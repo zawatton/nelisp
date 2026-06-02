@@ -170,6 +170,30 @@
               (lambda (b) (nelisp-asm-arm64-fmov-d-from-x b 'd31 'x30)))
              #x9E6703DF)))
 
+;; FMOV X0, D0 = 0x9E660000
+(ert-deftest nelisp-asm-arm64-f64/fmov-x0-d0 ()
+  (should (= (nelisp-asm-arm64-f64-test--word
+              (lambda (b) (nelisp-asm-arm64-fmov-x-from-d b 'x0 'd0)))
+             #x9E660000)))
+
+;; FMOV X10, D1 = 0x9E66002A
+(ert-deftest nelisp-asm-arm64-f64/fmov-x10-d1 ()
+  (should (= (nelisp-asm-arm64-f64-test--word
+              (lambda (b) (nelisp-asm-arm64-fmov-x-from-d b 'x10 'd1)))
+             #x9E66002A)))
+
+;; SCVTF D1, X10 = 0x9E620141
+(ert-deftest nelisp-asm-arm64-f64/scvtf-d1-x10 ()
+  (should (= (nelisp-asm-arm64-f64-test--word
+              (lambda (b) (nelisp-asm-arm64-scvtf-d-from-x b 'd1 'x10)))
+             #x9E620141)))
+
+;; FCVTZS X10, D1 = 0x9E78002A
+(ert-deftest nelisp-asm-arm64-f64/fcvtzs-x10-d1 ()
+  (should (= (nelisp-asm-arm64-f64-test--word
+              (lambda (b) (nelisp-asm-arm64-fcvtzs-x-from-d b 'x10 'd1)))
+             #x9E78002A)))
+
 ;; ---- §110.D.1 (6) STUR / LDUR D ----
 
 ;; STUR D0, [X29, #-16] = 0xFC1F03A0
@@ -252,6 +276,9 @@
                  (lambda (b) (nelisp-asm-arm64-fabs-reg-reg b 'd0 'd0))
                  (lambda (b) (nelisp-asm-arm64-fcmp-reg-reg b 'd0 'd1))
                  (lambda (b) (nelisp-asm-arm64-fmov-d-from-x b 'd0 'x10))
+                 (lambda (b) (nelisp-asm-arm64-fmov-x-from-d b 'x10 'd0))
+                 (lambda (b) (nelisp-asm-arm64-scvtf-d-from-x b 'd0 'x10))
+                 (lambda (b) (nelisp-asm-arm64-fcvtzs-x-from-d b 'x10 'd0))
                  (lambda (b) (nelisp-asm-arm64-stur-d-base-disp b 'd0 'x29 -16))
                  (lambda (b) (nelisp-asm-arm64-ldur-d-base-disp b 'd0 'x29 -8))))
     (let ((b (nelisp-asm-arm64-make-buffer)))

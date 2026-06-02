@@ -250,9 +250,13 @@ r_addend)."
             (list :unknown-reloc-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
          (relocs (plist-get plist :relocs))
-         (entry (list :type type :sym sym
+         (sym-name (if (stringp sym) sym (symbol-name sym)))
+         (entry (list :type type
+                      :symbol sym-name
+                      :sym sym
                       :offset (plist-get plist :length)
-                      :addend (or addend 0))))
+                      :addend (or addend 0)
+                      :section 'text)))
     (setq plist (plist-put plist :relocs (append relocs (list entry))))
     (nelisp-asm-arm64--rewrap buf plist)))
 
@@ -828,6 +832,18 @@ Base 0xF8E00000 | (Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE
     (nelisp-asm-arm64--emit-word
      buf (logior #xF8E00000 (ash s-reg 16) (ash n-reg 5) t-reg))))
 
+(defun nelisp-asm-arm64-casal (buf rs rt rn)
+  "Emit `CASAL Xs, Xt, [Xn]' (= LSE compare-and-swap, acquire+release).
+Atomically compares [Xn] with Xs; on success stores Xt; in all cases Xs
+is overwritten with the old memory value.  Base 0xC8E0FC00 |
+(Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE (present on all Apple
+Silicon)."
+  (let ((s-reg (logand (nelisp-asm-arm64--reg-num rs) #x1F))
+        (t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xC8E0FC00 (ash s-reg 16) (ash n-reg 5) t-reg))))
+
 ;; ---- §101.B-arm64 immediate-offset load/store (Sexp field access) ----
 ;;
 ;; Unsigned-offset forms used by the Sexp slot ops (tag byte at +0,
@@ -987,6 +1003,27 @@ pattern (= constructed in Xn via MOV/MOVK) into Dn for FCMP."
          (n (logand (nelisp-asm-arm64--reg-num src) #x1F)))
     (nelisp-asm-arm64--emit-word
      buf (logior #x9E670000 (ash n 5) (logand d #x1F)))))
+
+(defun nelisp-asm-arm64-fmov-x-from-d (buf dst src)
+  "Emit `FMOV Xd, Dn' (= FP→GP 64-bit transfer)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (nelisp-asm-arm64--fp-reg-num src)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9E660000 (ash (logand n #x1F) 5) d))))
+
+(defun nelisp-asm-arm64-scvtf-d-from-x (buf dst src)
+  "Emit `SCVTF Dd, Xn' (= signed i64 to f64)."
+  (let* ((d (nelisp-asm-arm64--fp-reg-num dst))
+         (n (logand (nelisp-asm-arm64--reg-num src) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9E620000 (ash n 5) (logand d #x1F)))))
+
+(defun nelisp-asm-arm64-fcvtzs-x-from-d (buf dst src)
+  "Emit `FCVTZS Xd, Dn' (= f64 to signed i64, truncate toward zero)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (nelisp-asm-arm64--fp-reg-num src)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x9E780000 (ash (logand n #x1F) 5) d))))
 
 (defun nelisp-asm-arm64-stur-d-base-disp (buf src base imm9)
   "Emit `STUR Dt, [Xn, #IMM9]' (= unscaled store of low 8 bytes).

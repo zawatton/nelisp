@@ -10103,13 +10103,13 @@ the call instruction)."
     (nelisp-phase47-compiler--emit-f64-leaf-into
      arg buf (if aarch64-p 'd0 'xmm0))
     (if aarch64-p
-        (let ((slot (nelisp-asm-arm64-buffer-pos buf)))
+        (progn
           ;; Emit BL imm26 placeholder (= base 0x94000000, imm26
           ;; field zeroed).  The linker patches imm26 at static-
           ;; link time via R_AARCH64_CALL26.
-          (nelisp-asm-arm64--emit-word buf #x94000000)
           (nelisp-asm-arm64-emit-reloc
-           buf 'b26-pc (symbol-name name)))
+           buf 'b26-pc (symbol-name name))
+          (nelisp-asm-arm64--emit-word buf #x94000000))
       ;; x86_64: CALL rel32 = 0xE8 + 4-byte placeholder.  Reloc
       ;; addend -4 matches the GCC / clang convention (= the
       ;; CALL instruction's relative offset is computed against
@@ -10134,18 +10134,23 @@ trivial until xmm spill machinery lands."
       ;; Evaluate INT-EXPR → rax (= gp-class), then MOVQ xmm-dst, rax.
       (nelisp-phase47-compiler--emit-value
        (nelisp-phase47-compiler--ir-get node :int-expr) buf)
-      (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax))
+      (if (eq nelisp-phase47-compiler--arch 'aarch64)
+          (nelisp-asm-arm64-fmov-d-from-x buf xmm-dst 'x0)
+        (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax)))
      ((eq kind 'i64-to-f64)
       ;; Evaluate INT-EXPR → rax (= gp-class signed i64), then
       ;; CVTSI2SD xmm-dst, rax (= f64 representation of the int).
       (nelisp-phase47-compiler--emit-value
        (nelisp-phase47-compiler--ir-get node :int-expr) buf)
-      (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf xmm-dst 'rax))
+      (if (eq nelisp-phase47-compiler--arch 'aarch64)
+          (nelisp-asm-arm64-scvtf-d-from-x buf xmm-dst 'x0)
+        (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf xmm-dst 'rax)))
      ((eq kind 'f64-call)
       ;; Existing f64-call ABI lands its result in xmm0.  If XMM-DST is
       ;; xmm0, just emit the call; otherwise pre-call-shuffle is
       ;; needed (= not implemented at MVP, signal error).
-      (unless (eq xmm-dst 'xmm0)
+      (unless (eq xmm-dst (if (eq nelisp-phase47-compiler--arch 'aarch64)
+                              'd0 'xmm0))
         (signal 'nelisp-phase47-compiler-error
                 (list :f64-call-leaf-into-nonzero-dst xmm-dst)))
       (nelisp-phase47-compiler--emit-f64-call node buf))
@@ -10317,26 +10322,41 @@ aarch64 spills to `[x29 - 16*(slot+1)]' (STUR); x86_64 to
     (let* ((slot (nth 1 binding))
            (value-ir (nth 2 binding)))
       (nelisp-phase47-compiler--emit-value value-ir buf)
-      (if (eq nelisp-phase47-compiler--arch 'aarch64)
-          (let ((disp (- (* 16 (1+ slot)))))
-            (unless (<= -256 disp 255)
-              (signal 'nelisp-phase47-compiler-error
-                      (list :let-slot-out-of-range slot)))
-            (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
-        (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp (- (* 8 (1+ slot))) 'rax)))))
+      (nelisp-phase47-compiler--emit-frame-slot-store-from-value buf slot))))
 
 (defun nelisp-phase47-compiler--emit-frame-slot-into-reg (buf slot reg)
   "Emit a GP load from frame SLOT into REG."
-  (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf reg 'rbp (- (* 8 (1+ slot)))))
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (let ((disp (- (* 16 (1+ slot)))))
+        (unless (<= -256 disp 255)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :frame-slot-out-of-range slot)))
+        (nelisp-phase47-compiler--arm64-emit-ldur buf reg 'x29 disp))
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf reg 'rbp (- (* 8 (1+ slot))))))
+
+(defun nelisp-phase47-compiler--emit-frame-slot-store-from-value (buf slot)
+  "Store the current GP value register into frame SLOT.
+On aarch64 the value is in x0 and slots use 16-byte frame stride; on
+x86_64 the value is in rax and slots use the existing 8-byte stride."
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (let ((disp (- (* 16 (1+ slot)))))
+        (unless (<= -256 disp 255)
+          (signal 'nelisp-phase47-compiler-error
+                  (list :frame-slot-out-of-range slot)))
+        (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rbp (- (* 8 (1+ slot))) 'rax)))
 
 (defun nelisp-phase47-compiler--emit-aot-root-bridge-call
     (node name buf &optional roots-rsp-disp)
-  "Emit a direct SysV call to Doc 129.5 root bridge NAME for NODE.
+  "Emit a direct call to Doc 129.5 root bridge NAME for NODE.
 When ROOTS-RSP-DISP is non-nil, load the roots argument from
-`[rsp + ROOTS-RSP-DISP]' instead of NODE's `roots' boundary slot."
-  (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
-               (eq nelisp-phase47-compiler--abi 'sysv))
+`[rsp + ROOTS-RSP-DISP]' / `[sp + ROOTS-RSP-DISP]' instead of
+NODE's `roots' boundary slot."
+  (unless (or (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                   (eq nelisp-phase47-compiler--abi 'sysv))
+              (eq nelisp-phase47-compiler--arch 'aarch64))
     (signal 'nelisp-phase47-compiler-error
             (list :aot-root-scope-unsupported-target
                   nelisp-phase47-compiler--arch
@@ -10349,21 +10369,34 @@ When ROOTS-RSP-DISP is non-nil, load the roots argument from
                                       sym slots))))))
     ;; nelisp_aot_{push,pop}_roots(mirror, frames, roots, out, scratch)
     (nelisp-phase47-compiler--emit-frame-slot-into-reg
-     buf (funcall slot-of 'mirror) 'rdi)
+     buf (funcall slot-of 'mirror)
+     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x0 'rdi))
     (nelisp-phase47-compiler--emit-frame-slot-into-reg
-     buf (funcall slot-of 'frames) 'rsi)
+     buf (funcall slot-of 'frames)
+     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x1 'rsi))
     (if roots-rsp-disp
-        (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
-         buf 'rdx roots-rsp-disp)
+        (if (eq nelisp-phase47-compiler--arch 'aarch64)
+            (nelisp-asm-arm64-ldr-imm buf 'x2 'sp roots-rsp-disp)
+          (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+           buf 'rdx roots-rsp-disp))
       (nelisp-phase47-compiler--emit-frame-slot-into-reg
-       buf (funcall slot-of 'roots) 'rdx))
+       buf (funcall slot-of 'roots)
+       (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x2 'rdx)))
     (nelisp-phase47-compiler--emit-frame-slot-into-reg
-     buf (funcall slot-of 'out) 'rcx)
+     buf (funcall slot-of 'out)
+     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x3 'rcx))
     (nelisp-phase47-compiler--emit-frame-slot-into-reg
-     buf (funcall slot-of 'scratch) 'r8)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf (symbol-name name) -4 'text)))
+     buf (funcall slot-of 'scratch)
+     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x4 'r8))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (if nelisp-phase47-compiler--allow-external-user-calls
+            (progn
+              (nelisp-asm-arm64-emit-reloc buf 'b26-pc (symbol-name name))
+              (nelisp-asm-arm64--emit-word buf #x94000000))
+          (nelisp-asm-arm64-bl buf name))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf (symbol-name name) -4 'text))))
 
 (defun nelisp-phase47-compiler--emit-aot-root-scope (node buf)
   "Emit automatic Doc 129.5 root push/pop around NODE's body."
@@ -10380,44 +10413,75 @@ When ROOTS-RSP-DISP is non-nil, load the roots argument from
        (unless roots-slot
          (signal 'nelisp-phase47-compiler-error
                  (list :aot-root-scope-missing-slot 'roots slots)))
-       (nelisp-asm-x86_64-mov-mem-reg-disp8
-        buf 'rbp (- (* 8 (1+ roots-slot))) 'rax)
+       (if (eq nelisp-phase47-compiler--arch 'aarch64)
+           (let ((disp (- (* 16 (1+ roots-slot)))))
+             (unless (<= -256 disp 255)
+               (signal 'nelisp-phase47-compiler-error
+                       (list :aot-root-scope-missing-slot 'roots slots)))
+             (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
+         (nelisp-asm-x86_64-mov-mem-reg-disp8
+          buf 'rbp (- (* 8 (1+ roots-slot))) 'rax))
        (nelisp-phase47-compiler--emit-aot-root-bridge-call
         node 'nelisp_aot_push_roots buf)
        (nelisp-phase47-compiler--emit-value
         (nelisp-phase47-compiler--ir-get node :body)
         buf)
-       ;; Preserve the body's GP return value across the pop bridge.
-       ;; The body-entry stack is 16-byte aligned; `push rax' misaligns
-       ;; it, so insert one fixed 8-byte pad before the bridge call and
-       ;; remove it before restoring rax.
-       (nelisp-asm-x86_64-push buf 'rax)
-       (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
-       (nelisp-phase47-compiler--emit-aot-root-bridge-call
-        node 'nelisp_aot_pop_roots buf)
-       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
-       (nelisp-asm-x86_64-pop buf 'rax))
+       (if (eq nelisp-phase47-compiler--arch 'aarch64)
+           (progn
+             ;; Preserve the body's GP return value across the pop bridge.
+             ;; AAPCS64 stack alignment stays valid with a 16-byte spill.
+             (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+             (nelisp-phase47-compiler--emit-aot-root-bridge-call
+              node 'nelisp_aot_pop_roots buf)
+             (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))
+         ;; Preserve the body's GP return value across the pop bridge.
+         ;; The body-entry stack is 16-byte aligned; `push rax' misaligns
+         ;; it, so insert one fixed 8-byte pad before the bridge call and
+         ;; remove it before restoring rax.
+         (nelisp-asm-x86_64-push buf 'rax)
+         (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
+         (nelisp-phase47-compiler--emit-aot-root-bridge-call
+          node 'nelisp_aot_pop_roots buf)
+         (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
+         (nelisp-asm-x86_64-pop buf 'rax)))
       ('stack
        ;; Keep the materialized roots in an aligned stack temporary for
-       ;; the whole body.  Two pushes preserve the body-entry call
-       ;; alignment; the first copy at [rsp+8] is the roots vector.
-       (nelisp-asm-x86_64-push buf 'rax)
-       (nelisp-asm-x86_64-push buf 'rax)
-       (nelisp-phase47-compiler--emit-aot-root-bridge-call
-        node 'nelisp_aot_push_roots buf 8)
-       (nelisp-phase47-compiler--emit-value
-        (nelisp-phase47-compiler--ir-get node :body)
-        buf)
-       ;; Layout before the pop bridge after `push rax; sub rsp, 8':
-       ;; [rsp+8] = saved result, [rsp+16] = alignment copy,
-       ;; [rsp+24] = roots vector.
-       (nelisp-asm-x86_64-push buf 'rax)
-       (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
-       (nelisp-phase47-compiler--emit-aot-root-bridge-call
-        node 'nelisp_aot_pop_roots buf 24)
-       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
-       (nelisp-asm-x86_64-pop buf 'rax)
-       (nelisp-asm-x86_64-add-imm32 buf 'rsp 16))
+       ;; the whole body.
+       (if (eq nelisp-phase47-compiler--arch 'aarch64)
+           (progn
+             ;; [sp] = roots vector.  A single 16-byte spill preserves
+             ;; the AAPCS64 call alignment.
+             (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+             (nelisp-phase47-compiler--emit-aot-root-bridge-call
+              node 'nelisp_aot_push_roots buf 0)
+             (nelisp-phase47-compiler--emit-value
+              (nelisp-phase47-compiler--ir-get node :body)
+              buf)
+             ;; Before pop bridge: [sp] = saved result, [sp+16] = roots.
+             (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+             (nelisp-phase47-compiler--emit-aot-root-bridge-call
+              node 'nelisp_aot_pop_roots buf 16)
+             (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+             (nelisp-asm-arm64-add-imm buf 'sp 'sp 16))
+         ;; x86_64 SysV: two pushes preserve the body-entry call
+         ;; alignment; the first copy at [rsp+8] is the roots vector.
+         (nelisp-asm-x86_64-push buf 'rax)
+         (nelisp-asm-x86_64-push buf 'rax)
+         (nelisp-phase47-compiler--emit-aot-root-bridge-call
+          node 'nelisp_aot_push_roots buf 8)
+         (nelisp-phase47-compiler--emit-value
+          (nelisp-phase47-compiler--ir-get node :body)
+          buf)
+         ;; Layout before the pop bridge after `push rax; sub rsp, 8':
+         ;; [rsp+8] = saved result, [rsp+16] = alignment copy,
+         ;; [rsp+24] = roots vector.
+         (nelisp-asm-x86_64-push buf 'rax)
+         (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
+         (nelisp-phase47-compiler--emit-aot-root-bridge-call
+          node 'nelisp_aot_pop_roots buf 24)
+         (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
+         (nelisp-asm-x86_64-pop buf 'rax)
+         (nelisp-asm-x86_64-add-imm32 buf 'rsp 16)))
       (_
        (signal 'nelisp-phase47-compiler-error
                (list :aot-root-scope-unknown-storage
@@ -10516,8 +10580,11 @@ the node's class to consume the result correctly."
          (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
            (nelisp-phase47-compiler--emit-value child buf)))
         ((= tag 96)             ; setq-local
-         (nelisp-phase47-compiler--emit-aarch64-unsupported
-          'setq-local node))
+         (let ((slot (nelisp-phase47-compiler--ir-get node :slot)))
+           (nelisp-phase47-compiler--emit-value
+            (nelisp-phase47-compiler--ir-get node :value-ir) buf)
+           (nelisp-phase47-compiler--emit-frame-slot-store-from-value
+            buf slot)))
         ((= tag 93)             ; aot-landing-label
          (nelisp-phase47-compiler--emit-aot-landing-label node buf))
         ((= tag 94)             ; aot-machine-landing-jump
@@ -10530,9 +10597,10 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-f64-cmp node buf))
         ((= tag 25)             ; f64-call
          (nelisp-phase47-compiler--emit-f64-call node buf))
-        ((= tag 28)             ; i64-to-f64 — aarch64: unsupported (x86_64-only)
-         (nelisp-phase47-compiler--emit-aarch64-unsupported
-          'i64-to-f64 node))
+        ((= tag 28)             ; i64-to-f64 — result in d0
+         (nelisp-phase47-compiler--emit-value
+          (nelisp-phase47-compiler--ir-get node :int-expr) buf)
+         (nelisp-asm-arm64-scvtf-d-from-x buf 'd0 'x0))
         ((= tag 78)             ; syscall-direct — aarch64 raw SVC (Linux/Darwin)
          (nelisp-phase47-compiler--emit-syscall-direct-arm64 node buf))
         ((= tag 41)             ; ptr-read-u64 — aarch64 LDR x0,[x1,x2]
@@ -10541,6 +10609,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-ptr-write-u64-arm64 node buf))
         ((= tag 3)              ; atomic-fetch-add — aarch64 LDADDAL
          (nelisp-phase47-compiler--emit-atomic-fetch-add-arm64 node buf))
+        ((= tag 2)              ; atomic-compare-exchange — aarch64 CASAL
+         (nelisp-phase47-compiler--emit-atomic-compare-exchange-arm64 node buf))
         ((= tag 86)             ; while — aarch64 loop (cmp/b.eq/b)
          (nelisp-phase47-compiler--emit-while node buf))
         ((= tag 5)              ; call — aarch64 direct BL (fixed arity)
@@ -10618,27 +10688,102 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-logic node buf))
         ((= tag 97)             ; addr-of — aarch64 ADR x0,<name>
          (nelisp-phase47-compiler--emit-addr-of node buf))
-        ((memq tag '(23 55 27            ; extern-call sexp-float-unwrap f64-to-i64-trunc
-                     14                  ; cons-cdr-raw
-                     60                  ; sexp-payload-ptr-record
-                     52 48 49            ; record-type-tag record-slot-count record-slot-ref
-                     50 51               ; record-slot-ref-ptr record-slot-set
-                     81 83 84 85         ; vector-len vector-ref vector-ref-ptr vector-slot-set
-                     82                  ; vector-make
-                     47                  ; record-make
-                     9 8 6 7             ; cell-value cell-set-value cell-make cell-null-p
-                     69 70 73 76         ; str-bytes str-bytes-ptr str-eq symbol-eq
-                     77 58               ; symbol-name-eq sexp-name-eq
-                     63 66               ; sexp-write-nil sexp-write-t
-                     64 65 90 91 62      ; sexp-write-str sexp-write-symbol sexp-write-symbol-lit sexp-write-str-lit sexp-write-float
-                     36 37 38            ; mut-str-make-empty mut-str-push-byte mut-str-push-codepoint
-                     35 34               ; mut-str-len mut-str-finalize
-                     71 72 74            ; str-char-count str-codepoint-at str-is-alphanumeric-at
-                     2                   ; atomic-compare-exchange
-                     94 95               ; aot-machine-landing-jump aot-current-sp
-                     92))                ; aot-root-scope
-         (nelisp-phase47-compiler--emit-aarch64-unsupported
-          (nelisp-phase47-compiler--ir-kind node) node))
+        ((= tag 14)             ; cons-cdr-raw — aarch64 boxed cdr walk
+         (nelisp-phase47-compiler--emit-cons-cdr-raw-arm64 node buf))
+        ((= tag 60)             ; sexp-payload-ptr-record — Record payload guard
+         (nelisp-phase47-compiler--emit-sexp-payload-ptr-record-arm64 node buf))
+        ((= tag 52)             ; record-type-tag — copy inline type tag
+         (nelisp-phase47-compiler--emit-record-type-tag-arm64 node buf))
+        ((= tag 48)             ; record-slot-count — read NlRecord.slots.len
+         (nelisp-phase47-compiler--emit-record-slot-count-arm64 node buf))
+        ((= tag 49)             ; record-slot-ref — clone record slot into dst
+         (nelisp-phase47-compiler--emit-record-slot-ref-arm64 node buf))
+        ((= tag 50)             ; record-slot-ref-ptr — borrow record slot ptr
+         (nelisp-phase47-compiler--emit-record-slot-ref-ptr-arm64 node buf))
+        ((= tag 51)             ; record-slot-set — BL nl_record_set_slot
+         (nelisp-phase47-compiler--emit-record-slot-set-arm64 node buf))
+        ((= tag 81)             ; vector-len — read NlVector.value.len
+         (nelisp-phase47-compiler--emit-vector-len-arm64 node buf))
+        ((= tag 83)             ; vector-ref — clone vector element into dst
+         (nelisp-phase47-compiler--emit-vector-ref-arm64 node buf))
+        ((= tag 84)             ; vector-ref-ptr — borrow vector element ptr
+         (nelisp-phase47-compiler--emit-vector-ref-ptr-arm64 node buf))
+        ((= tag 85)             ; vector-slot-set — BL nl_vector_set_slot
+         (nelisp-phase47-compiler--emit-vector-slot-set-arm64 node buf))
+        ((= tag 82)             ; vector-make — BL nl_alloc_vector + tag slot
+         (nelisp-phase47-compiler--emit-vector-make-arm64 node buf))
+        ((= tag 47)             ; record-make — BL nl_alloc_record + tag slot
+         (nelisp-phase47-compiler--emit-record-make-arm64 node buf))
+        ((= tag 9)              ; cell-value — copy NlCell.value into dst
+         (nelisp-phase47-compiler--emit-cell-value-arm64 node buf))
+        ((= tag 8)              ; cell-set-value — BL nl_cell_set_value
+         (nelisp-phase47-compiler--emit-cell-set-value-arm64 node buf))
+        ((= tag 6)              ; cell-make — BL nl_alloc_cell + tag slot
+         (nelisp-phase47-compiler--emit-cell-make-arm64 node buf))
+        ((= tag 7)              ; cell-null-p — NlCell.value tag == Nil
+         (nelisp-phase47-compiler--emit-cell-null-p-arm64 node buf))
+        ((= tag 69)             ; str-bytes — read String ptr
+         (nelisp-phase47-compiler--emit-str-bytes-arm64 node buf))
+        ((= tag 70)             ; str-bytes-ptr — BL nl_str_bytes_ptr
+         (nelisp-phase47-compiler--emit-str-bytes-ptr-arm64 node buf))
+        ((= tag 73)             ; str-eq — inline String byte equality
+         (nelisp-phase47-compiler--emit-str-eq-arm64 node buf))
+        ((= tag 76)             ; symbol-eq — Symbol tag + byte equality
+         (nelisp-phase47-compiler--emit-symbol-eq-arm64 node buf))
+        ((= tag 77)             ; symbol-name-eq — Symbol vs literal name
+         (nelisp-phase47-compiler--emit-symbol-name-eq-arm64 node buf))
+        ((= tag 58)             ; sexp-name-eq — Symbol/Str vs literal name
+         (nelisp-phase47-compiler--emit-sexp-name-eq-arm64 node buf))
+        ((= tag 63)             ; sexp-write-nil — write Nil tag byte
+         (nelisp-phase47-compiler--emit-sexp-write-tag-arm64
+          node buf nelisp-sexp--tag-nil))
+        ((= tag 66)             ; sexp-write-t — write T tag byte
+         (nelisp-phase47-compiler--emit-sexp-write-tag-arm64
+          node buf nelisp-sexp--tag-t))
+        ((= tag 64)             ; sexp-write-str — BL nl_alloc_str
+         (nelisp-phase47-compiler--emit-sexp-write-alloc-arm64
+          node buf 'nl_alloc_str))
+        ((= tag 65)             ; sexp-write-symbol — BL nl_alloc_symbol
+         (nelisp-phase47-compiler--emit-sexp-write-alloc-arm64
+          node buf 'nl_alloc_symbol))
+        ((= tag 90)             ; sexp-write-symbol-lit — stack bytes + BL nl_alloc_symbol
+         (nelisp-phase47-compiler--emit-sexp-write-lit-arm64
+          node buf 'nl_alloc_symbol))
+        ((= tag 91)             ; sexp-write-str-lit — stack bytes + BL nl_alloc_str
+         (nelisp-phase47-compiler--emit-sexp-write-lit-arm64
+          node buf 'nl_alloc_str))
+        ((= tag 36)             ; mut-str-make-empty — BL nl_alloc_mut_str
+         (nelisp-phase47-compiler--emit-mut-str-make-empty-arm64 node buf))
+        ((= tag 37)             ; mut-str-push-byte — BL nl_mut_str_push_byte
+         (nelisp-phase47-compiler--emit-mut-str-push-2arg-arm64
+          node buf 'nl_mut_str_push_byte :byte))
+        ((= tag 38)             ; mut-str-push-codepoint — BL nl_mut_str_push_codepoint
+         (nelisp-phase47-compiler--emit-mut-str-push-2arg-arm64
+          node buf 'nl_mut_str_push_codepoint :cp))
+        ((= tag 35)             ; mut-str-len — BL nl_mut_str_len
+         (nelisp-phase47-compiler--emit-mut-str-len-arm64 node buf))
+        ((= tag 34)             ; mut-str-finalize — BL nl_mut_str_finalize
+         (nelisp-phase47-compiler--emit-mut-str-finalize-arm64 node buf))
+        ((= tag 71)             ; str-char-count — BL nl_str_char_count
+         (nelisp-phase47-compiler--emit-str-char-count-arm64 node buf))
+        ((= tag 72)             ; str-codepoint-at — BL nl_str_codepoint_at
+         (nelisp-phase47-compiler--emit-str-codepoint-at-arm64 node buf))
+        ((= tag 74)             ; str-is-alphanumeric-at — BL nl_str_is_alphanumeric_at
+         (nelisp-phase47-compiler--emit-str-is-alphanumeric-at-arm64 node buf))
+        ((= tag 23)             ; extern-call — aarch64 GP-only direct/reloc BL
+         (nelisp-phase47-compiler--emit-extern-call-arm64 node buf))
+        ((= tag 94)             ; aot-machine-landing-jump — restore sp + branch
+         (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
+        ((= tag 95)             ; aot-current-sp — expose native sp
+         (nelisp-phase47-compiler--emit-aot-current-sp node buf))
+        ((= tag 92)             ; aot-root-scope — root bridge push/pop
+         (nelisp-phase47-compiler--emit-aot-root-scope node buf))
+        ((= tag 55)             ; sexp-float-unwrap — raw payload bits
+         (nelisp-phase47-compiler--emit-sexp-float-unwrap node buf))
+        ((= tag 27)             ; f64-to-i64-trunc — FCVTZS
+         (nelisp-phase47-compiler--emit-f64-to-i64-trunc node buf))
+        ((= tag 62)             ; sexp-write-float — BL nl_sexp_write_float
+         (nelisp-phase47-compiler--emit-sexp-write-float node buf))
         (t
          (let ((kind (nelisp-phase47-compiler--ir-kind node)))
            (signal 'nelisp-phase47-compiler-error
@@ -10863,13 +11008,14 @@ the node's class to consume the result correctly."
        (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
          (nelisp-phase47-compiler--emit-value child buf)))
       ((= tag 96)               ; setq-local
-       ;; Evaluate RHS into rax, spill it back into the local frame slot,
-       ;; and leave rax live so `(setq x v)' is itself value-producing.
-       (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
-              (disp (- (* 8 (1+ slot)))))
+       ;; Evaluate RHS into the target ABI's value register, spill it back
+       ;; into the local frame slot, and leave the value register live so
+       ;; `(setq x v)' is itself value-producing.
+       (let ((slot (nelisp-phase47-compiler--ir-get node :slot)))
          (nelisp-phase47-compiler--emit-value
           (nelisp-phase47-compiler--ir-get node :value-ir) buf)
-         (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)))
+         (nelisp-phase47-compiler--emit-frame-slot-store-from-value
+          buf slot)))
       ((= tag 93)               ; aot-landing-label
        (nelisp-phase47-compiler--emit-aot-landing-label node buf))
       ((= tag 94)               ; aot-machine-landing-jump
@@ -11572,8 +11718,12 @@ semantic differs from this default.
 F64-EXPR is emitted via `--emit-f64-leaf-into' which now accepts
 `bits-to-f64' / `f64-call' / `ref :class f64' as valid producers."
   (let ((f64-expr (nelisp-phase47-compiler--ir-get node :f64-expr)))
-    (nelisp-phase47-compiler--emit-f64-leaf-into f64-expr buf 'xmm0)
-    (nelisp-asm-x86_64-cvttsd2si-r64-xmm buf 'rax 'xmm0)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          (nelisp-phase47-compiler--emit-f64-leaf-into f64-expr buf 'd0)
+          (nelisp-asm-arm64-fcvtzs-x-from-d buf 'x0 'd0))
+      (nelisp-phase47-compiler--emit-f64-leaf-into f64-expr buf 'xmm0)
+      (nelisp-asm-x86_64-cvttsd2si-r64-xmm buf 'rax 'xmm0))))
 
 (defun nelisp-phase47-compiler--emit-sexp-float-unwrap (node buf)
   "Emit f64-payload read for a `Sexp::Float(f)' value, returning the
@@ -11596,10 +11746,15 @@ Mirror of `--emit-sexp-int-unwrap' (= same byte sequence, same
 offset); separated as a distinct op for emit-time class clarity
 and for future f64-class composition with `--emit-f64-leaf-into'."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'rax 'rdi nelisp-sexp--offset-payload)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          (nelisp-phase47-compiler--emit-value ptr buf)
+          (nelisp-asm-arm64-ldr-imm
+           buf 'x0 'x0 nelisp-sexp--offset-payload))
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+      (nelisp-asm-x86_64-mov-reg-mem-disp8
+       buf 'rax 'rdi nelisp-sexp--offset-payload))))
 
 (defun nelisp-phase47-compiler--emit-sexp-int-unwrap (node buf)
   "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr into rdi.
@@ -12735,39 +12890,63 @@ f64 arg, balanced pushes for stack alignment):
 SLOT f64-class is the workaround for the Phase 47 MVP requirement
 that defun params be uniform-class.  Test harnesses bit-cast the
 pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
-param alongside VALUE; the bit pattern survives unchanged through
-the xmm0 spill / unspill round trip."
+  param alongside VALUE; the bit pattern survives unchanged through
+  the xmm0 spill / unspill round trip."
   (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
         (value (nelisp-phase47-compiler--ir-get node :value)))
-    ;; Step 1-2: VALUE → xmm0, then xmm0 → rax, push.  The
-    ;; `emit-f64-leaf-into' helper enforces the flat-ref shape so
-    ;; this op composes only at the same MVP level as `f64-call'.
-    (nelisp-phase47-compiler--emit-f64-leaf-into value buf 'xmm0)
-    (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Step 3: SLOT.  If the IR node is an f64-class ref, the
-    ;; emit-value path lands the bit pattern in xmm0; transfer to
-    ;; rax via MOVQ.  Otherwise (= gp-class ref / imm / call), the
-    ;; result is already in rax.
-    (nelisp-phase47-compiler--emit-value slot buf)
-    (when (and (eq (nelisp-phase47-compiler--ir-kind slot) 'ref)
-               (eq (nelisp-phase47-compiler--ir-get slot :class) 'f64))
-      (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Step 4: pop in reverse — slot (last pushed) → rdi, then
-    ;; value (first pushed) → rax → xmm0.
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-pop buf 'rax)
-    (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)
-    ;; Step 5: alignment pad.
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Step 6: CALL rel32 = 0xE8 + 4-byte placeholder + PLT32 reloc.
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_sexp_write_float" -4 'text)
-    ;; Step 7: discard the alignment pad.  rax = slot pointer is
-    ;; the value-form result.
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          ;; VALUE -> d0, spill raw bits in one aligned stack slot.
+          (nelisp-phase47-compiler--emit-f64-leaf-into value buf 'd0)
+          (nelisp-asm-arm64-fmov-x-from-d buf 'x10 'd0)
+          (nelisp-asm-arm64-str-pre-sp-16 buf 'x10)
+          ;; SLOT -> x0.  A f64-class slot parameter carries pointer
+          ;; bits in a D register, mirroring the x86_64 workaround.
+          (if (and (eq (nelisp-phase47-compiler--ir-kind slot) 'ref)
+                   (eq (nelisp-phase47-compiler--ir-get slot :class) 'f64))
+              (progn
+                (nelisp-phase47-compiler--emit-f64-leaf-into slot buf 'd1)
+                (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd1))
+            (nelisp-phase47-compiler--emit-value slot buf))
+          ;; Restore VALUE into d0 and call AAPCS64 helper:
+          ;;   x0 = slot, d0 = value.  Helper returns slot in x0.
+          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x10)
+          (nelisp-asm-arm64-fmov-d-from-x buf 'd0 'x10)
+          (if nelisp-phase47-compiler--allow-external-user-calls
+              (progn
+                (nelisp-asm-arm64-emit-reloc
+                 buf 'b26-pc "nl_sexp_write_float")
+                (nelisp-asm-arm64--emit-word buf #x94000000))
+            (nelisp-asm-arm64-bl buf 'nl_sexp_write_float)))
+      ;; Step 1-2: VALUE → xmm0, then xmm0 → rax, push.  The
+      ;; `emit-f64-leaf-into' helper enforces the flat-ref shape so
+      ;; this op composes only at the same MVP level as `f64-call'.
+      (nelisp-phase47-compiler--emit-f64-leaf-into value buf 'xmm0)
+      (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
+      (nelisp-asm-x86_64-push buf 'rax)
+      ;; Step 3: SLOT.  If the IR node is an f64-class ref, the
+      ;; emit-value path lands the bit pattern in xmm0; transfer to
+      ;; rax via MOVQ.  Otherwise (= gp-class ref / imm / call), the
+      ;; result is already in rax.
+      (nelisp-phase47-compiler--emit-value slot buf)
+      (when (and (eq (nelisp-phase47-compiler--ir-kind slot) 'ref)
+                 (eq (nelisp-phase47-compiler--ir-get slot :class) 'f64))
+        (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
+      (nelisp-asm-x86_64-push buf 'rax)
+      ;; Step 4: pop in reverse — slot (last pushed) → rdi, then
+      ;; value (first pushed) → rax → xmm0.
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-pop buf 'rax)
+      (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)
+      ;; Step 5: alignment pad.
+      (nelisp-asm-x86_64-push buf 'rax)
+      ;; Step 6: CALL rel32 = 0xE8 + 4-byte placeholder + PLT32 reloc.
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_sexp_write_float" -4 'text)
+      ;; Step 7: discard the alignment pad.  rax = slot pointer is
+      ;; the value-form result.
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 
 ;; ---- Doc 122 §122.B — Mutable string builder grammar emit ----
@@ -13263,6 +13442,28 @@ ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Xn)
   (nelisp-asm-arm64-ldaddal buf 'x2 'x0 'x1))        ; x0 = old [x1]
 
+(defun nelisp-phase47-compiler--emit-atomic-compare-exchange-arm64 (node buf)
+  "Emit `atomic-compare-exchange' for aarch64 — inline `CASAL'.
+ptr → x1, expected → x2, new-val → x3.  `CASAL x2,x3,[x1]' overwrites
+x2 with the old memory value; comparing that old value with EXPECTED
+materialises x0 = 1 on success, 0 on failure, matching the x86_64
+`LOCK CMPXCHG' contract."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :expected) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push expected
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :new-val) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)         ; x3 = new value (Rt)
+  (nelisp-asm-arm64-ldr-imm buf 'x9 'sp 0)           ; x9 = expected snapshot
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = expected / old (Rs)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Rn)
+  (nelisp-asm-arm64-casal buf 'x2 'x3 'x1)           ; x2 = old [x1]
+  (nelisp-asm-arm64-cmp-reg-reg buf 'x2 'x9)
+  (nelisp-asm-arm64-cset buf 'x0 'eq))
+
 (defun nelisp-phase47-compiler--emit-alloc-bytes-arm64 (node buf)
   "Emit `alloc-bytes' for aarch64 — call `nl_alloc_bytes(size, align)'.
 size -> x0, align -> x1, BL nl_alloc_bytes; the allocated pointer (or 0
@@ -13409,6 +13610,278 @@ slot pointer in x0 (matches the `cons-make' ABI)."
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
+(defun nelisp-phase47-compiler--emit-copy-sexp32-arm64
+    (buf src dst &optional src-off dst-off)
+  "Copy one 32-byte Sexp slot from SRC+SRC-OFF to DST+DST-OFF."
+  (dotimes (i 4)
+    (nelisp-asm-arm64-ldr-imm
+     buf 'x9 src (+ (or src-off 0) (* i 8)))
+    (nelisp-asm-arm64-str-imm
+     buf 'x9 dst (+ (or dst-off 0) (* i 8)))))
+
+(defun nelisp-phase47-compiler--emit-cons-cdr-raw-arm64 (node buf)
+  "Emit `cons-cdr-raw' for aarch64 — follow cdr if it is a Cons."
+  (let* ((id (nelisp-phase47-compiler--gensym "cons-cdr-raw-a64"))
+         (nil-lbl (intern (format "%s-nil" id)))
+         (end-lbl (intern (format "%s-end" id)))
+         (from-box (nelisp-phase47-compiler--ir-get node :from-box)))
+    (nelisp-phase47-compiler--emit-value
+     (nelisp-phase47-compiler--ir-get node :ptr) buf)
+    (unless from-box
+      (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload))
+    (nelisp-asm-arm64-add-imm buf 'x1 'x0 nelisp-nlconsbox--offset-cdr)
+    (nelisp-asm-arm64-ldrb-imm buf 'x2 'x1 nelisp-sexp--offset-tag)
+    (nelisp-asm-arm64-cmp-imm buf 'x2 nelisp-sexp--tag-cons)
+    (nelisp-asm-arm64-b-cond buf 'ne nil-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-sexp--offset-payload)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf nil-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-payload-ptr-record-arm64 (node buf)
+  "Emit `sexp-payload-ptr-record' for aarch64 — Record -> box ptr, else 0."
+  (let* ((id (nelisp-phase47-compiler--gensym "sexp-payload-ptr-record-a64"))
+         (zero-lbl (intern (format "%s-zero" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value
+     (nelisp-phase47-compiler--ir-get node :ptr) buf)
+    (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 nelisp-sexp--offset-tag)
+    (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-record)
+    (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf zero-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-record-slot-ptr-core-arm64 (ptr idx buf)
+  "Leave the raw record slot pointer for PTR/IDX in x0."
+  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-asm-arm64-mov-imm64 buf 'x9 nelisp-sexp--slot-size)
+  (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+  (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-ldr-imm
+   buf 'x2 'x2 nelisp-nlrecord--offset-slots-capacity)
+  (nelisp-asm-arm64-add-reg-reg buf 'x0 'x2 'x0))
+
+(defun nelisp-phase47-compiler--emit-record-type-tag-arm64 (node buf)
+  "Emit `record-type-tag' for aarch64 — copy inline type tag to :slot."
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x0 nelisp-sexp--offset-payload)
+    (nelisp-phase47-compiler--emit-copy-sexp32-arm64
+     buf 'x2 'x1 nelisp-nlrecord--offset-type-tag 0)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1)))
+
+(defun nelisp-phase47-compiler--emit-record-slot-count-arm64 (node buf)
+  "Emit `record-slot-count' for aarch64 — read NlRecord.slots.length."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-ldr-imm
+   buf 'x0 'x0 nelisp-nlrecord--offset-slots-length))
+
+(defun nelisp-phase47-compiler--emit-record-slot-ref-ptr-arm64 (node buf)
+  "Emit `record-slot-ref-ptr' for aarch64."
+  (nelisp-phase47-compiler--emit-record-slot-ptr-core-arm64
+   (nelisp-phase47-compiler--ir-get node :ptr)
+   (nelisp-phase47-compiler--ir-get node :idx)
+   buf))
+
+(defun nelisp-phase47-compiler--emit-record-slot-ref-arm64 (node buf)
+  "Emit `record-slot-ref' for aarch64 via `nl_sexp_clone_into'."
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
+    (nelisp-phase47-compiler--emit-record-slot-ptr-core-arm64 ptr idx buf)
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)         ; src
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)       ; dst
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)        ; src
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)         ; preserve dst
+    (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)))      ; return dst
+
+(defun nelisp-phase47-compiler--emit-record-slot-set-arm64 (node buf)
+  "Emit `record-slot-set' for aarch64 via `nl_record_set_slot'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-bl buf 'nl_record_set_slot)
+  (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
+
+(defun nelisp-phase47-compiler--emit-vector-slot-ptr-core-arm64 (ptr idx buf)
+  "Leave the raw vector element pointer for PTR/IDX in x0."
+  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-asm-arm64-mov-imm64 buf 'x9 nelisp-sexp--slot-size)
+  (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+  (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-ldr-imm
+   buf 'x2 'x2 nelisp-nlvector--offset-value-capacity)
+  (nelisp-asm-arm64-add-reg-reg buf 'x0 'x2 'x0))
+
+(defun nelisp-phase47-compiler--emit-vector-len-arm64 (node buf)
+  "Emit `vector-len' for aarch64 — read NlVector.value.length."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-ldr-imm
+   buf 'x0 'x0 nelisp-nlvector--offset-value-length))
+
+(defun nelisp-phase47-compiler--emit-vector-ref-ptr-arm64 (node buf)
+  "Emit `vector-ref-ptr' for aarch64."
+  (nelisp-phase47-compiler--emit-vector-slot-ptr-core-arm64
+   (nelisp-phase47-compiler--ir-get node :ptr)
+   (nelisp-phase47-compiler--ir-get node :idx)
+   buf))
+
+(defun nelisp-phase47-compiler--emit-vector-ref-arm64 (node buf)
+  "Emit `vector-ref' for aarch64 via `nl_sexp_clone_into'."
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+        (idx (nelisp-phase47-compiler--ir-get node :idx))
+        (slot (nelisp-phase47-compiler--ir-get node :slot)))
+    (nelisp-phase47-compiler--emit-vector-slot-ptr-core-arm64 ptr idx buf)
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)         ; src
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)       ; dst
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)        ; src
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)         ; preserve dst
+    (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)))      ; return dst
+
+(defun nelisp-phase47-compiler--emit-vector-slot-set-arm64 (node buf)
+  "Emit `vector-slot-set' for aarch64 via `nl_vector_set_slot'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-bl buf 'nl_vector_set_slot)
+  (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
+
+(defun nelisp-phase47-compiler--emit-vector-make-arm64 (node buf)
+  "Emit `vector-make' for aarch64 via `nl_alloc_vector'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :cap) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; slot
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; cap
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)           ; preserve slot
+  (nelisp-asm-arm64-bl buf 'nl_alloc_vector)         ; x0 = NlVector*
+  (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; slot
+  (nelisp-asm-arm64-mov-imm64 buf 'x2 nelisp-sexp--tag-vector)
+  (nelisp-asm-arm64-strb-imm buf 'x2 'x1 nelisp-sexp--offset-tag)
+  (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
+
+(defun nelisp-phase47-compiler--emit-record-make-arm64 (node buf)
+  "Emit `record-make' for aarch64 via `nl_alloc_record'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :tag-ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot-count) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; slot
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; count
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; tag-ptr
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x2)           ; preserve slot
+  (nelisp-asm-arm64-bl buf 'nl_alloc_record)         ; x0 = NlRecord*
+  (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; slot
+  (nelisp-asm-arm64-mov-imm64 buf 'x2 nelisp-sexp--tag-record)
+  (nelisp-asm-arm64-strb-imm buf 'x2 'x1 nelisp-sexp--offset-tag)
+  (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
+
+(defun nelisp-phase47-compiler--emit-cell-value-arm64 (node buf)
+  "Emit `cell-value' for aarch64 — copy NlCell.value into :slot."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-ldr-imm buf 'x2 'x0 nelisp-sexp--offset-payload)
+  (nelisp-phase47-compiler--emit-copy-sexp32-arm64
+   buf 'x2 'x1 nelisp-nlcell--offset-value 0)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
+
+(defun nelisp-phase47-compiler--emit-cell-set-value-arm64 (node buf)
+  "Emit `cell-set-value' for aarch64 via `nl_cell_set_value'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; return handle
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-bl buf 'nl_cell_set_value)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))
+
+(defun nelisp-phase47-compiler--emit-cell-make-arm64 (node buf)
+  "Emit `cell-make' for aarch64 via `nl_alloc_cell'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; slot
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; val-ptr
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)           ; preserve slot
+  (nelisp-asm-arm64-bl buf 'nl_alloc_cell)           ; x0 = NlCell*
+  (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; slot
+  (nelisp-asm-arm64-mov-imm64 buf 'x2 nelisp-sexp--tag-cell)
+  (nelisp-asm-arm64-strb-imm buf 'x2 'x1 nelisp-sexp--offset-tag)
+  (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
+
+(defun nelisp-phase47-compiler--emit-cell-null-p-arm64 (node buf)
+  "Emit `cell-null-p' for aarch64 — x0 = NlCell.value tag is Nil."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+  (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 nelisp-nlcell--offset-value)
+  (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-nil)
+  (nelisp-asm-arm64-cset buf 'x0 'eq))
+
 (defun nelisp-phase47-compiler--emit-sexp-tag-arm64 (node buf)
   "Emit `sexp-tag' for aarch64 — x0 = zero-extended tag byte at [ptr]."
   (nelisp-phase47-compiler--emit-value
@@ -13443,6 +13916,309 @@ result (zero-extended byte) in x0."
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-ptr) ; x0 = buf ptr
   (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x2)     ; x0 = buf + idx
   (nelisp-asm-arm64-ldrb-imm buf 'x0 'x0 0))         ; x0 = byte
+
+(defun nelisp-phase47-compiler--emit-cmp-reg-imm64-arm64 (buf reg imm)
+  "Emit a compare of REG against IMM, using CMP #imm12 when possible."
+  (if (and (integerp imm) (>= imm 0) (< imm #x1000))
+      (nelisp-asm-arm64-cmp-imm buf reg imm)
+    (progn
+      (nelisp-asm-arm64-mov-imm64 buf 'x12 imm)
+      (nelisp-asm-arm64-cmp-reg-reg buf reg 'x12))))
+
+(defun nelisp-phase47-compiler--emit-str-bytes-arm64 (node buf)
+  "Emit `str-bytes' for aarch64 — x0 = String data pointer at +16."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-ptr))
+
+(defun nelisp-phase47-compiler--emit-str-bytes-ptr-arm64 (node buf)
+  "Emit `str-bytes-ptr' for aarch64 via `nl_str_bytes_ptr'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-bl buf 'nl_str_bytes_ptr))
+
+(defun nelisp-phase47-compiler--emit-string-eq-core-arm64
+    (buf left right id)
+  "Emit length-first byte equality for two string-like Sexp slots."
+  (let ((false-lbl (intern (format "%s-false" id)))
+        (true-lbl (intern (format "%s-true" id)))
+        (loop-lbl (intern (format "%s-loop" id)))
+        (end-lbl (intern (format "%s-end" id))))
+    (nelisp-asm-arm64-ldr-imm buf 'x10 left nelisp-string--offset-length)
+    (nelisp-asm-arm64-ldr-imm buf 'x11 right nelisp-string--offset-length)
+    (nelisp-asm-arm64-cmp-reg-reg buf 'x10 'x11)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-cmp-imm buf 'x10 0)
+    (nelisp-asm-arm64-b-cond buf 'eq true-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x8 left nelisp-string--offset-ptr)
+    (nelisp-asm-arm64-ldr-imm buf 'x9 right nelisp-string--offset-ptr)
+    (nelisp-asm-arm64-define-label buf loop-lbl)
+    (nelisp-asm-arm64-ldrb-imm buf 'x0 'x8 0)
+    (nelisp-asm-arm64-ldrb-imm buf 'x12 'x9 0)
+    (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x12)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-add-imm buf 'x8 'x8 1)
+    (nelisp-asm-arm64-add-imm buf 'x9 'x9 1)
+    (nelisp-asm-arm64-sub-imm buf 'x10 'x10 1)
+    (nelisp-asm-arm64-cmp-imm buf 'x10 0)
+    (nelisp-asm-arm64-b-cond buf 'ne loop-lbl)
+    (nelisp-asm-arm64-define-label buf true-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 1)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf false-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-str-eq-arm64 (node buf)
+  "Emit `str-eq' for aarch64."
+  (let ((id (nelisp-phase47-compiler--ir-get node :id)))
+    (nelisp-phase47-compiler--emit-value
+     (nelisp-phase47-compiler--ir-get node :a) buf)
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+    (nelisp-phase47-compiler--emit-value
+     (nelisp-phase47-compiler--ir-get node :b) buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+    (nelisp-phase47-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)))
+
+(defun nelisp-phase47-compiler--emit-symbol-name-eq-arm64 (node buf)
+  "Emit `symbol-name-eq' for aarch64 — Symbol tag + literal byte compare."
+  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
+         (id (nelisp-phase47-compiler--ir-get node :id))
+         (len (length bytes))
+         (false-lbl (intern (format "%s-false" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+    (nelisp-asm-arm64-ldrb-imm buf 'x0 'x1 nelisp-sexp--offset-tag)
+    (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-length)
+    (nelisp-phase47-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x9 'x1 nelisp-string--offset-ptr)
+    (dolist (b bytes)
+      (nelisp-asm-arm64-ldrb-imm buf 'x0 'x9 0)
+      (nelisp-asm-arm64-cmp-imm buf 'x0 b)
+      (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+      (nelisp-asm-arm64-add-imm buf 'x9 'x9 1))
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 1)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf false-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-name-eq-arm64 (node buf)
+  "Emit `sexp-name-eq' for aarch64 — Symbol/Str tag + literal byte compare."
+  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
+         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
+         (id (nelisp-phase47-compiler--ir-get node :id))
+         (len (length bytes))
+         (bytes-lbl (intern (format "%s-bytes" id)))
+         (false-lbl (intern (format "%s-false" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+    (nelisp-asm-arm64-ldrb-imm buf 'x0 'x1 nelisp-sexp--offset-tag)
+    (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
+    (nelisp-asm-arm64-b-cond buf 'eq bytes-lbl)
+    (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-str)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-define-label buf bytes-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-length)
+    (nelisp-phase47-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x9 'x1 nelisp-string--offset-ptr)
+    (dolist (b bytes)
+      (nelisp-asm-arm64-ldrb-imm buf 'x0 'x9 0)
+      (nelisp-asm-arm64-cmp-imm buf 'x0 b)
+      (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+      (nelisp-asm-arm64-add-imm buf 'x9 'x9 1))
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 1)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf false-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-symbol-eq-arm64 (node buf)
+  "Emit `symbol-eq' for aarch64 — both tags Symbol, then byte equality."
+  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
+         (tag-false-lbl (intern (format "%s-tag-false" id)))
+         (end-lbl (intern (format "%s-tag-end" id))))
+    (nelisp-phase47-compiler--emit-value
+     (nelisp-phase47-compiler--ir-get node :a) buf)
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+    (nelisp-phase47-compiler--emit-value
+     (nelisp-phase47-compiler--ir-get node :b) buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+    (nelisp-asm-arm64-ldrb-imm buf 'x0 'x1 nelisp-sexp--offset-tag)
+    (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
+    (nelisp-asm-arm64-b-cond buf 'ne tag-false-lbl)
+    (nelisp-asm-arm64-ldrb-imm buf 'x0 'x2 nelisp-sexp--offset-tag)
+    (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
+    (nelisp-asm-arm64-b-cond buf 'ne tag-false-lbl)
+    (nelisp-phase47-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf tag-false-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-define-label buf end-lbl)))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-tag-arm64 (node buf tag)
+  "Emit aarch64 `sexp-write-nil' / `sexp-write-t' tag write."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-imm64 buf 'x1 tag)
+  (nelisp-asm-arm64-strb-imm buf 'x1 'x0 nelisp-sexp--offset-tag))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-alloc-arm64
+    (node buf helper-sym)
+  "Emit `sexp-write-str' / `sexp-write-symbol' for aarch64."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :bytes-ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :len) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-bl buf helper-sym))
+
+(defun nelisp-phase47-compiler--emit-sexp-write-lit-arm64
+    (node buf helper-sym)
+  "Emit a literal string/symbol allocation through HELPER-SYM on aarch64."
+  (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
+         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
+         (chunks (nelisp-phase47-compiler--bytes->u64-chunks bytes))
+         (stack-bytes (* 16 (/ (+ (* 8 (length chunks)) 15) 16)))
+         (off 0))
+    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)      ; x10 = slot
+    (when (> stack-bytes 0)
+      (nelisp-asm-arm64-sub-imm buf 'sp 'sp stack-bytes))
+    (dolist (chunk chunks)
+      (nelisp-asm-arm64-mov-imm64 buf 'x9 chunk)
+      (nelisp-asm-arm64-str-imm buf 'x9 'sp off)
+      (setq off (+ off 8)))
+    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'sp)       ; bytes-ptr
+    (nelisp-asm-arm64-mov-imm64 buf 'x1 (length bytes))
+    (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x10)      ; slot
+    (nelisp-asm-arm64-bl buf helper-sym)
+    (when (> stack-bytes 0)
+      (nelisp-asm-arm64-add-imm buf 'sp 'sp stack-bytes))))
+
+(defun nelisp-phase47-compiler--emit-mut-str-make-empty-arm64 (node buf)
+  "Emit `mut-str-make-empty' for aarch64 via `nl_alloc_mut_str'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :cap) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-bl buf 'nl_alloc_mut_str))
+
+(defun nelisp-phase47-compiler--emit-mut-str-push-2arg-arm64
+    (node buf helper-sym arg-key)
+  "Emit a two-arg mut-str in-place helper call for aarch64."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node arg-key) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-bl buf helper-sym)
+  (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
+
+(defun nelisp-phase47-compiler--emit-mut-str-len-arm64 (node buf)
+  "Emit `mut-str-len' for aarch64 via `nl_mut_str_len'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-bl buf 'nl_mut_str_len))
+
+(defun nelisp-phase47-compiler--emit-mut-str-finalize-arm64 (node buf)
+  "Emit `mut-str-finalize' for aarch64 via `nl_mut_str_finalize'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-bl buf 'nl_mut_str_finalize))
+
+(defun nelisp-phase47-compiler--emit-str-char-count-arm64 (node buf)
+  "Emit `str-char-count' for aarch64 via `nl_str_char_count'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-bl buf 'nl_str_char_count))
+
+(defun nelisp-phase47-compiler--emit-str-codepoint-at-arm64 (node buf)
+  "Emit `str-codepoint-at' for aarch64 via `nl_str_codepoint_at'."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :cp-slot) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :width-slot) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-bl buf 'nl_str_codepoint_at))
+
+(defun nelisp-phase47-compiler--emit-str-is-alphanumeric-at-arm64 (node buf)
+  "Emit `str-is-alphanumeric-at' for aarch64."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+  (nelisp-asm-arm64-bl buf 'nl_str_is_alphanumeric_at))
+
+(defun nelisp-phase47-compiler--emit-extern-call-arm64 (node buf)
+  "Emit a GP-only `extern-call' for aarch64.
+This matches the existing fixed-arity AAPCS64 call path: evaluate args
+left-to-right, spill them in 16-byte stack slots, pop into x0..x5, then
+BL the target.  f64 and stack arguments remain explicitly unsupported
+on this arm64 path."
+  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
+         (args (nelisp-phase47-compiler--ir-get node :args))
+         (gp-regs '(x0 x1 x2 x3 x4 x5))
+         (n (length args)))
+    (when (> n (length gp-regs))
+      (signal 'nelisp-phase47-compiler-error
+              (list :extern-call-too-many-args-aarch64 name n)))
+    (dolist (a args)
+      (unless (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
+        (signal 'nelisp-phase47-compiler-error
+                (list :extern-call-f64-arg-unsupported-aarch64 name))))
+    (dolist (a args)
+      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
+    (cl-loop for i from (1- n) downto 0
+             do (nelisp-asm-arm64-ldr-post-sp-16 buf (nth i gp-regs)))
+    ;; Executable/selfhost smoke resolves helper defuns as in-buffer labels,
+    ;; possibly forward-defined.  Relocatable object mode records externs.
+    (if nelisp-phase47-compiler--allow-external-user-calls
+        (progn
+          (nelisp-asm-arm64-emit-reloc buf 'b26-pc (symbol-name name))
+          (nelisp-asm-arm64--emit-word buf #x94000000))
+      (nelisp-asm-arm64--emit-word buf #x94000000)
+      (nelisp-asm-arm64-emit-fixup
+       buf (- (nelisp-asm-arm64-buffer-pos buf) 4) name 'bl26))))
 
 (defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
   "Emit a fixed-arity call for aarch64 (AAPCS64), direct or indirect.
@@ -13900,25 +14676,28 @@ Final emit:
 
 (defun nelisp-phase47-compiler--emit-aot-machine-landing-jump (node buf)
   "Emit a native stack-pointer restore and branch to NODE's target."
-  (unless (eq nelisp-phase47-compiler--arch 'x86_64)
-    (nelisp-phase47-compiler--emit-aarch64-unsupported
-     'aot-machine-landing-jump node))
   (let ((saved-sp (nelisp-phase47-compiler--ir-get node :saved-sp))
         (target (nelisp-phase47-compiler--ir-get node :target)))
     (nelisp-phase47-compiler--emit-value saved-sp buf)
-    ;; rax holds the saved stack pointer.  Keep the actual `rsp'
-    ;; rewrite as the last register move before the jump so ordinary
-    ;; value evaluation still runs on the current frame.
-    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'r10)
-    (nelisp-asm-x86_64-jmp-rel32 buf target)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          ;; x0 holds the saved stack pointer.  Keep the actual `sp'
+          ;; rewrite as the final move before the branch.
+          (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)
+          (nelisp-asm-arm64-add-imm buf 'sp 'x10 0)
+          (nelisp-asm-arm64-b buf target))
+      ;; rax holds the saved stack pointer.  Keep the actual `rsp'
+      ;; rewrite as the last register move before the jump so ordinary
+      ;; value evaluation still runs on the current frame.
+      (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'r10)
+      (nelisp-asm-x86_64-jmp-rel32 buf target))))
 
 (defun nelisp-phase47-compiler--emit-aot-current-sp (_node buf)
   "Emit the current native stack pointer as a value in rax."
-  (unless (eq nelisp-phase47-compiler--arch 'x86_64)
-    (nelisp-phase47-compiler--emit-aarch64-unsupported
-     'aot-current-sp _node))
-  (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsp))
+  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (nelisp-asm-arm64-add-imm buf 'x0 'sp 0)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsp)))
 
 ;; ---- §97.5 emit walker — statements ----
 
@@ -13967,11 +14746,19 @@ the absolute virtual address of byte 0 of .rodata."
          (offset (plist-get entry :offset))
          (len    (plist-get entry :len))
          (addr   (+ rodata-vaddr offset)))
-    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
-    (nelisp-asm-x86_64-mov-imm32 buf 'rdi 1)
-    (nelisp-asm-x86_64-mov-imm64 buf 'rsi addr)
-    (nelisp-asm-x86_64-mov-imm32 buf 'rdx len)
-    (nelisp-asm-x86_64-syscall buf)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (let ((darwin (eq nelisp-phase47-compiler--os 'darwin)))
+          (nelisp-asm-arm64-mov-imm64 buf 'x0 1)
+          (nelisp-asm-arm64-mov-imm64 buf 'x1 addr)
+          (nelisp-asm-arm64-mov-imm64 buf 'x2 len)
+          (nelisp-asm-arm64-mov-imm64 buf (if darwin 'x16 'x8)
+                                          (if darwin 4 64))
+          (nelisp-asm-arm64-svc buf (if darwin #x80 0)))
+      (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+      (nelisp-asm-x86_64-mov-imm32 buf 'rdi 1)
+      (nelisp-asm-x86_64-mov-imm64 buf 'rsi addr)
+      (nelisp-asm-x86_64-mov-imm32 buf 'rdx len)
+      (nelisp-asm-x86_64-syscall buf))))
 
 (defun nelisp-phase47-compiler--emit-exit (buf value-node)
   "Emit an exit(STATUS) syscall to BUF.
@@ -14031,10 +14818,10 @@ skipped here — they're emitted separately by the orchestrator."
        ;; Runtime let: evaluate value-ir → rax, spill to frame slot,
        ;; then walk body as statement.
        (let* ((slot (nelisp-phase47-compiler--ir-get ir :slot))
-              (value-ir (nelisp-phase47-compiler--ir-get ir :value-ir))
-              (disp (- (* 8 (1+ slot)))))
+              (value-ir (nelisp-phase47-compiler--ir-get ir :value-ir)))
          (nelisp-phase47-compiler--emit-value value-ir buf)
-         (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
+         (nelisp-phase47-compiler--emit-frame-slot-store-from-value
+          buf slot)
          (nelisp-phase47-compiler--emit-stmt
           (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr)))
       ((= tag 89)               ; let-rt-n
@@ -14623,9 +15410,13 @@ drift (= a Doc 92 emitter invariant violation)."
                        (nelisp-asm-x86_64-extract-relocs buf)))
              (extern-names
               (delete-dups
-               (mapcar (lambda (r) (plist-get r :symbol))
+               (mapcar (lambda (r)
+                         (let ((nm (or (plist-get r :symbol)
+                                       (plist-get r :sym))))
+                           (if (stringp nm) nm (symbol-name nm))))
                        (cl-remove-if-not
-                        (lambda (r) (eq (plist-get r :type) 'plt32))
+                        (lambda (r)
+                          (memq (plist-get r :type) '(plt32 b26-pc)))
                         relocs))))
              ;; Only the user-defined defun names should appear as
              ;; GLOBAL FUNC symbols.  The control-flow helper labels
