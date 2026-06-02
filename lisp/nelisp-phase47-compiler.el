@@ -10688,6 +10688,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-logic node buf))
         ((= tag 97)             ; addr-of — aarch64 ADR x0,<name>
          (nelisp-phase47-compiler--emit-addr-of node buf))
+        ((= tag 80)             ; static-imm32-table-lookup — u32 in x0
+         (nelisp-phase47-compiler--emit-table-lookup node buf))
         ((= tag 14)             ; cons-cdr-raw — aarch64 boxed cdr walk
          (nelisp-phase47-compiler--emit-cons-cdr-raw-arm64 node buf))
         ((= tag 60)             ; sexp-payload-ptr-record — Record payload guard
@@ -13444,7 +13446,7 @@ ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
 
 (defun nelisp-phase47-compiler--emit-atomic-compare-exchange-arm64 (node buf)
   "Emit `atomic-compare-exchange' for aarch64 — inline `CASAL'.
-ptr → x1, expected → x2, new-val → x3.  `CASAL x2,x3,[x1]' overwrites
+ptr → x1, expected → x2, new-val → x3.  `CASAL x3,x2,[x1]' overwrites
 x2 with the old memory value; comparing that old value with EXPECTED
 materialises x0 = 1 on success, 0 on failure, matching the x86_64
 `LOCK CMPXCHG' contract."
@@ -13460,7 +13462,7 @@ materialises x0 = 1 on success, 0 on failure, matching the x86_64
   (nelisp-asm-arm64-ldr-imm buf 'x9 'sp 0)           ; x9 = expected snapshot
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = expected / old (Rs)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Rn)
-  (nelisp-asm-arm64-casal buf 'x2 'x3 'x1)           ; x2 = old [x1]
+  (nelisp-asm-arm64-casal buf 'x3 'x2 'x1)           ; x2 = old [x1]
   (nelisp-asm-arm64-cmp-reg-reg buf 'x2 'x9)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
@@ -14104,7 +14106,7 @@ result (zero-extended byte) in x0."
       (nelisp-asm-arm64-mov-imm64 buf 'x9 chunk)
       (nelisp-asm-arm64-str-imm buf 'x9 'sp off)
       (setq off (+ off 8)))
-    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'sp)       ; bytes-ptr
+    (nelisp-asm-arm64-add-imm buf 'x0 'sp 0)         ; bytes-ptr
     (nelisp-asm-arm64-mov-imm64 buf 'x1 (length bytes))
     (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x10)      ; slot
     (nelisp-asm-arm64-bl buf helper-sym)
@@ -14701,10 +14703,24 @@ Final emit:
 
 ;; ---- §97.5 emit walker — statements ----
 
+(defun nelisp-phase47-compiler--emit-arm64-mov-imm64-fixed (buf reg imm64)
+  "Emit a fixed 16-byte MOVZ/MOVK chain loading IMM64 into REG.
+Unlike `nelisp-asm-arm64-mov-imm64', this always emits four words so
+pass-1 placeholder addresses and pass-2 real addresses have identical
+text size."
+  (unless (integerp imm64)
+    (signal 'nelisp-phase47-compiler-error
+            (list :arm64-fixed-imm-not-integer imm64)))
+  (let ((u (logand imm64 #xFFFFFFFFFFFFFFFF)))
+    (nelisp-asm-arm64-mov-imm-z buf reg (logand u #xFFFF))
+    (nelisp-asm-arm64-mov-imm-k buf reg (logand (ash u -16) #xFFFF) 16)
+    (nelisp-asm-arm64-mov-imm-k buf reg (logand (ash u -32) #xFFFF) 32)
+    (nelisp-asm-arm64-mov-imm-k buf reg (logand (ash u -48) #xFFFF) 48)))
+
 (defun nelisp-phase47-compiler--emit-table-lookup (node buf)
-  "Emit `static-imm32-table-lookup' value op, result u32 → rax.
+  "Emit `static-imm32-table-lookup' value op, result u32 → rax/x0.
 NODE is `(:kind table-lookup :name NAME :index INDEX-IR)'.
-BUF is the asm buffer.  Sequence (= fixed 20 bytes after INDEX-IR):
+BUF is the asm buffer.  x86_64 sequence (= fixed 20 bytes after INDEX-IR):
   <eval INDEX-IR → rax>     ; varies
   mov rsi, rax              ; 3 bytes (REX.W 89 C6)
   shl rsi, 2                ; 4 bytes (REX.W C1 E6 02)  = index*4
@@ -14725,16 +14741,22 @@ imm64 size is fixed) so the byte invariant holds."
                     (signal 'nelisp-phase47-compiler-error
                             (list :static-imm32-table-vaddr-missing
                                   name)))))
-    ;; 1. Eval INDEX-IR → rax (= variable size).
     (nelisp-phase47-compiler--emit-value index-ir buf)
-    ;; 2. mov rsi, rax (= snapshot index into rsi).
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'rax)
-    ;; 3. shl rsi, 2 (= rsi = index * 4 bytes).
-    (nelisp-asm-x86_64-shl-reg-imm8 buf 'rsi 2)
-    ;; 4. mov rdi, IMM64 (= absolute address of table[0]).
-    (nelisp-asm-x86_64-mov-imm64 buf 'rdi vaddr)
-    ;; 5. mov eax, [rdi+rsi] (= load u32, zero-extends to rax).
-    (nelisp-asm-x86_64-mov-eax-dword-rdi-rsi buf)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (progn
+          ;; x2 = index * 4, x1 = table base, x0 = zero-extended u32 load.
+          (nelisp-asm-arm64-add-reg-reg buf 'x2 'x0 'x0)
+          (nelisp-asm-arm64-add-reg-reg buf 'x2 'x2 'x2)
+          (nelisp-phase47-compiler--emit-arm64-mov-imm64-fixed buf 'x1 vaddr)
+          (nelisp-asm-arm64-ldrw-reg-reg buf 'x0 'x1 'x2))
+      ;; 2. mov rsi, rax (= snapshot index into rsi).
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'rax)
+      ;; 3. shl rsi, 2 (= rsi = index * 4 bytes).
+      (nelisp-asm-x86_64-shl-reg-imm8 buf 'rsi 2)
+      ;; 4. mov rdi, IMM64 (= absolute address of table[0]).
+      (nelisp-asm-x86_64-mov-imm64 buf 'rdi vaddr)
+      ;; 5. mov eax, [rdi+rsi] (= load u32, zero-extends to rax).
+      (nelisp-asm-x86_64-mov-eax-dword-rdi-rsi buf))))
 
 (defun nelisp-phase47-compiler--emit-write (buf str str-offsets rodata-vaddr)
   "Emit a write(1, addr, len) syscall for STR to BUF.
@@ -14749,7 +14771,7 @@ the absolute virtual address of byte 0 of .rodata."
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (let ((darwin (eq nelisp-phase47-compiler--os 'darwin)))
           (nelisp-asm-arm64-mov-imm64 buf 'x0 1)
-          (nelisp-asm-arm64-mov-imm64 buf 'x1 addr)
+          (nelisp-phase47-compiler--emit-arm64-mov-imm64-fixed buf 'x1 addr)
           (nelisp-asm-arm64-mov-imm64 buf 'x2 len)
           (nelisp-asm-arm64-mov-imm64 buf (if darwin 'x16 'x8)
                                           (if darwin 4 64))

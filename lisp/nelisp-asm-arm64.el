@@ -834,7 +834,7 @@ Base 0xF8E00000 | (Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE
 
 (defun nelisp-asm-arm64-casal (buf rs rt rn)
   "Emit `CASAL Xs, Xt, [Xn]' (= LSE compare-and-swap, acquire+release).
-Atomically compares [Xn] with Xs; on success stores Xt; in all cases Xs
+Atomically compares [Xn] with Xt; on success stores Xs; in all cases Xt
 is overwritten with the old memory value.  Base 0xC8E0FC00 |
 (Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE (present on all Apple
 Silicon)."

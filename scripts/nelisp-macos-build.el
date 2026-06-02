@@ -38,7 +38,7 @@ emitted first so it runs at the Mach-O `LC_MAIN' offset, then each
 defun is appended after; their labels are forward-resolved by
 `resolve-fixups' (also required for B / B.cond — without it every
 branch keeps its placeholder offset 0 = self-loop).  Returns a
-unibyte string containing code followed by any write-string rodata."
+unibyte string containing code followed by string/table rodata."
   (let* ((nelisp-phase47-compiler--arch 'aarch64)
          (nelisp-phase47-compiler--os 'darwin)
          (nelisp-phase47-compiler--label-counter 0)
@@ -51,26 +51,47 @@ unibyte string containing code followed by any write-string rodata."
                     (nelisp-phase47-compiler-error nil))))
     (let ((bytes
            (if stmt-ir
-               (let* ((collected
+               (let* ((str-collected
                        (nelisp-phase47-compiler--collect-strings stmt-ir))
-                      (str-offsets (car collected))
-                      (rodata-bytes (cdr collected))
+                      (str-offsets (car str-collected))
+                      (str-rodata-bytes (cdr str-collected))
+                      (table-collected
+                       (nelisp-phase47-compiler--collect-tables stmt-ir))
+                      (table-offsets (car table-collected))
+                      (table-bytes (cdr table-collected))
+                      (str-rodata-len (length str-rodata-bytes))
+                      (rodata-bytes (concat str-rodata-bytes table-bytes))
                       (defuns (nelisp-phase47-compiler--collect-defuns stmt-ir))
                       (emit-pass
-                       (lambda (rodata-vaddr)
-                         (let ((buf (nelisp-asm-arm64-make-buffer)))
+                       (lambda (rodata-vaddr table-vaddrs)
+                         (let ((nelisp-phase47-compiler--table-vaddrs
+                                table-vaddrs)
+                               (buf (nelisp-asm-arm64-make-buffer)))
                            (nelisp-phase47-compiler--emit-stmt
                             stmt-ir buf str-offsets rodata-vaddr)
                            (dolist (d defuns)
                              (nelisp-phase47-compiler--emit-defun d buf))
                            buf)))
-                      (pass1 (funcall emit-pass 0))
+                      (pass1-table-vaddrs
+                       (mapcar (lambda (entry) (cons (car entry) 0))
+                               table-offsets))
+                      (pass1 (funcall emit-pass 0 pass1-table-vaddrs))
                       (text-size (nelisp-asm-arm64-buffer-pos pass1))
                       (rodata-vaddr
                        (+ nelisp-mach-o--exe-text-vmaddr
                           nelisp-mach-o--exe-code-off
                           text-size))
-                      (pass2 (funcall emit-pass rodata-vaddr))
+                      (table-vaddrs
+                       (mapcar (lambda (entry)
+                                 (let* ((name (car entry))
+                                        (info (cdr entry))
+                                        (offset (plist-get info :offset)))
+                                   (cons name
+                                         (+ rodata-vaddr
+                                            str-rodata-len
+                                            offset))))
+                               table-offsets))
+                      (pass2 (funcall emit-pass rodata-vaddr table-vaddrs))
                       (text-bytes (nelisp-asm-arm64-resolve-fixups pass2)))
                  (concat text-bytes rodata-bytes))
              (let ((buf (nelisp-asm-arm64-make-buffer)))

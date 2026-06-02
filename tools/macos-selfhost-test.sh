@@ -342,7 +342,7 @@ build_run boxed '(seq
 # string/symbol name ops: hand-build Symbol("ab") and Str("ab"), check
 # str-bytes, str-bytes-ptr, str-eq, symbol-eq, symbol-name-eq,
 # sexp-name-eq, and sexp-write-nil/t.  Expected:
-# 97 + 3 + 5 + 7 + 11 + 0 + 17 + 19 = 156.
+# 97 + 3 + 5 + 7 + 11 + 0 + 17 + 19 = 159.
 build_run names '(seq
   (defun nl_str_bytes_ptr (ptr) (str-bytes ptr))
   (defun run ()
@@ -369,10 +369,29 @@ build_run names '(seq
                         (+ (* 17 (sexp-tag 8589934976))
                            (* 19 (if (= (str-bytes-ptr 8589934784)
                                         (str-bytes 8589934784)) 1 0)))))))))))
-  (exit (run)))' 156
+  (exit (run)))' 159
+
+# Four-arg local call writing through the 3rd/4th arguments.  This
+# isolates the same out-slot pattern used by str-codepoint-at without
+# going through that builtin's dedicated emitter.
+build_run call4-outs '(seq
+  (defun write_outs (a b cp-slot width-slot)
+    (seq
+      (ptr-write-u64 cp-slot 0 97)
+      (ptr-write-u64 width-slot 0 1)
+      1))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (write_outs 11 22 8589934976 8589935040)
+      (+ 1
+         (+ (ptr-read-u64 8589934976 0)
+            (ptr-read-u64 8589935040 0)))))
+  (exit (run)))' 99
 
 # string writers + mut-str + UTF-8 helper call shuffles.  Helpers are
 # stubbed locally; this checks aarch64 BL arg order and return handling.
+# The mut-str push ops return a void-helper sentinel 1 after BL.
 # Expected = 5+4+6+1+1+2+5+2+1+97+1+1 = 126.
 build_run str-helpers '(seq
   (defun nl_alloc_str (bytes len slot)
@@ -408,6 +427,7 @@ build_run str-helpers '(seq
       (sexp-write-str 8589934656 8589934848 2)
       (sexp-write-symbol 8589934720 8589934848 2)
       (mut-str-make-empty 8589934784 3)
+      (str-codepoint-at 8589934656 0 8589934976 8589935040)
       (+ (sexp-tag 8589934656)
          (+ (sexp-tag 8589934720)
             (+ (sexp-tag 8589934784)
@@ -416,7 +436,7 @@ build_run str-helpers '(seq
                      (+ (mut-str-len 8589934784)
                         (+ (sexp-tag (mut-str-finalize 8589934784 8589934912))
                            (+ (str-char-count 8589934656)
-                              (+ (str-codepoint-at 8589934656 0 8589934976 8589935040)
+                              (+ 1
                                  (+ (ptr-read-u64 8589934976 0)
                                     (+ (ptr-read-u64 8589935040 0)
                                        (str-is-alphanumeric-at 8589934656 0))))))))))))))
