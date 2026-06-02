@@ -39,9 +39,10 @@
 ;; single-PID `kill' to `OpenProcess' / `TerminateProcess'.  Stage 17 maps
 ;; `execve' to `CreateProcessW' + `ExitProcess'.  Stage 18 maps `wait' to
 ;; `OpenProcess' / `WaitForSingleObject' / `GetExitCodeProcess'.  Stage 19
-;; maps `getppid' to the Tool Help process snapshot APIs.  The Linux/Darwin path
-;; remains the default until a real Windows standalone runtime selects
-;; `system-type' = `windows-nt'.
+;; maps `getppid' to the Tool Help process snapshot APIs.  Stage 20 adds a
+;; minimal Windows `fcntl' compatibility branch for `F_DUPFD' / `F_GETFL' /
+;; `F_SETFL'.  The Linux/Darwin path remains the default until a real Windows
+;; standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -212,6 +213,14 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
     (setq nelisp-os--windows-next-fd (1+ nelisp-os--windows-next-fd))
     (push (cons fd handle) nelisp-os--windows-fd-table)
     fd))
+
+(defun nelisp-os--windows-fd-alloc-at-least (handle min-fd)
+  "Allocate a POSIX-like fd for Windows HANDLE with fd number >= MIN-FD."
+  (when (< min-fd 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (when (< nelisp-os--windows-next-fd min-fd)
+    (setq nelisp-os--windows-next-fd min-fd))
+  (nelisp-os--windows-fd-alloc handle))
 
 (defun nelisp-os--windows-fd-handle (fd)
   "Return the Windows HANDLE for FD, or signal EBADF."
@@ -765,6 +774,48 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                   (nelisp-os--windows-fd-install newfd target-handle)))))
         (nelisp-os--free target-handle-buf)))))
 
+(defun nelisp-os--windows-duplicate-fd (oldfd min-fd)
+  "Duplicate OLDFD to a new Windows fd whose number is at least MIN-FD."
+  (let ((source-handle (nelisp-os--windows-handle-for-fd oldfd))
+        (target-process (nelisp-os--libc-call
+                         "kernel32" "GetCurrentProcess"
+                         [:pointer]))
+        (target-buf (nelisp-os--alloc 8)))
+    (unwind-protect
+        (let ((ok (nelisp-os--libc-call
+                   "kernel32" "DuplicateHandle"
+                   [:sint32 :pointer :pointer :pointer :pointer
+                    :uint32 :sint32 :uint32]
+                   target-process
+                   source-handle
+                   target-process
+                   target-buf
+                   0
+                   1
+                   nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))
+          (if (= ok 0)
+              (nelisp-os--windows-ffi-error-signal)
+            (nelisp-os--windows-fd-alloc-at-least
+             (nelisp-os-read-i64 target-buf 0)
+             min-fd)))
+      (nelisp-os--free target-buf))))
+
+(defun nelisp-os--windows-fcntl (fd cmd arg)
+  "Windows implementation of the int-only `nelisp-os-fcntl' subset."
+  (cond
+   ((= cmd nelisp-os-F-DUPFD)
+    (nelisp-os--windows-duplicate-fd fd arg))
+   ((= cmd nelisp-os-F-GETFL)
+    (nelisp-os--windows-handle-for-fd fd)
+    0)
+   ((= cmd nelisp-os-F-SETFL)
+    (nelisp-os--windows-handle-for-fd fd)
+    (if (/= arg 0)
+        (signal 'nelisp-os-error (list 95)) ; ENOTSUP
+      0))
+   (t
+    (signal 'nelisp-os-error (list 22))))) ; EINVAL
+
 (defun nelisp-os-fstat (fd)
   "POSIX fstat(2) — return positional list of stat fields, or signal
 `nelisp-os-error'.  Order matches `nelisp-os-stat-*' accessors below
@@ -859,7 +910,9 @@ mapping failure (raw kernel returns -errno for failed mmap)."
   "POSIX fcntl(2) — int-only variant (= F_GETFL / F_SETFL / F_DUPFD).
 Other variadic forms (struct flock for F_SETLK etc.) need their own
 primitive; not supported in Phase 3."
-  (nelisp-os--check-errno (nelisp--syscall 'fcntl fd cmd arg)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-fcntl fd cmd arg)
+    (nelisp-os--check-errno (nelisp--syscall 'fcntl fd cmd arg))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 55 Phase 4 — Posix-30 (subprocess + AF_INET network + poll).

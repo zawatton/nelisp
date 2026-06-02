@@ -632,6 +632,64 @@
     (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-duplicates-handle ()
+  "Windows F_DUPFD duplicates a HANDLE into the fd table at or above ARG."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 4)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10) 10))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess"
+                          [:pointer]
+                          nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))))
+    (should (equal nelisp-os--windows-fd-table '((10 . #xbbbb) (3 . #xaaaa))))
+    (should (= nelisp-os--windows-next-fd 11))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-getfl-and-setfl-noop ()
+  "Windows F_GETFL returns 0 and F_SETFL 0 validates the fd as a no-op."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0) 0))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-SETFL 0) 0))))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-setfl-nonzero-errors ()
+  "Windows F_SETFL rejects unsupported flag updates before FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-fcntl 3 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-kill-windows-uses-terminateprocess ()
   "Windows kill terminates a single PID through kernel32 process APIs."
   (let ((calls nil))
