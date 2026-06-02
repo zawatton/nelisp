@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-134-WINDOWS-OS-COMPAT-SMOKE
+#+STATUS: STAGE-135-WINDOWS-SOCKETPAIR-FDPASS
 
 * Status
 
-- *State*: STAGE 134 Windows OS compatibility smoke script
+- *State*: STAGE 135 Windows socketpair fd-passing compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -281,9 +281,10 @@
   =SIGKILL= and validates the fd kind before FFI.  Synthetic process fds now
   also avoid regular HANDLE file APIs for =read/write/lseek/fstat/poll=.
   =fork= plus remaining Linux-only APIs still reject Windows before reaching
-  Linux syscall or Linux libc paths: =fork= and fd-passing
-  =sendmsg= / =recvmsg= requests signal =nelisp-os-error= with =ENOTSUP= on
-  Windows.  Windows =sigprocmask= now
+  Linux syscall or Linux libc paths.  Windows AF_UNIX socketpairs support
+  same-process synthetic fd passing through =sendmsg-fds= / =recvmsg-fds=;
+  untracked arbitrary sockets still reject real descriptor-passing requests
+  with =ENOTSUP=.  Windows =sigprocmask= now
   tracks an emulated signal mask for =SIG_BLOCK= / =SIG_UNBLOCK= /
   =SIG_SETMASK= without POSIX =sigset_t= allocation or libc FFI.  Windows
   =signalfd= now creates synthetic fd-kind entries with tracked normalized mask,
@@ -301,7 +302,9 @@
   Windows AF_UNIX socketpairs now record same-process synthetic peer
   credentials so =getsockopt-peercred= returns =(PID 0 0)= for tracked
   socketpair fds and socket duplicates; untracked arbitrary sockets remain
-  explicit =ENOTSUP=.
+  explicit =ENOTSUP=.  The same tracked socketpair endpoints now queue
+  synthetic same-process fd-passing messages so descriptor lists can round-trip
+  through =sendmsg-fds= / =recvmsg-fds= without Linux =SCM_RIGHTS= libc paths.
   =tools/windows-os-compat-test.ps1= now provides a Windows real-machine
   PowerShell entry for the Emacs-side OS compatibility ERT suite, with focused
   selectors for timerfd, socketpair, peercred, inotify, signals, eventfd, fd,
@@ -403,10 +406,11 @@
   before rebinding.  Windows AF_UNIX socketpair peer credentials are tracked
   synthetically for same-process pairs and duplicated socket fds; arbitrary
   untracked sockets still return =ENOTSUP=.  Windows =sendmsg-fds= /
-  =recvmsg-fds= now support the
-  payload-only case through Winsock =send= / =recv= when no descriptors are
-  requested, while real SCM_RIGHTS-style fd passing remains explicitly
-  =ENOTSUP=.  IPv4, IPv6,
+  =recvmsg-fds= support the payload-only case through Winsock =send= / =recv=
+  when no descriptors are requested, and tracked same-process AF_UNIX
+  socketpairs now queue synthetic descriptor lists for receive-side
+  duplication.  Untracked sockets still reject real descriptor passing before
+  FFI.  IPv4, IPv6,
   and filesystem AF_UNIX
   =getsockname= / =getpeername= wrappers now dispatch socket-kind Windows fds
   through =ws2_32!getsockname= / =getpeername= and reuse the existing family
@@ -717,8 +721,8 @@
   fds continue to expose pidfd-like non-file =read/write/lseek= behavior.
   Stage 123 coverage verifies Windows =sendmsg-fds= with an empty fd list
   sends payload bytes through Winsock =send=, =recvmsg-fds= with =MAX-FDS= 0
-  receives payload bytes through Winsock =recv=, and non-empty fd-passing
-  requests still reject before FFI.
+  receives payload bytes through Winsock =recv=, and untracked non-empty
+  fd-passing requests still reject before FFI.
   Stage 124 coverage verifies Windows timerfd creation, close-on-exec/status
   flag handling, relative arming through =SetWaitableTimer=, tracked
   =gettime= remaining time, =read= expiration counts, =poll= readiness,
@@ -763,6 +767,11 @@
   Stage 134 coverage verifies the Windows OS compatibility PowerShell smoke
   exposes stable focused suites and invokes =test/nelisp-stdlib-os-test.el=
   through an environment-driven ERT selector.
+  Stage 135 coverage verifies tracked Windows AF_UNIX socketpairs queue
+  same-process synthetic fd-passing messages, =recvmsg-fds= duplicates queued
+  descriptors with =F_DUPFD=, =MAX-FDS= 0 discards queued descriptors without
+  duplication, untracked sockets still reject before Winsock I/O, and socket
+  =dup2= / =F_DUPFD= share fd-passing endpoint state.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1236,6 +1245,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =nelisp-stdlib-os= ERT selectors on real Windows machines, including the
   timerfd, peercred, socketpair, inotify, signal, eventfd, fd, process, and
   socket groups.
+  *Windows socketpair fd-passing progress 2026-06-03*: tracked Windows
+  AF_UNIX socketpairs now support same-process synthetic descriptor passing:
+  non-empty =sendmsg-fds= queues fd lists on the peer endpoint, and
+  =recvmsg-fds= returns duplicated fds through =F_DUPFD=.
   *Windows sigprocmask compatibility progress 2026-06-03*: Windows
   =sigprocmask= now tracks an emulated mask for =SIG_BLOCK= /
   =SIG_UNBLOCK= / =SIG_SETMASK= without invoking POSIX signal-mask FFI.
@@ -1533,7 +1546,9 @@ largest uncertainty (B1 + B2) first.
    *Windows AF_UNIX Linux-only guards SHIPPED 2026-06-02*: abstract namespace,
    =sendmsg/recvmsg= fd passing, and =SO_PEERCRED= helpers now return
    =ENOTSUP= on Windows before allocation or libc FFI.  The abstract namespace
-   portion was superseded on 2026-06-03 by hashed temporary path compatibility.
+   portion was superseded on 2026-06-03 by hashed temporary path compatibility;
+   the fd-passing portion was superseded on 2026-06-03 for tracked
+   same-process AF_UNIX socketpairs by synthetic fd-passing compatibility.
    *Windows Winsock getname SHIPPED 2026-06-02*: IPv4, IPv6, and
    filesystem-AF_UNIX =getsockname= / =getpeername= wrappers now dispatch to
    =ws2_32= and keep the existing family-specific decode shapes.
@@ -1721,6 +1736,11 @@ largest uncertainty (B1 + B2) first.
    =tools/windows-os-compat-test.ps1= provides a real-machine PowerShell entry
    for the Windows-focused OS ERT suite and logs each selected suite under
    =target/windows-os-compat=.
+   *Windows socketpair fd-passing compatibility SHIPPED 2026-06-03*:
+   tracked same-process AF_UNIX socketpairs now queue synthetic descriptor
+   lists for =sendmsg-fds= and duplicate them on =recvmsg-fds= with
+   =F_DUPFD=; arbitrary untracked sockets remain explicit =ENOTSUP= for real
+   descriptor passing.
    *Windows inotify synthetic fd compatibility SHIPPED 2026-06-03*:
    =inotify_init= creates event HANDLE-backed fd-kind state,
    =inotify_add_watch= / =inotify_rm_watch= manage synthetic watch

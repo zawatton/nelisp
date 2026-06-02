@@ -117,6 +117,7 @@
 ;; Stage 131 preserves Windows inotify state across dup.
 ;; Stage 132 tracks synthetic Windows socketpair peer credentials.
 ;; Stage 133 accepts Windows timerfd alarm clock ids.
+;; Stage 135 adds same-process Windows socketpair fd-passing compatibility.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -444,6 +445,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defvar nelisp-os--windows-socket-peercred-table nil
   "Alist mapping Windows socket fds to synthetic peer credentials.")
 
+(defvar nelisp-os--windows-socket-fdpass-table nil
+  "Alist mapping Windows socketpair fds to synthetic fd-passing state.")
+
 (defvar nelisp-os--windows-signal-mask nil
   "Emulated Windows signal mask used by `nelisp-os-sigprocmask'.")
 
@@ -680,6 +684,78 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
         (setcdr cell cred)
       (push (cons fd cred) nelisp-os--windows-socket-peercred-table))))
 
+(defun nelisp-os--windows-socket-fdpass-set (fd state)
+  "Record synthetic Windows socket fd-passing STATE for FD."
+  (let ((cell (assq fd nelisp-os--windows-socket-fdpass-table)))
+    (if cell
+        (setcdr cell state)
+      (push (cons fd state) nelisp-os--windows-socket-fdpass-table))))
+
+(defun nelisp-os--windows-socket-fdpass-state-referenced-p (state)
+  "Return non-nil when any fd still owns fd-passing STATE."
+  (catch 'found
+    (dolist (cell nelisp-os--windows-socket-fdpass-table)
+      (when (eq (aref (cdr cell) 0) state)
+        (throw 'found t)))
+    nil))
+
+(defun nelisp-os--windows-socket-fdpass-remove (fd)
+  "Remove synthetic Windows socket fd-passing state tracked for FD."
+  (let* ((cell (assq fd nelisp-os--windows-socket-fdpass-table))
+         (state (and cell (aref (cdr cell) 0))))
+    (when cell
+      (setq nelisp-os--windows-socket-fdpass-table
+            (delq cell nelisp-os--windows-socket-fdpass-table))
+      (unless (nelisp-os--windows-socket-fdpass-state-referenced-p state)
+        (dolist (other-cell (copy-sequence
+                             nelisp-os--windows-socket-fdpass-table))
+          (when (eq (aref (cdr other-cell) 1) state)
+            (setq nelisp-os--windows-socket-fdpass-table
+                  (delq other-cell
+                        nelisp-os--windows-socket-fdpass-table))))))))
+
+(defun nelisp-os--windows-socket-fdpass-track-pair (left right)
+  "Track LEFT and RIGHT as same-process Windows fd-passing socket peers."
+  (let ((left-state (vector nil))
+        (right-state (vector nil)))
+    (nelisp-os--windows-socket-fdpass-set
+     left (vector left-state right-state))
+    (nelisp-os--windows-socket-fdpass-set
+     right (vector right-state left-state))))
+
+(defun nelisp-os--windows-socket-fdpass-enqueue (fd fds)
+  "Queue FDS for the peer of Windows socketpair FD."
+  (let ((cell (assq fd nelisp-os--windows-socket-fdpass-table)))
+    (unless cell
+      (nelisp-os--windows-unsupported))
+    (let* ((state (cdr cell))
+           (peer-state (aref state 1)))
+      (aset peer-state
+            0
+            (append (aref peer-state 0)
+                    (list (copy-sequence fds)))))))
+
+(defun nelisp-os--windows-socket-fdpass-dequeue (fd max-fds)
+  "Dequeue and duplicate at most MAX-FDS synthetic fds for Windows socket FD."
+  (let ((cell (assq fd nelisp-os--windows-socket-fdpass-table)))
+    (if (not cell)
+        (progn
+          (when (> max-fds 0)
+            (nelisp-os--windows-unsupported))
+          nil)
+      (let* ((own-state (aref (cdr cell) 0))
+             (queue (aref own-state 0))
+             (fds (car queue))
+             (out nil)
+             (count 0))
+        (when queue
+          (aset own-state 0 (cdr queue))
+          (while (and fds (< count max-fds))
+            (push (nelisp-os-fcntl (car fds) nelisp-os-F-DUPFD 0) out)
+            (setq fds (cdr fds)
+                  count (1+ count))))
+        (nreverse out)))))
+
 (defun nelisp-os--windows-synthetic-peercred ()
   "Return synthetic peer credentials for same-process Windows socket pairs."
   (list (emacs-pid) 0 0))
@@ -741,6 +817,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
     (nelisp-os--windows-signalfd-remove fd)
     (nelisp-os--windows-inotify-remove fd)
     (nelisp-os--windows-socket-peercred-remove fd)
+    (nelisp-os--windows-socket-fdpass-remove fd)
     (cdr cell)))
 
 (defun nelisp-os--windows-close-resource (handle kind)
@@ -935,6 +1012,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (nelisp-os--windows-signalfd-remove fd)
       (nelisp-os--windows-inotify-remove fd)
       (nelisp-os--windows-socket-peercred-remove fd)
+      (nelisp-os--windows-socket-fdpass-remove fd)
       (setq nelisp-os--windows-fd-table
             (delq cell nelisp-os--windows-fd-table)))
     (push (cons fd handle) nelisp-os--windows-fd-table)
@@ -1513,24 +1591,33 @@ thread HANDLE from `PROCESS_INFORMATION' is closed before returning."
       (nelisp-os--free buf))))
 
 (defun nelisp-os--windows-sendmsg-fds (fd fds payload)
-  "Windows payload-only compatibility for `nelisp-os-sendmsg-fds'.
-Windows AF_UNIX sockets do not provide POSIX SCM_RIGHTS fd passing.  Preserve
-the useful payload path when FDS is empty and reject real fd passing explicitly."
+  "Windows compatibility for `nelisp-os-sendmsg-fds'.
+Payload-only sends use Winsock directly.  Non-empty FDS are supported for
+same-process socketpairs created by `nelisp-os-socketpair'."
   (when (= (length payload) 0)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (when fds
-    (nelisp-os--windows-unsupported))
-  (nelisp-os--windows-write-socket fd payload))
+    (unless (assq fd nelisp-os--windows-socket-fdpass-table)
+      (nelisp-os--windows-unsupported))
+    (dolist (one-fd fds)
+      (nelisp-os--windows-handle-for-fd one-fd)))
+  (prog1
+      (nelisp-os--windows-write-socket fd payload)
+    (when fds
+      (nelisp-os--windows-socket-fdpass-enqueue fd fds))))
 
 (defun nelisp-os--windows-recvmsg-fds (fd max-fds max-bytes)
-  "Windows payload-only compatibility for `nelisp-os-recvmsg-fds'."
+  "Windows compatibility for `nelisp-os-recvmsg-fds'."
   (when (<= max-bytes 0)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (when (< max-fds 0)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (when (> max-fds 0)
+  (when (and (> max-fds 0)
+             (not (assq fd nelisp-os--windows-socket-fdpass-table)))
     (nelisp-os--windows-unsupported))
-  (cons (nelisp-os--windows-read-socket fd max-bytes) nil))
+  (let ((payload (nelisp-os--windows-read-socket fd max-bytes)))
+    (cons payload
+          (nelisp-os--windows-socket-fdpass-dequeue fd max-fds))))
 
 (defconst nelisp-os--eventfd-max-counter (- (ash 1 64) 2))
 (defconst nelisp-os--eventfd-invalid-value (1- (ash 1 64)))
@@ -2187,7 +2274,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       (let ((target-socket (nelisp-os--windows-duplicate-socket oldfd))
             (flags (nelisp-os--windows-fd-flags oldfd))
             (peercred (cdr (assq oldfd
-                                  nelisp-os--windows-socket-peercred-table))))
+                                  nelisp-os--windows-socket-peercred-table)))
+            (fdpass-state
+             (cdr (assq oldfd nelisp-os--windows-socket-fdpass-table))))
         (prog1
             (if (nelisp-os--windows-std-handle-selector newfd)
                 (nelisp-os--windows-install-std-fd
@@ -2198,7 +2287,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                'socket
                flags))
           (when peercred
-            (nelisp-os--windows-socket-peercred-set newfd peercred)))))
+            (nelisp-os--windows-socket-peercred-set newfd peercred))
+          (when fdpass-state
+            (nelisp-os--windows-socket-fdpass-set newfd fdpass-state)))))
      ((eq (nelisp-os--windows-fd-kind oldfd) 'eventfd)
       (nelisp-os--windows-install-eventfd-fd
        newfd
@@ -2278,9 +2369,13 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                'socket
                (nelisp-os--windows-fd-flags oldfd)))
           (peercred (cdr (assq oldfd
-                                nelisp-os--windows-socket-peercred-table))))
+                                nelisp-os--windows-socket-peercred-table)))
+          (fdpass-state
+           (cdr (assq oldfd nelisp-os--windows-socket-fdpass-table))))
       (when peercred
         (nelisp-os--windows-socket-peercred-set fd peercred))
+      (when fdpass-state
+        (nelisp-os--windows-socket-fdpass-set fd fdpass-state))
       fd))
    ((eq (nelisp-os--windows-fd-kind oldfd) 'eventfd)
     (let ((state (cdr (nelisp-os--windows-eventfd-cell oldfd))))
@@ -5055,7 +5150,8 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
   (when (= domain nelisp-os-AF-UNIX)
     (let ((cred (nelisp-os--windows-synthetic-peercred)))
       (nelisp-os--windows-socket-peercred-set (car pair) cred)
-      (nelisp-os--windows-socket-peercred-set (cdr pair) cred)))
+      (nelisp-os--windows-socket-peercred-set (cdr pair) cred))
+    (nelisp-os--windows-socket-fdpass-track-pair (car pair) (cdr pair)))
   pair)
 
 (defun nelisp-os--windows-socketpair (domain type protocol)
