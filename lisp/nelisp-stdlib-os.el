@@ -106,6 +106,7 @@
 ;; Stage 120 adds Windows pidfd compatibility backed by process HANDLE fds.
 ;; Stage 121 adds non-file behavior for Windows process fd compatibility.
 ;; Stage 122 preserves Windows process fd kind across dup2 / F_DUPFD.
+;; Stage 123 adds payload-only Windows sendmsg/recvmsg compatibility.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -1356,6 +1357,26 @@ thread HANDLE from `PROCESS_INFORMATION' is closed before returning."
                 (nelisp-os--windows-winsock-error-signal)
               sent)))
       (nelisp-os--free buf))))
+
+(defun nelisp-os--windows-sendmsg-fds (fd fds payload)
+  "Windows payload-only compatibility for `nelisp-os-sendmsg-fds'.
+Windows AF_UNIX sockets do not provide POSIX SCM_RIGHTS fd passing.  Preserve
+the useful payload path when FDS is empty and reject real fd passing explicitly."
+  (when (= (length payload) 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (when fds
+    (nelisp-os--windows-unsupported))
+  (nelisp-os--windows-write-socket fd payload))
+
+(defun nelisp-os--windows-recvmsg-fds (fd max-fds max-bytes)
+  "Windows payload-only compatibility for `nelisp-os-recvmsg-fds'."
+  (when (<= max-bytes 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (when (< max-fds 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (when (> max-fds 0)
+    (nelisp-os--windows-unsupported))
+  (cons (nelisp-os--windows-read-socket fd max-bytes) nil))
 
 (defconst nelisp-os--eventfd-max-counter (- (ash 1 64) 2))
 (defconst nelisp-os--eventfd-invalid-value (1- (ash 1 64)))
@@ -4328,7 +4349,7 @@ Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
 via sendmsg(2) + SCM_RIGHTS cmsg.  PAYLOAD must be a string ≥ 1 byte
 (the kernel rejects cmsg-only sendmsg).  Returns bytes_sent."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-sendmsg-fds fd fds payload)
     (when (= (length payload) 0)
       (signal 'nelisp-os-error (list 22)))     ; EINVAL — cmsg-only rejected
     (let* ((nfds          (length fds))
@@ -4384,7 +4405,7 @@ PAYLOAD-STRING is truncated to the actual bytes_received; FDS-LIST is
 all descriptors collected from SCM_RIGHTS cmsgs (may be fewer than
 MAX-FDS, never more)."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-recvmsg-fds fd max-fds max-bytes)
     (when (<= max-bytes 0)
       (signal 'nelisp-os-error (list 22)))     ; EINVAL
     (let* ((fds-bytes  (* max-fds nelisp-os--sizeof-fd))

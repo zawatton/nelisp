@@ -2327,6 +2327,59 @@
           (should-error (funcall fn) :type 'nelisp-os-error))))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-sendmsg-fds-windows-empty-fds-uses-send ()
+  "Windows sendmsg-fds with no fd passing uses Winsock send for payload."
+  (let ((calls nil)
+        (freed nil)
+        (written-string nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written-string (cons ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-sendmsg-fds 3 nil "data") 4))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "send"
+                          [:sint32 :pointer :pointer :sint32 :sint32]
+                          (list #xabcdef 3000 4 0)))))
+    (should (equal written-string (cons 3000 "data")))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-recvmsg-fds-windows-zero-fds-uses-recv ()
+  "Windows recvmsg-fds with no fd passing uses Winsock recv for payload."
+  (let ((calls nil)
+        (freed nil)
+        (read-request nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr n)
+                 (setq read-request (list ptr n))
+                 "data"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-recvmsg-fds 3 0 16)
+                       (cons "data" nil)))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "recv"
+                          [:sint32 :pointer :pointer :sint32 :sint32]
+                          (list #xabcdef 3000 16 0)))))
+    (should (equal read-request (list 3000 4)))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-pidfd-open-windows-opens-process-handle ()
   "Windows pidfd_open returns a process HANDLE-backed fd."
   (let ((calls nil)
