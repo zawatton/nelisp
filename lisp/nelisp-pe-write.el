@@ -926,8 +926,9 @@ TEXT-RVA is the RVA of byte 0 of the code stored in CBUF."
     (nelisp-pe--write-bytes cbuf (unibyte-string #xFF #x15))
     (nelisp-pe--write-le32-signed cbuf disp)))
 
-(defun nelisp-pe--build-executable-with-imports (text imports)
-  "Build a PE32+ console executable from TEXT bytes and IMPORTS plist."
+(defun nelisp-pe--build-executable-with-imports (text imports &optional extra-rdata)
+  "Build a PE32+ console executable from TEXT bytes and IMPORTS plist.
+EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
   (let* ((pe-offset nelisp-pe--dos-stub-size)
          (num-sections 2)
          (headers-raw
@@ -939,14 +940,16 @@ TEXT-RVA is the RVA of byte 0 of the code stored in CBUF."
          (text-rva nelisp-pe--section-alignment)
          (rdata-rva (* 2 nelisp-pe--section-alignment))
          (import-bytes (plist-get imports :bytes))
+         (rdata-bytes (concat import-bytes
+                              (or extra-rdata (unibyte-string))))
          (text-raw-size (nelisp-pe--align-up (length text)
                                              nelisp-pe--file-alignment))
-         (rdata-raw-size (nelisp-pe--align-up (length import-bytes)
+         (rdata-raw-size (nelisp-pe--align-up (length rdata-bytes)
                                               nelisp-pe--file-alignment))
          (text-raw-ptr size-headers)
          (rdata-raw-ptr (+ text-raw-ptr text-raw-size))
          (size-image (nelisp-pe--align-up
-                      (+ rdata-rva (length import-bytes))
+                      (+ rdata-rva (length rdata-bytes))
                       nelisp-pe--section-alignment))
          (cbuf (nelisp-pe--make-buffer)))
     (nelisp-pe--write-dos-stub cbuf pe-offset)
@@ -990,7 +993,7 @@ TEXT-RVA is the RVA of byte 0 of the code stored in CBUF."
     (nelisp-pe--write-section-header
      cbuf
      (list :name ".rdata"
-           :virtual-size (length import-bytes)
+           :virtual-size (length rdata-bytes)
            :virtual-address rdata-rva
            :raw-data-size rdata-raw-size
            :raw-data-ptr rdata-raw-ptr
@@ -1006,8 +1009,8 @@ TEXT-RVA is the RVA of byte 0 of the code stored in CBUF."
     (nelisp-pe--write-pad cbuf (- text-raw-size (length text)))
     (unless (= (nelisp-pe--buffer-length cbuf) rdata-raw-ptr)
       (error "nelisp-pe: .rdata raw offset drift"))
-    (nelisp-pe--write-bytes cbuf import-bytes)
-    (nelisp-pe--write-pad cbuf (- rdata-raw-size (length import-bytes)))
+    (nelisp-pe--write-bytes cbuf rdata-bytes)
+    (nelisp-pe--write-pad cbuf (- rdata-raw-size (length rdata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
 (defun nelisp-pe--build-exitprocess-text (exit-code text-rva iat-rva)
@@ -1078,19 +1081,23 @@ FAILURE-CODE otherwise.  IAT-RVAS maps imported function names to RVAs."
                 (plist-get imports :iat-rvas))))
     (nelisp-pe--build-executable-with-imports text imports)))
 
-(defun nelisp-pe-write-build-kernel32-executable (names text-builder)
+(defun nelisp-pe-write-build-kernel32-executable
+    (names text-builder &optional extra-rdata)
   "Build a PE32+ console EXE importing KERNEL32.dll NAMES.
-TEXT-BUILDER is called as `(TEXT-BUILDER TEXT-RVA IAT-RVAS)' and must
-return the .text bytes.  IAT-RVAS is an alist mapping each imported
-function name to its IAT slot RVA."
+TEXT-BUILDER is called as `(TEXT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA)'
+and must return the .text bytes.  IAT-RVAS is an alist mapping each
+imported function name to its IAT slot RVA.  RDATA-RVA is the RVA where
+EXTRA-RDATA will be appended after the import blob."
   (unless (functionp text-builder)
     (error "nelisp-pe: text-builder must be callable"))
   (let* ((text-rva nelisp-pe--section-alignment)
          (rdata-rva (* 2 nelisp-pe--section-alignment))
          (imports (nelisp-pe--build-kernel32-imports rdata-rva names))
+         (extra-rdata-rva (+ rdata-rva (length (plist-get imports :bytes))))
          (text (funcall text-builder text-rva
-                        (plist-get imports :iat-rvas))))
-    (nelisp-pe--build-executable-with-imports text imports)))
+                        (plist-get imports :iat-rvas)
+                        extra-rdata-rva)))
+    (nelisp-pe--build-executable-with-imports text imports extra-rdata)))
 
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)

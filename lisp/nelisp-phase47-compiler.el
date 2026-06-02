@@ -165,6 +165,12 @@ ignores this var (= AAPCS64 only).")
 (defvar nelisp-phase47-compiler--windows-exitprocess-iat-rva nil
   "RVA of KERNEL32.dll!ExitProcess IAT slot for Windows executable emit.")
 
+(defvar nelisp-phase47-compiler--windows-getstdhandle-iat-rva nil
+  "RVA of KERNEL32.dll!GetStdHandle IAT slot for Windows executable emit.")
+
+(defvar nelisp-phase47-compiler--windows-writefile-iat-rva nil
+  "RVA of KERNEL32.dll!WriteFile IAT slot for Windows executable emit.")
+
 (defvar nelisp-phase47-compiler--next-rt-let-slot nil
   "Cons cell `(N)' holding the next free runtime-let frame slot index.
 Bound by the `defun' parser around body parsing; N starts at the
@@ -13462,20 +13468,20 @@ imm64 size is fixed) so the byte invariant holds."
   "Emit a write(1, addr, len) syscall for STR to BUF.
 STR-OFFSETS is the alist from `--collect-strings'.  RODATA-VADDR is
 the absolute virtual address of byte 0 of .rodata."
-  (when (eq nelisp-phase47-compiler--os 'windows)
-    (signal 'nelisp-phase47-compiler-error
-            (list :unsupported-windows-form 'write)))
-  (let* ((entry (cdr (or (assoc str str-offsets)
-                         (signal 'nelisp-phase47-compiler-error
-                                 (list :missing-string-entry str)))))
-         (offset (plist-get entry :offset))
-         (len    (plist-get entry :len))
-         (addr   (+ rodata-vaddr offset)))
-    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
-    (nelisp-asm-x86_64-mov-imm32 buf 'rdi 1)
-    (nelisp-asm-x86_64-mov-imm64 buf 'rsi addr)
-    (nelisp-asm-x86_64-mov-imm32 buf 'rdx len)
-    (nelisp-asm-x86_64-syscall buf)))
+  (if (eq nelisp-phase47-compiler--os 'windows)
+      (nelisp-phase47-compiler--emit-windows-write
+       buf str str-offsets rodata-vaddr)
+    (let* ((entry (cdr (or (assoc str str-offsets)
+                           (signal 'nelisp-phase47-compiler-error
+                                   (list :missing-string-entry str)))))
+           (offset (plist-get entry :offset))
+           (len    (plist-get entry :len))
+           (addr   (+ rodata-vaddr offset)))
+      (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+      (nelisp-asm-x86_64-mov-imm32 buf 'rdi 1)
+      (nelisp-asm-x86_64-mov-imm64 buf 'rsi addr)
+      (nelisp-asm-x86_64-mov-imm32 buf 'rdx len)
+      (nelisp-asm-x86_64-syscall buf))))
 
 (defun nelisp-phase47-compiler--emit-le32-signed (buf value)
   "Append signed 32-bit VALUE to x86_64 BUF in little-endian order."
@@ -13497,6 +13503,54 @@ the absolute virtual address of byte 0 of .rodata."
               (list :windows-iat-disp-out-of-range disp)))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xff #x15))
     (nelisp-phase47-compiler--emit-le32-signed buf disp)))
+
+(defun nelisp-phase47-compiler--emit-windows-lea-rdx-rva (buf target-rva)
+  "Emit `lea rdx, [rip+disp32]' from BUF to TARGET-RVA."
+  (let* ((lea-off (nelisp-asm-x86_64-buffer-pos buf))
+         (next-rva (+ nelisp-phase47-compiler--windows-text-rva lea-off 7))
+         (disp (- target-rva next-rva)))
+    (unless (and (<= (- (ash 1 31)) disp) (< disp (ash 1 31)))
+      (signal 'nelisp-phase47-compiler-error
+              (list :windows-lea-disp-out-of-range disp)))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8d #x15))
+    (nelisp-phase47-compiler--emit-le32-signed buf disp)))
+
+(defun nelisp-phase47-compiler--emit-windows-write
+    (buf str str-offsets rodata-rva)
+  "Emit Win64 GetStdHandle/WriteFile call sequence for STR."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-getstdhandle-iat-rva
+               nelisp-phase47-compiler--windows-writefile-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-write-import-missing)))
+  (let* ((entry (cdr (or (assoc str str-offsets)
+                         (signal 'nelisp-phase47-compiler-error
+                                 (list :missing-string-entry str)))))
+         (offset (plist-get entry :offset))
+         (len (plist-get entry :len))
+         (str-rva (+ rodata-rva offset)))
+    ;; Reserve shadow space, one stack argument, and a local DWORD for the
+    ;; lpNumberOfBytesWritten out parameter.
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x48 #x83 #xec #x38)) ; sub rsp, 56
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #xb9))                ; mov ecx, STD_OUTPUT_HANDLE
+    (nelisp-phase47-compiler--emit-le32-signed buf -11)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-getstdhandle-iat-rva)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax) ; hFile
+    (nelisp-phase47-compiler--emit-windows-lea-rdx-rva buf str-rva) ; lpBuffer
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x41 #xb8)) ; mov r8d, len
+    (nelisp-phase47-compiler--emit-le32-signed buf len)
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x4c #x8d #x4c #x24 #x28)) ; lea r9, [rsp+40]
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x48 #xc7 #x44 #x24 #x20 0 0 0 0)) ; arg5 NULL
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-writefile-iat-rva)
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x48 #x83 #xc4 #x38)))) ; add rsp, 56
 
 (defun nelisp-phase47-compiler--emit-windows-exit (buf value-node)
   "Emit Win64 KERNEL32.dll!ExitProcess call for VALUE-NODE."
