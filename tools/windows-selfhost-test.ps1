@@ -14,6 +14,7 @@
 #   .\tools\windows-selfhost-test.ps1 -Smoke createfile-write
 #   .\tools\windows-selfhost-test.ps1 -Smoke setfilepointer
 #   .\tools\windows-selfhost-test.ps1 -Smoke getfiletype
+#   .\tools\windows-selfhost-test.ps1 -Smoke getfileinformation
 #   .\tools\windows-selfhost-test.ps1 -Smoke createprocess
 #   .\tools\windows-selfhost-test.ps1 -Smoke createthread
 #
@@ -100,6 +101,12 @@ $Smokes = @(
     @{
         Name = "getfiletype"
         Spec = "getfiletype-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
+        Name = "getfileinformation"
+        Spec = "getfileinformation-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
     },
