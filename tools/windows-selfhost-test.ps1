@@ -10,6 +10,7 @@
 #
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualalloc
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualprotect-free
+#   .\tools\windows-selfhost-test.ps1 -Smoke readfile-stdin
 #   .\tools\windows-selfhost-test.ps1 -Smoke createprocess
 #   .\tools\windows-selfhost-test.ps1 -Smoke createthread
 #
@@ -74,6 +75,12 @@ $Smokes = @(
         Spec = "writefile-stdout-exit-42"
         ExpectedExit = 42
         ExpectedStdout = "hello from nelisp windows"
+    },
+    @{
+        Name = "readfile-stdin"
+        Spec = "readfile-stdin-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
     },
     @{
         Name = "getcommandline"

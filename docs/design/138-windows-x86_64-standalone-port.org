@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-137-WINDOWS-SEQPACKET-SOCKET
+#+STATUS: STAGE-138-WINDOWS-READFILE-SMOKE
 
 * Status
 
-- *State*: STAGE 137 Windows seqpacket socket compatibility
+- *State*: STAGE 138 Windows ReadFile PE smoke
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -40,7 +40,11 @@
   =WaitForSingleObject= / =GetExitCodeThread= / =CloseHandle= /
   =ExitProcess=, starts an in-image thread routine that returns 42, joins the
   thread, checks its exit code, closes the thread HANDLE, and exits 42 only
-  when the full thread lifecycle succeeds.  Win64 COFF object coverage now also
+  when the full thread lifecycle succeeds.  The eleventh EXE spec,
+  =readfile-stdin-exit-42=, imports =GetStdHandle= and =ReadFile=, obtains
+  =STD_INPUT_HANDLE=, issues a zero-byte =ReadFile= through a writable =.data=
+  buffer / bytes-read slot so it cannot block for console input, and exits 42
+  on success / 1 on failure.  Win64 COFF object coverage now also
   verifies =extern-call= emits four GP arguments in =RCX/RDX/R8/R9=, surrounds
   the call with the required 32-byte caller shadow space, and places fifth and
   later GP arguments in the Win64 outgoing stack area above shadow space.
@@ -823,7 +827,10 @@
   =CreateProcessW= / wait / exit-code validation.  Stage 57 coverage verifies
   the =createthread-wait-exit-42= PE layout, thread API imports, writable
   thread-id / exit-code data, in-image thread entry address setup, wait, and
-  exit-code validation.  Stage 58 coverage verifies Win64 =extern-call= COFF
+  exit-code validation.  Stage 138 coverage verifies the
+  =readfile-stdin-exit-42= PE layout, =GetStdHandle= / =ReadFile= imports,
+  writable buffer / bytes-read data, zero-byte read count, and Win64
+  fifth-argument stack slot.  Stage 58 coverage verifies Win64 =extern-call= COFF
   emit uses =RCX/RDX/R8/R9= for four GP arguments, emits 32-byte caller shadow
   space around =CALL=, and rejects GP stack arguments beyond that register
   window before invalid object emission.  Stage 59 coverage supersedes that
@@ -844,7 +851,8 @@
   that EXE returned =$LASTEXITCODE = 42=.  Remaining real Windows checks:
   =virtualalloc-exit-42=, =virtualprotect-free-exit-42=,
   =virtualalloc-arena-exit-42=, and
-  =writefile-stdout-exit-42=, =getcommandline-exit-42=,
+  =writefile-stdout-exit-42=, =readfile-stdin-exit-42=,
+  =getcommandline-exit-42=,
   =commandlinetoargv-exit-42=, =wsastartup-exit-42=,
   =createprocess-wait-exit-42=, and =createthread-wait-exit-42=.  They can now
   be built individually on native
@@ -852,6 +860,7 @@
   =nelisp-windows-build-virtualprotect-free=,
   =nelisp-windows-build-arena=, and
   =nelisp-windows-build-writefile-stdout=, and
+  =nelisp-windows-build-readfile-stdin=, and
   =nelisp-windows-build-getcommandline=,
   =nelisp-windows-build-commandlinetoargv=, and
   =nelisp-windows-build-wsastartup=, and
@@ -861,13 +870,14 @@
   =target/nelisp-windows-virtualprotect-free.exe=,
   =target/nelisp-windows-arena.exe=, and
   =target/nelisp-windows-writefile-stdout.exe=, and
+  =target/nelisp-windows-readfile-stdin.exe=, and
   =target/nelisp-windows-getcommandline.exe=,
   =target/nelisp-windows-commandlinetoargv.exe=, and
   =target/nelisp-windows-wsastartup.exe=, and
   =target/nelisp-windows-createprocess.exe=, and
   =target/nelisp-windows-createthread.exe=.  This Linux host does not have
   =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
-  it builds and runs the ten PE32+ smoke EXEs on native Windows, checking exit
+  it builds and runs the eleven PE32+ smoke EXEs on native Windows, checking exit
   code 42 and the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE
   generation without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
@@ -1435,6 +1445,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   has a =createthread-wait-exit-42= smoke that starts an in-image thread entry
   returning 42, waits, reads the thread exit code, closes the thread HANDLE,
   and is wired into the native Windows PowerShell smoke runner.
+  *Windows ReadFile stdin PE smoke progress 2026-06-03*: pure-Elisp PE emit
+  now has a =readfile-stdin-exit-42= smoke that obtains =STD_INPUT_HANDLE=,
+  calls =ReadFile= with a zero-byte count plus writable bytes-read storage, and
+  is wired into the native Windows PowerShell smoke runner without requiring
+  console input.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -1869,6 +1884,10 @@ largest uncertainty (B1 + B2) first.
    *Windows CreateThread PE smoke SHIPPED 2026-06-03*: pure-Elisp PE emit now
    has a native =CreateThread= smoke that starts an in-image thread entry,
    waits, validates the thread exit code, closes the HANDLE, and is included in
+   =tools/windows-selfhost-test.ps1=.
+   *Windows ReadFile stdin PE smoke SHIPPED 2026-06-03*: pure-Elisp PE emit now
+   has a native =ReadFile= stdin smoke that performs a zero-byte read through
+   =GetStdHandle(STD_INPUT_HANDLE)= and is included in
    =tools/windows-selfhost-test.ps1=.
    *Win64 extern-call ABI coverage SHIPPED 2026-06-03*: Phase 47 COFF tests now
    verify Win64 =extern-call= uses =RCX/RDX/R8/R9=, emits 32-byte shadow space

@@ -52,6 +52,7 @@
 ;; waits for the child, reads its exit code, and closes the process HANDLE.
 ;; Stage 57 adds a `CreateThread' smoke that starts an in-image thread entry,
 ;; joins it, reads its exit code, and closes the thread HANDLE.
+;; Stage 138 adds a nonblocking `ReadFile' stdin smoke with a zero-byte read.
 ;; Production standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
@@ -1293,6 +1294,65 @@ success / 1 on failure."
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--minimal-readfile-stdin-text
+    (text-rva exit-iat-rva get-std-handle-iat-rva read-file-iat-rva data-rva)
+  "Return x86_64 entry bytes that issue a zero-byte stdin ReadFile.
+The generated code calls GetStdHandle(STD_INPUT_HANDLE), then
+ReadFile(handle, DATA-RVA, 0, DATA-RVA+4, NULL), and exits 42 on success /
+1 on failure.  The zero-byte read proves the import and Win64 call shape
+without blocking for console input."
+  (let* ((get-call-off 9)
+         (lea-buf-off 18)
+         (lea-read-off 28)
+         (read-call-off 44)
+         (success-exit-call-off 59)
+         (fail-off 65)
+         (fail-exit-call-off 70)
+         (call-len 6)
+         (lea-len 7)
+         (get-disp (- get-std-handle-iat-rva
+                      (+ text-rva get-call-off call-len)))
+         (buf-disp (- data-rva (+ text-rva lea-buf-off lea-len)))
+         (read-disp (- (+ data-rva 4) (+ text-rva lea-read-off lea-len)))
+         (read-file-disp (- read-file-iat-rva
+                            (+ text-rva read-call-off call-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (jz-disp (- fail-off (+ 52 2)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; 32-byte shadow + one stack arg + alignment pad.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x38))
+    (nelisp-pe--write-u8 cbuf #xb9) ; mov ecx, STD_INPUT_HANDLE (-10)
+    (nelisp-pe--write-le32 cbuf #xfffffff6)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf get-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc1)) ; rcx = handle
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x15)) ; rdx = buffer
+    (nelisp-pe--write-le32-signed cbuf buf-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x45 #x31 #xc0)) ; r8d = 0
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x4c #x8d #x0d)) ; r9 = bytesRead*
+    (nelisp-pe--write-le32-signed cbuf read-disp)
+    ;; 5th arg lpOverlapped = NULL at [rsp + 32].
+    (nelisp-pe--write-bytes cbuf
+                            (unibyte-string #x48 #xc7 #x44 #x24 #x20
+                                            #x00 #x00 #x00 #x00))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf read-file-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0)) ; test eax,eax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 (logand jz-disp #xff)))
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--minimal-getcommandline-text
     (text-rva exit-iat-rva get-command-line-iat-rva)
   "Return x86_64 entry bytes that call GetCommandLineW, then ExitProcess.
@@ -2120,6 +2180,102 @@ when the thread reported exit code 42."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-readfile-stdin-exitprocess-exe ()
+  "Build a PE32+ EXE that proves stdin ReadFile import and call wiring."
+  (let* ((num-sections 3)
+         (data-bytes (make-string 8 0))
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (data-rva (* 2 nelisp-pe--section-alignment))
+         (idata-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva (list "ExitProcess" "GetStdHandle" "ReadFile")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-readfile-stdin-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "GetStdHandle" iat-map))
+           (cdr (assoc "ReadFile" iat-map))
+           data-rva))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length data-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (data-raw-ptr (+ text-raw-ptr text-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ data-raw-size idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length data-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf data-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--build-getcommandline-exitprocess-exe ()
   "Build a PE32+ EXE that proves GetCommandLineW import wiring."
   (let* ((num-sections 2)
@@ -2640,7 +2796,7 @@ so raw binary content is preserved.  Returns FILE-PATH."
   "Emit a PE32+ console executable to FILE-PATH.
 SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `virtualprotect-free-exit-42', `virtualalloc-arena-exit-42',
-`writefile-stdout-exit-42',
+`writefile-stdout-exit-42', `readfile-stdin-exit-42',
 `getcommandline-exit-42', `wsastartup-exit-42',
 `commandlinetoargv-exit-42', `createprocess-wait-exit-42',
 `createthread-wait-exit-42', or a plist with :exit-code.  The output imports
@@ -2653,6 +2809,7 @@ DLL functions through a real PE import directory and writes raw bytes with
            ((eq spec 'virtualprotect-free-exit-42) nil)
            ((eq spec 'virtualalloc-arena-exit-42) nil)
            ((eq spec 'writefile-stdout-exit-42) nil)
+           ((eq spec 'readfile-stdin-exit-42) nil)
            ((eq spec 'getcommandline-exit-42) nil)
            ((eq spec 'wsastartup-exit-42) nil)
            ((eq spec 'commandlinetoargv-exit-42) nil)
@@ -2669,6 +2826,8 @@ DLL functions through a real PE import directory and writes raw bytes with
                   (nelisp-pe--build-virtualalloc-arena-exitprocess-exe))
                  ((eq spec 'writefile-stdout-exit-42)
                   (nelisp-pe--build-writefile-stdout-exitprocess-exe))
+                 ((eq spec 'readfile-stdin-exit-42)
+                  (nelisp-pe--build-readfile-stdin-exitprocess-exe))
                  ((eq spec 'getcommandline-exit-42)
                   (nelisp-pe--build-getcommandline-exitprocess-exe))
                  ((eq spec 'wsastartup-exit-42)
