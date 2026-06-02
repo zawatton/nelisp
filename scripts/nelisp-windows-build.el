@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -23,6 +23,8 @@
 ;; ExitProcess.
 ;; Stage 11 adds a native CreateThread/WaitForSingleObject/GetExitCodeThread
 ;; probe for de-risking Windows thread API mechanics before replacing clone(2).
+;; Stage 12 carries Phase47 static imm32 table rodata into PE .rdata so
+;; table lookup users no longer trip the Windows table rejection gate.
 
 ;;; Code:
 
@@ -270,6 +272,14 @@ FDS is the list of accepted immediate fd values."
          (collected (nelisp-phase47-compiler--collect-strings ir)))
     (cdr collected)))
 
+(defun nelisp-windows-build--phase47-extra-rdata-bytes (sexp)
+  "Return Phase47 string rodata followed by static table rodata for SEXP."
+  (let* ((nelisp-phase47-compiler--label-counter 0)
+         (ir (nelisp-phase47-compiler--parse sexp nil))
+         (strings (nelisp-phase47-compiler--collect-strings ir))
+         (tables (nelisp-phase47-compiler--collect-tables ir)))
+    (concat (cdr strings) (cdr tables))))
+
 (defun nelisp-windows-build--phase47-text (sexp text-rva iat-rvas rodata-rva)
   "Return Win64 .text bytes for Phase47 SEXP.
 TEXT-RVA is the PE .text RVA, IAT-RVAS maps imported functions to IAT
@@ -302,11 +312,8 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
            (str-offsets (car collected))
            (table-collected (nelisp-phase47-compiler--collect-tables ir))
            (table-offsets (car table-collected))
-           (table-bytes (cdr table-collected))
+           (str-rodata-len (length (cdr collected)))
            (defuns (nelisp-phase47-compiler--collect-defuns ir)))
-      (when (> (length table-bytes) 0)
-        (signal 'nelisp-phase47-compiler-error
-                (list :windows-tables-not-yet-supported)))
       (let* ((pass1-table-vaddrs
               (mapcar (lambda (entry) (cons (car entry) 0)) table-offsets))
              (pass1 (nelisp-phase47-compiler--pass
@@ -314,8 +321,14 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
              (text-size (nelisp-asm-x86_64-buffer-pos pass1))
              (table-vaddrs
               (mapcar (lambda (entry)
-                        (let ((name (car entry)))
-                          (cons name 0)))
+                        (let* ((name (car entry))
+                               (info (cdr entry))
+                               (offset (plist-get info :offset)))
+                          (cons name
+                                (+ nelisp-pe--image-base-x86-64
+                                   rodata-rva
+                                   str-rodata-len
+                                   offset))))
                       table-offsets))
              (pass2 (nelisp-phase47-compiler--pass
                      ir defuns str-offsets rodata-rva table-vaddrs))
@@ -330,14 +343,18 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
 
 (defun nelisp-windows-build--phase47-executable-bytes (sexp)
   "Return a PE32+ EXE byte string for Phase47 SEXP."
-  (let* ((rodata-bytes (nelisp-windows-build--phase47-rodata-bytes sexp))
-         (imports (nelisp-windows-build--phase47-import-names sexp rodata-bytes)))
+  (let* ((str-rodata-bytes
+          (nelisp-windows-build--phase47-rodata-bytes sexp))
+         (extra-rdata-bytes
+          (nelisp-windows-build--phase47-extra-rdata-bytes sexp))
+         (imports (nelisp-windows-build--phase47-import-names
+                   sexp str-rodata-bytes)))
     (nelisp-pe-write-build-kernel32-executable
      imports
      (lambda (text-rva iat-rvas rodata-rva)
        (nelisp-windows-build--phase47-text
         sexp text-rva iat-rvas rodata-rva))
-     rodata-bytes)))
+     extra-rdata-bytes)))
 
 (defun nelisp-windows-build-phase47-exe (sexp out-path)
   "Write OUT-PATH as a PE32+ EXE compiled from Phase47 SEXP."
@@ -500,6 +517,16 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
   (nelisp-windows-build-phase47-exe
    '(exit (syscall-direct 60 42 0 0 0 0 0))
    "target/nelisp-windows-phase47-sysexit42.exe"))
+
+(defun nelisp-windows-build-phase47-table42 ()
+  "Batch entry: build target/nelisp-windows-phase47-table42.exe."
+  (nelisp-windows-build-phase47-exe
+   '(seq
+     (static-imm32-table-define "t" (7 42 99))
+     (defun table_probe ()
+       (static-imm32-table-lookup "t" 1))
+     (exit (table_probe)))
+   "target/nelisp-windows-phase47-table42.exe"))
 
 (provide 'nelisp-windows-build)
 

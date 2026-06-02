@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -532,6 +532,44 @@
              (regexp-quote (unibyte-string #x48 #xc7 #xc0
                                             #x2b #x00 #x00 #x00))
              text))
+    (should (member #x2038 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-phase47-static-table-rdata-and-lookup ()
+  "Windows Phase47 carries static imm32 tables into PE .rdata."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (static-imm32-table-define "t" (7 42 99))
+                   (defun table_probe ()
+                     (static-imm32-table-lookup "t" 1))
+                   (exit (table_probe)))))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-size (nelisp-windows-build-test--read-le32 bytes (+ opt 124)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (table-rva (+ rdata-rva import-size))
+         (table-raw (+ rdata-raw import-size))
+         (table-vaddr (+ nelisp-pe--image-base-x86-64 table-rva))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 180)))
+         (mov-rdi (string-match-p
+                   (regexp-quote (unibyte-string #x48 #xbf))
+                   text))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 180))))
+    (should (equal imports '("ExitProcess")))
+    (should (equal (substring bytes table-raw (+ table-raw 12))
+                   (unibyte-string #x07 #x00 #x00 #x00
+                                   #x2a #x00 #x00 #x00
+                                   #x63 #x00 #x00 #x00)))
+    (should mov-rdi)
+    (should (= (nelisp-windows-build-test--read-le64
+                text (+ mov-rdi 2))
+               table-vaddr))
     (should (member #x2038 targets))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))

@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 11 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 12 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -30,7 +30,10 @@
   raw-syscall gap.  Stage 11 adds a native =CreateThread= /
   =WaitForSingleObject= / =GetExitCodeThread= probe so the Windows thread API
   mechanics can be verified before the standalone =clone(2)= continuation
-  replacement is wired into Phase47/reader code.
+  replacement is wired into Phase47/reader code.  Stage 12 carries Phase47
+  =static-imm32-table-define= rodata into PE =.rdata= and resolves lookup
+  vaddrs against the PE image base, removing the explicit Windows table
+  rejection gate.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
