@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -29,6 +29,8 @@
 ;; which is the bridge from single-probe PE emit toward standalone units.
 ;; Stage 14 carries linked-unit .rodata through the PE writer so static
 ;; linker rodata sections can ship in PE .rdata.
+;; Stage 15 carries linked-unit .data through the PE writer so read-write
+;; linker data sections no longer block PE manifest assembly.
 
 ;;; Code:
 
@@ -228,28 +230,36 @@ successfully recovered through GetExitCodeThread."
     (imports unit-builder &optional extra-rdata)
   "Return a PE32+ EXE from linked units produced by UNIT-BUILDER.
 IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
-`(UNIT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA)' and returns link-units."
+`(UNIT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA)' or
+`(UNIT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA DATA-RVA)' and returns
+link-units."
   (nelisp-pe-write-build-kernel32-executable
    imports
-   (lambda (text-rva iat-rvas rdata-rva)
-     (let* ((units (funcall unit-builder text-rva iat-rvas rdata-rva))
+   (lambda (text-rva iat-rvas rdata-rva data-rva)
+     (let* ((arity (func-arity unit-builder))
+            (maxargs (cdr arity))
+            (units (if (or (eq maxargs 'many)
+                           (eq maxargs t)
+                           (and (integerp maxargs) (>= maxargs 4)))
+                       (funcall unit-builder text-rva iat-rvas
+                                rdata-rva data-rva)
+                     (funcall unit-builder text-rva iat-rvas rdata-rva)))
             (layout `((text . ,(+ nelisp-pe--image-base-x86-64 text-rva))
-                      (rodata . ,(+ nelisp-pe--image-base-x86-64 rdata-rva))))
+                      (rodata . ,(+ nelisp-pe--image-base-x86-64 rdata-rva))
+                      (data . ,(+ nelisp-pe--image-base-x86-64 data-rva))))
             (link-result (nelisp-link-units-2pass units layout))
             (bytes (plist-get link-result :bytes))
             (text (nelisp-link--bytes-or-empty bytes 'text))
             (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
             (data (nelisp-link--bytes-or-empty bytes 'data))
             (bss-size (or (cdr (assq 'bss bytes)) 0)))
-       (unless (= (length data) 0)
-         (signal 'nelisp-link-error
-                 (list :windows-pe-linked-data-not-yet-supported
-                       (length data))))
-       (unless (= bss-size 0)
-         (signal 'nelisp-link-error
-                 (list :windows-pe-linked-bss-not-yet-supported bss-size)))
-       (if (> (length rodata) 0)
-           (list :text text :extra-rdata rodata)
+       (if (or (> (length rodata) 0)
+               (> (length data) 0)
+               (> bss-size 0))
+           (list :text text
+                 :extra-rdata rodata
+                 :extra-data data
+                 :bss-size bss-size)
          text)))
    extra-rdata))
 
@@ -291,6 +301,34 @@ IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
          (list (list :offset 2 :type 'pc32 :symbol "answer"
                      :addend 0 :section 'text))))))))
 
+(defun nelisp-windows-build--linked-data42-bytes ()
+  "Return a PE32+ EXE proving linked-unit .data is emitted."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess")
+   (lambda (text-rva iat-rvas _rdata-rva _data-rva)
+     (list
+      (nelisp-windows-build--linked-start-unit
+       text-rva (cdr (assoc "ExitProcess" iat-rvas)))
+      (let* ((data (unibyte-string #x28 #x00 #x00 #x00))
+             (helper-text
+              (let ((buf (nelisp-asm-x86_64-make-buffer 'win64)))
+                ;; mov eax, ecx; add eax, dword ptr [rip+disp32]; ret.
+                (nelisp-asm-x86_64-emit-bytes
+                 buf (unibyte-string #x89 #xc8
+                                     #x03 #x05 #x00 #x00 #x00 #x00))
+                (nelisp-asm-x86_64-ret buf)
+                (nelisp-asm-x86_64-buffer-bytes buf))))
+        (nelisp-link-unit-make
+         "data-helper.o"
+         (list (cons 'text helper-text)
+               (cons 'data data))
+         (list (nelisp-link-symbol
+                "add40" 0 :section 'text :bind 'global :type 'func)
+               (nelisp-link-symbol
+                "delta" 0 :section 'data :bind 'global :type 'object))
+         (list (list :offset 4 :type 'pc32 :symbol "delta"
+                     :addend 0 :section 'text))))))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -308,6 +346,16 @@ IMPORTS is the KERNEL32 import list.  UNIT-BUILDER is called as
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (linked rodata -> ExitProcess)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-linked-data42 ()
+  "Batch entry: build target/nelisp-windows-linked-data42.exe."
+  (let ((bytes (nelisp-windows-build--linked-data42-bytes))
+        (out-path "target/nelisp-windows-linked-data42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (linked data -> ExitProcess)"
              out-path)
     out-path))
 

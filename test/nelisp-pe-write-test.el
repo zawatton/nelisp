@@ -64,6 +64,13 @@
       (setq end (1+ end)))
     (substring bytes offset end)))
 
+(defun nelisp-pe-write-test--unibyte-fill (len byte)
+  "Return a unibyte string of LEN copies of BYTE."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-char byte len)
+    (buffer-string)))
+
 ;; ---- sample input ----
 
 (defconst nelisp-pe-write-test--sample-text
@@ -375,6 +382,53 @@
             :extra-rdata (unibyte-string #x01)))
     (unibyte-string #x02))
    :type 'error))
+
+(ert-deftest nelisp-pe-write-kernel32-builder-plist-extra-data-section ()
+  "KERNEL32 EXE builder accepts text-builder plist extra .data."
+  (let* ((data (unibyte-string #x44 #x33 #x22 #x11))
+         (captured-data-rva nil)
+         (bytes
+          (nelisp-pe-write-build-kernel32-executable
+           '("ExitProcess")
+           (lambda (_text-rva _iat-rvas _rdata-rva data-rva)
+             (setq captured-data-rva data-rva)
+             (list :text (unibyte-string #xcc)
+                   :extra-data data
+                   :bss-size 16))))
+         (peoff (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (sect0 (+ opt 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40)))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ peoff 6)) 3))
+    (should (string-prefix-p ".data" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 8)) 20))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 12)) #x3000))
+    (should (= captured-data-rva #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 16)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 20)) #x600))
+    (should (equal (substring bytes #x600 (+ #x600 (length data)))
+                   data))))
+
+(ert-deftest nelisp-pe-write-kernel32-builder-large-text-moves-rdata ()
+  "KERNEL32 EXE builder places .rdata after multi-page .text."
+  (let* ((text (nelisp-pe-write-test--unibyte-fill #x1200 #x90))
+         (captured-rdata-rva nil)
+         (bytes
+          (nelisp-pe-write-build-kernel32-executable
+           '("ExitProcess")
+           (lambda (_text-rva _iat-rvas rdata-rva)
+             (setq captured-rdata-rva rdata-rva)
+             text)))
+         (peoff (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (sect0 (+ opt 240))
+         (sect1 (+ sect0 40))
+         (import-rva (nelisp-pe-write-test--read-le32 bytes (+ opt 120))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 12)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x3000))
+    (should (= import-rva #x3000))
+    (should (> captured-rdata-rva #x3000))))
 
 (provide 'nelisp-pe-write-test)
 

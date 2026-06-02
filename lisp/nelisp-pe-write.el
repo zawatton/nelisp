@@ -147,6 +147,12 @@
           nelisp-pe--scn-mem-read)
   "Section Characteristics for an executable image .rdata section.")
 
+(defconst nelisp-pe--exe-data-flags
+  (logior nelisp-pe--scn-cnt-init-data
+          nelisp-pe--scn-mem-read
+          nelisp-pe--scn-mem-write)
+  "Section Characteristics for an executable image .data section.")
+
 ;; ---- chunk-buffer abstraction (= same pattern as nelisp-elf-write) ----
 
 (defun nelisp-pe--make-buffer ()
@@ -926,11 +932,17 @@ TEXT-RVA is the RVA of byte 0 of the code stored in CBUF."
     (nelisp-pe--write-bytes cbuf (unibyte-string #xFF #x15))
     (nelisp-pe--write-le32-signed cbuf disp)))
 
-(defun nelisp-pe--build-executable-with-imports (text imports &optional extra-rdata)
+(defun nelisp-pe--build-executable-with-imports
+    (text imports &optional extra-rdata extra-data bss-size)
   "Build a PE32+ console executable from TEXT bytes and IMPORTS plist.
-EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
+EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata.
+EXTRA-DATA and BSS-SIZE create an optional .data section."
   (let* ((pe-offset nelisp-pe--dos-stub-size)
-         (num-sections 2)
+         (data-bytes (or extra-data (unibyte-string)))
+         (bss (or bss-size 0))
+         (have-data (or (> (length data-bytes) 0)
+                        (> bss 0)))
+         (num-sections (if have-data 3 2))
          (headers-raw
           (+ pe-offset 4 nelisp-pe--header-size
              nelisp-pe--optional-header-pe32plus-size
@@ -938,7 +950,7 @@ EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
          (size-headers (nelisp-pe--align-up headers-raw
                                             nelisp-pe--file-alignment))
          (text-rva nelisp-pe--section-alignment)
-         (rdata-rva (* 2 nelisp-pe--section-alignment))
+         (rdata-rva (plist-get imports :import-rva))
          (import-bytes (plist-get imports :bytes))
          (rdata-bytes (concat import-bytes
                               (or extra-rdata (unibyte-string))))
@@ -946,10 +958,25 @@ EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
                                              nelisp-pe--file-alignment))
          (rdata-raw-size (nelisp-pe--align-up (length rdata-bytes)
                                               nelisp-pe--file-alignment))
+         (data-rva (and have-data
+                        (nelisp-pe--align-up
+                         (+ rdata-rva (length rdata-bytes))
+                         nelisp-pe--section-alignment)))
+         (data-virtual-size (and have-data
+                                 (+ (length data-bytes) bss)))
+         (data-raw-size (if have-data
+                            (nelisp-pe--align-up
+                             (length data-bytes)
+                             nelisp-pe--file-alignment)
+                          0))
          (text-raw-ptr size-headers)
          (rdata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (data-raw-ptr (and have-data
+                            (+ rdata-raw-ptr rdata-raw-size)))
          (size-image (nelisp-pe--align-up
-                      (+ rdata-rva (length rdata-bytes))
+                      (if have-data
+                          (+ data-rva data-virtual-size)
+                        (+ rdata-rva (length rdata-bytes)))
                       nelisp-pe--section-alignment))
          (cbuf (nelisp-pe--make-buffer)))
     (nelisp-pe--write-dos-stub cbuf pe-offset)
@@ -971,7 +998,7 @@ EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
     (nelisp-pe--write-pe32plus-optional-header
      cbuf
      (list :size-code text-raw-size
-           :size-init-data rdata-raw-size
+           :size-init-data (+ rdata-raw-size data-raw-size)
            :entry-rva text-rva
            :base-code text-rva
            :image-base nelisp-pe--image-base-x86-64
@@ -979,7 +1006,7 @@ EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
            :size-headers size-headers
            :import-rva (plist-get imports :import-rva)
            :import-size (plist-get imports :import-size)))
-    ;; IMAGE_SECTION_HEADER[.text, .rdata].
+    ;; IMAGE_SECTION_HEADER[.text, .rdata, optional .data].
     (nelisp-pe--write-section-header
      cbuf
      (list :name ".text"
@@ -1000,6 +1027,17 @@ EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
            :reloc-ptr 0
            :num-relocs 0
            :characteristics nelisp-pe--exe-rdata-flags))
+    (when have-data
+      (nelisp-pe--write-section-header
+       cbuf
+       (list :name ".data"
+             :virtual-size data-virtual-size
+             :virtual-address data-rva
+             :raw-data-size data-raw-size
+             :raw-data-ptr data-raw-ptr
+             :reloc-ptr 0
+             :num-relocs 0
+             :characteristics nelisp-pe--exe-data-flags)))
     (unless (<= (nelisp-pe--buffer-length cbuf) size-headers)
       (error "nelisp-pe: headers exceed SizeOfHeaders"))
     (nelisp-pe--write-pad cbuf (- size-headers (nelisp-pe--buffer-length cbuf)))
@@ -1011,6 +1049,11 @@ EXTRA-RDATA, when non-nil, is appended after the import blob in .rdata."
       (error "nelisp-pe: .rdata raw offset drift"))
     (nelisp-pe--write-bytes cbuf rdata-bytes)
     (nelisp-pe--write-pad cbuf (- rdata-raw-size (length rdata-bytes)))
+    (when have-data
+      (unless (= (nelisp-pe--buffer-length cbuf) data-raw-ptr)
+        (error "nelisp-pe: .data raw offset drift"))
+      (nelisp-pe--write-bytes cbuf data-bytes)
+      (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes))))
     (nelisp-pe--buffer-bytes cbuf)))
 
 (defun nelisp-pe--build-exitprocess-text (exit-code text-rva iat-rva)
@@ -1081,36 +1124,120 @@ FAILURE-CODE otherwise.  IAT-RVAS maps imported function names to RVAs."
                 (plist-get imports :iat-rvas))))
     (nelisp-pe--build-executable-with-imports text imports)))
 
+(defun nelisp-pe--call-text-builder
+    (text-builder text-rva iat-rvas rdata-rva data-rva)
+  "Call TEXT-BUILDER with compatible arity.
+New callers may accept DATA-RVA as a fourth argument.  Existing callers
+continue to receive `(TEXT-RVA IAT-RVAS RDATA-RVA)'."
+  (let* ((arity (func-arity text-builder))
+         (maxargs (cdr arity)))
+    (if (or (eq maxargs 'many)
+            (eq maxargs t)
+            (and (integerp maxargs) (>= maxargs 4)))
+        (funcall text-builder text-rva iat-rvas rdata-rva data-rva)
+      (funcall text-builder text-rva iat-rvas rdata-rva))))
+
+(defun nelisp-pe--normalize-executable-build-result (built)
+  "Normalize TEXT-BUILDER result BUILT to a plist."
+  (let* ((plist-p (and (consp built) (plist-member built :text)))
+         (raw-extra (and plist-p (plist-get built :extra-rdata)))
+         (raw-data (and plist-p (plist-get built :extra-data)))
+         (bss-size (or (and plist-p (plist-get built :bss-size)) 0)))
+    (unless (and (integerp bss-size) (<= 0 bss-size))
+      (error "nelisp-pe: :bss-size must be a non-negative integer: %S"
+             bss-size))
+    (list :text (if plist-p (plist-get built :text) built)
+          :extra-rdata (and raw-extra (> (length raw-extra) 0) raw-extra)
+          :extra-data (and raw-data (> (length raw-data) 0) raw-data)
+          :bss-size bss-size)))
+
+(defun nelisp-pe--executable-data-rva (rdata-rva rdata-bytes data-bytes bss-size)
+  "Return .data RVA after .rdata, or nil when no .data section is needed."
+  (let ((data-len (length (or data-bytes (unibyte-string))))
+        (bss (or bss-size 0)))
+    (when (or (> data-len 0) (> bss 0))
+      (nelisp-pe--align-up
+       (+ rdata-rva (length rdata-bytes))
+       nelisp-pe--section-alignment))))
+
 (defun nelisp-pe-write-build-kernel32-executable
     (names text-builder &optional extra-rdata)
   "Build a PE32+ console EXE importing KERNEL32.dll NAMES.
 TEXT-BUILDER is called as `(TEXT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA)'
-and must return the .text bytes, or a plist `(:text TEXT :extra-rdata BYTES)'.
+or, for new callers, `(TEXT-BUILDER TEXT-RVA IAT-RVAS RDATA-RVA DATA-RVA)'.
+It must return the .text bytes, or a plist `(:text TEXT :extra-rdata BYTES
+:extra-data BYTES :bss-size N)'.
 IAT-RVAS is an alist mapping each imported function name to its IAT slot
 RVA.  RDATA-RVA is the RVA where EXTRA-RDATA will be appended after the
-import blob.  When TEXT-BUILDER returns :extra-rdata, the optional
+import blob.  DATA-RVA is the RVA of the optional .data section.  When
+TEXT-BUILDER returns :extra-rdata, the optional
 EXTRA-RDATA argument must be nil or empty so RDATA-RVA remains unambiguous."
   (unless (functionp text-builder)
     (error "nelisp-pe: text-builder must be callable"))
   (let* ((text-rva nelisp-pe--section-alignment)
-         (rdata-rva (* 2 nelisp-pe--section-alignment))
-         (imports (nelisp-pe--build-kernel32-imports rdata-rva names))
-         (extra-rdata-rva (+ rdata-rva (length (plist-get imports :bytes))))
-         (built (funcall text-builder text-rva
-                         (plist-get imports :iat-rvas)
-                         extra-rdata-rva))
-         (raw-builder-extra (and (consp built)
-                                 (plist-get built :extra-rdata)))
-         (builder-extra (and raw-builder-extra
-                             (> (length raw-builder-extra) 0)
-                             raw-builder-extra))
-         (text (if (and (consp built) (plist-member built :text))
-                   (plist-get built :text)
-                 built)))
-    (when (and builder-extra extra-rdata (> (length extra-rdata) 0))
+         (guess-rdata-rva (* 2 nelisp-pe--section-alignment))
+         (guess-imports (nelisp-pe--build-kernel32-imports
+                         guess-rdata-rva names))
+         (guess-extra-rdata-rva
+          (+ guess-rdata-rva (length (plist-get guess-imports :bytes))))
+         (guess (nelisp-pe--normalize-executable-build-result
+                 (nelisp-pe--call-text-builder
+                  text-builder text-rva
+                  (plist-get guess-imports :iat-rvas)
+                  guess-extra-rdata-rva
+                  (* 3 nelisp-pe--section-alignment))))
+         (guess-extra (plist-get guess :extra-rdata))
+         (guess-data (plist-get guess :extra-data))
+         (guess-bss (plist-get guess :bss-size)))
+    (when (and guess-extra extra-rdata (> (length extra-rdata) 0))
       (error "nelisp-pe: text-builder :extra-rdata cannot combine with argument EXTRA-RDATA"))
-    (nelisp-pe--build-executable-with-imports
-     text imports (or builder-extra extra-rdata))))
+    (let* ((final-rdata-rva
+            (nelisp-pe--align-up
+             (+ text-rva (max 1 (length (plist-get guess :text))))
+             nelisp-pe--section-alignment))
+           (final-imports (nelisp-pe--build-kernel32-imports
+                           final-rdata-rva names))
+           (final-extra-rdata-rva
+            (+ final-rdata-rva (length (plist-get final-imports :bytes))))
+           (guess-rdata-bytes
+            (concat (plist-get final-imports :bytes)
+                    (or guess-extra extra-rdata (unibyte-string))))
+           (final-data-rva
+            (or (nelisp-pe--executable-data-rva
+                 final-rdata-rva guess-rdata-bytes guess-data guess-bss)
+                (* 3 nelisp-pe--section-alignment)))
+           (built (nelisp-pe--normalize-executable-build-result
+                   (nelisp-pe--call-text-builder
+                    text-builder text-rva
+                    (plist-get final-imports :iat-rvas)
+                    final-extra-rdata-rva
+                    final-data-rva)))
+           (builder-extra (plist-get built :extra-rdata))
+           (builder-data (plist-get built :extra-data))
+           (builder-bss (plist-get built :bss-size))
+           (text (plist-get built :text))
+           (check-rdata-rva
+            (nelisp-pe--align-up
+             (+ text-rva (max 1 (length text)))
+             nelisp-pe--section-alignment))
+           (final-rdata-bytes
+            (concat (plist-get final-imports :bytes)
+                    (or builder-extra extra-rdata (unibyte-string))))
+           (check-data-rva
+            (or (nelisp-pe--executable-data-rva
+                 check-rdata-rva final-rdata-bytes builder-data builder-bss)
+                (* 3 nelisp-pe--section-alignment))))
+      (when (and builder-extra extra-rdata (> (length extra-rdata) 0))
+        (error "nelisp-pe: text-builder :extra-rdata cannot combine with argument EXTRA-RDATA"))
+      (unless (= check-rdata-rva final-rdata-rva)
+        (error "nelisp-pe: text-builder changed .text size after layout: %S -> %S"
+               final-rdata-rva check-rdata-rva))
+      (unless (= check-data-rva final-data-rva)
+        (error "nelisp-pe: text-builder changed .data RVA after layout: %S -> %S"
+               final-data-rva check-data-rva))
+      (nelisp-pe--build-executable-with-imports
+       text final-imports (or builder-extra extra-rdata)
+       builder-data builder-bss))))
 
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)

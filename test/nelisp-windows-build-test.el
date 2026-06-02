@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -24,6 +24,11 @@
     (add-to-list 'load-path (expand-file-name "scripts" root))))
 
 (require 'nelisp-windows-build)
+
+(defun nelisp-windows-build-test--read-le16 (bytes offset)
+  "Read unsigned 16-bit little-endian integer from BYTES at OFFSET."
+  (logior (aref bytes offset)
+          (ash (aref bytes (+ offset 1)) 8)))
 
 (defun nelisp-windows-build-test--read-le32 (bytes offset)
   "Read unsigned 32-bit little-endian integer from BYTES at OFFSET."
@@ -287,6 +292,47 @@
                    (unibyte-string #x2a #x00 #x00 #x00)))
     (should load-off)
     (should (= target-rva answer-rva))
+    (should (member #x2038 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-linked-data-imports-exitprocess ()
+  "Stage 15 linked-unit data PE imports ExitProcess."
+  (let* ((bytes (nelisp-windows-build--linked-data42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess")))))
+
+(ert-deftest nelisp-windows-build-linked-data-carries-and-loads-data ()
+  "Stage 15 linked-unit PE carries .data and patches its RIP load."
+  (let* ((bytes (nelisp-windows-build--linked-data42-bytes))
+         (peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (sect0 (+ opt 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (data-rva (nelisp-windows-build-test--read-le32 bytes (+ sect2 12)))
+         (data-raw (nelisp-windows-build-test--read-le32 bytes (+ sect2 20)))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (text (substring bytes text-raw (+ text-raw 160)))
+         (load-off (string-match-p
+                    (regexp-quote (unibyte-string #x03 #x05))
+                    text))
+         (disp (and load-off
+                    (nelisp-windows-build-test--read-le32
+                     text (+ load-off 2))))
+         (target-rva (and disp (+ text-rva load-off 6 disp)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 160))))
+    (should (= (nelisp-windows-build-test--read-le16 bytes (+ peoff 6)) 3))
+    (should (string-prefix-p ".data" (substring bytes sect2 (+ sect2 8))))
+    (should (= data-rva #x3000))
+    (should (= data-raw #x600))
+    (should (equal (substring bytes data-raw (+ data-raw 4))
+                   (unibyte-string #x28 #x00 #x00 #x00)))
+    (should load-off)
+    (should (= target-rva data-rva))
     (should (member #x2038 targets))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))
