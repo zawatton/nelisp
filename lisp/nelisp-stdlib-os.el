@@ -3148,13 +3148,56 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
 
 ;; ----- socketpair -----
 
+(defun nelisp-os--windows-socketpair (domain type protocol)
+  "Windows `nelisp-os-socketpair' implementation via TCP loopback.
+Windows has no POSIX socketpair(2).  For the stream subset, create a
+temporary AF_INET loopback listener, connect one socket to it, accept the peer,
+then close the listener and return the connected fd pair."
+  (unless (memq domain (list nelisp-os-AF-UNIX nelisp-os-AF-INET))
+    (nelisp-os--windows-unsupported))
+  (unless (= type nelisp-os-SOCK-STREAM)
+    (nelisp-os--windows-unsupported))
+  (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((listener nil)
+        (client nil)
+        (server nil)
+        (success nil))
+    (unwind-protect
+        (progn
+          (setq listener (nelisp-os-socket
+                          nelisp-os-AF-INET
+                          nelisp-os-SOCK-STREAM
+                          nelisp-os-IPPROTO-TCP))
+          (nelisp-os-bind-inet listener nelisp-os-INADDR-LOOPBACK 0)
+          (nelisp-os-listen listener 1)
+          (let ((bound (nelisp-os-getsockname-inet listener)))
+            (setq client (nelisp-os-socket
+                          nelisp-os-AF-INET
+                          nelisp-os-SOCK-STREAM
+                          nelisp-os-IPPROTO-TCP))
+            (nelisp-os-connect-inet client nelisp-os-INADDR-LOOPBACK
+                                    (cadr bound))
+            (setq server (car (nelisp-os-accept-inet listener)))
+            (nelisp-os-close listener)
+            (setq listener nil
+                  success t)
+            (cons client server)))
+      (when listener
+        (ignore-errors (nelisp-os-close listener)))
+      (unless success
+        (when client
+          (ignore-errors (nelisp-os-close client)))
+        (when server
+          (ignore-errors (nelisp-os-close server)))))))
+
 (defun nelisp-os-socketpair (domain type protocol)
   "POSIX socketpair(2) — returns (FD1 . FD2) on success.
 Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
 `nelisp-os-error' on failure."
   ;; libc::socketpair(int domain, int type, int protocol, int sv[2]) → int.
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-socketpair domain type protocol)
     (let ((sv-buf (nelisp-os--alloc 8)))         ; 2 × sizeof(int)
       (unwind-protect
           (let ((r (nelisp-os--libc-call "libc" "socketpair"

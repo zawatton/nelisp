@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-65-WIN64-XMM-CALLEE-SAVES
+#+STATUS: STAGE-66-WINDOWS-SOCKETPAIR
 
 * Status
 
-- *State*: STAGE 65 Win64 XMM callee-saves
+- *State*: STAGE 66 Windows socketpair loopback stream
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -187,11 +187,15 @@
   Winsock path: =nelisp-os-socket= accepts =AF_UNIX=, and
   =nelisp-os-bind-unix= / =connect-unix= / =accept-unix= call =ws2_32!bind= /
   =connect= / =accept= with the existing =sockaddr_un= encoder and peer-path
-  decoder.  Linux abstract namespace AF_UNIX remains explicitly unsupported on
-  Windows.  Linux-only AF_UNIX helpers now reject Windows before libc or
-  allocation: =bind-unix-abstract=, =connect-unix-abstract=, =socketpair=,
-  =sendmsg-fds=, =recvmsg-fds=, and =getsockopt-peercred= signal
-  =nelisp-os-error= with =ENOTSUP=.  IPv4, IPv6, and filesystem AF_UNIX
+  decoder.  =nelisp-os-socketpair= now supports Windows stream pairs by
+  creating a temporary AF_INET loopback listener, connecting a client socket,
+  accepting the server peer, closing the listener, and returning the two
+  socket-kind fds with setup-failure cleanup.  Linux abstract namespace AF_UNIX
+  remains explicitly unsupported on Windows.  Linux-only AF_UNIX helpers now
+  reject Windows before libc or allocation: =bind-unix-abstract=,
+  =connect-unix-abstract=, =sendmsg-fds=, =recvmsg-fds=, and
+  =getsockopt-peercred= signal =nelisp-os-error= with =ENOTSUP=.  IPv4, IPv6,
+  and filesystem AF_UNIX
   =getsockname= / =getpeername= wrappers now dispatch socket-kind Windows fds
   through =ws2_32!getsockname= / =getpeername= and reuse the existing family
   decoders.  =nelisp-os-sigprocmask= now rejects Windows before allocating a
@@ -293,8 +297,8 @@
   verifies Windows =AF_UNIX= socket creation, filesystem =bind= / =connect=
   argument shape, accepted socket-kind fd allocation, peer-path decoding, and
   buffer cleanup.  Stage 32 coverage verifies Linux-only AF_UNIX abstract,
-  socketpair, SCM_RIGHTS send/recv, and peercred helpers reject Windows before
-  invoking allocation helpers or libc FFI.  Stage 33 coverage verifies Windows
+  SCM_RIGHTS send/recv, and peercred helpers reject Windows before invoking
+  allocation helpers or libc FFI.  Stage 33 coverage verifies Windows
   IPv4 =getsockname=, IPv6 =getpeername=, and AF_UNIX =getsockname= dispatch
   through Winsock, length-buffer setup, family decoder calls, and cleanup.
   Stage 34 coverage verifies =nelisp-os-sigprocmask= rejects Windows before
@@ -676,7 +680,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   Filesystem-path =AF_UNIX= sockets now use Winsock as well, while Linux-only
   abstract namespace / fd-passing / peercred helpers reject Windows before
   libc fallback.  =getsockname= / =getpeername= wrappers now use Winsock for
-  IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.
+  IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.  =nelisp-os-socketpair=
+  now synthesizes Windows stream pairs through a temporary AF_INET loopback
+  listener and returns the connected socket-kind fd pair.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -836,11 +842,14 @@ largest uncertainty (B1 + B2) first.
    Unix sockets now use Winsock for =socket= / =bind= / =connect= / =accept=,
    with accepted sockets registered as socket-kind fds.
    *Windows AF_UNIX Linux-only guards SHIPPED 2026-06-02*: abstract namespace,
-   =socketpair=, =sendmsg/recvmsg= fd passing, and =SO_PEERCRED= helpers now
-   return =ENOTSUP= on Windows before allocation or libc FFI.
+   =sendmsg/recvmsg= fd passing, and =SO_PEERCRED= helpers now return
+   =ENOTSUP= on Windows before allocation or libc FFI.
    *Windows Winsock getname SHIPPED 2026-06-02*: IPv4, IPv6, and
    filesystem-AF_UNIX =getsockname= / =getpeername= wrappers now dispatch to
    =ws2_32= and keep the existing family-specific decode shapes.
+   *Windows socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair= now creates
+   Windows stream pairs with a temporary AF_INET loopback listener, closes the
+   listener on success, and cleans up already-created fds on setup failure.
    *Windows sigprocmask guard SHIPPED 2026-06-02*: =nelisp-os-sigprocmask=
    now rejects Windows before POSIX =sigset_t= allocation or
    =libc!pthread_sigmask=.
@@ -987,9 +996,9 @@ largest uncertainty (B1 + B2) first.
    integration remains pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
-   getname, read/write, poll, and setsockopt-int; broader socket extensions
-   remain pending.  Linux-only AF_UNIX fd-passing/peercred helpers are guarded,
-   not ported.
+   getname, read/write, poll, setsockopt-int, and loopback-backed stream
+   socketpair; broader socket extensions remain pending.  Linux-only AF_UNIX
+   fd-passing/peercred helpers are guarded, not ported.
 
 * One-line summary
 
