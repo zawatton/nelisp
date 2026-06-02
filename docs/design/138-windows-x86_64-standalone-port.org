@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-34-WINDOWS-SIGPROCMASK-GUARD-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-35-WINDOWS-TIMERFD-HELPER-GUARD-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 34 Windows sigprocmask guard + first real Windows smoke VALIDATED
+- *State*: STAGE 35 Windows timerfd helper guard + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -115,7 +115,9 @@
   =getsockname= / =getpeername= wrappers now dispatch socket-kind Windows fds
   through =ws2_32!getsockname= / =getpeername= and reuse the existing family
   decoders.  =nelisp-os-sigprocmask= now rejects Windows before allocating a
-  POSIX =sigset_t= or calling =libc!pthread_sigmask=.
+  POSIX =sigset_t= or calling =libc!pthread_sigmask=.  The public
+  =nelisp-os-timerfd-set-relative-ms= helper now also rejects Windows directly
+  instead of relying on the lower-level timerfd wrapper to fail first.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -189,6 +191,8 @@
   through Winsock, length-buffer setup, family decoder calls, and cleanup.
   Stage 34 coverage verifies =nelisp-os-sigprocmask= rejects Windows before
   POSIX =sigset_t= allocation, libc FFI, or raw syscall entry.
+  Stage 35 coverage verifies =nelisp-os-timerfd-set-relative-ms= rejects
+  Windows before delegating into timerfd allocation or libc/syscall paths.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -247,7 +251,8 @@
   Stage 32 guards Linux-only AF_UNIX abstract namespace / descriptor-passing /
   peercred helpers on Windows.  Stage 33 routes getsockname / getpeername
   wrappers through Winsock on Windows.  Stage 34 guards =sigprocmask= on
-  Windows before POSIX signal-mask allocation or libc calls.
+  Windows before POSIX signal-mask allocation or libc calls.  Stage 35 guards
+  the relative-ms timerfd helper directly on Windows.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -434,7 +439,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   supports no-op =F_SETFL= while rejecting unsupported flag changes.
   *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
   =eventfd=, =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
-  Windows before reaching Linux syscall/libc paths.
+  Windows before reaching Linux syscall/libc paths, including the relative-ms
+  timerfd helper.
   *Windows Winsock progress 2026-06-02*: =nelisp-os-socket= now initializes
   Winsock, creates =AF_INET= sockets through =ws2_32!socket=, tracks socket fds
   separately from HANDLE fds, and =nelisp-os-close= dispatches socket fds to
@@ -555,6 +561,9 @@ largest uncertainty (B1 + B2) first.
    *Windows sigprocmask guard SHIPPED 2026-06-02*: =nelisp-os-sigprocmask=
    now rejects Windows before POSIX =sigset_t= allocation or
    =libc!pthread_sigmask=.
+   *Windows timerfd helper guard SHIPPED 2026-06-02*:
+   =nelisp-os-timerfd-set-relative-ms= now rejects Windows directly before
+   delegating into Linux timerfd paths.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:

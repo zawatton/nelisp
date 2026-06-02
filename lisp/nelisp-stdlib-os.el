@@ -57,7 +57,8 @@
 ;; AF_UNIX abstract namespace / fd-passing / peercred helpers reject Windows
 ;; before libc allocation.  Stage 33 maps getsockname / getpeername wrappers to
 ;; Winsock.  Stage 34 makes `sigprocmask' reject Windows before POSIX
-;; signal-mask allocation or libc calls.  The Linux/Darwin path remains the
+;; signal-mask allocation or libc calls.  Stage 35 gives the timerfd relative
+;; helper the same early Windows guard.  The Linux/Darwin path remains the
 ;; default until a real Windows standalone runtime selects `system-type' =
 ;; `windows-nt'.
 
@@ -2459,9 +2460,11 @@ list (INT-S INT-NS VAL-S VAL-NS)."
   "Schedule a one-shot relative timer of MS milliseconds on FD.
 Equivalent to `nelisp-os-timerfd-settime' with FLAGS=0, interval=0,
 value=MS-as-(sec . nsec)."
-  (let* ((sec  (/ ms 1000))
-         (nsec (* (mod ms 1000) 1000000)))
-    (nelisp-os-timerfd-settime fd 0 0 0 sec nsec)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (let* ((sec  (/ ms 1000))
+           (nsec (* (mod ms 1000) 1000000)))
+      (nelisp-os-timerfd-settime fd 0 0 0 sec nsec))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 60 Phase 4.4 — SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6

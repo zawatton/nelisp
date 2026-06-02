@@ -746,6 +746,7 @@
           (lambda () (nelisp-os-timerfd-create 0 0))
           (lambda () (nelisp-os-timerfd-settime 3 0 0 0 1 0))
           (lambda () (nelisp-os-timerfd-gettime 3))
+          (lambda () (nelisp-os-timerfd-set-relative-ms 3 10))
           (lambda () (nelisp-os-bind-unix-abstract 3 "x"))
           (lambda () (nelisp-os-connect-unix-abstract 3 "x"))
           (lambda () (nelisp-os-socketpair
