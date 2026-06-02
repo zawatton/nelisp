@@ -26,12 +26,15 @@
 ;;
 ;; Doc 138 Stage 5 starts the Windows branch: stdout/stderr writes can route
 ;; through kernel32 HANDLE I/O (`GetStdHandle' + `WriteFile') instead of POSIX
-;; integer fd `write'.  The Linux/Darwin path remains the default until a real
-;; Windows standalone runtime selects `system-type' = `windows-nt'.
+;; integer fd `write'.  Stage 6 adds stdin reads through `ReadFile'.  The
+;; Linux/Darwin path remains the default until a real Windows standalone runtime
+;; selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
 (require 'nelisp-stdlib-os-int-helpers)
+
+(define-error 'nelisp-os-error "NeLisp OS error")
 
 ;; ---------------------------------------------------------------------------
 ;; Platform detect — set once, drives all branches below.
@@ -151,6 +154,32 @@ placeholder errno value so callers still get the project-local OS condition."
    (nelisp-os--windows-get-std-handle fd)
    str))
 
+(defun nelisp-os--windows-read-handle (handle nbytes)
+  "Read up to NBYTES bytes from Windows HANDLE using kernel32!ReadFile."
+  (let ((buf (nelisp-os--alloc nbytes))
+        (read-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-u32 read-buf 0 0)
+          (let ((ok (nelisp-os--libc-call
+                     "kernel32" "ReadFile"
+                     [:sint32 :pointer :pointer :uint32 :pointer :pointer]
+                     handle buf nbytes read-buf 0)))
+            (if (= ok 0)
+                (nelisp-os--windows-ffi-error-signal)
+              (let ((nread (nelisp-os-read-u32 read-buf 0)))
+                (if (= nread 0)
+                    ""
+                  (nelisp-os--read-bytes buf nread))))))
+      (nelisp-os--free read-buf)
+      (nelisp-os--free buf))))
+
+(defun nelisp-os--windows-read-std-fd (fd nbytes)
+  "Read up to NBYTES bytes from a Windows standard FD using HANDLE I/O."
+  (nelisp-os--windows-read-handle
+   (nelisp-os--windows-get-std-handle fd)
+   nbytes))
+
 (defun nelisp-os-open (path flags mode)
   "POSIX open(2) — return integer fd, or signal `nelisp-os-error'.
 PATH is a string, FLAGS / MODE are integers."
@@ -169,8 +198,14 @@ PATH is a string, FLAGS / MODE are integers."
   ;; Linux x86_64 / aarch64: ssize_t=:sint64, size_t=:uint64.
   (when (< nbytes 0)
     (signal 'nelisp-os-error (list 22)))     ; EINVAL
-  (if (= nbytes 0)
-      ""
+  (cond
+   ((= nbytes 0) "")
+   ((and (nelisp-os--windows-p)
+         (= fd nelisp-os-STDIN))
+    (nelisp-os--windows-read-std-fd fd nbytes))
+   ((nelisp-os--windows-p)
+    (signal 'nelisp-os-error (list 9))) ; EBADF until regular HANDLE fds land.
+   (t
     (let ((buf (nelisp-os--alloc nbytes)))
       (unwind-protect
           (let ((r (nelisp-os--libc-call "libc" "read"
@@ -180,7 +215,7 @@ PATH is a string, FLAGS / MODE are integers."
              ((= r -1) (nelisp-os--ffi-errno-signal))
              ((= r 0)  "")
              (t        (nelisp-os--read-bytes buf r))))
-        (nelisp-os--free buf)))))
+        (nelisp-os--free buf))))))
 
 (defun nelisp-os-write (fd str)
   "POSIX write(2) — write the bytes of STR to FD, return byte count
@@ -191,9 +226,13 @@ sequences; we route through `nelisp-os--alloc' / `-write-bytes' so the
 exact bytes (= `string-bytes' worth) reach libc.write — matching old
 Path A's `as_bytes()' semantics rather than the broken Path B that
 went through `:string' (= CString::new, NUL-rejecting)."
-  (if (and (nelisp-os--windows-p)
-           (nelisp-os--windows-std-handle-selector fd))
-      (nelisp-os--windows-write-std-fd fd str)
+  (cond
+   ((and (nelisp-os--windows-p)
+         (nelisp-os--windows-std-handle-selector fd))
+    (nelisp-os--windows-write-std-fd fd str))
+   ((nelisp-os--windows-p)
+    (signal 'nelisp-os-error (list 9))) ; EBADF until regular HANDLE fds land.
+   (t
     (let* ((nbytes (string-bytes str))
            (buf    (nelisp-os--alloc nbytes)))
       (unwind-protect
@@ -206,7 +245,7 @@ went through `:string' (= CString::new, NUL-rejecting)."
               (if (= r -1)
                   (nelisp-os--ffi-errno-signal)
                 r)))
-        (nelisp-os--free buf)))))
+        (nelisp-os--free buf))))))
 
 (defun nelisp-os-close (fd)
   "POSIX close(2) — close FD, return nil or signal `nelisp-os-error'."

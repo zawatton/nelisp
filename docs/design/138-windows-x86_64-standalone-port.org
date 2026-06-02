@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-5-STDLIB-WINDOWS-WRITE-BRANCH-SHIPPED
+#+STATUS: STAGE-6-STDLIB-WINDOWS-STDIO-HANDLE-BRANCH-SHIPPED
 
 * Status
 
-- *State*: STAGE 5 stdlib Windows write branch SHIPPED 2026-06-02.  The
+- *State*: STAGE 6 stdlib Windows stdio HANDLE branch SHIPPED 2026-06-02.  The
   first de-risk slices now exist in =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
   import directory for =KERNEL32.dll!ExitProcess= and entry code that exits
@@ -18,7 +18,8 @@
   a short message from =.rdata= to stdout using HANDLE I/O, and exits 42 on
   success / 1 on failure.  =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
-  =kernel32!WriteFile= instead of POSIX integer-fd =libc.write=.
+  =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
+  =kernel32!ReadFile= instead of POSIX integer-fd =libc.read/write=.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -28,8 +29,10 @@
   =WriteFile=, and decode the expected Win64 register setup including the
   fifth =WriteFile= stack argument.  =test/nelisp-stdlib-os-test.el= mocks the
   runtime FFI/memory boundary and verifies the Windows std fd selector mapping,
-  stdout/stderr =GetStdHandle= selectors, =WriteFile= argument shape, buffer
-  cleanup, and non-Windows fallback to =libc.write=.
+  stdin/stdout/stderr =GetStdHandle= selectors, =ReadFile= / =WriteFile=
+  argument shape, buffer cleanup, catchable =nelisp-os-error=, non-Windows
+  fallbacks to =libc.read/write=, and that unsupported Windows non-std writes do
+  not silently fall through to POSIX libc.
 - *Execution status*: real Windows execution is still pending and must be the
   next external validation step.  This Linux host does not have =wine=.  The
   real-machine smoke entry is now =tools/windows-selfhost-test.ps1=; it builds
@@ -45,11 +48,11 @@
 - *Scope*: Identify the bottlenecks that block running the *standalone
   self-host binary* natively on Windows x86_64, rank them, and give a
   de-risk-first staged plan modeled on the macOS port.
-- *Non-goal*: Production standalone wiring.  Stage 1-5 prove the PE EXE
+- *Non-goal*: Production standalone wiring.  Stage 1-6 prove the PE EXE
   container, import-table path, =VirtualAlloc= call shape, first arena metadata
-  write path, HANDLE stdout write path, and first stdlib Windows write branch;
-  they do not yet replace the Linux standalone allocator or the rest of the
-  stdlib OS surface.
+  write path, HANDLE stdout write path, and first stdlib Windows stdio read/write
+  branch; they do not yet replace the Linux standalone allocator, implement
+  regular Windows file HANDLE tables, or cover the rest of the stdlib OS surface.
 
 * TL;DR
 
@@ -180,9 +183,12 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   imports =GetStdHandle= / =WriteFile= and emits a Win64 5-arg call shape for
   stdout output through a HANDLE.  =nelisp-stdlib-os.el= now connects the write
   abstraction for Windows stdout/stderr to =GetStdHandle= + =WriteFile=, with
-  host-side ERT coverage in =test/nelisp-stdlib-os-test.el=.  *Next*: execute
-  on real Windows, then extend this branch to stdin/read, regular file handles,
-  and path conversion.
+  host-side ERT coverage in =test/nelisp-stdlib-os-test.el=.  *Stdlib stdin
+  progress 2026-06-02*: Windows stdin =nelisp-os-read= now routes through
+  =GetStdHandle= + =ReadFile=, and Windows non-std writes no longer fall through
+  to POSIX =libc.write=.  *Next*: execute on real Windows, then extend this
+  branch to regular file handles, =CreateFileW= / =CloseHandle=, and path
+  conversion.
 
 * Tier 3 — relatively easy / non-blockers (good news)
 
@@ -214,8 +220,9 @@ largest uncertainty (B1 + B2) first.
    =writefile-stdout-exit-42= imports =GetStdHandle= / =WriteFile=, uses a
    real HANDLE path, and exercises Win64's fifth stack argument.  *Stdlib write
    branch SHIPPED 2026-06-02*: Windows stdout/stderr =nelisp-os-write= calls
-   route through the same HANDLE model.
-4. Execute the Stage 1-5 smokes on real Windows / Wine, then wire win64 ABI emit
+   route through the same HANDLE model.  *Stdlib stdin read branch SHIPPED
+   2026-06-02*: Windows stdin =nelisp-os-read= routes through =ReadFile=.
+4. Execute the Stage 1-6 smokes on real Windows / Wine, then wire win64 ABI emit
    through all ops (B5).  *Real-machine script READY 2026-06-02*:
    =tools/windows-selfhost-test.ps1= drives =scripts/nelisp-windows-build.el=
    to emit =minimal-exit-42=, =virtualalloc-exit-42=,
@@ -242,7 +249,7 @@ writer (import directory).  That single coupling (B1+B2) is the whole game.
 - =lisp/nelisp-asm-x86_64.el= — =('sysv | 'win64)= ABI slot.
 - =lisp/nelisp-phase47-compiler.el:149= — =--abi= dynvar (sysv/win64).
 - =lisp/nelisp-stdlib-os.el= — Linux/Darwin POSIX-like path plus Windows
-  stdout/stderr HANDLE write branch.
+  stdin/stdout/stderr HANDLE read/write branch.
 - =scripts/nelisp-windows-build.el= / =tools/windows-selfhost-test.ps1= —
   real-machine Windows PE32+ smoke build/run harness.
 - =lisp/nelisp-crt0.el= / =nelisp-crt0-arm64.el= — ELF _start entry.
