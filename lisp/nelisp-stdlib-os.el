@@ -84,6 +84,8 @@
 ;; socket option helpers.
 ;; Stage 106 maps `IPPROTO_IP' / `IP_RECVTTL' and `IP_RECVTOS' through the
 ;; Windows int-valued socket option helpers.
+;; Stage 107 maps `IPPROTO_UDP' int-valued options through the Windows socket
+;; option helpers.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -289,6 +291,10 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-IPV6-MULTICAST-HOPS 10)
 (defconst nelisp-os-WIN-IPV6-MULTICAST-LOOP 11)
 (defconst nelisp-os-WIN-IPV6-V6ONLY 27)
+(defconst nelisp-os-WIN-UDP-NOCHECKSUM 1)
+(defconst nelisp-os-WIN-UDP-SEND-MSG-SIZE 2)
+(defconst nelisp-os-WIN-UDP-RECV-MAX-COALESCED-SIZE 3)
+(defconst nelisp-os-WIN-UDP-CHECKSUM-COVERAGE 20)
 (defconst nelisp-os-WIN-TCP-NODELAY #x0001)
 (defconst nelisp-os-WIN-FIONBIO #x8004667e)
 
@@ -1977,6 +1983,10 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-IPV6-MULTICAST-LOOP 19)
 (defconst nelisp-os-IPV6-UNICAST-IF 76)
 (defconst nelisp-os-IPV6-V6ONLY 26)
+(defconst nelisp-os-UDP-NOCHECKSUM 1)
+(defconst nelisp-os-UDP-SEND-MSG-SIZE 2)
+(defconst nelisp-os-UDP-RECV-MAX-COALESCED-SIZE 3)
+(defconst nelisp-os-UDP-CHECKSUM-COVERAGE 20)
 (defconst nelisp-os-TCP-NODELAY   1)
 
 ;; ----- Poll events -----
@@ -2405,6 +2415,7 @@ host byte order."
    ((= level nelisp-os-SOL-SOCKET) nelisp-os-WIN-SOL-SOCKET)
    ((= level nelisp-os-IPPROTO-IP) nelisp-os-WIN-IPPROTO-IP)
    ((= level nelisp-os-IPPROTO-TCP) nelisp-os-IPPROTO-TCP)
+   ((= level nelisp-os-IPPROTO-UDP) nelisp-os-IPPROTO-UDP)
    ((= level nelisp-os-IPPROTO-IPV6) nelisp-os-WIN-IPPROTO-IPV6)
    (t (nelisp-os--windows-unsupported))))
 
@@ -2451,6 +2462,18 @@ When GETTER-P is non-nil, include get-only options."
    ((and (= level nelisp-os-IPPROTO-TCP)
          (= optname nelisp-os-TCP-NODELAY))
     nelisp-os-WIN-TCP-NODELAY)
+   ((and (= level nelisp-os-IPPROTO-UDP)
+         (= optname nelisp-os-UDP-NOCHECKSUM))
+    nelisp-os-WIN-UDP-NOCHECKSUM)
+   ((and (= level nelisp-os-IPPROTO-UDP)
+         (= optname nelisp-os-UDP-SEND-MSG-SIZE))
+    nelisp-os-WIN-UDP-SEND-MSG-SIZE)
+   ((and (= level nelisp-os-IPPROTO-UDP)
+         (= optname nelisp-os-UDP-RECV-MAX-COALESCED-SIZE))
+    nelisp-os-WIN-UDP-RECV-MAX-COALESCED-SIZE)
+   ((and (= level nelisp-os-IPPROTO-UDP)
+         (= optname nelisp-os-UDP-CHECKSUM-COVERAGE))
+    nelisp-os-WIN-UDP-CHECKSUM-COVERAGE)
    ((and (= level nelisp-os-IPPROTO-IP)
          (= optname nelisp-os-IP-HDRINCL))
     nelisp-os-WIN-IP-HDRINCL)

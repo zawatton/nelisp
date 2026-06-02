@@ -2669,6 +2669,63 @@
                                3000
                                4))))))
 
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-udp-options ()
+  "Windows IPPROTO_UDP int options translate through Winsock setsockopt."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-UDP nelisp-os-UDP-NOCHECKSUM 1)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-UDP nelisp-os-UDP-SEND-MSG-SIZE 1200)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-UDP
+                    nelisp-os-UDP-RECV-MAX-COALESCED-SIZE 1400)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-UDP
+                    nelisp-os-UDP-CHECKSUM-COVERAGE 20)
+                   0))))
+    (should (equal (nreverse writes)
+                   '((3000 0 1)
+                     (3000 0 1200)
+                     (3000 0 1400)
+                     (3000 0 20))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-NOCHECKSUM 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-SEND-MSG-SIZE 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-RECV-MAX-COALESCED-SIZE
+                                3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-CHECKSUM-COVERAGE
+                                3000 4)))))
+    (should (equal freed '(3000 3000 3000 3000)))))
+
 (ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-ip-ttl ()
   "Windows IP_TTL translates through Winsock setsockopt."
   (let ((call nil)
@@ -3332,6 +3389,67 @@
                                nelisp-os-WIN-TCP-NODELAY
                                3000
                                4000))))))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-udp-options ()
+  "Windows IPPROTO_UDP int options translate through Winsock getsockopt."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr _off)
+                 (cdr (assq ptr '((3000 . 1)
+                                  (5000 . 1200)
+                                  (7000 . 1400)
+                                  (9000 . 20))))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-UDP nelisp-os-UDP-NOCHECKSUM)
+                   1))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-UDP nelisp-os-UDP-SEND-MSG-SIZE)
+                   1200))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-UDP
+                    nelisp-os-UDP-RECV-MAX-COALESCED-SIZE)
+                   1400))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-UDP
+                    nelisp-os-UDP-CHECKSUM-COVERAGE)
+                   20))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-NOCHECKSUM 3000 4000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-SEND-MSG-SIZE 5000 6000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-RECV-MAX-COALESCED-SIZE
+                                7000 8000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-IPPROTO-UDP
+                                nelisp-os-WIN-UDP-CHECKSUM-COVERAGE
+                                9000 10000)))))
+    (should (equal (sort freed #'<)
+                   '(3000 4000 5000 6000 7000 8000 9000 10000)))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-ip-ttl ()
   "Windows IP_TTL translates through Winsock getsockopt."

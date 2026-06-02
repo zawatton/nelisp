@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-106-WINDOWS-IP-RECV-METADATA-SOCKOPTS
+#+STATUS: STAGE-107-WINDOWS-UDP-SOCKOPTS
 
 * Status
 
-- *State*: STAGE 106 Windows IP recv metadata sockopts
+- *State*: STAGE 107 Windows UDP sockopts
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -204,6 +204,10 @@
   =setsockopt= / =getsockopt=, using Windows-specific option numbers while
   keeping the POSIX-like public constants separate from the Winsock
   translation.
+  Windows int-valued socket option helpers now also translate =IPPROTO_UDP=
+  options =UDP_NOCHECKSUM=, =UDP_SEND_MSG_SIZE=,
+  =UDP_RECV_MAX_COALESCED_SIZE=, and =UDP_CHECKSUM_COVERAGE= through Winsock
+  =setsockopt= / =getsockopt=.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -560,6 +564,9 @@
   Stage 106 coverage verifies Windows =setsockopt-int= / =getsockopt-int=
   translate =IPPROTO_IP= / =IP_RECVTTL= and =IP_RECVTOS= through Winsock with
   the Windows option numbers.
+  Stage 107 coverage verifies Windows =setsockopt-int= / =getsockopt-int=
+  translate =IPPROTO_UDP= level options through Winsock with the Windows
+  option numbers.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1040,6 +1047,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock IP recv metadata socket option progress 2026-06-03*:
   =nelisp-os-setsockopt-int= / =getsockopt-int= now translate
   =IPPROTO_IP= / =IP_RECVTTL= and =IP_RECVTOS= through Winsock.
+  *Windows Winsock UDP socket option progress 2026-06-03*:
+  =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =IPPROTO_UDP=
+  int-valued options through Winsock.
   *Windows fstat file information progress 2026-06-03*: disk HANDLE-backed
   =nelisp-os-fstat= now decodes =BY_HANDLE_FILE_INFORMATION= for mode, size,
   timestamps, link count, file index, and volume serial number.
@@ -1322,6 +1332,10 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock IP recv metadata options SHIPPED 2026-06-03*: int-valued
    socket option helpers now support =IPPROTO_IP= / =IP_RECVTTL= and
    =IP_RECVTOS= set/get on Windows, translating to the Winsock option numbers.
+   *Windows Winsock UDP options SHIPPED 2026-06-03*: int-valued socket
+   option helpers now support =IPPROTO_UDP= / =UDP_NOCHECKSUM=,
+   =UDP_SEND_MSG_SIZE=, =UDP_RECV_MAX_COALESCED_SIZE=, and
+   =UDP_CHECKSUM_COVERAGE= set/get on Windows.
    *Windows fstat file information SHIPPED 2026-06-03*: disk HANDLE-backed
    =nelisp-os-fstat= now uses =GetFileInformationByHandle= to return richer
    positional stat fields, including directory mode, timestamps, link count,
@@ -1485,7 +1499,9 @@ largest uncertainty (B1 + B2) first.
    =IP_UNICAST_IF= / =IP_MULTICAST_IF= /
    =IP_MULTICAST_TTL= / =IP_MULTICAST_LOOP= / =IPV6_UNICAST_HOPS= /
    =IPV6_UNICAST_IF= / =IPV6_MULTICAST_IF= / =IPV6_MULTICAST_HOPS= /
-   =IPV6_MULTICAST_LOOP= / =IPV6_V6ONLY=, and
+   =IPV6_MULTICAST_LOOP= / =IPV6_V6ONLY=, UDP options including
+   =UDP_NOCHECKSUM= / =UDP_SEND_MSG_SIZE= /
+   =UDP_RECV_MAX_COALESCED_SIZE= / =UDP_CHECKSUM_COVERAGE=, and
    loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=, accepted
    socket nonblock flag tracking, and socket close-on-exec support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
