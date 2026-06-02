@@ -476,6 +476,82 @@
                           [:uint32 :pointer]
                           (list #x55667788)))))))
 
+(ert-deftest nelisp-stdlib-os-dup2-windows-duplicates-regular-fd ()
+  "Windows dup2 duplicates a HANDLE and installs it in the fd table."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 6)
+        (nelisp-os--windows-fd-table '((5 . #xcccc)
+                                       (3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 5) 5))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess"
+                          [:pointer]
+                          nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xcccc)))))
+    (should (equal nelisp-os--windows-fd-table '((5 . #xbbbb) (3 . #xaaaa))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-dup2-windows-can-target-stdout ()
+  "Windows dup2 to stdout uses SetStdHandle for the duplicated HANDLE."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "SetStdHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 nelisp-os-STDOUT)
+                   nelisp-os-STDOUT))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess"
+                          [:pointer]
+                          nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "SetStdHandle"
+                          [:sint32 :sint32 :pointer]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE #xbbbb)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

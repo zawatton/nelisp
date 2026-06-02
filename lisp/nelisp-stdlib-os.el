@@ -35,8 +35,9 @@
 ;; `ExitProcess'.  Stage 12 maps `pipe' to `CreatePipe' and stores both HANDLEs
 ;; in the Windows fd table.  Stage 13 maps `lseek' to `SetFilePointerEx'.
 ;; Stage 14 maps the minimal `fstat' shape to `GetFileType' / `GetFileSizeEx'.
-;; The Linux/Darwin path remains the default until a real Windows standalone
-;; runtime selects `system-type' = `windows-nt'.
+;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  The
+;; Linux/Darwin path remains the default until a real Windows standalone runtime
+;; selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -115,6 +116,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-FILE-TYPE-DISK    1)
 (defconst nelisp-os-WIN-FILE-TYPE-CHAR    2)
 (defconst nelisp-os-WIN-FILE-TYPE-PIPE    3)
+
+;; Windows DuplicateHandle constants.
+(defconst nelisp-os-WIN-DUPLICATE-SAME-ACCESS #x2)
 
 (defvar nelisp-os--windows-next-fd 3
   "Next POSIX-like fd number for Windows HANDLE table entries.")
@@ -201,6 +205,21 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
   (if (nelisp-os--windows-std-handle-selector fd)
       (nelisp-os--windows-get-std-handle fd)
     (nelisp-os--windows-fd-handle fd)))
+
+(defun nelisp-os--windows-fd-install (fd handle)
+  "Install HANDLE at POSIX-like FD, replacing any existing HANDLE."
+  (let ((cell (assq fd nelisp-os--windows-fd-table)))
+    (when cell
+      (let ((ok (nelisp-os--libc-call
+                 "kernel32" "CloseHandle" [:sint32 :pointer] (cdr cell))))
+        (if (= ok 0)
+            (nelisp-os--windows-ffi-error-signal)))
+      (setq nelisp-os--windows-fd-table
+            (delq cell nelisp-os--windows-fd-table)))
+    (push (cons fd handle) nelisp-os--windows-fd-table)
+    (when (>= fd nelisp-os--windows-next-fd)
+      (setq nelisp-os--windows-next-fd (1+ fd)))
+    fd))
 
 (defun nelisp-os--windows-open-access (flags)
   "Translate POSIX-like FLAGS to a CreateFileW desired-access mask."
@@ -629,6 +648,47 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
             (nelisp-os--free size-buf)))
       (nelisp-os--windows-stat-list 0 0))))
 
+(defun nelisp-os--windows-dup2 (oldfd newfd)
+  "Windows implementation of `nelisp-os-dup2' via DuplicateHandle."
+  (when (< newfd 0)
+    (signal 'nelisp-os-error (list 9))) ; EBADF
+  (if (= oldfd newfd)
+      newfd
+    (let ((target-handle-buf (nelisp-os--alloc 8)))
+      (unwind-protect
+          (let* ((source-handle (nelisp-os--windows-handle-for-fd oldfd))
+                 (current-process
+                  (nelisp-os--libc-call "kernel32" "GetCurrentProcess" [:pointer]))
+                 (ok (nelisp-os--libc-call
+                      "kernel32" "DuplicateHandle"
+                      [:sint32 :pointer :pointer :pointer :pointer
+                       :uint32 :sint32 :uint32]
+                      current-process
+                      source-handle
+                      current-process
+                      target-handle-buf
+                      0
+                      1
+                      nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))
+            (if (= ok 0)
+                (nelisp-os--windows-ffi-error-signal)
+              (let ((target-handle (nelisp-os-read-i64 target-handle-buf 0))
+                    (selector (nelisp-os--windows-std-handle-selector newfd)))
+                (if selector
+                    (let ((set-ok (nelisp-os--libc-call
+                                   "kernel32" "SetStdHandle"
+                                   [:sint32 :sint32 :pointer]
+                                   selector target-handle)))
+                      (if (= set-ok 0)
+                          (progn
+                            (nelisp-os--libc-call
+                             "kernel32" "CloseHandle"
+                             [:sint32 :pointer] target-handle)
+                            (nelisp-os--windows-ffi-error-signal))
+                        newfd))
+                  (nelisp-os--windows-fd-install newfd target-handle)))))
+        (nelisp-os--free target-handle-buf)))))
+
 (defun nelisp-os-fstat (fd)
   "POSIX fstat(2) — return positional list of stat fields, or signal
 `nelisp-os-error'.  Order matches `nelisp-os-stat-*' accessors below
@@ -697,7 +757,9 @@ mapping failure (raw kernel returns -errno for failed mmap)."
 
 (defun nelisp-os-dup2 (oldfd newfd)
   "POSIX dup2(2) — duplicate OLDFD onto NEWFD; returns NEWFD."
-  (nelisp-os--check-errno (nelisp--syscall 'dup2 oldfd newfd)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-dup2 oldfd newfd)
+    (nelisp-os--check-errno (nelisp--syscall 'dup2 oldfd newfd))))
 
 (defun nelisp-os-pipe ()
   "POSIX pipe(2) — return cons (READ-FD . WRITE-FD), or signal
