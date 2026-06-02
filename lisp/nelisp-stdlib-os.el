@@ -56,8 +56,10 @@
 ;; AF_UNIX bind / connect / accept through Winsock.  Stage 32 makes Linux-only
 ;; AF_UNIX abstract namespace / fd-passing / peercred helpers reject Windows
 ;; before libc allocation.  Stage 33 maps getsockname / getpeername wrappers to
-;; Winsock.  The Linux/Darwin path remains the default until a real Windows
-;; standalone runtime selects `system-type' = `windows-nt'.
+;; Winsock.  Stage 34 makes `sigprocmask' reject Windows before POSIX
+;; signal-mask allocation or libc calls.  The Linux/Darwin path remains the
+;; default until a real Windows standalone runtime selects `system-type' =
+;; `windows-nt'.
 
 ;;; Code:
 
@@ -2392,20 +2394,22 @@ no events are ready (only on FD opened `SFD-NONBLOCK')."
   "POSIX pthread_sigmask(3) — apply MASK with HOW (= `SIG-BLOCK' /
 `SIG-UNBLOCK' / `SIG-SETMASK').  Returns the previous mask as a
 list of signal numbers."
-  (let ((new-buf (nelisp-os--alloc nelisp-os--sigset-len))
-        (old-buf (nelisp-os--alloc nelisp-os--sigset-len)))
-    (unwind-protect
-        (progn
-          (nelisp-os--encode-sigset new-buf mask)
-          (let ((r (nelisp-os--libc-call "libc" "pthread_sigmask"
-                                [:sint32 :sint32 :pointer :pointer]
-                                how new-buf old-buf)))
-            ;; pthread_sigmask returns errno directly (= 0 on success).
-            (if (/= r 0)
-                (signal 'nelisp-os-error (list r))
-              (nelisp-os--decode-sigset old-buf))))
-      (nelisp-os--free new-buf)
-      (nelisp-os--free old-buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-unsupported)
+    (let ((new-buf (nelisp-os--alloc nelisp-os--sigset-len))
+          (old-buf (nelisp-os--alloc nelisp-os--sigset-len)))
+      (unwind-protect
+          (progn
+            (nelisp-os--encode-sigset new-buf mask)
+            (let ((r (nelisp-os--libc-call "libc" "pthread_sigmask"
+                                  [:sint32 :sint32 :pointer :pointer]
+                                  how new-buf old-buf)))
+              ;; pthread_sigmask returns errno directly (= 0 on success).
+              (if (/= r 0)
+                  (signal 'nelisp-os-error (list r))
+                (nelisp-os--decode-sigset old-buf))))
+        (nelisp-os--free new-buf)
+        (nelisp-os--free old-buf)))))
 
 ;; ----- timerfd wrappers -----
 

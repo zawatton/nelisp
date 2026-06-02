@@ -741,6 +741,8 @@
           (lambda () (nelisp-os-eventfd 0 0))
           (lambda () (nelisp-os-signalfd -1 (list nelisp-os-SIGTERM) 0))
           (lambda () (nelisp-os-signalfd-read 3 1))
+          (lambda () (nelisp-os-sigprocmask nelisp-os-SIG-BLOCK
+                                            (list nelisp-os-SIGTERM)))
           (lambda () (nelisp-os-timerfd-create 0 0))
           (lambda () (nelisp-os-timerfd-settime 3 0 0 0 1 0))
           (lambda () (nelisp-os-timerfd-gettime 3))
