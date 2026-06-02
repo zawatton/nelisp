@@ -90,6 +90,17 @@ build_run cons '(seq
       (ptr-read-u64 8589934848 8)))
   (exit (run)))' 7
 
+# sexp readers: make Int(42), then read its tag (= 2 = SEXP_TAG_INT) and
+# its payload (= 42) -> 2*100 + 42 = 242.  Exercises sexp-tag (LDRB) and
+# sexp-int-unwrap (LDR payload).
+build_run sexp '(seq
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (sexp-int-make 8589934656 42)
+      (+ (* (sexp-tag 8589934656) 100) (sexp-int-unwrap 8589934656))))
+  (exit (run)))' 242
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0
