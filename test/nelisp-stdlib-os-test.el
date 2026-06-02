@@ -2307,10 +2307,6 @@
           (lambda () (nelisp-os-signalfd-read 3 1))
           (lambda () (nelisp-os-sigprocmask nelisp-os-SIG-BLOCK
                                             (list nelisp-os-SIGTERM)))
-          (lambda () (nelisp-os-timerfd-create 0 0))
-          (lambda () (nelisp-os-timerfd-settime 3 0 0 0 1 0))
-          (lambda () (nelisp-os-timerfd-gettime 3))
-          (lambda () (nelisp-os-timerfd-set-relative-ms 3 10))
           (lambda () (nelisp-os-bind-unix-abstract 3 "x"))
           (lambda () (nelisp-os-connect-unix-abstract 3 "x"))
           (lambda () (nelisp-os-sendmsg-fds 3 (list 4) "x"))
@@ -2564,6 +2560,173 @@
     (should-not nelisp-os--windows-fd-flags-table)
     (should-not nelisp-os--windows-eventfd-table)
     (should-not nelisp-os--windows-eventfd-fd-flags-table)))
+
+(ert-deftest nelisp-stdlib-os-timerfd-windows-create-uses-waitable-timer ()
+  "Windows timerfd_create creates a waitable timer HANDLE-backed fd."
+  (let ((calls nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-timerfd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "CreateWaitableTimerW") #xaaaa)
+                  ((equal fn "SetHandleInformation") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-timerfd-create
+                    nelisp-os-CLOCK-MONOTONIC
+                    (logior nelisp-os-TFD-NONBLOCK
+                            nelisp-os-TFD-CLOEXEC))
+                   3))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . timerfd))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   '((3 . [0 0 nil]))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateWaitableTimerW"
+                          [:pointer :pointer :sint32 :pointer]
+                          (list 0 0 0))
+                    (list "kernel32" "SetHandleInformation"
+                          [:sint32 :pointer :uint32 :uint32]
+                          (list #xaaaa
+                                nelisp-os-WIN-HANDLE-FLAG-INHERIT
+                                0)))))))
+
+(ert-deftest nelisp-stdlib-os-timerfd-windows-settime-gettime-and-read ()
+  "Windows timerfd settime/gettime/read use a waitable timer HANDLE."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (ticks '(1000 1200))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . timerfd)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-timerfd-table '((3 . [0 0 nil]))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetTickCount64") (pop ticks))
+                  ((equal fn "SetWaitableTimer") 1)
+                  ((equal fn "WaitForSingleObject")
+                   nelisp-os-WIN-WAIT-OBJECT-0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-timerfd-set-relative-ms 3 2500)
+                       '(0 0 0 0)))
+        (should (equal (nelisp-os-timerfd-gettime 3)
+                       '(0 0 2 300000000)))
+        (should (= (nelisp-os--u64le-from-string (nelisp-os-read 3 8)) 1))))
+    (should (equal nelisp-os--windows-timerfd-table
+                   '((3 . [0 0 nil]))))
+    (should (equal writes '((3000 0 -25000000))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "SetWaitableTimer"
+                          [:sint32 :pointer :pointer :sint32 :pointer :pointer
+                           :sint32]
+                          (list #xaaaa 3000 0 0 0 0))
+                    (list "kernel32" "GetTickCount64" [:uint64] nil)
+                    (list "kernel32" "GetTickCount64" [:uint64] nil)
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xaaaa 0)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-timerfd-windows-poll-uses-waitforsingleobject ()
+  "Windows poll reports timerfd readiness from WaitForSingleObject."
+  (let ((calls nil)
+        (wait-results (list nelisp-os-WIN-WAIT-TIMEOUT
+                            nelisp-os-WIN-WAIT-TIMEOUT
+                            nelisp-os-WIN-WAIT-OBJECT-0
+                            nelisp-os-WIN-WAIT-OBJECT-0))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . timerfd)))
+        (nelisp-os--windows-timerfd-table '((3 . [0 1000 t]))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForSingleObject") (pop wait-results))
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
+                       (list (cons 3 0))))
+        (should (equal (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
+                       (list (cons 3 nelisp-os-POLLIN))))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xaaaa 0))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xaaaa 0))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xaaaa 0))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xaaaa 0)))))))
+
+(ert-deftest nelisp-stdlib-os-timerfd-windows-validates-and-cleans-up ()
+  "Windows timerfd validates arguments and removes timer state on close."
+  (let ((calls nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-timerfd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "CreateWaitableTimerW") #xaaaa)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-timerfd-create
+                       nelisp-os-CLOCK-REALTIME-ALARM 0)
+                      :type 'nelisp-os-error)
+        (should-error (nelisp-os-timerfd-create
+                       nelisp-os-CLOCK-MONOTONIC #x40000000)
+                      :type 'nelisp-os-error)
+        (should (= (nelisp-os-timerfd-create nelisp-os-CLOCK-MONOTONIC 0) 3))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-SETFL
+                                    nelisp-os-O-NONBLOCK)
+                   0))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should-error (nelisp-os-read 3 4) :type 'nelisp-os-error)
+        (should-error (nelisp-os-write 3 "x") :type 'nelisp-os-error)
+        (should-error (nelisp-os-lseek 3 0 nelisp-os-SEEK-SET)
+                      :type 'nelisp-os-error)
+        (should (= (nelisp-os-stat-mode (nelisp-os-fstat 3))
+                   nelisp-os--timerfd-stat-mode))
+        (should-not (nelisp-os-close 3))))
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should-not nelisp-os--windows-fd-flags-table)
+    (should-not nelisp-os--windows-timerfd-table)
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateWaitableTimerW"
+                          [:pointer :pointer :sint32 :pointer]
+                          (list 0 0 0))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xaaaa)))))))
 
 (ert-deftest nelisp-stdlib-os-socketpair-windows-uses-loopback-stream ()
   "Windows socketpair uses a temporary loopback listener and returns peers."

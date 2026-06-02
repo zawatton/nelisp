@@ -107,6 +107,7 @@
 ;; Stage 121 adds non-file behavior for Windows process fd compatibility.
 ;; Stage 122 preserves Windows process fd kind across dup2 / F_DUPFD.
 ;; Stage 123 adds payload-only Windows sendmsg/recvmsg compatibility.
+;; Stage 124 adds Windows waitable-timer backed timerfd compatibility.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -417,6 +418,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defvar nelisp-os--windows-eventfd-fd-flags-table nil
   "Alist mapping Windows eventfd-compatible fds to descriptor flags.")
 
+(defvar nelisp-os--windows-timerfd-table nil
+  "Alist mapping Windows timerfd-compatible fds to state vectors.")
+
 (defvar nelisp-os--windows-winsock-started-p nil
   "Non-nil after this process successfully calls WSAStartup.")
 
@@ -594,6 +598,13 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (setq nelisp-os--windows-eventfd-fd-flags-table
             (delq desc-cell nelisp-os--windows-eventfd-fd-flags-table)))))
 
+(defun nelisp-os--windows-timerfd-remove (fd)
+  "Remove Windows timerfd-specific state tracked for FD."
+  (let ((timer-cell (assq fd nelisp-os--windows-timerfd-table)))
+    (when timer-cell
+      (setq nelisp-os--windows-timerfd-table
+            (delq timer-cell nelisp-os--windows-timerfd-table)))))
+
 (defun nelisp-os--windows-fd-kind (fd)
   "Return the Windows resource kind for FD."
   (or (cdr (assq fd nelisp-os--windows-fd-kind-table))
@@ -647,6 +658,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
         (setq nelisp-os--windows-fd-flags-table
               (delq flag-cell nelisp-os--windows-fd-flags-table))))
     (nelisp-os--windows-eventfd-remove fd)
+    (nelisp-os--windows-timerfd-remove fd)
     (cdr cell)))
 
 (defun nelisp-os--windows-close-resource (handle kind)
@@ -688,6 +700,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
               (nelisp-os--windows-ffi-error-signal)
             (nelisp-os--windows-fd-set-kind fd nil)
             (nelisp-os--windows-fd-set-flags fd 0)
+            (nelisp-os--windows-timerfd-remove fd)
             nil))))))
 
 (defun nelisp-os--windows-install-std-fd (fd handle flags &optional kind)
@@ -711,6 +724,8 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
           (condition-case nil
               (nelisp-os--windows-close-resource old-handle old-kind)
             (nelisp-os-error nil)))
+        (nelisp-os--windows-eventfd-remove fd)
+        (nelisp-os--windows-timerfd-remove fd)
         (nelisp-os--windows-fd-set-kind fd kind)
         (nelisp-os--windows-fd-set-flags fd flags)
         fd))))
@@ -781,6 +796,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
           (setq nelisp-os--windows-fd-flags-table
                 (delq flag-cell nelisp-os--windows-fd-flags-table))))
       (nelisp-os--windows-eventfd-remove fd)
+      (nelisp-os--windows-timerfd-remove fd)
       (setq nelisp-os--windows-fd-table
             (delq cell nelisp-os--windows-fd-table)))
     (push (cons fd handle) nelisp-os--windows-fd-table)
@@ -1381,6 +1397,7 @@ the useful payload path when FDS is empty and reject real fd passing explicitly.
 (defconst nelisp-os--eventfd-max-counter (- (ash 1 64) 2))
 (defconst nelisp-os--eventfd-invalid-value (1- (ash 1 64)))
 (defconst nelisp-os--eventfd-stat-mode 384) ; 0o600
+(defconst nelisp-os--timerfd-stat-mode 384) ; 0o600
 (defconst nelisp-os--pidfd-stat-mode 448) ; 0o700
 
 (defun nelisp-os--u64le-string (value)
@@ -1467,6 +1484,9 @@ PATH is a string, FLAGS / MODE are integers."
   (cond
    ((= nbytes 0) "")
    ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'timerfd))
+    (nelisp-os--windows-read-timerfd fd nbytes))
+   ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'eventfd))
     (nelisp-os--windows-read-eventfd fd nbytes))
    ((and (nelisp-os--windows-p)
@@ -1505,6 +1525,10 @@ exact bytes (= `string-bytes' worth) reach libc.write — matching old
 Path A's `as_bytes()' semantics rather than the broken Path B that
  went through `:string' (= CString::new, NUL-rejecting)."
   (cond
+   ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'timerfd))
+    (nelisp-os--windows-timerfd-handle fd)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'eventfd))
     (nelisp-os--windows-write-eventfd fd str))
@@ -1794,6 +1818,9 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
    ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
     (nelisp-os--windows-eventfd-cell fd)
     0)
+   ((eq (nelisp-os--windows-fd-kind fd) 'timerfd)
+    (nelisp-os--windows-timerfd-handle fd)
+    (signal 'nelisp-os-error (list 29))) ; ESPIPE
    (t
     (let ((new-pos-buf (nelisp-os--alloc 8)))
       (unwind-protect
@@ -1921,6 +1948,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
    ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
     (nelisp-os--windows-eventfd-cell fd)
     (nelisp-os--windows-stat-list 0 nelisp-os--eventfd-stat-mode))
+   ((eq (nelisp-os--windows-fd-kind fd) 'timerfd)
+    (nelisp-os--windows-timerfd-handle fd)
+    (nelisp-os--windows-stat-list 0 nelisp-os--timerfd-stat-mode))
    ((eq (nelisp-os--windows-fd-kind fd) 'process)
     (nelisp-os--windows-processfd-handle fd)
     (nelisp-os--windows-stat-list 0 nelisp-os--pidfd-stat-mode))
@@ -1979,6 +2009,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
        (nelisp-os--windows-fd-flags oldfd)))
      (t
       (let ((kind (nelisp-os--windows-fd-kind oldfd))
+            (timer-state (and (eq (nelisp-os--windows-fd-kind oldfd) 'timerfd)
+                              (cdr (nelisp-os--windows-timerfd-cell oldfd))))
             (source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
             (target-handle-buf (nelisp-os--alloc 8)))
         (unwind-protect
@@ -2000,16 +2032,26 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                 (let ((target-handle (nelisp-os-read-i64 target-handle-buf 0))
                       (selector (nelisp-os--windows-std-handle-selector newfd)))
                   (if selector
-                      (nelisp-os--windows-install-std-fd
+                      (progn
+                        (nelisp-os--windows-install-std-fd
+                         newfd
+                         target-handle
+                         (nelisp-os--windows-fd-flags oldfd)
+                         kind)
+                        (when timer-state
+                          (push (cons newfd timer-state)
+                                nelisp-os--windows-timerfd-table))
+                        newfd)
+                    (progn
+                      (nelisp-os--windows-fd-install
                        newfd
                        target-handle
-                       (nelisp-os--windows-fd-flags oldfd)
-                       kind)
-                    (nelisp-os--windows-fd-install
-                     newfd
-                     target-handle
-                     kind
-                     (nelisp-os--windows-fd-flags oldfd))))))
+                       kind
+                       (nelisp-os--windows-fd-flags oldfd))
+                      (when timer-state
+                        (push (cons newfd timer-state)
+                              nelisp-os--windows-timerfd-table))
+                      newfd)))))
           (nelisp-os--free target-handle-buf)))))))
 
 (defun nelisp-os--windows-duplicate-fd (oldfd min-fd)
@@ -2036,6 +2078,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
         fd)))
    (t
     (let ((kind (nelisp-os--windows-fd-kind oldfd))
+          (timer-state (and (eq (nelisp-os--windows-fd-kind oldfd) 'timerfd)
+                            (cdr (nelisp-os--windows-timerfd-cell oldfd))))
           (source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
           (target-process (nelisp-os--libc-call
                            "kernel32" "GetCurrentProcess"
@@ -2055,11 +2099,15 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                      nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))
             (if (= ok 0)
                 (nelisp-os--windows-ffi-error-signal)
-              (nelisp-os--windows-fd-alloc-at-least
-               (nelisp-os-read-i64 target-buf 0)
-               min-fd
-               (nelisp-os--windows-fd-flags oldfd)
-               kind)))
+              (let ((fd (nelisp-os--windows-fd-alloc-at-least
+                         (nelisp-os-read-i64 target-buf 0)
+                         min-fd
+                         (nelisp-os--windows-fd-flags oldfd)
+                         kind)))
+                (when timer-state
+                  (push (cons fd timer-state)
+                        nelisp-os--windows-timerfd-table))
+                fd)))
         (nelisp-os--free target-buf))))))
 
 (defun nelisp-os--windows-getfd-flags (fd)
@@ -2131,6 +2179,12 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
       0)
      ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
       (nelisp-os--windows-eventfd-cell fd)
+      (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
+        (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+      (nelisp-os--windows-fd-set-flags fd arg)
+      0)
+     ((eq (nelisp-os--windows-fd-kind fd) 'timerfd)
+      (nelisp-os--windows-timerfd-handle fd)
       (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
         (signal 'nelisp-os-error (list 95))) ; ENOTSUP
       (nelisp-os--windows-fd-set-flags fd arg)
@@ -3189,6 +3243,9 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
          ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
           (when (/= (nelisp-os--windows-eventfd-revents fd (cdr entry)) 0)
             (setq ready-p t)))
+         ((eq (nelisp-os--windows-fd-kind fd) 'timerfd)
+          (when (/= (nelisp-os--windows-timerfd-revents fd (cdr entry)) 0)
+            (setq ready-p t)))
          ((eq (nelisp-os--windows-fd-kind fd) 'process)
           (when (/= (nelisp-os--windows-processfd-revents fd (cdr entry)) 0)
             (setq ready-p t)))
@@ -3208,6 +3265,8 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
            (cond
             ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
              (cons fd (nelisp-os--windows-eventfd-revents fd events)))
+            ((eq (nelisp-os--windows-fd-kind fd) 'timerfd)
+             (cons fd (nelisp-os--windows-timerfd-revents fd events)))
             ((eq (nelisp-os--windows-fd-kind fd) 'process)
              (cons fd (nelisp-os--windows-processfd-revents fd events)))
             ((eq (nelisp-os--windows-fd-kind fd) 'socket)
@@ -3999,10 +4058,189 @@ list of signal numbers."
 
 ;; ----- timerfd wrappers -----
 
+(defun nelisp-os--windows-timerfd-cell (fd)
+  "Return the Windows timerfd state cell for FD, or signal EBADF."
+  (unless (eq (nelisp-os--windows-fd-kind fd) 'timerfd)
+    (signal 'nelisp-os-error (list 9))) ; EBADF
+  (let ((cell (assq fd nelisp-os--windows-timerfd-table)))
+    (if cell
+        cell
+      (signal 'nelisp-os-error (list 9)))))
+
+(defun nelisp-os--windows-timerfd-handle (fd)
+  "Return the waitable timer HANDLE for Windows timerfd FD."
+  (nelisp-os--windows-timerfd-cell fd)
+  (nelisp-os--windows-handle-for-fd fd))
+
+(defun nelisp-os--windows-now-ms ()
+  "Return a monotonic-ish Windows millisecond tick count."
+  (nelisp-os--libc-call "kernel32" "GetTickCount64" [:uint64]))
+
+(defun nelisp-os--timer-ms (sec nsec)
+  "Return milliseconds represented by SEC and NSEC, rounded up."
+  (when (or (< sec 0) (< nsec 0) (>= nsec 1000000000))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (+ (* sec 1000)
+     (ceiling nsec 1000000)))
+
+(defun nelisp-os--timer-100ns (sec nsec)
+  "Return 100ns ticks represented by SEC and NSEC, rounded up."
+  (when (or (< sec 0) (< nsec 0) (>= nsec 1000000000))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (+ (* sec 10000000)
+     (ceiling nsec 100)))
+
+(defun nelisp-os--ms-sec-nsec (ms)
+  "Return (SEC . NSEC) for non-negative millisecond duration MS."
+  (cons (/ ms 1000)
+        (* (mod ms 1000) 1000000)))
+
+(defun nelisp-os--windows-timerfd-state-itimerspec (state)
+  "Return timerfd itimerspec tuple for Windows timerfd STATE."
+  (let* ((interval-ms (aref state 0))
+         (due-ms (aref state 1))
+         (armed-p (aref state 2))
+         (now-ms (and armed-p (nelisp-os--windows-now-ms)))
+         (remaining-ms (if armed-p
+                           (max 0 (- due-ms now-ms))
+                         0))
+         (interval (nelisp-os--ms-sec-nsec interval-ms))
+         (remaining (nelisp-os--ms-sec-nsec remaining-ms)))
+    (list (car interval) (cdr interval)
+          (car remaining) (cdr remaining))))
+
+(defun nelisp-os--windows-timerfd-gettime (fd)
+  "Windows implementation of `nelisp-os-timerfd-gettime'."
+  (nelisp-os--windows-timerfd-state-itimerspec
+   (cdr (nelisp-os--windows-timerfd-cell fd))))
+
+(defun nelisp-os--windows-timerfd-create (clockid flags)
+  "Windows implementation of `nelisp-os-timerfd-create'."
+  (unless (memq clockid (list nelisp-os-CLOCK-REALTIME
+                             nelisp-os-CLOCK-MONOTONIC
+                             nelisp-os-CLOCK-BOOTTIME))
+    (nelisp-os--windows-unsupported))
+  (unless (= (logand flags (lognot (logior nelisp-os-TFD-NONBLOCK
+                                           nelisp-os-TFD-CLOEXEC)))
+             0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((handle (nelisp-os--libc-call
+                 "kernel32" "CreateWaitableTimerW"
+                 [:pointer :pointer :sint32 :pointer]
+                 0 0 0)))
+    (if (= handle 0)
+        (nelisp-os--windows-ffi-error-signal)
+      (let ((fd (nelisp-os--windows-fd-alloc
+                 handle
+                 'timerfd
+                 (if (/= (logand flags nelisp-os-TFD-NONBLOCK) 0)
+                     nelisp-os-O-NONBLOCK
+                   0))))
+        (push (cons fd (vector 0 0 nil)) nelisp-os--windows-timerfd-table)
+        (if (= (logand flags nelisp-os-TFD-CLOEXEC) 0)
+            fd
+          (condition-case err
+              (progn
+                (nelisp-os--windows-setfd-flags fd nelisp-os-FD-CLOEXEC)
+                fd)
+            (nelisp-os-error
+             (ignore-errors (nelisp-os-close fd))
+             (signal (car err) (cdr err)))))))))
+
+(defun nelisp-os--windows-timerfd-settime
+    (fd flags it-int-s it-int-ns it-val-s it-val-ns)
+  "Windows implementation of `nelisp-os-timerfd-settime'."
+  (unless (= (logand flags (lognot nelisp-os-TFD-TIMER-ABSTIME)) 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (when (/= (logand flags nelisp-os-TFD-TIMER-ABSTIME) 0)
+    (nelisp-os--windows-unsupported))
+  (let* ((cell (nelisp-os--windows-timerfd-cell fd))
+         (state (cdr cell))
+         (handle (nelisp-os--windows-timerfd-handle fd))
+         (old (nelisp-os--windows-timerfd-state-itimerspec state))
+         (interval-ms (nelisp-os--timer-ms it-int-s it-int-ns))
+         (value-ms (nelisp-os--timer-ms it-val-s it-val-ns))
+         (value-100ns (nelisp-os--timer-100ns it-val-s it-val-ns)))
+    (if (= value-ms 0)
+        (progn
+          (nelisp-os--libc-call
+           "kernel32" "CancelWaitableTimer"
+           [:sint32 :pointer]
+           handle)
+          (aset state 0 0)
+          (aset state 1 0)
+          (aset state 2 nil)
+          old)
+      (let ((due-buf (nelisp-os--alloc 8)))
+        (unwind-protect
+            (progn
+              (nelisp-os-write-i64 due-buf 0 (- (max 1 value-100ns)))
+              (let ((ok (nelisp-os--libc-call
+                         "kernel32" "SetWaitableTimer"
+                         [:sint32 :pointer :pointer :sint32 :pointer :pointer
+                          :sint32]
+                         handle
+                         due-buf
+                         interval-ms
+                         0
+                         0
+                         0)))
+                (if (= ok 0)
+                    (nelisp-os--windows-ffi-error-signal)
+                  (aset state 0 interval-ms)
+                  (aset state 1 (+ (nelisp-os--windows-now-ms) value-ms))
+                  (aset state 2 t)
+                  old)))
+          (nelisp-os--free due-buf))))))
+
+(defun nelisp-os--windows-read-timerfd (fd nbytes)
+  "Read an 8-byte expiration count from Windows timerfd-compatible FD."
+  (unless (= nbytes 8)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let* ((state (cdr (nelisp-os--windows-timerfd-cell fd)))
+         (handle (nelisp-os--windows-timerfd-handle fd))
+         (timeout (if (/= (logand (nelisp-os--windows-fd-flags fd)
+                                  nelisp-os-O-NONBLOCK)
+                         0)
+                      0
+                    nelisp-os-WIN-INFINITE))
+         (rc (nelisp-os--libc-call
+              "kernel32" "WaitForSingleObject"
+              [:uint32 :pointer :uint32]
+              handle timeout)))
+    (cond
+     ((= rc nelisp-os-WIN-WAIT-TIMEOUT)
+      (signal 'nelisp-os-error (list 11))) ; EAGAIN
+     ((= rc nelisp-os-WIN-WAIT-OBJECT-0)
+      (let ((interval-ms (aref state 0)))
+        (if (> interval-ms 0)
+            (aset state 1 (+ (nelisp-os--windows-now-ms) interval-ms))
+          (aset state 1 0)
+          (aset state 2 nil)))
+      (nelisp-os--u64le-string 1))
+     (t
+      (nelisp-os--windows-ffi-error-signal)))))
+
+(defun nelisp-os--windows-timerfd-revents (fd events)
+  "Return synthetic poll revents for Windows timerfd-compatible FD."
+  (let* ((handle (nelisp-os--windows-timerfd-handle fd))
+         (rc (nelisp-os--libc-call
+              "kernel32" "WaitForSingleObject"
+              [:uint32 :pointer :uint32]
+              handle 0)))
+    (cond
+     ((= rc nelisp-os-WIN-WAIT-TIMEOUT) 0)
+     ((= rc nelisp-os-WIN-WAIT-OBJECT-0)
+      (if (/= (logand events nelisp-os-POLLIN) 0)
+          nelisp-os-POLLIN
+        0))
+     (t
+      (nelisp-os--windows-ffi-error-signal)))))
+
 (defun nelisp-os-timerfd-create (clockid flags)
   "Linux timerfd_create(2) — return a new timer fd."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-timerfd-create clockid flags)
     (nelisp-os--check-errno (nelisp--syscall 'timerfd_create clockid flags))))
 
 (defun nelisp-os-timerfd-settime (fd flags it-int-s it-int-ns it-val-s it-val-ns)
@@ -4010,7 +4248,8 @@ list of signal numbers."
 previous itimerspec as 4-element list (PREV-INT-S PREV-INT-NS
 PREV-VAL-S PREV-VAL-NS)."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-timerfd-settime
+       fd flags it-int-s it-int-ns it-val-s it-val-ns)
     (let ((new-buf (nelisp-os--alloc nelisp-os--itimerspec-len))
           (old-buf (nelisp-os--alloc nelisp-os--itimerspec-len)))
       (unwind-protect
@@ -4029,7 +4268,7 @@ PREV-VAL-S PREV-VAL-NS)."
   "Linux timerfd_gettime(2) — return current itimerspec as 4-element
 list (INT-S INT-NS VAL-S VAL-NS)."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-timerfd-gettime fd)
     (let ((cur-buf (nelisp-os--alloc nelisp-os--itimerspec-len)))
       (unwind-protect
           (let ((r (nelisp-os--libc-call "libc" "timerfd_gettime"
@@ -4046,7 +4285,9 @@ list (INT-S INT-NS VAL-S VAL-NS)."
 Equivalent to `nelisp-os-timerfd-settime' with FLAGS=0, interval=0,
 value=MS-as-(sec . nsec)."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (let* ((sec (/ ms 1000))
+             (nsec (* (mod ms 1000) 1000000)))
+        (nelisp-os-timerfd-settime fd 0 0 0 sec nsec))
     (let* ((sec  (/ ms 1000))
            (nsec (* (mod ms 1000) 1000000)))
       (nelisp-os-timerfd-settime fd 0 0 0 sec nsec))))

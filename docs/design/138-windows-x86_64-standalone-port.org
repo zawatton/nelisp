@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-123-WINDOWS-PAYLOAD-MSG
+#+STATUS: STAGE-124-WINDOWS-TIMERFD
 
 * Status
 
-- *State*: STAGE 123 Windows payload-only sendmsg/recvmsg compatibility
+- *State*: STAGE 124 Windows timerfd compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -281,8 +281,13 @@
   =SIGKILL= and validates the fd kind before FFI.  Synthetic process fds now
   also avoid regular HANDLE file APIs for =read/write/lseek/fstat/poll=.
   =fork= plus Linux-only event fd APIs still reject Windows before reaching Linux syscall or Linux libc paths:
-  =fork=, =inotify_*=, =signalfd=, =sigprocmask=, and =timerfd_*= signal
-  =nelisp-os-error= with =ENOTSUP= on Windows.  =nelisp-os-eventfd= now has a Windows
+  =fork=, =inotify_*=, =signalfd=, and =sigprocmask= signal
+  =nelisp-os-error= with =ENOTSUP= on Windows.  Windows =timerfd_create= now
+  creates a waitable-timer HANDLE-backed fd-kind entry, =timerfd_settime= /
+  =timerfd_set_relative_ms= arm relative timers through =SetWaitableTimer=,
+  =timerfd_gettime= derives tracked remaining time from =GetTickCount64=,
+  =read= returns an 8-byte expiration count after =WaitForSingleObject=, and
+  =poll= reports =POLLIN= from timer readiness.  =nelisp-os-eventfd= now has a Windows
   compatibility implementation backed by a synthetic fd-kind counter, with
   8-byte little-endian =read/write= counter semantics, =EFD_SEMAPHORE=, and
   =EFD_NONBLOCK= status tracking.  The synthetic eventfd fd also has Windows
@@ -372,9 +377,9 @@
   =getsockname= / =getpeername= wrappers now dispatch socket-kind Windows fds
   through =ws2_32!getsockname= / =getpeername= and reuse the existing family
   decoders.  =nelisp-os-sigprocmask= now rejects Windows before allocating a
-  POSIX =sigset_t= or calling =libc!pthread_sigmask=.  The public
-  =nelisp-os-timerfd-set-relative-ms= helper now also rejects Windows directly
-  instead of relying on the lower-level timerfd wrapper to fail first.
+  POSIX =sigset_t= or calling =libc!pthread_sigmask=.  Windows timerfd
+  compatibility now uses waitable timers for relative one-shot / interval
+  timers and keeps absolute =TFD_TIMER_ABSTIME= explicitly unsupported.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
   smoke manifest and emits all ten PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
@@ -476,8 +481,9 @@
   through Winsock, length-buffer setup, family decoder calls, and cleanup.
   Stage 34 coverage verifies =nelisp-os-sigprocmask= rejects Windows before
   POSIX =sigset_t= allocation, libc FFI, or raw syscall entry.
-  Stage 35 coverage verifies =nelisp-os-timerfd-set-relative-ms= rejects
-  Windows before delegating into timerfd allocation or libc/syscall paths.
+  Stage 35 coverage verifies the former =nelisp-os-timerfd-set-relative-ms=
+  Windows guard before delegating into timerfd allocation or libc/syscall
+  paths; Stage 124 supersedes this with waitable timer-backed compatibility.
   Stage 36 coverage verifies =scripts/nelisp-windows-build.el= keeps the
   =exit42= / =virtualalloc= / =virtualprotect-free= / =arena= /
   =writefile-stdout= / =getcommandline= / =commandlinetoargv= /
@@ -672,6 +678,10 @@
   sends payload bytes through Winsock =send=, =recvmsg-fds= with =MAX-FDS= 0
   receives payload bytes through Winsock =recv=, and non-empty fd-passing
   requests still reject before FFI.
+  Stage 124 coverage verifies Windows timerfd creation, close-on-exec/status
+  flag handling, relative arming through =SetWaitableTimer=, tracked
+  =gettime= remaining time, =read= expiration counts, =poll= readiness,
+  validation, =fstat= metadata, and cleanup of timer state on close.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1031,9 +1041,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   flags so =F_GETFL= on stdout/stderr/stdin remains coherent after
   =SetStdHandle=.
   *Windows Linux-only guard progress 2026-06-02*: =fork= plus =inotify=,
-  =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
-  Windows before reaching Linux syscall/libc paths, including the relative-ms
-  timerfd helper.
+  =signalfd=, =sigprocmask=, and the then-unimplemented =timerfd= entry
+  points reject Windows before reaching Linux syscall/libc paths.  The
+  timerfd portion was superseded on 2026-06-03 by waitable timer-backed
+  compatibility.
   *Windows Winsock progress 2026-06-02*: =nelisp-os-socket= now initializes
   Winsock, creates =AF_INET= sockets through =ws2_32!socket=, tracks socket fds
   separately from HANDLE fds, and =nelisp-os-close= dispatches socket fds to
@@ -1123,6 +1134,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =sendmsg-fds= / =recvmsg-fds= now route descriptor-free payload messages
   through Winsock =send= / =recv= while preserving =ENOTSUP= for real fd
   passing.
+  *Windows timerfd compatibility progress 2026-06-03*: Windows timerfd now
+  creates waitable timer HANDLE-backed fds, arms relative timers with
+  =SetWaitableTimer=, reports readiness through =WaitForSingleObject= in
+  =read= / =poll=, and tracks remaining time for =timerfd_gettime=.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1418,7 +1433,8 @@ largest uncertainty (B1 + B2) first.
    =libc!pthread_sigmask=.
    *Windows timerfd helper guard SHIPPED 2026-06-02*:
    =nelisp-os-timerfd-set-relative-ms= now rejects Windows directly before
-   delegating into Linux timerfd paths.
+   delegating into Linux timerfd paths.  Superseded 2026-06-03 by waitable
+   timer-backed timerfd compatibility.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
    manifest and host-side emission of all ten PE32+ smoke EXEs.
@@ -1574,6 +1590,11 @@ largest uncertainty (B1 + B2) first.
    *Windows payload-only sendmsg/recvmsg SHIPPED 2026-06-03*: descriptor-free
    =sendmsg-fds= / =recvmsg-fds= calls now use Winsock =send= / =recv= on
    socket-kind fds, while non-empty fd passing remains explicit =ENOTSUP=.
+   *Windows timerfd compatibility SHIPPED 2026-06-03*: =timerfd_create= now
+   returns waitable timer HANDLE-backed timerfd fds, relative
+   =timerfd_settime= / =timerfd_set_relative_ms= arm through
+   =SetWaitableTimer=, =timerfd_gettime= reports tracked remaining time, and
+   =read= / =poll= use =WaitForSingleObject= readiness.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
