@@ -126,7 +126,7 @@
                          (list nelisp-os-STDOUT 3000 3))))))
 
 (ert-deftest nelisp-stdlib-os-write-windows-non-std-fd-errors ()
-  "Windows write does not fall through to POSIX libc for non-std fds."
+  "Windows write on an unknown fd does not fall through to POSIX libc."
   (let ((called nil))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
                (lambda (&rest _args) (setq called t))))
@@ -134,6 +134,142 @@
         (should-error (nelisp-os-write 99 "abc")
                       :type 'nelisp-os-error)))
     (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-open-windows-uses-createfilea ()
+  "On Windows, regular file open returns a POSIX-like fd backed by HANDLE."
+  (let ((call nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 #xabcdef)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-open "out.txt"
+                                   (logior nelisp-os-O-CREAT
+                                           nelisp-os-O-TRUNC
+                                           nelisp-os-O-WRONLY)
+                                   0)
+                   3))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal call
+                   (list "kernel32" "CreateFileA"
+                         [:pointer :string :uint32 :uint32 :pointer
+                          :uint32 :uint32 :pointer]
+                         (list "out.txt"
+                               nelisp-os-WIN-GENERIC-WRITE
+                               (logior nelisp-os-WIN-FILE-SHARE-READ
+                                       nelisp-os-WIN-FILE-SHARE-WRITE
+                                       nelisp-os-WIN-FILE-SHARE-DELETE)
+                               0
+                               nelisp-os-WIN-CREATE-ALWAYS
+                               nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL
+                               0))))))
+
+(ert-deftest nelisp-stdlib-os-windows-open-flag-translation ()
+  "Windows open flag translation preserves key POSIX-like modes."
+  (should (= (nelisp-os--windows-open-access nelisp-os-O-RDONLY)
+             nelisp-os-WIN-GENERIC-READ))
+  (should (= (nelisp-os--windows-open-access nelisp-os-O-WRONLY)
+             nelisp-os-WIN-GENERIC-WRITE))
+  (should (= (nelisp-os--windows-open-access
+              (logior nelisp-os-O-WRONLY nelisp-os-O-APPEND))
+             nelisp-os-WIN-FILE-APPEND-DATA))
+  (should (= (nelisp-os--windows-open-access
+              (logior nelisp-os-O-RDONLY nelisp-os-O-APPEND))
+             nelisp-os-WIN-GENERIC-READ))
+  (should (= (nelisp-os--windows-open-access
+              (logior nelisp-os-O-RDWR nelisp-os-O-APPEND))
+             (logior nelisp-os-WIN-GENERIC-READ
+                     nelisp-os-WIN-FILE-APPEND-DATA)))
+  (should (= (nelisp-os--windows-open-disposition
+              (logior nelisp-os-O-CREAT nelisp-os-O-EXCL))
+             nelisp-os-WIN-CREATE-NEW))
+  (should (= (nelisp-os--windows-open-disposition nelisp-os-O-TRUNC)
+             nelisp-os-WIN-TRUNCATE-EXISTING))
+  (should (= (nelisp-os--windows-open-disposition nelisp-os-O-RDONLY)
+             nelisp-os-WIN-OPEN-EXISTING)))
+
+(ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
+  "Windows regular fd read uses the HANDLE table and ReadFile."
+  (let ((calls nil)
+        (alloc-next 1000)
+        (freed nil)
+        (zeroed nil)
+        (read-request nil)
+        (nelisp-os--windows-fd-table '((3 . #x44556677))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val) (setq zeroed (list ptr off val)) val))
+              ((symbol-function 'nelisp-os-read-u32) (lambda (_ptr _off) 4))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr n)
+                 (setq read-request (list ptr n))
+                 "data"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-read 3 16) "data"))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "ReadFile"
+                          [:sint32 :pointer :pointer :uint32 :pointer :pointer]
+                          (list #x44556677 1000 16 2000 0)))))
+    (should (equal zeroed (list 2000 0 0)))
+    (should (equal read-request (list 1000 4)))
+    (should (equal (sort freed #'<) '(1000 2000)))))
+
+(ert-deftest nelisp-stdlib-os-write-windows-regular-fd-uses-writefile ()
+  "Windows regular fd write uses the HANDLE table and WriteFile."
+  (let ((calls nil)
+        (alloc-next 1000)
+        (freed nil)
+        (written-string nil)
+        (nelisp-os--windows-fd-table '((3 . #x55667788))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written-string (cons ptr str))))
+              ((symbol-function 'nelisp-os-write-u32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-u32) (lambda (_ptr _off) 4))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-write 3 "data") 4))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WriteFile"
+                          [:sint32 :pointer :pointer :uint32 :pointer :pointer]
+                          (list #x55667788 1000 4 2000 0)))))
+    (should (equal written-string (cons 1000 "data")))
+    (should (equal (sort freed #'<) '(1000 2000)))))
+
+(ert-deftest nelisp-stdlib-os-close-windows-regular-fd-uses-closehandle ()
+  "Windows regular fd close removes the table entry and calls CloseHandle."
+  (let ((call nil)
+        (nelisp-os--windows-fd-table '((3 . #x778899aa))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should-not (nelisp-os-close 3))))
+    (should-not nelisp-os--windows-fd-table)
+    (should (equal call
+                   (list "kernel32" "CloseHandle"
+                         [:sint32 :pointer]
+                         (list #x778899aa))))))
 
 (ert-deftest nelisp-stdlib-os-read-windows-stdin-uses-kernel32 ()
   "On Windows, stdin read routes through GetStdHandle + ReadFile."

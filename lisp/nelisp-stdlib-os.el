@@ -26,9 +26,10 @@
 ;;
 ;; Doc 138 Stage 5 starts the Windows branch: stdout/stderr writes can route
 ;; through kernel32 HANDLE I/O (`GetStdHandle' + `WriteFile') instead of POSIX
-;; integer fd `write'.  Stage 6 adds stdin reads through `ReadFile'.  The
-;; Linux/Darwin path remains the default until a real Windows standalone runtime
-;; selects `system-type' = `windows-nt'.
+;; integer fd `write'.  Stage 6 adds stdin reads through `ReadFile'.  Stage 7
+;; adds a small Windows fd->HANDLE table for regular file I/O via `CreateFileA'
+;; / `CloseHandle'.  The Linux/Darwin path remains the default until a real
+;; Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -76,6 +77,26 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-STD-INPUT-HANDLE  -10)
 (defconst nelisp-os-WIN-STD-OUTPUT-HANDLE -11)
 (defconst nelisp-os-WIN-STD-ERROR-HANDLE  -12)
+
+;; Windows CreateFileA constants.
+(defconst nelisp-os-WIN-GENERIC-READ  #x80000000)
+(defconst nelisp-os-WIN-GENERIC-WRITE #x40000000)
+(defconst nelisp-os-WIN-FILE-APPEND-DATA #x4)
+(defconst nelisp-os-WIN-FILE-SHARE-READ   #x1)
+(defconst nelisp-os-WIN-FILE-SHARE-WRITE  #x2)
+(defconst nelisp-os-WIN-FILE-SHARE-DELETE #x4)
+(defconst nelisp-os-WIN-CREATE-NEW        1)
+(defconst nelisp-os-WIN-CREATE-ALWAYS     2)
+(defconst nelisp-os-WIN-OPEN-EXISTING     3)
+(defconst nelisp-os-WIN-OPEN-ALWAYS       4)
+(defconst nelisp-os-WIN-TRUNCATE-EXISTING 5)
+(defconst nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL #x80)
+
+(defvar nelisp-os--windows-next-fd 3
+  "Next POSIX-like fd number for Windows HANDLE table entries.")
+
+(defvar nelisp-os--windows-fd-table nil
+  "Alist mapping POSIX-like fds to Windows HANDLE values.")
 
 ;; ---------------------------------------------------------------------------
 ;; Error helpers.  syscall return convention: negative integer = -errno.
@@ -125,8 +146,78 @@ placeholder errno value so callers still get the project-local OS condition."
       ;; GetStdHandle returns NULL on failure and INVALID_HANDLE_VALUE (-1) for
       ;; invalid selectors.  Treat both as OS errors.
       (if (or (= handle 0) (= handle -1))
-          (nelisp-os--windows-ffi-error-signal)
-        handle))))
+	      (nelisp-os--windows-ffi-error-signal)
+	    handle))))
+
+(defun nelisp-os--windows-fd-alloc (handle)
+  "Allocate a POSIX-like fd for Windows HANDLE."
+  (let ((fd nelisp-os--windows-next-fd))
+    (setq nelisp-os--windows-next-fd (1+ nelisp-os--windows-next-fd))
+    (push (cons fd handle) nelisp-os--windows-fd-table)
+    fd))
+
+(defun nelisp-os--windows-fd-handle (fd)
+  "Return the Windows HANDLE for FD, or signal EBADF."
+  (let ((cell (assq fd nelisp-os--windows-fd-table)))
+    (if cell
+        (cdr cell)
+      (signal 'nelisp-os-error (list 9)))))
+
+(defun nelisp-os--windows-fd-remove (fd)
+  "Remove FD from the Windows HANDLE table and return its HANDLE."
+  (let ((cell (assq fd nelisp-os--windows-fd-table)))
+    (unless cell
+      (signal 'nelisp-os-error (list 9)))
+    (setq nelisp-os--windows-fd-table
+          (delq cell nelisp-os--windows-fd-table))
+    (cdr cell)))
+
+(defun nelisp-os--windows-open-access (flags)
+  "Translate POSIX-like FLAGS to a CreateFileA desired-access mask."
+  (let ((mode (logand flags 3))
+        (append (not (= 0 (logand flags nelisp-os-O-APPEND)))))
+    (cond
+     ((and append (= mode nelisp-os-O-RDWR))
+      (logior nelisp-os-WIN-GENERIC-READ nelisp-os-WIN-FILE-APPEND-DATA))
+     ((and append (= mode nelisp-os-O-WRONLY))
+      nelisp-os-WIN-FILE-APPEND-DATA)
+     ((= mode nelisp-os-O-RDWR)
+      (logior nelisp-os-WIN-GENERIC-READ nelisp-os-WIN-GENERIC-WRITE))
+     ((= mode nelisp-os-O-WRONLY)
+      nelisp-os-WIN-GENERIC-WRITE)
+     (t
+      nelisp-os-WIN-GENERIC-READ))))
+
+(defun nelisp-os--windows-open-disposition (flags)
+  "Translate POSIX-like FLAGS to a CreateFileA creation disposition."
+  (let ((creat (not (= 0 (logand flags nelisp-os-O-CREAT))))
+        (excl  (not (= 0 (logand flags nelisp-os-O-EXCL))))
+        (trunc (not (= 0 (logand flags nelisp-os-O-TRUNC)))))
+    (cond
+     ((and creat excl) nelisp-os-WIN-CREATE-NEW)
+     ((and creat trunc) nelisp-os-WIN-CREATE-ALWAYS)
+     (creat nelisp-os-WIN-OPEN-ALWAYS)
+     (trunc nelisp-os-WIN-TRUNCATE-EXISTING)
+     (t nelisp-os-WIN-OPEN-EXISTING))))
+
+(defun nelisp-os--windows-open (path flags _mode)
+  "Open PATH on Windows and return a POSIX-like fd."
+  (let* ((share (logior nelisp-os-WIN-FILE-SHARE-READ
+                       nelisp-os-WIN-FILE-SHARE-WRITE
+                       nelisp-os-WIN-FILE-SHARE-DELETE))
+         (handle (nelisp-os--libc-call
+                  "kernel32" "CreateFileA"
+                  [:pointer :string :uint32 :uint32 :pointer :uint32 :uint32 :pointer]
+                  path
+                  (nelisp-os--windows-open-access flags)
+                  share
+                  0
+                  (nelisp-os--windows-open-disposition flags)
+                  nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL
+                  0)))
+    (if (or (= handle 0) (= handle -1))
+        (nelisp-os--windows-ffi-error-signal)
+      (nelisp-os--windows-fd-alloc handle))))
 
 (defun nelisp-os--windows-write-handle (handle str)
   "Write STR bytes to Windows HANDLE using kernel32!WriteFile."
@@ -185,11 +276,13 @@ placeholder errno value so callers still get the project-local OS condition."
 PATH is a string, FLAGS / MODE are integers."
   ;; libc::open: int(const char *path, int flags, mode_t mode) → int.
   ;; Linux glibc: int=:sint32, mode_t=:uint32.
-  (let ((r (nelisp-os--libc-call "libc" "open" [:sint32 :string :sint32 :uint32]
-                        path flags mode)))
-    (if (= r -1)
-        (nelisp-os--ffi-errno-signal)
-      r)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-open path flags mode)
+    (let ((r (nelisp-os--libc-call "libc" "open" [:sint32 :string :sint32 :uint32]
+                          path flags mode)))
+      (if (= r -1)
+          (nelisp-os--ffi-errno-signal)
+        r))))
 
 (defun nelisp-os-read (fd nbytes)
   "POSIX read(2) — return string of up to NBYTES bytes or signal
@@ -204,7 +297,9 @@ PATH is a string, FLAGS / MODE are integers."
          (= fd nelisp-os-STDIN))
     (nelisp-os--windows-read-std-fd fd nbytes))
    ((nelisp-os--windows-p)
-    (signal 'nelisp-os-error (list 9))) ; EBADF until regular HANDLE fds land.
+    (nelisp-os--windows-read-handle
+     (nelisp-os--windows-fd-handle fd)
+     nbytes))
    (t
     (let ((buf (nelisp-os--alloc nbytes)))
       (unwind-protect
@@ -231,7 +326,9 @@ went through `:string' (= CString::new, NUL-rejecting)."
          (nelisp-os--windows-std-handle-selector fd))
     (nelisp-os--windows-write-std-fd fd str))
    ((nelisp-os--windows-p)
-    (signal 'nelisp-os-error (list 9))) ; EBADF until regular HANDLE fds land.
+    (nelisp-os--windows-write-handle
+     (nelisp-os--windows-fd-handle fd)
+     str))
    (t
     (let* ((nbytes (string-bytes str))
            (buf    (nelisp-os--alloc nbytes)))
@@ -249,11 +346,18 @@ went through `:string' (= CString::new, NUL-rejecting)."
 
 (defun nelisp-os-close (fd)
   "POSIX close(2) — close FD, return nil or signal `nelisp-os-error'."
-  (if nelisp-os--use-direct-syscall
+  (if (nelisp-os--windows-p)
+      (let* ((handle (nelisp-os--windows-fd-remove fd))
+             (ok (nelisp-os--libc-call
+                  "kernel32" "CloseHandle" [:sint32 :pointer] handle)))
+        (if (= ok 0)
+            (nelisp-os--windows-ffi-error-signal)
+          nil))
+    (if nelisp-os--use-direct-syscall
       (progn (nelisp-os--check-errno (nelisp--syscall 'close fd)) nil)
     (progn
       (nelisp-os--check-errno (nelisp-os--libc-call "libc" "close" [:int :int] fd))
-      nil)))
+      nil))))
 
 (defun nelisp-os-exit (code)
   "POSIX exit_group(2) — terminate process with CODE.  Never returns."
