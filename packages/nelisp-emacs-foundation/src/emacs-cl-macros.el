@@ -370,6 +370,7 @@ Recognised shapes:
   count FORM                           count truthy
   when COND return FORM                early-exit with FORM
   when COND do FORM                    conditional side-effect
+  when COND collect FORM               conditional accumulate
 
 The bodyless form `(cl-loop BODY...)' (= no for/with/do keyword,
 just a body to repeat forever with `cl-return' for exit) is also
@@ -381,6 +382,7 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
           (sum-form nil) (count-form nil) (with-bindings nil)
           (when-return-cond nil) (when-return-form nil)
           (when-do-cond nil) (when-do-forms nil)
+          (when-collect-cond nil) (when-collect-form nil)
           (numeric-from nil) (numeric-to nil) (numeric-below nil)
           (bodyless-forms nil)
           (cur clauses) (recognised t))
@@ -459,6 +461,10 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                 (setq when-do-cond cond-form
                       when-do-forms (cons next-form when-do-forms)
                       cur (cdr (cdr (cdr (cdr cur))))))
+               ((eq next-kw 'collect)
+                (setq when-collect-cond cond-form
+                      when-collect-form next-form
+                      cur (cdr (cdr (cdr (cdr cur))))))
                (t (setq recognised nil)))))
            (t (setq recognised nil)))))
       (cond
@@ -498,6 +504,14 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
           (list 'let (cons (list acc-sym nil) with-bindings)
                 (list 'dolist (list var list-form)
                       (list 'setq acc-sym (list 'cons collect-form acc-sym)))
+                (list 'nreverse acc-sym))))
+       (when-collect-cond
+        (let ((acc-sym (make-symbol "--loop-acc--")))
+          (list 'let (cons (list acc-sym nil) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'when when-collect-cond
+                            (list 'setq acc-sym
+                                  (list 'cons when-collect-form acc-sym))))
                 (list 'nreverse acc-sym))))
        (sum-form
         (let ((acc-sym (make-symbol "--loop-sum--")))
@@ -616,7 +630,15 @@ defaults to `make-NAME')."
            (slot-list (if (and (consp slots) (stringp (car slots)))
                           (cdr slots)
                         slots))
-           (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slot-list)))
+           (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slot-list))
+           (slot-defaults
+            (mapcar (lambda (s)
+                      (let ((slot (if (consp s) (car s) s))
+                            (default (and (consp s)
+                                          (consp (cdr s))
+                                          (cadr s))))
+                        (cons slot default)))
+                    slot-list)))
       (let ((forms nil))
         ;; CTOR constructor → returns alist of slots.
         ;; Built with `list' so the inner `sname' splice is explicit
@@ -624,9 +646,29 @@ defaults to `make-NAME')."
         ;; cannot use the convenient backtick form here).
         (push (list 'defun ctor-name
                     '(&rest args)
-                    (list 'let '((alist nil) (cur args))
+                    (list 'let
+                          (list
+                           (list 'alist
+                                 (cons 'list
+                                       (mapcar
+                                        (lambda (cell)
+                                          (list 'cons
+                                                (list 'quote
+                                                      (intern
+                                                       (concat ":"
+                                                               (symbol-name
+                                                                (car cell)))))
+                                                (cdr cell)))
+                                        slot-defaults)))
+                           '(cur args))
                           '(while cur
-                             (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
+                             (let ((cell (assoc (car cur) alist)))
+                               (if cell
+                                   (setcdr cell (car (cdr cur)))
+                                 (setq alist
+                                       (cons (cons (car cur)
+                                                   (car (cdr cur)))
+                                             alist))))
                              (setq cur (cdr (cdr cur))))
                           (list 'cons (list 'quote sname) 'alist)))
               forms)
@@ -646,7 +688,8 @@ defaults to `make-NAME')."
         (dolist (slot slot-names)
           (let* ((kw (intern (concat ":" (symbol-name slot))))
                  (acc (intern (concat conc-name (symbol-name slot))))
-                 (setter (intern (concat conc-name (symbol-name slot) "--setter"))))
+                 (setter (intern (concat conc-name (symbol-name slot) "--setter")))
+                 (gv-setter (intern (format "(setf %s)" acc))))
             (push (list 'defun acc
                         '(obj)
                         (list 'cdr (list 'assoc kw '(cdr obj))))
@@ -665,6 +708,12 @@ defaults to `make-NAME')."
             (push (list 'put (list 'quote acc)
                         (list 'quote 'cl-struct-setter)
                         (list 'quote setter))
+                  forms)
+            (push (list 'when '(boundp 'emacs-version)
+                        (list 'defalias
+                              (list 'quote gv-setter)
+                              (list 'lambda '(val obj)
+                                    (list setter 'obj 'val))))
                   forms)))
         (cons 'progn (nreverse forms))))))
 

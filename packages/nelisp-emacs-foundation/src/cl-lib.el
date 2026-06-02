@@ -135,37 +135,41 @@ this for sibling-list immutability)."
                       unless (equal item x) collect x)))
      (t (signal 'wrong-type-argument (list 'sequencep sequence))))))
 
-(unless (fboundp 'cl-find-if-not)
-  (defun cl-find-if-not (predicate sequence)
-    "Return the first element of SEQUENCE for which PREDICATE is nil."
+(unless (fboundp 'cl-find-if)
+  (defun cl-find-if (predicate sequence)
+    "Return the first element of SEQUENCE for which PREDICATE is non-nil."
     (catch 'found
       (cond
        ((listp sequence)
         (dolist (x sequence)
-          (unless (funcall predicate x) (throw 'found x))))
+          (when (funcall predicate x) (throw 'found x))))
        ((stringp sequence)
         (let ((i 0) (n (length sequence)))
           (while (< i n)
             (let ((c (aref sequence i)))
-              (unless (funcall predicate c) (throw 'found c)))
+              (when (funcall predicate c) (throw 'found c)))
             (setq i (1+ i)))))
        ((vectorp sequence)
         (let ((i 0) (n (length sequence)))
           (while (< i n)
             (let ((x (aref sequence i)))
-              (unless (funcall predicate x) (throw 'found x)))
+              (when (funcall predicate x) (throw 'found x)))
             (setq i (1+ i))))))
       nil)))
+
+(unless (fboundp 'cl-find-if-not)
+  (defun cl-find-if-not (predicate sequence)
+    "Return the first element of SEQUENCE for which PREDICATE is nil."
+    (cl-find-if (lambda (x) (not (funcall predicate x))) sequence)))
 
 ;;;; --- generalized place setter (setf) ---------------------------------
 ;;
 ;; nelisp driver では vendor/emacs-lisp/emacs-lisp/gv.el が reader 不
 ;; 整合で読めないため、setf を最小限ここで polyfill する。host driver
-;; では gv.el の `setf' が先に勝つので、`(unless (fboundp 'setf) ...)'
-;; gate で安全に共存。
+;; では gv.el の `setf' を使う。autoload を local stub で上書きしない
+;; よう、この polyfill は standalone 専用にする。
 
-(when (or (not (boundp 'emacs-version))
-          (cl-lib--define-p 'setf))
+(unless (boundp 'emacs-version)
   (defmacro setf (&rest pairs)
     "Minimal setf — handles common places.
 Supported PLACE forms:
