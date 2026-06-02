@@ -1078,6 +1078,20 @@ FAILURE-CODE otherwise.  IAT-RVAS maps imported function names to RVAs."
                 (plist-get imports :iat-rvas))))
     (nelisp-pe--build-executable-with-imports text imports)))
 
+(defun nelisp-pe-write-build-kernel32-executable (names text-builder)
+  "Build a PE32+ console EXE importing KERNEL32.dll NAMES.
+TEXT-BUILDER is called as `(TEXT-BUILDER TEXT-RVA IAT-RVAS)' and must
+return the .text bytes.  IAT-RVAS is an alist mapping each imported
+function name to its IAT slot RVA."
+  (unless (functionp text-builder)
+    (error "nelisp-pe: text-builder must be callable"))
+  (let* ((text-rva nelisp-pe--section-alignment)
+         (rdata-rva (* 2 nelisp-pe--section-alignment))
+         (imports (nelisp-pe--build-kernel32-imports rdata-rva names))
+         (text (funcall text-builder text-rva
+                        (plist-get imports :iat-rvas))))
+    (nelisp-pe--build-executable-with-imports text imports)))
+
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
   "Emit a PE32+/COFF relocatable object file to FILE-PATH.

@@ -146,6 +146,10 @@ within one compile but never collide between control-flow nodes.")
 Emit helpers consult this dynvar to pick the x86_64 or aarch64 code
 path while sharing the same parsed IR.")
 
+(defvar nelisp-phase47-compiler--os 'linux
+  "Target operating system for the current emit pass.
+Supported values are currently `linux' and `windows'.")
+
 (defvar nelisp-phase47-compiler--abi 'sysv
   "Calling convention ABI bound by the public compile entry points.
 Doc 101 §101.B Wave 5: selects SysV vs Win64 emit paths for x86_64.
@@ -154,6 +158,12 @@ Doc 101 §101.B Wave 5: selects SysV vs Win64 emit paths for x86_64.
 Emit helpers consult this dynvar for arg-register selection, shadow
 space allocation, and prologue/epilogue layout.  The aarch64 path
 ignores this var (= AAPCS64 only).")
+
+(defvar nelisp-phase47-compiler--windows-text-rva #x1000
+  "PE .text RVA used while emitting Windows RIP-relative calls.")
+
+(defvar nelisp-phase47-compiler--windows-exitprocess-iat-rva nil
+  "RVA of KERNEL32.dll!ExitProcess IAT slot for Windows executable emit.")
 
 (defvar nelisp-phase47-compiler--next-rt-let-slot nil
   "Cons cell `(N)' holding the next free runtime-let frame slot index.
@@ -13452,6 +13462,9 @@ imm64 size is fixed) so the byte invariant holds."
   "Emit a write(1, addr, len) syscall for STR to BUF.
 STR-OFFSETS is the alist from `--collect-strings'.  RODATA-VADDR is
 the absolute virtual address of byte 0 of .rodata."
+  (when (eq nelisp-phase47-compiler--os 'windows)
+    (signal 'nelisp-phase47-compiler-error
+            (list :unsupported-windows-form 'write)))
   (let* ((entry (cdr (or (assoc str str-offsets)
                          (signal 'nelisp-phase47-compiler-error
                                  (list :missing-string-entry str)))))
@@ -13464,28 +13477,85 @@ the absolute virtual address of byte 0 of .rodata."
     (nelisp-asm-x86_64-mov-imm32 buf 'rdx len)
     (nelisp-asm-x86_64-syscall buf)))
 
+(defun nelisp-phase47-compiler--emit-le32-signed (buf value)
+  "Append signed 32-bit VALUE to x86_64 BUF in little-endian order."
+  (let ((u (logand value #xffffffff)))
+    (nelisp-asm-x86_64-emit-bytes
+     buf
+     (unibyte-string (logand u #xff)
+                     (logand (ash u -8) #xff)
+                     (logand (ash u -16) #xff)
+                     (logand (ash u -24) #xff)))))
+
+(defun nelisp-phase47-compiler--emit-windows-call-iat-rva (buf iat-rva)
+  "Emit `call qword [rip+disp32]' from BUF to IAT-RVA."
+  (let* ((call-off (nelisp-asm-x86_64-buffer-pos buf))
+         (next-rva (+ nelisp-phase47-compiler--windows-text-rva call-off 6))
+         (disp (- iat-rva next-rva)))
+    (unless (and (<= (- (ash 1 31)) disp) (< disp (ash 1 31)))
+      (signal 'nelisp-phase47-compiler-error
+              (list :windows-iat-disp-out-of-range disp)))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xff #x15))
+    (nelisp-phase47-compiler--emit-le32-signed buf disp)))
+
+(defun nelisp-phase47-compiler--emit-windows-exit (buf value-node)
+  "Emit Win64 KERNEL32.dll!ExitProcess call for VALUE-NODE."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-exitprocess-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-exitprocess-import-missing)))
+  (let ((tag (nelisp-phase47-compiler--ir-kind-tag value-node)))
+    (cond
+     ((= tag 30)                    ; imm
+      (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
+        (unless (and (integerp status) (<= 0 status #xffffffff))
+          (signal 'nelisp-phase47-compiler-error
+                  (list :windows-exit-code-out-of-range status)))
+        ;; Microsoft x64 ABI: at process entry RSP is call-entry aligned;
+        ;; reserve 32-byte shadow space plus 8-byte alignment pad.
+        (nelisp-asm-x86_64-emit-bytes
+         buf (unibyte-string #x48 #x83 #xec #x28)) ; sub rsp, 40
+        (nelisp-asm-x86_64-emit-bytes
+         buf (unibyte-string #xb9))                ; mov ecx, imm32
+        (nelisp-phase47-compiler--emit-le32-signed buf status)
+        (nelisp-phase47-compiler--emit-windows-call-iat-rva
+         buf nelisp-phase47-compiler--windows-exitprocess-iat-rva)
+        (nelisp-asm-x86_64-int3 buf)))
+     (t
+      ;; Compute value into rax (= might call functions) before reserving
+      ;; the final ExitProcess shadow space.
+      (nelisp-phase47-compiler--emit-value value-node buf)
+      (nelisp-asm-x86_64-emit-bytes
+       buf (unibyte-string #x48 #x83 #xec #x28)) ; sub rsp, 40
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+      (nelisp-phase47-compiler--emit-windows-call-iat-rva
+       buf nelisp-phase47-compiler--windows-exitprocess-iat-rva)
+      (nelisp-asm-x86_64-int3 buf)))))
+
 (defun nelisp-phase47-compiler--emit-exit (buf value-node)
   "Emit an exit(STATUS) syscall to BUF.
 VALUE-NODE is a value-producing IR node.  If it's an `imm', emit
 the legacy fixed-status path (= 16 bytes).  Otherwise compute the
 value into rax then `mov rdi, rax' + syscall."
-  ;; A33.3 — integer-tag dispatch (`pcase' arm → `cond' over
-  ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-  (let ((tag (nelisp-phase47-compiler--ir-kind-tag value-node)))
-   (cond
-    ((= tag 30)                 ; imm
-     (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
+  (if (eq nelisp-phase47-compiler--os 'windows)
+      (nelisp-phase47-compiler--emit-windows-exit buf value-node)
+    ;; A33.3 — integer-tag dispatch (`pcase' arm → `cond' over
+    ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
+    (let ((tag (nelisp-phase47-compiler--ir-kind-tag value-node)))
+     (cond
+      ((= tag 30)                 ; imm
+       (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
+         (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
+         (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
+         (nelisp-asm-x86_64-syscall buf)))
+      (t
+       ;; Compute value into rax (= might call functions).
+       (nelisp-phase47-compiler--emit-value value-node buf)
+       ;; mov rdi, rax (= exit status from computed value).
+       (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+       ;; mov rax, 60 (SYS_exit).
        (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
-       (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
-       (nelisp-asm-x86_64-syscall buf)))
-    (t
-     ;; Compute value into rax (= might call functions).
-     (nelisp-phase47-compiler--emit-value value-node buf)
-     ;; mov rdi, rax (= exit status from computed value).
-     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-     ;; mov rax, 60 (SYS_exit).
-     (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
-     (nelisp-asm-x86_64-syscall buf)))))
+       (nelisp-asm-x86_64-syscall buf))))))
 
 (defun nelisp-phase47-compiler--emit-stmt (ir buf str-offsets rodata-vaddr)
   "Walk statement IR appending instructions to BUF.
