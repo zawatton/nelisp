@@ -62,7 +62,9 @@
                    (writefile-stdout . writefile-stdout-exit-42)
                    (getcommandline . getcommandline-exit-42)
                    (commandlinetoargv . commandlinetoargv-exit-42)
-                   (wsastartup . wsastartup-exit-42))))
+                   (wsastartup . wsastartup-exit-42)
+                   (createprocess . createprocess-wait-exit-42)
+                   (createthread . createthread-wait-exit-42))))
   (dolist (entry nelisp-windows-build-smoke-specs)
     (should (eq (nelisp-windows-build--normalize-spec (car entry))
                 (cdr entry)))
@@ -95,7 +97,9 @@
                            "nelisp-windows-writefile-stdout.exe"
                            "nelisp-windows-getcommandline.exe"
                            "nelisp-windows-commandlinetoargv.exe"
-                           "nelisp-windows-wsastartup.exe")))
+                           "nelisp-windows-wsastartup.exe"
+                           "nelisp-windows-createprocess.exe"
+                           "nelisp-windows-createthread.exe")))
           (dolist (path paths)
             (let ((bytes (nelisp-windows-build-test--read-file-bytes path)))
               (should (> (length bytes) #x400))

@@ -143,7 +143,7 @@ function Build-SmokeExe {
         $env:NELISP_WINDOWS_SPEC = $Spec
         $env:NELISP_WINDOWS_OUT = $OutPath
 
-        & $Emacs --batch -Q -L lisp -L scripts -l nelisp-windows-build `
+        & $Emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build `
             -f nelisp-windows-build-from-env *> $LogPath
 
         if ($LASTEXITCODE -ne 0) {
