@@ -1648,6 +1648,49 @@
                                3000
                                4))))))
 
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-buffer-options ()
+  "Windows SOL_SOCKET buffer/broadcast options translate through Winsock."
+  (let ((calls nil)
+        (writes nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (_ptr) nil))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-SNDBUF 4096)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-RCVBUF 8192)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-BROADCAST 1)
+                   0))))
+    (should (equal (nreverse writes)
+                   '((3000 0 4096)
+                     (3000 0 8192)
+                     (3000 0 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-SNDBUF 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-RCVBUF 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-BROADCAST 3000 4)))))))
+
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-uses-winsock ()
   "Windows int-valued socket options translate to Winsock getsockopt."
   (let ((alloc-next 3000)
@@ -1734,6 +1777,50 @@
                                nelisp-os-WIN-TCP-NODELAY
                                3000
                                4000))))))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-buffer-options ()
+  "Windows SOL_SOCKET buffer/broadcast options translate through getsockopt."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (reads '(4096 8192 1))
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (_ptr) nil))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (_ptr _off) (pop reads)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-SNDBUF)
+                   4096))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-RCVBUF)
+                   8192))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-SOL-SOCKET nelisp-os-SO-BROADCAST)
+                   1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-SNDBUF 3000 4000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-RCVBUF 5000 6000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-WIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-BROADCAST 7000 8000)))))))
 
 (ert-deftest nelisp-stdlib-os-bind-inet-windows-uses-winsock ()
   "Windows AF_INET bind passes encoded sockaddr_in to Winsock."

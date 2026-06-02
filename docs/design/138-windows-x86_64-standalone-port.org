@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-66-WINDOWS-SOCKETPAIR
+#+STATUS: STAGE-67-WINDOWS-SOCKET-OPTIONS
 
 * Status
 
-- *State*: STAGE 66 Windows socketpair loopback stream
+- *State*: STAGE 67 Windows socket option expansion
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -172,7 +172,8 @@
   =ws2_32!WSAPoll=, and preserves the existing =(FD . REVENTS)= return shape.
   =nelisp-os-setsockopt-int= now routes supported socket-kind Windows fds
   through =ws2_32!setsockopt=, translating the POSIX-like =SOL_SOCKET= /
-  =SO_REUSEADDR= / =SO_KEEPALIVE= constants to their Winsock values before FFI.
+  =SO_REUSEADDR= / =SO_KEEPALIVE= / =SO_SNDBUF= / =SO_RCVBUF= /
+  =SO_BROADCAST= constants to their Winsock values before FFI.
   The sockaddr byte-order helpers now call Winsock =htons= / =htonl= /
   =ntohs= / =ntohl= on Windows instead of assuming a POSIX =libc= provider,
   so Windows =bind= / =connect= / =accept= no longer retain that hidden libc
@@ -203,9 +204,9 @@
   =nelisp-os-timerfd-set-relative-ms= helper now also rejects Windows directly
   instead of relying on the lower-level timerfd wrapper to fail first.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
-  smoke manifest and emits all eight PE32+ smoke EXEs on the host side before
+  smoke manifest and emits all ten PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
-  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|getcommandline|commandlinetoargv|wsastartup|all= so the
+  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|getcommandline|commandlinetoargv|wsastartup|createprocess|createthread|all= so the
   remaining native Windows checks can be re-run individually after a partial
   pass.  =nelisp-os-getsockopt-int= now routes socket-kind Windows fds through
   =ws2_32!getsockopt= for the same supported =SOL_SOCKET= int options as
@@ -308,8 +309,8 @@
   Stage 36 coverage verifies =scripts/nelisp-windows-build.el= keeps the
   =exit42= / =virtualalloc= / =virtualprotect-free= / =arena= /
   =writefile-stdout= / =getcommandline= / =commandlinetoargv= /
-  =wsastartup= manifest stable and can emit all eight PE32+ smoke EXEs from
-  that manifest.
+  =wsastartup= / =createprocess= / =createthread= manifest stable and can emit
+  all ten PE32+ smoke EXEs from that manifest.
   Stage 37 coverage
   checks that the PowerShell real-machine script exposes a =-Smoke= selector
   with the same smoke names.
@@ -697,6 +698,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock TCP_NODELAY progress 2026-06-03*:
   =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =IPPROTO_TCP=
   =TCP_NODELAY= through Winsock.
+  *Windows Winsock buffer/broadcast socket options progress 2026-06-03*:
+  =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =SOL_SOCKET=
+  =SO_SNDBUF=, =SO_RCVBUF=, and =SO_BROADCAST= through Winsock.
   *Windows file-backed mmap progress 2026-06-03*: =nelisp-os-mmap= now maps
   HANDLE-backed =MAP_PRIVATE= file views with =CreateFileMappingW= /
   =MapViewOfFile=, and =nelisp-os-munmap= releases those views with
@@ -858,7 +862,7 @@ largest uncertainty (B1 + B2) first.
    delegating into Linux timerfd paths.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
-   manifest and host-side emission of all eight PE32+ smoke EXEs.
+   manifest and host-side emission of all ten PE32+ smoke EXEs.
    *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
    be re-run when checking =virtualalloc=, =virtualprotect-free=, =arena=,
@@ -868,6 +872,9 @@ largest uncertainty (B1 + B2) first.
    int options on socket-kind fds.
    *Windows Winsock TCP_NODELAY SHIPPED 2026-06-03*: int-valued socket option
    helpers now support =IPPROTO_TCP= / =TCP_NODELAY= on Windows.
+   *Windows Winsock buffer/broadcast options SHIPPED 2026-06-03*: int-valued
+   socket option helpers now support =SO_SNDBUF=, =SO_RCVBUF=, and
+   =SO_BROADCAST= on Windows.
    *Windows file-backed mmap SHIPPED 2026-06-03*: =nelisp-os-mmap= now accepts
    HANDLE-backed =MAP_PRIVATE= mappings via =CreateFileMappingW= /
    =MapViewOfFile=, with =UnmapViewOfFile= cleanup.
@@ -996,8 +1003,9 @@ largest uncertainty (B1 + B2) first.
    integration remains pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
-   getname, read/write, poll, setsockopt-int, and loopback-backed stream
-   socketpair; broader socket extensions remain pending.  Linux-only AF_UNIX
+   getname, read/write, poll, expanded int socket options, and
+   loopback-backed stream socketpair; broader socket extensions remain
+   pending.  Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 
 * One-line summary
