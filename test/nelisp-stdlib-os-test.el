@@ -230,6 +230,101 @@
   (should (= (nelisp-os--windows-open-disposition nelisp-os-O-RDONLY)
              nelisp-os-WIN-OPEN-EXISTING)))
 
+(ert-deftest nelisp-stdlib-os-windows-page-protect-translation ()
+  "Windows virtual-memory protection maps POSIX-like PROT bits."
+  (should (= (nelisp-os--windows-page-protect nelisp-os-PROT-NONE)
+             nelisp-os-WIN-PAGE-NOACCESS))
+  (should (= (nelisp-os--windows-page-protect nelisp-os-PROT-READ)
+             nelisp-os-WIN-PAGE-READONLY))
+  (should (= (nelisp-os--windows-page-protect nelisp-os-PROT-WRITE)
+             nelisp-os-WIN-PAGE-READWRITE))
+  (should (= (nelisp-os--windows-page-protect
+              (logior nelisp-os-PROT-READ nelisp-os-PROT-WRITE))
+             nelisp-os-WIN-PAGE-READWRITE))
+  (should (= (nelisp-os--windows-page-protect nelisp-os-PROT-EXEC)
+             nelisp-os-WIN-PAGE-EXECUTE))
+  (should (= (nelisp-os--windows-page-protect
+              (logior nelisp-os-PROT-READ nelisp-os-PROT-EXEC))
+             nelisp-os-WIN-PAGE-EXECUTE-READ))
+  (should (= (nelisp-os--windows-page-protect
+              (logior nelisp-os-PROT-READ
+                      nelisp-os-PROT-WRITE
+                      nelisp-os-PROT-EXEC))
+             nelisp-os-WIN-PAGE-EXECUTE-READWRITE)))
+
+(ert-deftest nelisp-stdlib-os-mmap-windows-uses-virtualalloc ()
+  "Windows anonymous mmap routes through kernel32 VirtualAlloc."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 #x70000000)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-mmap
+                    4096
+                    (logior nelisp-os-PROT-READ nelisp-os-PROT-WRITE)
+                    (logior nelisp-os-MAP-PRIVATE nelisp-os-MAP-ANONYMOUS)
+                    -1
+                    0)
+                   #x70000000))))
+    (should (equal call
+                   (list "kernel32" "VirtualAlloc"
+                         [:pointer :pointer :uint64 :uint32 :uint32]
+                         (list 0
+                               4096
+                               (logior nelisp-os-WIN-MEM-COMMIT
+                                       nelisp-os-WIN-MEM-RESERVE)
+                               nelisp-os-WIN-PAGE-READWRITE))))))
+
+(ert-deftest nelisp-stdlib-os-mmap-windows-rejects-fd-backed-mapping ()
+  "Windows mmap branch only accepts anonymous mappings for now."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-mmap 4096 nelisp-os-PROT-READ
+                                      nelisp-os-MAP-PRIVATE 3 0)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-mprotect-windows-uses-virtualprotect ()
+  "Windows mprotect routes through kernel32 VirtualProtect."
+  (let ((call nil)
+        (freed nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 9000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-mprotect
+                    #x70000000 4096
+                    (logior nelisp-os-PROT-READ nelisp-os-PROT-EXEC))
+                   0))))
+    (should (equal call
+                   (list "kernel32" "VirtualProtect"
+                         [:sint32 :pointer :uint64 :uint32 :pointer]
+                         (list #x70000000 4096
+                               nelisp-os-WIN-PAGE-EXECUTE-READ
+                               9000))))
+    (should (equal freed '(9000)))))
+
+(ert-deftest nelisp-stdlib-os-munmap-windows-uses-virtualfree ()
+  "Windows munmap routes through kernel32 VirtualFree MEM_RELEASE."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-munmap #x70000000 4096) 0))))
+    (should (equal call
+                   (list "kernel32" "VirtualFree"
+                         [:sint32 :pointer :uint64 :uint32]
+                         (list #x70000000 0
+                               nelisp-os-WIN-MEM-RELEASE))))))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

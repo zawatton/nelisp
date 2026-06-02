@@ -29,8 +29,10 @@
 ;; integer fd `write'.  Stage 6 adds stdin reads through `ReadFile'.  Stage 7
 ;; adds a small Windows fd->HANDLE table for regular file I/O via `CreateFileW'
 ;; / `CloseHandle'.  Stage 9 reports Windows HANDLE failures through
-;; `GetLastError'.  The Linux/Darwin path remains the default until a real
-;; Windows standalone runtime selects `system-type' = `windows-nt'.
+;; `GetLastError'.  Stage 10 maps the anonymous mmap/mprotect/munmap surface to
+;; `VirtualAlloc' / `VirtualProtect' / `VirtualFree'.  The Linux/Darwin path
+;; remains the default until a real Windows standalone runtime selects
+;; `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -92,6 +94,17 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-OPEN-ALWAYS       4)
 (defconst nelisp-os-WIN-TRUNCATE-EXISTING 5)
 (defconst nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL #x80)
+
+;; Windows virtual memory constants.
+(defconst nelisp-os-WIN-MEM-COMMIT  #x1000)
+(defconst nelisp-os-WIN-MEM-RESERVE #x2000)
+(defconst nelisp-os-WIN-MEM-RELEASE #x8000)
+(defconst nelisp-os-WIN-PAGE-NOACCESS          #x01)
+(defconst nelisp-os-WIN-PAGE-READONLY          #x02)
+(defconst nelisp-os-WIN-PAGE-READWRITE         #x04)
+(defconst nelisp-os-WIN-PAGE-EXECUTE           #x10)
+(defconst nelisp-os-WIN-PAGE-EXECUTE-READ      #x20)
+(defconst nelisp-os-WIN-PAGE-EXECUTE-READWRITE #x40)
 
 (defvar nelisp-os--windows-next-fd 3
   "Next POSIX-like fd number for Windows HANDLE table entries.")
@@ -433,6 +446,68 @@ went through `:string' (= CString::new, NUL-rejecting)."
 (defconst nelisp-os-MAP-ANONYMOUS 32)       ; 0o40
 (defconst nelisp-os-MAP-FAILED    -1)       ; not strictly a flag, sentinel
 
+(defun nelisp-os--windows-page-protect (prot)
+  "Translate POSIX-like PROT bits to a Windows PAGE_* constant."
+  (let ((read  (not (= 0 (logand prot nelisp-os-PROT-READ))))
+        (write (not (= 0 (logand prot nelisp-os-PROT-WRITE))))
+        (exec  (not (= 0 (logand prot nelisp-os-PROT-EXEC)))))
+    (cond
+     ((and exec write) nelisp-os-WIN-PAGE-EXECUTE-READWRITE)
+     ((and exec read)  nelisp-os-WIN-PAGE-EXECUTE-READ)
+     (exec             nelisp-os-WIN-PAGE-EXECUTE)
+     (write            nelisp-os-WIN-PAGE-READWRITE)
+     (read             nelisp-os-WIN-PAGE-READONLY)
+     (t                nelisp-os-WIN-PAGE-NOACCESS))))
+
+(defun nelisp-os--windows-anonymous-mmap-p (flags fd offset)
+  "Return non-nil when mmap inputs are supported by VirtualAlloc."
+  (and (= fd -1)
+       (= offset 0)
+       (not (= 0 (logand flags nelisp-os-MAP-ANONYMOUS)))))
+
+(defun nelisp-os--windows-mmap (length prot flags fd offset)
+  "Windows implementation of anonymous `nelisp-os-mmap' via VirtualAlloc."
+  (when (or (<= length 0)
+            (not (nelisp-os--windows-anonymous-mmap-p flags fd offset)))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((addr (nelisp-os--libc-call
+               "kernel32" "VirtualAlloc"
+               [:pointer :pointer :uint64 :uint32 :uint32]
+               0 length
+               (logior nelisp-os-WIN-MEM-COMMIT nelisp-os-WIN-MEM-RESERVE)
+               (nelisp-os--windows-page-protect prot))))
+    (if (= addr 0)
+        (nelisp-os--windows-ffi-error-signal)
+      addr)))
+
+(defun nelisp-os--windows-mprotect (addr length prot)
+  "Windows implementation of `nelisp-os-mprotect' via VirtualProtect."
+  (when (or (= addr 0) (<= length 0))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((old-protect (nelisp-os--alloc 4)))
+    (unwind-protect
+        (let ((ok (nelisp-os--libc-call
+                   "kernel32" "VirtualProtect"
+                   [:sint32 :pointer :uint64 :uint32 :pointer]
+                   addr length (nelisp-os--windows-page-protect prot)
+                   old-protect)))
+          (if (= ok 0)
+              (nelisp-os--windows-ffi-error-signal)
+            0))
+      (nelisp-os--free old-protect))))
+
+(defun nelisp-os--windows-munmap (addr length)
+  "Windows implementation of `nelisp-os-munmap' via VirtualFree."
+  (when (or (= addr 0) (<= length 0))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((ok (nelisp-os--libc-call
+             "kernel32" "VirtualFree"
+             [:sint32 :pointer :uint64 :uint32]
+             addr 0 nelisp-os-WIN-MEM-RELEASE)))
+    (if (= ok 0)
+        (nelisp-os--windows-ffi-error-signal)
+      0)))
+
 ;; struct stat st_mode bits
 (defconst nelisp-os-S-IFMT  61440)          ; 0o170000
 (defconst nelisp-os-S-IFREG 32768)          ; 0o100000
@@ -518,16 +593,22 @@ and the old `nelisp--syscall-fstat' Rust primitive (Doc 54 Phase 3)."
   "POSIX mmap(2) — addr=0 (kernel chooses).  Returns mapping address as
 integer (opaque pointer for elisp), or signals `nelisp-os-error' on
 mapping failure (raw kernel returns -errno for failed mmap)."
-  (nelisp-os--check-errno
-   (nelisp--syscall 'mmap 0 length prot flags fd offset)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-mmap length prot flags fd offset)
+    (nelisp-os--check-errno
+     (nelisp--syscall 'mmap 0 length prot flags fd offset))))
 
 (defun nelisp-os-mprotect (addr length prot)
   "POSIX mprotect(2) — change protection on existing mapping."
-  (nelisp-os--check-errno (nelisp--syscall 'mprotect addr length prot)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-mprotect addr length prot)
+    (nelisp-os--check-errno (nelisp--syscall 'mprotect addr length prot))))
 
 (defun nelisp-os-munmap (addr length)
   "POSIX munmap(2) — release a previously mmap'd region."
-  (nelisp-os--check-errno (nelisp--syscall 'munmap addr length)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-munmap addr length)
+    (nelisp-os--check-errno (nelisp--syscall 'munmap addr length))))
 
 (defun nelisp-os-dup2 (oldfd newfd)
   "POSIX dup2(2) — duplicate OLDFD onto NEWFD; returns NEWFD."

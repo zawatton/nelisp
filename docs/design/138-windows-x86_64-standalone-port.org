@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-9-GETLASTERROR-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-10-VIRTUALALLOC-OS-MEMORY-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 9 GetLastError + first real Windows smoke VALIDATED
+- *State*: STAGE 10 VirtualAlloc OS memory + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -28,7 +28,11 @@
   =nelisp-os-error= with the raw =GetLastError= DWORD instead of a fixed
   placeholder value, preserving native Windows diagnostics across
   =GetStdHandle=, =CreateFileW=, =ReadFile=, =WriteFile=, and =CloseHandle=
-  failures.
+  failures.  The stdlib OS memory surface now maps Windows anonymous
+  =nelisp-os-mmap= to =kernel32!VirtualAlloc(MEM_COMMIT|MEM_RESERVE)=,
+  =nelisp-os-mprotect= to =VirtualProtect=, and =nelisp-os-munmap= to
+  =VirtualFree(MEM_RELEASE)=.  File-backed mappings remain unsupported on
+  Windows until the separate =CreateFileMappingW= / =MapViewOfFile= path lands.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -45,7 +49,9 @@
   =ReadFile= / =WriteFile= / =CloseHandle=, and that unknown Windows fds do not
   silently fall through to POSIX libc.  It also verifies that Windows FFI
   failures call =kernel32!GetLastError= and propagate that DWORD through
-  =nelisp-os-error=.
+  =nelisp-os-error=.  Stage 10 coverage verifies Windows PAGE_* protection
+  translation plus =VirtualAlloc= / =VirtualProtect= / =VirtualFree= argument
+  shape for =nelisp-os-mmap/mprotect/munmap=.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -75,9 +81,11 @@
   container, import-table path, =VirtualAlloc= call shape, first arena metadata
   write path, HANDLE stdout write path, and first stdlib Windows stdio read/write
   branch plus regular file HANDLE fd table; Stage 9 adds native Windows error
-  reporting through =GetLastError=.  These stages do not yet replace the Linux
-  standalone allocator, complete real Windows execution of every smoke, support
-  all Windows OS APIs, or cover the rest of the stdlib OS surface.
+  reporting through =GetLastError=; Stage 10 adds the anonymous
+  =mmap/mprotect/munmap= compatibility branch over Windows virtual memory APIs.
+  These stages do not yet replace the Linux standalone allocator, complete real
+  Windows execution of every smoke, support all Windows OS APIs, or cover the
+  rest of the stdlib OS surface.
 
 * TL;DR
 
@@ -167,6 +175,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
 - Windows has no mmap → =kernel32!VirtualAlloc= / =VirtualProtect= via
   import.  Preferred-base / ASLR constraints differ (analogous to the macOS
   =__PAGEZERO=4GB= rebase issue).
+- *Stdlib memory progress 2026-06-02*: =nelisp-os-mmap= now routes anonymous
+  Windows mappings through =VirtualAlloc(MEM_COMMIT|MEM_RESERVE)=, protection
+  changes through =VirtualProtect=, and release through
+  =VirtualFree(MEM_RELEASE)=.  Non-anonymous / fd-backed mappings are rejected
+  explicitly until Windows file mapping support is designed.
 
 ** B4. Parallel build's fork(2)/clone(2) absent on Windows
 
@@ -218,6 +231,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =minimal-exit-42= has executed on native Windows and returned exit code 42.
   *Windows error progress 2026-06-02*: HANDLE/API failures now report
   =kernel32!GetLastError= through =nelisp-os-error= instead of a placeholder.
+  *Windows memory progress 2026-06-02*: anonymous =mmap/mprotect/munmap= now
+  routes through =VirtualAlloc= / =VirtualProtect= / =VirtualFree= with
+  host-side ERT coverage.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -245,7 +261,9 @@ largest uncertainty (B1 + B2) first.
    SHIPPED 2026-06-02*: =virtualalloc-exit-42= imports =VirtualAlloc= and
    emits a runnable smoke entry in Win64 ABI shape.  *Arena metadata
    byte-structure SHIPPED 2026-06-02*: =virtualalloc-arena-exit-42= allocates
-   64KiB and stores =base/cursor/end= into =.data=.  *Next*: execute on real
+   64KiB and stores =base/cursor/end= into =.data=.  *Stdlib memory branch
+   SHIPPED 2026-06-02*: anonymous =nelisp-os-mmap/mprotect/munmap= now maps to
+   =VirtualAlloc= / =VirtualProtect= / =VirtualFree=.  *Next*: execute on real
    Windows, then connect this metadata path to the real standalone allocator.
 3. HANDLE stdout I/O smoke (B7).  *Host byte-structure SHIPPED 2026-06-02*:
    =writefile-stdout-exit-42= imports =GetStdHandle= / =WriteFile=, uses a
