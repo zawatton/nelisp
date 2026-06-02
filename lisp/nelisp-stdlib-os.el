@@ -472,6 +472,11 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
      (trunc nelisp-os-WIN-TRUNCATE-EXISTING)
      (t nelisp-os-WIN-OPEN-EXISTING))))
 
+(defun nelisp-os--windows-open-status-flags (flags)
+  "Return Windows-tracked POSIX status/access FLAGS for an opened file fd."
+  (logior (logand flags 3)
+          (logand flags nelisp-os-O-APPEND)))
+
 (defun nelisp-os--windows-utf16-code-units (str)
   "Return UTF-16 code units for STR as a list of unsigned 16-bit integers."
   (let ((units nil))
@@ -904,7 +909,10 @@ thread HANDLE from `PROCESS_INFORMATION' is closed before returning."
                          0)))
             (if (or (= handle 0) (= handle -1))
                 (nelisp-os--windows-ffi-error-signal)
-              (let ((fd (nelisp-os--windows-fd-alloc handle)))
+              (let ((fd (nelisp-os--windows-fd-alloc
+                         handle
+                         nil
+                         (nelisp-os--windows-open-status-flags flags))))
                 (if (= (logand flags nelisp-os-O-CLOEXEC) 0)
                     fd
                   (condition-case err
@@ -1536,18 +1544,25 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
     (nelisp-os--windows-fd-flags fd))
    ((= cmd nelisp-os-F-SETFL)
     (nelisp-os--windows-handle-for-fd fd)
-    (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
-      (signal 'nelisp-os-error (list 95))) ; ENOTSUP
     (if (eq (nelisp-os--windows-fd-kind fd) 'socket)
         (progn
+          (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
+            (signal 'nelisp-os-error (list 95))) ; ENOTSUP
           (nelisp-os--windows-set-socket-nonblock
            (nelisp-os--windows-socket-for-fd fd)
            (/= (logand arg nelisp-os-O-NONBLOCK) 0))
           (nelisp-os--windows-fd-set-flags fd arg)
           0)
-      (if (/= arg 0)
-          (signal 'nelisp-os-error (list 95)) ; ENOTSUP
-        (nelisp-os--windows-fd-set-flags fd 0)
+      (let* ((current (nelisp-os--windows-fd-flags fd))
+             (requested-append (logand arg nelisp-os-O-APPEND))
+             (current-append (logand current nelisp-os-O-APPEND)))
+        (unless (= (logand arg (lognot (logior 3 nelisp-os-O-APPEND))) 0)
+          (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+        (unless (= requested-append current-append)
+          (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+        (nelisp-os--windows-fd-set-flags
+         fd
+         (logior (logand current 3) current-append))
         0)))
    (t
     (signal 'nelisp-os-error (list 22))))) ; EINVAL

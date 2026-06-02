@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-74-WINDOWS-ACCEPT-NONBLOCK-FLAGS
+#+STATUS: STAGE-75-WINDOWS-OPEN-STATUS-FLAGS
 
 * Status
 
-- *State*: STAGE 74 Windows accept nonblocking flags
+- *State*: STAGE 75 Windows open status flags
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -63,9 +63,10 @@
   Windows files now use a small POSIX-like fd table over kernel32 HANDLEs:
   =nelisp-os-open= writes a UTF-16LE path buffer and calls =CreateFileW=,
   applies =O_CLOEXEC= by clearing HANDLE inheritance through =F_SETFD
-  FD_CLOEXEC= / =SetHandleInformation= after successful creation, regular fd
-  read/write use =ReadFile= / =WriteFile=, and =nelisp-os-close= calls
-  =CloseHandle=.  Windows HANDLE/API failures now signal
+  FD_CLOEXEC= / =SetHandleInformation= after successful creation, records
+  access mode and =O_APPEND= status for =F_GETFL=, regular fd read/write use
+  =ReadFile= / =WriteFile=, and =nelisp-os-close= calls =CloseHandle=.
+  Windows HANDLE/API failures now signal
   =nelisp-os-error= with the raw =GetLastError= DWORD instead of a fixed
   placeholder value, preserving native Windows diagnostics across
   =GetStdHandle=, =CreateFileW=, =ReadFile=, =WriteFile=, and =CloseHandle=
@@ -363,6 +364,9 @@
   Stage 74 coverage verifies Windows accepted socket fds preserve the
   listener's tracked =O_NONBLOCK= status flag and report it through
   =F_GETFL=.
+  Stage 75 coverage verifies Windows regular =open= records access mode and
+  =O_APPEND= status for =F_GETFL=, while regular =F_SETFL= refuses append
+  state changes that would desynchronize tracking from the HANDLE.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -708,6 +712,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   honors =O_CLOEXEC= on Windows by applying =F_SETFD FD_CLOEXEC= to the newly
   allocated HANDLE fd after =CreateFileW= succeeds, and closes the new fd if
   the inheritability update fails.
+  *Windows open status flag progress 2026-06-03*: Windows regular file
+  =open= now records access mode and =O_APPEND= status flags in the fd table so
+  =F_GETFL= reflects the requested CreateFileW access semantics.  Regular
+  =F_SETFL= rejects append state changes that cannot be applied to the
+  existing HANDLE.
   *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
   =eventfd=, =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
   Windows before reaching Linux syscall/libc paths, including the relative-ms
@@ -890,6 +899,9 @@ largest uncertainty (B1 + B2) first.
    *Windows open close-on-exec SHIPPED 2026-06-03*: =nelisp-os-open= now maps
    =O_CLOEXEC= to a post-=CreateFileW= =SetHandleInformation= update and
    releases the newly allocated fd on descriptor flag failure.
+   *Windows open status flags SHIPPED 2026-06-03*: regular Windows
+   =CreateFileW= opens now preserve access mode and =O_APPEND= tracking for
+   =F_GETFL=, and reject unsupported regular-fd append flag changes.
    *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
    fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
    fallback.
@@ -1096,9 +1108,9 @@ largest uncertainty (B1 + B2) first.
    getname, read/write, poll, expanded int socket options, and
    loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=, accepted
    socket nonblock flag tracking, and socket close-on-exec support; regular
-   =CreateFileW= opens now honor
-   =O_CLOEXEC= through HANDLE inheritance updates.  Broader socket extensions
-   remain pending.
+   =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
+   updates and preserve access / =O_APPEND= status flags for =F_GETFL=.
+   Broader socket extensions remain pending.
    Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 

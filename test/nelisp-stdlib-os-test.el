@@ -651,7 +651,8 @@
         (freed nil)
         (wide-writes nil)
         (nelisp-os--windows-next-fd 3)
-        (nelisp-os--windows-fd-table nil))
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-flags-table nil))
     (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 4000))
               ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
               ((symbol-function 'nelisp-os-write-u16)
@@ -670,6 +671,8 @@
                                    0)
                    3))))
     (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-WRONLY))))
     (should (equal call
                    (list "kernel32" "CreateFileW"
                          [:pointer :pointer :uint32 :uint32 :pointer
@@ -699,7 +702,8 @@
   (let ((calls nil)
         (freed nil)
         (nelisp-os--windows-next-fd 3)
-        (nelisp-os--windows-fd-table nil))
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-flags-table nil))
     (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 4000))
               ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
               ((symbol-function 'nelisp-os-write-u16) (lambda (&rest _args) nil))
@@ -738,13 +742,56 @@
                                 nelisp-os-WIN-HANDLE-FLAG-INHERIT
                                 0)))))
     (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-WRONLY))))
     (should (equal freed '(4000)))))
+
+(ert-deftest nelisp-stdlib-os-open-windows-tracks-status-flags-for-getfl ()
+  "Windows regular open records access and O_APPEND status for F_GETFL."
+  (let ((calls nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-flags-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 4000))
+              ((symbol-function 'nelisp-os--free) (lambda (_ptr) nil))
+              ((symbol-function 'nelisp-os-write-u16) (lambda (&rest _args) nil))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 #xabcdef)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-open "append.txt"
+                                   (logior nelisp-os-O-RDWR
+                                           nelisp-os-O-APPEND)
+                                   0)
+                   3))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0)
+                   (logior nelisp-os-O-RDWR nelisp-os-O-APPEND)))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateFileW"
+                          [:pointer :pointer :uint32 :uint32 :pointer
+                           :uint32 :uint32 :pointer]
+                          (list 4000
+                                (logior nelisp-os-WIN-GENERIC-READ
+                                        nelisp-os-WIN-FILE-APPEND-DATA)
+                                (logior nelisp-os-WIN-FILE-SHARE-READ
+                                        nelisp-os-WIN-FILE-SHARE-WRITE
+                                        nelisp-os-WIN-FILE-SHARE-DELETE)
+                                0
+                                nelisp-os-WIN-OPEN-EXISTING
+                                nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL
+                                0)))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,(logior nelisp-os-O-RDWR
+                                   nelisp-os-O-APPEND)))))))
 
 (ert-deftest nelisp-stdlib-os-open-windows-o-cloexec-cleans-up-on-setfd-error ()
   "Windows open O_CLOEXEC closes the new fd when inheritability update fails."
   (let ((closed nil)
         (nelisp-os--windows-next-fd 3)
-        (nelisp-os--windows-fd-table nil))
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-flags-table nil))
     (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 4000))
               ((symbol-function 'nelisp-os--free) (lambda (_ptr) nil))
               ((symbol-function 'nelisp-os-write-u16) (lambda (&rest _args) nil))
@@ -1412,6 +1459,26 @@
         (should-error (nelisp-os-fcntl 3 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
                       :type 'nelisp-os-error)))
     (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-setfl-regular-append-change-errors ()
+  "Windows regular F_SETFL refuses to desync tracked O_APPEND from the HANDLE."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-flags-table
+         `((3 . ,(logior nelisp-os-O-WRONLY nelisp-os-O-APPEND)))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-fcntl 3 nelisp-os-F-SETFL 0)
+                      :type 'nelisp-os-error)
+        (should (= (nelisp-os-fcntl
+                    3 nelisp-os-F-SETFL
+                    (logior nelisp-os-O-WRONLY nelisp-os-O-APPEND))
+                   0))))
+    (should-not called)
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,(logior nelisp-os-O-WRONLY
+                                   nelisp-os-O-APPEND)))))))
 
 (ert-deftest nelisp-stdlib-os-fcntl-windows-getfd-uses-gethandleinformation ()
   "Windows F_GETFD maps HANDLE_FLAG_INHERIT to POSIX FD_CLOEXEC."
