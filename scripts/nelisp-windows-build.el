@@ -17,6 +17,13 @@
 ;;
 ;;   .\tools\windows-selfhost-test.ps1
 ;;
+;; Or build a single smoke EXE with one of:
+;;
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-exit42
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-virtualalloc
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-arena
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-writefile-stdout
+;;
 ;; The generated EXEs require no external compiler, linker, CRT, or signing.
 
 ;;; Code:
@@ -40,6 +47,21 @@
   (expand-file-name "target/nelisp-windows-exit42.exe"
                     nelisp-windows-build--repo-root)
   "Default path for the single ExitProcess(42) smoke EXE.")
+
+(defconst nelisp-windows-build--virtualalloc-out
+  (expand-file-name "target/nelisp-windows-virtualalloc.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single VirtualAlloc smoke EXE.")
+
+(defconst nelisp-windows-build--arena-out
+  (expand-file-name "target/nelisp-windows-arena.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single VirtualAlloc arena smoke EXE.")
+
+(defconst nelisp-windows-build--writefile-stdout-out
+  (expand-file-name "target/nelisp-windows-writefile-stdout.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single WriteFile stdout smoke EXE.")
 
 (defconst nelisp-windows-build-smoke-specs
   '((exit42 . minimal-exit-42)
@@ -91,13 +113,40 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
       (error "NELISP_WINDOWS_OUT is required"))
     (nelisp-windows-build-exe spec out)))
 
+(defun nelisp-windows-build--batch-smoke (spec out-path label)
+  "Build one batch smoke SPEC to OUT-PATH and describe it with LABEL."
+  (make-directory (file-name-directory (expand-file-name out-path)) t)
+  (nelisp-pe-write-exe-binary out-path spec)
+  (message "nelisp-windows-build: wrote %s (%s)" out-path label)
+  out-path)
+
 (defun nelisp-windows-build-exit42 (&optional out-path)
   "Batch entry: build the minimal Windows ExitProcess(42) smoke EXE."
-  (let ((out (or out-path nelisp-windows-build--exit42-out)))
-    (make-directory (file-name-directory (expand-file-name out)) t)
-    (nelisp-pe-write-exe-binary out 'minimal-exit-42)
-    (message "nelisp-windows-build: wrote %s (ExitProcess 42)" out)
-    out))
+  (nelisp-windows-build--batch-smoke
+   'minimal-exit-42
+   (or out-path nelisp-windows-build--exit42-out)
+   "ExitProcess 42"))
+
+(defun nelisp-windows-build-virtualalloc (&optional out-path)
+  "Batch entry: build the Windows VirtualAlloc smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'virtualalloc-exit-42
+   (or out-path nelisp-windows-build--virtualalloc-out)
+   "VirtualAlloc + ExitProcess 42"))
+
+(defun nelisp-windows-build-arena (&optional out-path)
+  "Batch entry: build the Windows VirtualAlloc arena smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'virtualalloc-arena-exit-42
+   (or out-path nelisp-windows-build--arena-out)
+   "VirtualAlloc arena metadata + ExitProcess 42"))
+
+(defun nelisp-windows-build-writefile-stdout (&optional out-path)
+  "Batch entry: build the Windows WriteFile stdout smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'writefile-stdout-exit-42
+   (or out-path nelisp-windows-build--writefile-stdout-out)
+   "GetStdHandle + WriteFile stdout + ExitProcess 42"))
 
 (provide 'nelisp-windows-build)
 

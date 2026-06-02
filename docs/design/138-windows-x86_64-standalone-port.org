@@ -45,11 +45,17 @@
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
   that EXE returned =$LASTEXITCODE = 42=.  Remaining real Windows checks:
   =virtualalloc-exit-42=, =virtualalloc-arena-exit-42=, and
-  =writefile-stdout-exit-42=.  This Linux host does not have =wine=.  The
-  real-machine smoke entry is =tools/windows-selfhost-test.ps1=; it builds and
-  runs the four PE32+ smoke EXEs on native Windows, checking exit code 42 and
-  the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE generation
-  without executing them.
+  =writefile-stdout-exit-42=.  They can now be built individually on native
+  Windows with =nelisp-windows-build-virtualalloc=,
+  =nelisp-windows-build-arena=, and
+  =nelisp-windows-build-writefile-stdout=, producing
+  =target/nelisp-windows-virtualalloc.exe=,
+  =target/nelisp-windows-arena.exe=, and
+  =target/nelisp-windows-writefile-stdout.exe=.  This Linux host does not have
+  =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
+  it builds and runs the four PE32+ smoke EXEs on native Windows, checking exit
+  code 42 and the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE
+  generation without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
   in a *separate* session — Windows is the next target after macOS lands.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
@@ -246,7 +252,11 @@ largest uncertainty (B1 + B2) first.
    =tools/windows-selfhost-test.ps1= drives =scripts/nelisp-windows-build.el=
    to emit =minimal-exit-42=, =virtualalloc-exit-42=,
    =virtualalloc-arena-exit-42=, and =writefile-stdout-exit-42=, then validates
-   process exit status and stdout on Windows.
+   process exit status and stdout on Windows.  Individual real-machine build
+   entries are also READY 2026-06-02:
+   =nelisp-windows-build-exit42=, =nelisp-windows-build-virtualalloc=,
+   =nelisp-windows-build-arena=, and
+   =nelisp-windows-build-writefile-stdout=.
 5. Replace parallel/MT with =CreateProcess= / =CreateThread= (B4) — last,
    since it is a feature extension, not a boot blocker.
 
