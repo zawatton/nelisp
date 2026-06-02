@@ -10616,6 +10616,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-cond node buf))
         ((= tag 33)             ; logic — aarch64 and/or short-circuit
          (nelisp-phase47-compiler--emit-logic node buf))
+        ((= tag 97)             ; addr-of — aarch64 ADR x0,<name>
+         (nelisp-phase47-compiler--emit-addr-of node buf))
         ((memq tag '(23 55 27            ; extern-call sexp-float-unwrap f64-to-i64-trunc
                      14                  ; cons-cdr-raw
                      60                  ; sexp-payload-ptr-record
@@ -11071,16 +11073,15 @@ NODE must satisfy `nelisp-phase47-compiler--call-arg-trivial-p'."
               (list :trivial-emit-unexpected-kind kind))))))
 
 (defun nelisp-phase47-compiler--emit-addr-of (node buf)
-  "Emit `LEA rax, [rip + NAME]' — load function NAME's address into
-rax (Doc 133 Phase 0 `addr-of').  Produces an i64 value (a code
-pointer) that `call-ptr' can invoke.  x86_64 only; signals on
-aarch64 (RIP-relative LEA has no single-instruction aarch64 form —
-ADRP+ADD lowering is deferred)."
+  "Emit a code-pointer load for function NAME (Doc 133 Phase 0 `addr-of').
+Produces an i64 value (a code pointer) that `call-ptr' can invoke.
+x86_64: `LEA rax, [rip + NAME]'.  aarch64: `ADR x0, NAME' — a single
+PC-relative byte-offset load (±1 MiB), sufficient for the intra-text
+self-host section (no GOT, no ADRP+ADD page split needed)."
   (let ((name (nelisp-phase47-compiler--ir-get node :name)))
-    (when (eq nelisp-phase47-compiler--arch 'aarch64)
-      (signal 'nelisp-phase47-compiler-error
-              (list :addr-of-aarch64-unsupported name)))
-    (nelisp-asm-x86_64-lea-reg-rip-label buf 'rax name)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (nelisp-asm-arm64-adr buf 'x0 name)
+      (nelisp-asm-x86_64-lea-reg-rip-label buf 'rax name))))
 
 (defun nelisp-phase47-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.
@@ -13444,30 +13445,40 @@ result (zero-extended byte) in x0."
   (nelisp-asm-arm64-ldrb-imm buf 'x0 'x0 0))         ; x0 = byte
 
 (defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
-  "Emit a fixed-arity direct call for aarch64 (AAPCS64).
+  "Emit a fixed-arity call for aarch64 (AAPCS64), direct or indirect.
 Each arg is evaluated left-to-right into x0 and spilled (STR
 [SP,#-16]!); the n spills are then popped into x0..x(n-1) so later
 args cannot clobber earlier arg registers; then `BL <name>'.  The
-result is already in x0.  Only named (non-pointer) targets with
-<= 6 register args are supported (nelisp-sys caps params at 6)."
+result is already in x0.  Only <= 6 register args are supported
+(nelisp-sys caps params at 6).
+
+Indirect (`:fn-value') calls (Doc 133 P0 `call-ptr'): the function
+pointer is evaluated first and spilled BELOW the args, so the arg-reg
+shuffle cannot clobber it; after the args are in place it is popped
+into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
   (let* ((name (nelisp-phase47-compiler--ir-get node :name))
          (fn-value (nelisp-phase47-compiler--ir-get node :fn-value))
          (args (nelisp-phase47-compiler--ir-get node :args))
          (n (length args))
          (gp-arg-regs '(x0 x1 x2 x3 x4 x5)))
-    (when fn-value
-      (signal 'nelisp-phase47-compiler-error
-              (list :call-ptr-aarch64-unsupported name)))
     (when (> n (length gp-arg-regs))
       (signal 'nelisp-phase47-compiler-error
               (list :call-too-many-args-aarch64 name n)))
+    ;; Indirect: stash the fn-ptr below the args (popped into x9 last).
+    (when fn-value
+      (nelisp-phase47-compiler--emit-value fn-value buf)
+      (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
     (dolist (a args)
       (nelisp-phase47-compiler--emit-value a buf)
       (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
     ;; Pop in reverse: top of stack (last arg) -> highest reg.
     (cl-loop for i from (1- n) downto 0
              do (nelisp-asm-arm64-ldr-post-sp-16 buf (nth i gp-arg-regs)))
-    (nelisp-asm-arm64-bl buf name)))
+    (if fn-value
+        (progn
+          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)  ; x9 = fn-ptr
+          (nelisp-asm-arm64-blr buf 'x9))
+      (nelisp-asm-arm64-bl buf name))))
 
 ;; ---- Doc 101 §101.D Cons construction ops ----
 

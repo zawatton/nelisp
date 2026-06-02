@@ -198,6 +198,28 @@ must contain STR{B,H,}/LDR{B,H,} `[X1, X2]' words (val→x3, result→x0)."
                   (exit (run))))))
     (should (> (length bytes) 0))))
 
+;; ---- addr-of + call-ptr (function pointers) ----------------------
+
+(ert-deftest nelisp-macos-dataops/addr-of-call-ptr-compile-and-encode ()
+  "addr-of + call-ptr compile on aarch64 and emit ADR + BLR.
+`(call-ptr (addr-of add2) 30 12)' takes add2's PC-relative address
+(ADR x0), shuffles args into x0/x1, then invokes it (BLR x9)."
+  (let* ((bytes (nelisp-macos-dataops-test--emit
+                 '(seq
+                   (defun add2 (a b) (+ a b))
+                   (defun run () (call-ptr (addr-of add2) 30 12))
+                   (exit (run)))))
+         (words (nelisp-macos-dataops-test--words bytes))
+         (adr nil) (blr nil))
+    (should (> (length bytes) 0))
+    (dolist (w words)
+      ;; ADR: bit31=0, bits[28:24]=0b10000 (mask 0x9F000000 == 0x10000000).
+      (when (= (logand w #x9F000000) #x10000000) (setq adr t))
+      ;; BLR Xn: 0xD63F0000 | (Rn<<5) (mask out the Rn field).
+      (when (= (logand w #xFFFFFC1F) #xD63F0000) (setq blr t)))
+    (should adr)
+    (should blr)))
+
 (provide 'nelisp-macos-dataops-test)
 
 ;;; nelisp-macos-dataops-test.el ends here
