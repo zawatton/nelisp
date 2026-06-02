@@ -396,7 +396,8 @@
 
 (ert-deftest nelisp-stdlib-os-mmap-windows-uses-virtualalloc ()
   "Windows anonymous mmap routes through kernel32 VirtualAlloc."
-  (let ((call nil))
+  (let ((call nil)
+        (nelisp-os--windows-mmap-table nil))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (setq call (list dll fn sig args))
@@ -416,18 +417,42 @@
                                4096
                                (logior nelisp-os-WIN-MEM-COMMIT
                                        nelisp-os-WIN-MEM-RESERVE)
-                               nelisp-os-WIN-PAGE-READWRITE))))))
+                               nelisp-os-WIN-PAGE-READWRITE))))
+    (should (equal nelisp-os--windows-mmap-table
+                   '((#x70000000 . virtualalloc))))))
 
-(ert-deftest nelisp-stdlib-os-mmap-windows-rejects-fd-backed-mapping ()
-  "Windows mmap branch only accepts anonymous mappings for now."
-  (let ((called nil))
+(ert-deftest nelisp-stdlib-os-mmap-windows-file-backed-uses-mapviewoffile ()
+  "Windows file-backed mmap routes through CreateFileMappingW + MapViewOfFile."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-mmap-table nil))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
-               (lambda (&rest _args) (setq called t))))
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "CreateFileMappingW") #xbbbb)
+                  ((equal fn "MapViewOfFile") #x71000000)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
       (let ((system-type 'windows-nt))
-        (should-error (nelisp-os-mmap 4096 nelisp-os-PROT-READ
-                                      nelisp-os-MAP-PRIVATE 3 0)
-                      :type 'nelisp-os-error)))
-    (should-not called)))
+        (should (= (nelisp-os-mmap 4096 nelisp-os-PROT-READ
+                                   nelisp-os-MAP-PRIVATE 3 #x1000)
+                   #x71000000))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateFileMappingW"
+                          [:pointer :pointer :pointer :uint32 :uint32 :uint32 :pointer]
+                          (list #xaaaa 0 nelisp-os-WIN-PAGE-READONLY
+                                0 #x2000 0))
+                    (list "kernel32" "MapViewOfFile"
+                          [:pointer :pointer :uint32 :uint32 :uint32 :uint64]
+                          (list #xbbbb nelisp-os-WIN-FILE-MAP-READ
+                                0 #x1000 4096))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xbbbb)))))
+    (should (equal nelisp-os--windows-mmap-table
+                   '((#x71000000 . mapped-file))))))
 
 (ert-deftest nelisp-stdlib-os-mprotect-windows-uses-virtualprotect ()
   "Windows mprotect routes through kernel32 VirtualProtect."
@@ -454,7 +479,8 @@
 
 (ert-deftest nelisp-stdlib-os-munmap-windows-uses-virtualfree ()
   "Windows munmap routes through kernel32 VirtualFree MEM_RELEASE."
-  (let ((call nil))
+  (let ((call nil)
+        (nelisp-os--windows-mmap-table nil))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (setq call (list dll fn sig args))
@@ -466,6 +492,22 @@
                          [:sint32 :pointer :uint64 :uint32]
                          (list #x70000000 0
                                nelisp-os-WIN-MEM-RELEASE))))))
+
+(ert-deftest nelisp-stdlib-os-munmap-windows-file-view-uses-unmapviewoffile ()
+  "Windows munmap releases file-backed views through UnmapViewOfFile."
+  (let ((call nil)
+        (nelisp-os--windows-mmap-table '((#x71000000 . mapped-file))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-munmap #x71000000 4096) 0))))
+    (should (equal call
+                   (list "kernel32" "UnmapViewOfFile"
+                         [:sint32 :pointer]
+                         (list #x71000000))))
+    (should-not nelisp-os--windows-mmap-table)))
 
 (ert-deftest nelisp-stdlib-os-pipe-windows-uses-createpipe ()
   "Windows pipe routes through CreatePipe and records both HANDLEs."

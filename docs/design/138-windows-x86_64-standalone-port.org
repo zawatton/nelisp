@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-39-WINSOCK-TCP-NODELAY
+#+STATUS: STAGE-40-WINDOWS-FILE-BACKED-MMAP
 
 * Status
 
-- *State*: STAGE 39 Winsock TCP_NODELAY
+- *State*: STAGE 40 Windows file-backed mmap
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -30,9 +30,9 @@
   =GetStdHandle=, =CreateFileW=, =ReadFile=, =WriteFile=, and =CloseHandle=
   failures.  The stdlib OS memory surface now maps Windows anonymous
   =nelisp-os-mmap= to =kernel32!VirtualAlloc(MEM_COMMIT|MEM_RESERVE)=,
-  =nelisp-os-mprotect= to =VirtualProtect=, and =nelisp-os-munmap= to
-  =VirtualFree(MEM_RELEASE)=.  File-backed mappings remain unsupported on
-  Windows until the separate =CreateFileMappingW= / =MapViewOfFile= path lands.
+  =nelisp-os-mprotect= to =VirtualProtect=, anonymous =nelisp-os-munmap= to
+  =VirtualFree(MEM_RELEASE)=, and file-backed =MAP_PRIVATE= mappings through
+  =CreateFileMappingW= / =MapViewOfFile= with =UnmapViewOfFile= cleanup.
   The minimal process surface now routes Windows =nelisp-os-exit= through
   =kernel32!ExitProcess= and =nelisp-os-getpid= through
   =kernel32!GetCurrentProcessId=, removing another raw Linux syscall / POSIX
@@ -128,6 +128,8 @@
   =setsockopt-int=.  Both =nelisp-os-setsockopt-int= and
   =nelisp-os-getsockopt-int= now also translate =IPPROTO_TCP= /
   =TCP_NODELAY= through Winsock.
+  File-backed =nelisp-os-mmap= now accepts Windows HANDLE-backed fds and maps
+  them through =CreateFileMappingW= / =MapViewOfFile=.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -213,6 +215,9 @@
   cleanup, and non-socket fd rejection before Winsock FFI.
   Stage 39 coverage verifies Windows =setsockopt-int= / =getsockopt-int=
   support =IPPROTO_TCP= / =TCP_NODELAY= through Winsock.
+  Stage 40 coverage verifies Windows file-backed =mmap= dispatch through
+  =CreateFileMappingW= / =MapViewOfFile=, mapping handle cleanup, mapping-kind
+  tracking, and =munmap= dispatch through =UnmapViewOfFile= for file views.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -277,6 +282,8 @@
   real-machine script.  Stage 37 lets that script run a selected smoke by name.
   Stage 38 routes int-valued =getsockopt= through Winsock on Windows.
   Stage 39 adds TCP_NODELAY translation to the int-valued socket option helpers.
+  Stage 40 adds file-backed =MAP_PRIVATE= =mmap= through Windows file mapping
+  APIs.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -496,6 +503,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock TCP_NODELAY progress 2026-06-03*:
   =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =IPPROTO_TCP=
   =TCP_NODELAY= through Winsock.
+  *Windows file-backed mmap progress 2026-06-03*: =nelisp-os-mmap= now maps
+  HANDLE-backed =MAP_PRIVATE= file views with =CreateFileMappingW= /
+  =MapViewOfFile=, and =nelisp-os-munmap= releases those views with
+  =UnmapViewOfFile=.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -613,6 +624,9 @@ largest uncertainty (B1 + B2) first.
    int options on socket-kind fds.
    *Windows Winsock TCP_NODELAY SHIPPED 2026-06-03*: int-valued socket option
    helpers now support =IPPROTO_TCP= / =TCP_NODELAY= on Windows.
+   *Windows file-backed mmap SHIPPED 2026-06-03*: =nelisp-os-mmap= now accepts
+   HANDLE-backed =MAP_PRIVATE= mappings via =CreateFileMappingW= /
+   =MapViewOfFile=, with =UnmapViewOfFile= cleanup.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:

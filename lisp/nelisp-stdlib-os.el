@@ -60,8 +60,9 @@
 ;; signal-mask allocation or libc calls.  Stage 35 gives the timerfd relative
 ;; helper the same early Windows guard.  Stage 38 maps int-valued socket option
 ;; reads to Winsock `getsockopt'.  Stage 39 adds TCP_NODELAY translation to the
-;; int-valued socket option helpers.  The Linux/Darwin path remains the default
-;; until a real Windows standalone runtime selects `system-type' =
+;; int-valued socket option helpers.  Stage 40 maps file-backed Windows `mmap'
+;; to CreateFileMappingW / MapViewOfFile.  The Linux/Darwin path remains the
+;; default until a real Windows standalone runtime selects `system-type' =
 ;; `windows-nt'.
 
 ;;; Code:
@@ -135,6 +136,12 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-PAGE-EXECUTE           #x10)
 (defconst nelisp-os-WIN-PAGE-EXECUTE-READ      #x20)
 (defconst nelisp-os-WIN-PAGE-EXECUTE-READWRITE #x40)
+(defconst nelisp-os-WIN-PAGE-WRITECOPY         #x08)
+(defconst nelisp-os-WIN-PAGE-EXECUTE-WRITECOPY #x80)
+(defconst nelisp-os-WIN-FILE-MAP-COPY          #x0001)
+(defconst nelisp-os-WIN-FILE-MAP-WRITE         #x0002)
+(defconst nelisp-os-WIN-FILE-MAP-READ          #x0004)
+(defconst nelisp-os-WIN-FILE-MAP-EXECUTE       #x0020)
 
 ;; Windows GetFileType constants.
 (defconst nelisp-os-WIN-FILE-TYPE-UNKNOWN 0)
@@ -187,6 +194,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defvar nelisp-os--windows-fd-kind-table nil
   "Alist mapping POSIX-like Windows fds to resource kind symbols.")
+
+(defvar nelisp-os--windows-mmap-table nil
+  "Alist mapping Windows mapping base addresses to mapping kind symbols.")
 
 (defvar nelisp-os--windows-winsock-started-p nil
   "Non-nil after this process successfully calls WSAStartup.")
@@ -700,26 +710,118 @@ went through `:string' (= CString::new, NUL-rejecting)."
      (read             nelisp-os-WIN-PAGE-READONLY)
      (t                nelisp-os-WIN-PAGE-NOACCESS))))
 
+(defun nelisp-os--windows-file-mapping-protect (prot)
+  "Translate POSIX-like PROT bits to CreateFileMappingW protection."
+  (let ((read  (not (= 0 (logand prot nelisp-os-PROT-READ))))
+        (write (not (= 0 (logand prot nelisp-os-PROT-WRITE))))
+        (exec  (not (= 0 (logand prot nelisp-os-PROT-EXEC)))))
+    (cond
+     ((and exec write) nelisp-os-WIN-PAGE-EXECUTE-WRITECOPY)
+     ((and exec read)  nelisp-os-WIN-PAGE-EXECUTE-READ)
+     (exec             nelisp-os-WIN-PAGE-EXECUTE)
+     (write            nelisp-os-WIN-PAGE-WRITECOPY)
+     (read             nelisp-os-WIN-PAGE-READONLY)
+     (t (signal 'nelisp-os-error (list 22))))))
+
+(defun nelisp-os--windows-file-map-access (prot)
+  "Translate POSIX-like PROT bits to MapViewOfFile desired access."
+  (let ((read  (not (= 0 (logand prot nelisp-os-PROT-READ))))
+        (write (not (= 0 (logand prot nelisp-os-PROT-WRITE))))
+        (exec  (not (= 0 (logand prot nelisp-os-PROT-EXEC)))))
+    (cond
+     (write (logior nelisp-os-WIN-FILE-MAP-COPY
+                    (if exec nelisp-os-WIN-FILE-MAP-EXECUTE 0)))
+     ((or read exec)
+      (logior (if read nelisp-os-WIN-FILE-MAP-READ 0)
+              (if exec nelisp-os-WIN-FILE-MAP-EXECUTE 0)))
+     (t (signal 'nelisp-os-error (list 22))))))
+
 (defun nelisp-os--windows-anonymous-mmap-p (flags fd offset)
   "Return non-nil when mmap inputs are supported by VirtualAlloc."
   (and (= fd -1)
        (= offset 0)
        (not (= 0 (logand flags nelisp-os-MAP-ANONYMOUS)))))
 
-(defun nelisp-os--windows-mmap (length prot flags fd offset)
-  "Windows implementation of anonymous `nelisp-os-mmap' via VirtualAlloc."
-  (when (or (<= length 0)
-            (not (nelisp-os--windows-anonymous-mmap-p flags fd offset)))
-    (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (let ((addr (nelisp-os--libc-call
-               "kernel32" "VirtualAlloc"
-               [:pointer :pointer :uint64 :uint32 :uint32]
-               0 length
-               (logior nelisp-os-WIN-MEM-COMMIT nelisp-os-WIN-MEM-RESERVE)
-               (nelisp-os--windows-page-protect prot))))
-    (if (= addr 0)
+(defun nelisp-os--windows-file-backed-mmap-p (flags fd offset)
+  "Return non-nil when mmap inputs are supported by MapViewOfFile."
+  (and (>= fd 0)
+       (>= offset 0)
+       (= 0 (logand flags nelisp-os-MAP-ANONYMOUS))
+       (not (= 0 (logand flags nelisp-os-MAP-PRIVATE)))))
+
+(defun nelisp-os--windows-record-mmap (addr kind)
+  "Remember that ADDR was mapped with Windows mapping KIND."
+  (push (cons addr kind) nelisp-os--windows-mmap-table)
+  addr)
+
+(defun nelisp-os--windows-take-mmap-kind (addr)
+  "Remove ADDR from the Windows mapping table and return its kind."
+  (let ((cell (assq addr nelisp-os--windows-mmap-table)))
+    (when cell
+      (setq nelisp-os--windows-mmap-table
+            (delq cell nelisp-os--windows-mmap-table))
+      (cdr cell))))
+
+(defun nelisp-os--windows-u64-high (value)
+  "Return high 32 bits of unsigned VALUE."
+  (logand (ash value -32) #xffffffff))
+
+(defun nelisp-os--windows-u64-low (value)
+  "Return low 32 bits of unsigned VALUE."
+  (logand value #xffffffff))
+
+(defun nelisp-os--windows-mmap-file (length prot fd offset)
+  "Windows file-backed `nelisp-os-mmap' via CreateFileMappingW / MapViewOfFile."
+  (let* ((handle (nelisp-os--windows-fd-handle fd))
+         (end (+ offset length))
+         (protect (nelisp-os--windows-file-mapping-protect prot))
+         (access (nelisp-os--windows-file-map-access prot))
+         (mapping
+          (nelisp-os--libc-call
+           "kernel32" "CreateFileMappingW"
+           [:pointer :pointer :pointer :uint32 :uint32 :uint32 :pointer]
+           handle 0 protect
+           (nelisp-os--windows-u64-high end)
+           (nelisp-os--windows-u64-low end)
+           0)))
+    (if (= mapping 0)
         (nelisp-os--windows-ffi-error-signal)
-      addr)))
+      (unwind-protect
+          (let ((addr
+                 (nelisp-os--libc-call
+                  "kernel32" "MapViewOfFile"
+                  [:pointer :pointer :uint32 :uint32 :uint32 :uint64]
+                  mapping access
+                  (nelisp-os--windows-u64-high offset)
+                  (nelisp-os--windows-u64-low offset)
+                  length)))
+            (if (= addr 0)
+                (nelisp-os--windows-ffi-error-signal)
+              (nelisp-os--windows-record-mmap addr 'mapped-file)))
+        (let ((ok (nelisp-os--libc-call
+                   "kernel32" "CloseHandle" [:sint32 :pointer] mapping)))
+          (when (= ok 0)
+            (nelisp-os--windows-ffi-error-signal)))))))
+
+(defun nelisp-os--windows-mmap (length prot flags fd offset)
+  "Windows implementation of `nelisp-os-mmap'."
+  (when (<= length 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (cond
+   ((nelisp-os--windows-anonymous-mmap-p flags fd offset)
+    (let ((addr (nelisp-os--libc-call
+                 "kernel32" "VirtualAlloc"
+                 [:pointer :pointer :uint64 :uint32 :uint32]
+                 0 length
+                 (logior nelisp-os-WIN-MEM-COMMIT nelisp-os-WIN-MEM-RESERVE)
+                 (nelisp-os--windows-page-protect prot))))
+      (if (= addr 0)
+          (nelisp-os--windows-ffi-error-signal)
+        (nelisp-os--windows-record-mmap addr 'virtualalloc))))
+   ((nelisp-os--windows-file-backed-mmap-p flags fd offset)
+    (nelisp-os--windows-mmap-file length prot fd offset))
+   (t
+    (signal 'nelisp-os-error (list 22)))))
 
 (defun nelisp-os--windows-mprotect (addr length prot)
   "Windows implementation of `nelisp-os-mprotect' via VirtualProtect."
@@ -738,16 +840,27 @@ went through `:string' (= CString::new, NUL-rejecting)."
       (nelisp-os--free old-protect))))
 
 (defun nelisp-os--windows-munmap (addr length)
-  "Windows implementation of `nelisp-os-munmap' via VirtualFree."
+  "Windows implementation of `nelisp-os-munmap'."
   (when (or (= addr 0) (<= length 0))
     (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (let ((ok (nelisp-os--libc-call
-             "kernel32" "VirtualFree"
-             [:sint32 :pointer :uint64 :uint32]
-             addr 0 nelisp-os-WIN-MEM-RELEASE)))
-    (if (= ok 0)
-        (nelisp-os--windows-ffi-error-signal)
-      0)))
+  (let ((kind (or (nelisp-os--windows-take-mmap-kind addr) 'virtualalloc)))
+    (cond
+     ((eq kind 'mapped-file)
+      (let ((ok (nelisp-os--libc-call
+                 "kernel32" "UnmapViewOfFile"
+                 [:sint32 :pointer]
+                 addr)))
+        (if (= ok 0)
+            (nelisp-os--windows-ffi-error-signal)
+          0)))
+     (t
+      (let ((ok (nelisp-os--libc-call
+                 "kernel32" "VirtualFree"
+                 [:sint32 :pointer :uint64 :uint32]
+                 addr 0 nelisp-os-WIN-MEM-RELEASE)))
+        (if (= ok 0)
+            (nelisp-os--windows-ffi-error-signal)
+          0))))))
 
 (defun nelisp-os--windows-pipe ()
   "Windows implementation of `nelisp-os-pipe' via CreatePipe."
