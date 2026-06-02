@@ -36,6 +36,11 @@
   (expand-file-name "target/windows-smoke" nelisp-windows-build--repo-root)
   "Default directory for generated Windows smoke EXEs.")
 
+(defconst nelisp-windows-build--exit42-out
+  (expand-file-name "target/nelisp-windows-exit42.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single ExitProcess(42) smoke EXE.")
+
 (defconst nelisp-windows-build-smoke-specs
   '((exit42 . minimal-exit-42)
     (virtualalloc . virtualalloc-exit-42)
@@ -85,6 +90,14 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
     (unless (and out (> (length out) 0))
       (error "NELISP_WINDOWS_OUT is required"))
     (nelisp-windows-build-exe spec out)))
+
+(defun nelisp-windows-build-exit42 (&optional out-path)
+  "Batch entry: build the minimal Windows ExitProcess(42) smoke EXE."
+  (let ((out (or out-path nelisp-windows-build--exit42-out)))
+    (make-directory (file-name-directory (expand-file-name out)) t)
+    (nelisp-pe-write-exe-binary out 'minimal-exit-42)
+    (message "nelisp-windows-build: wrote %s (ExitProcess 42)" out)
+    out))
 
 (provide 'nelisp-windows-build)
 

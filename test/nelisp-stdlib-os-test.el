@@ -135,12 +135,20 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
-(ert-deftest nelisp-stdlib-os-open-windows-uses-createfilea ()
+(ert-deftest nelisp-stdlib-os-open-windows-uses-createfilew ()
   "On Windows, regular file open returns a POSIX-like fd backed by HANDLE."
   (let ((call nil)
+        (freed nil)
+        (wide-writes nil)
         (nelisp-os--windows-next-fd 3)
         (nelisp-os--windows-fd-table nil))
-    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 4000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u16)
+               (lambda (ptr off val)
+                 (push (list ptr off val) wide-writes)
+                 val))
+              ((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (setq call (list dll fn sig args))
                  #xabcdef)))
@@ -153,10 +161,10 @@
                    3))))
     (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
     (should (equal call
-                   (list "kernel32" "CreateFileA"
-                         [:pointer :string :uint32 :uint32 :pointer
+                   (list "kernel32" "CreateFileW"
+                         [:pointer :pointer :uint32 :uint32 :pointer
                           :uint32 :uint32 :pointer]
-                         (list "out.txt"
+                         (list 4000
                                nelisp-os-WIN-GENERIC-WRITE
                                (logior nelisp-os-WIN-FILE-SHARE-READ
                                        nelisp-os-WIN-FILE-SHARE-WRITE
@@ -164,7 +172,23 @@
                                0
                                nelisp-os-WIN-CREATE-ALWAYS
                                nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL
-                               0))))))
+                               0))))
+    (should (equal (nreverse wide-writes)
+                   '((4000 0 111)
+                     (4000 2 117)
+                     (4000 4 116)
+                     (4000 6 46)
+                     (4000 8 116)
+                     (4000 10 120)
+                     (4000 12 116)
+                     (4000 14 0))))
+    (should (equal freed '(4000)))))
+
+(ert-deftest nelisp-stdlib-os-windows-utf16-code-units ()
+  "Windows path conversion emits UTF-16 code units, including surrogate pairs."
+  (should (equal (nelisp-os--windows-utf16-code-units
+                  (string #x41 #x3042 #x10437))
+                 '(#x41 #x3042 #xd801 #xdc37))))
 
 (ert-deftest nelisp-stdlib-os-windows-open-flag-translation ()
   "Windows open flag translation preserves key POSIX-like modes."

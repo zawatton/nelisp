@@ -27,7 +27,7 @@
 ;; Doc 138 Stage 5 starts the Windows branch: stdout/stderr writes can route
 ;; through kernel32 HANDLE I/O (`GetStdHandle' + `WriteFile') instead of POSIX
 ;; integer fd `write'.  Stage 6 adds stdin reads through `ReadFile'.  Stage 7
-;; adds a small Windows fd->HANDLE table for regular file I/O via `CreateFileA'
+;; adds a small Windows fd->HANDLE table for regular file I/O via `CreateFileW'
 ;; / `CloseHandle'.  The Linux/Darwin path remains the default until a real
 ;; Windows standalone runtime selects `system-type' = `windows-nt'.
 
@@ -78,7 +78,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-STD-OUTPUT-HANDLE -11)
 (defconst nelisp-os-WIN-STD-ERROR-HANDLE  -12)
 
-;; Windows CreateFileA constants.
+;; Windows CreateFileW constants.
 (defconst nelisp-os-WIN-GENERIC-READ  #x80000000)
 (defconst nelisp-os-WIN-GENERIC-WRITE #x40000000)
 (defconst nelisp-os-WIN-FILE-APPEND-DATA #x4)
@@ -146,8 +146,8 @@ placeholder errno value so callers still get the project-local OS condition."
       ;; GetStdHandle returns NULL on failure and INVALID_HANDLE_VALUE (-1) for
       ;; invalid selectors.  Treat both as OS errors.
       (if (or (= handle 0) (= handle -1))
-	      (nelisp-os--windows-ffi-error-signal)
-	    handle))))
+          (nelisp-os--windows-ffi-error-signal)
+        handle))))
 
 (defun nelisp-os--windows-fd-alloc (handle)
   "Allocate a POSIX-like fd for Windows HANDLE."
@@ -173,7 +173,7 @@ placeholder errno value so callers still get the project-local OS condition."
     (cdr cell)))
 
 (defun nelisp-os--windows-open-access (flags)
-  "Translate POSIX-like FLAGS to a CreateFileA desired-access mask."
+  "Translate POSIX-like FLAGS to a CreateFileW desired-access mask."
   (let ((mode (logand flags 3))
         (append (not (= 0 (logand flags nelisp-os-O-APPEND)))))
     (cond
@@ -189,7 +189,7 @@ placeholder errno value so callers still get the project-local OS condition."
       nelisp-os-WIN-GENERIC-READ))))
 
 (defun nelisp-os--windows-open-disposition (flags)
-  "Translate POSIX-like FLAGS to a CreateFileA creation disposition."
+  "Translate POSIX-like FLAGS to a CreateFileW creation disposition."
   (let ((creat (not (= 0 (logand flags nelisp-os-O-CREAT))))
         (excl  (not (= 0 (logand flags nelisp-os-O-EXCL))))
         (trunc (not (= 0 (logand flags nelisp-os-O-TRUNC)))))
@@ -200,24 +200,59 @@ placeholder errno value so callers still get the project-local OS condition."
      (trunc nelisp-os-WIN-TRUNCATE-EXISTING)
      (t nelisp-os-WIN-OPEN-EXISTING))))
 
+(defun nelisp-os--windows-utf16-code-units (str)
+  "Return UTF-16 code units for STR as a list of unsigned 16-bit integers."
+  (let ((units nil))
+    (dotimes (i (length str))
+      (let ((ch (aref str i)))
+        (cond
+         ((or (< ch 0) (> ch #x10ffff)
+              (and (<= #xd800 ch) (<= ch #xdfff)))
+          (signal 'nelisp-os-error (list 22))) ; EINVAL
+         ((<= ch #xffff)
+          (push ch units))
+         (t
+          (let* ((n (- ch #x10000))
+                 (hi (+ #xd800 (ash n -10)))
+                 (lo (+ #xdc00 (logand n #x3ff))))
+            (push hi units)
+            (push lo units))))))
+    (nreverse units)))
+
+(defun nelisp-os--windows-write-utf16le-z (buf units)
+  "Write UTF-16LE UNITS plus a terminating NUL WCHAR to BUF."
+  (let ((idx 0))
+    (dolist (unit units)
+      (nelisp-os-write-u16 buf (* idx 2) unit)
+      (setq idx (1+ idx)))
+    (nelisp-os-write-u16 buf (* idx 2) 0)
+    buf))
+
 (defun nelisp-os--windows-open (path flags _mode)
   "Open PATH on Windows and return a POSIX-like fd."
-  (let* ((share (logior nelisp-os-WIN-FILE-SHARE-READ
+  (let* ((units (nelisp-os--windows-utf16-code-units path))
+         (path-buf (nelisp-os--alloc (* 2 (1+ (length units)))))
+         (share (logior nelisp-os-WIN-FILE-SHARE-READ
                        nelisp-os-WIN-FILE-SHARE-WRITE
-                       nelisp-os-WIN-FILE-SHARE-DELETE))
-         (handle (nelisp-os--libc-call
-                  "kernel32" "CreateFileA"
-                  [:pointer :string :uint32 :uint32 :pointer :uint32 :uint32 :pointer]
-                  path
-                  (nelisp-os--windows-open-access flags)
-                  share
-                  0
-                  (nelisp-os--windows-open-disposition flags)
-                  nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL
-                  0)))
-    (if (or (= handle 0) (= handle -1))
-        (nelisp-os--windows-ffi-error-signal)
-      (nelisp-os--windows-fd-alloc handle))))
+                       nelisp-os-WIN-FILE-SHARE-DELETE)))
+    (unwind-protect
+        (progn
+          (nelisp-os--windows-write-utf16le-z path-buf units)
+          (let ((handle (nelisp-os--libc-call
+                         "kernel32" "CreateFileW"
+                         [:pointer :pointer :uint32 :uint32 :pointer
+                          :uint32 :uint32 :pointer]
+                         path-buf
+                         (nelisp-os--windows-open-access flags)
+                         share
+                         0
+                         (nelisp-os--windows-open-disposition flags)
+                         nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL
+                         0)))
+            (if (or (= handle 0) (= handle -1))
+                (nelisp-os--windows-ffi-error-signal)
+              (nelisp-os--windows-fd-alloc handle))))
+      (nelisp-os--free path-buf))))
 
 (defun nelisp-os--windows-write-handle (handle str)
   "Write STR bytes to Windows HANDLE using kernel32!WriteFile."
