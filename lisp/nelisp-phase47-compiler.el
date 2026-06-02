@@ -13446,7 +13446,7 @@ ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
 
 (defun nelisp-phase47-compiler--emit-atomic-compare-exchange-arm64 (node buf)
   "Emit `atomic-compare-exchange' for aarch64 — inline `CASAL'.
-ptr → x1, expected → x2, new-val → x3.  `CASAL x3,x2,[x1]' overwrites
+ptr → x1, expected → x2, new-val → x3.  `CASAL x2,x3,[x1]' overwrites
 x2 with the old memory value; comparing that old value with EXPECTED
 materialises x0 = 1 on success, 0 on failure, matching the x86_64
 `LOCK CMPXCHG' contract."
@@ -13462,7 +13462,7 @@ materialises x0 = 1 on success, 0 on failure, matching the x86_64
   (nelisp-asm-arm64-ldr-imm buf 'x9 'sp 0)           ; x9 = expected snapshot
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = expected / old (Rs)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Rn)
-  (nelisp-asm-arm64-casal buf 'x3 'x2 'x1)           ; x2 = old [x1]
+  (nelisp-asm-arm64-casal buf 'x2 'x3 'x1)           ; x2 = old [x1]
   (nelisp-asm-arm64-cmp-reg-reg buf 'x2 'x9)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 

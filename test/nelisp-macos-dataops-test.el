@@ -114,7 +114,7 @@ must contain STR{B,H,}/LDR{B,H,} `[X1, X2]' words (val→x3, result→x0)."
 (ert-deftest nelisp-macos-dataops/atomic-compare-exchange-compile-and-encode ()
   "atomic-compare-exchange compiles on aarch64 and emits CASAL.
 The compiler lowers ptr/expected/new-val to x1/x2/x3, so the CAS word is
-CASAL X3, X2, [X1] = 0xC8E3FC22."
+CASAL X2, X3, [X1] = 0xC8E2FC23."
   (let* ((bytes (nelisp-macos-dataops-test--emit
                  '(seq
                    (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
@@ -122,7 +122,7 @@ CASAL X3, X2, [X1] = 0xC8E3FC22."
                    (atomic-compare-exchange 8589934592 7 42))))
          (words (nelisp-macos-dataops-test--words bytes)))
     (should (> (length bytes) 0))
-    (should (member #xC8E3FC22 words))))
+    (should (member #xC8E2FC23 words))))
 
 ;; ---- dealloc-bytes -----------------------------------------------
 
