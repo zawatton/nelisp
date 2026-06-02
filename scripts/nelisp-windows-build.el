@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/40.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/40/41.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -82,6 +82,8 @@
 ;; proves Str/MutStr codepoint decode in a Windows standalone PE.
 ;; Stage 40 links the lowered MutStr set-codepoint kernel and proves
 ;; variable-width UTF-8 replacement in a Windows standalone PE.
+;; Stage 41 links the lowered CharTable raw get/set kernel and proves
+;; entry growth, default fallback, update, and clone-out behavior.
 
 ;;; Code:
 
@@ -112,6 +114,7 @@
 (require 'nelisp-cc-evalport-nonenv-mut-str-push)
 (require 'nelisp-cc-nlstr-utf8-direct)
 (require 'nelisp-cc-evalport-nonenv-mut-str-set-cp)
+(require 'nelisp-cc-evalport-nonenv-char-table)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
   "Write OUT-PATH as a PE32+ EXE calling ExitProcess(EXIT-CODE)."
@@ -2231,6 +2234,156 @@ link-units."
        (list start driver alloc-mut push set-cp char-count codepoint
              bridge arena)))))
 
+(defun nelisp-windows-build--standalone-char-table-driver42-bytes ()
+  "Return a PE32+ EXE proving CharTable raw get/set on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(seq
+                       (defun nl_win_ct_int_ok (slot val)
+                         (and (= (ptr-read-u64 slot 0) 2)
+                              (= (ptr-read-u64 (+ slot 8) 0) val)))
+                       (defun nl_win_ct_entry_ok (box key val)
+                         (let* ((eptr (ptr-read-u64 (+ box 64) 0)))
+                           (and (= (ptr-read-u64 (+ box 72) 0) 4)
+                                (= (ptr-read-u64 (+ box 80) 0) 1)
+                                (= (ptr-read-u64 eptr 0) key)
+                                (= (nl_win_ct_int_ok (+ eptr 8) val) 1))))
+                       (defun driver ()
+                         (let* ((arena (nl_arena_init)))
+                           (if (= arena 0)
+                               114
+                             (let* ((ct-slot (nl_alloc_bytes 32 8))
+                                    (box (nl_alloc_bytes 96 8))
+                                    (val1 (nl_alloc_bytes 32 8))
+                                    (val2 (nl_alloc_bytes 32 8))
+                                    (out1 (nl_alloc_bytes 32 8))
+                                    (out2 (nl_alloc_bytes 32 8)))
+                               (if (= out2 0)
+                                   115
+                                 (seq
+                                  (ptr-write-u64 ct-slot 0 9)
+                                  (ptr-write-u64 (+ ct-slot 8) 0 box)
+                                  (ptr-write-u64 val1 0 2)
+                                  (ptr-write-u64 (+ val1 8) 0 1234)
+                                  (ptr-write-u64 val2 0 2)
+                                  (ptr-write-u64 (+ val2 8) 0 5678)
+                                  (nl_char_table_get_raw ct-slot 65 out1)
+                                  (if (= (ptr-read-u64 out1 0) 0)
+                                      (seq
+                                       (nl_char_table_set_raw ct-slot 65 val1 out1)
+                                       (if (= (nl_win_ct_int_ok out1 1234) 1)
+                                           (if (= (nl_win_ct_entry_ok box 65 1234) 1)
+                                               (seq
+                                                (nl_char_table_set_raw ct-slot 65 val2 out1)
+                                                (nl_char_table_get_raw ct-slot 65 out2)
+                                                (if (= (nl_win_ct_int_ok out1 5678) 1)
+                                                    (if (= (nl_win_ct_int_ok out2 5678) 1)
+                                                        (if (= (nl_win_ct_entry_ok box 65 5678) 1)
+                                                            42
+                                                          116)
+                                                      117)
+                                                  118))
+                                             119)
+                                         120))
+                                    121))))))))
+                     driver-rva iat-rvas))
+            (chartable-rva (+ driver-rva
+                              (nelisp-windows-build--unit-text-length driver)))
+            (chartable (nelisp-windows-build--compile-defuns-to-unit
+                        "char-table.o"
+                        nelisp-cc-evalport-nonenv-char-table--source
+                        chartable-rva iat-rvas))
+            (clone-rva (+ chartable-rva
+                          (nelisp-windows-build--unit-text-length chartable)))
+            (clone (nelisp-windows-build--compile-defuns-to-unit
+                    "clone.o" nelisp-cc-sexp-clone-into--source
+                    clone-rva iat-rvas))
+            (consbox-clone-rva
+             (+ clone-rva (nelisp-windows-build--unit-text-length clone)))
+            (consbox-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "consbox-clone.o" nelisp-cc-nlconsbox-clone--source
+              consbox-clone-rva iat-rvas))
+            (str-clone-rva
+             (+ consbox-clone-rva
+                (nelisp-windows-build--unit-text-length consbox-clone)))
+            (str-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "str-clone.o" nelisp-cc-nlstr-clone--source
+              str-clone-rva iat-rvas))
+            (vector-clone-rva
+             (+ str-clone-rva
+                (nelisp-windows-build--unit-text-length str-clone)))
+            (vector-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "vec-clone.o" nelisp-cc-nlvector-clone--source
+              vector-clone-rva iat-rvas))
+            (chartable-clone-rva
+             (+ vector-clone-rva
+                (nelisp-windows-build--unit-text-length vector-clone)))
+            (chartable-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "chartable-clone.o" nelisp-cc-nlchartable-clone--source
+              chartable-clone-rva iat-rvas))
+            (boolvector-clone-rva
+             (+ chartable-clone-rva
+                (nelisp-windows-build--unit-text-length chartable-clone)))
+            (boolvector-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "boolvec-clone.o" nelisp-cc-nlboolvector-clone--source
+              boolvector-clone-rva iat-rvas))
+            (cell-clone-rva
+             (+ boolvector-clone-rva
+                (nelisp-windows-build--unit-text-length boolvector-clone)))
+            (cell-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "cell-clone.o" nelisp-cc-nlcell-clone--source
+              cell-clone-rva iat-rvas))
+            (record-clone-rva
+             (+ cell-clone-rva
+                (nelisp-windows-build--unit-text-length cell-clone)))
+            (record-clone
+             (nelisp-windows-build--compile-defuns-to-unit
+              "record-clone.o" nelisp-cc-nlrecord-clone--source
+              record-clone-rva iat-rvas))
+            (alloc-str-rva
+             (+ record-clone-rva
+                (nelisp-windows-build--unit-text-length record-clone)))
+            (alloc-str
+             (nelisp-windows-build--compile-defuns-to-unit
+              "alloc-str.o" nelisp-cc-nlstr-direct-ops--alloc-str-source
+              alloc-str-rva iat-rvas))
+            (bridge-rva
+             (+ alloc-str-rva
+                (nelisp-windows-build--unit-text-length alloc-str)))
+            (bridge (nelisp-windows-build--compile-defuns-to-unit
+                     "alloc-bridge.o"
+                     '(seq
+                       (defun nelisp_alloc_bytes (size align)
+                         (nl_alloc_bytes size align))
+                       (defun nelisp_dealloc_bytes (ptr size align)
+                         (nl_dealloc_bytes ptr size align))
+                       (defun nelisp_ptr_read_u8 (ptr off)
+                         (ptr-read-u8 ptr off))
+                       (defun nelisp_ptr_write_u8 (ptr off val)
+                         (ptr-write-u8 ptr off val)))
+                     bridge-rva iat-rvas))
+            (arena-rva (+ bridge-rva
+                          (nelisp-windows-build--unit-text-length bridge)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver chartable clone consbox-clone str-clone
+             vector-clone chartable-clone boolvector-clone cell-clone
+             record-clone alloc-str bridge arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -2498,6 +2651,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone MutStr set-codepoint)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-char-table-driver42 ()
+  "Batch entry: build the standalone CharTable get/set probe."
+  (let ((bytes (nelisp-windows-build--standalone-char-table-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-char-table-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone CharTable)"
              out-path)
     out-path))
 

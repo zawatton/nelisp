@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/40 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38/39/40/41 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -1640,6 +1640,59 @@
                    #x00000018 #x00000041 #x00000042 #x0000005a
                    #x00000082 #x00000090 #x000000a2 #x000000ac
                    #x000000c2 #x000000e2 #x000020ac))
+      (should (string-match-p
+               (regexp-quote
+                (unibyte-string (logand imm #xff)
+                                (logand (ash imm -8) #xff)
+                                (logand (ash imm -16) #xff)
+                                (logand (ash imm -24) #xff)))
+               text)))))
+
+(ert-deftest nelisp-windows-build-standalone-char-table-imports-virtualalloc ()
+  "Stage 41 standalone CharTable PE imports ExitProcess and VirtualAlloc."
+  (let* ((bytes (nelisp-windows-build--standalone-char-table-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess" "VirtualAlloc")))))
+
+(ert-deftest nelisp-windows-build-standalone-char-table-text-calls-virtualalloc ()
+  "Stage 41 linked CharTable get/set probe calls VirtualAlloc through IAT."
+  (let* ((bytes (nelisp-windows-build--standalone-char-table-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-bounds (nelisp-windows-build-test--section-raw-bounds
+                       bytes ".text"))
+         (text-raw (car text-bounds))
+         (text-end (cdr text-bounds))
+         (text (substring bytes text-raw text-end))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw text-end)))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (member (cdr (assoc "VirtualAlloc" iat-map)) targets))
+    (dolist (status '(#x72 #x73 #x74 #x75 #x76 #x77 #x78 #x79 #x2a))
+      (should (string-match-p
+               (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                              status #x00 #x00 #x00))
+               text)))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-char-table-checks-invariants ()
+  "Stage 41 driver checks CharTable default, insert, update, and get paths."
+  (let* ((bytes (nelisp-windows-build--standalone-char-table-driver42-bytes))
+         (text-bounds (nelisp-windows-build-test--section-raw-bounds
+                       bytes ".text"))
+         (text-raw (car text-bounds))
+         (text-end (cdr text-bounds))
+         (text (substring bytes text-raw text-end)))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xf0 #x48 #x0f #xc1 #x07))
+             text))
+    (dolist (imm '(#x00000001 #x00000002 #x00000004 #x00000008
+                   #x00000020 #x00000028 #x00000040 #x00000048
+                   #x00000050 #x00000058 #x00000060 #x00000041
+                   #x000004d2 #x0000162e))
       (should (string-match-p
                (regexp-quote
                 (unibyte-string (logand imm #xff)
