@@ -102,45 +102,69 @@ pumps `emacs-tui-event-input-fn' (= our
        (or (not (fboundp 'emacs-tui-event-handle-alive-p))
            (emacs-tui-event-handle-alive-p handle))))
 
+(defun nemacs-main--standalone-batch-tui-fallback-p ()
+  "Return non-nil when batch tests should use lightweight TUI state."
+  (fboundp 'nelisp--write-stdout-bytes))
+
+(defun nemacs-main--prepare-standalone-batch-tui-state ()
+  "Prepare lightweight in-memory TUI state for standalone batch gates.
+The full TUI backend still depends on struct constructor behavior that
+the standalone REPL path is hardening.  Batch close-gates only need the
+state variables to be realised so Layer 2 edit/event-loop teardown paths
+can run without a host Emacs."
+  (setq nemacs-main--tui-features-loaded-p t
+        nemacs-main--tui-state-prepared-p t
+        nemacs-main--backend (list 'nemacs-standalone-batch-tui-backend)
+        nemacs-main--frame (list 'nemacs-standalone-batch-tui-frame)
+        nemacs-main--redisplay (list 'nemacs-standalone-batch-redisplay)
+        nemacs-main--event-handle nil)
+  (when (and (boundp 'nelisp-ec--buffers)
+             (fboundp 'nelisp-ec-generate-new-buffer)
+             (null (assoc "*scratch*" nelisp-ec--buffers)))
+    (nelisp-ec-generate-new-buffer "*scratch*"))
+  nemacs-main--redisplay)
+
 (defun nemacs-main--prepare-tui-state ()
   "Ensure the pure-Elisp TUI state objects exist and return redisplay.
 This performs only in-memory setup: backend handle, default frame,
 redisplay handle, and event parser handle.  It is safe to call while
 baking an interactive NeLisp runtime image, before runtime-specific TTY
 state such as raw mode or terminal resize has been touched."
-  (when (not nemacs-main--tui-features-loaded-p)
-    (cond
-     ((fboundp 'emacs-init-load-tui-core-features)
-      (emacs-init-load-tui-core-features))
-     ((fboundp 'emacs-init-load-editor-features)
-      (emacs-init-load-editor-features))))
-  (setq nemacs-main--tui-features-loaded-p t)
-  (nemacs-main--ensure-keymap-after-feature-load)
-  (if (and nemacs-main--tui-state-prepared-p
-           nemacs-main--backend
-           nemacs-main--frame
-           nemacs-main--redisplay)
-      nemacs-main--redisplay
-    (when (and (fboundp 'emacs-tui-backend-init)
-               (fboundp 'emacs-tui-backend-frame-create)
-               (fboundp 'emacs-redisplay-init))
-      (unless (nemacs-main--tui-backend-live-p nemacs-main--backend)
-        (setq nemacs-main--backend (emacs-tui-backend-init)
-              nemacs-main--frame nil
-              nemacs-main--redisplay nil
-              nemacs-main--event-handle nil))
-      (unless (nemacs-main--tui-frame-live-p nemacs-main--frame)
-        (setq nemacs-main--frame
-              (emacs-tui-backend-frame-create nemacs-main--backend "main"))
-        (nemacs-main--mark-tui-frame-clean))
-      (unless (nemacs-main--redisplay-live-p nemacs-main--redisplay)
-        (setq nemacs-main--redisplay
-              (emacs-redisplay-init (list :backend nemacs-main--backend))))
-      (when (and (fboundp 'emacs-tui-event-init)
-                 (not (nemacs-main--event-live-p nemacs-main--event-handle)))
-        (setq nemacs-main--event-handle (emacs-tui-event-init)))
-      (setq nemacs-main--tui-state-prepared-p t)
-      nemacs-main--redisplay)))
+  (if (nemacs-main--standalone-batch-tui-fallback-p)
+      (nemacs-main--prepare-standalone-batch-tui-state)
+    (when (not nemacs-main--tui-features-loaded-p)
+      (cond
+       ((fboundp 'emacs-init-load-tui-core-features)
+        (emacs-init-load-tui-core-features))
+       ((fboundp 'emacs-init-load-editor-features)
+        (emacs-init-load-editor-features))))
+    (setq nemacs-main--tui-features-loaded-p t)
+    (nemacs-main--ensure-keymap-after-feature-load)
+    (if (and nemacs-main--tui-state-prepared-p
+             nemacs-main--backend
+             nemacs-main--frame
+             nemacs-main--redisplay)
+        nemacs-main--redisplay
+      (when (and (fboundp 'emacs-tui-backend-init)
+                 (fboundp 'emacs-tui-backend-frame-create)
+                 (fboundp 'emacs-redisplay-init))
+        (unless (nemacs-main--tui-backend-live-p nemacs-main--backend)
+          (setq nemacs-main--backend (emacs-tui-backend-init)
+                nemacs-main--frame nil
+                nemacs-main--redisplay nil
+                nemacs-main--event-handle nil))
+        (unless (nemacs-main--tui-frame-live-p nemacs-main--frame)
+          (setq nemacs-main--frame
+                (emacs-tui-backend-frame-create nemacs-main--backend "main"))
+          (nemacs-main--mark-tui-frame-clean))
+        (unless (nemacs-main--redisplay-live-p nemacs-main--redisplay)
+          (setq nemacs-main--redisplay
+                (emacs-redisplay-init (list :backend nemacs-main--backend))))
+        (when (and (fboundp 'emacs-tui-event-init)
+                   (not (nemacs-main--event-live-p nemacs-main--event-handle)))
+          (setq nemacs-main--event-handle (emacs-tui-event-init)))
+        (setq nemacs-main--tui-state-prepared-p t)
+        nemacs-main--redisplay))))
 
 (defun nemacs-main--mark-tui-frame-clean ()
   "Mark the prepared TUI frame canvas as clean without changing pixels."
@@ -169,21 +193,22 @@ fallback path runs nemacs read-eval batch-style)."
       (progn
         (let ((h (nemacs-main--prepare-tui-state)))
           (when h
-            (when (fboundp 'emacs-redisplay-set-current-handle)
-              (emacs-redisplay-set-current-handle h))
-            ;; Doc 51 Track U (2026-05-04) — turn on bottom-row mode-line
-            ;; reservation so every leaf window paints a status row.
-            (when (boundp 'emacs-redisplay-paint-mode-line-p)
-              (setq emacs-redisplay-paint-mode-line-p t))
-            ;; Bind scratch into the selected window so the first
-            ;; redisplay pass has something to paint.
-            (let ((w (and (fboundp 'emacs-window-selected-window)
-                          (emacs-window-selected-window)))
-                  (b (and (boundp 'nelisp-ec--buffers)
-                          (cdr (assoc "*scratch*" nelisp-ec--buffers)))))
-              (when (and w b (fboundp 'emacs-window-set-window-buffer)
-                         (boundp 'nelisp-ec--buffers))
-                (emacs-window-set-window-buffer w b)))
+            (unless (nemacs-main--standalone-batch-tui-fallback-p)
+              (when (fboundp 'emacs-redisplay-set-current-handle)
+                (emacs-redisplay-set-current-handle h))
+              ;; Doc 51 Track U (2026-05-04) — turn on bottom-row mode-line
+              ;; reservation so every leaf window paints a status row.
+              (when (boundp 'emacs-redisplay-paint-mode-line-p)
+                (setq emacs-redisplay-paint-mode-line-p t))
+              ;; Bind scratch into the selected window so the first
+              ;; redisplay pass has something to paint.
+              (let ((w (and (fboundp 'emacs-window-selected-window)
+                            (emacs-window-selected-window)))
+                    (b (and (boundp 'nelisp-ec--buffers)
+                            (cdr (assoc "*scratch*" nelisp-ec--buffers)))))
+                (when (and w b (fboundp 'emacs-window-set-window-buffer)
+                           (boundp 'nelisp-ec--buffers))
+                  (emacs-window-set-window-buffer w b))))
             h)))
     (error
      (when (fboundp 'message)
@@ -230,17 +255,18 @@ backend side)."
 
 (defun nemacs-main--shutdown-tui ()
   "Tear down the TUI subsystem realised by `nemacs-main--realise-tui'."
-  (nemacs-main--leave-fullscreen)
-  (when (and nemacs-main--event-handle
-             (fboundp 'emacs-tui-event-shutdown))
-    (condition-case _
-        (emacs-tui-event-shutdown nemacs-main--event-handle)
-      (error nil)))
-  (when (and nemacs-main--backend
-             (fboundp 'emacs-tui-backend-shutdown))
-    (condition-case _
-        (emacs-tui-backend-shutdown nemacs-main--backend)
-      (error nil)))
+  (unless (nemacs-main--standalone-batch-tui-fallback-p)
+    (nemacs-main--leave-fullscreen)
+    (when (and nemacs-main--event-handle
+               (fboundp 'emacs-tui-event-shutdown))
+      (condition-case _
+          (emacs-tui-event-shutdown nemacs-main--event-handle)
+        (error nil)))
+    (when (and nemacs-main--backend
+               (fboundp 'emacs-tui-backend-shutdown))
+      (condition-case _
+          (emacs-tui-backend-shutdown nemacs-main--backend)
+        (error nil))))
   (setq nemacs-main--backend nil
         nemacs-main--frame nil
         nemacs-main--redisplay nil

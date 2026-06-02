@@ -118,7 +118,63 @@ path."
   (defun nelisp-text-buffer-cursor-byte (obj)
     (nelisp-text-buffer--slot obj :cursor-byte))
   (defun nelisp-text-buffer-cursor-byte--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :cursor-byte value)))
+    (nelisp-text-buffer--set-slot obj :cursor-byte value))
+
+  (put 'nelisp-text-buffer-bytes 'cl-struct-setter
+       'nelisp-text-buffer-bytes--setter)
+  (put 'nelisp-text-buffer-gap-start 'cl-struct-setter
+       'nelisp-text-buffer-gap-start--setter)
+  (put 'nelisp-text-buffer-gap-end 'cl-struct-setter
+       'nelisp-text-buffer-gap-end--setter)
+  (put 'nelisp-text-buffer-char-count 'cl-struct-setter
+       'nelisp-text-buffer-char-count--setter)
+  (put 'nelisp-text-buffer-byte-count 'cl-struct-setter
+       'nelisp-text-buffer-byte-count--setter)
+  (put 'nelisp-text-buffer-multibyte-p 'cl-struct-setter
+       'nelisp-text-buffer-multibyte-p--setter)
+  (put 'nelisp-text-buffer-cursor-char 'cl-struct-setter
+       'nelisp-text-buffer-cursor-char--setter)
+  (put 'nelisp-text-buffer-cursor-byte 'cl-struct-setter
+       'nelisp-text-buffer-cursor-byte--setter))
+
+(defun nelisp-text-buffer--set-slot-by-accessor (accessor tb value)
+  "Set TB slot addressed by ACCESSOR to VALUE."
+  (funcall (or (get accessor 'cl-struct-setter)
+               (intern (concat (symbol-name accessor) "--setter")))
+           tb value))
+
+(defun nelisp-text-buffer--set-bytes (tb value)
+  (nelisp-text-buffer--set-slot-by-accessor
+   'nelisp-text-buffer-bytes tb value))
+
+(defun nelisp-text-buffer--set-gap-start (tb value)
+  (nelisp-text-buffer--set-slot-by-accessor
+   'nelisp-text-buffer-gap-start tb value))
+
+(defun nelisp-text-buffer--set-gap-end (tb value)
+  (nelisp-text-buffer--set-slot-by-accessor
+   'nelisp-text-buffer-gap-end tb value))
+
+(defun nelisp-text-buffer--set-char-count (tb value)
+  (nelisp-text-buffer--set-slot-by-accessor
+   'nelisp-text-buffer-char-count tb value))
+
+(defun nelisp-text-buffer--set-byte-count (tb value)
+  (nelisp-text-buffer--set-slot-by-accessor
+   'nelisp-text-buffer-byte-count tb value))
+
+(defun nelisp-text-buffer--set-cursor-char (tb value)
+  (nelisp-text-buffer--set-slot-by-accessor
+   'nelisp-text-buffer-cursor-char tb value))
+
+(defun nelisp-text-buffer--set-cursor-byte (tb value)
+  (nelisp-text-buffer--set-slot-by-accessor
+   'nelisp-text-buffer-cursor-byte tb value))
+
+(defun nelisp-text-buffer--max3 (a b c)
+  "Return the greatest of A, B, and C without relying on `max'."
+  (let ((m (if (> a b) a b)))
+    (if (> m c) m c)))
 
 ;;; Internal helpers
 
@@ -147,15 +203,15 @@ When the gap shrinks below this threshold we reallocate to grow it.")
   "Replace TB contents with TEXT and set cursor to CURSOR.
 Standalone NeLisp strings are already decoded runtime strings; keeping
 the logical text directly avoids byte-by-byte mutation in the slow
-self-hosted interpreter."
+  self-hosted interpreter."
   (let ((n (length text)))
-    (setf (nelisp-text-buffer-bytes tb) text)
-    (setf (nelisp-text-buffer-gap-start tb) cursor)
-    (setf (nelisp-text-buffer-gap-end tb) cursor)
-    (setf (nelisp-text-buffer-char-count tb) n)
-    (setf (nelisp-text-buffer-byte-count tb) n)
-    (setf (nelisp-text-buffer-cursor-char tb) cursor)
-    (setf (nelisp-text-buffer-cursor-byte tb) cursor)
+    (nelisp-text-buffer--set-bytes tb text)
+    (nelisp-text-buffer--set-gap-start tb cursor)
+    (nelisp-text-buffer--set-gap-end tb cursor)
+    (nelisp-text-buffer--set-char-count tb n)
+    (nelisp-text-buffer--set-byte-count tb n)
+    (nelisp-text-buffer--set-cursor-char tb cursor)
+    (nelisp-text-buffer--set-cursor-byte tb cursor)
     tb))
 
 (defun nelisp-text-buffer--gap-size (tb)
@@ -226,9 +282,10 @@ after the gap this adds the gap size."
              (gap-end    (nelisp-text-buffer-gap-end tb))
              (old-total  (length old-bytes))
              (post-len   (- old-total gap-end))
-             (new-gap    (max needed
-                              nelisp-text-buffer--initial-gap
-                              (* 2 gap-size)))
+             (new-gap    (nelisp-text-buffer--max3
+                           needed
+                           nelisp-text-buffer--initial-gap
+                           (* 2 gap-size)))
              (new-total  (+ gap-start new-gap post-len))
              (new-bytes  (make-string new-total 0)))
         ;; copy pre-gap region
@@ -245,9 +302,9 @@ after the gap this adds the gap size."
               (aset new-bytes dst (aref old-bytes src))
               (setq src (1+ src)
                     dst (1+ dst)))))
-        (setf (nelisp-text-buffer-bytes tb) new-bytes)
-        (setf (nelisp-text-buffer-gap-start tb) gap-start)
-        (setf (nelisp-text-buffer-gap-end tb) (+ gap-start new-gap))))))
+        (nelisp-text-buffer--set-bytes tb new-bytes)
+        (nelisp-text-buffer--set-gap-start tb gap-start)
+        (nelisp-text-buffer--set-gap-end tb (+ gap-start new-gap))))))
 
 (defun nelisp-text-buffer--move-gap-to-byte (tb byte-pos)
   "Move TB's gap so that gap-start = BYTE-POS (logical byte index).
@@ -269,8 +326,8 @@ BYTE-POS must be in [0, byte-count]."
           (while (>= i 0)
             (aset bytes (+ dst-start i) (aref bytes (+ src-start i)))
             (setq i (1- i))))
-        (setf (nelisp-text-buffer-gap-start tb) byte-pos)
-        (setf (nelisp-text-buffer-gap-end tb) (- gap-end shift-len))))
+        (nelisp-text-buffer--set-gap-start tb byte-pos)
+        (nelisp-text-buffer--set-gap-end tb (- gap-end shift-len))))
      (t
       ;; byte-pos > gap-start: shift bytes [gap-end .. gap-end + (byte-pos - gap-start))
       ;; leftward to fill from gap-start.
@@ -281,8 +338,8 @@ BYTE-POS must be in [0, byte-count]."
           (while (< i shift-len)
             (aset bytes (+ dst-start i) (aref bytes (+ src-start i)))
             (setq i (1+ i))))
-        (setf (nelisp-text-buffer-gap-start tb) byte-pos)
-        (setf (nelisp-text-buffer-gap-end tb) (+ gap-end shift-len)))))))
+        (nelisp-text-buffer--set-gap-start tb byte-pos)
+        (nelisp-text-buffer--set-gap-end tb (+ gap-end shift-len)))))))
 
 (defun nelisp-text-buffer--encode (tb str)
   "Encode STR according to TB's multibyte flag, return a unibyte byte string.
@@ -404,16 +461,16 @@ The cursor advances by one character.  Returns TB."
       (aset (nelisp-text-buffer-bytes tb)
             (nelisp-text-buffer-gap-start tb)
             char)
-      (setf (nelisp-text-buffer-gap-start tb)
-            (1+ (nelisp-text-buffer-gap-start tb)))
-      (setf (nelisp-text-buffer-byte-count tb)
-            (1+ (nelisp-text-buffer-byte-count tb)))
-      (setf (nelisp-text-buffer-char-count tb)
-            (1+ (nelisp-text-buffer-char-count tb)))
-      (setf (nelisp-text-buffer-cursor-char tb)
-            (1+ (nelisp-text-buffer-cursor-char tb)))
-      (setf (nelisp-text-buffer-cursor-byte tb)
-            (nelisp-text-buffer-gap-start tb))
+      (nelisp-text-buffer--set-gap-start
+       tb (1+ (nelisp-text-buffer-gap-start tb)))
+      (nelisp-text-buffer--set-byte-count
+       tb (1+ (nelisp-text-buffer-byte-count tb)))
+      (nelisp-text-buffer--set-char-count
+       tb (1+ (nelisp-text-buffer-char-count tb)))
+      (nelisp-text-buffer--set-cursor-char
+       tb (1+ (nelisp-text-buffer-cursor-char tb)))
+      (nelisp-text-buffer--set-cursor-byte
+       tb (nelisp-text-buffer-gap-start tb))
       tb))
    (t
     (text-buffer-insert tb (string char)))))
@@ -452,16 +509,16 @@ The cursor advances to the end of the inserted text. Returns TB."
               (while (< i n-bytes)
                 (aset bytes (+ gap-start i) (aref encoded i))
                 (setq i (1+ i)))))
-          (setf (nelisp-text-buffer-gap-start tb)
-                (+ (nelisp-text-buffer-gap-start tb) n-bytes))
-          (setf (nelisp-text-buffer-byte-count tb)
-                (+ (nelisp-text-buffer-byte-count tb) n-bytes))
-          (setf (nelisp-text-buffer-char-count tb)
-                (+ (nelisp-text-buffer-char-count tb) n-chars))
-          (setf (nelisp-text-buffer-cursor-char tb)
-                (+ (nelisp-text-buffer-cursor-char tb) n-chars))
-          (setf (nelisp-text-buffer-cursor-byte tb)
-                (nelisp-text-buffer-gap-start tb))))
+          (nelisp-text-buffer--set-gap-start
+           tb (+ (nelisp-text-buffer-gap-start tb) n-bytes))
+          (nelisp-text-buffer--set-byte-count
+           tb (+ (nelisp-text-buffer-byte-count tb) n-bytes))
+          (nelisp-text-buffer--set-char-count
+           tb (+ (nelisp-text-buffer-char-count tb) n-chars))
+          (nelisp-text-buffer--set-cursor-char
+           tb (+ (nelisp-text-buffer-cursor-char tb) n-chars))
+          (nelisp-text-buffer--set-cursor-byte
+           tb (nelisp-text-buffer-gap-start tb))))
       tb))))
 
 ;;;###autoload
@@ -486,28 +543,28 @@ char count. Returns TB."
              (cursor-char (nelisp-text-buffer-cursor-char tb)))
         (nelisp-text-buffer--move-gap-to-byte tb start-byte)
         ;; expand gap to absorb [start-byte .. end-byte)
-        (setf (nelisp-text-buffer-gap-end tb)
-              (+ (nelisp-text-buffer-gap-end tb) n-bytes))
-        (setf (nelisp-text-buffer-byte-count tb)
-              (- (nelisp-text-buffer-byte-count tb) n-bytes))
-        (setf (nelisp-text-buffer-char-count tb)
-              (- (nelisp-text-buffer-char-count tb) n-chars))
+        (nelisp-text-buffer--set-gap-end
+         tb (+ (nelisp-text-buffer-gap-end tb) n-bytes))
+        (nelisp-text-buffer--set-byte-count
+         tb (- (nelisp-text-buffer-byte-count tb) n-bytes))
+        (nelisp-text-buffer--set-char-count
+         tb (- (nelisp-text-buffer-char-count tb) n-chars))
         ;; cursor adjustment
         (cond
          ((<= cursor-char start)
           ;; cursor before deleted region: byte index unchanged
-          (setf (nelisp-text-buffer-cursor-byte tb) start-byte))
+          (nelisp-text-buffer--set-cursor-byte tb start-byte))
          ((< cursor-char end)
           ;; cursor inside deleted region: collapse to start
-          (setf (nelisp-text-buffer-cursor-char tb) start)
-          (setf (nelisp-text-buffer-cursor-byte tb) start-byte))
+          (nelisp-text-buffer--set-cursor-char tb start)
+          (nelisp-text-buffer--set-cursor-byte tb start-byte))
          (t
           ;; cursor after deleted region: shift left
-          (setf (nelisp-text-buffer-cursor-char tb)
-                (- cursor-char n-chars))
-          (setf (nelisp-text-buffer-cursor-byte tb)
-                (nelisp-text-buffer--char-pos-to-byte-pos
-                 tb (nelisp-text-buffer-cursor-char tb))))))))
+          (nelisp-text-buffer--set-cursor-char
+           tb (- cursor-char n-chars))
+          (nelisp-text-buffer--set-cursor-byte
+           tb (nelisp-text-buffer--char-pos-to-byte-pos
+               tb (nelisp-text-buffer-cursor-char tb))))))))
   tb)
 
 ;;;###autoload
@@ -528,9 +585,9 @@ POS must be in [0, length]. Returns TB."
   (let ((char-count (nelisp-text-buffer-char-count tb)))
     (when (or (< pos 0) (> pos char-count))
       (signal 'args-out-of-range (list pos char-count))))
-  (setf (nelisp-text-buffer-cursor-char tb) pos)
-  (setf (nelisp-text-buffer-cursor-byte tb)
-        (nelisp-text-buffer--char-pos-to-byte-pos tb pos))
+  (nelisp-text-buffer--set-cursor-char tb pos)
+  (nelisp-text-buffer--set-cursor-byte
+   tb (nelisp-text-buffer--char-pos-to-byte-pos tb pos))
   tb)
 
 ;;;###autoload

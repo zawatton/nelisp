@@ -165,7 +165,24 @@ Slots:
   (defun nelisp-ec-buffer-killed-p (obj)
     (nelisp-ec-buffer--slot obj :killed-p))
   (defun nelisp-ec-buffer-killed-p--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :killed-p value)))
+    (nelisp-ec-buffer--set-slot obj :killed-p value))
+
+  (put 'nelisp-ec-buffer-name 'cl-struct-setter
+       'nelisp-ec-buffer-name--setter)
+  (put 'nelisp-ec-buffer-text 'cl-struct-setter
+       'nelisp-ec-buffer-text--setter)
+  (put 'nelisp-ec-buffer-point 'cl-struct-setter
+       'nelisp-ec-buffer-point--setter)
+  (put 'nelisp-ec-buffer-narrow-start 'cl-struct-setter
+       'nelisp-ec-buffer-narrow-start--setter)
+  (put 'nelisp-ec-buffer-narrow-end 'cl-struct-setter
+       'nelisp-ec-buffer-narrow-end--setter)
+  (put 'nelisp-ec-buffer-modified-p 'cl-struct-setter
+       'nelisp-ec-buffer-modified-p--setter)
+  (put 'nelisp-ec-buffer-text-tick 'cl-struct-setter
+       'nelisp-ec-buffer-text-tick--setter)
+  (put 'nelisp-ec-buffer-killed-p 'cl-struct-setter
+       'nelisp-ec-buffer-killed-p--setter))
 
 ;;; defstruct: marker
 
@@ -214,7 +231,51 @@ free for the API surface; access slots only via the `--' accessors."
       (if cell
           (setcdr cell value)
         (setcdr obj (cons (cons :buffer value) (cdr obj))))
-      value)))
+      value))
+
+  (put 'nelisp-ec-marker--position 'cl-struct-setter
+       'nelisp-ec-marker--position--setter)
+  (put 'nelisp-ec-marker--buffer 'cl-struct-setter
+       'nelisp-ec-marker--buffer--setter))
+
+(defun nelisp-ec--set-slot-by-accessor (accessor obj value)
+  "Set OBJ slot addressed by ACCESSOR to VALUE."
+  (funcall (or (get accessor 'cl-struct-setter)
+               (intern (concat (symbol-name accessor) "--setter")))
+           obj value))
+
+(defun nelisp-ec--set-buffer-point (buf value)
+  (nelisp-ec--set-slot-by-accessor 'nelisp-ec-buffer-point buf value))
+
+(defun nelisp-ec--set-buffer-narrow-start (buf value)
+  (nelisp-ec--set-slot-by-accessor
+   'nelisp-ec-buffer-narrow-start buf value))
+
+(defun nelisp-ec--set-buffer-narrow-end (buf value)
+  (nelisp-ec--set-slot-by-accessor 'nelisp-ec-buffer-narrow-end buf value))
+
+(defun nelisp-ec--set-buffer-modified-p (buf value)
+  (nelisp-ec--set-slot-by-accessor 'nelisp-ec-buffer-modified-p buf value))
+
+(defun nelisp-ec--set-buffer-text-tick (buf value)
+  (nelisp-ec--set-slot-by-accessor 'nelisp-ec-buffer-text-tick buf value))
+
+(defun nelisp-ec--set-buffer-killed-p (buf value)
+  (nelisp-ec--set-slot-by-accessor 'nelisp-ec-buffer-killed-p buf value))
+
+(defun nelisp-ec--set-marker-position (marker value)
+  (nelisp-ec--set-slot-by-accessor 'nelisp-ec-marker--position marker value))
+
+(defun nelisp-ec--set-marker-buffer (marker value)
+  (nelisp-ec--set-slot-by-accessor 'nelisp-ec-marker--buffer marker value))
+
+(defun nelisp-ec--min2 (a b)
+  "Return the smaller of A and B without relying on `min'."
+  (if (< a b) a b))
+
+(defun nelisp-ec--max2 (a b)
+  "Return the greater of A and B without relying on `max'."
+  (if (> a b) a b))
 
 ;;; Errors
 
@@ -393,7 +454,7 @@ the current buffer the selection is cleared (set to nil)."
     (let ((name (nelisp-ec-buffer-name buf)))
       (setq nelisp-ec--buffers
             (assoc-delete-all name nelisp-ec--buffers)))
-    (setf (nelisp-ec-buffer-killed-p buf) t)
+    (nelisp-ec--set-buffer-killed-p buf t)
     (when (eq buf nelisp-ec--current-buffer)
       (setq nelisp-ec--current-buffer nil)))
   t)
@@ -433,7 +494,7 @@ range values signal `nelisp-ec-args-out-of-range'."
         (hi (nelisp-ec-point-max)))
     (when (or (< pos lo) (> pos hi))
       (signal 'nelisp-ec-args-out-of-range (list pos lo hi)))
-    (setf (nelisp-ec-buffer-point buf) pos)
+    (nelisp-ec--set-buffer-point buf pos)
     pos))
 
 ;;;###autoload
@@ -448,7 +509,7 @@ narrowed region (or buffer)."
          (hi (nelisp-ec-point-max)))
     (when (or (< new lo) (> new hi))
       (signal 'nelisp-ec-args-out-of-range (list new lo hi)))
-    (setf (nelisp-ec-buffer-point buf) new)
+    (nelisp-ec--set-buffer-point buf new)
     t))
 
 ;;;###autoload
@@ -466,8 +527,8 @@ Ignores narrowing — this is always the underlying text length."
 
 (defun nelisp-ec--bump-buffer-text-tick (buf)
   "Increment BUF's lightweight text-content version."
-  (setf (nelisp-ec-buffer-text-tick buf)
-        (1+ (nelisp-ec-buffer-text-tick buf))))
+  (nelisp-ec--set-buffer-text-tick
+   buf (1+ (nelisp-ec-buffer-text-tick buf))))
 
 ;;; C. text editing  (6 APIs)
 
@@ -486,11 +547,11 @@ the general `&rest' / `dolist' string-insert path."
     (if (fboundp 'text-buffer-insert-char-code)
         (text-buffer-insert-char-code (nelisp-ec--text buf) char)
       (text-buffer-insert (nelisp-ec--text buf) (string char)))
-    (setf (nelisp-ec-buffer-point buf) new-point)
-    (setf (nelisp-ec-buffer-modified-p buf) t)
+    (nelisp-ec--set-buffer-point buf new-point)
+    (nelisp-ec--set-buffer-modified-p buf t)
     (nelisp-ec--bump-buffer-text-tick buf)
     (when (and ne (<= insert-point ne))
-      (setf (nelisp-ec-buffer-narrow-end buf) (1+ ne)))
+      (nelisp-ec--set-buffer-narrow-end buf (1+ ne)))
     new-point))
 
 ;;;###autoload
@@ -511,13 +572,12 @@ MVP is forgiving for callers that build arg lists dynamically)."
                  (ne (nelisp-ec-buffer-narrow-end buf)))
             (nelisp-ec--sync-cursor buf)
             (text-buffer-insert (nelisp-ec--text buf) s)
-            (setf (nelisp-ec-buffer-point buf) new-point)
-            (setf (nelisp-ec-buffer-modified-p buf) t)
+            (nelisp-ec--set-buffer-point buf new-point)
+            (nelisp-ec--set-buffer-modified-p buf t)
             (nelisp-ec--bump-buffer-text-tick buf)
             ;; Push narrow-end out when insertion occurred at or before it.
             (when (and ne (<= insert-point ne))
-              (setf (nelisp-ec-buffer-narrow-end buf)
-                    (+ ne n-chars)))))))
+              (nelisp-ec--set-buffer-narrow-end buf (+ ne n-chars)))))))
     nil))
 
 ;;;###autoload
@@ -532,8 +592,8 @@ adjusted analogously."
   (let* ((buf (nelisp-ec--ensure-current))
          (lo (nelisp-ec-point-min))
          (hi (nelisp-ec-point-max))
-         (s (min start end))
-         (e (max start end)))
+         (s (nelisp-ec--min2 start end))
+         (e (nelisp-ec--max2 start end)))
     (when (or (< s lo) (> e hi))
       (signal 'nelisp-ec-args-out-of-range (list s e lo hi)))
     (when (> e s)
@@ -545,16 +605,16 @@ adjusted analogously."
           ;; point before deletion: unchanged
           )
          ((<= point e)
-          (setf (nelisp-ec-buffer-point buf) s))
+          (nelisp-ec--set-buffer-point buf s))
          (t
-          (setf (nelisp-ec-buffer-point buf) (- point n))))
+          (nelisp-ec--set-buffer-point buf (- point n))))
         (let ((ne (nelisp-ec-buffer-narrow-end buf)))
           (when ne
             (cond
              ((<= ne s) nil)
-             ((<= ne e) (setf (nelisp-ec-buffer-narrow-end buf) s))
-             (t (setf (nelisp-ec-buffer-narrow-end buf) (- ne n))))))
-        (setf (nelisp-ec-buffer-modified-p buf) t)
+             ((<= ne e) (nelisp-ec--set-buffer-narrow-end buf s))
+             (t (nelisp-ec--set-buffer-narrow-end buf (- ne n))))))
+        (nelisp-ec--set-buffer-modified-p buf t)
         (nelisp-ec--bump-buffer-text-tick buf)))
     nil))
 
@@ -578,7 +638,7 @@ Emacs `erase-buffer' which signals an error under narrowing in some
 modes; our MVP simply erases the visible region."
   (let ((buf (nelisp-ec--ensure-current)))
     (nelisp-ec-delete-region (nelisp-ec-point-min) (nelisp-ec-point-max))
-    (setf (nelisp-ec-buffer-modified-p buf) t)
+    (nelisp-ec--set-buffer-modified-p buf t)
     nil))
 
 ;;;###autoload
@@ -589,8 +649,8 @@ modes; our MVP simply erases the visible region."
   (let* ((buf (nelisp-ec--ensure-current))
          (lo (nelisp-ec-point-min))
          (hi (nelisp-ec-point-max))
-         (s (min start end))
-         (e (max start end)))
+         (s (nelisp-ec--min2 start end))
+         (e (nelisp-ec--max2 start end)))
     (when (or (< s lo) (> e hi))
       (signal 'nelisp-ec-args-out-of-range (list s e lo hi)))
     (text-buffer-substring (nelisp-ec--text buf) (1- s) (1- e))))
@@ -620,7 +680,7 @@ Phase 9a MVP; switch to a marker-backed restore in Phase 9b."
            (progn ,@body)
          (when (and ,saved-buf
                     (not (nelisp-ec-buffer-killed-p ,saved-buf)))
-           (setf (nelisp-ec-buffer-point ,saved-buf) ,saved-pt))
+           (nelisp-ec--set-buffer-point ,saved-buf ,saved-pt))
          (setq nelisp-ec--current-buffer ,saved-buf)))))
 
 ;;;###autoload
@@ -642,8 +702,8 @@ BODY changes the current buffer."
            (progn ,@body)
          (when (and ,saved-buf
                     (not (nelisp-ec-buffer-killed-p ,saved-buf)))
-           (setf (nelisp-ec-buffer-narrow-start ,saved-buf) ,saved-lo)
-           (setf (nelisp-ec-buffer-narrow-end ,saved-buf) ,saved-hi))))))
+           (nelisp-ec--set-buffer-narrow-start ,saved-buf ,saved-lo)
+           (nelisp-ec--set-buffer-narrow-end ,saved-buf ,saved-hi))))))
 
 ;;;###autoload
 (defmacro nelisp-ec-save-current-buffer (&rest body)
@@ -667,24 +727,24 @@ range.  Returns nil."
   (let* ((buf (nelisp-ec--ensure-current))
          (raw-len (text-buffer-length (nelisp-ec--text buf)))
          (max-end (1+ raw-len))
-         (s (min start end))
-         (e (max start end)))
+         (s (nelisp-ec--min2 start end))
+         (e (nelisp-ec--max2 start end)))
     (when (or (< s 1) (> e max-end))
       (signal 'nelisp-ec-args-out-of-range (list s e 1 max-end)))
-    (setf (nelisp-ec-buffer-narrow-start buf) s)
-    (setf (nelisp-ec-buffer-narrow-end buf) e)
+    (nelisp-ec--set-buffer-narrow-start buf s)
+    (nelisp-ec--set-buffer-narrow-end buf e)
     (let ((p (nelisp-ec-buffer-point buf)))
       (cond
-       ((< p s) (setf (nelisp-ec-buffer-point buf) s))
-       ((> p e) (setf (nelisp-ec-buffer-point buf) e))))
+       ((< p s) (nelisp-ec--set-buffer-point buf s))
+       ((> p e) (nelisp-ec--set-buffer-point buf e))))
     nil))
 
 ;;;###autoload
 (defun nelisp-ec-widen ()
   "Remove any narrowing restriction on the current buffer.  Return nil."
   (let ((buf (nelisp-ec--ensure-current)))
-    (setf (nelisp-ec-buffer-narrow-start buf) nil)
-    (setf (nelisp-ec-buffer-narrow-end buf) nil)
+    (nelisp-ec--set-buffer-narrow-start buf nil)
+    (nelisp-ec--set-buffer-narrow-end buf nil)
     nil))
 
 ;;; F. marker  (5 APIs)
@@ -708,8 +768,8 @@ affects where you can move POINT, not where a marker may sit."
     (signal 'wrong-type-argument (list 'nelisp-ec-marker-p marker)))
   (cond
    ((null pos)
-    (setf (nelisp-ec-marker--position marker) nil)
-    (setf (nelisp-ec-marker--buffer marker) nil))
+    (nelisp-ec--set-marker-position marker nil)
+    (nelisp-ec--set-marker-buffer marker nil))
    (t
     (unless (integerp pos)
       (signal 'wrong-type-argument (list 'integerp pos)))
@@ -720,8 +780,8 @@ affects where you can move POINT, not where a marker may sit."
       (let ((max-end (1+ (text-buffer-length (nelisp-ec--text b)))))
         (when (or (< pos 1) (> pos max-end))
           (signal 'nelisp-ec-args-out-of-range (list pos 1 max-end))))
-      (setf (nelisp-ec-marker--position marker) pos)
-      (setf (nelisp-ec-marker--buffer marker) b))))
+      (nelisp-ec--set-marker-position marker pos)
+      (nelisp-ec--set-marker-buffer marker b))))
   marker)
 
 ;;;###autoload
@@ -767,7 +827,7 @@ position bound (1-based) — searches stop without matching past it."
              (and (or (null bound) (<= match-end-pos bound))
                   (<= match-end-pos (nelisp-ec-point-max)))))
       (let ((new-point (1+ (+ hit (length string)))))
-        (setf (nelisp-ec-buffer-point buf) new-point)
+        (nelisp-ec--set-buffer-point buf new-point)
         (nelisp-ec--set-simple-match-data (1+ hit) new-point)
         new-point))
      (noerror nil)
@@ -806,7 +866,7 @@ non-nil, is the lower position bound (1-based)."
     (cond
      (best
       (let ((new-point (1+ best)))
-        (setf (nelisp-ec-buffer-point buf) new-point)
+        (nelisp-ec--set-buffer-point buf new-point)
         (nelisp-ec--set-simple-match-data new-point (+ new-point slen))
         new-point))
      (noerror nil)
@@ -854,7 +914,7 @@ On failure, return nil when NOERROR is non-nil, else signal
     (cond
      ((and match
            (or (null bound) (<= abs-end bound)))
-      (setf (nelisp-ec-buffer-point buf) abs-end)
+      (nelisp-ec--set-buffer-point buf abs-end)
       (nelisp-ec--rx-match-data-to-ec base match)
       abs-end)
      (noerror nil)
@@ -875,7 +935,7 @@ non-nil.  On failure honor NOERROR like `nelisp-ec-re-search-forward'."
          (base (nth 0 region))
          (text (nth 1 region))
          (point-index (nth 2 region))
-         (lo-index (if bound (max 0 (- bound base)) 0))
+         (lo-index (if bound (nelisp-ec--max2 0 (- bound base)) 0))
          (matches (nelisp-rx-string-match-all regexp text lo-index))
          (best nil))
     (dolist (match matches)
@@ -885,7 +945,7 @@ non-nil.  On failure honor NOERROR like `nelisp-ec-re-search-forward'."
     (cond
      (best
       (let ((new-point (+ base (plist-get best :start))))
-        (setf (nelisp-ec-buffer-point buf) new-point)
+        (nelisp-ec--set-buffer-point buf new-point)
         (nelisp-ec--rx-match-data-to-ec base best)
         new-point))
      (noerror nil)
