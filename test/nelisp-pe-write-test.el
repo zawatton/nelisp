@@ -1233,6 +1233,80 @@
     (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 72)) #x1ffc))
     (should (= (aref bytes (+ text-off 76)) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-createpipe-section-table ()
+  "The CreatePipe smoke EXE has HANDLE and byte-count storage."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'createpipe-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20))
+         (sect0 (+ pe-off 4 20 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (text-raw #x200)
+         (data-raw #x400)
+         (idata-raw #x600))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ file-off 2)) 3))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 4)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 8)) #x400))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 56)) #x4000))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 20)) text-raw))
+    (should (string-prefix-p ".data" (substring bytes sect1 (+ sect1 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 8)) 28))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) data-raw))
+    (should (string-prefix-p ".idata" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 12)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 20)) idata-raw))
+    (dotimes (i 28)
+      (should (= (aref bytes (+ data-raw i))
+                 (if (= i 16) #x4e 0))))))
+
+(ert-deftest nelisp-pe-write-exe-binary-createpipe-import-directory ()
+  "The CreatePipe smoke EXE imports anonymous pipe lifecycle APIs."
+  (let ((bytes (nelisp-pe-write-test--emit-exe 'createpipe-exit-42)))
+    (dolist (name '("KERNEL32.dll"
+                    "ExitProcess"
+                    "CreatePipe"
+                    "WriteFile"
+                    "ReadFile"
+                    "CloseHandle"))
+      (should (nelisp-pe-write-test--contains-p bytes name)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-createpipe-entry-code ()
+  "The CreatePipe smoke EXE writes, reads, verifies, and closes a pipe."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'createpipe-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (sect0 (+ pe-off 4 20 240))
+         (text-size (nelisp-pe-write-test--read-le32 bytes (+ sect0 8)))
+         (text-off #x200))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x38)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x8d #x0d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x8d #x15)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x4c #x8d #x0d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x45 #x31 #xc0 #x45 #x31 #xc9)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x41 #xb8 #x01 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #xc7 #x44 #x24 #x20
+                                   #x00 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x85 #xc0 #x75 #x0b)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x83 #x3d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x80 #x3d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xb9 #x2a #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xb9 #x01 #x00 #x00 #x00)))
+    (should (= (aref bytes (+ text-off (1- text-size))) #xcc))))
+
 (ert-deftest nelisp-pe-write-exe-binary-createfile-write-section-table ()
   "The CreateFileW smoke EXE has path/message rdata, data, and imports."
   (let* ((bytes (nelisp-pe-write-test--emit-exe 'createfile-write-exit-42))

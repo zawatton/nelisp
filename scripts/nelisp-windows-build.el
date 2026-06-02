@@ -12,9 +12,10 @@
 ;; PE writer.  These are deliberately small de-risk artifacts for Doc 138:
 ;; ExitProcess, VirtualAlloc, VirtualProtect / VirtualFree, arena metadata,
 ;; stdout/stdin HANDLE I/O via GetStdHandle + WriteFile / ReadFile,
-;; CreateFileW file lifecycle, SetFilePointerEx seek wiring, GetFileType HANDLE
-;; classification, GetFileInformationByHandle metadata queries, and file-backed
-;; mapping lifecycle wiring, GetCurrentProcessId process id discovery,
+;; anonymous pipe HANDLE lifecycle via CreatePipe, CreateFileW file lifecycle,
+;; SetFilePointerEx seek wiring, GetFileType HANDLE classification,
+;; GetFileInformationByHandle metadata queries, and file-backed mapping
+;; lifecycle wiring, GetCurrentProcessId process id discovery,
 ;; GetLastError error propagation, CRT-free command-line discovery via
 ;; GetCommandLineW / CommandLineToArgvW, and Winsock startup via WS2_32.dll!
 ;; WSAStartup, plus CreateProcessW child launch / wait and CreateThread launch
@@ -32,6 +33,7 @@
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-arena
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-writefile-stdout
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-readfile-stdin
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-createpipe
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-createfile-write
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-setfilepointer
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getfiletype
@@ -93,6 +95,11 @@
   (expand-file-name "target/nelisp-windows-readfile-stdin.exe"
                     nelisp-windows-build--repo-root)
   "Default path for the single ReadFile stdin smoke EXE.")
+
+(defconst nelisp-windows-build--createpipe-out
+  (expand-file-name "target/nelisp-windows-createpipe.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single CreatePipe smoke EXE.")
 
 (defconst nelisp-windows-build--createfile-write-out
   (expand-file-name "target/nelisp-windows-createfile-write.exe"
@@ -161,6 +168,7 @@
     (arena . virtualalloc-arena-exit-42)
     (writefile-stdout . writefile-stdout-exit-42)
     (readfile-stdin . readfile-stdin-exit-42)
+    (createpipe . createpipe-exit-42)
     (createfile-write . createfile-write-exit-42)
     (setfilepointer . setfilepointer-exit-42)
     (getfiletype . getfiletype-exit-42)
@@ -268,6 +276,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'readfile-stdin-exit-42
    (or out-path nelisp-windows-build--readfile-stdin-out)
    "GetStdHandle + ReadFile stdin + ExitProcess 42"))
+
+(defun nelisp-windows-build-createpipe (&optional out-path)
+  "Batch entry: build the Windows CreatePipe smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'createpipe-exit-42
+   (or out-path nelisp-windows-build--createpipe-out)
+   "CreatePipe + WriteFile + ReadFile + CloseHandle + ExitProcess 42"))
 
 (defun nelisp-windows-build-createfile-write (&optional out-path)
   "Batch entry: build the Windows CreateFileW write smoke EXE."

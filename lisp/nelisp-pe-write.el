@@ -60,6 +60,7 @@
 ;; Stage 144 adds file mapping smoke for file-backed mmap wiring.
 ;; Stage 145 adds `GetCurrentProcessId' smoke for getpid wiring.
 ;; Stage 146 adds `GetLastError' smoke for Windows error propagation wiring.
+;; Stage 147 adds `CreatePipe' smoke for anonymous pipe HANDLE wiring.
 ;; Production standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
@@ -1359,6 +1360,138 @@ without blocking for console input."
     (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--minimal-createpipe-text
+    (text-rva exit-iat-rva create-pipe-iat-rva write-file-iat-rva
+              read-file-iat-rva close-handle-iat-rva data-rva)
+  "Return x86_64 bytes that create a pipe, write/read one byte, and close it.
+The generated code calls CreatePipe, writes one byte through the write HANDLE,
+reads it back through the read HANDLE, verifies byte counts and payload, closes
+both HANDLEs, and exits 42 only when the full lifecycle succeeds."
+  (let ((cbuf (nelisp-pe--make-buffer))
+        (read-handle-rva data-rva)
+        (write-handle-rva (+ data-rva 8))
+        (write-byte-rva (+ data-rva 16))
+        (read-byte-rva (+ data-rva 17))
+        (bytes-written-rva (+ data-rva 20))
+        (bytes-read-rva (+ data-rva 24)))
+    (let (emit-call
+          emit-lea-rcx
+          emit-lea-rdx
+          emit-lea-r9
+          emit-mov-rcx-data
+          emit-cmp-dword-one
+          emit-cmp-byte-n
+          emit-exit1
+          emit-exit42)
+      (setq emit-call
+            (lambda (iat-rva)
+              (let ((call-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- iat-rva (+ text-rva call-off 6))))))
+      (setq emit-lea-rcx
+            (lambda (target-rva)
+              (let ((lea-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x0d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva lea-off 7))))))
+      (setq emit-lea-rdx
+            (lambda (target-rva)
+              (let ((lea-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x15))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva lea-off 7))))))
+      (setq emit-lea-r9
+            (lambda (target-rva)
+              (let ((lea-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x4c #x8d #x0d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva lea-off 7))))))
+      (setq emit-mov-rcx-data
+            (lambda (target-rva)
+              (let ((mov-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8b #x0d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva mov-off 7))))))
+      (setq emit-cmp-dword-one
+            (lambda (target-rva)
+              (let ((cmp-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x83 #x3d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva cmp-off 7)))
+                (nelisp-pe--write-u8 cbuf #x01))))
+      (setq emit-cmp-byte-n
+            (lambda (target-rva)
+              (let ((cmp-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x80 #x3d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva cmp-off 7)))
+                (nelisp-pe--write-u8 cbuf #x4e))))
+      (setq emit-exit1
+            (lambda ()
+              (nelisp-pe--write-u8 cbuf #xb9)
+              (nelisp-pe--write-le32 cbuf 1)
+              (funcall emit-call exit-iat-rva)))
+      (setq emit-exit42
+            (lambda ()
+              (nelisp-pe--write-u8 cbuf #xb9)
+              (nelisp-pe--write-le32 cbuf 42)
+              (funcall emit-call exit-iat-rva)))
+      ;; Win64 ABI: 32-byte shadow, one stack arg for ReadFile/WriteFile.
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x38))
+      (funcall emit-lea-rcx read-handle-rva)
+      (funcall emit-lea-rdx write-handle-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x45 #x31 #xc0))
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x45 #x31 #xc9))
+      (funcall emit-call create-pipe-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-exit1)
+
+      (funcall emit-mov-rcx-data write-handle-rva)
+      (funcall emit-lea-rdx write-byte-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8))
+      (nelisp-pe--write-le32 cbuf 1)
+      (funcall emit-lea-r9 bytes-written-rva)
+      (nelisp-pe--write-bytes cbuf
+                              (unibyte-string #x48 #xc7 #x44 #x24 #x20
+                                              #x00 #x00 #x00 #x00))
+      (funcall emit-call write-file-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-cmp-dword-one bytes-written-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x74 #x0b))
+      (funcall emit-exit1)
+
+      (funcall emit-mov-rcx-data read-handle-rva)
+      (funcall emit-lea-rdx read-byte-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8))
+      (nelisp-pe--write-le32 cbuf 1)
+      (funcall emit-lea-r9 bytes-read-rva)
+      (nelisp-pe--write-bytes cbuf
+                              (unibyte-string #x48 #xc7 #x44 #x24 #x20
+                                              #x00 #x00 #x00 #x00))
+      (funcall emit-call read-file-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-cmp-dword-one bytes-read-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x74 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-cmp-byte-n read-byte-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x74 #x0b))
+      (funcall emit-exit1)
+
+      (funcall emit-mov-rcx-data write-handle-rva)
+      (funcall emit-call close-handle-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-mov-rcx-data read-handle-rva)
+      (funcall emit-call close-handle-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-exit42)
+      (nelisp-pe--write-u8 cbuf #xcc)
+      (nelisp-pe--buffer-bytes cbuf))))
 
 (defun nelisp-pe--minimal-createfile-write-text
     (text-rva exit-iat-rva create-file-iat-rva write-file-iat-rva
@@ -2838,6 +2971,108 @@ when the thread reported exit code 42."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-createpipe-exitprocess-exe ()
+  "Build a PE32+ EXE that proves anonymous pipe HANDLE wiring."
+  (let* ((num-sections 3)
+         (data-bytes (make-string 28 0))
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (data-rva (* 2 nelisp-pe--section-alignment))
+         (idata-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva
+           (list "ExitProcess" "CreatePipe" "WriteFile" "ReadFile"
+                 "CloseHandle")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (progn
+            (aset data-bytes 16 #x4e)
+            (nelisp-pe--minimal-createpipe-text
+             text-rva
+             (cdr (assoc "ExitProcess" iat-map))
+             (cdr (assoc "CreatePipe" iat-map))
+             (cdr (assoc "WriteFile" iat-map))
+             (cdr (assoc "ReadFile" iat-map))
+             (cdr (assoc "CloseHandle" iat-map))
+             data-rva)))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length data-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (data-raw-ptr (+ text-raw-ptr text-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ data-raw-size idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length data-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf data-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--build-createfile-write-exitprocess-exe ()
   "Build a PE32+ EXE that writes and deletes a file through kernel32."
   (let* ((num-sections 4)
@@ -4143,7 +4378,7 @@ so raw binary content is preserved.  Returns FILE-PATH."
 SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `virtualprotect-free-exit-42', `virtualalloc-arena-exit-42',
 `writefile-stdout-exit-42', `readfile-stdin-exit-42',
-`createfile-write-exit-42', `setfilepointer-exit-42',
+`createpipe-exit-42', `createfile-write-exit-42', `setfilepointer-exit-42',
 `getfiletype-exit-42', `getfileinformation-exit-42',
 `filemapping-exit-42', `getcurrentprocessid-exit-42',
 `getlasterror-exit-42',
@@ -4160,6 +4395,7 @@ DLL functions through a real PE import directory and writes raw bytes with
            ((eq spec 'virtualalloc-arena-exit-42) nil)
            ((eq spec 'writefile-stdout-exit-42) nil)
            ((eq spec 'readfile-stdin-exit-42) nil)
+           ((eq spec 'createpipe-exit-42) nil)
            ((eq spec 'createfile-write-exit-42) nil)
            ((eq spec 'setfilepointer-exit-42) nil)
            ((eq spec 'getfiletype-exit-42) nil)
@@ -4185,6 +4421,8 @@ DLL functions through a real PE import directory and writes raw bytes with
                   (nelisp-pe--build-writefile-stdout-exitprocess-exe))
                  ((eq spec 'readfile-stdin-exit-42)
                   (nelisp-pe--build-readfile-stdin-exitprocess-exe))
+                 ((eq spec 'createpipe-exit-42)
+                  (nelisp-pe--build-createpipe-exitprocess-exe))
                  ((eq spec 'createfile-write-exit-42)
                   (nelisp-pe--build-createfile-write-exitprocess-exe))
                  ((eq spec 'setfilepointer-exit-42)

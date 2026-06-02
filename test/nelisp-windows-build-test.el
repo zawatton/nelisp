@@ -61,6 +61,7 @@
                    (arena . virtualalloc-arena-exit-42)
                    (writefile-stdout . writefile-stdout-exit-42)
                    (readfile-stdin . readfile-stdin-exit-42)
+                   (createpipe . createpipe-exit-42)
                    (createfile-write . createfile-write-exit-42)
                    (setfilepointer . setfilepointer-exit-42)
                    (getfiletype . getfiletype-exit-42)
@@ -135,6 +136,7 @@
                            "nelisp-windows-arena.exe"
                            "nelisp-windows-writefile-stdout.exe"
                            "nelisp-windows-readfile-stdin.exe"
+                           "nelisp-windows-createpipe.exe"
                            "nelisp-windows-createfile-write.exe"
                            "nelisp-windows-setfilepointer.exe"
                            "nelisp-windows-getfiletype.exe"

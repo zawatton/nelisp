@@ -11,6 +11,7 @@
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualalloc
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualprotect-free
 #   .\tools\windows-selfhost-test.ps1 -Smoke readfile-stdin
+#   .\tools\windows-selfhost-test.ps1 -Smoke createpipe
 #   .\tools\windows-selfhost-test.ps1 -Smoke createfile-write
 #   .\tools\windows-selfhost-test.ps1 -Smoke setfilepointer
 #   .\tools\windows-selfhost-test.ps1 -Smoke getfiletype
@@ -89,6 +90,12 @@ $Smokes = @(
         ExpectedExit = 42
         ExpectedStdout = $null
         StdinText = "nelisp readfile smoke"
+    },
+    @{
+        Name = "createpipe"
+        Spec = "createpipe-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
     },
     @{
         Name = "createfile-write"
