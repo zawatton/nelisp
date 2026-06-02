@@ -114,11 +114,20 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-O-EXCL   128)          ; 0o200
 (defconst nelisp-os-O-TRUNC  512)          ; 0o1000
 (defconst nelisp-os-O-APPEND 1024)         ; 0o2000
+(defconst nelisp-os-O-CLOEXEC 524288)      ; 0o2000000
 
 ;; Standard fds.
 (defconst nelisp-os-STDIN  0)
 (defconst nelisp-os-STDOUT 1)
 (defconst nelisp-os-STDERR 2)
+
+;; fcntl(2) cmd
+(defconst nelisp-os-F-DUPFD 0)
+(defconst nelisp-os-F-GETFD 1)
+(defconst nelisp-os-F-SETFD 2)
+(defconst nelisp-os-F-GETFL 3)
+(defconst nelisp-os-F-SETFL 4)
+(defconst nelisp-os-FD-CLOEXEC 1)
 
 ;; Windows standard HANDLE selectors for GetStdHandle.
 (defconst nelisp-os-WIN-STD-INPUT-HANDLE  -10)
@@ -895,7 +904,17 @@ thread HANDLE from `PROCESS_INFORMATION' is closed before returning."
                          0)))
             (if (or (= handle 0) (= handle -1))
                 (nelisp-os--windows-ffi-error-signal)
-              (nelisp-os--windows-fd-alloc handle))))
+              (let ((fd (nelisp-os--windows-fd-alloc handle)))
+                (if (= (logand flags nelisp-os-O-CLOEXEC) 0)
+                    fd
+                  (condition-case err
+                      (progn
+                        (nelisp-os--windows-setfd-flags
+                         fd nelisp-os-FD-CLOEXEC)
+                        fd)
+                    (nelisp-os-error
+                     (ignore-errors (nelisp-os-close fd))
+                     (signal (car err) (cdr err)))))))))
       (nelisp-os--free path-buf))))
 
 (defun nelisp-os--windows-write-handle (handle str)
@@ -1096,14 +1115,6 @@ went through `:string' (= CString::new, NUL-rejecting)."
 (defconst nelisp-os-SEEK-SET 0)
 (defconst nelisp-os-SEEK-CUR 1)
 (defconst nelisp-os-SEEK-END 2)
-
-;; fcntl(2) cmd
-(defconst nelisp-os-F-DUPFD 0)
-(defconst nelisp-os-F-GETFD 1)
-(defconst nelisp-os-F-SETFD 2)
-(defconst nelisp-os-F-GETFL 3)
-(defconst nelisp-os-F-SETFL 4)
-(defconst nelisp-os-FD-CLOEXEC 1)
 
 ;; open(2) / fcntl(2) extra flag
 (defconst nelisp-os-O-NONBLOCK 2048)        ; 0o4000

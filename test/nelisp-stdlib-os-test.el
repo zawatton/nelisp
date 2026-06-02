@@ -694,6 +694,82 @@
                      (4000 14 0))))
     (should (equal freed '(4000)))))
 
+(ert-deftest nelisp-stdlib-os-open-windows-supports-o-cloexec ()
+  "Windows open O_CLOEXEC clears HANDLE_FLAG_INHERIT after CreateFileW."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 4000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u16) (lambda (&rest _args) nil))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "CreateFileW") #xabcdef)
+                  ((equal fn "SetHandleInformation") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-open "out.txt"
+                                   (logior nelisp-os-O-CREAT
+                                           nelisp-os-O-TRUNC
+                                           nelisp-os-O-WRONLY
+                                           nelisp-os-O-CLOEXEC)
+                                   0)
+                   3))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "CreateFileW"
+                          [:pointer :pointer :uint32 :uint32 :pointer
+                           :uint32 :uint32 :pointer]
+                          (list 4000
+                                nelisp-os-WIN-GENERIC-WRITE
+                                (logior nelisp-os-WIN-FILE-SHARE-READ
+                                        nelisp-os-WIN-FILE-SHARE-WRITE
+                                        nelisp-os-WIN-FILE-SHARE-DELETE)
+                                0
+                                nelisp-os-WIN-CREATE-ALWAYS
+                                nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL
+                                0))
+                    (list "kernel32" "SetHandleInformation"
+                          [:sint32 :pointer :uint32 :uint32]
+                          (list #xabcdef
+                                nelisp-os-WIN-HANDLE-FLAG-INHERIT
+                                0)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal freed '(4000)))))
+
+(ert-deftest nelisp-stdlib-os-open-windows-o-cloexec-cleans-up-on-setfd-error ()
+  "Windows open O_CLOEXEC closes the new fd when inheritability update fails."
+  (let ((closed nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 4000))
+              ((symbol-function 'nelisp-os--free) (lambda (_ptr) nil))
+              ((symbol-function 'nelisp-os-write-u16) (lambda (&rest _args) nil))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (_dll fn _sig &rest _args)
+                 (if (equal fn "CreateFileW")
+                     #xabcdef
+                   (error "unexpected ffi call %S" fn))))
+              ((symbol-function 'nelisp-os--windows-setfd-flags)
+               (lambda (_fd _flags)
+                 (signal 'nelisp-os-error (list 10022))))
+              ((symbol-function 'nelisp-os-close)
+               (lambda (fd)
+                 (push fd closed)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-open "out.txt"
+                         (logior nelisp-os-O-CREAT
+                                 nelisp-os-O-WRONLY
+                                 nelisp-os-O-CLOEXEC)
+                         0)
+         :type 'nelisp-os-error)))
+    (should (equal closed '(3)))))
+
 (ert-deftest nelisp-stdlib-os-windows-utf16-code-units ()
   "Windows path conversion emits UTF-16 code units, including surrogate pairs."
   (should (equal (nelisp-os--windows-utf16-code-units
