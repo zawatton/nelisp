@@ -32,8 +32,9 @@
 ;; `GetLastError'.  Stage 10 maps the anonymous mmap/mprotect/munmap surface to
 ;; `VirtualAlloc' / `VirtualProtect' / `VirtualFree'.  Stage 11 routes the
 ;; minimal process identity/exit surface through `GetCurrentProcessId' and
-;; `ExitProcess'.  The Linux/Darwin path remains the default until a real
-;; Windows standalone runtime selects `system-type' = `windows-nt'.
+;; `ExitProcess'.  Stage 12 maps `pipe' to `CreatePipe' and stores both HANDLEs
+;; in the Windows fd table.  The Linux/Darwin path remains the default until a
+;; real Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -513,6 +514,25 @@ went through `:string' (= CString::new, NUL-rejecting)."
         (nelisp-os--windows-ffi-error-signal)
       0)))
 
+(defun nelisp-os--windows-pipe ()
+  "Windows implementation of `nelisp-os-pipe' via CreatePipe."
+  (let ((read-handle-buf (nelisp-os--alloc 8))
+        (write-handle-buf (nelisp-os--alloc 8)))
+    (unwind-protect
+        (let ((ok (nelisp-os--libc-call
+                   "kernel32" "CreatePipe"
+                   [:sint32 :pointer :pointer :pointer :uint32]
+                   read-handle-buf write-handle-buf 0 0)))
+          (if (= ok 0)
+              (nelisp-os--windows-ffi-error-signal)
+            (let ((read-fd (nelisp-os--windows-fd-alloc
+                            (nelisp-os-read-i64 read-handle-buf 0)))
+                  (write-fd (nelisp-os--windows-fd-alloc
+                             (nelisp-os-read-i64 write-handle-buf 0))))
+              (cons read-fd write-fd))))
+      (nelisp-os--free write-handle-buf)
+      (nelisp-os--free read-handle-buf))))
+
 ;; struct stat st_mode bits
 (defconst nelisp-os-S-IFMT  61440)          ; 0o170000
 (defconst nelisp-os-S-IFREG 32768)          ; 0o100000
@@ -626,14 +646,16 @@ mapping failure (raw kernel returns -errno for failed mmap)."
   ;; (= 2 × int32) so libc.pipe can fill them, then decode via
   ;; `nelisp-os-read-i32' to dodge `nelisp-os--read-bytes''s UTF-8 lossy
   ;; conversion (= corrupts byte values 0x80-0xFF).
-  (let ((buf (nelisp-os--alloc 8)))
-    (unwind-protect
-        (let ((r (nelisp-os--libc-call "libc" "pipe" [:sint32 :pointer] buf)))
-          (if (= r -1)
-              (nelisp-os--ffi-errno-signal)
-            (cons (nelisp-os-read-i32 buf 0)
-                  (nelisp-os-read-i32 buf 4))))
-      (nelisp-os--free buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-pipe)
+    (let ((buf (nelisp-os--alloc 8)))
+      (unwind-protect
+          (let ((r (nelisp-os--libc-call "libc" "pipe" [:sint32 :pointer] buf)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (cons (nelisp-os-read-i32 buf 0)
+                    (nelisp-os-read-i32 buf 4))))
+        (nelisp-os--free buf)))))
 
 (defun nelisp-os-fcntl (fd cmd arg)
   "POSIX fcntl(2) — int-only variant (= F_GETFL / F_SETFL / F_DUPFD).

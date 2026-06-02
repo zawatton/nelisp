@@ -351,6 +351,40 @@
                          (list #x70000000 0
                                nelisp-os-WIN-MEM-RELEASE))))))
 
+(ert-deftest nelisp-stdlib-os-pipe-windows-uses-createpipe ()
+  "Windows pipe routes through CreatePipe and records both HANDLEs."
+  (let ((call nil)
+        (alloc-next 1000)
+        (freed nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (ptr _off)
+                 (cond
+                  ((= ptr 1000) #x1111222233334444)
+                  ((= ptr 2000) #x5555666677778888)
+                  (t (error "unexpected pointer %S" ptr)))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-pipe) '(3 . 4)))))
+    (should (equal call
+                   (list "kernel32" "CreatePipe"
+                         [:sint32 :pointer :pointer :pointer :uint32]
+                         (list 1000 2000 0 0))))
+    (should (equal nelisp-os--windows-fd-table
+                   '((4 . #x5555666677778888)
+                     (3 . #x1111222233334444))))
+    (should (equal (sort freed #'<) '(1000 2000)))))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

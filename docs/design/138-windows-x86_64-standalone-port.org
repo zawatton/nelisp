@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-11-MINIMAL-PROCESS-API-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-12-CREATEPIPE-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 11 minimal process API + first real Windows smoke VALIDATED
+- *State*: STAGE 12 CreatePipe + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -36,7 +36,10 @@
   The minimal process surface now routes Windows =nelisp-os-exit= through
   =kernel32!ExitProcess= and =nelisp-os-getpid= through
   =kernel32!GetCurrentProcessId=, removing another raw Linux syscall / POSIX
-  libc dependency from Windows execution.
+  libc dependency from Windows execution.  =nelisp-os-pipe= now routes through
+  =kernel32!CreatePipe= and stores the read/write HANDLEs in the existing
+  Windows fd table, so subsequent =nelisp-os-read/write/close= operations use
+  the already-covered HANDLE path.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -57,7 +60,8 @@
   translation plus =VirtualAlloc= / =VirtualProtect= / =VirtualFree= argument
   shape for =nelisp-os-mmap/mprotect/munmap=.  Stage 11 coverage verifies
   =ExitProcess= and =GetCurrentProcessId= argument shape for
-  =nelisp-os-exit/getpid=.
+  =nelisp-os-exit/getpid=.  Stage 12 coverage verifies =CreatePipe= argument
+  shape, HANDLE decoding, fd-table allocation, and cleanup.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -89,10 +93,11 @@
   branch plus regular file HANDLE fd table; Stage 9 adds native Windows error
   reporting through =GetLastError=; Stage 10 adds the anonymous
   =mmap/mprotect/munmap= compatibility branch over Windows virtual memory APIs.
-  Stage 11 adds minimal =exit/getpid= process API wiring over kernel32.  These
-  stages do not yet replace the Linux standalone allocator, complete real
-  Windows execution of every smoke, support all Windows OS APIs, or cover the
-  rest of the stdlib OS surface.
+  Stage 11 adds minimal =exit/getpid= process API wiring over kernel32.  Stage
+  12 adds anonymous pipe creation through =CreatePipe=.  These stages do not
+  yet replace the Linux standalone allocator, complete real Windows execution of
+  every smoke, support all Windows OS APIs, or cover the rest of the stdlib OS
+  surface.
 
 * TL;DR
 
@@ -247,6 +252,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   host-side ERT coverage.
   *Windows process progress 2026-06-02*: =nelisp-os-exit/getpid= now route
   through =ExitProcess= / =GetCurrentProcessId= with host-side ERT coverage.
+  *Windows pipe progress 2026-06-02*: =nelisp-os-pipe= now routes through
+  =CreatePipe= and registers both HANDLEs in the Windows fd table.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -288,6 +295,8 @@ largest uncertainty (B1 + B2) first.
    =open/read/write/close= routes through =CreateFileW= + fd table + HANDLE I/O.
    *Windows error branch SHIPPED 2026-06-02*: HANDLE/API failures route through
    =kernel32!GetLastError= so callers receive the raw Windows error code.
+   *Windows pipe branch SHIPPED 2026-06-02*: =nelisp-os-pipe= uses
+   =CreatePipe= and feeds the resulting HANDLEs into the same fd table.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
