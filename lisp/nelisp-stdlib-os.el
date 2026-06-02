@@ -47,8 +47,9 @@
 ;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
 ;; Winsock.  Stage 24 maps AF_INET `accept' to Winsock and registers accepted
 ;; sockets in the Windows fd table.  Stage 25 maps socket fd `read' / `write'
-;; to Winsock `recv' / `send'.  The Linux/Darwin path remains the default until
-;; a real Windows standalone runtime selects `system-type' = `windows-nt'.
+;; to Winsock `recv' / `send'.  Stage 26 maps socket fd `poll' to `WSAPoll'.
+;; The Linux/Darwin path remains the default until a real Windows standalone
+;; runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -1425,6 +1426,7 @@ returns (0 . 0)."
 (defconst nelisp-os--AF-INET 2)
 (defconst nelisp-os--sockaddr-in-len 16)
 (defconst nelisp-os--pollfd-len 8)
+(defconst nelisp-os--windows-wsapollfd-len 16)
 
 (defun nelisp-os--encode-sockaddr-in (buf host-int port)
   "Populate BUF (= 16-byte zeroed `nelisp-os--alloc') with sockaddr_in
@@ -1556,39 +1558,71 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
 
 ;; ----- Multiplexing -----
 
+(defun nelisp-os--windows-poll (pfds timeout-ms)
+  "Windows implementation of `nelisp-os-poll' for socket-kind fds."
+  (let* ((n (length pfds))
+         (buf (nelisp-os--alloc (* n nelisp-os--windows-wsapollfd-len))))
+    (unwind-protect
+        (progn
+          (let ((idx 0))
+            (dolist (entry pfds)
+              (let ((off (* idx nelisp-os--windows-wsapollfd-len)))
+                (nelisp-os-write-i64
+                 buf off (nelisp-os--windows-socket-for-fd (car entry)))
+                (nelisp-os-write-i16 buf (+ off 8) (cdr entry)))
+              (setq idx (1+ idx))))
+          (let ((r (nelisp-os--libc-call
+                    "ws2_32" "WSAPoll"
+                    [:sint32 :pointer :uint32 :sint32]
+                    buf n timeout-ms)))
+            (if (= r -1)
+                (nelisp-os--windows-winsock-error-signal)
+              (let ((result nil)
+                    (idx 0))
+                (dolist (entry pfds)
+                  (let ((off (* idx nelisp-os--windows-wsapollfd-len)))
+                    (push (cons (car entry)
+                                (nelisp-os-read-i16 buf (+ off 10)))
+                          result))
+                  (setq idx (1+ idx)))
+                (nreverse result)))))
+      (nelisp-os--free buf))))
+
 (defun nelisp-os-poll (pfds timeout-ms)
   "POSIX poll(2).  PFDS is a list of (FD . EVENTS) cons cells.  Returns
 the same-length list of (FD . REVENTS) cons cells.  TIMEOUT-MS = -1
 blocks indefinitely; 0 polls without blocking."
   ;; libc::poll(struct pollfd *fds, nfds_t nfds, int timeout) → int.
   ;; pollfd layout: int fd (4) + short events (2) + short revents (2) = 8 bytes.
-  (let* ((n (length pfds))
-         (buf (nelisp-os--alloc (* n nelisp-os--pollfd-len))))
-    (unwind-protect
-        (progn
-          (let ((idx 0))
-            (dolist (entry pfds)
-              (let ((off (* idx nelisp-os--pollfd-len)))
-                (nelisp-os-write-i32 buf off            (car entry))
-                (nelisp-os-write-i16 buf (+ off 4)      (cdr entry))
-                ;; revents at offset+6 stays zero from malloc.
-                )
-              (setq idx (1+ idx))))
-          (let ((r (nelisp-os--libc-call "libc" "poll"
-                                [:sint32 :pointer :uint64 :sint32]
-                                buf n timeout-ms)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              (let ((result nil)
-                    (idx 0))
-                (dolist (entry pfds)
-                  (let ((off (* idx nelisp-os--pollfd-len)))
-                    (push (cons (nelisp-os-read-i32 buf off)
-                                (nelisp-os-read-i16 buf (+ off 6)))
-                          result))
-                  (setq idx (1+ idx)))
-                (nreverse result)))))
-      (nelisp-os--free buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-poll pfds timeout-ms)
+    (let* ((n (length pfds))
+           (buf (nelisp-os--alloc (* n nelisp-os--pollfd-len))))
+      (unwind-protect
+          (progn
+            (let ((idx 0))
+              (dolist (entry pfds)
+                (let ((off (* idx nelisp-os--pollfd-len)))
+                  (nelisp-os-write-i32 buf off            (car entry))
+                  (nelisp-os-write-i16 buf (+ off 4)      (cdr entry))
+                  ;; revents at offset+6 stays zero from malloc.
+                  )
+                (setq idx (1+ idx))))
+            (let ((r (nelisp-os--libc-call "libc" "poll"
+                                  [:sint32 :pointer :uint64 :sint32]
+                                  buf n timeout-ms)))
+              (if (= r -1)
+                  (nelisp-os--ffi-errno-signal)
+                (let ((result nil)
+                      (idx 0))
+                  (dolist (_entry pfds)
+                    (let ((off (* idx nelisp-os--pollfd-len)))
+                      (push (cons (nelisp-os-read-i32 buf off)
+                                  (nelisp-os-read-i16 buf (+ off 6)))
+                            result))
+                    (setq idx (1+ idx)))
+                  (nreverse result)))))
+        (nelisp-os--free buf)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 56 Phase 4.1 — AF_UNIX + AF_INET6 socket family extensions.
