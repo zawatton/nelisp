@@ -51,9 +51,9 @@
 ;; Stage 55 guards Windows wait-many HANDLE counts before allocation / FFI.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
-;; `F_GETFL' / `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on
-;; Windows
-;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
+;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
+;; Linux-only event/process fd APIs on Windows before they can fall through to
+;; Linux syscall or libc paths.  Stage 22 starts
 ;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
 ;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
 ;; Winsock.  Stage 24 maps AF_INET `accept' to Winsock and registers accepted
@@ -176,6 +176,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-WAIT-TIMEOUT #x00000102)
 (defconst nelisp-os-WIN-WAIT-FAILED #xffffffff)
 (defconst nelisp-os-WIN-MAXIMUM-WAIT-OBJECTS 64)
+(defconst nelisp-os-WIN-HANDLE-FLAG-INHERIT #x00000001)
 
 ;; POSIX wait options.
 (defconst nelisp-os-WNOHANG 1)
@@ -1098,8 +1099,11 @@ went through `:string' (= CString::new, NUL-rejecting)."
 
 ;; fcntl(2) cmd
 (defconst nelisp-os-F-DUPFD 0)
+(defconst nelisp-os-F-GETFD 1)
+(defconst nelisp-os-F-SETFD 2)
 (defconst nelisp-os-F-GETFL 3)
 (defconst nelisp-os-F-SETFL 4)
+(defconst nelisp-os-FD-CLOEXEC 1)
 
 ;; open(2) / fcntl(2) extra flag
 (defconst nelisp-os-O-NONBLOCK 2048)        ; 0o4000
@@ -1474,11 +1478,48 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                min-fd)))
         (nelisp-os--free target-buf)))))
 
+(defun nelisp-os--windows-getfd-flags (fd)
+  "Return POSIX-style descriptor flags for Windows FD."
+  (let ((handle (nelisp-os--windows-handle-for-fd fd))
+        (flags-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (let ((ok (nelisp-os--libc-call
+                   "kernel32" "GetHandleInformation"
+                   [:sint32 :pointer :pointer]
+                   handle flags-buf)))
+          (if (= ok 0)
+              (nelisp-os--windows-ffi-error-signal)
+            (let ((flags (nelisp-os-read-u32 flags-buf 0)))
+              (if (= (logand flags nelisp-os-WIN-HANDLE-FLAG-INHERIT) 0)
+                  nelisp-os-FD-CLOEXEC
+                0))))
+      (nelisp-os--free flags-buf))))
+
+(defun nelisp-os--windows-setfd-flags (fd flags)
+  "Set POSIX-style descriptor FLAGS for Windows FD."
+  (unless (= (logand flags (lognot nelisp-os-FD-CLOEXEC)) 0)
+    (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+  (let* ((handle (nelisp-os--windows-handle-for-fd fd))
+         (inherit-p (= (logand flags nelisp-os-FD-CLOEXEC) 0))
+         (ok (nelisp-os--libc-call
+              "kernel32" "SetHandleInformation"
+              [:sint32 :pointer :uint32 :uint32]
+              handle
+              nelisp-os-WIN-HANDLE-FLAG-INHERIT
+              (if inherit-p nelisp-os-WIN-HANDLE-FLAG-INHERIT 0))))
+    (if (= ok 0)
+        (nelisp-os--windows-ffi-error-signal)
+      0)))
+
 (defun nelisp-os--windows-fcntl (fd cmd arg)
   "Windows implementation of the int-only `nelisp-os-fcntl' subset."
   (cond
    ((= cmd nelisp-os-F-DUPFD)
     (nelisp-os--windows-duplicate-fd fd arg))
+   ((= cmd nelisp-os-F-GETFD)
+    (nelisp-os--windows-getfd-flags fd))
+   ((= cmd nelisp-os-F-SETFD)
+    (nelisp-os--windows-setfd-flags fd arg))
    ((= cmd nelisp-os-F-GETFL)
     (nelisp-os--windows-handle-for-fd fd)
     (nelisp-os--windows-fd-flags fd))
@@ -1620,7 +1661,8 @@ mapping failure (raw kernel returns -errno for failed mmap)."
         (nelisp-os--free buf)))))
 
 (defun nelisp-os-fcntl (fd cmd arg)
-  "POSIX fcntl(2) — int-only variant (= F_GETFL / F_SETFL / F_DUPFD).
+  "POSIX fcntl(2) — int-only variant.
+Supports F_DUPFD / F_GETFD / F_SETFD / F_GETFL / F_SETFL.
 Other variadic forms (struct flock for F_SETLK etc.) need their own
 primitive; not supported in Phase 3."
   (if (nelisp-os--windows-p)

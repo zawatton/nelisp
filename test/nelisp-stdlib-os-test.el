@@ -1337,6 +1337,97 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-fcntl-windows-getfd-uses-gethandleinformation ()
+  "Windows F_GETFD maps HANDLE_FLAG_INHERIT to POSIX FD_CLOEXEC."
+  (let ((calls nil)
+        (reads (list 0 nelisp-os-WIN-HANDLE-FLAG-INHERIT))
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (push (list 'read-u32 ptr off) calls)
+                 (pop reads)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFD 0)
+                   nelisp-os-FD-CLOEXEC))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFD 0) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetHandleInformation"
+                          [:sint32 :pointer :pointer]
+                          (list #xaaaa 3000))
+                    '(read-u32 3000 0)
+                    (list "kernel32" "GetHandleInformation"
+                          [:sint32 :pointer :pointer]
+                          (list #xaaaa 3000))
+                    '(read-u32 3000 0))))
+    (should (equal freed '(3000 3000)))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-setfd-uses-sethandleinformation ()
+  "Windows F_SETFD toggles HANDLE_FLAG_INHERIT for FD_CLOEXEC."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-SETFD
+                                    nelisp-os-FD-CLOEXEC)
+                   0))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-SETFD 0) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "SetHandleInformation"
+                          [:sint32 :pointer :uint32 :uint32]
+                          (list #xaaaa
+                                nelisp-os-WIN-HANDLE-FLAG-INHERIT
+                                0))
+                    (list "kernel32" "SetHandleInformation"
+                          [:sint32 :pointer :uint32 :uint32]
+                          (list #xaaaa
+                                nelisp-os-WIN-HANDLE-FLAG-INHERIT
+                                nelisp-os-WIN-HANDLE-FLAG-INHERIT)))))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-setfd-socket-uses-sethandleinformation ()
+  "Windows F_SETFD works on socket-kind fds through the socket HANDLE."
+  (let ((call nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-SETFD
+                                    nelisp-os-FD-CLOEXEC)
+                   0))))
+    (should (equal call
+                   (list "kernel32" "SetHandleInformation"
+                         [:sint32 :pointer :uint32 :uint32]
+                         (list #xabcdef
+                               nelisp-os-WIN-HANDLE-FLAG-INHERIT
+                               0))))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-setfd-extra-flags-error ()
+  "Windows F_SETFD rejects unsupported descriptor flags before FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-fcntl 3 nelisp-os-F-SETFD
+                          (logior nelisp-os-FD-CLOEXEC #x100))
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-fcntl-windows-socket-setfl-nonblock ()
   "Windows socket F_SETFL O_NONBLOCK uses ioctlsocket(FIONBIO)."
   (let ((calls nil)

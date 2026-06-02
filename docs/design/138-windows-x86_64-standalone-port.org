@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-71-WINDOWS-SOCKET-CLOEXEC
+#+STATUS: STAGE-72-WINDOWS-FCNTL-CLOEXEC
 
 * Status
 
-- *State*: STAGE 71 Windows socket close-on-exec
+- *State*: STAGE 72 Windows fcntl close-on-exec
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -147,7 +147,9 @@
   the current PID is found, and returns =th32ParentProcessID=.  =nelisp-os-fcntl=
   now has a Windows branch for the int-only subset: =F_DUPFD= duplicates the
   underlying HANDLE with =DuplicateHandle= and installs it in the Windows fd
-  table, =F_GETFL= validates the fd and returns tracked status flags, and
+  table, =F_GETFD= / =F_SETFD FD_CLOEXEC= read and update
+  =HANDLE_FLAG_INHERIT= through =GetHandleInformation= /
+  =SetHandleInformation=, =F_GETFL= validates the fd and returns tracked status flags, and
   =F_SETFL= supports socket-fd =O_NONBLOCK= through
   =ws2_32!ioctlsocket(FIONBIO)= while regular HANDLE fds still reject nonzero
   flag changes.  Linux-only process/event fd APIs now reject Windows before
@@ -347,6 +349,10 @@
   =WSASocketW= with =WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT=,
   composes with =SOCK_NONBLOCK= before =ioctlsocket(FIONBIO)=, and propagates
   through stream =socketpair= internal socket creation.
+  Stage 72 coverage verifies Windows =F_GETFD= maps =HANDLE_FLAG_INHERIT= to
+  POSIX-style =FD_CLOEXEC=, =F_SETFD= toggles inheritability through
+  =SetHandleInformation= for regular and socket-kind fds, and unsupported
+  descriptor flag bits reject before FFI.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -684,6 +690,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows fcntl progress 2026-06-02*: =nelisp-os-fcntl= now handles =F_DUPFD=
   through =DuplicateHandle= + fd-table allocation, validates =F_GETFL=, and
   supports no-op regular-fd =F_SETFL= while rejecting unsupported flag changes.
+  *Windows fcntl close-on-exec progress 2026-06-03*: =nelisp-os-fcntl= now
+  supports =F_GETFD= / =F_SETFD FD_CLOEXEC= on Windows by mapping
+  POSIX-style close-on-exec to the inverse of =HANDLE_FLAG_INHERIT= through
+  =GetHandleInformation= / =SetHandleInformation=.
   *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
   =eventfd=, =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
   Windows before reaching Linux syscall/libc paths, including the relative-ms
@@ -856,6 +866,9 @@ largest uncertainty (B1 + B2) first.
    *Windows fcntl branch SHIPPED 2026-06-02*: =nelisp-os-fcntl= supports the
    int-only =F_DUPFD= / =F_GETFL= / regular-fd no-op =F_SETFL= subset without
    falling back to raw syscalls.
+   *Windows fcntl close-on-exec SHIPPED 2026-06-03*: =nelisp-os-fcntl= now
+   supports =F_GETFD= / =F_SETFD FD_CLOEXEC= for regular and socket-kind fds by
+   reading and toggling =HANDLE_FLAG_INHERIT=.
    *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
    fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
    fallback.
