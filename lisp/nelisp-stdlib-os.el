@@ -100,6 +100,7 @@
 ;; eventfd-compatible fds.
 ;; Stage 115 adds dup2 support for Windows eventfd-compatible fds.
 ;; Stage 116 adds fstat support for Windows eventfd-compatible fds.
+;; Stage 117 adds poll readiness for Windows eventfd-compatible fds.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -2973,8 +2974,8 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
 
 ;; ----- Multiplexing -----
 
-(defun nelisp-os--windows-poll (pfds timeout-ms)
-  "Windows implementation of `nelisp-os-poll' for socket-kind fds."
+(defun nelisp-os--windows-poll-sockets (pfds timeout-ms)
+  "Windows implementation of `nelisp-os-poll' for socket-kind PFDS."
   (let* ((n (length pfds))
          (buf (nelisp-os--alloc (* n nelisp-os--windows-wsapollfd-len))))
     (unwind-protect
@@ -3002,6 +3003,53 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
                   (setq idx (1+ idx)))
                 (nreverse result)))))
       (nelisp-os--free buf))))
+
+(defun nelisp-os--windows-eventfd-revents (fd events)
+  "Return synthetic poll revents for Windows eventfd-compatible FD."
+  (let* ((cell (nelisp-os--windows-eventfd-cell fd))
+         (counter (car (cdr cell)))
+         (revents 0))
+    (when (and (/= (logand events nelisp-os-POLLIN) 0)
+               (> counter 0))
+      (setq revents (logior revents nelisp-os-POLLIN)))
+    (when (and (/= (logand events nelisp-os-POLLOUT) 0)
+               (< counter nelisp-os--eventfd-max-counter))
+      (setq revents (logior revents nelisp-os-POLLOUT)))
+    revents))
+
+(defun nelisp-os--windows-poll (pfds timeout-ms)
+  "Windows implementation of `nelisp-os-poll' for sockets and eventfd fds."
+  (let ((socket-pfds nil)
+        (eventfd-ready-p nil))
+    (dolist (entry pfds)
+      (let ((fd (car entry)))
+        (cond
+         ((eq (nelisp-os--windows-fd-kind fd) 'socket)
+          (push entry socket-pfds))
+         ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+          (when (/= (nelisp-os--windows-eventfd-revents fd (cdr entry)) 0)
+            (setq eventfd-ready-p t)))
+         (t
+          (signal 'nelisp-os-error (list 9)))))) ; EBADF
+    (setq socket-pfds (nreverse socket-pfds))
+    (let* ((socket-timeout (if eventfd-ready-p
+                               0
+                             timeout-ms))
+           (socket-results (and socket-pfds
+                                (nelisp-os--windows-poll-sockets
+                                 socket-pfds socket-timeout))))
+      (mapcar
+       (lambda (entry)
+         (let ((fd (car entry))
+               (events (cdr entry)))
+           (cond
+            ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
+             (cons fd (nelisp-os--windows-eventfd-revents fd events)))
+            ((eq (nelisp-os--windows-fd-kind fd) 'socket)
+             (cons fd (or (cdr (assq fd socket-results)) 0)))
+            (t
+             (cons fd nelisp-os-POLLNVAL)))))
+       pfds))))
 
 (defun nelisp-os-poll (pfds timeout-ms)
   "POSIX poll(2).  PFDS is a list of (FD . EVENTS) cons cells.  Returns

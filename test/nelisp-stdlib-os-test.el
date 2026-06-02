@@ -6072,7 +6072,7 @@
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-poll-windows-rejects-non-socket-fd-before-ffi ()
-  "Windows poll rejects regular HANDLE fds before calling WSAPoll."
+  "Windows poll rejects regular HANDLE fds before allocation or WSAPoll."
   (let ((called nil)
         (freed nil)
         (nelisp-os--windows-fd-table '((3 . #xaaaa)))
@@ -6085,6 +6085,73 @@
         (should-error (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
                       :type 'nelisp-os-error)))
     (should-not called)
+    (should-not freed)))
+
+(ert-deftest nelisp-stdlib-os-poll-windows-eventfd-uses-counter-readiness ()
+  "Windows poll reports synthetic eventfd POLLIN/POLLOUT readiness."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . 0) (4 . 0)))
+        (nelisp-os--windows-fd-kind-table '((3 . eventfd) (4 . eventfd)))
+        (nelisp-os--windows-eventfd-table
+         `((3 . (5 . 0))
+           (4 . (,nelisp-os--eventfd-max-counter . 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should (equal
+                 (nelisp-os-poll
+                  (list (cons 3 (logior nelisp-os-POLLIN nelisp-os-POLLOUT))
+                        (cons 4 (logior nelisp-os-POLLIN nelisp-os-POLLOUT)))
+                 0)
+                 (list (cons 3 (logior nelisp-os-POLLIN nelisp-os-POLLOUT))
+                       (cons 4 nelisp-os-POLLIN))))))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-poll-windows-eventfd-socket-mix-preserves-order ()
+  "Windows poll combines eventfd readiness with WSAPoll socket results."
+  (let ((call nil)
+        (freed nil)
+        (writes nil)
+        (nelisp-os--windows-fd-table '((3 . 0) (4 . #xbbbb)))
+        (nelisp-os--windows-fd-kind-table '((3 . eventfd) (4 . socket)))
+        (nelisp-os--windows-eventfd-table '((3 . (1 . 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list 'i64 ptr off val) writes)
+                 val))
+              ((symbol-function 'nelisp-os-write-i16)
+               (lambda (ptr off val)
+                 (push (list 'i16 ptr off val) writes)
+                 val))
+              ((symbol-function 'nelisp-os-read-i16)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 10))
+                 nelisp-os-POLLOUT))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (equal
+                 (nelisp-os-poll
+                  (list (cons 3 nelisp-os-POLLIN)
+                        (cons 4 nelisp-os-POLLOUT))
+                 5000)
+                 (list (cons 3 nelisp-os-POLLIN)
+                       (cons 4 nelisp-os-POLLOUT))))))
+    (should (equal call
+                   (list "ws2_32" "WSAPoll"
+                         [:sint32 :pointer :uint32 :sint32]
+                         (list 3000 1 0))))
+    (should (equal (nreverse writes)
+                   (list
+                    (list 'i64 3000 0 #xbbbb)
+                    (list 'i16 3000 8 nelisp-os-POLLOUT))))
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-close-windows-regular-fd-uses-closehandle ()

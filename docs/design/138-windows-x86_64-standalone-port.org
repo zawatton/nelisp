@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-116-WINDOWS-EVENTFD-FSTAT
+#+STATUS: STAGE-117-WINDOWS-EVENTFD-POLL
 
 * Status
 
-- *State*: STAGE 116 Windows eventfd fstat compatibility
+- *State*: STAGE 117 Windows eventfd poll compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -292,7 +292,10 @@
   such as stdout without routing eventfd I/O through HANDLE reads/writes.
   Windows =fstat= now returns a zero-size, Linux-compatible =0600= stat for
   synthetic eventfd fds, including standard fd targets, without entering
-  HANDLE =GetFileType= paths.  The Winsock branch has started:
+  HANDLE =GetFileType= paths.  Windows =poll= now recognizes eventfd-kind fds
+  and synthesizes =POLLIN= / =POLLOUT= readiness from the counter state while
+  preserving existing =WSAPoll= behavior for socket-kind fds.  The Winsock
+  branch has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -624,6 +627,10 @@
   zero-size =0600= =fstat= metadata with no type bits, matching Linux eventfd
   host behavior observed locally, and standard eventfd fd targets skip HANDLE
   metadata FFI as well.
+  Stage 117 coverage verifies Windows =poll= reports synthetic eventfd
+  readable/writable readiness from the counter state, treats a full counter as
+  not writable, preserves input ordering when eventfd and socket fds are mixed,
+  and polls socket fds with timeout 0 when an eventfd is already ready.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1048,6 +1055,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows eventfd fstat progress 2026-06-03*: Windows =fstat= now recognizes
   fd kind =eventfd= and returns zero-size =0600= stat metadata without
   =GetFileType= / HANDLE fallback, including standard fd targets.
+  *Windows eventfd poll progress 2026-06-03*: Windows =poll= now recognizes
+  synthetic eventfd fds, reports =POLLIN= when the counter is nonzero and
+  =POLLOUT= while the counter is below the maximum, and keeps mixed
+  socket/eventfd result ordering stable while preserving the =WSAPoll= path for
+  socket fds.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1476,6 +1488,9 @@ largest uncertainty (B1 + B2) first.
    *Windows eventfd fstat compatibility SHIPPED 2026-06-03*: Windows
    synthetic eventfd fds now return Linux-compatible zero-size =0600= stat
    metadata, and standard eventfd fd targets avoid HANDLE metadata calls.
+   *Windows eventfd poll compatibility SHIPPED 2026-06-03*: Windows =poll=
+   now reports synthetic eventfd readiness from counter state and combines it
+   with existing socket =WSAPoll= results in input order.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -1637,7 +1652,7 @@ largest uncertainty (B1 + B2) first.
    IPv4/IPv6 loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=,
    accepted socket nonblock flag tracking, socket close-on-exec support, and
    Windows-compatible =eventfd= counters with synthetic =fcntl= dup/cloexec
-   plus =dup2= / =fstat= support; regular
+   plus =dup2= / =fstat= / =poll= support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd
