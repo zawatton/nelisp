@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1.  Build the smallest native Windows PE32+ executable
-;; through the pure-elisp PE writer: import kernel32.dll!ExitProcess and
-;; call it with a chosen status code.
+;; Doc 138 Stage 1/2.  Build native Windows PE32+ executables through
+;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
+;; import-table probes.
 
 ;;; Code:
 
@@ -26,6 +26,18 @@
 (defun nelisp-windows-build-exit42 ()
   "Batch entry: build target/nelisp-windows-exit42.exe."
   (nelisp-windows-build-exitprocess "target/nelisp-windows-exit42.exe" 42))
+
+(defun nelisp-windows-build-virtualalloc-probe (out-path)
+  "Write OUT-PATH as a PE32+ EXE probing VirtualAlloc.
+The program exits 42 on allocation success and 13 on failure."
+  (nelisp-pe-write-virtualalloc-executable out-path 42 13)
+  (message "nelisp-windows-build: wrote %s (VirtualAlloc probe)" out-path)
+  out-path)
+
+(defun nelisp-windows-build-virtualalloc42 ()
+  "Batch entry: build target/nelisp-windows-virtualalloc42.exe."
+  (nelisp-windows-build-virtualalloc-probe
+   "target/nelisp-windows-virtualalloc42.exe"))
 
 (provide 'nelisp-windows-build)
 

@@ -837,77 +837,97 @@ FIELDS is a plist carrying the fixed image layout values."
       (nelisp-pe--write-le32 cbuf 0)
       (nelisp-pe--write-le32 cbuf 0))))
 
+(defun nelisp-pe--build-kernel32-imports (rdata-rva names)
+  "Build .rdata import data for KERNEL32.dll NAMES at RDATA-RVA.
+Returns a plist (:bytes BYTES :import-rva RVA :import-size SIZE
+:iat-rvas ALIST)."
+  (let* ((names (copy-sequence names))
+         (n (length names))
+         (ilt-off 40)
+         (ilt-size (* 8 (1+ n)))
+         (iat-off (+ ilt-off ilt-size))
+         (iat-size (* 8 (1+ n)))
+         (hint-name-off (+ iat-off iat-size))
+         (name-offsets nil)
+         (cursor hint-name-off)
+         (dll-name-off nil)
+         (iat-rvas nil)
+         (cbuf (nelisp-pe--make-buffer)))
+    (dolist (name names)
+      (push (cons name cursor) name-offsets)
+      (push (cons name (+ rdata-rva iat-off (* 8 (length iat-rvas))))
+            iat-rvas)
+      (setq cursor (+ cursor 2 (length name) 1)))
+    (setq name-offsets (nreverse name-offsets))
+    (setq iat-rvas (nreverse iat-rvas))
+    (setq dll-name-off cursor)
+    (let* ((import-size (+ dll-name-off (length "KERNEL32.dll") 1))
+           (dll-name-rva (+ rdata-rva dll-name-off))
+           (ilt-rva (+ rdata-rva ilt-off))
+           (iat-rva (+ rdata-rva iat-off)))
+      ;; IMAGE_IMPORT_DESCRIPTOR for KERNEL32.dll.
+      (nelisp-pe--write-le32 cbuf ilt-rva)      ; OriginalFirstThunk
+      (nelisp-pe--write-le32 cbuf 0)            ; TimeDateStamp
+      (nelisp-pe--write-le32 cbuf 0)            ; ForwarderChain
+      (nelisp-pe--write-le32 cbuf dll-name-rva) ; Name
+      (nelisp-pe--write-le32 cbuf iat-rva)      ; FirstThunk
+      ;; Null descriptor.
+      (nelisp-pe--write-pad cbuf 20)
+      ;; Import lookup table.
+      (dolist (entry name-offsets)
+        (nelisp-pe--write-le64 cbuf (+ rdata-rva (cdr entry))))
+      (nelisp-pe--write-le64 cbuf 0)
+      ;; Import address table.
+      (dolist (entry name-offsets)
+        (nelisp-pe--write-le64 cbuf (+ rdata-rva (cdr entry))))
+      (nelisp-pe--write-le64 cbuf 0)
+      ;; IMAGE_IMPORT_BY_NAME entries.
+      (dolist (entry name-offsets)
+        (unless (= (nelisp-pe--buffer-length cbuf) (cdr entry))
+          (error "nelisp-pe: import name offset drift for %S" (car entry)))
+        (nelisp-pe--write-le16 cbuf 0)          ; Hint
+        (nelisp-pe--write-bytes cbuf (car entry))
+        (nelisp-pe--write-u8 cbuf 0))
+      ;; DLL name.
+      (unless (= (nelisp-pe--buffer-length cbuf) dll-name-off)
+        (error "nelisp-pe: DLL name offset drift"))
+      (nelisp-pe--write-bytes cbuf "KERNEL32.dll")
+      (nelisp-pe--write-u8 cbuf 0)
+      (unless (= (nelisp-pe--buffer-length cbuf) import-size)
+        (error "nelisp-pe: import blob size drift (at %d expected %d)"
+               (nelisp-pe--buffer-length cbuf) import-size))
+      (list :bytes (nelisp-pe--buffer-bytes cbuf)
+            :import-rva rdata-rva
+            :import-size import-size
+            :iat-rvas iat-rvas))))
+
 (defun nelisp-pe--build-kernel32-exitprocess-imports (rdata-rva)
   "Build .rdata import data for kernel32.dll!ExitProcess at RDATA-RVA.
 Returns a plist (:bytes BYTES :import-rva RVA :import-size SIZE
 :iat-rva RVA)."
-  (let* ((desc-off 0)
-         (null-desc-off 20)
-         (ilt-off 40)
-         (iat-off 56)
-         (hint-name-off 72)
-         (dll-name-off (+ hint-name-off 2 (length "ExitProcess") 1))
-         (import-size (+ dll-name-off (length "KERNEL32.dll") 1))
-         (hint-name-rva (+ rdata-rva hint-name-off))
-         (dll-name-rva (+ rdata-rva dll-name-off))
-         (ilt-rva (+ rdata-rva ilt-off))
-         (iat-rva (+ rdata-rva iat-off))
-         (cbuf (nelisp-pe--make-buffer)))
-    (ignore null-desc-off)
-    ;; IMAGE_IMPORT_DESCRIPTOR for KERNEL32.dll.
-    (nelisp-pe--write-le32 cbuf ilt-rva)      ; OriginalFirstThunk
-    (nelisp-pe--write-le32 cbuf 0)            ; TimeDateStamp
-    (nelisp-pe--write-le32 cbuf 0)            ; ForwarderChain
-    (nelisp-pe--write-le32 cbuf dll-name-rva) ; Name
-    (nelisp-pe--write-le32 cbuf iat-rva)      ; FirstThunk
-    ;; Null descriptor.
-    (nelisp-pe--write-pad cbuf 20)
-    ;; Import lookup table.
-    (nelisp-pe--write-le64 cbuf hint-name-rva)
-    (nelisp-pe--write-le64 cbuf 0)
-    ;; Import address table.
-    (nelisp-pe--write-le64 cbuf hint-name-rva)
-    (nelisp-pe--write-le64 cbuf 0)
-    ;; IMAGE_IMPORT_BY_NAME.
-    (nelisp-pe--write-le16 cbuf 0)            ; Hint
-    (nelisp-pe--write-bytes cbuf "ExitProcess")
-    (nelisp-pe--write-u8 cbuf 0)
-    ;; DLL name.
-    (nelisp-pe--write-bytes cbuf "KERNEL32.dll")
-    (nelisp-pe--write-u8 cbuf 0)
-    (unless (= (nelisp-pe--buffer-length cbuf) import-size)
-      (error "nelisp-pe: import blob size drift (at %d expected %d)"
-             (nelisp-pe--buffer-length cbuf) import-size))
-    (ignore desc-off)
-    (list :bytes (nelisp-pe--buffer-bytes cbuf)
-          :import-rva rdata-rva
-          :import-size import-size
-          :iat-rva iat-rva)))
+  (let* ((imports (nelisp-pe--build-kernel32-imports
+                   rdata-rva '("ExitProcess")))
+         (iat-rva (cdr (assoc "ExitProcess" (plist-get imports :iat-rvas)))))
+    (append imports (list :iat-rva iat-rva))))
 
-(defun nelisp-pe--build-exitprocess-text (exit-code text-rva iat-rva)
-  "Build x86_64 Win64 entry code calling ExitProcess(EXIT-CODE).
-TEXT-RVA is the RVA of the .text section and IAT-RVA is the RVA of the
-ExitProcess IAT slot."
-  (let* ((call-off 9)
+(defun nelisp-pe--validate-rel32 (disp context)
+  "Signal unless DISP fits signed rel32.  CONTEXT describes the caller."
+  (unless (and (<= (- (ash 1 31)) disp) (< disp (ash 1 31)))
+    (error "nelisp-pe: %s displacement out of rel32 range: %S"
+           context disp)))
+
+(defun nelisp-pe--write-call-iat-rva (cbuf text-rva iat-rva)
+  "Append `call qword [rip+disp32]' to IAT-RVA.
+TEXT-RVA is the RVA of byte 0 of the code stored in CBUF."
+  (let* ((call-off (nelisp-pe--buffer-length cbuf))
          (next-rva (+ text-rva call-off 6))
-         (disp (- iat-rva next-rva))
-         (cbuf (nelisp-pe--make-buffer)))
-    (unless (and (integerp exit-code) (<= 0 exit-code #xFFFFFFFF))
-      (error "nelisp-pe: exit code must fit u32: %S" exit-code))
-    (unless (and (<= (- (ash 1 31)) disp) (< disp (ash 1 31)))
-      (error "nelisp-pe: ExitProcess call displacement out of rel32 range: %S"
-             disp))
-    ;; Microsoft x64 ABI: reserve 32-byte shadow space plus alignment pad.
-    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xEC #x28)) ; sub rsp, 40
-    (nelisp-pe--write-u8 cbuf #xB9) ; mov ecx, imm32
-    (nelisp-pe--write-le32 cbuf exit-code)
-    (nelisp-pe--write-bytes cbuf (unibyte-string #xFF #x15)) ; call qword [rip+disp32]
-    (nelisp-pe--write-le32-signed cbuf disp)
-    (nelisp-pe--write-u8 cbuf #xCC) ; should not return
-    (nelisp-pe--buffer-bytes cbuf)))
+         (disp (- iat-rva next-rva)))
+    (nelisp-pe--validate-rel32 disp "IAT call")
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xFF #x15))
+    (nelisp-pe--write-le32-signed cbuf disp)))
 
-(defun nelisp-pe--build-exitprocess-executable (exit-code)
-  "Build a minimal PE32+ console executable that calls ExitProcess(EXIT-CODE)."
+(defun nelisp-pe--build-executable-with-imports (text imports)
+  "Build a PE32+ console executable from TEXT bytes and IMPORTS plist."
   (let* ((pe-offset nelisp-pe--dos-stub-size)
          (num-sections 2)
          (headers-raw
@@ -918,18 +938,15 @@ ExitProcess IAT slot."
                                             nelisp-pe--file-alignment))
          (text-rva nelisp-pe--section-alignment)
          (rdata-rva (* 2 nelisp-pe--section-alignment))
-         (imports0 (nelisp-pe--build-kernel32-exitprocess-imports rdata-rva))
-         (text (nelisp-pe--build-exitprocess-text
-                exit-code text-rva (plist-get imports0 :iat-rva)))
-         (imports (plist-get imports0 :bytes))
+         (import-bytes (plist-get imports :bytes))
          (text-raw-size (nelisp-pe--align-up (length text)
                                              nelisp-pe--file-alignment))
-         (rdata-raw-size (nelisp-pe--align-up (length imports)
+         (rdata-raw-size (nelisp-pe--align-up (length import-bytes)
                                               nelisp-pe--file-alignment))
          (text-raw-ptr size-headers)
          (rdata-raw-ptr (+ text-raw-ptr text-raw-size))
          (size-image (nelisp-pe--align-up
-                      (+ rdata-rva (length imports))
+                      (+ rdata-rva (length import-bytes))
                       nelisp-pe--section-alignment))
          (cbuf (nelisp-pe--make-buffer)))
     (nelisp-pe--write-dos-stub cbuf pe-offset)
@@ -957,8 +974,8 @@ ExitProcess IAT slot."
            :image-base nelisp-pe--image-base-x86-64
            :size-image size-image
            :size-headers size-headers
-           :import-rva (plist-get imports0 :import-rva)
-           :import-size (plist-get imports0 :import-size)))
+           :import-rva (plist-get imports :import-rva)
+           :import-size (plist-get imports :import-size)))
     ;; IMAGE_SECTION_HEADER[.text, .rdata].
     (nelisp-pe--write-section-header
      cbuf
@@ -973,7 +990,7 @@ ExitProcess IAT slot."
     (nelisp-pe--write-section-header
      cbuf
      (list :name ".rdata"
-           :virtual-size (length imports)
+           :virtual-size (length import-bytes)
            :virtual-address rdata-rva
            :raw-data-size rdata-raw-size
            :raw-data-ptr rdata-raw-ptr
@@ -989,9 +1006,77 @@ ExitProcess IAT slot."
     (nelisp-pe--write-pad cbuf (- text-raw-size (length text)))
     (unless (= (nelisp-pe--buffer-length cbuf) rdata-raw-ptr)
       (error "nelisp-pe: .rdata raw offset drift"))
-    (nelisp-pe--write-bytes cbuf imports)
-    (nelisp-pe--write-pad cbuf (- rdata-raw-size (length imports)))
+    (nelisp-pe--write-bytes cbuf import-bytes)
+    (nelisp-pe--write-pad cbuf (- rdata-raw-size (length import-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-exitprocess-text (exit-code text-rva iat-rva)
+  "Build x86_64 Win64 entry code calling ExitProcess(EXIT-CODE).
+TEXT-RVA is the RVA of the .text section and IAT-RVA is the RVA of the
+ExitProcess IAT slot."
+  (let ((cbuf (nelisp-pe--make-buffer)))
+    (unless (and (integerp exit-code) (<= 0 exit-code #xFFFFFFFF))
+      (error "nelisp-pe: exit code must fit u32: %S" exit-code))
+    ;; Microsoft x64 ABI: reserve 32-byte shadow space plus alignment pad.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xEC #x28)) ; sub rsp, 40
+    (nelisp-pe--write-u8 cbuf #xB9) ; mov ecx, imm32
+    (nelisp-pe--write-le32 cbuf exit-code)
+    (nelisp-pe--write-call-iat-rva cbuf text-rva iat-rva)
+    (nelisp-pe--write-u8 cbuf #xCC) ; should not return
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-virtualalloc-text
+    (success-code failure-code text-rva iat-rvas)
+  "Build x86_64 Win64 entry code for VirtualAlloc then ExitProcess.
+The program exits SUCCESS-CODE when VirtualAlloc returns non-NULL and
+FAILURE-CODE otherwise.  IAT-RVAS maps imported function names to RVAs."
+  (let ((virtualalloc-iat (cdr (assoc "VirtualAlloc" iat-rvas)))
+        (exitprocess-iat (cdr (assoc "ExitProcess" iat-rvas)))
+        (cbuf (nelisp-pe--make-buffer)))
+    (unless (and virtualalloc-iat exitprocess-iat)
+      (error "nelisp-pe: missing VirtualAlloc/ExitProcess IAT RVAs"))
+    (dolist (code (list success-code failure-code))
+      (unless (and (integerp code) (<= 0 code #xFFFFFFFF))
+        (error "nelisp-pe: exit code must fit u32: %S" code)))
+    ;; Microsoft x64 ABI: reserve 32-byte shadow space plus alignment pad.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xEC #x28)) ; sub rsp, 40
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x31 #xC9)) ; xor ecx, ecx
+    (nelisp-pe--write-u8 cbuf #xBA) ; mov edx, 4096
+    (nelisp-pe--write-le32 cbuf #x1000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xB8)) ; mov r8d, MEM_COMMIT|RESERVE
+    (nelisp-pe--write-le32 cbuf #x3000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xB9)) ; mov r9d, PAGE_READWRITE
+    (nelisp-pe--write-le32 cbuf #x04)
+    (nelisp-pe--write-call-iat-rva cbuf text-rva virtualalloc-iat)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x85 #xC0)) ; test rax, rax
+    (nelisp-pe--write-u8 cbuf #xB9) ; mov ecx, failure-code
+    (nelisp-pe--write-le32 cbuf failure-code)
+    (nelisp-pe--write-u8 cbuf #xBA) ; mov edx, success-code
+    (nelisp-pe--write-le32 cbuf success-code)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x0F #x45 #xCA)) ; cmovne ecx, edx
+    (nelisp-pe--write-call-iat-rva cbuf text-rva exitprocess-iat)
+    (nelisp-pe--write-u8 cbuf #xCC)
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-exitprocess-executable (exit-code)
+  "Build a minimal PE32+ console executable that calls ExitProcess(EXIT-CODE)."
+  (let* ((text-rva nelisp-pe--section-alignment)
+         (rdata-rva (* 2 nelisp-pe--section-alignment))
+         (imports0 (nelisp-pe--build-kernel32-exitprocess-imports rdata-rva))
+         (text (nelisp-pe--build-exitprocess-text
+                exit-code text-rva (plist-get imports0 :iat-rva))))
+    (nelisp-pe--build-executable-with-imports text imports0)))
+
+(defun nelisp-pe--build-virtualalloc-executable (success-code failure-code)
+  "Build a PE32+ console EXE that probes VirtualAlloc and exits with a code."
+  (let* ((text-rva nelisp-pe--section-alignment)
+         (rdata-rva (* 2 nelisp-pe--section-alignment))
+         (imports (nelisp-pe--build-kernel32-imports
+                   rdata-rva '("ExitProcess" "VirtualAlloc")))
+         (text (nelisp-pe--build-virtualalloc-text
+                success-code failure-code text-rva
+                (plist-get imports :iat-rvas))))
+    (nelisp-pe--build-executable-with-imports text imports)))
 
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
@@ -1030,6 +1115,19 @@ so raw binary content is preserved.  Returns FILE-PATH."
 This is Doc 138 Stage 1: prove Windows native execution through a real
 PE import table, without an external linker or CRT."
   (let ((bytes (nelisp-pe--build-exitprocess-executable exit-code))
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil file-path nil 'silent)
+    file-path))
+
+;;;###autoload
+(defun nelisp-pe-write-virtualalloc-executable
+    (file-path success-code failure-code)
+  "Emit a PE32+ console EXE that probes VirtualAlloc.
+The program imports KERNEL32.dll!VirtualAlloc and !ExitProcess, calls
+VirtualAlloc(NULL, 4096, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE), and
+then exits SUCCESS-CODE on non-NULL or FAILURE-CODE on NULL."
+  (let ((bytes (nelisp-pe--build-virtualalloc-executable
+                success-code failure-code))
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil file-path nil 'silent)
     file-path))

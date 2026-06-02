@@ -103,6 +103,16 @@
       (when (file-exists-p path)
         (delete-file path)))))
 
+(defun nelisp-pe-write-test--emit-virtualalloc ()
+  "Emit the sample PE32+ VirtualAlloc probe executable and return its bytes."
+  (let ((path (make-temp-file "nelisp-pe-virtualalloc-test-" nil ".exe")))
+    (unwind-protect
+        (progn
+          (nelisp-pe-write-virtualalloc-executable path 42 13)
+          (nelisp-pe-write-test--read-file-bytes path))
+      (when (file-exists-p path)
+        (delete-file path)))))
+
 ;; ---- IMAGE_FILE_HEADER tests ----
 
 (ert-deftest nelisp-pe-write-binary-machine-amd64 ()
@@ -263,6 +273,74 @@
     (should (equal (substring bytes (+ text-raw 9) (+ text-raw 11))
                    (unibyte-string #xff #x15)))
     (should (= (+ text-rva 15 disp) iat-rva))))
+
+(ert-deftest nelisp-pe-write-virtualalloc-imports-two-functions ()
+  "VirtualAlloc probe imports both ExitProcess and VirtualAlloc."
+  (let* ((bytes (nelisp-pe-write-test--emit-virtualalloc))
+         (peoff (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-rva (nelisp-pe-write-test--read-le32 bytes (+ opt 120)))
+         (import-size (nelisp-pe-write-test--read-le32 bytes (+ opt 124)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (import-off (+ rdata-raw (- import-rva rdata-rva)))
+         (oft (nelisp-pe-write-test--read-le32 bytes import-off))
+         (iat-rva (nelisp-pe-write-test--read-le32 bytes (+ import-off 16)))
+         (name0-rva (nelisp-pe-write-test--read-le64
+                     bytes (+ rdata-raw (- oft rdata-rva))))
+         (name1-rva (nelisp-pe-write-test--read-le64
+                     bytes (+ rdata-raw (- oft rdata-rva) 8)))
+         (iat0-rva (nelisp-pe-write-test--read-le64
+                    bytes (+ rdata-raw (- iat-rva rdata-rva))))
+         (iat1-rva (nelisp-pe-write-test--read-le64
+                    bytes (+ rdata-raw (- iat-rva rdata-rva) 8))))
+    (should (= import-rva #x2000))
+    (should (> import-size 120))
+    (should (= oft #x2028))
+    (should (= iat-rva #x2040))
+    (should (= iat0-rva name0-rva))
+    (should (= iat1-rva name1-rva))
+    (should (equal (nelisp-pe-write-test--read-cstr
+                    bytes (+ rdata-raw (- name0-rva rdata-rva) 2))
+                   "ExitProcess"))
+    (should (equal (nelisp-pe-write-test--read-cstr
+                    bytes (+ rdata-raw (- name1-rva rdata-rva) 2))
+                   "VirtualAlloc"))))
+
+(ert-deftest nelisp-pe-write-virtualalloc-text-calls-both-iats ()
+  "VirtualAlloc probe entry calls VirtualAlloc, then ExitProcess."
+  (let* ((bytes (nelisp-pe-write-test--emit-virtualalloc))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (exit-iat-rva #x2040)
+         (virtualalloc-iat-rva #x2048)
+         (va-call-off 23)
+         (exit-call-off 45)
+         (va-disp (nelisp-pe-write-test--read-le32
+                   bytes (+ text-raw va-call-off 2)))
+         (exit-disp (nelisp-pe-write-test--read-le32
+                     bytes (+ text-raw exit-call-off 2))))
+    (should (equal (substring bytes text-raw (+ text-raw 4))
+                   (unibyte-string #x48 #x83 #xec #x28)))
+    (should (equal (substring bytes (+ text-raw 4) (+ text-raw 6))
+                   (unibyte-string #x31 #xc9)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-raw 7)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-raw 13)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-raw 19)) #x04))
+    (should (equal (substring bytes (+ text-raw va-call-off)
+                              (+ text-raw va-call-off 2))
+                   (unibyte-string #xff #x15)))
+    (should (= (+ text-rva va-call-off 6 va-disp) virtualalloc-iat-rva))
+    (should (equal (substring bytes (+ text-raw 29) (+ text-raw 32))
+                   (unibyte-string #x48 #x85 #xc0)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-raw 33)) 13))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-raw 38)) 42))
+    (should (equal (substring bytes (+ text-raw 42) (+ text-raw 45))
+                   (unibyte-string #x0f #x45 #xca)))
+    (should (equal (substring bytes (+ text-raw exit-call-off)
+                              (+ text-raw exit-call-off 2))
+                   (unibyte-string #xff #x15)))
+    (should (= (+ text-rva exit-call-off 6 exit-disp) exit-iat-rva))))
 
 (provide 'nelisp-pe-write-test)
 
