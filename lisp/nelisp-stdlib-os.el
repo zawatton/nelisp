@@ -457,9 +457,15 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets.
 FLAGS are POSIX-style status flags tracked for fcntl compatibility."
   (let ((cell (assq fd nelisp-os--windows-fd-table)))
     (when cell
-      (nelisp-os--windows-close-resource
-       (cdr cell)
-       (nelisp-os--windows-fd-kind fd))
+      (condition-case err
+          (nelisp-os--windows-close-resource
+           (cdr cell)
+           (nelisp-os--windows-fd-kind fd))
+        (nelisp-os-error
+         (condition-case nil
+             (nelisp-os--windows-close-resource handle kind)
+           (nelisp-os-error nil))
+         (signal (car err) (cdr err))))
       (let ((kind-cell (assq fd nelisp-os--windows-fd-kind-table)))
         (when kind-cell
           (setq nelisp-os--windows-fd-kind-table

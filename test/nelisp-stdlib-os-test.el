@@ -1290,6 +1290,61 @@
                                    nelisp-os-O-APPEND)))))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-dup2-windows-cleans-duplicate-on-target-close-error ()
+  "Windows dup2 closes the duplicate if replacing the target fd fails."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((5 . #xcccc)
+                                       (3 . #xaaaa)))
+        (nelisp-os--windows-fd-flags-table
+         `((5 . ,nelisp-os-O-RDWR)
+           (3 . ,nelisp-os-O-WRONLY))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (_ptr _off) #xbbbb))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcess") #x9999)
+                  ((equal fn "DuplicateHandle") 1)
+                  ((and (equal fn "CloseHandle")
+                        (= (car args) #xcccc))
+                   0)
+                  ((and (equal fn "CloseHandle")
+                        (= (car args) #xbbbb))
+                   1)
+                  ((equal fn "GetLastError") 1234)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-dup2 3 5)
+                      :type 'nelisp-os-error)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcess"
+                          [:pointer]
+                          nil)
+                    (list "kernel32" "DuplicateHandle"
+                          [:sint32 :pointer :pointer :pointer :pointer
+                           :uint32 :sint32 :uint32]
+                          (list #x9999 #xaaaa #x9999 3000 0 1
+                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xcccc))
+                    (list "kernel32" "GetLastError"
+                          [:uint32]
+                          nil)
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xbbbb)))))
+    (should (equal nelisp-os--windows-fd-table '((5 . #xcccc) (3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((5 . ,nelisp-os-O-RDWR)
+                     (3 . ,nelisp-os-O-WRONLY))))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-dup2-windows-same-fd-validates-oldfd ()
   "Windows dup2(oldfd, oldfd) validates OLDFD before returning."
   (let ((called nil)
