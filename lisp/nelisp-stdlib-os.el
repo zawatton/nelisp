@@ -23,6 +23,11 @@
 ;; Platform detect runs once at load time via
 ;; `nelisp--syscall-supported-p'; downstream callers see a single
 ;; OS-agnostic API.
+;;
+;; Doc 138 Stage 5 starts the Windows branch: stdout/stderr writes can route
+;; through kernel32 HANDLE I/O (`GetStdHandle' + `WriteFile') instead of POSIX
+;; integer fd `write'.  The Linux/Darwin path remains the default until a real
+;; Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -37,6 +42,11 @@
   "When t, route OS calls through `nelisp--syscall' (libc::syscall on
 Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (Darwin/Windows).  Set once at load time.")
+
+(defun nelisp-os--windows-p ()
+  "Return non-nil when running on a native Windows host."
+  (and (boundp 'system-type)
+       (eq system-type 'windows-nt)))
 
 ;; ---------------------------------------------------------------------------
 ;; POSIX flag constants (Linux x86_64/arm64 values).  Phase 3+ refactor
@@ -58,6 +68,11 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-STDIN  0)
 (defconst nelisp-os-STDOUT 1)
 (defconst nelisp-os-STDERR 2)
+
+;; Windows standard HANDLE selectors for GetStdHandle.
+(defconst nelisp-os-WIN-STD-INPUT-HANDLE  -10)
+(defconst nelisp-os-WIN-STD-OUTPUT-HANDLE -11)
+(defconst nelisp-os-WIN-STD-ERROR-HANDLE  -12)
 
 ;; ---------------------------------------------------------------------------
 ;; Error helpers.  syscall return convention: negative integer = -errno.
@@ -82,6 +97,59 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defun nelisp-os--ffi-errno-signal ()
   "Signal `nelisp-os-error' with the current errno."
   (signal 'nelisp-os-error (list (nelisp-os--errno))))
+
+(defun nelisp-os--windows-ffi-error-signal ()
+  "Signal `nelisp-os-error' for a Windows FFI failure.
+Until `GetLastError' is wired through the Windows import surface, use a stable
+placeholder errno value so callers still get the project-local OS condition."
+  (signal 'nelisp-os-error (list 5))) ; ERROR_ACCESS_DENIED as conservative placeholder.
+
+(defun nelisp-os--windows-std-handle-selector (fd)
+  "Return GetStdHandle selector for POSIX-like FD, or nil if unsupported."
+  (cond
+   ((= fd nelisp-os-STDIN)  nelisp-os-WIN-STD-INPUT-HANDLE)
+   ((= fd nelisp-os-STDOUT) nelisp-os-WIN-STD-OUTPUT-HANDLE)
+   ((= fd nelisp-os-STDERR) nelisp-os-WIN-STD-ERROR-HANDLE)
+   (t nil)))
+
+(defun nelisp-os--windows-get-std-handle (fd)
+  "Return the Windows HANDLE corresponding to POSIX-like FD."
+  (let ((selector (nelisp-os--windows-std-handle-selector fd)))
+    (unless selector
+      (signal 'nelisp-os-error (list 9))) ; EBADF
+    (let ((handle (nelisp-os--libc-call
+                   "kernel32" "GetStdHandle" [:pointer :sint32] selector)))
+      ;; GetStdHandle returns NULL on failure and INVALID_HANDLE_VALUE (-1) for
+      ;; invalid selectors.  Treat both as OS errors.
+      (if (or (= handle 0) (= handle -1))
+          (nelisp-os--windows-ffi-error-signal)
+        handle))))
+
+(defun nelisp-os--windows-write-handle (handle str)
+  "Write STR bytes to Windows HANDLE using kernel32!WriteFile."
+  (let* ((nbytes (string-bytes str))
+         (buf (nelisp-os--alloc (max nbytes 1)))
+         (written-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (when (> nbytes 0)
+            (nelisp-os--write-bytes buf str))
+          (nelisp-os-write-u32 written-buf 0 0)
+          (let ((ok (nelisp-os--libc-call
+                     "kernel32" "WriteFile"
+                     [:sint32 :pointer :pointer :uint32 :pointer :pointer]
+                     handle buf nbytes written-buf 0)))
+            (if (= ok 0)
+                (nelisp-os--windows-ffi-error-signal)
+              (nelisp-os-read-u32 written-buf 0))))
+      (nelisp-os--free written-buf)
+      (nelisp-os--free buf))))
+
+(defun nelisp-os--windows-write-std-fd (fd str)
+  "Write STR to Windows standard FD using HANDLE I/O."
+  (nelisp-os--windows-write-handle
+   (nelisp-os--windows-get-std-handle fd)
+   str))
 
 (defun nelisp-os-open (path flags mode)
   "POSIX open(2) — return integer fd, or signal `nelisp-os-error'.
@@ -123,19 +191,22 @@ sequences; we route through `nelisp-os--alloc' / `-write-bytes' so the
 exact bytes (= `string-bytes' worth) reach libc.write — matching old
 Path A's `as_bytes()' semantics rather than the broken Path B that
 went through `:string' (= CString::new, NUL-rejecting)."
-  (let* ((nbytes (string-bytes str))
-         (buf    (nelisp-os--alloc nbytes)))
-    (unwind-protect
-        (progn
-          (nelisp-os--write-bytes buf str)
-          ;; libc::write: ssize_t(int fd, const void *buf, size_t count).
-          (let ((r (nelisp-os--libc-call "libc" "write"
-                                [:sint64 :sint32 :pointer :uint64]
-                                fd buf nbytes)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              r)))
-      (nelisp-os--free buf))))
+  (if (and (nelisp-os--windows-p)
+           (nelisp-os--windows-std-handle-selector fd))
+      (nelisp-os--windows-write-std-fd fd str)
+    (let* ((nbytes (string-bytes str))
+           (buf    (nelisp-os--alloc nbytes)))
+      (unwind-protect
+          (progn
+            (nelisp-os--write-bytes buf str)
+            ;; libc::write: ssize_t(int fd, const void *buf, size_t count).
+            (let ((r (nelisp-os--libc-call "libc" "write"
+                                  [:sint64 :sint32 :pointer :uint64]
+                                  fd buf nbytes)))
+              (if (= r -1)
+                  (nelisp-os--ffi-errno-signal)
+                r)))
+        (nelisp-os--free buf)))))
 
 (defun nelisp-os-close (fd)
   "POSIX close(2) — close FD, return nil or signal `nelisp-os-error'."

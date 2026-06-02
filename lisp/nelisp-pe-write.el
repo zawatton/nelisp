@@ -1,4 +1,4 @@
-;;; nelisp-pe-write.el --- PE32+/COFF object writer (Phase 47)  -*- lexical-binding: t; -*-
+;;; nelisp-pe-write.el --- PE32+/COFF object and EXE writer  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -34,6 +34,16 @@
 ;;
 ;; The module is freestanding and not yet wired into the production
 ;; STDLIB load (integration deferred per Doc 101 §101.A).
+;;
+;; Doc 138 Stage 1 adds a minimal PE32+ executable writer for Windows
+;; standalone bring-up: it emits a console EXE whose import directory resolves
+;; `KERNEL32.dll!ExitProcess' and whose entry point exits with code 42.
+;; Stage 2 extends the same import-table path to `VirtualAlloc' so the Windows
+;; arena-allocation dependency can be tested without a linker.  Stage 3 writes
+;; the allocated arena base/cursor/end triple into a PE .data section.  Stage 4
+;; adds a HANDLE-based stdout smoke via `GetStdHandle' + `WriteFile'.  This is
+;; intentionally small; production standalone wiring still needs the wider OS
+;; import surface.
 
 ;;; Code:
 
@@ -41,6 +51,33 @@
 
 (defconst nelisp-pe--machine-amd64 #x8664
   "IMAGE_FILE_MACHINE_AMD64 (= x86_64 Windows 64-bit).")
+
+(defconst nelisp-pe--optional-header-pe32-plus-size 240
+  "sizeof(IMAGE_OPTIONAL_HEADER64) with 16 data directories.")
+
+(defconst nelisp-pe--dos-header-size #x80
+  "DOS stub size used by the minimal PE32+ EXE path.")
+
+(defconst nelisp-pe--file-alignment #x200
+  "PE FileAlignment used by the minimal PE32+ EXE path.")
+
+(defconst nelisp-pe--section-alignment #x1000
+  "PE SectionAlignment used by the minimal PE32+ EXE path.")
+
+(defconst nelisp-pe--image-base #x140000000
+  "Default PE32+ ImageBase for x86_64 Windows EXEs.")
+
+(defconst nelisp-pe--characteristic-executable #x0002
+  "IMAGE_FILE_EXECUTABLE_IMAGE.")
+
+(defconst nelisp-pe--characteristic-large-address-aware #x0020
+  "IMAGE_FILE_LARGE_ADDRESS_AWARE.")
+
+(defconst nelisp-pe--subsystem-windows-cui 3
+  "IMAGE_SUBSYSTEM_WINDOWS_CUI.")
+
+(defconst nelisp-pe--dll-characteristics-nx-compat #x0100
+  "IMAGE_DLLCHARACTERISTICS_NX_COMPAT.")
 
 ;; IMAGE_FILE_HEADER Characteristics — for an object file (= no IMAGE_FILE_EXECUTABLE_IMAGE):
 ;; We emit 0 for a standard relocatable object.
@@ -75,6 +112,12 @@
           nelisp-pe--scn-align-16bytes)
   "Section Characteristics for a .text code section.")
 
+(defconst nelisp-pe--scn-exe-text-flags
+  (logior nelisp-pe--scn-cnt-code
+          nelisp-pe--scn-mem-execute
+          nelisp-pe--scn-mem-read)
+  "Section Characteristics for a PE image .text section.")
+
 (defconst nelisp-pe--scn-rdata-flags
   (logior nelisp-pe--scn-cnt-init-data
           nelisp-pe--scn-mem-read
@@ -87,6 +130,12 @@
           nelisp-pe--scn-mem-write
           nelisp-pe--scn-align-8bytes)
   "Section Characteristics for a .data read-write data section.")
+
+(defconst nelisp-pe--scn-idata-flags
+  (logior nelisp-pe--scn-cnt-init-data
+          nelisp-pe--scn-mem-read
+          nelisp-pe--scn-mem-write)
+  "Section Characteristics for a PE import-data section.")
 
 ;; Symbol StorageClass values (§5.4.2).
 (defconst nelisp-pe--sym-class-external 2 "IMAGE_SYM_CLASS_EXTERNAL.")
@@ -729,6 +778,725 @@ Section numbers (1-based, per COFF spec §4):
     (ignore symtab-size) ; used for offset documentation only
     (nelisp-pe--buffer-bytes cbuf)))
 
+;;; ---- Doc 138 Stage 1 PE32+ EXE writer ----
+
+(defun nelisp-pe--write-dos-stub (cbuf pe-offset)
+  "Write a minimal DOS header/stub to CBUF with e_lfanew = PE-OFFSET."
+  (nelisp-pe--write-bytes cbuf (unibyte-string #x4d #x5a)) ; MZ
+  (nelisp-pe--write-pad cbuf 58)
+  (nelisp-pe--write-le32 cbuf pe-offset) ; IMAGE_DOS_HEADER.e_lfanew
+  (nelisp-pe--write-pad cbuf (- pe-offset (nelisp-pe--buffer-length cbuf))))
+
+(defun nelisp-pe--write-pe-file-header (cbuf fields)
+  "Write IMAGE_FILE_HEADER for a PE image using FIELDS plist."
+  (nelisp-pe--write-le16 cbuf (or (plist-get fields :machine)
+                                  nelisp-pe--machine-amd64))
+  (nelisp-pe--write-le16 cbuf (or (plist-get fields :num-sections) 0))
+  (nelisp-pe--write-le32 cbuf (or (plist-get fields :timestamp) 0))
+  (nelisp-pe--write-le32 cbuf 0) ; PointerToSymbolTable
+  (nelisp-pe--write-le32 cbuf 0) ; NumberOfSymbols
+  (nelisp-pe--write-le16 cbuf nelisp-pe--optional-header-pe32-plus-size)
+  (nelisp-pe--write-le16 cbuf
+                         (or (plist-get fields :characteristics)
+                             (logior nelisp-pe--characteristic-executable
+                                     nelisp-pe--characteristic-large-address-aware))))
+
+(defun nelisp-pe--write-data-directory-table (cbuf import-rva import-size
+                                                   iat-rva iat-size)
+  "Write the PE32+ 16-entry data-directory table."
+  (dotimes (i 16)
+    (cond
+     ;; IMAGE_DIRECTORY_ENTRY_IMPORT
+     ((= i 1)
+      (nelisp-pe--write-le32 cbuf import-rva)
+      (nelisp-pe--write-le32 cbuf import-size))
+     ;; IMAGE_DIRECTORY_ENTRY_IAT
+     ((= i 12)
+      (nelisp-pe--write-le32 cbuf iat-rva)
+      (nelisp-pe--write-le32 cbuf iat-size))
+     (t
+      (nelisp-pe--write-le32 cbuf 0)
+      (nelisp-pe--write-le32 cbuf 0)))))
+
+(defun nelisp-pe--write-optional-header64 (cbuf fields)
+  "Write IMAGE_OPTIONAL_HEADER64 for a minimal PE32+ console EXE."
+  (let ((section-alignment (or (plist-get fields :section-alignment)
+                               nelisp-pe--section-alignment))
+        (file-alignment (or (plist-get fields :file-alignment)
+                            nelisp-pe--file-alignment))
+        (image-base (or (plist-get fields :image-base)
+                        nelisp-pe--image-base))
+        (entry-rva (or (plist-get fields :entry-rva) 0))
+        (text-rva (or (plist-get fields :text-rva) 0))
+        (size-of-code (or (plist-get fields :size-of-code) 0))
+        (size-of-initialized-data
+         (or (plist-get fields :size-of-initialized-data) 0))
+        (size-of-image (or (plist-get fields :size-of-image) 0))
+        (size-of-headers (or (plist-get fields :size-of-headers) 0))
+        (import-rva (or (plist-get fields :import-rva) 0))
+        (import-size (or (plist-get fields :import-size) 0))
+        (iat-rva (or (plist-get fields :iat-rva) 0))
+        (iat-size (or (plist-get fields :iat-size) 0)))
+    (nelisp-pe--write-le16 cbuf #x020b) ; PE32+
+    (nelisp-pe--write-u8 cbuf 0)        ; MajorLinkerVersion
+    (nelisp-pe--write-u8 cbuf 1)        ; MinorLinkerVersion
+    (nelisp-pe--write-le32 cbuf size-of-code)
+    (nelisp-pe--write-le32 cbuf size-of-initialized-data)
+    (nelisp-pe--write-le32 cbuf 0)      ; SizeOfUninitializedData
+    (nelisp-pe--write-le32 cbuf entry-rva)
+    (nelisp-pe--write-le32 cbuf text-rva)
+    (nelisp-pe--write-le64 cbuf image-base)
+    (nelisp-pe--write-le32 cbuf section-alignment)
+    (nelisp-pe--write-le32 cbuf file-alignment)
+    (nelisp-pe--write-le16 cbuf 6)      ; MajorOperatingSystemVersion
+    (nelisp-pe--write-le16 cbuf 0)
+    (nelisp-pe--write-le16 cbuf 0)      ; MajorImageVersion
+    (nelisp-pe--write-le16 cbuf 0)
+    (nelisp-pe--write-le16 cbuf 6)      ; MajorSubsystemVersion
+    (nelisp-pe--write-le16 cbuf 0)
+    (nelisp-pe--write-le32 cbuf 0)      ; Win32VersionValue
+    (nelisp-pe--write-le32 cbuf size-of-image)
+    (nelisp-pe--write-le32 cbuf size-of-headers)
+    (nelisp-pe--write-le32 cbuf 0)      ; CheckSum
+    (nelisp-pe--write-le16 cbuf nelisp-pe--subsystem-windows-cui)
+    (nelisp-pe--write-le16 cbuf nelisp-pe--dll-characteristics-nx-compat)
+    (nelisp-pe--write-le64 cbuf #x100000) ; SizeOfStackReserve
+    (nelisp-pe--write-le64 cbuf #x1000)   ; SizeOfStackCommit
+    (nelisp-pe--write-le64 cbuf #x100000) ; SizeOfHeapReserve
+    (nelisp-pe--write-le64 cbuf #x1000)   ; SizeOfHeapCommit
+    (nelisp-pe--write-le32 cbuf 0)        ; LoaderFlags
+    (nelisp-pe--write-le32 cbuf 16)       ; NumberOfRvaAndSizes
+    (nelisp-pe--write-data-directory-table
+     cbuf import-rva import-size iat-rva iat-size)))
+
+(defun nelisp-pe--write-pe-section-header (cbuf fields)
+  "Write an IMAGE_SECTION_HEADER for a PE image."
+  (nelisp-pe--write-section-header
+   cbuf
+   (list :name (plist-get fields :name)
+         :virtual-size (or (plist-get fields :virtual-size) 0)
+         :virtual-address (or (plist-get fields :virtual-address) 0)
+         :raw-data-size (or (plist-get fields :raw-data-size) 0)
+         :raw-data-ptr (or (plist-get fields :raw-data-ptr) 0)
+         :reloc-ptr 0
+         :num-relocs 0
+         :characteristics (or (plist-get fields :characteristics) 0))))
+
+(defun nelisp-pe--build-kernel32-idata (idata-rva function-names)
+  "Build .idata bytes for KERNEL32.dll imports named by FUNCTION-NAMES.
+Returns a plist with :bytes, :import-rva, :import-size, :iat-rva and
+:iat-size.  It also returns :iat-rva-alist mapping function names to their
+IAT slot RVAs.  All RVA values are relative to the image base."
+  (let* ((dll-name "KERNEL32.dll")
+         (func-count (length function-names))
+         (descriptor-size 40) ; one IMAGE_IMPORT_DESCRIPTOR + null
+         (ilt-off descriptor-size)
+         (ilt-size (* 8 (1+ func-count)))
+         (iat-off (+ ilt-off ilt-size))
+         (iat-size (* 8 (1+ func-count)))
+         (hint-name-off (+ iat-off iat-size))
+         (hint-entries nil)
+         (hint-cursor hint-name-off)
+         (iat-rva-alist nil)
+         (slot 0)
+         dll-name-off
+         dll-name-rva
+         (ilt-rva (+ idata-rva ilt-off))
+         (iat-rva (+ idata-rva iat-off))
+         (cbuf (nelisp-pe--make-buffer)))
+    (dolist (func-name function-names)
+      (let* ((entry-bytes (concat (unibyte-string 0 0)
+                                  (encode-coding-string func-name 'utf-8 t)
+                                  (unibyte-string 0)))
+             (entry-rva (+ idata-rva hint-cursor)))
+        (push (list :name func-name :rva entry-rva :bytes entry-bytes)
+              hint-entries)
+        (push (cons func-name (+ iat-rva (* slot 8))) iat-rva-alist)
+        (setq hint-cursor (+ hint-cursor (length entry-bytes)))
+        (setq slot (1+ slot))))
+    (setq hint-entries (nreverse hint-entries))
+    (setq iat-rva-alist (nreverse iat-rva-alist))
+    (setq dll-name-off hint-cursor)
+    (setq dll-name-rva (+ idata-rva dll-name-off))
+    ;; IMAGE_IMPORT_DESCRIPTOR for KERNEL32.dll.
+    (nelisp-pe--write-le32 cbuf ilt-rva)      ; OriginalFirstThunk
+    (nelisp-pe--write-le32 cbuf 0)            ; TimeDateStamp
+    (nelisp-pe--write-le32 cbuf 0)            ; ForwarderChain
+    (nelisp-pe--write-le32 cbuf dll-name-rva) ; Name
+    (nelisp-pe--write-le32 cbuf iat-rva)      ; FirstThunk
+    ;; Null descriptor.
+    (nelisp-pe--write-pad cbuf 20)
+    ;; Import Lookup Table.
+    (dolist (entry hint-entries)
+      (nelisp-pe--write-le64 cbuf (plist-get entry :rva)))
+    (nelisp-pe--write-le64 cbuf 0)
+    ;; Import Address Table.
+    (dolist (entry hint-entries)
+      (nelisp-pe--write-le64 cbuf (plist-get entry :rva)))
+    (nelisp-pe--write-le64 cbuf 0)
+    ;; IMAGE_IMPORT_BY_NAME entries + DLL name.
+    (dolist (entry hint-entries)
+      (nelisp-pe--write-bytes cbuf (plist-get entry :bytes)))
+    (nelisp-pe--write-bytes cbuf (encode-coding-string dll-name 'utf-8 t))
+    (nelisp-pe--write-u8 cbuf 0)
+    (list :bytes (nelisp-pe--buffer-bytes cbuf)
+          :import-rva idata-rva
+          :import-size descriptor-size
+          :iat-rva iat-rva
+          :iat-size iat-size
+          :iat-rva-alist iat-rva-alist)))
+
+(defun nelisp-pe--build-exitprocess-idata (idata-rva)
+  "Build .idata bytes for one import: KERNEL32.dll!ExitProcess."
+  (nelisp-pe--build-kernel32-idata idata-rva (list "ExitProcess")))
+
+(defun nelisp-pe--minimal-exitprocess-text (exit-code text-rva iat-rva)
+  "Return x86_64 entry bytes that call ExitProcess(EXIT-CODE) via IAT-RVA."
+  (let* ((call-off 9) ; sub rsp,40 (4) + mov ecx,imm32 (5)
+         (call-len 6)
+         (next-rva (+ text-rva call-off call-len))
+         (disp (- iat-rva next-rva))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: 32-byte shadow space plus 8 bytes to preserve call alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-u8 cbuf #xb9) ; mov ecx, imm32
+    (nelisp-pe--write-le32 cbuf (logand exit-code #xffffffff))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15)) ; call [rip+disp32]
+    (nelisp-pe--write-le32-signed cbuf disp)
+    (nelisp-pe--write-u8 cbuf #xcc) ; should not return
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--minimal-virtualalloc-text (text-rva exit-iat-rva virtualalloc-iat-rva)
+  "Return x86_64 entry bytes that call VirtualAlloc, then ExitProcess.
+The generated code exits 42 when VirtualAlloc(NULL, 4096,
+MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE) succeeds and exits 1 otherwise."
+  (let* ((virtualalloc-call-off 23)
+         (success-exit-call-off 39)
+         (fail-exit-call-off 50)
+         (call-len 6)
+         (virtualalloc-disp (- virtualalloc-iat-rva
+                               (+ text-rva virtualalloc-call-off call-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: 32-byte shadow space plus 8 bytes for stack alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x31 #xc9)) ; xor ecx, ecx
+    (nelisp-pe--write-u8 cbuf #xba) ; mov edx, 4096
+    (nelisp-pe--write-le32 cbuf #x1000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; mov r8d, 0x3000
+    (nelisp-pe--write-le32 cbuf #x3000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb9)) ; mov r9d, 4
+    (nelisp-pe--write-le32 cbuf #x4)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15)) ; call [rip+disp32]
+    (nelisp-pe--write-le32-signed cbuf virtualalloc-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x85 #xc0)) ; test rax,rax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 #x0b)) ; jz fail
+    (nelisp-pe--write-u8 cbuf #xb9) ; mov ecx, 42
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9) ; fail: mov ecx, 1
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--minimal-virtualalloc-arena-text
+    (text-rva exit-iat-rva virtualalloc-iat-rva data-rva arena-size)
+  "Return x86_64 entry bytes that initialize arena metadata in .data.
+The generated code calls VirtualAlloc(NULL, ARENA-SIZE,
+MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE), writes base/cursor/end pointers at
+DATA-RVA + 0/8/16, and exits 42 on success / 1 on failure."
+  (let* ((virtualalloc-call-off 23)
+         (base-store-off 34)
+         (cursor-store-off 41)
+         (end-store-off 58)
+         (success-exit-call-off 70)
+         (fail-off 76)
+         (fail-exit-call-off 81)
+         (call-len 6)
+         (store-len 7)
+         (virtualalloc-disp (- virtualalloc-iat-rva
+                               (+ text-rva virtualalloc-call-off call-len)))
+         (base-disp (- data-rva (+ text-rva base-store-off store-len)))
+         (cursor-disp (- (+ data-rva 8)
+                         (+ text-rva cursor-store-off store-len)))
+         (end-disp (- (+ data-rva 16)
+                      (+ text-rva end-store-off store-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (jz-disp (- fail-off (+ 32 2)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: 32-byte shadow space plus 8 bytes for stack alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x31 #xc9)) ; rcx = NULL
+    (nelisp-pe--write-u8 cbuf #xba) ; rdx = arena size
+    (nelisp-pe--write-le32 cbuf arena-size)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; r8d = MEM_*
+    (nelisp-pe--write-le32 cbuf #x3000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb9)) ; r9d = PAGE_READWRITE
+    (nelisp-pe--write-le32 cbuf #x4)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf virtualalloc-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x85 #xc0)) ; test rax,rax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 (logand jz-disp #xff)))
+    ;; arena_base = rax; arena_cursor = rax.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #x05))
+    (nelisp-pe--write-le32-signed cbuf base-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #x05))
+    (nelisp-pe--write-le32-signed cbuf cursor-disp)
+    ;; arena_end = rax + arena_size.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc2)) ; mov rdx, rax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x81 #xc2)) ; add rdx, imm32
+    (nelisp-pe--write-le32 cbuf arena-size)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #x15))
+    (nelisp-pe--write-le32-signed cbuf end-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--minimal-writefile-stdout-text
+    (text-rva exit-iat-rva get-std-handle-iat-rva write-file-iat-rva
+              rdata-rva data-rva message-len)
+  "Return x86_64 entry bytes that write a message to stdout via WriteFile.
+The generated code calls GetStdHandle(STD_OUTPUT_HANDLE), then
+WriteFile(handle, RDATA-RVA, MESSAGE-LEN, DATA-RVA, NULL), and exits 42 on
+success / 1 on failure."
+  (let* ((get-call-off 9)
+         (lea-msg-off 18)
+         (lea-written-off 31)
+         (write-call-off 47)
+         (success-exit-call-off 62)
+         (fail-off 68)
+         (fail-exit-call-off 73)
+         (call-len 6)
+         (lea-len 7)
+         (get-disp (- get-std-handle-iat-rva
+                      (+ text-rva get-call-off call-len)))
+         (msg-disp (- rdata-rva (+ text-rva lea-msg-off lea-len)))
+         (written-disp (- data-rva (+ text-rva lea-written-off lea-len)))
+         (write-disp (- write-file-iat-rva
+                        (+ text-rva write-call-off call-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (jz-disp (- fail-off (+ 55 2)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; 32-byte shadow + one stack arg + alignment pad.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x38))
+    (nelisp-pe--write-u8 cbuf #xb9) ; mov ecx, STD_OUTPUT_HANDLE (-11)
+    (nelisp-pe--write-le32 cbuf #xfffffff5)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf get-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc1)) ; rcx = handle
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x15)) ; rdx = msg
+    (nelisp-pe--write-le32-signed cbuf msg-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; r8d = len
+    (nelisp-pe--write-le32 cbuf message-len)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x4c #x8d #x0d)) ; r9 = written*
+    (nelisp-pe--write-le32-signed cbuf written-disp)
+    ;; 5th arg lpOverlapped = NULL at [rsp + 32].
+    (nelisp-pe--write-bytes cbuf
+                            (unibyte-string #x48 #xc7 #x44 #x24 #x20
+                                            #x00 #x00 #x00 #x00))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf write-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0)) ; test eax,eax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 (logand jz-disp #xff)))
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-minimal-exitprocess-exe (exit-code)
+  "Build a minimal PE32+ console EXE that exits with EXIT-CODE."
+  (let* ((num-sections 2)
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (idata-rva (* 2 nelisp-pe--section-alignment))
+         (idata-info (nelisp-pe--build-exitprocess-idata idata-rva))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-exitprocess-text
+           exit-code text-rva (plist-get idata-info :iat-rva)))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (idata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00)) ; PE\0\0
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data idata-raw-size
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (unless (= (nelisp-pe--buffer-length cbuf) text-raw-ptr)
+      (error "nelisp-pe: .text raw pointer drift"))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (unless (= (nelisp-pe--buffer-length cbuf) idata-raw-ptr)
+      (error "nelisp-pe: .idata raw pointer drift"))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-virtualalloc-exitprocess-exe ()
+  "Build a minimal PE32+ console EXE that proves VirtualAlloc import wiring."
+  (let* ((num-sections 2)
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (idata-rva (* 2 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva (list "ExitProcess" "VirtualAlloc")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-virtualalloc-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "VirtualAlloc" iat-map))))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (idata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data idata-raw-size
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-virtualalloc-arena-exitprocess-exe ()
+  "Build a PE32+ EXE that initializes a tiny Windows arena metadata block."
+  (let* ((num-sections 3)
+         (arena-size #x10000)
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (idata-rva (* 2 nelisp-pe--section-alignment))
+         (data-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva (list "ExitProcess" "VirtualAlloc")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (data-bytes (make-string 24 0))
+         (text-bytes
+          (nelisp-pe--minimal-virtualalloc-arena-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "VirtualAlloc" iat-map))
+           data-rva
+           arena-size))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length data-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (idata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (data-raw-ptr (+ idata-raw-ptr idata-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ data-rva (length data-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ idata-raw-size data-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length data-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--write-bytes cbuf data-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-writefile-stdout-exitprocess-exe ()
+  "Build a PE32+ EXE that writes a short message to stdout via WriteFile."
+  (let* ((num-sections 4)
+         (message-bytes "hello from nelisp windows\n")
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (rdata-rva (* 2 nelisp-pe--section-alignment))
+         (data-rva (* 3 nelisp-pe--section-alignment))
+         (idata-rva (* 4 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva (list "ExitProcess" "GetStdHandle" "WriteFile")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (data-bytes (make-string 4 0))
+         (text-bytes
+          (nelisp-pe--minimal-writefile-stdout-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "GetStdHandle" iat-map))
+           (cdr (assoc "WriteFile" iat-map))
+           rdata-rva
+           data-rva
+           (length message-bytes)))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (rdata-raw-size
+          (nelisp-pe--align-up (length message-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length data-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (rdata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (data-raw-ptr (+ rdata-raw-ptr rdata-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ rdata-raw-size
+                                        data-raw-size
+                                        idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".rdata"
+           :virtual-size (length message-bytes)
+           :virtual-address rdata-rva
+           :raw-data-size rdata-raw-size
+           :raw-data-ptr rdata-raw-ptr
+           :characteristics nelisp-pe--scn-rdata-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length data-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf message-bytes)
+    (nelisp-pe--write-pad cbuf (- rdata-raw-size (length message-bytes)))
+    (nelisp-pe--write-bytes cbuf data-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
   "Emit a PE32+/COFF relocatable object file to FILE-PATH.
@@ -757,6 +1525,35 @@ Writes the resulting .obj bytes to FILE-PATH using `no-conversion'
 so raw binary content is preserved.  Returns FILE-PATH."
   (let ((bytes (nelisp-pe--build-object build-plist))
         (coding-system-for-write 'no-conversion))
+    (write-region bytes nil file-path nil 'silent)
+    file-path))
+
+;;;###autoload
+(defun nelisp-pe-write-exe-binary (file-path spec)
+  "Emit a PE32+ console executable to FILE-PATH.
+SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
+`virtualalloc-arena-exit-42', `writefile-stdout-exit-42', or a plist with
+:exit-code.  The output imports KERNEL32.dll functions through a real PE
+import directory and writes raw bytes with `no-conversion'.  Returns
+FILE-PATH."
+  (let* ((exit-code
+          (cond
+           ((eq spec 'minimal-exit-42) 42)
+           ((eq spec 'virtualalloc-exit-42) nil)
+           ((eq spec 'virtualalloc-arena-exit-42) nil)
+           ((eq spec 'writefile-stdout-exit-42) nil)
+           ((listp spec) (or (plist-get spec :exit-code) 42))
+           (t (error "nelisp-pe-write-exe-binary: invalid SPEC %S" spec))))
+         (bytes (cond
+                 ((eq spec 'virtualalloc-exit-42)
+                  (nelisp-pe--build-virtualalloc-exitprocess-exe))
+                 ((eq spec 'virtualalloc-arena-exit-42)
+                  (nelisp-pe--build-virtualalloc-arena-exitprocess-exe))
+                 ((eq spec 'writefile-stdout-exit-42)
+                  (nelisp-pe--build-writefile-stdout-exitprocess-exe))
+                 (t
+                  (nelisp-pe--build-minimal-exitprocess-exe exit-code))))
+         (coding-system-for-write 'no-conversion))
     (write-region bytes nil file-path nil 'silent)
     file-path))
 
