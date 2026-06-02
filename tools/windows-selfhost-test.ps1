@@ -11,6 +11,7 @@
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualalloc
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualprotect-free
 #   .\tools\windows-selfhost-test.ps1 -Smoke readfile-stdin
+#   .\tools\windows-selfhost-test.ps1 -Smoke createfile-write
 #   .\tools\windows-selfhost-test.ps1 -Smoke createprocess
 #   .\tools\windows-selfhost-test.ps1 -Smoke createthread
 #
@@ -79,6 +80,12 @@ $Smokes = @(
     @{
         Name = "readfile-stdin"
         Spec = "readfile-stdin-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
+        Name = "createfile-write"
+        Spec = "createfile-write-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
     },

@@ -11,9 +11,9 @@
 ;; Builds native Windows x86_64 PE32+ smoke executables from the pure-elisp
 ;; PE writer.  These are deliberately small de-risk artifacts for Doc 138:
 ;; ExitProcess, VirtualAlloc, VirtualProtect / VirtualFree, arena metadata,
-;; stdout/stdin HANDLE I/O via GetStdHandle + WriteFile / ReadFile, and
-;; CRT-free command-line discovery via GetCommandLineW / CommandLineToArgvW,
-;; and Winsock startup via WS2_32.dll!WSAStartup, plus CreateProcessW child launch / wait and
+;; stdout/stdin HANDLE I/O via GetStdHandle + WriteFile / ReadFile,
+;; CreateFileW file lifecycle wiring, CRT-free command-line discovery via
+;; GetCommandLineW / CommandLineToArgvW, and Winsock startup via WS2_32.dll!WSAStartup, plus CreateProcessW child launch / wait and
 ;; CreateThread launch / join.
 ;;
 ;; Run on a Windows machine with Emacs installed via:
@@ -28,6 +28,7 @@
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-arena
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-writefile-stdout
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-readfile-stdin
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-createfile-write
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getcommandline
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-commandlinetoargv
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-wsastartup
@@ -83,6 +84,11 @@
                     nelisp-windows-build--repo-root)
   "Default path for the single ReadFile stdin smoke EXE.")
 
+(defconst nelisp-windows-build--createfile-write-out
+  (expand-file-name "target/nelisp-windows-createfile-write.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single CreateFileW write smoke EXE.")
+
 (defconst nelisp-windows-build--getcommandline-out
   (expand-file-name "target/nelisp-windows-getcommandline.exe"
                     nelisp-windows-build--repo-root)
@@ -115,6 +121,7 @@
     (arena . virtualalloc-arena-exit-42)
     (writefile-stdout . writefile-stdout-exit-42)
     (readfile-stdin . readfile-stdin-exit-42)
+    (createfile-write . createfile-write-exit-42)
     (getcommandline . getcommandline-exit-42)
     (commandlinetoargv . commandlinetoargv-exit-42)
     (wsastartup . wsastartup-exit-42)
@@ -213,6 +220,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'readfile-stdin-exit-42
    (or out-path nelisp-windows-build--readfile-stdin-out)
    "GetStdHandle + ReadFile stdin + ExitProcess 42"))
+
+(defun nelisp-windows-build-createfile-write (&optional out-path)
+  "Batch entry: build the Windows CreateFileW write smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'createfile-write-exit-42
+   (or out-path nelisp-windows-build--createfile-write-out)
+   "CreateFileW + WriteFile + CloseHandle + DeleteFileW + ExitProcess 42"))
 
 (defun nelisp-windows-build-getcommandline (&optional out-path)
   "Batch entry: build the Windows GetCommandLineW smoke EXE."

@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-138-WINDOWS-READFILE-SMOKE
+#+STATUS: STAGE-139-WINDOWS-CREATEFILE-SMOKE
 
 * Status
 
-- *State*: STAGE 138 Windows ReadFile PE smoke
+- *State*: STAGE 139 Windows CreateFileW PE smoke
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -44,7 +44,12 @@
   =readfile-stdin-exit-42=, imports =GetStdHandle= and =ReadFile=, obtains
   =STD_INPUT_HANDLE=, issues a zero-byte =ReadFile= through a writable =.data=
   buffer / bytes-read slot so it cannot block for console input, and exits 42
-  on success / 1 on failure.  Win64 COFF object coverage now also
+  on success / 1 on failure.  The twelfth EXE spec,
+  =createfile-write-exit-42=, imports =CreateFileW= / =WriteFile= /
+  =CloseHandle= / =DeleteFileW=, creates
+  =target\windows-smoke\nelisp-windows-createfile.tmp=, writes a short payload,
+  closes the HANDLE, deletes the file, and exits 42 only when the full file
+  lifecycle succeeds.  Win64 COFF object coverage now also
   verifies =extern-call= emits four GP arguments in =RCX/RDX/R8/R9=, surrounds
   the call with the required 32-byte caller shadow space, and places fifth and
   later GP arguments in the Win64 outgoing stack area above shadow space.
@@ -432,7 +437,7 @@
   normalized events, and poll readiness; native =ReadDirectoryChangesW= event
   production remains the follow-up.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
-  smoke manifest and emits all ten PE32+ smoke EXEs on the host side before
+  smoke manifest and emits all twelve PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
   accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|getcommandline|commandlinetoargv|wsastartup|createprocess|createthread|all= so the
   remaining native Windows checks can be re-run individually after a partial
@@ -540,7 +545,7 @@
   =exit42= / =virtualalloc= / =virtualprotect-free= / =arena= /
   =writefile-stdout= / =getcommandline= / =commandlinetoargv= /
   =wsastartup= / =createprocess= / =createthread= manifest stable and can emit
-  all ten PE32+ smoke EXEs from that manifest.
+  all twelve PE32+ smoke EXEs from that manifest.
   Stage 37 coverage
   checks that the PowerShell real-machine script exposes a =-Smoke= selector
   with the same smoke names.
@@ -830,7 +835,11 @@
   exit-code validation.  Stage 138 coverage verifies the
   =readfile-stdin-exit-42= PE layout, =GetStdHandle= / =ReadFile= imports,
   writable buffer / bytes-read data, zero-byte read count, and Win64
-  fifth-argument stack slot.  Stage 58 coverage verifies Win64 =extern-call= COFF
+  fifth-argument stack slot.  Stage 139 coverage verifies the
+  =createfile-write-exit-42= PE layout, UTF-16LE path / payload data,
+  =CreateFileW= / =WriteFile= / =CloseHandle= / =DeleteFileW= imports,
+  seven-argument Win64 =CreateFileW= setup, and cleanup success checks.
+  Stage 58 coverage verifies Win64 =extern-call= COFF
   emit uses =RCX/RDX/R8/R9= for four GP arguments, emits 32-byte caller shadow
   space around =CALL=, and rejects GP stack arguments beyond that register
   window before invalid object emission.  Stage 59 coverage supersedes that
@@ -852,6 +861,7 @@
   =virtualalloc-exit-42=, =virtualprotect-free-exit-42=,
   =virtualalloc-arena-exit-42=, and
   =writefile-stdout-exit-42=, =readfile-stdin-exit-42=,
+  =createfile-write-exit-42=,
   =getcommandline-exit-42=,
   =commandlinetoargv-exit-42=, =wsastartup-exit-42=,
   =createprocess-wait-exit-42=, and =createthread-wait-exit-42=.  They can now
@@ -861,6 +871,7 @@
   =nelisp-windows-build-arena=, and
   =nelisp-windows-build-writefile-stdout=, and
   =nelisp-windows-build-readfile-stdin=, and
+  =nelisp-windows-build-createfile-write=, and
   =nelisp-windows-build-getcommandline=,
   =nelisp-windows-build-commandlinetoargv=, and
   =nelisp-windows-build-wsastartup=, and
@@ -871,13 +882,14 @@
   =target/nelisp-windows-arena.exe=, and
   =target/nelisp-windows-writefile-stdout.exe=, and
   =target/nelisp-windows-readfile-stdin.exe=, and
+  =target/nelisp-windows-createfile-write.exe=, and
   =target/nelisp-windows-getcommandline.exe=,
   =target/nelisp-windows-commandlinetoargv.exe=, and
   =target/nelisp-windows-wsastartup.exe=, and
   =target/nelisp-windows-createprocess.exe=, and
   =target/nelisp-windows-createthread.exe=.  This Linux host does not have
   =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
-  it builds and runs the eleven PE32+ smoke EXEs on native Windows, checking exit
+  it builds and runs the twelve PE32+ smoke EXEs on native Windows, checking exit
   code 42 and the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE
   generation without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
@@ -1450,6 +1462,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   calls =ReadFile= with a zero-byte count plus writable bytes-read storage, and
   is wired into the native Windows PowerShell smoke runner without requiring
   console input.
+  *Windows CreateFileW PE smoke progress 2026-06-03*: pure-Elisp PE emit now
+  has a =createfile-write-exit-42= smoke that creates a temporary file under
+  =target\windows-smoke=, writes a payload with =WriteFile=, closes the HANDLE,
+  deletes the file with =DeleteFileW=, and is wired into the native Windows
+  PowerShell smoke runner.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -1599,7 +1616,7 @@ largest uncertainty (B1 + B2) first.
    timer-backed timerfd compatibility.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
-   manifest and host-side emission of all ten PE32+ smoke EXEs.
+   manifest and host-side emission of all twelve PE32+ smoke EXEs.
    *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
    be re-run when checking =virtualalloc=, =virtualprotect-free=, =arena=,
@@ -1889,6 +1906,10 @@ largest uncertainty (B1 + B2) first.
    has a native =ReadFile= stdin smoke that performs a zero-byte read through
    =GetStdHandle(STD_INPUT_HANDLE)= and is included in
    =tools/windows-selfhost-test.ps1=.
+   *Windows CreateFileW PE smoke SHIPPED 2026-06-03*: pure-Elisp PE emit now
+   has a native =CreateFileW= write/delete smoke that exercises file creation,
+   =WriteFile=, =CloseHandle=, and =DeleteFileW= through the PE import table and
+   is included in =tools/windows-selfhost-test.ps1=.
    *Win64 extern-call ABI coverage SHIPPED 2026-06-03*: Phase 47 COFF tests now
    verify Win64 =extern-call= uses =RCX/RDX/R8/R9=, emits 32-byte shadow space
    around =CALL=, and rejects unsupported GP stack arguments before bad object
