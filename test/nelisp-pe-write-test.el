@@ -331,6 +331,125 @@
     (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 52)) #x1008))
     (should (= (aref bytes (+ text-off 56)) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-virtualprotect-free-section-table ()
+  "The VirtualProtect / VirtualFree smoke EXE has .data oldProtect storage."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe
+                 'virtualprotect-free-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20))
+         (sect0 (+ pe-off 4 20 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (data-raw #x400))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ file-off 2)) 3))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 4)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 8)) #x400))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 56)) #x4000))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (string-prefix-p ".data" (substring bytes sect1 (+ sect1 8))))
+    (should (string-prefix-p ".idata" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 8)) 4))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 16)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) data-raw))
+    (dotimes (i 4)
+      (should (= (aref bytes (+ data-raw i)) 0)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-virtualprotect-free-import-directory ()
+  "The VirtualProtect / VirtualFree smoke EXE imports four KERNEL32 APIs."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe
+                 'virtualprotect-free-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt-off (+ pe-off 4 20))
+         (iat-dir-off (+ opt-off 112 (* 12 8)))
+         (idata-raw #x600)
+         (idata-rva #x3000)
+         (ilt-rva (nelisp-pe-write-test--read-le32 bytes idata-raw))
+         (name-rva (nelisp-pe-write-test--read-le32 bytes (+ idata-raw 12)))
+         (first-thunk-rva (nelisp-pe-write-test--read-le32 bytes (+ idata-raw 16)))
+         (iat-rva (nelisp-pe-write-test--read-le32 bytes iat-dir-off))
+         (iat-size (nelisp-pe-write-test--read-le32 bytes (+ iat-dir-off 4)))
+         (exit-hint-rva
+          (nelisp-pe-write-test--read-le64 bytes
+                                           (+ idata-raw (- iat-rva idata-rva))))
+         (virtualalloc-hint-rva
+          (nelisp-pe-write-test--read-le64
+           bytes (+ idata-raw (- (+ iat-rva 8) idata-rva))))
+         (virtualprotect-hint-rva
+          (nelisp-pe-write-test--read-le64
+           bytes (+ idata-raw (- (+ iat-rva 16) idata-rva))))
+         (virtualfree-hint-rva
+          (nelisp-pe-write-test--read-le64
+           bytes (+ idata-raw (- (+ iat-rva 24) idata-rva))))
+         (dll-name-off (+ idata-raw (- name-rva idata-rva)))
+         (exit-hint-off (+ idata-raw (- exit-hint-rva idata-rva)))
+         (virtualalloc-hint-off
+          (+ idata-raw (- virtualalloc-hint-rva idata-rva)))
+         (virtualprotect-hint-off
+          (+ idata-raw (- virtualprotect-hint-rva idata-rva)))
+         (virtualfree-hint-off
+          (+ idata-raw (- virtualfree-hint-rva idata-rva))))
+    (should (= ilt-rva #x3028))
+    (should (= first-thunk-rva #x3050))
+    (should (= iat-rva #x3050))
+    (should (= iat-size 40))
+    (should (string-prefix-p "KERNEL32.dll"
+                             (substring bytes dll-name-off (+ dll-name-off 13))))
+    (should (string-prefix-p "ExitProcess"
+                             (substring bytes (+ exit-hint-off 2)
+                                        (+ exit-hint-off 14))))
+    (should (string-prefix-p "VirtualAlloc"
+                             (substring bytes (+ virtualalloc-hint-off 2)
+                                        (+ virtualalloc-hint-off 15))))
+    (should (string-prefix-p "VirtualProtect"
+                             (substring bytes (+ virtualprotect-hint-off 2)
+                                        (+ virtualprotect-hint-off 16))))
+    (should (string-prefix-p "VirtualFree"
+                             (substring bytes (+ virtualfree-hint-off 2)
+                                        (+ virtualfree-hint-off 13))))))
+
+(ert-deftest nelisp-pe-write-exe-binary-virtualprotect-free-entry-code ()
+  "The VirtualProtect / VirtualFree smoke EXE uses Win64 argument registers."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe
+                 'virtualprotect-free-exit-42))
+         (text-off #x200))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x28)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 7)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 13)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 19)) #x4))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 25)) #x203b))
+    (should (equal (substring bytes (+ text-off 29) (+ text-off 34))
+                   (unibyte-string #x48 #x85 #xc0 #x74 #x53)))
+    (should (equal (substring bytes (+ text-off 34) (+ text-off 40))
+                   (unibyte-string #x48 #x89 #xc3 #x48 #x89 #xc1)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 41)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 47)) #x2))
+    (should (equal (substring bytes (+ text-off 51) (+ text-off 54))
+                   (unibyte-string #x4c #x8d #x0d)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 54)) #xfc6))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 60)) #x2020))
+    (should (equal (substring bytes (+ text-off 64) (+ text-off 68))
+                   (unibyte-string #x85 #xc0 #x74 #x20)))
+    (should (equal (substring bytes (+ text-off 68) (+ text-off 73))
+                   (unibyte-string #x48 #x89 #xd9 #x31 #xd2)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 75)) #x8000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 81)) #x2013))
+    (should (equal (substring bytes (+ text-off 85) (+ text-off 89))
+                   (unibyte-string #x85 #xc0 #x74 #x1c)))
+    (should (= (aref bytes (+ text-off 89)) #xb9))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 90)) 42))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 96)) #x1fec))
+    (should (equal (substring bytes (+ text-off 100) (+ text-off 105))
+                   (unibyte-string #x48 #x89 #xd9 #x31 #xd2)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 107)) #x8000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 113)) #x1ff3))
+    (should (= (aref bytes (+ text-off 117)) #xb9))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 118)) 1))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 124)) #x1fd0))
+    (should (= (aref bytes (+ text-off 128)) #xcc))))
+
 (ert-deftest nelisp-pe-write-exe-binary-getcommandline-import-directory ()
   "The GetCommandLineW smoke EXE imports ExitProcess and GetCommandLineW."
   (let* ((bytes (nelisp-pe-write-test--emit-exe 'getcommandline-exit-42))

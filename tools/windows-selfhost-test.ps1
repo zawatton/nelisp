@@ -9,6 +9,7 @@
 # To run only one smoke:
 #
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualalloc
+#   .\tools\windows-selfhost-test.ps1 -Smoke virtualprotect-free
 #
 # To validate generation without running the EXEs:
 #
@@ -46,6 +47,12 @@ $Smokes = @(
     @{
         Name = "virtualalloc"
         Spec = "virtualalloc-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
+        Name = "virtualprotect-free"
+        Spec = "virtualprotect-free-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
     },

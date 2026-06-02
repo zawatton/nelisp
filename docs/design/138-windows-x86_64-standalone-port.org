@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-44-WINDOWS-COMMANDLINETOARGV-SMOKE
+#+STATUS: STAGE-45-WINDOWS-VIRTUALPROTECT-FREE-SMOKE
 
 * Status
 
-- *State*: STAGE 44 Windows CommandLineToArgvW smoke
+- *State*: STAGE 45 Windows VirtualProtect / VirtualFree smoke
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -27,7 +27,11 @@
   imports both =KERNEL32.dll!ExitProcess= and
   =WS2_32.dll!WSAStartup= through a multi-DLL PE import directory, calls
   =WSAStartup(MAKEWORD(2,2), &WSADATA)=, and exits 42 on success / 1 on
-  failure.  =lisp/nelisp-stdlib-os.el= now also routes Windows
+  failure.  The eighth EXE spec, =virtualprotect-free-exit-42=, imports
+  =VirtualAlloc= / =VirtualProtect= / =VirtualFree=, allocates one page,
+  changes it to read-only through a =.data= old-protection slot, releases it
+  with =VirtualFree(MEM_RELEASE)=, and exits 42 only when the full lifecycle
+  succeeds.  =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
   =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
   =kernel32!ReadFile= instead of POSIX integer-fd =libc.read/write=.  Regular
@@ -133,9 +137,9 @@
   =nelisp-os-timerfd-set-relative-ms= helper now also rejects Windows directly
   instead of relying on the lower-level timerfd wrapper to fail first.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
-  smoke manifest and emits all seven PE32+ smoke EXEs on the host side before
+  smoke manifest and emits all eight PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
-  accepts =-Smoke exit42|virtualalloc|arena|writefile-stdout|getcommandline|commandlinetoargv|wsastartup|all= so the
+  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|getcommandline|commandlinetoargv|wsastartup|all= so the
   remaining native Windows checks can be re-run individually after a partial
   pass.  =nelisp-os-getsockopt-int= now routes socket-kind Windows fds through
   =ws2_32!getsockopt= for the same supported =SOL_SOCKET= int options as
@@ -163,7 +167,11 @@
   parses =commandlinetoargv-exit-42= as a PE32+ x86-64 EXE with separate
   =KERNEL32.dll= and =SHELL32.dll= import descriptors, a zeroed =.data= argc
   slot, and entry bytes that call =GetCommandLineW=, =CommandLineToArgvW=,
-  =LocalFree=, and =ExitProcess=.  =test/nelisp-stdlib-os-test.el= mocks the
+  =LocalFree=, and =ExitProcess=.  Stage 45 host coverage parses
+  =virtualprotect-free-exit-42= as a PE32+ x86-64 EXE importing
+  =KERNEL32.dll!VirtualAlloc= / =VirtualProtect= / =VirtualFree=, with a
+  zeroed =.data= old-protection slot and entry bytes that allocate, protect,
+  release, then exit 42.  =test/nelisp-stdlib-os-test.el= mocks the
   runtime FFI/memory boundary and verifies the Windows std fd selector mapping,
   stdin/stdout/stderr =GetStdHandle= selectors, =ReadFile= / =WriteFile=
   argument shape, buffer cleanup, catchable =nelisp-os-error=, non-Windows
@@ -232,9 +240,10 @@
   Stage 35 coverage verifies =nelisp-os-timerfd-set-relative-ms= rejects
   Windows before delegating into timerfd allocation or libc/syscall paths.
   Stage 36 coverage verifies =scripts/nelisp-windows-build.el= keeps the
-  =exit42= / =virtualalloc= / =arena= / =writefile-stdout= / =getcommandline=
-  / =commandlinetoargv= / =wsastartup= manifest stable and can emit all seven
-  PE32+ smoke EXEs from that manifest.
+  =exit42= / =virtualalloc= / =virtualprotect-free= / =arena= /
+  =writefile-stdout= / =getcommandline= / =commandlinetoargv= /
+  =wsastartup= manifest stable and can emit all eight PE32+ smoke EXEs from
+  that manifest.
   Stage 37 coverage
   checks that the PowerShell real-machine script exposes a =-Smoke= selector
   with the same smoke names.
@@ -254,28 +263,33 @@
   =WS2_32.dll= and the Win64 =WSAStartup= call shape.
   Stage 44 coverage verifies CRT-free argv materialization through
   =GetCommandLineW= / =CommandLineToArgvW= / =LocalFree=.
+  Stage 45 coverage verifies PE-level Windows memory lifecycle wiring through
+  =VirtualAlloc= / =VirtualProtect= / =VirtualFree=.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
   that EXE returned =$LASTEXITCODE = 42=.  Remaining real Windows checks:
-  =virtualalloc-exit-42=, =virtualalloc-arena-exit-42=, and
+  =virtualalloc-exit-42=, =virtualprotect-free-exit-42=,
+  =virtualalloc-arena-exit-42=, and
   =writefile-stdout-exit-42=, =getcommandline-exit-42=,
   =commandlinetoargv-exit-42=, and
   =wsastartup-exit-42=.  They can now be built individually on native
   Windows with =nelisp-windows-build-virtualalloc=,
+  =nelisp-windows-build-virtualprotect-free=,
   =nelisp-windows-build-arena=, and
   =nelisp-windows-build-writefile-stdout=, and
   =nelisp-windows-build-getcommandline=,
   =nelisp-windows-build-commandlinetoargv=, and
   =nelisp-windows-build-wsastartup=, producing
   =target/nelisp-windows-virtualalloc.exe=,
+  =target/nelisp-windows-virtualprotect-free.exe=,
   =target/nelisp-windows-arena.exe=, and
   =target/nelisp-windows-writefile-stdout.exe=, and
   =target/nelisp-windows-getcommandline.exe=,
   =target/nelisp-windows-commandlinetoargv.exe=, and
   =target/nelisp-windows-wsastartup.exe=.  This Linux host does not have
   =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
-  it builds and runs the seven PE32+ smoke EXEs on native Windows, checking exit
+  it builds and runs the eight PE32+ smoke EXEs on native Windows, checking exit
   code 42 and the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE
   generation without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
@@ -565,6 +579,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows CommandLineToArgvW smoke progress 2026-06-03*:
   =commandlinetoargv-exit-42= imports =Shell32.dll!CommandLineToArgvW=,
   validates =argc >= 1=, and frees the argv vector with =LocalFree=.
+  *Windows VirtualProtect / VirtualFree smoke progress 2026-06-03*:
+  =virtualprotect-free-exit-42= imports =VirtualAlloc= / =VirtualProtect= /
+  =VirtualFree= and proves the native memory protect/release lifecycle.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -673,11 +690,11 @@ largest uncertainty (B1 + B2) first.
    delegating into Linux timerfd paths.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
-   manifest and host-side emission of all seven PE32+ smoke EXEs.
+   manifest and host-side emission of all eight PE32+ smoke EXEs.
    *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
-   be re-run when checking =virtualalloc=, =arena=, =writefile-stdout=,
-   =getcommandline=, =commandlinetoargv=, or =wsastartup=.
+   be re-run when checking =virtualalloc=, =virtualprotect-free=, =arena=,
+   =writefile-stdout=, =getcommandline=, =commandlinetoargv=, or =wsastartup=.
    *Windows Winsock getsockopt SHIPPED 2026-06-03*: =nelisp-os-getsockopt-int=
    now uses =ws2_32!getsockopt= for supported =SO_REUSEADDR= / =SO_KEEPALIVE=
    int options on socket-kind fds.
@@ -699,13 +716,17 @@ largest uncertainty (B1 + B2) first.
    *Windows CommandLineToArgvW smoke SHIPPED 2026-06-03*:
    =commandlinetoargv-exit-42= proves CRT-free argv materialization through
    =GetCommandLineW= / =CommandLineToArgvW= / =LocalFree=.
+   *Windows VirtualProtect / VirtualFree smoke SHIPPED 2026-06-03*:
+   =virtualprotect-free-exit-42= proves PE-level memory lifecycle wiring
+   through =VirtualAlloc= / =VirtualProtect= / =VirtualFree=.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
    =tools/windows-selfhost-test.ps1= drives =scripts/nelisp-windows-build.el=
    to emit =minimal-exit-42=, =virtualalloc-exit-42=,
-   =virtualalloc-arena-exit-42=, =writefile-stdout-exit-42=, and
+   =virtualprotect-free-exit-42=, =virtualalloc-arena-exit-42=,
+   =writefile-stdout-exit-42=, and
    =getcommandline-exit-42=, =commandlinetoargv-exit-42=, and
    =wsastartup-exit-42=, then validates process exit status and stdout on
    Windows.  Individual real-machine build
@@ -713,8 +734,9 @@ largest uncertainty (B1 + B2) first.
    =nelisp-windows-build-exit42=, =nelisp-windows-build-virtualalloc=,
    =nelisp-windows-build-arena=, and
    =nelisp-windows-build-writefile-stdout=.  =nelisp-windows-build-getcommandline=
-   =nelisp-windows-build-commandlinetoargv=, and
-   =nelisp-windows-build-wsastartup= are READY 2026-06-03.
+   =nelisp-windows-build-commandlinetoargv=,
+   =nelisp-windows-build-wsastartup=, and
+   =nelisp-windows-build-virtualprotect-free= are READY 2026-06-03.
 5. Replace parallel/MT with =CreateProcess= / =CreateThread= (B4) — last,
    since it is a feature extension, not a boot blocker.
    *Minimal process API SHIPPED 2026-06-02*: =nelisp-os-exit= and
@@ -742,8 +764,8 @@ writer (import directory).  That single coupling (B1+B2) is the whole game.
 - =lisp/nelisp-elf-write.el= — ET_EXEC / PT_LOAD emit.
 - =lisp/nelisp-mach-o-write.el= — MH_EXECUTE emit (M1 exit=42).
 - =lisp/nelisp-pe-write.el= — PE32+ console EXE smoke specs for ExitProcess,
-  VirtualAlloc, arena metadata, WriteFile stdout, GetCommandLineW, and
-  CommandLineToArgvW, and WSAStartup.
+  VirtualAlloc, VirtualProtect / VirtualFree, arena metadata, WriteFile
+  stdout, GetCommandLineW, CommandLineToArgvW, and WSAStartup.
 - =lisp/nelisp-asm-x86_64.el= — =('sysv | 'win64)= ABI slot.
 - =lisp/nelisp-phase47-compiler.el:149= — =--abi= dynvar (sysv/win64).
 - =lisp/nelisp-stdlib-os.el= — Linux/Darwin POSIX-like path plus Windows

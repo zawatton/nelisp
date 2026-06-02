@@ -46,7 +46,8 @@
 ;; can prove command-line discovery through the PE import table.  Stage 43
 ;; broadens the import writer to more than one DLL and adds a `WS2_32.dll'
 ;; `WSAStartup' smoke for the standalone Winsock import path.  Stage 44 adds
-;; `Shell32.dll!CommandLineToArgvW' for CRT-free argv materialization.
+;; `Shell32.dll!CommandLineToArgvW' for CRT-free argv materialization.  Stage
+;; 45 adds a `VirtualProtect' + `VirtualFree' memory-lifecycle smoke.
 ;; Production standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
@@ -1059,6 +1060,102 @@ MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE) succeeds and exits 1 otherwise."
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--minimal-virtualprotect-free-text
+    (text-rva exit-iat-rva virtualalloc-iat-rva
+              virtualprotect-iat-rva virtualfree-iat-rva data-rva)
+  "Return x86_64 bytes for VirtualAlloc, VirtualProtect, and VirtualFree.
+The generated code exits 42 when allocation, protection change, and release
+all succeed.  On VirtualProtect failure it releases the allocation before
+exiting 1."
+  (let* ((virtualalloc-call-off 23)
+         (fail-off 117)
+         (alloc-fail-jz-next-off 34)
+         (protect-fail-jz-next-off 68)
+         (free-fail-jz-next-off 89)
+         (lea-old-protect-off 51)
+         (virtualprotect-call-off 58)
+         (free-success-call-off 79)
+         (success-exit-call-off 94)
+         (free-fail-off 100)
+         (free-fail-call-off 111)
+         (fail-exit-call-off 122)
+         (call-len 6)
+         (lea-len 7)
+         (virtualalloc-disp (- virtualalloc-iat-rva
+                               (+ text-rva virtualalloc-call-off call-len)))
+         (old-protect-disp (- data-rva
+                              (+ text-rva lea-old-protect-off lea-len)))
+         (virtualprotect-disp
+          (- virtualprotect-iat-rva
+             (+ text-rva virtualprotect-call-off call-len)))
+         (free-success-disp
+          (- virtualfree-iat-rva (+ text-rva free-success-call-off call-len)))
+         (success-exit-disp
+          (- exit-iat-rva (+ text-rva success-exit-call-off call-len)))
+         (free-fail-disp
+          (- virtualfree-iat-rva (+ text-rva free-fail-call-off call-len)))
+         (fail-exit-disp
+          (- exit-iat-rva (+ text-rva fail-exit-call-off call-len)))
+         (jz-alloc-fail-disp (- fail-off alloc-fail-jz-next-off))
+         (jz-protect-fail-disp (- free-fail-off protect-fail-jz-next-off))
+         (jz-free-fail-disp (- fail-off free-fail-jz-next-off))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: 32-byte shadow space plus 8 bytes for stack alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x31 #xc9)) ; rcx = NULL
+    (nelisp-pe--write-u8 cbuf #xba) ; rdx = 4096
+    (nelisp-pe--write-le32 cbuf #x1000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; r8d = MEM_*
+    (nelisp-pe--write-le32 cbuf #x3000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb9)) ; r9d = RW
+    (nelisp-pe--write-le32 cbuf #x4)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf virtualalloc-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x85 #xc0)) ; test rax,rax
+    (nelisp-pe--write-bytes cbuf
+                            (unibyte-string #x74
+                                            (logand jz-alloc-fail-disp #xff)))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc3)) ; rbx = base
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc1)) ; rcx = base
+    (nelisp-pe--write-u8 cbuf #xba) ; rdx = 4096
+    (nelisp-pe--write-le32 cbuf #x1000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; r8d = PAGE_READONLY
+    (nelisp-pe--write-le32 cbuf #x2)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x4c #x8d #x0d)) ; r9 = &oldProtect
+    (nelisp-pe--write-le32-signed cbuf old-protect-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf virtualprotect-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0)) ; test eax,eax
+    (nelisp-pe--write-bytes cbuf
+                            (unibyte-string #x74
+                                            (logand jz-protect-fail-disp #xff)))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xd9)) ; rcx = base
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x31 #xd2)) ; rdx = 0
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; r8d = MEM_RELEASE
+    (nelisp-pe--write-le32 cbuf #x8000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf free-success-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0)) ; test eax,eax
+    (nelisp-pe--write-bytes cbuf
+                            (unibyte-string #x74
+                                            (logand jz-free-fail-disp #xff)))
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xd9)) ; rcx = base
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x31 #xd2)) ; rdx = 0
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; r8d = MEM_RELEASE
+    (nelisp-pe--write-le32 cbuf #x8000)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf free-fail-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--minimal-virtualalloc-arena-text
     (text-rva exit-iat-rva virtualalloc-iat-rva data-rva arena-size)
   "Return x86_64 entry bytes that initialize arena metadata in .data.
@@ -1476,6 +1573,104 @@ LocalFree, and exits 42 when argc >= 1."
       (nelisp-pe--write-pad cbuf header-pad))
     (nelisp-pe--write-bytes cbuf text-bytes)
     (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-virtualprotect-free-exitprocess-exe ()
+  "Build a PE32+ EXE that proves VirtualProtect and VirtualFree wiring."
+  (let* ((num-sections 3)
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (data-rva (* 2 nelisp-pe--section-alignment))
+         (idata-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva
+           (list "ExitProcess" "VirtualAlloc" "VirtualProtect" "VirtualFree")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (data-bytes (make-string 4 0))
+         (text-bytes
+          (nelisp-pe--minimal-virtualprotect-free-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "VirtualAlloc" iat-map))
+           (cdr (assoc "VirtualProtect" iat-map))
+           (cdr (assoc "VirtualFree" iat-map))
+           data-rva))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length data-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (data-raw-ptr (+ text-raw-ptr text-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ data-raw-size idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length data-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf data-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes)))
     (nelisp-pe--write-bytes cbuf idata-bytes)
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
@@ -2003,7 +2198,8 @@ so raw binary content is preserved.  Returns FILE-PATH."
 (defun nelisp-pe-write-exe-binary (file-path spec)
   "Emit a PE32+ console executable to FILE-PATH.
 SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
-`virtualalloc-arena-exit-42', `writefile-stdout-exit-42',
+`virtualprotect-free-exit-42', `virtualalloc-arena-exit-42',
+`writefile-stdout-exit-42',
 `getcommandline-exit-42', `wsastartup-exit-42',
 `commandlinetoargv-exit-42', or a plist with :exit-code.  The output imports
 DLL functions through a real PE import directory and writes raw bytes with
@@ -2012,6 +2208,7 @@ DLL functions through a real PE import directory and writes raw bytes with
           (cond
            ((eq spec 'minimal-exit-42) 42)
            ((eq spec 'virtualalloc-exit-42) nil)
+           ((eq spec 'virtualprotect-free-exit-42) nil)
            ((eq spec 'virtualalloc-arena-exit-42) nil)
            ((eq spec 'writefile-stdout-exit-42) nil)
            ((eq spec 'getcommandline-exit-42) nil)
@@ -2022,6 +2219,8 @@ DLL functions through a real PE import directory and writes raw bytes with
          (bytes (cond
                  ((eq spec 'virtualalloc-exit-42)
                   (nelisp-pe--build-virtualalloc-exitprocess-exe))
+                 ((eq spec 'virtualprotect-free-exit-42)
+                  (nelisp-pe--build-virtualprotect-free-exitprocess-exe))
                  ((eq spec 'virtualalloc-arena-exit-42)
                   (nelisp-pe--build-virtualalloc-arena-exitprocess-exe))
                  ((eq spec 'writefile-stdout-exit-42)

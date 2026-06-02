@@ -57,6 +57,7 @@
   (should (equal nelisp-windows-build-smoke-specs
                  '((exit42 . minimal-exit-42)
                    (virtualalloc . virtualalloc-exit-42)
+                   (virtualprotect-free . virtualprotect-free-exit-42)
                    (arena . virtualalloc-arena-exit-42)
                    (writefile-stdout . writefile-stdout-exit-42)
                    (getcommandline . getcommandline-exit-42)
@@ -89,6 +90,7 @@
           (should (equal (mapcar #'file-name-nondirectory paths)
                          '("nelisp-windows-exit42.exe"
                            "nelisp-windows-virtualalloc.exe"
+                           "nelisp-windows-virtualprotect-free.exe"
                            "nelisp-windows-arena.exe"
                            "nelisp-windows-writefile-stdout.exe"
                            "nelisp-windows-getcommandline.exe"

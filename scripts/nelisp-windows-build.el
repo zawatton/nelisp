@@ -10,9 +10,9 @@
 
 ;; Builds native Windows x86_64 PE32+ smoke executables from the pure-elisp
 ;; PE writer.  These are deliberately small de-risk artifacts for Doc 138:
-;; ExitProcess, VirtualAlloc, arena metadata, stdout HANDLE I/O via
-;; GetStdHandle + WriteFile, and CRT-free command-line discovery via
-;; GetCommandLineW / CommandLineToArgvW, and Winsock startup via
+;; ExitProcess, VirtualAlloc, VirtualProtect / VirtualFree, arena metadata,
+;; stdout HANDLE I/O via GetStdHandle + WriteFile, and CRT-free command-line
+;; discovery via GetCommandLineW / CommandLineToArgvW, and Winsock startup via
 ;; WS2_32.dll!WSAStartup.
 ;;
 ;; Run on a Windows machine with Emacs installed via:
@@ -23,6 +23,7 @@
 ;;
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-exit42
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-virtualalloc
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-virtualprotect-free
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-arena
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-writefile-stdout
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getcommandline
@@ -58,6 +59,11 @@
                     nelisp-windows-build--repo-root)
   "Default path for the single VirtualAlloc smoke EXE.")
 
+(defconst nelisp-windows-build--virtualprotect-free-out
+  (expand-file-name "target/nelisp-windows-virtualprotect-free.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single VirtualProtect / VirtualFree smoke EXE.")
+
 (defconst nelisp-windows-build--arena-out
   (expand-file-name "target/nelisp-windows-arena.exe"
                     nelisp-windows-build--repo-root)
@@ -86,6 +92,7 @@
 (defconst nelisp-windows-build-smoke-specs
   '((exit42 . minimal-exit-42)
     (virtualalloc . virtualalloc-exit-42)
+    (virtualprotect-free . virtualprotect-free-exit-42)
     (arena . virtualalloc-arena-exit-42)
     (writefile-stdout . writefile-stdout-exit-42)
     (getcommandline . getcommandline-exit-42)
@@ -156,6 +163,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'virtualalloc-exit-42
    (or out-path nelisp-windows-build--virtualalloc-out)
    "VirtualAlloc + ExitProcess 42"))
+
+(defun nelisp-windows-build-virtualprotect-free (&optional out-path)
+  "Batch entry: build the Windows VirtualProtect / VirtualFree smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'virtualprotect-free-exit-42
+   (or out-path nelisp-windows-build--virtualprotect-free-out)
+   "VirtualAlloc + VirtualProtect + VirtualFree + ExitProcess 42"))
 
 (defun nelisp-windows-build-arena (&optional out-path)
   "Batch entry: build the Windows VirtualAlloc arena smoke EXE."
