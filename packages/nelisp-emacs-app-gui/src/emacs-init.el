@@ -200,10 +200,14 @@ font-lock / mode setup before the first frame exists."
   ;; already been loaded by tests or an editor feature.
   (unless (featurep 'emacs-redisplay)
     (require 'emacs-redisplay-core))
+  (require 'emacs-tui-backend)
   ;; `emacs-tui-event' provides the byte-stream -> key event parser
   ;; that nemacs-main's event loop drains under the nelisp driver.
-  (when (locate-library "emacs-tui-event")
-    (require 'emacs-tui-event))
+  ;; Avoid `locate-library' here: the standalone NeLisp reader currently
+  ;; treats some file-system probes as process-stopping errors.  The
+  ;; bootstrap load-path is already explicit, so a direct require is the
+  ;; stable path in both host and standalone drivers.
+  (require 'emacs-tui-event)
   t)
 
 (defun emacs-init-load-editor-features ()

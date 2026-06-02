@@ -33,7 +33,10 @@ final `.el' suffix with `.repl'.")
   "Repository root used by the bundle generator.")
 
 (defvar nelisp-bootstrap-extra-files
-  '("cl-lib.el")
+  '("cl-lib.el"
+    "emacs-tui-backend.el"
+    "emacs-redisplay-core.el"
+    "emacs-tui-event.el")
   "Local src files that host Emacs may not load but standalone NeLisp needs.")
 
 (defun nelisp-bootstrap--src-dir ()
@@ -87,12 +90,14 @@ final `.el' suffix with `.repl'.")
 (defun nelisp-bootstrap--complete-file-list (files)
   "Add standalone-only source files to FILES in a dependency-safe spot."
   (let ((src (nelisp-bootstrap--src-dir))
-        (out files))
+        (out files)
+        (anchor (expand-file-name "emacs-cl-macros.el"
+                                  (nelisp-bootstrap--src-dir))))
     (dolist (name nelisp-bootstrap-extra-files)
-      (let ((file (expand-file-name name src))
-            (anchor (expand-file-name "emacs-cl-macros.el" src)))
+      (let ((file (expand-file-name name src)))
         (when (file-readable-p file)
-          (setq out (nelisp-bootstrap--insert-after file anchor out)))))
+          (setq out (nelisp-bootstrap--insert-after file anchor out))
+          (setq anchor file))))
     out))
 
 (defun nelisp-bootstrap--write-bundle (files output)

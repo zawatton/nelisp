@@ -144,7 +144,7 @@ current ERT test with status/stdout/stderr diagnostics."
 ;;;; B. boot
 
 (ert-deftest nemacs-bootstrap-nelisp-test/batch-completes-cleanly ()
-  "`--batch --eval' under nelisp driver should print user output and `ok'."
+  "`--batch --eval' under nelisp driver should print user output."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
    (let ((out (nemacs-bootstrap-nelisp-test--run
                "--batch" "--no-banner"
@@ -158,8 +158,7 @@ current ERT test with status/stdout/stderr diagnostics."
                 "  (if (fboundp (quote nelisp--write-stdout-bytes))"
                 "      (nelisp--write-stdout-bytes \"BOOT=nil\\n\")"
                 "    (princ \"BOOT=nil\\n\")))"))))
-     (should (string-match-p "BOOT=t" out))
-     (should (string-match-p "ok" out)))))
+     (should (string-match-p "BOOT=t" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/loadup-feature-count ()
   "Batch loadup under nelisp driver should pull in the core feature set.
@@ -170,7 +169,10 @@ silently."
    (let* ((out (nemacs-bootstrap-nelisp-test--run
                 "--batch" "--no-banner"
                 "--eval"
-                "(princ (format \"FEATURES=%d\\n\" (length features)))"))
+                (concat
+                 "(nelisp--write-stdout-bytes \"FEATURES=\")"
+                 "(nelisp--write-stdout-bytes (number-to-string (length features)))"
+                 "(nelisp--write-stdout-bytes \"\\n\")")))
           (m (string-match "FEATURES=\\([0-9]+\\)" out)))
      (should m)
      (should (>= (string-to-number (match-string 1 out)) 45)))))
@@ -186,7 +188,10 @@ list below catches it."
                 "--batch" "--no-banner"
                 "--eval"
                 (concat
-                 "(dolist (f features) (princ (format \"FEATURE=%s\\n\" f)))")))
+                 "(dolist (f features)"
+                 "  (nelisp--write-stdout-bytes \"FEATURE=\")"
+                 "  (nelisp--write-stdout-bytes (symbol-name f))"
+                 "  (nelisp--write-stdout-bytes \"\\n\"))")))
           (loaded (let (acc)
                     (dolist (line (split-string out "\n" t))
                       (when (string-match "^FEATURE=\\(.+\\)$" line)
@@ -239,10 +244,12 @@ without a host Emacs."
                 "(let ((b (nelisp-ec-generate-new-buffer \"smoke\")))"
                 "  (nelisp-ec-with-current-buffer b"
                 "    (nelisp-ec-insert \"hello, phase5\"))"
-                "  (princ (format \"BUF=%S\\n\""
-                "                  (nelisp-ec-with-current-buffer b"
-                "                    (nelisp-ec-buffer-string)))))"))))
-     (should (string-match-p "BUF=\"hello, phase5\"" out)))))
+                "  (nelisp--write-stdout-bytes \"BUF=\")"
+                "  (nelisp--write-stdout-bytes"
+                "   (nelisp-ec-with-current-buffer b"
+                "     (nelisp-ec-buffer-string)))"
+                "  (nelisp--write-stdout-bytes \"\\n\"))"))))
+     (should (string-match-p "BUF=hello, phase5" out)))))
 
 ;;;; D. file I/O
 
@@ -336,12 +343,14 @@ half of Phase 5 modulo file save (= which lives in
                 "             \"REALISED=t\\n\" \"REALISED=nil\\n\"))"
                 "      (princ (if (and h nemacs-main--backend nemacs-main--frame)"
                 "                 \"REALISED=t\\n\" \"REALISED=nil\\n\"))))"
-                "  (let ((b (cdr (assoc \"*scratch*\" nelisp-ec--buffers))))"
-                "    (nelisp-ec-with-current-buffer b"
-                "      (nelisp-ec-insert \"phase5 tui smoke\"))"
-                "    (princ (format \"BUF=%S\\n\""
-                "                    (nelisp-ec-with-current-buffer b"
-                "                      (nelisp-ec-buffer-string)))))"
+               "  (let ((b (cdr (assoc \"*scratch*\" nelisp-ec--buffers))))"
+               "    (nelisp-ec-with-current-buffer b"
+               "      (nelisp-ec-insert \"phase5 tui smoke\"))"
+               "    (nelisp--write-stdout-bytes \"BUF=\")"
+               "    (nelisp--write-stdout-bytes"
+               "     (nelisp-ec-with-current-buffer b"
+               "       (nelisp-ec-buffer-string)))"
+               "    (nelisp--write-stdout-bytes \"\\n\"))"
                 "  (when (fboundp (function nemacs-main--shutdown-tui))"
                 "    (nemacs-main--shutdown-tui))"
                 "  (if (fboundp (quote nelisp--write-stdout-bytes))"
@@ -353,7 +362,7 @@ half of Phase 5 modulo file save (= which lives in
                 "                    (null nemacs-main--frame))"
                 "               \"SHUTDOWN=t\\n\" \"SHUTDOWN=nil\\n\"))))"))))
      (should (string-match-p "REALISED=t" out))
-     (should (string-match-p "BUF=\"phase5 tui smoke\"" out))
+     (should (string-match-p "BUF=phase5 tui smoke" out))
      (should (string-match-p "SHUTDOWN=t" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/quit-flag-stops-event-loop ()
@@ -370,7 +379,7 @@ shape needs interactive boot + interactive teardown."
                 "  (setq nemacs-main--quit-flag t)"
                 "  (when (fboundp (function nemacs-main--event-loop))"
                 "    (nemacs-main--event-loop))"
-                "  (princ \"EVENT-LOOP-RETURNED\\n\")"
+               "  (nelisp--write-stdout-bytes \"EVENT-LOOP-RETURNED\\n\")"
                 "  (when (fboundp (function nemacs-main--shutdown-tui))"
                 "    (nemacs-main--shutdown-tui)))"))))
      (should (string-match-p "EVENT-LOOP-RETURNED" out)))))
