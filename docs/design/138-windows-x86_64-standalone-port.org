@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-85-WINDOWS-SOCKET-OPTION-DEBUG-OOBINLINE
+#+STATUS: STAGE-86-WINDOWS-FSTAT-FILE-INFORMATION
 
 * Status
 
-- *State*: STAGE 85 Windows socket option debug/oobinline
+- *State*: STAGE 86 Windows fstat file information
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -122,6 +122,10 @@
   get-only =SO_ACCEPTCONN= while =setsockopt-int= rejects it before Winsock FFI.
   Windows int-valued socket options now also support =SO_DEBUG= and
   =SO_OOBINLINE= through both =setsockopt-int= and =getsockopt-int=.
+  Windows disk HANDLE =nelisp-os-fstat= now uses
+  =GetFileInformationByHandle= to populate file/dir mode, size, atime, mtime,
+  ctime, link count, file index, and volume serial number instead of returning
+  only a minimal size/mode stat.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -416,6 +420,9 @@
   rejects =SO_ACCEPTCONN= before FFI.
   Stage 85 coverage verifies Windows =SO_DEBUG= and =SO_OOBINLINE= set/get
   translation through the int-valued socket option helpers.
+  Stage 86 coverage verifies Windows disk HANDLE =fstat= decodes
+  =BY_HANDLE_FILE_INFORMATION= fields into the positional stat list, including
+  regular-file vs directory mode and preserving pipe/console minimal stats.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -839,6 +846,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock debug/oobinline socket options progress 2026-06-03*:
   =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =SO_DEBUG= and
   =SO_OOBINLINE= through Winsock.
+  *Windows fstat file information progress 2026-06-03*: disk HANDLE-backed
+  =nelisp-os-fstat= now decodes =BY_HANDLE_FILE_INFORMATION= for mode, size,
+  timestamps, link count, file index, and volume serial number.
   *Windows file-backed mmap progress 2026-06-03*: =nelisp-os-mmap= now maps
   HANDLE-backed =MAP_PRIVATE= file views with =CreateFileMappingW= /
   =MapViewOfFile=, and =nelisp-os-munmap= releases those views with
@@ -1056,6 +1066,10 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock debug/oobinline options SHIPPED 2026-06-03*: int-valued
    socket option helpers now support =SO_DEBUG= and =SO_OOBINLINE= set/get on
    Windows.
+   *Windows fstat file information SHIPPED 2026-06-03*: disk HANDLE-backed
+   =nelisp-os-fstat= now uses =GetFileInformationByHandle= to return richer
+   positional stat fields, including directory mode, timestamps, link count,
+   file index, and volume serial number.
    *Windows datagram socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair=
    now supports =SOCK_DGRAM= by creating connected UDP loopback socket-kind
    fd pairs with setup-failure cleanup.
@@ -1211,7 +1225,8 @@ largest uncertainty (B1 + B2) first.
    when replacing an existing target fd fails.  Socket-kind =dup2= now supports
    standard fd targets and routes socket-backed standard fd =read/write/close=
    through Winsock.  Standard fd =close= now clears the Windows standard HANDLE
-   slot and removes tracked fd status flags.  The native Windows smoke runner
+   slot and removes tracked fd status flags.  Disk HANDLE =fstat= now returns
+   richer file information from =GetFileInformationByHandle=.  The native Windows smoke runner
    can list its full smoke manifest with =-List=.  Broader socket extensions
    remain pending.
    Linux-only AF_UNIX

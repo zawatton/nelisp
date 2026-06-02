@@ -147,6 +147,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-OPEN-ALWAYS       4)
 (defconst nelisp-os-WIN-TRUNCATE-EXISTING 5)
 (defconst nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL #x80)
+(defconst nelisp-os-WIN-FILE-ATTRIBUTE-DIRECTORY #x10)
 
 ;; Windows virtual memory constants.
 (defconst nelisp-os-WIN-MEM-COMMIT  #x1000)
@@ -170,6 +171,20 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-FILE-TYPE-DISK    1)
 (defconst nelisp-os-WIN-FILE-TYPE-CHAR    2)
 (defconst nelisp-os-WIN-FILE-TYPE-PIPE    3)
+
+;; Windows BY_HANDLE_FILE_INFORMATION layout.
+(defconst nelisp-os-WIN-BY-HANDLE-FILE-INFORMATION-SIZE 52)
+(defconst nelisp-os-WIN-BHFI-ATTRIBUTES-OFFSET 0)
+(defconst nelisp-os-WIN-BHFI-CREATION-TIME-OFFSET 4)
+(defconst nelisp-os-WIN-BHFI-LAST-ACCESS-TIME-OFFSET 12)
+(defconst nelisp-os-WIN-BHFI-LAST-WRITE-TIME-OFFSET 20)
+(defconst nelisp-os-WIN-BHFI-VOLUME-SERIAL-OFFSET 28)
+(defconst nelisp-os-WIN-BHFI-FILE-SIZE-HIGH-OFFSET 32)
+(defconst nelisp-os-WIN-BHFI-FILE-SIZE-LOW-OFFSET 36)
+(defconst nelisp-os-WIN-BHFI-NUMBER-OF-LINKS-OFFSET 40)
+(defconst nelisp-os-WIN-BHFI-FILE-INDEX-HIGH-OFFSET 44)
+(defconst nelisp-os-WIN-BHFI-FILE-INDEX-LOW-OFFSET 48)
+(defconst nelisp-os-WIN-FILETIME-UNIX-EPOCH-SECONDS 11644473600)
 
 ;; Windows DuplicateHandle constants.
 (defconst nelisp-os-WIN-DUPLICATE-SAME-ACCESS #x2)
@@ -1455,9 +1470,60 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
 (defconst nelisp-os--stat-offset-ctime     104)
 (defconst nelisp-os--stat-offset-ctime-nsec 112)
 
-(defun nelisp-os--windows-stat-list (size mode)
+(defun nelisp-os--windows-stat-list
+    (size mode &optional mtime mtime-nsec atime atime-nsec ctime ctime-nsec
+          nlink ino dev)
   "Return a `nelisp-os-fstat' positional stat list for Windows."
-  (list size mode 0 0 0 0 0 0 1 0 0 0 0))
+  (list size mode
+        (or mtime 0) (or mtime-nsec 0)
+        (or atime 0) (or atime-nsec 0)
+        (or ctime 0) (or ctime-nsec 0)
+        (or nlink 1) 0 0 (or ino 0) (or dev 0)))
+
+(defun nelisp-os--windows-read-u64-pair (buf high-off low-off)
+  "Read a Windows split high/low DWORD pair from BUF as an unsigned 64-bit value."
+  (logior (ash (nelisp-os-read-u32 buf high-off) 32)
+          (nelisp-os-read-u32 buf low-off)))
+
+(defun nelisp-os--windows-filetime-unix (buf off)
+  "Decode Windows FILETIME at BUF + OFF into (SECONDS . NANOSECONDS)."
+  (let ((ticks (nelisp-os--windows-read-u64-pair buf (+ off 4) off)))
+    (if (= ticks 0)
+        (cons 0 0)
+      (let* ((unix-ticks (- ticks (* nelisp-os-WIN-FILETIME-UNIX-EPOCH-SECONDS
+                                     10000000)))
+             (sec (/ unix-ticks 10000000))
+             (nsec (* (mod unix-ticks 10000000) 100)))
+        (cons sec nsec)))))
+
+(defun nelisp-os--windows-stat-from-file-information (buf)
+  "Build a stat list from BY_HANDLE_FILE_INFORMATION at BUF."
+  (let* ((attrs (nelisp-os-read-u32 buf nelisp-os-WIN-BHFI-ATTRIBUTES-OFFSET))
+         (mode (if (/= 0 (logand attrs nelisp-os-WIN-FILE-ATTRIBUTE-DIRECTORY))
+                   nelisp-os-S-IFDIR
+                 nelisp-os-S-IFREG))
+         (size (nelisp-os--windows-read-u64-pair
+                buf
+                nelisp-os-WIN-BHFI-FILE-SIZE-HIGH-OFFSET
+                nelisp-os-WIN-BHFI-FILE-SIZE-LOW-OFFSET))
+         (mtime (nelisp-os--windows-filetime-unix
+                 buf nelisp-os-WIN-BHFI-LAST-WRITE-TIME-OFFSET))
+         (atime (nelisp-os--windows-filetime-unix
+                 buf nelisp-os-WIN-BHFI-LAST-ACCESS-TIME-OFFSET))
+         (ctime (nelisp-os--windows-filetime-unix
+                 buf nelisp-os-WIN-BHFI-CREATION-TIME-OFFSET))
+         (nlink (nelisp-os-read-u32 buf nelisp-os-WIN-BHFI-NUMBER-OF-LINKS-OFFSET))
+         (ino (nelisp-os--windows-read-u64-pair
+               buf
+               nelisp-os-WIN-BHFI-FILE-INDEX-HIGH-OFFSET
+               nelisp-os-WIN-BHFI-FILE-INDEX-LOW-OFFSET))
+         (dev (nelisp-os-read-u32 buf nelisp-os-WIN-BHFI-VOLUME-SERIAL-OFFSET)))
+    (nelisp-os--windows-stat-list
+     size mode
+     (car mtime) (cdr mtime)
+     (car atime) (cdr atime)
+     (car ctime) (cdr ctime)
+     nlink ino dev)))
 
 (defun nelisp-os--windows-fstat (fd)
   "Windows implementation of `nelisp-os-fstat' for HANDLE-backed fds."
@@ -1465,18 +1531,17 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
          (file-type (nelisp-os--libc-call
                      "kernel32" "GetFileType" [:uint32 :pointer] handle)))
     (if (= file-type nelisp-os-WIN-FILE-TYPE-DISK)
-        (let ((size-buf (nelisp-os--alloc 8)))
+        (let ((info-buf (nelisp-os--alloc
+                         nelisp-os-WIN-BY-HANDLE-FILE-INFORMATION-SIZE)))
           (unwind-protect
               (let ((ok (nelisp-os--libc-call
-                         "kernel32" "GetFileSizeEx"
+                         "kernel32" "GetFileInformationByHandle"
                          [:sint32 :pointer :pointer]
-                         handle size-buf)))
+                         handle info-buf)))
                 (if (= ok 0)
                     (nelisp-os--windows-ffi-error-signal)
-                  (nelisp-os--windows-stat-list
-                   (nelisp-os-read-i64 size-buf 0)
-                   nelisp-os-S-IFREG)))
-            (nelisp-os--free size-buf)))
+                  (nelisp-os--windows-stat-from-file-information info-buf)))
+            (nelisp-os--free info-buf)))
       (nelisp-os--windows-stat-list 0 0))))
 
 (defun nelisp-os--windows-dup2 (oldfd newfd)
