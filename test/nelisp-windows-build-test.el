@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -1074,6 +1074,50 @@
          (text-end (nelisp-windows-build-test--rva-to-raw bytes #x2000))
          (text (substring bytes text-raw text-end)))
     (dolist (imm '(#x10000060 #x000002b0 #x00000002))
+      (should (string-match-p
+               (regexp-quote
+                (unibyte-string (logand imm #xff)
+                                (logand (ash imm -8) #xff)
+                                (logand (ash imm -16) #xff)
+                                (logand (ash imm -24) #xff)))
+               text)))))
+
+(ert-deftest nelisp-windows-build-standalone-cons-imports-virtualalloc ()
+  "Stage 30 standalone Cons construction PE imports ExitProcess and VirtualAlloc."
+  (let* ((bytes (nelisp-windows-build--standalone-cons-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess" "VirtualAlloc")))))
+
+(ert-deftest nelisp-windows-build-standalone-cons-text-calls-virtualalloc ()
+  "Stage 30 linked Cons construction calls VirtualAlloc through IAT."
+  (let* ((bytes (nelisp-windows-build--standalone-cons-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-raw #x200)
+         (text-end (nelisp-windows-build-test--rva-to-raw bytes #x2000))
+         (text (substring bytes text-raw text-end))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw text-end)))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (member (cdr (assoc "VirtualAlloc" iat-map)) targets))
+    (dolist (status '(#x19 #x1a #x1b #x1c #x1d #x1e #x1f #x20 #x21 #x2a))
+      (should (string-match-p
+               (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                              status #x00 #x00 #x00))
+               text)))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-cons-checks-invariants ()
+  "Stage 30 driver checks Cons tag, car/cdr payloads and refcount."
+  (let* ((bytes (nelisp-windows-build--standalone-cons-driver42-bytes))
+         (text-raw #x200)
+         (text-end (nelisp-windows-build-test--rva-to-raw bytes #x2000))
+         (text (substring bytes text-raw text-end)))
+    (dolist (imm '(#x00000007 #x00000002 #x0000000b #x0000001f
+                   #x00000020 #x00000040 #x00000048))
       (should (string-match-p
                (regexp-quote
                 (unibyte-string (logand imm #xff)

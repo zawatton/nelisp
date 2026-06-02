@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -59,6 +59,8 @@
 ;; `nl_alloc_bytes' and preserve the header/bump invariants on Windows.
 ;; Stage 29 extends Win64 GP defun/call stack args, then links the standalone
 ;; GC unit and proves mark/sweep can free and reuse an arena block.
+;; Stage 30 links the consbox allocator, cons constructor, and cons accessors,
+;; proving boxed Cons construction works over the Windows arena.
 
 ;;; Code:
 
@@ -67,6 +69,10 @@
 (require 'nelisp-phase47-compiler)
 (require 'nelisp-static-linker)
 (require 'nelisp-standalone-build)
+(require 'nelisp-cc-cons-construct)
+(require 'nelisp-cc-jit-cons-car-ptr)
+(require 'nelisp-cc-jit-cons-cdr-ptr)
+(require 'nelisp-cc-nlconsbox-alloc)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
   "Write OUT-PATH as a PE32+ EXE calling ExitProcess(EXIT-CODE)."
@@ -1176,6 +1182,80 @@ link-units."
                  gc-rva iat-rvas)))
        (list start driver arena gc)))))
 
+(defun nelisp-windows-build--standalone-cons-driver42-bytes ()
+  "Return a PE32+ EXE proving standalone cons construction works on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(defun driver ()
+                        (let* ((arena (nl_arena_init)))
+                          (if (= arena 0)
+                              25
+                            (let* ((car-slot (nl_alloc_bytes 32 8))
+                                   (cdr-slot (nl_alloc_bytes 32 8))
+                                   (out-slot (nl_alloc_bytes 32 8)))
+                              (if (= out-slot 0)
+                                  26
+                                (seq
+                                 (ptr-write-u64 car-slot 0 2)
+                                 (ptr-write-u64 (+ car-slot 8) 0 11)
+                                 (ptr-write-u64 cdr-slot 0 2)
+                                 (ptr-write-u64 (+ cdr-slot 8) 0 31)
+                                 (nelisp_cons_construct car-slot cdr-slot out-slot)
+                                 (if (= (ptr-read-u64 out-slot 0) 7)
+                                     (let* ((box (ptr-read-u64 out-slot 8))
+                                            (car-ptr (nl_cons_car_ptr out-slot))
+                                            (cdr-ptr (nl_cons_cdr_ptr out-slot)))
+                                       (if (= car-ptr box)
+                                           (if (= cdr-ptr (+ box 32))
+                                               (if (= (ptr-read-u64 (+ box 64) 0) 1)
+                                                   (if (= (ptr-read-u64 car-ptr 0) 2)
+                                                       (if (= (ptr-read-u64 (+ car-ptr 8) 0) 11)
+                                                           (if (= (ptr-read-u64 cdr-ptr 0) 2)
+                                                               (if (= (ptr-read-u64 (+ cdr-ptr 8) 0) 31)
+                                                                   42
+                                                                 33)
+                                                             32)
+                                                         31)
+                                                     30)
+                                                 29)
+                                             28)
+                                         27))
+                                   26)))))))
+                     driver-rva iat-rvas))
+            (cons-rva (+ driver-rva
+                         (nelisp-windows-build--unit-text-length driver)))
+            (cons (nelisp-windows-build--compile-defuns-to-unit
+                   "cons-ctor.o" nelisp-cc-cons-construct--source
+                   cons-rva iat-rvas))
+            (consbox-rva (+ cons-rva
+                            (nelisp-windows-build--unit-text-length cons)))
+            (consbox (nelisp-windows-build--compile-defuns-to-unit
+                      "consbox.o" nelisp-cc-nlconsbox-alloc--source
+                      consbox-rva iat-rvas))
+            (car-rva (+ consbox-rva
+                        (nelisp-windows-build--unit-text-length consbox)))
+            (car-ptr (nelisp-windows-build--compile-defuns-to-unit
+                      "car-ptr.o" nelisp-cc-jit-cons-car-ptr--source
+                      car-rva iat-rvas))
+            (cdr-rva (+ car-rva
+                        (nelisp-windows-build--unit-text-length car-ptr)))
+            (cdr-ptr (nelisp-windows-build--compile-defuns-to-unit
+                      "cdr-ptr.o" nelisp-cc-jit-cons-cdr-ptr--source
+                      cdr-rva iat-rvas))
+            (arena-rva (+ cdr-rva
+                          (nelisp-windows-build--unit-text-length cdr-ptr)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver cons consbox car-ptr cdr-ptr arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1333,6 +1413,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone GC reuse)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-cons-driver42 ()
+  "Batch entry: build the standalone cons construction probe."
+  (let ((bytes (nelisp-windows-build--standalone-cons-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-cons-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone Cons construct)"
              out-path)
     out-path))
 
