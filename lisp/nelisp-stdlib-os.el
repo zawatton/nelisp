@@ -94,6 +94,7 @@
 ;; Windows socket option helpers.
 ;; Stage 111 maps IPv6 header/control metadata options through the Windows
 ;; socket option helpers.
+;; Stage 112 supports AF_INET6 loopback-backed Windows socketpair.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -3735,29 +3736,37 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
 
 ;; ----- socketpair -----
 
-(defun nelisp-os--windows-socketpair-stream (&optional type)
+(defun nelisp-os--windows-socketpair-stream (&optional type domain)
   "Create a Windows stream socket pair via a temporary TCP loopback listener."
   (let ((socket-type (or type nelisp-os-SOCK-STREAM))
+        (socket-domain (if (= (or domain nelisp-os-AF-INET) nelisp-os-AF-INET6)
+                           nelisp-os-AF-INET6
+                         nelisp-os-AF-INET))
         (listener nil)
         (client nil)
         (server nil)
         (success nil))
     (unwind-protect
         (progn
-          (setq listener (nelisp-os-socket
-                          nelisp-os-AF-INET
-                          socket-type
-                          nelisp-os-IPPROTO-TCP))
-          (nelisp-os-bind-inet listener nelisp-os-INADDR-LOOPBACK 0)
+          (setq listener (nelisp-os-socket socket-domain socket-type
+                                           nelisp-os-IPPROTO-TCP))
+          (if (= socket-domain nelisp-os-AF-INET6)
+              (nelisp-os-bind-inet6 listener nelisp-os-IN6ADDR-LOOPBACK 0)
+            (nelisp-os-bind-inet listener nelisp-os-INADDR-LOOPBACK 0))
           (nelisp-os-listen listener 1)
-          (let ((bound (nelisp-os-getsockname-inet listener)))
-            (setq client (nelisp-os-socket
-                          nelisp-os-AF-INET
-                          socket-type
-                          nelisp-os-IPPROTO-TCP))
-            (nelisp-os-connect-inet client nelisp-os-INADDR-LOOPBACK
-                                    (cadr bound))
-            (setq server (car (nelisp-os-accept-inet listener)))
+          (let ((bound (if (= socket-domain nelisp-os-AF-INET6)
+                           (nelisp-os-getsockname-inet6 listener)
+                         (nelisp-os-getsockname-inet listener))))
+            (setq client (nelisp-os-socket socket-domain socket-type
+                                           nelisp-os-IPPROTO-TCP))
+            (if (= socket-domain nelisp-os-AF-INET6)
+                (nelisp-os-connect-inet6 client nelisp-os-IN6ADDR-LOOPBACK
+                                         (cadr bound))
+              (nelisp-os-connect-inet client nelisp-os-INADDR-LOOPBACK
+                                      (cadr bound)))
+            (setq server (car (if (= socket-domain nelisp-os-AF-INET6)
+                                  (nelisp-os-accept-inet6 listener)
+                                (nelisp-os-accept-inet listener))))
             (nelisp-os-close listener)
             (setq listener nil
                   success t)
@@ -3770,30 +3779,43 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
         (when server
           (ignore-errors (nelisp-os-close server)))))))
 
-(defun nelisp-os--windows-socketpair-dgram (&optional type)
+(defun nelisp-os--windows-socketpair-dgram (&optional type domain)
   "Create a Windows datagram socket pair via connected UDP loopback sockets."
   (let ((socket-type (or type nelisp-os-SOCK-DGRAM))
+        (socket-domain (if (= (or domain nelisp-os-AF-INET) nelisp-os-AF-INET6)
+                           nelisp-os-AF-INET6
+                         nelisp-os-AF-INET))
         (left nil)
         (right nil)
         (success nil))
     (unwind-protect
         (progn
-          (setq left (nelisp-os-socket
-                      nelisp-os-AF-INET
-                      socket-type
-                      nelisp-os-IPPROTO-UDP))
-          (nelisp-os-bind-inet left nelisp-os-INADDR-LOOPBACK 0)
-          (setq right (nelisp-os-socket
-                       nelisp-os-AF-INET
-                       socket-type
-                       nelisp-os-IPPROTO-UDP))
-          (nelisp-os-bind-inet right nelisp-os-INADDR-LOOPBACK 0)
-          (let ((left-bound (nelisp-os-getsockname-inet left))
-                (right-bound (nelisp-os-getsockname-inet right)))
-            (nelisp-os-connect-inet left nelisp-os-INADDR-LOOPBACK
-                                    (cadr right-bound))
-            (nelisp-os-connect-inet right nelisp-os-INADDR-LOOPBACK
-                                    (cadr left-bound))
+          (setq left (nelisp-os-socket socket-domain socket-type
+                                       nelisp-os-IPPROTO-UDP))
+          (if (= socket-domain nelisp-os-AF-INET6)
+              (nelisp-os-bind-inet6 left nelisp-os-IN6ADDR-LOOPBACK 0)
+            (nelisp-os-bind-inet left nelisp-os-INADDR-LOOPBACK 0))
+          (setq right (nelisp-os-socket socket-domain socket-type
+                                        nelisp-os-IPPROTO-UDP))
+          (if (= socket-domain nelisp-os-AF-INET6)
+              (nelisp-os-bind-inet6 right nelisp-os-IN6ADDR-LOOPBACK 0)
+            (nelisp-os-bind-inet right nelisp-os-INADDR-LOOPBACK 0))
+          (let ((left-bound (if (= socket-domain nelisp-os-AF-INET6)
+                                (nelisp-os-getsockname-inet6 left)
+                              (nelisp-os-getsockname-inet left)))
+                (right-bound (if (= socket-domain nelisp-os-AF-INET6)
+                                 (nelisp-os-getsockname-inet6 right)
+                               (nelisp-os-getsockname-inet right))))
+            (if (= socket-domain nelisp-os-AF-INET6)
+                (progn
+                  (nelisp-os-connect-inet6 left nelisp-os-IN6ADDR-LOOPBACK
+                                           (cadr right-bound))
+                  (nelisp-os-connect-inet6 right nelisp-os-IN6ADDR-LOOPBACK
+                                           (cadr left-bound)))
+              (nelisp-os-connect-inet left nelisp-os-INADDR-LOOPBACK
+                                      (cadr right-bound))
+              (nelisp-os-connect-inet right nelisp-os-INADDR-LOOPBACK
+                                      (cadr left-bound)))
             (setq success t)
             (cons left right)))
       (unless success
@@ -3819,7 +3841,8 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
   "Windows `nelisp-os-socketpair' implementation via loopback sockets.
 Windows has no POSIX socketpair(2).  Stream pairs use a temporary TCP listener;
 datagram pairs use two connected UDP sockets bound to loopback ephemeral ports."
-  (unless (memq domain (list nelisp-os-AF-UNIX nelisp-os-AF-INET))
+  (unless (memq domain (list nelisp-os-AF-UNIX nelisp-os-AF-INET
+                             nelisp-os-AF-INET6))
     (nelisp-os--windows-unsupported))
   (let* ((cloexec-p (/= 0 (logand type nelisp-os-SOCK-CLOEXEC)))
          (nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
@@ -3833,11 +3856,11 @@ datagram pairs use two connected UDP sockets bound to loopback ephemeral ports."
            ((= base-type nelisp-os-SOCK-STREAM)
             (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
               (signal 'nelisp-os-error (list 22))) ; EINVAL
-            (nelisp-os--windows-socketpair-stream create-type))
+            (nelisp-os--windows-socketpair-stream create-type domain))
            ((= base-type nelisp-os-SOCK-DGRAM)
             (unless (memq protocol (list 0 nelisp-os-IPPROTO-UDP))
               (signal 'nelisp-os-error (list 22))) ; EINVAL
-            (nelisp-os--windows-socketpair-dgram create-type))
+            (nelisp-os--windows-socketpair-dgram create-type domain))
            (t
             (nelisp-os--windows-unsupported)))))
     (if nonblock-p

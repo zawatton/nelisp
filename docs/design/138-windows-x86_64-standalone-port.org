@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-111-WINDOWS-IPV6-METADATA-SOCKOPTS
+#+STATUS: STAGE-112-WINDOWS-IPV6-SOCKETPAIR
 
 * Status
 
-- *State*: STAGE 111 Windows IPv6 metadata sockopts
+- *State*: STAGE 112 Windows IPv6 socketpair
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -592,6 +592,10 @@
   translate Linux-compatible =IPPROTO_IPV6= metadata options =IPV6_HDRINCL=,
   =IPV6_RECVPKTINFO=, and =IPV6_RECVHOPLIMIT= through Winsock
   =IPV6_HDRINCL=, =IPV6_PKTINFO=, and =IPV6_HOPLIMIT= option numbers.
+  Stage 112 coverage verifies Windows =nelisp-os-socketpair= also accepts
+  =AF_INET6= for stream and datagram socket pairs, using IPv6 loopback
+  =bind= / =connect= / =accept= / =getsockname= setup while preserving the
+  existing stream/datagram cleanup and flag paths.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -997,6 +1001,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =nelisp-os-socketpair= now supports =SOCK_DGRAM= on Windows by binding two
   UDP loopback sockets to ephemeral ports and connecting each socket to the
   other endpoint.
+  *Windows IPv6 socketpair progress 2026-06-03*: Windows
+  =nelisp-os-socketpair= now accepts =AF_INET6= for stream and datagram pairs
+  by using IPv6 loopback setup with the existing socket-kind fd tracking.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1407,6 +1414,9 @@ largest uncertainty (B1 + B2) first.
    *Windows datagram socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair=
    now supports =SOCK_DGRAM= by creating connected UDP loopback socket-kind
    fd pairs with setup-failure cleanup.
+   *Windows IPv6 socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair= now
+   supports =AF_INET6= stream pairs via a temporary IPv6 loopback TCP listener
+   and =AF_INET6= datagram pairs via connected IPv6 UDP loopback sockets.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -1565,8 +1575,8 @@ largest uncertainty (B1 + B2) first.
    =UDP_RECV_MAX_COALESCED_SIZE= / =UDP_CHECKSUM_COVERAGE=, TCP options
    including =TCP_NODELAY= / =TCP_KEEPIDLE= / =TCP_KEEPINTVL= /
    =TCP_KEEPCNT= / =TCP_MAXSEG= / =TCP_TIMESTAMPS= / =TCP_FASTOPEN=, and
-   loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=, accepted
-   socket nonblock flag tracking, and socket close-on-exec support; regular
+   IPv4/IPv6 loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=,
+   accepted socket nonblock flag tracking, and socket close-on-exec support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd
