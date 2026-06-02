@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-127-WINDOWS-SIGNALFD
+#+STATUS: STAGE-128-WINDOWS-AFUNIX-ABSTRACT
 
 * Status
 
-- *State*: STAGE 127 Windows signalfd compatibility
+- *State*: STAGE 128 Windows AF_UNIX abstract compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -290,6 +290,9 @@
   =SFD_NONBLOCK= status, =SFD_CLOEXEC= descriptor flags, shared state across
   =dup2= / =F_DUPFD=, zero-size =0600= =fstat= metadata, =ESPIPE= =lseek=,
   empty =signalfd-read= results, and no HANDLE/Linux syscall fallback.
+  Windows abstract AF_UNIX =bind= / =connect= now map abstract names to stable
+  hashed temporary filesystem socket paths and reuse the existing Winsock
+  filesystem AF_UNIX path.
   Windows =timerfd_create= now
   creates a waitable-timer HANDLE-backed fd-kind entry, =timerfd_settime= /
   =timerfd_set_relative_ms= arm relative timers through =SetWaitableTimer=,
@@ -375,10 +378,11 @@
   =O_NONBLOCK= status flag so =F_GETFL= stays coherent after =accept=.
   =SOCK_CLOEXEC= socketpair requests propagate close-on-exec to the internal
   socket creation path.
-  Linux abstract namespace AF_UNIX
-  remains explicitly unsupported on Windows.  Linux-only AF_UNIX helpers now
-  reject Windows before libc or allocation: =bind-unix-abstract=,
-  =connect-unix-abstract= and =getsockopt-peercred= signal =nelisp-os-error=
+  Windows abstract namespace AF_UNIX bind/connect now map NUL-free abstract
+  names to stable hashed temporary filesystem socket paths before dispatching
+  to the existing Winsock filesystem AF_UNIX path; stale bind paths are removed
+  before rebinding.  Linux-only AF_UNIX peer credentials still reject Windows
+  before libc or allocation: =getsockopt-peercred= signals =nelisp-os-error=
   with =ENOTSUP=.  Windows =sendmsg-fds= / =recvmsg-fds= now support the
   payload-only case through Winsock =send= / =recv= when no descriptors are
   requested, while real SCM_RIGHTS-style fd passing remains explicitly
@@ -706,6 +710,10 @@
   returns empty high-level reads, exposes poll/fstat/lseek/read/write behavior
   without HANDLE/Linux syscall fallback, validates invalid inputs, and removes
   signalfd tables on close.
+  Stage 128 coverage verifies Windows abstract AF_UNIX bind/connect map names
+  to the same hashed temporary filesystem path, delete stale bind paths before
+  rebinding, validate NUL-containing names before delegation, and keep the path
+  out of Linux syscall/libc/allocation fallback.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1083,9 +1091,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   uses Winsock hton*/ntoh* functions on Windows rather than POSIX =libc=.
   =AF_INET6= socket / bind / connect / accept now route through Winsock too,
   including scoped IPv6 variants that preserve flowinfo and scope-id.
-  Filesystem-path =AF_UNIX= sockets now use Winsock as well, while Linux-only
-  abstract namespace / fd-passing / peercred helpers reject Windows before
-  libc fallback.  =getsockname= / =getpeername= wrappers now use Winsock for
+  Filesystem-path =AF_UNIX= sockets now use Winsock as well; abstract namespace
+  bind/connect map to hashed temporary filesystem paths on Windows, while
+  Linux-only fd-passing / peercred helpers reject Windows before libc fallback.
+  =getsockname= / =getpeername= wrappers now use Winsock for
   IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.  =nelisp-os-socketpair=
   now synthesizes Windows stream pairs through a temporary AF_INET loopback
   listener and datagram pairs through connected UDP loopback sockets.
@@ -1174,6 +1183,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =SFD_NONBLOCK= / =SFD_CLOEXEC= state, supports high-level empty reads and
   fd metadata/dup/poll/lseek behavior, and keeps the path out of HANDLE/Linux
   syscall fallback.
+  *Windows AF_UNIX abstract progress 2026-06-03*: Windows
+  =bind-unix-abstract= / =connect-unix-abstract= now map NUL-free abstract names
+  to stable hashed temporary filesystem socket paths under
+  =temporary-file-directory= and reuse the existing Winsock filesystem AF_UNIX
+  bind/connect path.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1457,7 +1471,8 @@ largest uncertainty (B1 + B2) first.
    =F_GETFL=.
    *Windows AF_UNIX Linux-only guards SHIPPED 2026-06-02*: abstract namespace,
    =sendmsg/recvmsg= fd passing, and =SO_PEERCRED= helpers now return
-   =ENOTSUP= on Windows before allocation or libc FFI.
+   =ENOTSUP= on Windows before allocation or libc FFI.  The abstract namespace
+   portion was superseded on 2026-06-03 by hashed temporary path compatibility.
    *Windows Winsock getname SHIPPED 2026-06-02*: IPv4, IPv6, and
    filesystem-AF_UNIX =getsockname= / =getpeername= wrappers now dispatch to
    =ws2_32= and keep the existing family-specific decode shapes.
@@ -1642,6 +1657,10 @@ largest uncertainty (B1 + B2) first.
    synthetic Windows fd-kind entries with tracked masks, status/descriptor
    flags, shared dup state, empty high-level reads, and fd operation behavior
    that avoids HANDLE/Linux syscall fallback.
+   *Windows AF_UNIX abstract compatibility SHIPPED 2026-06-03*:
+   =bind-unix-abstract= / =connect-unix-abstract= now map Windows abstract
+   names to stable hashed temporary filesystem socket paths and reuse the
+   Winsock filesystem AF_UNIX path.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -1805,7 +1824,8 @@ largest uncertainty (B1 + B2) first.
    Windows-compatible =eventfd= counters with synthetic =fcntl= dup/cloexec
    plus =dup2= / =fstat= / =poll= support, and synthetic =signalfd=
    compatibility for mask tracking, descriptor/status flags, dup, metadata, and
-   empty reads; regular
+   empty reads; Windows abstract AF_UNIX bind/connect now map to hashed
+   temporary filesystem socket paths; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd

@@ -111,6 +111,7 @@
 ;; Stage 125 verifies Windows timerfd kind/state preservation across dup.
 ;; Stage 126 adds an emulated Windows sigprocmask mask tracker.
 ;; Stage 127 adds synthetic Windows signalfd compatibility.
+;; Stage 128 maps Windows AF_UNIX abstract names to temporary filesystem paths.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -127,8 +128,9 @@
 ;; socket / bind / connect / accept routing through Winsock.  Stage 30 maps the
 ;; scoped IPv6 variants through the same Winsock path.  Stage 31 maps filesystem
 ;; AF_UNIX bind / connect / accept through Winsock.  Stage 32 makes Linux-only
-;; AF_UNIX abstract namespace / fd-passing / peercred helpers reject Windows
-;; before libc allocation.  Stage 33 maps getsockname / getpeername wrappers to
+;; AF_UNIX fd-passing / peercred helpers reject Windows before libc allocation;
+;; Stage 128 supersedes the abstract namespace guard with a Windows temporary
+;; filesystem-path mapping.  Stage 33 maps getsockname / getpeername wrappers to
 ;; Winsock.  Stage 34 makes `sigprocmask' reject Windows before POSIX
 ;; signal-mask allocation or libc calls; Stage 126 supersedes it with an
 ;; emulated Windows mask.  Stage 35 gives the timerfd relative
@@ -3507,6 +3509,46 @@ Return the addrlen (= 2 + 1 + bytes)."
   (nelisp-os--write-bytes-at buf 3 name)
   (+ 3 (string-bytes name)))
 
+(defvar nelisp-os--windows-abstract-unix-dir nil
+  "Optional directory for Windows abstract AF_UNIX compatibility sockets.")
+
+(defun nelisp-os--check-unix-abstract-name (name)
+  "Validate abstract AF_UNIX NAME."
+  (unless (and (stringp name)
+               (not (string-match-p "\0" name)))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  name)
+
+(defun nelisp-os--windows-abstract-unix-base-dir ()
+  "Return the directory used for Windows abstract AF_UNIX compatibility."
+  (file-name-as-directory
+   (or nelisp-os--windows-abstract-unix-dir
+       (expand-file-name "nelisp-afunix" temporary-file-directory))))
+
+(defun nelisp-os--windows-abstract-unix-path (name)
+  "Return a filesystem AF_UNIX path for Windows abstract socket NAME."
+  (nelisp-os--check-unix-abstract-name name)
+  (let ((path (expand-file-name
+               (concat "nl-" (secure-hash 'sha1 name) ".sock")
+               (nelisp-os--windows-abstract-unix-base-dir))))
+    (when (> (string-bytes path) (1- nelisp-os-SUN-PATH-MAX))
+      (signal 'nelisp-os-error (list 36))) ; ENAMETOOLONG
+    path))
+
+(defun nelisp-os--windows-bind-unix-abstract (fd name)
+  "Windows compatibility for abstract AF_UNIX bind via a temporary path."
+  (let ((path (nelisp-os--windows-abstract-unix-path name)))
+    (make-directory (file-name-directory path) t)
+    (when (file-exists-p path)
+      (delete-file path))
+    (nelisp-os-bind-unix fd path)))
+
+(defun nelisp-os--windows-connect-unix-abstract (fd name)
+  "Windows compatibility for abstract AF_UNIX connect via a temporary path."
+  (nelisp-os-connect-unix
+   fd
+   (nelisp-os--windows-abstract-unix-path name)))
+
 (defun nelisp-os--decode-sockaddr-un (buf socklen)
   "Decode sockaddr_un at BUF.  SOCKLEN = total addrlen returned by
 accept(2) / getsockname(2).  Return:
@@ -3935,11 +3977,12 @@ counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
 ;; ---------------------------------------------------------------------------
 
 (defun nelisp-os-bind-unix-abstract (fd name)
-  "Linux-specific bind(2) for an AF_UNIX abstract-namespace socket.
+  "Bind FD to an AF_UNIX abstract-namespace socket.
 NAME is a NUL-free string; the kernel name is `\\0' + NAME and is
-auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
+auto-cleaned on close on Linux.  On Windows this maps NAME to a stable
+temporary filesystem AF_UNIX path.  Returns 0 or signals `nelisp-os-error'."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-bind-unix-abstract fd name)
     (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
       (unwind-protect
           (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
@@ -3950,9 +3993,9 @@ auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
         (nelisp-os--free buf)))))
 
 (defun nelisp-os-connect-unix-abstract (fd name)
-  "Linux-specific connect(2) for an AF_UNIX abstract-namespace socket."
+  "Connect FD to an AF_UNIX abstract-namespace socket."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-connect-unix-abstract fd name)
     (let ((buf (nelisp-os--alloc nelisp-os--sockaddr-un-len)))
       (unwind-protect
           (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
