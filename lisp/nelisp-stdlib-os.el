@@ -102,6 +102,7 @@
 ;; Stage 116 adds fstat support for Windows eventfd-compatible fds.
 ;; Stage 117 adds poll readiness for Windows eventfd-compatible fds.
 ;; Stage 118 adds lseek behavior for Windows socket and eventfd fds.
+;; Stage 119 maps common Winsock errors to Linux/POSIX errno payloads.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -280,6 +281,44 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-FROM-PROTOCOL-INFO -1)
 (defconst nelisp-os-WIN-WSA-FLAG-OVERLAPPED #x01)
 (defconst nelisp-os-WIN-WSA-FLAG-NO-HANDLE-INHERIT #x80)
+(defconst nelisp-os-WIN-WSAEINTR 10004)
+(defconst nelisp-os-WIN-WSAEBADF 10009)
+(defconst nelisp-os-WIN-WSAEACCES 10013)
+(defconst nelisp-os-WIN-WSAEFAULT 10014)
+(defconst nelisp-os-WIN-WSAEINVAL 10022)
+(defconst nelisp-os-WIN-WSAEMFILE 10024)
+(defconst nelisp-os-WIN-WSAEWOULDBLOCK 10035)
+(defconst nelisp-os-WIN-WSAEINPROGRESS 10036)
+(defconst nelisp-os-WIN-WSAEALREADY 10037)
+(defconst nelisp-os-WIN-WSAENOTSOCK 10038)
+(defconst nelisp-os-WIN-WSAEDESTADDRREQ 10039)
+(defconst nelisp-os-WIN-WSAEMSGSIZE 10040)
+(defconst nelisp-os-WIN-WSAEPROTOTYPE 10041)
+(defconst nelisp-os-WIN-WSAENOPROTOOPT 10042)
+(defconst nelisp-os-WIN-WSAEPROTONOSUPPORT 10043)
+(defconst nelisp-os-WIN-WSAESOCKTNOSUPPORT 10044)
+(defconst nelisp-os-WIN-WSAEOPNOTSUPP 10045)
+(defconst nelisp-os-WIN-WSAEPFNOSUPPORT 10046)
+(defconst nelisp-os-WIN-WSAEAFNOSUPPORT 10047)
+(defconst nelisp-os-WIN-WSAEADDRINUSE 10048)
+(defconst nelisp-os-WIN-WSAEADDRNOTAVAIL 10049)
+(defconst nelisp-os-WIN-WSAENETDOWN 10050)
+(defconst nelisp-os-WIN-WSAENETUNREACH 10051)
+(defconst nelisp-os-WIN-WSAENETRESET 10052)
+(defconst nelisp-os-WIN-WSAECONNABORTED 10053)
+(defconst nelisp-os-WIN-WSAECONNRESET 10054)
+(defconst nelisp-os-WIN-WSAENOBUFS 10055)
+(defconst nelisp-os-WIN-WSAEISCONN 10056)
+(defconst nelisp-os-WIN-WSAENOTCONN 10057)
+(defconst nelisp-os-WIN-WSAESHUTDOWN 10058)
+(defconst nelisp-os-WIN-WSAETOOMANYREFS 10059)
+(defconst nelisp-os-WIN-WSAETIMEDOUT 10060)
+(defconst nelisp-os-WIN-WSAECONNREFUSED 10061)
+(defconst nelisp-os-WIN-WSAELOOP 10062)
+(defconst nelisp-os-WIN-WSAENAMETOOLONG 10063)
+(defconst nelisp-os-WIN-WSAEHOSTDOWN 10064)
+(defconst nelisp-os-WIN-WSAEHOSTUNREACH 10065)
+(defconst nelisp-os-WIN-WSAENOTEMPTY 10066)
 (defconst nelisp-os-WIN-SOL-SOCKET #xffff)
 (defconst nelisp-os-WIN-SO-DEBUG #x0001)
 (defconst nelisp-os-WIN-SO-ACCEPTCONN #x0002)
@@ -407,10 +446,58 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
   (signal 'nelisp-os-error
           (list (nelisp-os--libc-call "kernel32" "GetLastError" [:uint32]))))
 
+(defconst nelisp-os--windows-winsock-errno-map
+  `((,nelisp-os-WIN-WSAEINTR . 4)
+    (,nelisp-os-WIN-WSAEBADF . 9)
+    (,nelisp-os-WIN-WSAEACCES . 13)
+    (,nelisp-os-WIN-WSAEFAULT . 14)
+    (,nelisp-os-WIN-WSAEINVAL . 22)
+    (,nelisp-os-WIN-WSAEMFILE . 24)
+    (,nelisp-os-WIN-WSAEWOULDBLOCK . 11)
+    (,nelisp-os-WIN-WSAEINPROGRESS . 115)
+    (,nelisp-os-WIN-WSAEALREADY . 114)
+    (,nelisp-os-WIN-WSAENOTSOCK . 88)
+    (,nelisp-os-WIN-WSAEDESTADDRREQ . 89)
+    (,nelisp-os-WIN-WSAEMSGSIZE . 90)
+    (,nelisp-os-WIN-WSAEPROTOTYPE . 91)
+    (,nelisp-os-WIN-WSAENOPROTOOPT . 92)
+    (,nelisp-os-WIN-WSAEPROTONOSUPPORT . 93)
+    (,nelisp-os-WIN-WSAESOCKTNOSUPPORT . 94)
+    (,nelisp-os-WIN-WSAEOPNOTSUPP . 95)
+    (,nelisp-os-WIN-WSAEPFNOSUPPORT . 96)
+    (,nelisp-os-WIN-WSAEAFNOSUPPORT . 97)
+    (,nelisp-os-WIN-WSAEADDRINUSE . 98)
+    (,nelisp-os-WIN-WSAEADDRNOTAVAIL . 99)
+    (,nelisp-os-WIN-WSAENETDOWN . 100)
+    (,nelisp-os-WIN-WSAENETUNREACH . 101)
+    (,nelisp-os-WIN-WSAENETRESET . 102)
+    (,nelisp-os-WIN-WSAECONNABORTED . 103)
+    (,nelisp-os-WIN-WSAECONNRESET . 104)
+    (,nelisp-os-WIN-WSAENOBUFS . 105)
+    (,nelisp-os-WIN-WSAEISCONN . 106)
+    (,nelisp-os-WIN-WSAENOTCONN . 107)
+    (,nelisp-os-WIN-WSAESHUTDOWN . 108)
+    (,nelisp-os-WIN-WSAETOOMANYREFS . 109)
+    (,nelisp-os-WIN-WSAETIMEDOUT . 110)
+    (,nelisp-os-WIN-WSAECONNREFUSED . 111)
+    (,nelisp-os-WIN-WSAELOOP . 40)
+    (,nelisp-os-WIN-WSAENAMETOOLONG . 36)
+    (,nelisp-os-WIN-WSAEHOSTDOWN . 112)
+    (,nelisp-os-WIN-WSAEHOSTUNREACH . 113)
+    (,nelisp-os-WIN-WSAENOTEMPTY . 39))
+  "Mapping from common Winsock WSAE* codes to Linux/POSIX errno numbers.")
+
+(defun nelisp-os--windows-winsock-error-code->errno (code)
+  "Map Winsock error CODE to the POSIX errno payload used by Nelisp."
+  (or (cdr (assq code nelisp-os--windows-winsock-errno-map))
+      code))
+
 (defun nelisp-os--windows-winsock-error-signal ()
-  "Signal `nelisp-os-error' with the current Winsock error code."
+  "Signal `nelisp-os-error' with the current Winsock error as POSIX errno."
   (signal 'nelisp-os-error
-          (list (nelisp-os--libc-call "ws2_32" "WSAGetLastError" [:sint32]))))
+          (list
+           (nelisp-os--windows-winsock-error-code->errno
+            (nelisp-os--libc-call "ws2_32" "WSAGetLastError" [:sint32])))))
 
 (defun nelisp-os--windows-unsupported ()
   "Signal ENOTSUP for a POSIX/Linux API with no Windows branch yet."

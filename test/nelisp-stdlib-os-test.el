@@ -57,6 +57,30 @@
     (should (equal call
                    (list "kernel32" "GetLastError" [:uint32] nil)))))
 
+(ert-deftest nelisp-stdlib-os-windows-winsock-error-maps-posix-errno ()
+  "Winsock WSAE* errors are reported as POSIX errno payloads."
+  (let ((call nil))
+    (should (= (nelisp-os--windows-winsock-error-code->errno
+                nelisp-os-WIN-WSAEWOULDBLOCK)
+               11))
+    (should (= (nelisp-os--windows-winsock-error-code->errno
+                nelisp-os-WIN-WSAECONNRESET)
+               104))
+    (should (= (nelisp-os--windows-winsock-error-code->errno 12345)
+               12345))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 nelisp-os-WIN-WSAECONNREFUSED)))
+      (condition-case err
+          (progn
+            (nelisp-os--windows-winsock-error-signal)
+            (ert-fail "expected nelisp-os-error"))
+        (nelisp-os-error
+         (should (equal (cdr err) '(111))))))
+    (should (equal call
+                   (list "ws2_32" "WSAGetLastError" [:sint32] nil)))))
+
 (ert-deftest nelisp-stdlib-os-exit-windows-uses-exitprocess ()
   "Windows process exit routes through kernel32 ExitProcess."
   (let ((call nil))

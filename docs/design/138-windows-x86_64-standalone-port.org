@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-118-WINDOWS-NONHANDLE-LSEEK
+#+STATUS: STAGE-119-WINDOWS-WINSOCK-ERRNO
 
 * Status
 
-- *State*: STAGE 118 Windows non-HANDLE lseek compatibility
+- *State*: STAGE 119 Windows Winsock errno compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -297,7 +297,10 @@
   preserving existing =WSAPoll= behavior for socket-kind fds.  Windows
   =lseek= now keeps non-HANDLE fds out of =SetFilePointerEx=: socket-kind fds
   signal =ESPIPE= and eventfd-kind fds return 0, matching Linux host behavior
-  observed locally.  The Winsock branch has started:
+  observed locally.  Winsock failure reporting now maps common =WSAE*= errors
+  to the POSIX errno payloads used by the Linux path, so nonblocking socket
+  errors such as =WSAEWOULDBLOCK= surface as =EAGAIN=.  The Winsock branch has
+  started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -636,6 +639,9 @@
   Stage 118 coverage verifies Windows =lseek= rejects socket-kind fds with
   =ESPIPE= before HANDLE allocation/FFI, and returns 0 for eventfd-kind fds
   before =SetFilePointerEx=, including arbitrary offsets.
+  Stage 119 coverage verifies common Winsock =WSAE*= failures are translated
+  to the POSIX errno payloads expected by the rest of the OS surface, while
+  unknown Winsock codes remain available as raw diagnostics.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1068,6 +1074,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows non-HANDLE lseek progress 2026-06-03*: Windows =lseek= now handles
   non-HANDLE fd kinds before =SetFilePointerEx=: socket-kind fds signal
   =ESPIPE= and synthetic eventfd fds return 0 like Linux eventfd.
+  *Windows Winsock errno progress 2026-06-03*: Winsock error reporting now
+  translates common =WSAE*= codes into the POSIX errno payloads used by the
+  Linux path, including =WSAEWOULDBLOCK= to =EAGAIN= and connection errors to
+  their matching =ECONN*= values.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1503,6 +1513,9 @@ largest uncertainty (B1 + B2) first.
    =lseek= now keeps socket/eventfd fd kinds off the HANDLE
    =SetFilePointerEx= path, returning =ESPIPE= for sockets and 0 for
    synthetic eventfd fds.
+   *Windows Winsock errno compatibility SHIPPED 2026-06-03*: common Winsock
+   =WSAE*= failures now surface as POSIX errno payloads, preserving raw unknown
+   codes only as fallback diagnostics.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
