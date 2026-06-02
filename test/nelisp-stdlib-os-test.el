@@ -1234,8 +1234,9 @@
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-dup2-windows-can-target-stdout ()
-  "Windows dup2 to stdout uses SetStdHandle for the duplicated HANDLE."
+  "Windows dup2 to stdout replaces and closes the old standard HANDLE."
   (let ((calls nil)
+        (std-handles '(#xdddd #xbbbb))
         (freed nil)
         (nelisp-os--windows-fd-table '((3 . #xaaaa)))
         (nelisp-os--windows-fd-flags-table
@@ -1251,7 +1252,8 @@
                   ((equal fn "GetCurrentProcess") #x9999)
                   ((equal fn "DuplicateHandle") 1)
                   ((equal fn "SetStdHandle") 1)
-                  ((equal fn "GetStdHandle") #xbbbb)
+                  ((equal fn "GetStdHandle") (pop std-handles))
+                  ((equal fn "CloseHandle") 1)
                   (t (error "unexpected ffi call %S" fn))))))
       (let ((system-type 'windows-nt))
         (should (= (nelisp-os-dup2 3 nelisp-os-STDOUT)
@@ -1268,9 +1270,15 @@
                            :uint32 :sint32 :uint32]
                           (list #x9999 #xaaaa #x9999 3000 0 1
                                 nelisp-os-WIN-DUPLICATE-SAME-ACCESS))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
                     (list "kernel32" "SetStdHandle"
                           [:sint32 :sint32 :pointer]
                           (list nelisp-os-WIN-STD-OUTPUT-HANDLE #xbbbb))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xdddd))
                     (list "kernel32" "GetStdHandle"
                           [:pointer :sint32]
                           (list nelisp-os-WIN-STD-OUTPUT-HANDLE)))))

@@ -417,6 +417,26 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
         (nelisp-os--windows-fd-set-flags fd 0)
         nil))))
 
+(defun nelisp-os--windows-install-std-fd (fd handle flags)
+  "Install HANDLE as Windows standard FD, replacing the old standard HANDLE."
+  (let ((selector (nelisp-os--windows-std-handle-selector fd))
+        (old-handle (nelisp-os--windows-optional-std-handle fd)))
+    (let ((ok (nelisp-os--libc-call
+               "kernel32" "SetStdHandle"
+               [:sint32 :sint32 :pointer]
+               selector
+               handle)))
+      (if (= ok 0)
+          (progn
+            (nelisp-os--libc-call
+             "kernel32" "CloseHandle"
+             [:sint32 :pointer] handle)
+            (nelisp-os--windows-ffi-error-signal))
+        (when old-handle
+          (nelisp-os--windows-close-resource old-handle 'handle))
+        (nelisp-os--windows-fd-set-flags fd flags)
+        fd))))
+
 (defun nelisp-os--windows-handle-for-fd (fd)
   "Return a Windows HANDLE for POSIX-like FD."
   (if (nelisp-os--windows-std-handle-selector fd)
@@ -1464,20 +1484,10 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                 (let ((target-handle (nelisp-os-read-i64 target-handle-buf 0))
                       (selector (nelisp-os--windows-std-handle-selector newfd)))
                   (if selector
-                      (let ((set-ok (nelisp-os--libc-call
-                                     "kernel32" "SetStdHandle"
-                                     [:sint32 :sint32 :pointer]
-                                     selector target-handle)))
-                        (if (= set-ok 0)
-                            (progn
-                              (nelisp-os--libc-call
-                               "kernel32" "CloseHandle"
-                               [:sint32 :pointer] target-handle)
-                              (nelisp-os--windows-ffi-error-signal))
-                          (nelisp-os--windows-fd-set-flags
-                           newfd
-                           (nelisp-os--windows-fd-flags oldfd))
-                          newfd))
+                      (nelisp-os--windows-install-std-fd
+                       newfd
+                       target-handle
+                       (nelisp-os--windows-fd-flags oldfd))
                     (nelisp-os--windows-fd-install
                      newfd
                      target-handle
