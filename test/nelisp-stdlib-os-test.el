@@ -2039,6 +2039,68 @@
                           [:sint32 :pointer]
                           (list #xabcdef)))))))
 
+(ert-deftest nelisp-stdlib-os-wait-windows-uses-registered-child-handle ()
+  "Windows wait reuses a registered child process HANDLE."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-process-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 9))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForSingleObject") nelisp-os-WIN-WAIT-OBJECT-0)
+                  ((equal fn "GetExitCodeProcess") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (nelisp-os--windows-register-process 1234 #xabcdef)
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-wait 1234 0)
+                       (cons 1234 (ash 9 8))))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef nelisp-os-WIN-INFINITE))
+                    (list "kernel32" "GetExitCodeProcess"
+                          [:sint32 :pointer :pointer]
+                          (list #xabcdef 3000))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xabcdef)))))
+    (should-not nelisp-os--windows-process-table)
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-wait-windows-keeps-registered-handle-on-wnohang ()
+  "Windows WNOHANG wait keeps registered HANDLEs while the child is running."
+  (let ((calls nil)
+        (nelisp-os--windows-process-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (error "unexpected alloc")))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForSingleObject") nelisp-os-WIN-WAIT-TIMEOUT)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (nelisp-os--windows-register-process 1234 #xabcdef)
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-wait 1234 nelisp-os-WNOHANG)
+                       '(0 . 0)))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef 0)))))
+    (should (equal nelisp-os--windows-process-table
+                   '((1234 . #xabcdef))))))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

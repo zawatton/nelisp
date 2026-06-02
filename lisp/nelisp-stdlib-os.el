@@ -40,10 +40,12 @@
 ;; `execve' to `CreateProcessW' + `ExitProcess'.  Stage 48 fills
 ;; `STARTUPINFOW' standard handles when available so Windows execve preserves
 ;; stdio redirection explicitly.  Stage 18 maps `wait' to `OpenProcess' /
-;; `WaitForSingleObject' / `GetExitCodeProcess'.  Stage 19 maps `getppid' to
-;; the Tool Help process snapshot APIs.  Stage 20 adds a minimal Windows
-;; `fcntl' compatibility branch for `F_DUPFD' / `F_GETFL' / `F_SETFL'.
-;; Stage 21 rejects Linux-only event/process fd APIs on Windows
+;; `WaitForSingleObject' / `GetExitCodeProcess'.  Stage 49 lets Windows
+;; `wait' reuse registered child process HANDLEs and retain them across
+;; `WNOHANG' timeouts.  Stage 19 maps `getppid' to the Tool Help process
+;; snapshot APIs.  Stage 20 adds a minimal Windows `fcntl' compatibility branch
+;; for `F_DUPFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects Linux-only
+;; event/process fd APIs on Windows
 ;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
 ;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
 ;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
@@ -209,6 +211,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defvar nelisp-os--windows-mmap-table nil
   "Alist mapping Windows mapping base addresses to mapping kind symbols.")
+
+(defvar nelisp-os--windows-process-table nil
+  "Alist mapping Windows child PIDs to process HANDLE values.")
 
 (defvar nelisp-os--windows-winsock-started-p nil
   "Non-nil after this process successfully calls WSAStartup.")
@@ -493,6 +498,46 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
       (nelisp-os-write-i64 startup-buf
                            nelisp-os-WIN-STARTUPINFOW-HSTDERROR-OFFSET
                            stderr-handle))))
+
+(defun nelisp-os--windows-register-process (pid handle)
+  "Remember child process HANDLE for PID and return PID.
+Replacing an existing PID closes the old HANDLE before installing HANDLE."
+  (let ((cell (assq pid nelisp-os--windows-process-table)))
+    (when cell
+      (nelisp-os--windows-close-resource (cdr cell) 'handle)
+      (setq nelisp-os--windows-process-table
+            (delq cell nelisp-os--windows-process-table)))
+    (push (cons pid handle) nelisp-os--windows-process-table)
+    pid))
+
+(defun nelisp-os--windows-forget-process (pid)
+  "Forget a registered Windows child PID without closing its HANDLE."
+  (let ((cell (assq pid nelisp-os--windows-process-table)))
+    (when cell
+      (setq nelisp-os--windows-process-table
+            (delq cell nelisp-os--windows-process-table)))))
+
+(defun nelisp-os--windows-wait-handle (pid)
+  "Return (HANDLE . REGISTERED-P) for Windows wait on PID."
+  (let ((cell (assq pid nelisp-os--windows-process-table)))
+    (if cell
+        (cons (cdr cell) t)
+      (let ((handle (nelisp-os--libc-call
+                     "kernel32" "OpenProcess"
+                     [:pointer :uint32 :sint32 :uint32]
+                     (logior nelisp-os-WIN-SYNCHRONIZE
+                             nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION)
+                     0
+                     pid)))
+        (if (= handle 0)
+            (nelisp-os--windows-ffi-error-signal)
+          (cons handle nil))))))
+
+(defun nelisp-os--windows-close-wait-handle (pid handle registered)
+  "Close Windows wait HANDLE and forget PID when REGISTERED is non-nil."
+  (nelisp-os--windows-close-resource handle 'handle)
+  (when registered
+    (nelisp-os--windows-forget-process pid)))
 
 (defun nelisp-os--windows-alloc-utf16le-z (str)
   "Allocate a UTF-16LE NUL-terminated buffer containing STR."
@@ -1428,45 +1473,43 @@ list and ENVP list of strings.  Only returns on failure (signals
   (when (or (<= pid 0)
             (not (memq options (list 0 nelisp-os-WNOHANG))))
     (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (let ((handle (nelisp-os--libc-call
-                 "kernel32" "OpenProcess"
-                 [:pointer :uint32 :sint32 :uint32]
-                 (logior nelisp-os-WIN-SYNCHRONIZE
-                         nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION)
-                 0
-                 pid)))
-    (if (= handle 0)
-        (nelisp-os--windows-ffi-error-signal)
-      (unwind-protect
-          (let* ((timeout (if (= options nelisp-os-WNOHANG)
-                              0
-                            nelisp-os-WIN-INFINITE))
-                 (wait-rc (nelisp-os--libc-call
-                           "kernel32" "WaitForSingleObject"
-                           [:uint32 :pointer :uint32]
-                           handle timeout)))
-            (cond
-             ((= wait-rc nelisp-os-WIN-WAIT-TIMEOUT)
-              (cons 0 0))
-             ((= wait-rc nelisp-os-WIN-WAIT-OBJECT-0)
-              (let ((exit-code-buf (nelisp-os--alloc 4)))
-                (unwind-protect
-                    (let ((ok (nelisp-os--libc-call
-                               "kernel32" "GetExitCodeProcess"
-                               [:sint32 :pointer :pointer]
-                               handle exit-code-buf)))
-                      (if (= ok 0)
-                          (nelisp-os--windows-ffi-error-signal)
-                          (cons pid (ash (nelisp-os-read-u32 exit-code-buf 0) 8))))
-                  (nelisp-os--free exit-code-buf))))
-             (t
-              (nelisp-os--windows-ffi-error-signal))))
-        (let ((close-ok (nelisp-os--libc-call
-                         "kernel32" "CloseHandle"
-                         [:sint32 :pointer]
-                         handle)))
-          (if (= close-ok 0)
-              (nelisp-os--windows-ffi-error-signal)))))))
+  (let* ((handle-info (nelisp-os--windows-wait-handle pid))
+         (handle (car handle-info))
+         (registered (cdr handle-info))
+         (timeout (if (= options nelisp-os-WNOHANG)
+                      0
+                    nelisp-os-WIN-INFINITE))
+         (wait-rc (nelisp-os--libc-call
+                   "kernel32" "WaitForSingleObject"
+                   [:uint32 :pointer :uint32]
+                   handle timeout)))
+    (cond
+     ((= wait-rc nelisp-os-WIN-WAIT-TIMEOUT)
+      (unless registered
+        (nelisp-os--windows-close-wait-handle pid handle nil))
+      (cons 0 0))
+     ((= wait-rc nelisp-os-WIN-WAIT-OBJECT-0)
+      (let ((exit-code-buf (nelisp-os--alloc 4)))
+        (unwind-protect
+            (let ((ok (nelisp-os--libc-call
+                       "kernel32" "GetExitCodeProcess"
+                       [:sint32 :pointer :pointer]
+                       handle exit-code-buf)))
+              (if (= ok 0)
+                  (let ((err (nelisp-os--libc-call
+                              "kernel32" "GetLastError" [:uint32])))
+                    (unless registered
+                      (nelisp-os--windows-close-wait-handle pid handle nil))
+                    (signal 'nelisp-os-error (list err)))
+                (prog1 (cons pid (ash (nelisp-os-read-u32 exit-code-buf 0) 8))
+                  (nelisp-os--windows-close-wait-handle
+                   pid handle registered))))
+          (nelisp-os--free exit-code-buf))))
+     (t
+      (let ((err (nelisp-os--libc-call "kernel32" "GetLastError" [:uint32])))
+        (unless registered
+          (nelisp-os--windows-close-wait-handle pid handle nil))
+        (signal 'nelisp-os-error (list err)))))))
 
 (defun nelisp-os-wait (pid options)
   "POSIX wait4(2) — wait for child PID with OPTIONS (= 0, WNOHANG, etc.).
