@@ -542,6 +542,82 @@
                    (unibyte-string #xff #x15)))
     (should (= (aref bytes (+ text-off 37)) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-duplicatehandle-section-table ()
+  "The DuplicateHandle smoke EXE has .data storage for the duplicate HANDLE."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'duplicatehandle-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20))
+         (sect0 (+ pe-off 4 20 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (text-raw #x200)
+         (data-raw #x400)
+         (idata-raw #x600))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ file-off 2)) 3))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 4)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 8)) #x400))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 56)) #x4000))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 20)) text-raw))
+    (should (string-prefix-p ".data" (substring bytes sect1 (+ sect1 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 8)) 8))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) data-raw))
+    (should (string-prefix-p ".idata" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 12)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 20)) idata-raw))
+    (dotimes (i 8)
+      (should (= (aref bytes (+ data-raw i)) 0)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-duplicatehandle-import-directory ()
+  "The DuplicateHandle smoke EXE imports HANDLE duplication APIs."
+  (let ((bytes (nelisp-pe-write-test--emit-exe 'duplicatehandle-exit-42)))
+    (dolist (name '("KERNEL32.dll"
+                    "ExitProcess"
+                    "GetCurrentProcess"
+                    "DuplicateHandle"
+                    "CloseHandle"))
+      (should (nelisp-pe-write-test--contains-p bytes name)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-duplicatehandle-entry-code ()
+  "The DuplicateHandle smoke EXE sets seven args and closes the duplicate."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'duplicatehandle-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (sect0 (+ pe-off 4 20 240))
+         (text-size (nelisp-pe-write-test--read-le32 bytes (+ sect0 8)))
+         (text-off #x200))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x48)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x89 #xc1)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x89 #xc2)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x49 #x89 #xc0)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x4c #x8d #x0d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xc7 #x44 #x24 #x20
+                                   #x00 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xc7 #x44 #x24 #x28
+                                   #x00 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xc7 #x44 #x24 #x30
+                                   #x02 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x85 #xc0 #x75 #x0b)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x8b #x0d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x85 #xc9 #x75 #x0b)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xb9 #x2a #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xb9 #x01 #x00 #x00 #x00)))
+    (should (= (aref bytes (+ text-off (1- text-size))) #xcc))))
+
 (ert-deftest nelisp-pe-write-exe-binary-getlasterror-section-table ()
   "The GetLastError smoke EXE has an invalid filename in .rdata."
   (let* ((bytes (nelisp-pe-write-test--emit-exe 'getlasterror-exit-42))

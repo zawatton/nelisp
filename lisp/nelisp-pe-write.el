@@ -61,6 +61,7 @@
 ;; Stage 145 adds `GetCurrentProcessId' smoke for getpid wiring.
 ;; Stage 146 adds `GetLastError' smoke for Windows error propagation wiring.
 ;; Stage 147 adds `CreatePipe' smoke for anonymous pipe HANDLE wiring.
+;; Stage 148 adds `DuplicateHandle' smoke for fd duplication wiring.
 ;; Production standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
@@ -2040,6 +2041,73 @@ id and exits 1 otherwise."
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--minimal-duplicatehandle-text
+    (text-rva exit-iat-rva get-current-process-iat-rva duplicate-handle-iat-rva
+              close-handle-iat-rva data-rva)
+  "Return x86_64 entry bytes that duplicate and close a current-process HANDLE.
+The generated code calls GetCurrentProcess, duplicates that pseudo HANDLE with
+DuplicateHandle(DUPLICATE_SAME_ACCESS), closes the real duplicate, and exits 42
+only when the full lifecycle succeeds."
+  (let ((cbuf (nelisp-pe--make-buffer))
+        (dup-handle-rva data-rva))
+    (let (emit-call emit-lea-r9 emit-mov-rcx-data emit-exit1 emit-exit42)
+      (setq emit-call
+            (lambda (iat-rva)
+              (let ((call-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- iat-rva (+ text-rva call-off 6))))))
+      (setq emit-lea-r9
+            (lambda (target-rva)
+              (let ((lea-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x4c #x8d #x0d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva lea-off 7))))))
+      (setq emit-mov-rcx-data
+            (lambda (target-rva)
+              (let ((mov-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8b #x0d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- target-rva (+ text-rva mov-off 7))))))
+      (setq emit-exit1
+            (lambda ()
+              (nelisp-pe--write-u8 cbuf #xb9)
+              (nelisp-pe--write-le32 cbuf 1)
+              (funcall emit-call exit-iat-rva)))
+      (setq emit-exit42
+            (lambda ()
+              (nelisp-pe--write-u8 cbuf #xb9)
+              (nelisp-pe--write-le32 cbuf 42)
+              (funcall emit-call exit-iat-rva)))
+      ;; Win64 ABI: 32-byte shadow, three stack args, and call alignment.
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x48))
+      (funcall emit-call get-current-process-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc1))
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc2))
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x49 #x89 #xc0))
+      (funcall emit-lea-r9 dup-handle-rva)
+      (nelisp-pe--write-bytes cbuf
+                              (unibyte-string #xc7 #x44 #x24 #x20
+                                              #x00 #x00 #x00 #x00))
+      (nelisp-pe--write-bytes cbuf
+                              (unibyte-string #xc7 #x44 #x24 #x28
+                                              #x00 #x00 #x00 #x00))
+      (nelisp-pe--write-bytes cbuf
+                              (unibyte-string #xc7 #x44 #x24 #x30
+                                              #x02 #x00 #x00 #x00))
+      (funcall emit-call duplicate-handle-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-mov-rcx-data dup-handle-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x85 #xc9 #x75 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-call close-handle-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-exit1)
+      (funcall emit-exit42)
+      (nelisp-pe--write-u8 cbuf #xcc)
+      (nelisp-pe--buffer-bytes cbuf))))
+
 (defun nelisp-pe--minimal-getlasterror-text
     (text-rva exit-iat-rva delete-file-iat-rva get-last-error-iat-rva rdata-rva)
   "Return x86_64 entry bytes that fail DeleteFileW, then call GetLastError.
@@ -3838,6 +3906,105 @@ when the thread reported exit code 42."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-duplicatehandle-exitprocess-exe ()
+  "Build a PE32+ EXE that proves DuplicateHandle import wiring."
+  (let* ((num-sections 3)
+         (data-bytes (make-string 8 0))
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (data-rva (* 2 nelisp-pe--section-alignment))
+         (idata-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva
+           (list "ExitProcess" "GetCurrentProcess" "DuplicateHandle"
+                 "CloseHandle")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-duplicatehandle-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "GetCurrentProcess" iat-map))
+           (cdr (assoc "DuplicateHandle" iat-map))
+           (cdr (assoc "CloseHandle" iat-map))
+           data-rva))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length data-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (data-raw-ptr (+ text-raw-ptr text-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ data-raw-size idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length data-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf data-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--build-getlasterror-exitprocess-exe ()
   "Build a PE32+ EXE that proves GetLastError import wiring."
   (let* ((num-sections 3)
@@ -4381,7 +4548,7 @@ SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `createpipe-exit-42', `createfile-write-exit-42', `setfilepointer-exit-42',
 `getfiletype-exit-42', `getfileinformation-exit-42',
 `filemapping-exit-42', `getcurrentprocessid-exit-42',
-`getlasterror-exit-42',
+`duplicatehandle-exit-42', `getlasterror-exit-42',
 `getcommandline-exit-42', `wsastartup-exit-42',
 `commandlinetoargv-exit-42', `createprocess-wait-exit-42',
 `createthread-wait-exit-42', or a plist with :exit-code.  The output imports
@@ -4402,6 +4569,7 @@ DLL functions through a real PE import directory and writes raw bytes with
            ((eq spec 'getfileinformation-exit-42) nil)
            ((eq spec 'filemapping-exit-42) nil)
            ((eq spec 'getcurrentprocessid-exit-42) nil)
+           ((eq spec 'duplicatehandle-exit-42) nil)
            ((eq spec 'getlasterror-exit-42) nil)
            ((eq spec 'getcommandline-exit-42) nil)
            ((eq spec 'wsastartup-exit-42) nil)
@@ -4435,6 +4603,8 @@ DLL functions through a real PE import directory and writes raw bytes with
                   (nelisp-pe--build-filemapping-exitprocess-exe))
                  ((eq spec 'getcurrentprocessid-exit-42)
                   (nelisp-pe--build-getcurrentprocessid-exitprocess-exe))
+                 ((eq spec 'duplicatehandle-exit-42)
+                  (nelisp-pe--build-duplicatehandle-exitprocess-exe))
                  ((eq spec 'getlasterror-exit-42)
                   (nelisp-pe--build-getlasterror-exitprocess-exe))
                  ((eq spec 'getcommandline-exit-42)
