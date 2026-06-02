@@ -3301,23 +3301,44 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
         (when right
           (ignore-errors (nelisp-os-close right)))))))
 
+(defun nelisp-os--windows-socketpair-set-nonblock (pair)
+  "Set both Windows socketpair fds in PAIR to nonblocking mode."
+  (let ((success nil))
+    (unwind-protect
+        (progn
+          (nelisp-os-fcntl (car pair) nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
+          (nelisp-os-fcntl (cdr pair) nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
+          (setq success t)
+          pair)
+      (unless success
+        (ignore-errors (nelisp-os-close (car pair)))
+        (ignore-errors (nelisp-os-close (cdr pair)))))))
+
 (defun nelisp-os--windows-socketpair (domain type protocol)
   "Windows `nelisp-os-socketpair' implementation via loopback sockets.
 Windows has no POSIX socketpair(2).  Stream pairs use a temporary TCP listener;
 datagram pairs use two connected UDP sockets bound to loopback ephemeral ports."
   (unless (memq domain (list nelisp-os-AF-UNIX nelisp-os-AF-INET))
     (nelisp-os--windows-unsupported))
-  (cond
-   ((= type nelisp-os-SOCK-STREAM)
-    (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
-      (signal 'nelisp-os-error (list 22))) ; EINVAL
-    (nelisp-os--windows-socketpair-stream))
-   ((= type nelisp-os-SOCK-DGRAM)
-    (unless (memq protocol (list 0 nelisp-os-IPPROTO-UDP))
-      (signal 'nelisp-os-error (list 22))) ; EINVAL
-    (nelisp-os--windows-socketpair-dgram))
-   (t
-    (nelisp-os--windows-unsupported))))
+  (when (/= 0 (logand type nelisp-os-SOCK-CLOEXEC))
+    (nelisp-os--windows-unsupported))
+  (let* ((nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
+         (base-type (logand type (lognot nelisp-os-SOCK-NONBLOCK)))
+         (pair
+          (cond
+           ((= base-type nelisp-os-SOCK-STREAM)
+            (unless (memq protocol (list 0 nelisp-os-IPPROTO-TCP))
+              (signal 'nelisp-os-error (list 22))) ; EINVAL
+            (nelisp-os--windows-socketpair-stream))
+           ((= base-type nelisp-os-SOCK-DGRAM)
+            (unless (memq protocol (list 0 nelisp-os-IPPROTO-UDP))
+              (signal 'nelisp-os-error (list 22))) ; EINVAL
+            (nelisp-os--windows-socketpair-dgram))
+           (t
+            (nelisp-os--windows-unsupported)))))
+    (if nonblock-p
+        (nelisp-os--windows-socketpair-set-nonblock pair)
+      pair)))
 
 (defun nelisp-os-socketpair (domain type protocol)
   "POSIX socketpair(2) — returns (FD1 . FD2) on success.

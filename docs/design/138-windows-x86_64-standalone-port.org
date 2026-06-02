@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-69-WINDOWS-SOCKET-NONBLOCK
+#+STATUS: STAGE-70-WINDOWS-SOCKETPAIR-NONBLOCK
 
 * Status
 
-- *State*: STAGE 69 Windows socket nonblocking
+- *State*: STAGE 70 Windows socketpair nonblocking
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -196,7 +196,10 @@
   accepting the server peer, closing the listener, and returning the two
   socket-kind fds.  It also supports datagram pairs with two connected UDP
   loopback sockets bound to ephemeral ports, with setup-failure cleanup in
-  both paths.  Linux abstract namespace AF_UNIX
+  both paths.  =SOCK_NONBLOCK= socketpair requests now create the pair with
+  blocking setup semantics, then apply =F_SETFL O_NONBLOCK= to both returned
+  socket fds; =SOCK_CLOEXEC= remains explicitly unsupported on Windows.
+  Linux abstract namespace AF_UNIX
   remains explicitly unsupported on Windows.  Linux-only AF_UNIX helpers now
   reject Windows before libc or allocation: =bind-unix-abstract=,
   =connect-unix-abstract=, =sendmsg-fds=, =recvmsg-fds=, and
@@ -334,6 +337,10 @@
   unsupported extra =F_SETFL= bits reject before Winsock FFI, =F_DUPFD=
   preserves tracked socket flags, and =SOCK_NONBLOCK= socket creation strips
   the Linux type bit before the Winsock =socket= call.
+  Stage 70 coverage verifies Windows stream/datagram =socketpair= accepts
+  =SOCK_NONBLOCK=, keeps the loopback setup calls on the base socket type, then
+  applies =F_SETFL O_NONBLOCK= to both returned socket fds; it also verifies
+  =SOCK_CLOEXEC= rejects before opening sockets.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -698,6 +705,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   support =F_SETFL O_NONBLOCK= via =ioctlsocket(FIONBIO)=, and
   =nelisp-os-socket= accepts =SOCK_NONBLOCK= by enabling =FIONBIO= after
   creating the base Winsock socket.
+  *Windows socketpair nonblocking progress 2026-06-03*: stream and datagram
+  Windows =nelisp-os-socketpair= now accept =SOCK_NONBLOCK= by applying
+  =F_SETFL O_NONBLOCK= to both returned socket fds after loopback setup
+  succeeds.
   *Windows datagram socketpair progress 2026-06-03*:
   =nelisp-os-socketpair= now supports =SOCK_DGRAM= on Windows by binding two
   UDP loopback sockets to ephemeral ports and connecting each socket to the
@@ -900,6 +911,10 @@ largest uncertainty (B1 + B2) first.
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
    same Winsock nonblocking mode after creation.
+   *Windows socketpair nonblocking SHIPPED 2026-06-03*: stream/datagram
+   Windows =socketpair= now accepts =SOCK_NONBLOCK=, applies
+   =F_SETFL O_NONBLOCK= to both returned fds after setup, and rejects
+   =SOCK_CLOEXEC= before opening sockets.
    *Windows file-backed mmap SHIPPED 2026-06-03*: =nelisp-os-mmap= now accepts
    HANDLE-backed =MAP_PRIVATE= mappings via =CreateFileMappingW= /
    =MapViewOfFile=, with =UnmapViewOfFile= cleanup.
@@ -1029,8 +1044,8 @@ largest uncertainty (B1 + B2) first.
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
    getname, read/write, poll, expanded int socket options, and
-   loopback-backed stream/datagram socketpair; broader socket extensions remain
-   pending.  Linux-only AF_UNIX
+   loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK= support;
+   broader socket extensions remain pending.  Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 
 * One-line summary
