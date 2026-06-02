@@ -749,6 +749,52 @@ Base 0xF8E00000 | (Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE
     (nelisp-asm-arm64--emit-word
      buf (logior #xF8E00000 (ash s-reg 16) (ash n-reg 5) t-reg))))
 
+;; ---- §101.B-arm64 immediate-offset load/store (Sexp field access) ----
+;;
+;; Unsigned-offset forms used by the Sexp slot ops (tag byte at +0,
+;; payload at +8, NlConsBox car/cdr at +0/+32).  The 64-bit LDR/STR
+;; scale IMM by 8; LDRB/STRB are unscaled (byte).
+
+(defun nelisp-asm-arm64-ldr-imm (buf rt rn imm)
+  "Emit `LDR Xt, [Xn, #IMM]' (= 64-bit load, unsigned offset).
+IMM must be a multiple of 8 in 0..32760.  Base 0xF9400000."
+  (unless (and (integerp imm) (>= imm 0) (zerop (logand imm 7)) (<= imm 32760))
+    (signal 'nelisp-asm-arm64-error (list :ldr-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF9400000 (ash (ash imm -3) 10) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-str-imm (buf rt rn imm)
+  "Emit `STR Xt, [Xn, #IMM]' (= 64-bit store, unsigned offset).
+IMM must be a multiple of 8 in 0..32760.  Base 0xF9000000."
+  (unless (and (integerp imm) (>= imm 0) (zerop (logand imm 7)) (<= imm 32760))
+    (signal 'nelisp-asm-arm64-error (list :str-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF9000000 (ash (ash imm -3) 10) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-ldrb-imm (buf rt rn imm)
+  "Emit `LDRB Wt, [Xn, #IMM]' (= zero-extending byte load).
+IMM in 0..4095 (unscaled).  Base 0x39400000."
+  (unless (and (integerp imm) (>= imm 0) (<= imm 4095))
+    (signal 'nelisp-asm-arm64-error (list :ldrb-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x39400000 (ash imm 10) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-strb-imm (buf rt rn imm)
+  "Emit `STRB Wt, [Xn, #IMM]' (= low-byte store).
+IMM in 0..4095 (unscaled).  Base 0x39000000."
+  (unless (and (integerp imm) (>= imm 0) (<= imm 4095))
+    (signal 'nelisp-asm-arm64-error (list :strb-imm-out-of-range imm)))
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #x39000000 (ash imm 10) (ash n-reg 5) t-reg))))
+
 ;; ---- Doc 110 §110.D AArch64 SIMD/FP scalar-double helpers ----
 ;;
 ;; D-register encoding mirrors the X register table: low 5 bits land

@@ -10525,9 +10525,23 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-call-arm64 node buf))
         ((= tag 0)              ; alloc-bytes — aarch64 BL nl_alloc_bytes
          (nelisp-phase47-compiler--emit-alloc-bytes-arm64 node buf))
-        ((memq tag '(23 61 57 56 55 27   ; extern-call sexp-tag sexp-int-unwrap sexp-int-make sexp-float-unwrap f64-to-i64-trunc
-                     17 12 13 14         ; cons-null-p cons-car cons-cdr cons-cdr-raw
-                     59 60               ; sexp-payload-ptr sexp-payload-ptr-record
+        ((= tag 56)             ; sexp-int-make — aarch64 slot writer
+         (nelisp-phase47-compiler--emit-sexp-int-make-arm64 node buf))
+        ((= tag 17)             ; cons-null-p — aarch64 tag==Nil
+         (nelisp-phase47-compiler--emit-cons-null-p-arm64 node buf))
+        ((= tag 12)             ; cons-car — aarch64 boxed-slot copy
+         (nelisp-phase47-compiler--emit-cons-slot-copy-arm64
+          node buf nelisp-nlconsbox--offset-car))
+        ((= tag 13)             ; cons-cdr — aarch64 boxed-slot copy
+         (nelisp-phase47-compiler--emit-cons-slot-copy-arm64
+          node buf nelisp-nlconsbox--offset-cdr))
+        ((= tag 15)             ; cons-make — aarch64 box alloc + copy
+         (nelisp-phase47-compiler--emit-cons-make-arm64 node buf))
+        ((= tag 59)             ; sexp-payload-ptr — aarch64 Cons->box
+         (nelisp-phase47-compiler--emit-sexp-payload-ptr-arm64 node buf))
+        ((memq tag '(23 61 57 55 27      ; extern-call sexp-tag sexp-int-unwrap sexp-float-unwrap f64-to-i64-trunc
+                     14                  ; cons-cdr-raw
+                     60                  ; sexp-payload-ptr-record
                      52 48 49            ; record-type-tag record-slot-count record-slot-ref
                      50 51               ; record-slot-ref-ptr record-slot-set
                      81 83 84 85         ; vector-len vector-ref vector-ref-ptr vector-slot-set
@@ -10546,7 +10560,7 @@ the node's class to consume the result correctly."
                      39 43               ; ptr-read-u16 ptr-write-u16
                      40 44               ; ptr-read-u32 ptr-write-u32
                      20                  ; dealloc-bytes
-                     15 16 18 19         ; cons-make cons-make-with-clone cons-set-car cons-set-cdr
+                     16 18 19            ; cons-make-with-clone cons-set-car cons-set-cdr
                      11 33               ; cond logic
                      89                  ; let-rt-n
                      94 95               ; aot-machine-landing-jump aot-current-sp
@@ -13121,6 +13135,95 @@ intra-text call."
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = align
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = size
   (nelisp-asm-arm64-bl buf 'nl_alloc_bytes))         ; x0 = ptr
+
+;; ---- §101.B-arm64 Sexp slot ops (cons / int constructor + readers) ----
+
+(defun nelisp-phase47-compiler--emit-sexp-int-make-arm64 (node buf)
+  "Emit `sexp-int-make' for aarch64 — write `Sexp::Int' into :slot.
+slot -> x0, val -> x1; STRB tag-int @[x0+0], STR val @[x0+8]; x0 = slot."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = val (top)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = slot
+  (nelisp-asm-arm64-mov-imm64 buf 'x2 nelisp-sexp--tag-int)
+  (nelisp-asm-arm64-strb-imm buf 'x2 'x0 0)          ; tag byte
+  (nelisp-asm-arm64-str-imm buf 'x1 'x0 nelisp-sexp--offset-payload))
+
+(defun nelisp-phase47-compiler--emit-cons-null-p-arm64 (node buf)
+  "Emit `cons-null-p' for aarch64 — x0 = (tag byte at [ptr] == Nil)."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 0)          ; x1 = tag byte
+  (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-nil)
+  (nelisp-asm-arm64-cset buf 'x0 'eq))
+
+(defun nelisp-phase47-compiler--emit-cons-slot-copy-arm64 (node buf field-off)
+  "Emit `cons-car'/`cons-cdr' for aarch64 — copy 32-byte boxed Sexp to :slot.
+ptr -> x0, slot -> x1, box = [ptr+8] -> x2; copy [box+FIELD-OFF .. +32)
+into [slot]; x0 = slot.  FIELD-OFF is 0 (car) or 32 (cdr)."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = slot (top)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = ptr
+  (nelisp-asm-arm64-ldr-imm buf 'x2 'x0 nelisp-sexp--offset-payload) ; x2 = box
+  (dotimes (i 4)
+    (nelisp-asm-arm64-ldr-imm buf 'x9 'x2 (+ field-off (* i 8)))
+    (nelisp-asm-arm64-str-imm buf 'x9 'x1 (* i 8)))
+  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))        ; return slot
+
+(defun nelisp-phase47-compiler--emit-cons-make-arm64 (node buf)
+  "Emit `cons-make' for aarch64 — alloc a box, copy car/cdr, tag the slot.
+car-ptr/cdr-ptr/slot pushed; BL nl_alloc_consbox -> box (x10); copy the
+two 32-byte Sexps into box->car (+0) / box->cdr (+32); write tag-cons +
+box pointer into the slot; x0 = slot."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :car-ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :cdr-ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-asm-arm64-bl buf 'nl_alloc_consbox)        ; x0 = box
+  (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)        ; x10 = box
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; slot  (top)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; cdr-ptr
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x3)          ; car-ptr
+  (dotimes (i 4)                                      ; box->car = *car-ptr
+    (nelisp-asm-arm64-ldr-imm buf 'x9 'x3 (* i 8))
+    (nelisp-asm-arm64-str-imm buf 'x9 'x10 (+ nelisp-nlconsbox--offset-car (* i 8))))
+  (dotimes (i 4)                                      ; box->cdr = *cdr-ptr
+    (nelisp-asm-arm64-ldr-imm buf 'x9 'x2 (* i 8))
+    (nelisp-asm-arm64-str-imm buf 'x9 'x10 (+ nelisp-nlconsbox--offset-cdr (* i 8))))
+  (nelisp-asm-arm64-mov-imm64 buf 'x4 nelisp-sexp--tag-cons)
+  (nelisp-asm-arm64-strb-imm buf 'x4 'x1 0)          ; slot tag = Cons
+  (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload) ; slot payload = box
+  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))        ; return slot
+
+(defun nelisp-phase47-compiler--emit-sexp-payload-ptr-arm64 (node buf)
+  "Emit `sexp-payload-ptr' for aarch64 — Cons -> box ptr, else 0."
+  (let* ((id (nelisp-phase47-compiler--gensym "sexp-payload-ptr-a64"))
+         (zero-lbl (intern (format "%s-zero" id)))
+         (end-lbl (intern (format "%s-end" id))))
+    (nelisp-phase47-compiler--emit-value
+     (nelisp-phase47-compiler--ir-get node :ptr) buf)
+    (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 0)        ; tag byte
+    (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-cons)
+    (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
+    (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf zero-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
+    (nelisp-asm-arm64-define-label buf end-lbl)))
 
 (defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
   "Emit a fixed-arity direct call for aarch64 (AAPCS64).
