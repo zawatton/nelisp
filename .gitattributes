@@ -4,3 +4,8 @@
 # can `include_bytes!` them without running the baker, but a textual
 # diff would be useless — review the `.el` change instead.
 *.image binary
+
+# NeLisp's nelisp-sys typed-elisp DSL sources use the `.nl' extension, which
+# GitHub Linguist otherwise misclassifies as the unrelated NewLisp language.
+# These files are NeLisp (an Emacs Lisp dialect) source -- count them as Emacs Lisp.
+*.nl linguist-language=Emacs-Lisp
