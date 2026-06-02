@@ -283,8 +283,8 @@
       (nl_frame_write_symentry sym_slot)
       (sys:unsafe
        (nl_vector_set_slot box_ptr 5 sym_slot)
-       (nl_sexp_clone_into (+ data_ptr 224) val_ptr)
-       (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+       (nl_sexp_clone_into val_ptr (+ data_ptr 224))
+       (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
        (sys:poke-u64 out_sexp_vec_slot 8)
        (sys:poke-u64 (+ out_sexp_vec_slot 8) box_ptr)
        (sys:poke-u64 (+ out_sexp_vec_slot 16) 0)

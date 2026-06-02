@@ -205,8 +205,8 @@
       (sys:unsafe
        (nl_logic_write_symentry sym_slot)
        (nl_vector_set_slot box_ptr 5 sym_slot)
-       (nl_sexp_clone_into (+ data_ptr 224) val_ptr)
-       (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+       (nl_sexp_clone_into val_ptr (+ data_ptr 224))
+       (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
        (sys:poke-u64 out_sexp_vec_slot 8)
        (sys:poke-u64 (+ out_sexp_vec_slot 8) box_ptr)
        (sys:poke-u64 (+ out_sexp_vec_slot 16) 0)
@@ -292,7 +292,13 @@
    (sys:poke-u64 slot 0)
    (sys:poke-u64 (+ slot 8) 0)
    (sys:poke-u64 (+ slot 16) 0)
-   (sys:poke-u64 (+ slot 24) 0)))
+   (sys:poke-u64 (+ slot 24) 0)
+   ;; Return 0 (= success) explicitly.  Callers (`nl_let_parse_val')
+   ;; treat the return as a 0/1 rc; the trailing `poke-u64' otherwise
+   ;; yields a non-zero slot address that `nl_let_setup' mis-reads as a
+   ;; parse error, rejecting every nil-valued `let'/`let*' binding
+   ;; (`(let (v) ...)' / `(let ((v)) ...)').
+   (sys:cast i64 0)))
 
 ;; ---------------------------------------------------------------------------
 ;; SHARED HELPER: nl_logic_bind_local(env, name_ptr, val_ptr) -> i64
@@ -833,7 +839,7 @@
                         (sys:cast i64 0))
                       ;; Write handler body (cb.cdr) into *err_inout:
                       ;; nl_sexp_clone_into(err_inout_ptr, cb_cdr_ptr)
-                      (sys:unsafe (nl_sexp_clone_into err_inout_ptr cb_cdr_ptr))
+                      (sys:unsafe (nl_sexp_clone_into cb_cdr_ptr err_inout_ptr))
                       (sys:cast i64 0))
                   ;; no match: try next clause
                   (nl_cc_clause_walk cc_cdr_ptr err_clone_ptr actual_tag_ptr
@@ -869,7 +875,7 @@
               ;; car is Symbol: proceed with clause walk
               ;; Clone err into a local slot for the bind (if matched)
               (let ((err_clone usize (sys:alloc 32 8)))
-                (sys:unsafe (nl_sexp_clone_into err_clone err_inout))
+                (sys:unsafe (nl_sexp_clone_into err_inout err_clone))
                 (nl_cc_clause_walk clauses err_clone actual_tag_ptr var env err_inout))
             ;; car is not a Symbol: return 1
             (sys:cast i64 1)))

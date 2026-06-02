@@ -200,16 +200,21 @@
     ((arg usize) (new_slot usize) (byte_idx i64) (char_j i64) (idx i64) (val_cp i64))
   i64
   (:alloc may :ffi may :unsafe may)
+  ;; Doc 135 §9.4 fix: cp_slot / width_slot must NOT alias new_slot+8
+  ;; (= the MutStr Sexp's NlStr* payload).  Writing the decoded codepoint
+  ;; there clobbers the box pointer -> the next nl_mut_str_push_codepoint
+  ;; dereferences garbage -> SIGSEGV.  Use the Sexp pad region [16..31]:
+  ;; cp_slot = new_slot+16, width_slot = new_slot+24.
   (let ((ok i64 (sys:unsafe
                  (nl_str_codepoint_at arg byte_idx
-                                      (+ new_slot 8)
-                                      (+ new_slot 16)))))
+                                      (+ new_slot 16)
+                                      (+ new_slot 24)))))
     (if (= ok 0)
         ;; End of string: all chars pushed successfully.
         (sys:cast i64 0)
       ;; Decode succeeded: push correct codepoint, then recurse.
-      (let ((orig_cp i64 (sys:cast i64 (sys:unsafe (sys:peek-u64 (+ new_slot 8)))))
-            (width   i64 (sys:cast i64 (sys:unsafe (sys:peek-u64 (+ new_slot 16))))))
+      (let ((orig_cp i64 (sys:cast i64 (sys:unsafe (sys:peek-u64 (+ new_slot 16)))))
+            (width   i64 (sys:cast i64 (sys:unsafe (sys:peek-u64 (+ new_slot 24))))))
         (sys:unsafe
          (nl_mut_str_push_codepoint
           new_slot

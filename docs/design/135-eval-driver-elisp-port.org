@@ -473,3 +473,141 @@ forwards ~*mut Env~ to the compiled elisp ~sf_*~ .o → which thread it to env-l
   ~eval~/~apply_special~/~eval_arg_list~/~nl_eval_inner_cons~ (net-NEGATIVE Rust);
   (6) rebuild → link-green → ~(fact 5)~→120. Step 5 is the crux + highest risk
   (the stdlib bootstrap is the foundation).
+
+* 9.6 Stage 135.E cutover attempt — session 2026-05-30 (reverted, blocker found)
+
+** 9.6.0 Ground truth re-established
+- HEAD ~45dfdd74~ builds LINK-GREEN on a *clean* build (cargo clean -p
+  nelisp-build-tool first). The "20 duplicate symbols" seen on a stale tree are
+  the §9.1 footgun: ~ar~ glob-archives the out-dir, so a stale May-28 out-dir
+  re-archives superseded .o. ALWAYS clean-build build-tool before trusting link.
+- The clean binary SIGSEGVs on *every* invocation (even ~--version~; main always
+  calls ~Env::new_global()~ first) during the stdlib bootstrap — matches §9.2.
+- The whole elisp eval driver is ALREADY wired + T in libnelisp_elisp_spike.a:
+  ~nl_eval~ ~nl_eval_inner~ ~nl_eval_in_ctx~ ~nl_eval_ctx_make~ ~nl_eval_inner_cons~
+  ~nl_eval_arg_list~ ~nl_apply_function~ ~nl_install_builtins~. So §9.5 steps
+  (1)+(4) are DONE; combiner-cons/arglist/apply/entry/bootstrap/aot-builtin-call1
+  all uncommented in scripts/compile-elisp-objects.el.
+
+** 9.6.1 The cutover is a TINY Rust diff (3 edits, mechanically)
+- ~eval(form,&mut Env)~: drop the Rust depth-guard; call ~nl_eval(form,
+  &mut env as *mut Env as *mut c_void, &mut out)~ directly (env IS the ctx, see
+  9.6.2). nl_eval already owns quit-flag + depth-guard + nl_eval_inner.
+- ~nelisp_eval_call(form,env,out)~: STOP casting ~env as *mut Env~ + calling Rust
+  ~eval~; just forward → ~nl_eval(form, env, out)~ (env is the ctx the combiner
+  threads). This is the B1 fix.
+- lib.rs ~elisp_cc_spike~: add the ~extern "C"~ decl + ~cc_wrap_batch!~ wrapper for
+  ~nl_eval~ (3-arg ~(form,env,out)->i64~). nl_eval_ctx_make NOT needed if 9.6.2.
+- nelisp_apply_function stays UNCHANGED iff 9.6.2 (env becomes a real Env).
+
+** 9.6.2 KEY INSIGHT — Env MUST share EvalCtx's 120-byte layout
+The threaded pointer is simultaneously (a) read by the elisp combiner as
+~*mut eval_ctx~ (mirror@0 frames@32 unbound@64 rec_cur@96 rec_max@104 flags@112),
+and (b) cast back to ~*mut Env~ by the Rust bridges (~nelisp_eval_call~,
+~nelisp_apply_function~→~apply_function~→builtins::dispatch→~bi_globals_op~, and
+~capture_lexical~'s ~apply_function~ recursion that re-enters ~nl_apply_lambda_inner~).
+Re-pointing only one side just relocates the crash (B1/B2/B3). The clean fix is to
+make the Rust ~Env~ struct ~#[repr(C)]~ with its first 6 fields = the eval_ctx
+fields in the eval_ctx ORDER:
+#+begin_src rust
+#[repr(C)] pub struct Env {
+  pub globals_record: Sexp,    // @0   = ctx.mirror
+  pub frames_record: Sexp,     // @32  = ctx.frames   (NOTE: frames before unbound!)
+  pub unbound_marker: Sexp,    // @64  = ctx.unbound
+  pub current_recursion: i64,  // @96  = ctx.rec_cur
+  pub max_recursion: i64,      // @104 = ctx.rec_max
+  pub flags: i64,              // @112 = ctx.flags (combiner ignores it today)
+  pub extern_builtins: HashMap<String, ExternBuiltin>, // @120+ (elisp never reads)
+  pub use_elisp_apply: bool, pub delegation_depth: u32, // vestigial, keep
+}
+#+end_src
+Then the SAME ~*mut Env~ is a valid ctx and a valid Env — every bridge works with
+ZERO per-call reconstruction, and capture-lexical's lambda re-entry is correct.
+size_of::<Sexp>()==32 (frozen ABI slot-size), so offsets are exact. Ripple is
+small: ~6 max_recursion / 2 current_recursion sites (now i64; arithmetic-compatible),
+keep use_elisp_apply/delegation_depth as trailing fields (combiner ignores flags;
+delegation is DEFERRED per combiner-cons).
+
+** 9.6.3 env-globals-op — the only env-USING builtin on the bootstrap path
+- ~nelisp--env-globals-op~ is classified cls==0 (env-independent) by
+  ~nl_apply_name_classify~ → combiner forwards it to Rust ~nelisp_apply_function~
+  which casts env→Env → ~bi_globals_op~ reads env fields at Env offsets → if the
+  pointer is a ctx (not a layout-shared Env) it mis-reads the mirror → SIGSEGV in
+  ~nelisp_mirror_*~ (this was the attempt-1 crash, backtrace:
+  bi_globals_op → build_or_insert_scratch_vec → nelisp_mirror_set_function).
+- GOOD NEWS: ~bi_globals_op~ only needs ~globals_record~ (=ctx.mirror@0) and
+  ~unbound_marker~ (=ctx.unbound@64); set-ops go through shipped
+  ~nelisp_env_shim_set_op(op,mirror,name,scratch,result)~ and read-ops through
+  ~nelisp_env_shim_op(op,mirror,name,unbound,result,scratch)~ — the 11-way op
+  switch is ALREADY inside those shipped C-ABI symbols. Stdlib uses 11 ops
+  (set-value/-function/-constant, is-bound/-fbound/-constant, get-value/-function,
+  clear-value/-function, capture-lexical) via lisp/nelisp-stdlib-env-shim.el.
+- With 9.6.2 (Env==ctx) the forward to ~nelisp_apply_function~ delivers a REAL Env
+  → bi_globals_op works unchanged. No bridge, no temp-Env, no .nl re-lower needed.
+
+** 9.6.4 THE BLOCKER (why this session reverted)
+Applying 9.6.2 (reorder Env to the eval_ctx layout) makes the binary SIGSEGV
+EARLIER — now inside ~install_stage0~, BEFORE any eval (0 boot-trace lines). The
+crash (si_addr=0x0, NULL deref) is in Phase-47 ~nelisp_mirror_lookup_entry~, called
+from ~nelisp_mirror_install_entry_or_insert~ during the very first ("nil") install:
+  ~fresh ok~ → ~mirror_init ok~ → CRASH (no ~installed nil~).
+PROBED right before the crash: globals_record g_tag=12 g_pay=0x..2fa0 (NON-null
+valid Record), frames_record f_tag=12 f_pay non-null, unbound u_tag=4. So the
+mirror Record is byte-valid and identical to the pre-reorder run, yet
+~mirror_lookup_entry~ NULL-derefs ONLY after the Env reorder. The reorder changes
+*where* the records sit in Env memory + Env's size (i64 fields), but the mirror
+C-ABI takes the record pointers by value and should not depend on Env layout.
+ROOT CAUSE — CONFIRMED (drill-down this session, refcount/drop bug):
+- Disasm at the faulting rip: ~movzbq (%rdi),%rax~ where ~rdi = buckets_data +
+  index*32~ and ~index = nelisp_fnv1a(sym) & (bucket_count - 1)~ — i.e. the OOB
+  bucket read inside ~mirror_lookup_entry~. So ~bucket_count~ (the mask) is garbage.
+- DEEP PROBE of the mirror right after ~install_empty_mirror_rust_direct~ (before the
+  nil install): mirror.slots.len=3 OK, ht.slots.len=3 OK, ht.slot1=Vector(len 1024)
+  OK, ht.slot2=Int(0) OK, but *ht.slot0 = tag=99 / payload=GARBAGE* — the bucket-count
+  Int(1024) slot is CORRUPT (only slot 0; slots 1+2 are fine).
+- ISOLATION: adding ~std::mem::forget(v)~ to the lib.rs wrapper
+  ~env_install_empty_globals_frames~ (so the 6-slot scratch Sexp::Vector is NOT
+  dropped) makes ht.slot0 read tag=2 / payload=0x400 (= Int 1024, CORRECT) — and then
+  a ~"free(): double free detected"~ abort appears. → CONCLUSIVE: dropping the Rust
+  scratch ~v~ over-frees the ht record's backing, and the freed 32 bytes are reused by
+  the next allocation (the nil-install ~build_or_insert_scratch_vec~) → ht.slot0 reads
+  reused garbage. The reordered/larger Env merely changes the allocator's reuse
+  pattern so the latent use-after-free becomes an active corruption (original layout
+  masks it = "works by luck").
+- The bug is PRE-EXISTING, in the Phase-47 bootstrap mirror construction
+  ~lisp/nelisp-cc-env-install-empty.el~ + its primitives. That file's header comment
+  (lines 37-65) already ADMITS refcount sloppiness ("refcount LEAK", scratch[4]
+  "raw-overwritten") and asserts an rc=2 discipline for scratch[3] (ht) / scratch[4]
+  (backing). The corruption means that discipline is VIOLATED: ~record-make~ /
+  ~vector-make~ / ~record-slot-set~ (§115.3 / §115.1 / §111.B) almost certainly
+  install by MOVE (no refcount bump) rather than the clone the comment assumes, so
+  scratch[3]/scratch[4] alias globals.slot0 / frames.slot0 at rc=1, and the scratch
+  Vec drop frees a still-owned record.
+- DECISIVE next step: audit ~record-slot-set~ (§111.B) + ~record-make~ (§115.3) +
+  ~vector-make~ (§115.1) refcount semantics vs the rc=2 discipline comment in
+  nelisp-cc-env-install-empty.el. The fix is one of: (i) make record-slot-set bump
+  the installed value's refcount (clone-install) so the rc=2 discipline actually
+  holds; or (ii) have the Rust wrapper ~forget(v)~ AND null-out the scratch slots
+  that were move-installed so neither side double-frees. (i) is the correct fix
+  (restores the documented invariant) and likely a 1-op refcount add in the lowered
+  primitive — verify it does not regress the non-bootstrap callers of record-slot-set.
+
+** 9.6.5 Status + the exact resume recipe
+- Repo REVERTED to clean HEAD (45dfdd74); no source left modified. The full WIP
+  cutover diff (the 3 edits above incl. the reorder) is saved at
+  /tmp/doc135-cutover-wip.patch on the dev box (regenerate from 9.6.1+9.6.2 if lost).
+- Attempt-1 variant (eval via nl_eval_ctx_make building a SEPARATE ctx; Env NOT
+  reordered) gets PAST install_stage0 and into the stdlib eval loop, crashing only
+  in bi_globals_op (env-globals-op ctx mis-cast). So install_stage0 is fine when
+  Env keeps its original layout — confirming 9.6.4's blocker is the reorder alone.
+- Resume: (1) fix the §9.6.4 refcount bug — audit + fix ~record-slot-set~ /
+  ~record-make~ / ~vector-make~ so the rc=2 discipline in nelisp-cc-env-install-empty.el
+  actually holds (clone-install). VERIFY the fix in isolation: a Rust test that calls
+  ~env_install_empty_globals_frames~ then ~mirror_install_entry_or_insert~ for "nil",
+  asserting no corruption — independent of the cutover. (2) apply 9.6.1+9.6.2 (Env ==
+  eval_ctx layout). (3) build clean → expect (fact 5)→120; capture-lexical +
+  env-globals-op resolve for free under 9.6.2. (4) delete dead Rust
+  ~apply_special~/~eval_arg_list~ for the net-negative.
+- NOTE: step (1) is a standalone bootstrap-mirror refcount fix orthogonal to the
+  cutover; it should land + be verified on its own before the Env reorder, since it
+  is a real (currently-latent) use-after-free in the shipped bootstrap.

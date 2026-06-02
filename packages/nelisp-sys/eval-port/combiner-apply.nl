@@ -266,6 +266,29 @@
   i64
   (:alloc may :ffi may :unsafe may))
 
+;; nelisp_env_shim_op(op_ptr, mirror_ptr, sym_ptr, unbound_ptr, result_slot, vec_scratch) -> i64
+;; READ env-globals-op shim: get-value/get-function/is-bound/is-fbound/is-constant/
+;; clear-value/clear-function. Dispatches internally on op_ptr (a Sexp::Symbol).
+;; vec_scratch = pointer to an unused writable 32B Nil slot. result written into result_slot.
+;; rc: 1=success (result in result_slot), 0=unbound-var, -1=unbound-fn, other=error.
+(sys:extern nelisp_env_shim_op
+  (:symbol "nelisp_env_shim_op" :abi c :unsafe t)
+  ((op_ptr usize) (mirror_ptr usize) (sym_ptr usize)
+   (unbound_ptr usize) (result_slot usize) (vec_scratch usize))
+  i64
+  (:alloc may :ffi may :unsafe may))
+
+;; nelisp_env_shim_set_op(op_ptr, mirror_ptr, sym_ptr, scratch_ptr, result_slot, _pad) -> i64
+;; SET env-globals-op shim: set-value/set-function/set-constant. Dispatches on op_ptr.
+;; scratch_ptr = pre-built 11-slot Sexp::Vector. _pad = i64 0.
+;; rc: 1=success (result in result_slot), other=error.
+(sys:extern nelisp_env_shim_set_op
+  (:symbol "nelisp_env_shim_set_op" :abi c :unsafe t)
+  ((op_ptr usize) (mirror_ptr usize) (sym_ptr usize)
+   (scratch_ptr usize) (result_slot usize) (_pad i64))
+  i64
+  (:alloc may :ffi may :unsafe may))
+
 ;; ---------------------------------------------------------------------------
 ;; UTILITY HELPERS
 ;; ---------------------------------------------------------------------------
@@ -407,6 +430,56 @@
      (sys:poke-u64 (+ buf 16) 8097803565984738405)
      (sys:poke-u64 (+ buf 24) 7957616))
     (nl_apply_sym_eq_bytes name_ptr buf 27)))
+
+;; nl_apply_name_eq_env_globals_op(name_ptr) -> i64   "nelisp--env-globals-op" [22]
+;; bytes: 6e656c69 73702d2d / 656e762d 676c6f62 / 616c732d 6f70
+;; word0=3255381746650998126, word1=7093007128531988069, word2=123622806219873
+(sys:defun nl_apply_name_eq_env_globals_op
+    ((name_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 24 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 3255381746650998126)
+     (sys:poke-u64 (+ buf 8) 7093007128531988069)
+     (sys:poke-u64 (+ buf 16) 123622806219873))
+    (nl_apply_sym_eq_bytes name_ptr buf 22)))
+
+;; nl_apply_eq_set_value(op_ptr) -> i64   "set-value" [9]
+;; word0=8461244960118957427, word1=101
+(sys:defun nl_apply_eq_set_value
+    ((op_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 16 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 8461244960118957427)
+     (sys:poke-u64 (+ buf 8) 101))
+    (nl_apply_sym_eq_bytes op_ptr buf 9)))
+
+;; nl_apply_eq_set_function(op_ptr) -> i64   "set-function" [12]
+;; word0=7164793138902754675, word1=1852795252
+(sys:defun nl_apply_eq_set_function
+    ((op_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 16 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 7164793138902754675)
+     (sys:poke-u64 (+ buf 8) 1852795252))
+    (nl_apply_sym_eq_bytes op_ptr buf 12)))
+
+;; nl_apply_eq_set_constant(op_ptr) -> i64   "set-constant" [12]
+;; word0=8317708033554933107, word1=1953390964
+(sys:defun nl_apply_eq_set_constant
+    ((op_ptr usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  (let ((buf usize (sys:alloc 16 1)))
+    (sys:unsafe
+     (sys:poke-u64 buf 8317708033554933107)
+     (sys:poke-u64 (+ buf 8) 1953390964))
+    (nl_apply_sym_eq_bytes op_ptr buf 12)))
 
 ;; ---------------------------------------------------------------------------
 ;; DEFERRED NAMES DETECTION
@@ -616,6 +689,9 @@
                   (sys:cast i64 1)
                 (if (= (nl_apply_name_eq_set_use_elisp name_ptr) 1)
                     (sys:cast i64 1)
+                  ;; nelisp--env-globals-op: now handled in-combiner (class 1)
+                  (if (= (nl_apply_name_eq_env_globals_op name_ptr) 1)
+                      (sys:cast i64 1)
                   ;; symbol-function and fset: now handled (class 1)
                   (if (= (nl_apply_deferred_symbol_function name_ptr) 1)
                       (sys:cast i64 1)
@@ -637,7 +713,7 @@
                                   (if (= (nl_apply_deferred_apply_builtin name_ptr) 1)
                                       (sys:cast i64 2)
                                     ;; Not deferred: env-independent, safe to forward
-                                    (sys:cast i64 0)))))))))))))))))))
+                                    (sys:cast i64 0))))))))))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; WRONG-TYPE-ARGUMENT signal helper
@@ -692,7 +768,7 @@
         (signal_slot usize (sys:alloc 32 8)))
     (nl_apply_write_wta_sym tag_slot)
     (nl_apply_write_symbol_sym symbol_slot)
-    (sys:unsafe (nl_sexp_clone_into clone_slot offender_ptr))
+    (sys:unsafe (nl_sexp_clone_into offender_ptr clone_slot))
     (nl_apply_write_nil nil_slot)
     (sys:unsafe
      (nelisp_cons_construct clone_slot nil_slot inner_cdr)
@@ -730,8 +806,8 @@
          (nl_vector_set_slot box_ptr 5 sym_slot))
         (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
           (sys:unsafe
-           (nl_sexp_clone_into (+ data_ptr 224) signal_slot)
-           (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+           (nl_sexp_clone_into signal_slot (+ data_ptr 224))
+           (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
            (sys:poke-u64 vec_slot 8)
            (sys:poke-u64 (+ vec_slot 8) box_ptr)
            (sys:poke-u64 (+ vec_slot 16) 0)
@@ -833,8 +909,8 @@
      (nl_vector_set_slot box_ptr 5 sym_slot))
     (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
       (sys:unsafe
-       (nl_sexp_clone_into (+ data_ptr 224) val_ptr)
-       (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+       (nl_sexp_clone_into val_ptr (+ data_ptr 224))
+       (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
        (sys:poke-u64 vec_slot 8)
        (sys:poke-u64 (+ vec_slot 8) box_ptr)
        (sys:poke-u64 (+ vec_slot 16) 0)
@@ -932,7 +1008,7 @@
               (sys:unsafe (nelisp_cons_construct car_ptr rest_slot out_slot))
             (sys:cast i64 1))))
     ;; head exhausted: result = tail (share, not clone — tail is live)
-    (sys:unsafe (nl_sexp_clone_into out_slot tail_ptr))))
+    (sys:unsafe (nl_sexp_clone_into tail_ptr out_slot))))
 
 ;; ---------------------------------------------------------------------------
 ;; ENV-USING DISPATCH ARMS
@@ -1023,7 +1099,7 @@
                        (sys:unsafe
                         (nelisp_env_lookup_function mirror_ptr unbound_ptr arg0_ptr func_slot)))
                    ;; Not Symbol: clone arg0 into func_slot
-                   (sys:unsafe (nl_sexp_clone_into func_slot arg0_ptr)))))
+                   (sys:unsafe (nl_sexp_clone_into arg0_ptr func_slot)))))
             (if (= resolve_rc 0)
                 ;; Build spliced args: prefix ++ last_arg_as_list
                 ;; prefix = rest_args[0..n-2] (all but last)
@@ -1087,7 +1163,7 @@
           (nl_apply_stash_wta env args_list_ptr)
         (let ((rc i64 (nl_apply_bind_local env name_ptr val_ptr)))
           (if (= rc 0)
-              (sys:unsafe (nl_sexp_clone_into out val_ptr))
+              (sys:unsafe (nl_sexp_clone_into val_ptr out))
             rc))))))
 
 ;; nl_apply_do_push_captured(args_list_ptr, env, out) -> i64
@@ -1175,8 +1251,8 @@
      (nl_vector_set_slot box_ptr 5 sym_slot))
     (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
       (sys:unsafe
-       (nl_sexp_clone_into (+ data_ptr 224) unbound_ptr)
-       (nl_sexp_clone_into (+ data_ptr 256) definition_ptr)
+       (nl_sexp_clone_into unbound_ptr (+ data_ptr 224))
+       (nl_sexp_clone_into definition_ptr (+ data_ptr 256))
        ;; Wrap box_ptr as Sexp::Vector in out_slot (tag=8, payload=box_ptr)
        (sys:poke-u64 out_slot 8)
        (sys:poke-u64 (+ out_slot 8) box_ptr)
@@ -1238,7 +1314,7 @@
                        (sys:unsafe
                         (nelisp_env_lookup_function mirror_ptr unbound_ptr def_ptr resolved_slot))
                      ;; Not Symbol: clone def_ptr as-is
-                     (sys:unsafe (nl_sexp_clone_into resolved_slot def_ptr)))))
+                     (sys:unsafe (nl_sexp_clone_into def_ptr resolved_slot)))))
               (if (/= resolve_rc 0)
                   ;; lookup error (unbound function): propagate
                   resolve_rc
@@ -1251,7 +1327,121 @@
                     (if (/= set_rc 0)
                         set_rc
                       ;; fset returns args[1] (the original definition, not resolved)
-                      (sys:unsafe (nl_sexp_clone_into out def_ptr)))))))))))))
+                      (sys:unsafe (nl_sexp_clone_into def_ptr out)))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; ENV-GLOBALS-OP HANDLER (in-combiner; replaces forwarding to Rust bi_globals_op)
+;;
+;; nelisp--env-globals-op is the elisp-side dispatcher used by the bootstrap for
+;; symbol value/function/constant get/set/clear/bound queries. The args list is the
+;; EVALUATED argument cons list:
+;;   (OP)            -- 1 arg: 'capture-lexical (DEAD on bootstrap + (fact 5) paths)
+;;   (OP NAME)       -- 2 args: READ op  -> nelisp_env_shim_op
+;;   (OP NAME VAL)   -- 3 args: SET op   -> nelisp_env_shim_set_op
+;;
+;; OP is a Sexp::Symbol; the shims dispatch internally on it. On success the shim
+;; returns 1 and the result is already in OUT (result_slot == out). Any non-1 rc is
+;; an error (unbound var = 0, unbound fn = -1, other = error) -> stash wta, return 1.
+;; ---------------------------------------------------------------------------
+
+;; nl_apply_build_setop_scratch(unbound_ptr, s7_ptr, s8_ptr, s10_ptr, out_slot) -> out_slot
+;; Build an 11-slot function/value-variant Sexp::Vector scratch for set ops.
+;;   slot5  = Symbol("symbol-entry")   (vivify tag)
+;;   slot7  = *s7_ptr  (value-cell)
+;;   slot8  = *s8_ptr  (function-cell)
+;;   slot9  = Nil      (plist; auto from nl_alloc_vector)
+;;   slot10 = *s10_ptr (constant-cell)
+;;   slots 0-4,6 = Nil (auto from nl_alloc_vector)
+;; data_ptr = peek-u64(box_ptr+8); slot N at data_ptr + N*32.
+;; "symbol-entry" [12]: 7290602597431212403, 2037544046
+(sys:defun nl_apply_build_setop_scratch
+    ((unbound_ptr usize) (s7_ptr usize) (s8_ptr usize)
+     (s10_ptr usize) (out_slot usize))
+  usize
+  (:alloc may :ffi may :unsafe may)
+  (let ((box_ptr usize (sys:unsafe (nl_alloc_vector 11)))
+        (sym_slot usize (sys:alloc 32 8))
+        (sym_buf usize (sys:alloc 16 1)))
+    (sys:unsafe
+     (sys:poke-u64 sym_buf 7290602597431212403)
+     (sys:poke-u64 (+ sym_buf 8) 2037544046)
+     (nl_alloc_symbol sym_buf 12 sym_slot)
+     (nl_vector_set_slot box_ptr 5 sym_slot))
+    (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
+      (sys:unsafe
+       (nl_sexp_clone_into s7_ptr (+ data_ptr 224))
+       (nl_sexp_clone_into s8_ptr (+ data_ptr 256))
+       (nl_sexp_clone_into s10_ptr (+ data_ptr 320))
+       ;; Wrap box_ptr as Sexp::Vector in out_slot (tag=8, payload=box_ptr)
+       (sys:poke-u64 out_slot 8)
+       (sys:poke-u64 (+ out_slot 8) box_ptr)
+       (sys:poke-u64 (+ out_slot 16) 0)
+       (sys:poke-u64 (+ out_slot 24) 0)
+       out_slot))))
+
+;; nl_apply_do_globals_op(args_list_ptr, env, out) -> i64
+(sys:defun nl_apply_do_globals_op
+    ((args_list_ptr usize) (env (ptr eval_ctx)) (out usize))
+  i64
+  (:alloc may :ffi may :unsafe may)
+  ;; args_list must be Cons; op = car(args_list)
+  (if (= (sys:peek-u64 args_list_ptr) 7)
+      (let ((op_ptr usize (sys:unsafe (nl_cons_car_ptr args_list_ptr)))
+            (rest1 usize (sys:unsafe (nl_cons_cdr_ptr args_list_ptr))))
+        (if (= (sys:peek-u64 rest1) 7)
+            ;; 2+ args: sym = car(rest1)
+            (let ((sym_ptr usize (sys:unsafe (nl_cons_car_ptr rest1)))
+                  (rest2 usize (sys:unsafe (nl_cons_cdr_ptr rest1)))
+                  (mirror_ptr usize (+ (sys:cast usize env)
+                                       (sys:offsetof eval_ctx mirror)))
+                  (unbound_ptr usize (+ (sys:cast usize env)
+                                        (sys:offsetof eval_ctx unbound))))
+              (if (= (sys:peek-u64 rest2) 7)
+                  ;; 3 args: SET op. val = car(rest2)
+                  (let ((val_ptr usize (sys:unsafe (nl_cons_car_ptr rest2)))
+                        (nil_slot usize (sys:alloc 32 8))
+                        (scratch_slot usize (sys:alloc 32 8)))
+                    (nl_apply_write_nil nil_slot)
+                    ;; Build per-op scratch:
+                    ;;   set-value:    s7=val,     s8=unbound, s10=Nil
+                    ;;   set-function: s7=unbound,  s8=val,     s10=Nil
+                    ;;   set-constant: s7=unbound,  s8=unbound, s10=(val==Nil ? Nil : T)
+                    (if (= (nl_apply_eq_set_value op_ptr) 1)
+                        (nl_apply_build_setop_scratch unbound_ptr val_ptr unbound_ptr
+                                                      nil_slot scratch_slot)
+                      (if (= (nl_apply_eq_set_function op_ptr) 1)
+                          (nl_apply_build_setop_scratch unbound_ptr unbound_ptr val_ptr
+                                                        nil_slot scratch_slot)
+                        ;; set-constant (or unknown set op): slot10 = T if val != Nil
+                        (let ((const_slot usize (sys:alloc 32 8)))
+                          (if (= (sys:cast usize (sys:peek-u64 val_ptr)) 0)
+                              (nl_apply_write_nil const_slot)
+                            (sys:unsafe
+                             (sys:poke-u64 const_slot 1)
+                             (sys:poke-u64 (+ const_slot 8) 0)
+                             (sys:poke-u64 (+ const_slot 16) 0)
+                             (sys:poke-u64 (+ const_slot 24) 0)))
+                          (nl_apply_build_setop_scratch unbound_ptr unbound_ptr unbound_ptr
+                                                        const_slot scratch_slot))))
+                    (let ((rc i64 (sys:unsafe
+                                   (nelisp_env_shim_set_op
+                                    op_ptr mirror_ptr sym_ptr scratch_slot out 0))))
+                      (if (= rc 1)
+                          (sys:cast i64 0)
+                        (nl_apply_stash_wta env op_ptr))))
+                ;; 2 args: READ op.
+                (let ((nilpad usize (sys:alloc 32 8)))
+                  (nl_apply_write_nil nilpad)
+                  (let ((rc i64 (sys:unsafe
+                                 (nelisp_env_shim_op
+                                  op_ptr mirror_ptr sym_ptr unbound_ptr out nilpad))))
+                    (if (= rc 1)
+                        (sys:cast i64 0)
+                      (nl_apply_stash_wta env op_ptr))))))
+          ;; 1 arg (capture-lexical): DEAD path. Stash error sentinel.
+          (nl_apply_stash_wta env args_list_ptr)))
+    ;; args_list not Cons (0 args): malformed.
+    (nl_apply_stash_wta env args_list_ptr)))
 
 ;; ---------------------------------------------------------------------------
 ;; BUILTIN DISPATCH
@@ -1295,10 +1485,12 @@
                                       (nl_apply_do_push_captured args_list_ptr env out)
                                     (if (= (nl_apply_name_eq_set_use_elisp name_ptr) 1)
                                         (nl_apply_do_set_use_elisp args_list_ptr env out)
+                                      (if (= (nl_apply_name_eq_env_globals_op name_ptr) 1)
+                                          (nl_apply_do_globals_op args_list_ptr env out)
                                       (if (= (nl_apply_deferred_symbol_function name_ptr) 1)
                                           (nl_apply_do_symbol_function args_list_ptr env out)
                                         ;; must be fset
-                                        (nl_apply_do_fset args_list_ptr env out))))))))))
+                                        (nl_apply_do_fset args_list_ptr env out)))))))))))
                     (if (= cls 2)
                         ;; Deferred: stash not-yet-implemented error and return 1
                         (nl_apply_stash_wta env name_ptr)

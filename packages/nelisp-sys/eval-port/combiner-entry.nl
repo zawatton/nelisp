@@ -298,8 +298,8 @@
       (let ((box_ptr usize (nl_entry_build_scratch_box sym5_slot unbound_ptr)))
         (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
           (sys:unsafe
-           (nl_sexp_clone_into (+ data_ptr 224) signal_slot)
-           (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+           (nl_sexp_clone_into signal_slot (+ data_ptr 224))
+           (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
            (sys:poke-u64 vec_slot 8)
            (sys:poke-u64 (+ vec_slot 8) box_ptr)
            (sys:poke-u64 (+ vec_slot 16) 0)
@@ -356,8 +356,8 @@
       (let ((box_ptr usize (nl_entry_build_scratch_box sym5_slot unbound_ptr)))
         (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
           (sys:unsafe
-           (nl_sexp_clone_into (+ data_ptr 224) signal_slot)
-           (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+           (nl_sexp_clone_into signal_slot (+ data_ptr 224))
+           (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
            (sys:poke-u64 vec_slot 8)
            (sys:poke-u64 (+ vec_slot 8) box_ptr)
            (sys:poke-u64 (+ vec_slot 16) 0)
@@ -464,11 +464,19 @@
   ;; Allocate 120 bytes, align 8 for EvalCtx
   (let ((ctx usize (sys:alloc 120 8)))
     ;; Clone globals into ctx+0 (mirror, offset 0)
-    (sys:unsafe (nl_sexp_clone_into ctx globals_ptr))
+    (sys:unsafe (nl_sexp_clone_into globals_ptr ctx))
     ;; Clone frames into ctx+32 (frames, offset 32)
-    (sys:unsafe (nl_sexp_clone_into (+ ctx 32) frames_ptr_arg))
-    ;; Clone unbound into ctx+64 (unbound, offset 64)
-    (sys:unsafe (nl_sexp_clone_into (+ ctx 64) unbound_ptr))
+    (sys:unsafe (nl_sexp_clone_into frames_ptr_arg (+ ctx 32)))
+    ;; Copy unbound into ctx+64 (unbound, offset 64) -- SHALLOW raw 32B copy.
+    ;; Doc 135 UAF fix: the env outlives this ctx, so the ctx unbound field can
+    ;; share env.unbound_marker'''s buffer.  A deep clone (nl_sexp_clone_into ->
+    ;; nl_alloc_symbol) re-read the String buffer and crashed on a use-after-free
+    ;; of env.unbound_marker'''s alloc-bytes buffer; the raw copy never derefs it.
+    (sys:unsafe
+     (sys:poke-u64 (+ ctx 64) (sys:peek-u64 unbound_ptr))
+     (sys:poke-u64 (+ ctx 72) (sys:peek-u64 (+ unbound_ptr 8)))
+     (sys:poke-u64 (+ ctx 80) (sys:peek-u64 (+ unbound_ptr 16)))
+     (sys:poke-u64 (+ ctx 88) (sys:peek-u64 (+ unbound_ptr 24))))
     ;; rec_cur = 0 at offset 96
     (sys:unsafe (sys:poke-u64 (+ ctx 96) (sys:cast u64 0)))
     ;; rec_max = rec_max at offset 104

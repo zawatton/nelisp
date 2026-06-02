@@ -174,6 +174,6 @@
     ;; Walk the lexframe stack and populate alist_slot.
     (sys:unsafe (nl_capture_descend_native frames_sexp_ptr alist_slot))
     ;; Clone the alist (Nil or Cons chain) into *out — refcount-correct.
-    (sys:unsafe (nl_sexp_clone_into out alist_slot))
+    (sys:unsafe (nl_sexp_clone_into alist_slot out))
     ;; Return 0 (ok).
     (sys:cast i64 0)))

@@ -1,36 +1,5 @@
-;;; nelisp-cc-evalport-str-to-float.el --- Phase 47 nl_str_to_float  -*- lexical-binding: t; -*-
-
-;; Copyright (C) 2026 zawatton
-
-;; This file is not part of GNU Emacs.
-
-;; SPDX-License-Identifier: GPL-3.0-or-later
-
-;;; Commentary:
-
-;; Doc 136 -- nl_str_to_float standalone implementation.
-;;
-;; Lowered from packages/nelisp-sys/eval-port/nonenv-str-to-float.nl via
-;; `nelisp-sys-backend-lower-module' targeting x86_64-unknown-linux-gnu.
-;;
-;; Exports 1 C-ABI symbol:
-;;   nl_str_to_float(bytes_ptr, len, slot) -> i64
-;;
-;; APPROXIMATION FLAGS [A][B][C][D] -- see nonenv-str-to-float.nl header.
-;;
-;; Linux-x86_64 only.
-
+;;; nelisp-cc-evalport-str-to-float.el --- lowered -*- lexical-binding: t; -*-
 ;;; Code:
-
 (defconst nelisp-cc-evalport-str-to-float--source
-  '(seq (defun nl_stf_write_nil (slot) (seq (ptr-write-u64 slot 0 0) (ptr-write-u64 (+ slot 8) 0 0) (ptr-write-u64 (+ slot 16) 0 0) (ptr-write-u64 (+ slot 24) 0 0) 0)) (defun nl_stf_byte (bytes_ptr i len) (if (< i len) (nelisp_ptr_read_u8 bytes_ptr i) -1)) (defun nl_stf_is_digit (b) (if (< b 48) 0 (if (> b 57) 0 1))) (defun nl_stf_count (bytes_ptr i len) (let ((b (nl_stf_byte bytes_ptr i len))) (if (= (nl_stf_is_digit b) 1) (+ 1 (nl_stf_count bytes_ptr (+ i 1) len)) 0))) (defun nl_stf_accum (bytes_ptr i len acc) (let ((b (nl_stf_byte bytes_ptr i len))) (if (= (nl_stf_is_digit b) 1) (nl_stf_accum bytes_ptr (+ i 1) len (+ (* acc 10) (- b 48))) acc))) (defun nl_stf_ipow10 (n) (if (= n 0) 1 (* 10 (nl_stf_ipow10 (- n 1))))) (defun nl_stf_finish (slot neg mant_i64 net_exp) (let ((sign_val (if (= neg 1) (- 0 1) 1))) (if (>= net_exp 0) (let ((pow (nl_stf_ipow10 net_exp))) (let ((scaled (* (* sign_val mant_i64) pow))) (seq (nl_sexp_write_float slot (i64-to-f64 scaled)) 1))) (let ((neg_exp (- 0 net_exp))) (let ((pow_neg (nl_stf_ipow10 neg_exp))) (seq (nl_sexp_write_float slot (f64-div (i64-to-f64 (* sign_val mant_i64)) (i64-to-f64 pow_neg))) 1)))))) (defun nl_stf_build_result (bp len slot neg i2 mant) (let ((has_dot (if (= (nl_stf_byte bp i2 len) 46) 1 0))) (let ((frac_cnt (if (= has_dot 1) (nl_stf_count bp (+ i2 1) len) 0)) (frac_val (if (= has_dot 1) (nl_stf_accum bp (+ i2 1) len 0) 0))) (let ((i3 (if (= has_dot 1) (+ (+ i2 1) frac_cnt) i2)) (scale (if (= has_dot 1) (nl_stf_ipow10 frac_cnt) 1))) (let ((mant2 (+ (* mant scale) frac_val))) (let ((has_exp (if (= (nl_stf_byte bp i3 len) 101) 1 (if (= (nl_stf_byte bp i3 len) 69) 1 0)))) (let ((sb (nl_stf_byte bp (+ i3 1) len)) (i4 (if (= has_exp 1) (if (= (nl_stf_byte bp (+ i3 1) len) 45) (+ i3 2) (if (= (nl_stf_byte bp (+ i3 1) len) 43) (+ i3 2) (+ i3 1))) i3)) (eneg (if (= has_exp 1) (if (= (nl_stf_byte bp (+ i3 1) len) 45) 1 0) 0))) (let ((ecnt (if (= has_exp 1) (nl_stf_count bp i4 len) 0)) (emag (if (= has_exp 1) (nl_stf_accum bp i4 len 0) 0))) (let ((end_pos (+ i4 ecnt)) (exp_ok (if (= has_exp 1) (if (= ecnt 0) 0 1) 1))) (if (= end_pos len) (if (= exp_ok 1) (let ((esign (if (= eneg 1) (- 0 emag) emag))) (nl_stf_finish slot neg mant2 (- esign frac_cnt))) (nl_stf_write_nil slot)) (nl_stf_write_nil slot))))))))))) (defun nl_str_to_float (bytes_ptr len slot) (if (= len 0) (nl_stf_write_nil slot) (let ((b0 (nl_stf_byte bytes_ptr 0 len))) (let ((neg (if (= b0 45) 1 0)) (i1 (if (= b0 45) 1 0))) (let ((int_cnt (nl_stf_count bytes_ptr i1 len))) (if (= int_cnt 0) (nl_stf_write_nil slot) (let ((int_val (nl_stf_accum bytes_ptr i1 len 0)) (i2 (+ i1 int_cnt))) (nl_stf_build_result bytes_ptr len slot neg i2 int_val)))))))))
-  "Doc 136 Phase 47 source for nl_str_to_float.
-
-Lowered from packages/nelisp-sys/eval-port/nonenv-str-to-float.nl.
-
-Public exports: nl_str_to_float.
-Net Rust delta: zero.  Resolves 1 undefined symbol.")
-
-(provide 'nelisp-cc-evalport-str-to-float)
-
-;;; nelisp-cc-evalport-str-to-float.el ends here
+  (quote (seq (defun nl_stf_write_nil (slot) (seq (ptr-write-u64 slot 0 0) (ptr-write-u64 (+ slot 8) 0 0) (ptr-write-u64 (+ slot 16) 0 0) (ptr-write-u64 (+ slot 24) 0 0) 0)) (defun nl_stf_byte (bytes_ptr i len) (if (< i len) (nelisp_ptr_read_u8 bytes_ptr i) -1)) (defun nl_stf_is_digit (b) (if (< b 48) 0 (if (> b 57) 0 1))) (defun nl_stf_count (bytes_ptr i len) (let* ((b (nl_stf_byte bytes_ptr i len))) (if (= (nl_stf_is_digit b) 1) (+ 1 (nl_stf_count bytes_ptr (+ i 1) len)) 0))) (defun nl_stf_accum (bytes_ptr i len acc) (let* ((b (nl_stf_byte bytes_ptr i len))) (if (= (nl_stf_is_digit b) 1) (nl_stf_accum bytes_ptr (+ i 1) len (+ (* acc 10) (- b 48))) acc))) (defun nl_stf_ipow10 (n) (if (= n 0) 1 (* 10 (nl_stf_ipow10 (- n 1))))) (defun nl_stf_finish (slot neg mant_i64 net_exp) (let* ((sign_val (if (= neg 1) (- 0 1) 1))) (if (>= net_exp 0) (let* ((pow (nl_stf_ipow10 net_exp))) (let* ((scaled (* (* sign_val mant_i64) pow))) (seq (nl_sexp_write_float slot (i64-to-f64 scaled)) 1))) (let* ((neg_exp (- 0 net_exp))) (let* ((pow_neg (nl_stf_ipow10 neg_exp))) (seq (nl_sexp_write_float slot (f64-div (i64-to-f64 (* sign_val mant_i64)) (i64-to-f64 pow_neg))) 1)))))) (defun nl_stf_build_result (bp len slot neg i2 mant) (let* ((has_dot (if (= (nl_stf_byte bp i2 len) 46) 1 0))) (let* ((frac_cnt (if (= has_dot 1) (nl_stf_count bp (+ i2 1) len) 0)) (frac_val (if (= has_dot 1) (nl_stf_accum bp (+ i2 1) len 0) 0))) (let* ((i3 (if (= has_dot 1) (+ (+ i2 1) frac_cnt) i2)) (scale (if (= has_dot 1) (nl_stf_ipow10 frac_cnt) 1))) (let* ((mant2 (+ (* mant scale) frac_val))) (let* ((has_exp (if (= (nl_stf_byte bp i3 len) 101) 1 (if (= (nl_stf_byte bp i3 len) 69) 1 0)))) (let* ((sb (nl_stf_byte bp (+ i3 1) len)) (i4 (if (= has_exp 1) (if (= (nl_stf_byte bp (+ i3 1) len) 45) (+ i3 2) (if (= (nl_stf_byte bp (+ i3 1) len) 43) (+ i3 2) (+ i3 1))) i3)) (eneg (if (= has_exp 1) (if (= (nl_stf_byte bp (+ i3 1) len) 45) 1 0) 0))) (let* ((ecnt (if (= has_exp 1) (nl_stf_count bp i4 len) 0)) (emag (if (= has_exp 1) (nl_stf_accum bp i4 len 0) 0))) (let* ((end_pos (+ i4 ecnt)) (exp_ok (if (= has_exp 1) (if (= ecnt 0) 0 1) 1))) (if (= end_pos len) (if (= exp_ok 1) (let* ((esign (if (= eneg 1) (- 0 emag) emag))) (nl_stf_finish slot neg mant2 (- esign frac_cnt))) (nl_stf_write_nil slot)) (nl_stf_write_nil slot))))))))))) (defun nl_str_to_float (bytes_ptr len slot) (if (= len 0) (nl_stf_write_nil slot) (let* ((b0 (nl_stf_byte bytes_ptr 0 len))) (let* ((neg (if (= b0 45) 1 0)) (i1 (if (= b0 45) 1 0))) (let* ((int_cnt (nl_stf_count bytes_ptr i1 len))) (if (= int_cnt 0) (nl_stf_write_nil slot) (let* ((int_val (nl_stf_accum bytes_ptr i1 len 0)) (i2 (+ i1 int_cnt))) (nl_stf_build_result bytes_ptr len slot neg i2 int_val)))))))))))
+(provide (quote nelisp-cc-evalport-str-to-float))

@@ -348,7 +348,7 @@
      (sys:poke-u64 tag_buf 7959380261591412598)
      (sys:poke-u64 (+ tag_buf 8) 474315584611)
      (nl_alloc_symbol tag_buf 13 tag_slot)
-     (nl_sexp_clone_into clone_slot name_ptr))
+     (nl_sexp_clone_into name_ptr clone_slot))
     (nl_cons_write_nil nil_slot)
     (sys:unsafe
      (nelisp_cons_construct clone_slot nil_slot pair_slot)
@@ -378,8 +378,8 @@
        (nl_vector_set_slot box_ptr 5 sym_slot))
       (let ((data_ptr usize (sys:cast usize (sys:unsafe (sys:peek-u64 (+ box_ptr 8))))))
         (sys:unsafe
-         (nl_sexp_clone_into (+ data_ptr 224) signal_slot)
-         (nl_sexp_clone_into (+ data_ptr 256) unbound_ptr)
+         (nl_sexp_clone_into signal_slot (+ data_ptr 224))
+         (nl_sexp_clone_into unbound_ptr (+ data_ptr 256))
          (sys:poke-u64 vec_slot 8)
          (sys:poke-u64 (+ vec_slot 8) box_ptr)
          (sys:poke-u64 (+ vec_slot 16) 0)
