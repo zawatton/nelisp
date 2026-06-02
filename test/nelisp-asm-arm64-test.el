@@ -848,6 +848,38 @@ exec a probe and check exit status."
                   (lambda (b) (nelisp-asm-arm64-ldrb-reg-reg b 'x3 'x5 'x7)))
                  (nelisp-asm-arm64-test--word #x386768A3))))
 
+;; ---- Doc 133 P0 ADR (addr-of) PC-relative label fixup ------------
+
+(ert-deftest nelisp-asm-arm64-adr-forward-resolves ()
+  "ADR X0, <tgt> 8 bytes ahead resolves to byte-offset +8 = 0x10000040.
+imm byte-offset = 8 -> immlo = 0, immhi = 2 -> (2<<5) = 0x40."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-adr b 'x0 'tgt)        ; slot 0 (4 bytes)
+    (nelisp-asm-arm64-nop b)                  ; pos 4..8 spacer
+    (nelisp-asm-arm64-define-label b 'tgt)    ; tgt = pos 8
+    (nelisp-asm-arm64-nop b)
+    (let ((bytes (nelisp-asm-arm64-resolve-fixups b)))
+      (should (equal (substring bytes 0 4)
+                     (nelisp-asm-arm64-test--word #x10000040))))))
+
+(ert-deftest nelisp-asm-arm64-adr-backward-resolves ()
+  "ADR X3, <tgt> 4 bytes behind resolves to byte-offset -4 = 0x10FFFFE3.
+imm byte-offset = -4 -> immlo = 0, immhi = 0x7FFFF -> (0x7FFFF<<5)|Rd."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-define-label b 'tgt)    ; tgt = pos 0
+    (nelisp-asm-arm64-nop b)                  ; pos 0..4 spacer
+    (nelisp-asm-arm64-adr b 'x3 'tgt)         ; slot 4
+    (let ((bytes (nelisp-asm-arm64-resolve-fixups b)))
+      (should (equal (substring bytes 4 8)
+                     (nelisp-asm-arm64-test--word #x10FFFFE3))))))
+
+(ert-deftest nelisp-asm-arm64-adr-unresolved-label-signals ()
+  "An ADR against a never-defined label signals at finalize."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-adr b 'x0 'nope)
+    (should-error (nelisp-asm-arm64-resolve-fixups b)
+                  :type 'nelisp-asm-arm64-error)))
+
 (provide 'nelisp-asm-arm64-test)
 
 ;;; nelisp-asm-arm64-test.el ends here

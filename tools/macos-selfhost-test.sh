@@ -225,6 +225,14 @@ build_run cons-clone '(seq
       (+ (ptr-read-u64 8589934976 8) (ptr-read-u64 8589935040 8))))
   (exit (run)))' 23
 
+# function pointers (Doc 133 P0): take add2's address (ADR), call it
+# indirectly (BLR) with args 30, 12 -> 42.  Exercises addr-of + call-ptr,
+# the keystone for the real combiner/eval dispatch on arm64.
+build_run callptr '(seq
+  (defun add2 (a b) (+ a b))
+  (defun run () (call-ptr (addr-of add2) 30 12))
+  (exit (run)))' 42
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0

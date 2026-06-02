@@ -216,16 +216,18 @@ shadow would mask codegen bugs."
 
 (defun nelisp-asm-arm64-emit-fixup (buf slot-offset label type)
   "Record a 4-byte arm64 branch fixup at SLOT-OFFSET against LABEL.
-TYPE is one of `b26' / `bl26' / `b19'.  The first two share a
-26-bit immediate field at the low end of the instruction word
+TYPE is one of `b26' / `bl26' / `b19' / `adr21'.  `b26'/`bl26' share
+a 26-bit immediate field at the low end of the instruction word
 (= base 0x14000000 for B, 0x94000000 for BL).  `b19' is for
 `B.cond' instructions (= base 0x54000000) where the 19-bit signed
-byte-offset / 4 lives in bits [23:5] of the word.  Resolution
+byte-offset / 4 lives in bits [23:5] of the word.  `adr21' is for
+`ADR' (= base 0x10000000) where the 21-bit *signed byte* offset
+(±1 MiB) lives in immhi:immlo (bits [23:5] and [30:29]).  Resolution
 computes the appropriate imm field at finalize time and ORs it
 into the existing constant base already written; the caller is
 responsible for emitting the 4-byte placeholder (= base only,
 imm field = 0) before recording the fixup."
-  (unless (memq type '(b26 bl26 b19))
+  (unless (memq type '(b26 bl26 b19 adr21))
     (signal 'nelisp-asm-arm64-error
             (list :unknown-fixup-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
@@ -332,6 +334,21 @@ O(total-bytes))."
                       (field (ash (logand imm19 #x7FFFF) 5))
                       (new  (logior cur field)))
                  (nelisp-asm-arm64--write-word-le vec slot new))))
+            ('adr21
+             ;; Doc 133 P0 `addr-of': ADR patches a 21-bit *signed byte*
+             ;; offset (NOT /4) into immhi:immlo.  immlo = disp[1:0]
+             ;; (bits [30:29]), immhi = disp[20:2] (bits [23:5]).  PC for
+             ;; ADR is the instruction's own address (= slot).  Range is
+             ;; ±1 MiB — fine for a single intra-text section.
+             (unless (and (>= disp (- (ash 1 20)))
+                          (<  disp (ash 1 20)))
+               (signal 'nelisp-asm-arm64-error
+                       (list :adr-out-of-range disp :at-slot slot)))
+             (let* ((immlo (logand disp #x3))
+                    (immhi (logand (ash disp -2) #x7FFFF))
+                    (cur   (nelisp-asm-arm64--read-word-le vec slot))
+                    (new   (logior cur (ash immlo 29) (ash immhi 5))))
+               (nelisp-asm-arm64--write-word-le vec slot new)))
             (other
              (signal 'nelisp-asm-arm64-error
                      (list :unknown-fixup-type other :at-slot slot)))))))
@@ -508,6 +525,19 @@ low 26 bits."
   (let ((slot (nelisp-asm-arm64-buffer-pos buf)))
     (nelisp-asm-arm64--emit-word buf #x94000000)
     (nelisp-asm-arm64-emit-fixup buf slot label 'bl26)))
+
+(defun nelisp-asm-arm64-adr (buf reg label)
+  "Emit `ADR Xd, LABEL' — PC-relative address of LABEL into REG.
+Writes the 4-byte placeholder = base 0x10000000 | Rd (imm = 0),
+then records an `adr21' fixup at the placeholder offset.
+`resolve-fixups' patches the 21-bit signed byte offset (immhi:immlo,
+±1 MiB) at finalize time.  This materialises a function/data address
+intra-text — the aarch64 counterpart of x86_64 `LEA reg, [rip+sym]'
+\(Doc 133 Phase 0 `addr-of')."
+  (let ((d (logand (nelisp-asm-arm64--reg-num reg) #x1F))
+        (slot (nelisp-asm-arm64-buffer-pos buf)))
+    (nelisp-asm-arm64--emit-word buf (logior #x10000000 d))
+    (nelisp-asm-arm64-emit-fixup buf slot label 'adr21)))
 
 (defun nelisp-asm-arm64-blr (buf reg)
   "Emit `BLR Xn' (= branch with link to register, indirect call).
