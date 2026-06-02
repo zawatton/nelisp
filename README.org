@@ -1,6 +1,6 @@
 #+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v2.0)
 #+AUTHOR: zawatton
-#+DATE: 2026-05-22
+#+DATE: 2026-05-22 (standalone self-host & parallel build: 2026-06-02)
 
 #+begin_quote
 *Note on language:* I'm a non-native English speaker. The phrasing in
@@ -27,6 +27,15 @@ v2.0 (2026-05-22) ships:
   pure-elisp object-file writers (ELF, Mach-O, PE/COFF) and pure-elisp
   asm encoders (x86_64 with both SysV and Microsoft x64 ABIs, plus
   AArch64 AAPCS).
+
+2026-06 adds a *standalone self-hosting binary*:
+- *Self-host + parallel build* — a pure-elisp Phase-47-AOT binary
+  (=target/nelisp-standalone-reader=, *zero Rust*) loads its own
+  compiler and compiles Elisp source → native ELF *with no Emacs in
+  the loop*, including recursion (=(fact 5)= → exit 120),
+  multi-threaded native programs (=clone(2)= + atomics), and *N units
+  compiled concurrently* (=fork(2)= workers).  All CI-gated.  See
+  =Standalone self-host & parallel build=.
 
 Use cases: running Elisp on machines without Emacs, and as a
 substrate for Lisp Machine / new-dialect experiments.
@@ -115,6 +124,50 @@ targets are also pure Elisp.
   process-level concurrency under the same Lisp runtime, which is
   what made the orchestrator and the long-running MCP handler design
   tractable.
+
+* Standalone self-host & parallel build (2026-06)
+
+The pure-Elisp Phase-47 AOT toolchain now produces a *standalone
+interpreter binary* — =target/nelisp-standalone-reader=, built by =make
+standalone-reader=, *zero Rust* — that runs with *no Emacs in the loop
+at all*: it loads an =.el= file via =argv[1]=, evaluates it, and exits
+with the low byte of the last form's integer value.
+
+Fed its own compiler toolchain as source (=nelisp-phase47-compiler= +
+=nelisp-asm-x86_64= + =nelisp-elf-write= + =nelisp-static-linker=,
+~20k lines of Elisp), this binary *self-hosts*: it compiles Elisp
+source to a native x86_64 ELF executable, with no Emacs anywhere.  The
+following are all CI-gated (=.github/workflows/ci.yml=):
+
+| Make target                              | What it proves                                                                                    |
+|------------------------------------------+---------------------------------------------------------------------------------------------------|
+| =make standalone-selfhost-test=          | compiles =(seq (defun fact (n) ...) (exit (fact 5)))= → native ELF → run → exit *120* (recursion)  |
+| =make standalone-selfhost-mt-test=       | compiles a *multi-threaded* program (=clone(2)= + SeqCst atomics, 3 OS threads) → native ELF → *42* |
+| =make standalone-parallel-compile-test=  | compiles *4 units concurrently* — 4 =fork(2)= workers each running the full compiler → 11,22,33,44  |
+
+** Two concurrency paths, exposed to interpreted code
+
+Both are built only from existing Phase-47 grammar ops (=syscall-direct=
+/ =atomic-fetch-add= / raw memory access) — *zero new Rust*.
+
+- =(thread-spawn 'FORM)= / =(thread-join ADDR N)= — true multi-threaded
+  *eval* via =clone(2)= (CLONE_VM): OS threads sharing one address
+  space, each evaluating FORM with its own per-thread context (own
+  recursion counter), joined through a shared atomic counter.  The
+  shared-memory model (12/12 stable for parallel =eval=).
+- =(fork-spawn 'FORM)= — =fork(2)= workers with *COW-isolated* address
+  spaces (each its own arena / globals / env), so N workers compiling
+  concurrently share no mutable eval state and cannot race.  This is
+  the production *parallel build* path (4-way and 5-way verified
+  100%).
+
+The standalone arena allocator advances its bump pointer with a SeqCst
+=atomic-fetch-add=, so concurrent allocation is thread-safe by
+construction.
+
+This is the third rung of the self-host ladder, end to end and with no
+Emacs: =text → (the standalone interpreter running the Phase-47
+compiler) → native ELF=, scaled to *concurrent multi-unit compilation*.
 
 * Pure-Elisp Migration Progress (v2.0, 2026-05-22)
 
