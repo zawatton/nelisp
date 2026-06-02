@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 32 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 33 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -82,7 +82,9 @@
   clone kernel and proves its inline =atomic-fetch-add= refcount bump works
   in a Windows standalone PE.  Stage 32 links the =nl_sexp_clone_into=
   dispatcher plus every clone target it references, proving inline atom and
-  boxed Cons clone paths work in a Windows standalone PE.
+  boxed Cons clone paths work in a Windows standalone PE.  Stage 33 links the
+  NlConsBox set-car/set-cdr kernels and proves raw 32-byte slot updates work
+  over Windows arena-backed Cons boxes.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
