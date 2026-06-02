@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -707,6 +707,85 @@
                (regexp-quote (unibyte-string imm #x00 #x00 #x00))
                text)))
     (dolist (status '(#x2a #x10 #x11))
+      (should (string-match-p
+               (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                              status #x00 #x00 #x00))
+               text)))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-argv1-cstr-imports-apis ()
+  "Stage 24 standalone argv1 C-string bridge imports the required APIs."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-argv1-cstr-driver-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess" "GetCommandLineW" "lstrlenW")))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-argv1-cstr-data-buffer ()
+  "Stage 24 PE carries a .data argv1 byte buffer."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-argv1-cstr-driver-bytes))
+         (peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (sect0 (+ opt 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (data-rva (nelisp-windows-build-test--read-le32 bytes (+ sect2 12)))
+         (data-raw (nelisp-windows-build-test--read-le32 bytes (+ sect2 20)))
+         (data-size (nelisp-windows-build-test--read-le32 bytes (+ sect2 16))))
+    (should (= (nelisp-windows-build-test--read-le16 bytes (+ peoff 6)) 3))
+    (should (string-prefix-p ".data" (substring bytes sect2 (+ sect2 8))))
+    (should (= data-rva #x3000))
+    (should (> data-raw 0))
+    (should (>= data-size 260))
+    (should (equal (substring bytes data-raw (+ data-raw 16))
+                   (make-string 16 0)))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-argv1-cstr-passes-buffer ()
+  "Stage 24 `_start' passes argv1_cstr as driver arg2 in r8."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-argv1-cstr-driver-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (data-rva #x3000)
+         (text (substring bytes text-raw (+ text-raw 2600)))
+         (lea-off (string-match-p
+                   (regexp-quote (unibyte-string #x4c #x8d #x05))
+                   text))
+         (disp (and lea-off
+                    (nelisp-windows-build-test--read-le32
+                     text (+ lea-off 3))))
+         (target-rva (and disp (+ text-rva lea-off 7 disp)))
+         (call-off (string-match-p
+                    (regexp-quote (unibyte-string #xe8))
+                    text))
+         (driver-target (and call-off
+                             (+ text-rva call-off 5
+                                (nelisp-windows-build-test--read-le32
+                                 text (+ call-off 1)))))
+         (driver-off (and driver-target (- driver-target text-rva)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 2600))))
+    (should lea-off)
+    (should (= target-rva data-rva))
+    (should call-off)
+    (should driver-off)
+    (should (member (cdr (assoc "GetCommandLineW" iat-map)) targets))
+    (should (member (cdr (assoc "lstrlenW" iat-map)) targets))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (equal (substring text driver-off (+ driver-off 4))
+                   (unibyte-string #x55 #x48 #x89 #xe5)))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x0f #xb7 #x04 #x37))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x88 #x14 #x37))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x0f #xb6 #x04 #x37))
+             text))
+    (dolist (status '(#x0d #x0e #x0f #x11))
       (should (string-match-p
                (regexp-quote (unibyte-string #x48 #xc7 #xc0
                                               status #x00 #x00 #x00))
