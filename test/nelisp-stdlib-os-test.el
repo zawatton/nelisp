@@ -2560,6 +2560,35 @@
     (should (= nelisp-os--windows-next-fd 5))
     (should (equal (sort freed #'<) '(3000 4000)))))
 
+(ert-deftest nelisp-stdlib-os-accept-inet-windows-preserves-nonblock-flag ()
+  "Windows accepted socket fds keep listener O_NONBLOCK tracking."
+  (let ((freed nil)
+        (nelisp-os--windows-next-fd 4)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-fd-flags-table
+         `((3 . ,nelisp-os-O-NONBLOCK))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n) (if (= n nelisp-os--sockaddr-in-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (&rest _args) nil))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in)
+               (lambda (_ptr) (cons nelisp-os-INADDR-LOOPBACK 4444)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (_dll fn _sig &rest _args)
+                 (if (equal fn "accept")
+                     #x123456
+                   (error "unexpected ffi call %S" fn)))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-accept-inet 3)
+                       (list 4 nelisp-os-INADDR-LOOPBACK 4444)))
+        (should (= (nelisp-os-fcntl 4 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((4 . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
 (ert-deftest nelisp-stdlib-os-bind-inet6-windows-uses-winsock ()
   "Windows AF_INET6 bind passes encoded sockaddr_in6 to Winsock."
   (let ((calls nil)

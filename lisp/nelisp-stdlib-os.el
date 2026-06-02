@@ -2040,6 +2040,22 @@ returns (0 . 0)."
      [:pointer :sint32 :sint32 :sint32]
      domain base-type proto)))
 
+(defun nelisp-os--windows-accept-socket-fd (sockfd addr-buf len-buf)
+  "Accept SOCKFD through Winsock and return a socket-kind fd.
+The accepted fd keeps the listener's tracked status flags, matching the
+Winsock socket mode while keeping `F_GETFL' coherent for the new fd."
+  (let ((sock (nelisp-os--libc-call
+               "ws2_32" "accept"
+               [:pointer :pointer :pointer :pointer]
+               (nelisp-os--windows-socket-for-fd sockfd)
+               addr-buf len-buf)))
+    (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+        (nelisp-os--windows-winsock-error-signal)
+      (nelisp-os--windows-fd-alloc
+       sock
+       'socket
+       (nelisp-os--windows-fd-flags sockfd)))))
+
 (defun nelisp-os--windows-socket (domain type proto)
   "Windows implementation of `nelisp-os-socket' via Winsock."
   (unless (memq domain (list nelisp-os-AF-INET
@@ -2286,14 +2302,8 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in-len)
           (let ((newfd (if (nelisp-os--windows-p)
-                           (let ((sock (nelisp-os--libc-call
-                                        "ws2_32" "accept"
-                                        [:pointer :pointer :pointer :pointer]
-                                        (nelisp-os--windows-socket-for-fd sockfd)
-                                        addr-buf len-buf)))
-                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
-                                 (nelisp-os--windows-winsock-error-signal)
-                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                           (nelisp-os--windows-accept-socket-fd
+                            sockfd addr-buf len-buf)
                          (nelisp-os--libc-call "libc" "accept"
                                       [:sint32 :sint32 :pointer :pointer]
                                       sockfd addr-buf len-buf))))
@@ -2545,14 +2555,8 @@ peer is typically anonymous on a listening server."
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-un-len)
           (let ((newfd (if (nelisp-os--windows-p)
-                           (let ((sock (nelisp-os--libc-call
-                                        "ws2_32" "accept"
-                                        [:pointer :pointer :pointer :pointer]
-                                        (nelisp-os--windows-socket-for-fd sockfd)
-                                        addr-buf len-buf)))
-                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
-                                 (nelisp-os--windows-winsock-error-signal)
-                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                           (nelisp-os--windows-accept-socket-fd
+                            sockfd addr-buf len-buf)
                          (nelisp-os--libc-call "libc" "accept"
                                     [:sint32 :sint32 :pointer :pointer]
                                     sockfd addr-buf len-buf))))
@@ -2638,14 +2642,8 @@ host byte order."
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-len)
           (let ((newfd (if (nelisp-os--windows-p)
-                           (let ((sock (nelisp-os--libc-call
-                                        "ws2_32" "accept"
-                                        [:pointer :pointer :pointer :pointer]
-                                        (nelisp-os--windows-socket-for-fd sockfd)
-                                        addr-buf len-buf)))
-                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
-                                 (nelisp-os--windows-winsock-error-signal)
-                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                           (nelisp-os--windows-accept-socket-fd
+                            sockfd addr-buf len-buf)
                          (nelisp-os--libc-call "libc" "accept"
                                     [:sint32 :sint32 :pointer :pointer]
                                     sockfd addr-buf len-buf))))
@@ -3628,14 +3626,8 @@ FLOWINFO, SCOPE-ID).  All extra fields are wire-protocol-aware
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-scoped-len)
           (let ((newfd (if (nelisp-os--windows-p)
-                           (let ((sock (nelisp-os--libc-call
-                                        "ws2_32" "accept"
-                                        [:pointer :pointer :pointer :pointer]
-                                        (nelisp-os--windows-socket-for-fd fd)
-                                        addr-buf len-buf)))
-                             (if (= sock nelisp-os-WIN-INVALID-SOCKET)
-                                 (nelisp-os--windows-winsock-error-signal)
-                               (nelisp-os--windows-fd-alloc sock 'socket)))
+                           (nelisp-os--windows-accept-socket-fd
+                            fd addr-buf len-buf)
                          (nelisp-os--libc-call "libc" "accept"
                                     [:sint32 :sint32 :pointer :pointer]
                                     fd addr-buf len-buf))))
