@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -411,6 +411,55 @@
              (regexp-quote (unibyte-string #x48 #x89 #xc1 #xff #x15))
              text))
     (should (member #x2038 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-imports-apis ()
+  "Stage 18 standalone command-line bridge imports the required APIs."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess" "GetCommandLineW")))))
+
+(ert-deftest nelisp-windows-build-standalone-commandline-passes-driver-arg ()
+  "Stage 18 `_start' passes GetCommandLineW's result to `driver'."
+  (let* ((bytes (nelisp-windows-build--standalone-commandline-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (text (substring bytes text-raw (+ text-raw 180)))
+         (call-off (string-match-p
+                    (regexp-quote (unibyte-string #xe8))
+                    text))
+         (disp (and call-off
+                    (nelisp-windows-build-test--read-le32
+                     text (+ call-off 1))))
+         (target-rva (and disp (+ text-rva call-off 5 disp)))
+         (driver-off (and target-rva (- target-rva text-rva)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 180))))
+    (should call-off)
+    (should driver-off)
+    (should (member (cdr (assoc "GetCommandLineW" iat-map)) targets))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xff #x15))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x89 #xc1 #xe8))
+             text))
+    (should (equal (substring text driver-off (+ driver-off 4))
+                   (unibyte-string #x55 #x48 #x89 #xe5)))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                            #x2a #x00 #x00 #x00))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                            #x0d #x00 #x00 #x00))
+             text))
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))
                  text))))

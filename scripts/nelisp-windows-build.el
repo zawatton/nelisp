@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -35,6 +35,8 @@
 ;; exits through ExitProcess, replacing the Linux raw-syscall `_start' shape.
 ;; Stage 17 proves a freestanding PE entry can recover the process command
 ;; line through GetCommandLineW without relying on CRT argv startup.
+;; Stage 18 passes that command-line pointer through the standalone-shaped
+;; `_start' -> `driver' bridge.
 
 ;;; Code:
 
@@ -301,6 +303,29 @@ KERNEL32.dll!GetCommandLineW."
                                :bind 'global :type 'func))
      (nelisp-asm-x86_64-extract-relocs buf))))
 
+(defun nelisp-windows-build--standalone-commandline-start-unit
+    (text-rva exitprocess-iat-rva getcommandline-iat-rva)
+  "Return a PE `_start' unit that calls `driver(GetCommandLineW())'."
+  (let ((nelisp-phase47-compiler--windows-text-rva text-rva)
+        (buf (nelisp-asm-x86_64-make-buffer 'win64)))
+    ;; Keep `_start' at byte 0; the PE executable entry is .text RVA 0.
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp #x28)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf getcommandline-iat-rva)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xe8))
+    (nelisp-asm-x86_64-reloc-plt32-here buf "driver" 0 'text)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf exitprocess-iat-rva)
+    (nelisp-asm-x86_64-int3 buf)
+    (nelisp-link-unit-make
+     "start.o"
+     (list (cons 'text (nelisp-asm-x86_64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_start" 0 :section 'text
+                               :bind 'global :type 'func))
+     (nelisp-asm-x86_64-extract-relocs buf))))
+
 (defun nelisp-windows-build--link-units-executable-bytes
     (imports unit-builder &optional extra-rdata)
   "Return a PE32+ EXE from linked units produced by UNIT-BUILDER.
@@ -415,6 +440,21 @@ link-units."
       (nelisp-windows-build--compile-defuns-to-unit
        "driver.o" '(defun driver () 42))))))
 
+(defun nelisp-windows-build--standalone-commandline-driver42-bytes ()
+  "Return a PE32+ EXE proving `_start' passes GetCommandLineW to `driver'."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "GetCommandLineW")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (list
+      (nelisp-windows-build--standalone-commandline-start-unit
+       text-rva
+       (cdr (assoc "ExitProcess" iat-rvas))
+       (cdr (assoc "GetCommandLineW" iat-rvas)))
+      (nelisp-windows-build--compile-defuns-to-unit
+       "driver.o"
+       '(defun driver (cmdline)
+          (if (= cmdline 0) 13 42)))))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -452,6 +492,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone start -> driver)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-commandline-driver42 ()
+  "Batch entry: build target/nelisp-windows-standalone-commandline-driver42.exe."
+  (let ((bytes (nelisp-windows-build--standalone-commandline-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-commandline-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (GetCommandLineW -> driver)"
              out-path)
     out-path))
 

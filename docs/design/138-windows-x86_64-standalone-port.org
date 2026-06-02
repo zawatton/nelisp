@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 17 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 18 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -46,7 +46,10 @@
   the manifest bridge.  Stage 17 adds a freestanding =GetCommandLineW= /
   =lstrlenW= probe, proving a CRT-free PE entry can recover the process
   command line through KERNEL32 imports before argv parsing is wired into the
-  standalone reader path.
+  standalone reader path.  Stage 18 passes the =GetCommandLineW= pointer from
+  the standalone-shaped =_start= unit into a Phase47 =driver(cmdline)= defun,
+  proving the manifest bridge can receive Windows startup data without CRT
+  argv.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
