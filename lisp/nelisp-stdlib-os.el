@@ -436,6 +436,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defvar nelisp-os--windows-inotify-table nil
   "Alist mapping Windows inotify-compatible fds to state vectors.")
 
+(defvar nelisp-os--windows-socket-peercred-table nil
+  "Alist mapping Windows socket fds to synthetic peer credentials.")
+
 (defvar nelisp-os--windows-signal-mask nil
   "Emulated Windows signal mask used by `nelisp-os-sigprocmask'.")
 
@@ -658,6 +661,24 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (setq nelisp-os--windows-inotify-table
             (delq cell nelisp-os--windows-inotify-table)))))
 
+(defun nelisp-os--windows-socket-peercred-remove (fd)
+  "Remove Windows socket peer credential state tracked for FD."
+  (let ((cell (assq fd nelisp-os--windows-socket-peercred-table)))
+    (when cell
+      (setq nelisp-os--windows-socket-peercred-table
+            (delq cell nelisp-os--windows-socket-peercred-table)))))
+
+(defun nelisp-os--windows-socket-peercred-set (fd cred)
+  "Record synthetic Windows socket peer credential CRED for FD."
+  (let ((cell (assq fd nelisp-os--windows-socket-peercred-table)))
+    (if cell
+        (setcdr cell cred)
+      (push (cons fd cred) nelisp-os--windows-socket-peercred-table))))
+
+(defun nelisp-os--windows-synthetic-peercred ()
+  "Return synthetic peer credentials for same-process Windows socket pairs."
+  (list (emacs-pid) 0 0))
+
 (defun nelisp-os--windows-fd-kind (fd)
   "Return the Windows resource kind for FD."
   (or (cdr (assq fd nelisp-os--windows-fd-kind-table))
@@ -714,6 +735,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
     (nelisp-os--windows-timerfd-remove fd)
     (nelisp-os--windows-signalfd-remove fd)
     (nelisp-os--windows-inotify-remove fd)
+    (nelisp-os--windows-socket-peercred-remove fd)
     (cdr cell)))
 
 (defun nelisp-os--windows-close-resource (handle kind)
@@ -769,6 +791,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
             (nelisp-os--windows-timerfd-remove fd)
             (nelisp-os--windows-signalfd-remove fd)
             (nelisp-os--windows-inotify-remove fd)
+            (nelisp-os--windows-socket-peercred-remove fd)
             nil))))))
 
 (defun nelisp-os--windows-install-std-fd (fd handle flags &optional kind)
@@ -796,6 +819,7 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
         (nelisp-os--windows-timerfd-remove fd)
         (nelisp-os--windows-signalfd-remove fd)
         (nelisp-os--windows-inotify-remove fd)
+        (nelisp-os--windows-socket-peercred-remove fd)
         (nelisp-os--windows-fd-set-kind fd kind)
         (nelisp-os--windows-fd-set-flags fd flags)
         fd))))
@@ -823,6 +847,7 @@ descriptor semantics."
             (nelisp-os--windows-timerfd-remove fd)
             (nelisp-os--windows-signalfd-remove fd)
             (nelisp-os--windows-inotify-remove fd)
+            (nelisp-os--windows-socket-peercred-remove fd)
             (nelisp-os--windows-fd-set-kind fd 'eventfd)
             (nelisp-os--windows-fd-set-flags fd flags)
             (push (cons fd state) nelisp-os--windows-eventfd-table)
@@ -854,6 +879,7 @@ descriptor semantics."
             (nelisp-os--windows-timerfd-remove fd)
             (nelisp-os--windows-signalfd-remove fd)
             (nelisp-os--windows-inotify-remove fd)
+            (nelisp-os--windows-socket-peercred-remove fd)
             (nelisp-os--windows-fd-set-kind fd 'signalfd)
             (nelisp-os--windows-fd-set-flags fd flags)
             (push (cons fd state) nelisp-os--windows-signalfd-table)
@@ -903,6 +929,7 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
       (nelisp-os--windows-timerfd-remove fd)
       (nelisp-os--windows-signalfd-remove fd)
       (nelisp-os--windows-inotify-remove fd)
+      (nelisp-os--windows-socket-peercred-remove fd)
       (setq nelisp-os--windows-fd-table
             (delq cell nelisp-os--windows-fd-table)))
     (push (cons fd handle) nelisp-os--windows-fd-table)
@@ -2153,15 +2180,20 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
     (cond
      ((eq (nelisp-os--windows-fd-kind oldfd) 'socket)
       (let ((target-socket (nelisp-os--windows-duplicate-socket oldfd))
-            (flags (nelisp-os--windows-fd-flags oldfd)))
-        (if (nelisp-os--windows-std-handle-selector newfd)
-            (nelisp-os--windows-install-std-fd
-             newfd target-socket flags 'socket)
-          (nelisp-os--windows-fd-install
-           newfd
-           target-socket
-           'socket
-           flags))))
+            (flags (nelisp-os--windows-fd-flags oldfd))
+            (peercred (cdr (assq oldfd
+                                  nelisp-os--windows-socket-peercred-table))))
+        (prog1
+            (if (nelisp-os--windows-std-handle-selector newfd)
+                (nelisp-os--windows-install-std-fd
+                 newfd target-socket flags 'socket)
+              (nelisp-os--windows-fd-install
+               newfd
+               target-socket
+               'socket
+               flags))
+          (when peercred
+            (nelisp-os--windows-socket-peercred-set newfd peercred)))))
      ((eq (nelisp-os--windows-fd-kind oldfd) 'eventfd)
       (nelisp-os--windows-install-eventfd-fd
        newfd
@@ -2236,10 +2268,15 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
    ((eq (nelisp-os--windows-fd-kind oldfd) 'socket)
     (when (< nelisp-os--windows-next-fd min-fd)
       (setq nelisp-os--windows-next-fd min-fd))
-    (nelisp-os--windows-fd-alloc
-     (nelisp-os--windows-duplicate-socket oldfd)
-     'socket
-     (nelisp-os--windows-fd-flags oldfd)))
+    (let ((fd (nelisp-os--windows-fd-alloc
+               (nelisp-os--windows-duplicate-socket oldfd)
+               'socket
+               (nelisp-os--windows-fd-flags oldfd)))
+          (peercred (cdr (assq oldfd
+                                nelisp-os--windows-socket-peercred-table))))
+      (when peercred
+        (nelisp-os--windows-socket-peercred-set fd peercred))
+      fd))
    ((eq (nelisp-os--windows-fd-kind oldfd) 'eventfd)
     (let ((state (cdr (nelisp-os--windows-eventfd-cell oldfd))))
       (when (< nelisp-os--windows-next-fd min-fd)
@@ -4991,6 +5028,14 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
         (ignore-errors (nelisp-os-close (car pair)))
         (ignore-errors (nelisp-os-close (cdr pair)))))))
 
+(defun nelisp-os--windows-socketpair-track-peercred (domain pair)
+  "Track synthetic peer credentials for Windows AF_UNIX socketpair PAIR."
+  (when (= domain nelisp-os-AF-UNIX)
+    (let ((cred (nelisp-os--windows-synthetic-peercred)))
+      (nelisp-os--windows-socket-peercred-set (car pair) cred)
+      (nelisp-os--windows-socket-peercred-set (cdr pair) cred)))
+  pair)
+
 (defun nelisp-os--windows-socketpair (domain type protocol)
   "Windows `nelisp-os-socketpair' implementation via loopback sockets.
 Windows has no POSIX socketpair(2).  Stream pairs use a temporary TCP listener;
@@ -5017,9 +5062,11 @@ datagram pairs use two connected UDP sockets bound to loopback ephemeral ports."
             (nelisp-os--windows-socketpair-dgram create-type domain))
            (t
             (nelisp-os--windows-unsupported)))))
-    (if nonblock-p
-        (nelisp-os--windows-socketpair-set-nonblock pair)
-      pair)))
+    (nelisp-os--windows-socketpair-track-peercred
+     domain
+     (if nonblock-p
+         (nelisp-os--windows-socketpair-set-nonblock pair)
+       pair))))
 
 (defun nelisp-os-socketpair (domain type protocol)
   "POSIX socketpair(2) — returns (FD1 . FD2) on success.
@@ -5161,7 +5208,12 @@ MAX-FDS, never more)."
   "Retrieve the peer's `struct ucred' on AF_UNIX FD via getsockopt
 SO_PEERCRED.  Returns (PID UID GID) on success."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (progn
+        (nelisp-os--windows-socket-for-fd fd)
+        (let ((cell (assq fd nelisp-os--windows-socket-peercred-table)))
+          (if cell
+              (copy-sequence (cdr cell))
+            (nelisp-os--windows-unsupported))))
     (let ((cred-buf (nelisp-os--alloc nelisp-os--ucred-len))
           (len-buf  (nelisp-os--alloc 4)))
       (unwind-protect

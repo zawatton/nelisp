@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-131-WINDOWS-INOTIFY-DUP
+#+STATUS: STAGE-132-WINDOWS-PEERCRED-SOCKETPAIR
 
 * Status
 
-- *State*: STAGE 131 Windows inotify dup compatibility
+- *State*: STAGE 132 Windows socketpair peercred compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -281,9 +281,9 @@
   =SIGKILL= and validates the fd kind before FFI.  Synthetic process fds now
   also avoid regular HANDLE file APIs for =read/write/lseek/fstat/poll=.
   =fork= plus remaining Linux-only APIs still reject Windows before reaching
-  Linux syscall or Linux libc paths: =fork=, fd-passing
-  =sendmsg= / =recvmsg= requests, and =getsockopt-peercred= signal
-  =nelisp-os-error= with =ENOTSUP= on Windows.  Windows =sigprocmask= now
+  Linux syscall or Linux libc paths: =fork= and fd-passing
+  =sendmsg= / =recvmsg= requests signal =nelisp-os-error= with =ENOTSUP= on
+  Windows.  Windows =sigprocmask= now
   tracks an emulated signal mask for =SIG_BLOCK= / =SIG_UNBLOCK= /
   =SIG_SETMASK= without POSIX =sigset_t= allocation or libc FFI.  Windows
   =signalfd= now creates synthetic fd-kind entries with tracked normalized mask,
@@ -298,6 +298,10 @@
   Windows inotify duplicates now retain fd-kind / status flag tracking and
   share watch/queue state across =dup2=, standard fd =dup2= targets, and
   =F_DUPFD=.
+  Windows AF_UNIX socketpairs now record same-process synthetic peer
+  credentials so =getsockopt-peercred= returns =(PID 0 0)= for tracked
+  socketpair fds and socket duplicates; untracked arbitrary sockets remain
+  explicit =ENOTSUP=.
   Windows abstract AF_UNIX =bind= / =connect= now map abstract names to stable
   hashed temporary filesystem socket paths and reuse the existing Winsock
   filesystem AF_UNIX path.
@@ -390,9 +394,10 @@
   Windows abstract namespace AF_UNIX bind/connect now map NUL-free abstract
   names to stable hashed temporary filesystem socket paths before dispatching
   to the existing Winsock filesystem AF_UNIX path; stale bind paths are removed
-  before rebinding.  Linux-only AF_UNIX peer credentials still reject Windows
-  before libc or allocation: =getsockopt-peercred= signals =nelisp-os-error=
-  with =ENOTSUP=.  Windows =sendmsg-fds= / =recvmsg-fds= now support the
+  before rebinding.  Windows AF_UNIX socketpair peer credentials are tracked
+  synthetically for same-process pairs and duplicated socket fds; arbitrary
+  untracked sockets still return =ENOTSUP=.  Windows =sendmsg-fds= /
+  =recvmsg-fds= now support the
   payload-only case through Winsock =send= / =recv= when no descriptors are
   requested, while real SCM_RIGHTS-style fd passing remains explicitly
   =ENOTSUP=.  IPv4, IPv6,
@@ -741,6 +746,10 @@
   kind/status flags and share watch/queue state across =dup2=, stdout =dup2=,
   and =F_DUPFD=, including draining queued events from duplicated descriptors
   and adding watches through duplicated descriptors.
+  Stage 132 coverage verifies Windows AF_UNIX socketpair creation records
+  synthetic peer credentials, =getsockopt-peercred= returns the tracked
+  same-process credential, socket =dup2= / =F_DUPFD= preserve peercred state,
+  close removes peercred state, and untracked sockets reject before FFI.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1121,7 +1130,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   including scoped IPv6 variants that preserve flowinfo and scope-id.
   Filesystem-path =AF_UNIX= sockets now use Winsock as well; abstract namespace
   bind/connect map to hashed temporary filesystem paths on Windows, while
-  Linux-only fd-passing / peercred helpers reject Windows before libc fallback.
+  Linux-only fd-passing helpers reject Windows before libc fallback and
+  socketpair peercred is tracked synthetically.
   =getsockname= / =getpeername= wrappers now use Winsock for
   IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.  =nelisp-os-socketpair=
   now synthesizes Windows stream pairs through a temporary AF_INET loopback
@@ -1688,6 +1698,11 @@ largest uncertainty (B1 + B2) first.
    *Windows inotify dup compatibility SHIPPED 2026-06-03*: inotify =dup2=,
    stdout-target =dup2=, and =F_DUPFD= preserve inotify kind/status flags and
    share watch/queue state with the source descriptor.
+   *Windows socketpair peercred compatibility SHIPPED 2026-06-03*:
+   AF_UNIX socketpairs now track synthetic same-process peer credentials,
+   =getsockopt-peercred= returns tracked =(PID 0 0)= values, socket =dup2= /
+   =F_DUPFD= preserve peercred state, and untracked sockets remain
+   =ENOTSUP=.
    *Windows sigprocmask compatibility SHIPPED 2026-06-03*: =sigprocmask=
    now maintains an emulated Windows signal mask and returns previous masks
    for =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK= without POSIX FFI.
@@ -1880,8 +1895,8 @@ largest uncertainty (B1 + B2) first.
    =S_IFCHR=.  The native Windows smoke runner
    can list its full smoke manifest with =-List=.  Broader socket extensions
    remain pending.
-   Linux-only AF_UNIX
-   fd-passing/peercred helpers are guarded, not ported.
+   Linux-only AF_UNIX fd-passing remains guarded; socketpair peercred now has
+   synthetic same-process compatibility.
 
 * One-line summary
 

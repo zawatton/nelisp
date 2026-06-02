@@ -2294,14 +2294,13 @@
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-linux-only-apis-windows-error-before-syscall ()
-  "Linux-only fork/fd-passing/peercred APIs reject Windows before FFI."
+  "Linux-only fork/fd-passing APIs reject Windows before FFI."
   (let ((called nil)
         (forms
          (list
           (lambda () (nelisp-os-fork))
           (lambda () (nelisp-os-sendmsg-fds 3 (list 4) "x"))
-          (lambda () (nelisp-os-recvmsg-fds 3 1 1))
-          (lambda () (nelisp-os-getsockopt-peercred 3)))))
+          (lambda () (nelisp-os-recvmsg-fds 3 1 1)))))
     (cl-letf (((symbol-function 'nelisp--syscall)
                (lambda (&rest _args) (setq called t)))
               ((symbol-function 'nelisp-os--libc-call)
@@ -2312,6 +2311,94 @@
         (dolist (fn forms)
           (should-error (funcall fn) :type 'nelisp-os-error))))
     (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-peercred-windows-tracks-socketpair ()
+  "Windows AF_UNIX socketpair tracks synthetic peer credentials."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-socket-peercred-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--windows-socketpair-stream)
+               (lambda (type domain)
+                 (push (list 'socketpair-stream type domain) calls)
+                 (setq nelisp-os--windows-fd-table '((4 . #xbbbb) (3 . #xaaaa)))
+                 (setq nelisp-os--windows-fd-kind-table
+                       '((4 . socket) (3 . socket)))
+                 (cons 3 4))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-socketpair
+                        nelisp-os-AF-UNIX nelisp-os-SOCK-STREAM 0)
+                       '(3 . 4)))
+        (should (equal (nelisp-os-getsockopt-peercred 3)
+                       (list (emacs-pid) 0 0)))
+        (should (equal (nelisp-os-getsockopt-peercred 4)
+                       (list (emacs-pid) 0 0)))))
+    (should (equal calls
+                   (list (list 'socketpair-stream
+                               nelisp-os-SOCK-STREAM
+                               nelisp-os-AF-UNIX))))
+    (should (equal nelisp-os--windows-socket-peercred-table
+                   `((4 . ,(list (emacs-pid) 0 0))
+                     (3 . ,(list (emacs-pid) 0 0)))))))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-peercred-windows-duplicates-socket-state ()
+  "Windows socket dup preserves tracked synthetic peer credentials."
+  (let ((nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
+        (nelisp-os--windows-socket-peercred-table '((3 . (222 0 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--windows-duplicate-socket)
+               (lambda (fd)
+                 (should (= fd 3))
+                 #xbbbb)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-dup2 3 5) 5))
+        (should (equal (nelisp-os-getsockopt-peercred 5) '(222 0 0))))))
+  (let ((nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-socket-peercred-table '((3 . (222 0 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--windows-duplicate-socket)
+               (lambda (fd)
+                 (should (= fd 3))
+                 #xbbbb)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10) 10))
+        (should (equal (nelisp-os-getsockopt-peercred 10) '(222 0 0)))))))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-peercred-windows-rejects-untracked-socket ()
+  "Windows peercred rejects sockets without synthetic peer credentials."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-socket-peercred-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-getsockopt-peercred 3)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-peercred-windows-cleans-up-on-close ()
+  "Windows socket close removes synthetic peer credential state."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-socket-peercred-table '((3 . (222 0 0)))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should-not (nelisp-os-close 3))))
+    (should-not nelisp-os--windows-fd-table)
+    (should-not nelisp-os--windows-fd-kind-table)
+    (should-not nelisp-os--windows-socket-peercred-table)
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "closesocket"
+                          [:sint32 :pointer]
+                          (list #xaaaa)))))))
 
 (ert-deftest nelisp-stdlib-os-inotify-windows-creates-watches-and-cleans-up ()
   "Windows inotify creates synthetic fd-kind state and manages watches."
