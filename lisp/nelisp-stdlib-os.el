@@ -1458,7 +1458,11 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                                [:sint32 :pointer] target-handle)
                               (nelisp-os--windows-ffi-error-signal))
                           newfd))
-                    (nelisp-os--windows-fd-install newfd target-handle)))))
+                    (nelisp-os--windows-fd-install
+                     newfd
+                     target-handle
+                     nil
+                     (nelisp-os--windows-fd-flags oldfd))))))
           (nelisp-os--free target-handle-buf))))))
 
 (defun nelisp-os--windows-duplicate-fd (oldfd min-fd)
@@ -1494,7 +1498,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                 (nelisp-os--windows-ffi-error-signal)
               (nelisp-os--windows-fd-alloc-at-least
                (nelisp-os-read-i64 target-buf 0)
-               min-fd)))
+               min-fd
+               (nelisp-os--windows-fd-flags oldfd))))
         (nelisp-os--free target-buf)))))
 
 (defun nelisp-os--windows-getfd-flags (fd)

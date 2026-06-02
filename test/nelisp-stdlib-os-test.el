@@ -1192,7 +1192,9 @@
         (freed nil)
         (nelisp-os--windows-next-fd 6)
         (nelisp-os--windows-fd-table '((5 . #xcccc)
-                                       (3 . #xaaaa))))
+                                       (3 . #xaaaa)))
+        (nelisp-os--windows-fd-flags-table
+         `((3 . ,(logior nelisp-os-O-WRONLY nelisp-os-O-APPEND)))))
     (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
               ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
               ((symbol-function 'nelisp-os-read-i64)
@@ -1224,6 +1226,11 @@
                           [:sint32 :pointer]
                           (list #xcccc)))))
     (should (equal nelisp-os--windows-fd-table '((5 . #xbbbb) (3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((5 . ,(logior nelisp-os-O-WRONLY
+                                   nelisp-os-O-APPEND))
+                     (3 . ,(logior nelisp-os-O-WRONLY
+                                   nelisp-os-O-APPEND)))))
     (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-dup2-windows-can-target-stdout ()
@@ -1332,7 +1339,9 @@
   (let ((calls nil)
         (freed nil)
         (nelisp-os--windows-next-fd 4)
-        (nelisp-os--windows-fd-table '((3 . #xaaaa))))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-flags-table
+         `((3 . ,(logior nelisp-os-O-RDWR nelisp-os-O-APPEND)))))
     (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
               ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
               ((symbol-function 'nelisp-os-read-i64)
@@ -1360,6 +1369,11 @@
                           (list #x9999 #xaaaa #x9999 3000 0 1
                                 nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))))
     (should (equal nelisp-os--windows-fd-table '((10 . #xbbbb) (3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((10 . ,(logior nelisp-os-O-RDWR
+                                    nelisp-os-O-APPEND))
+                     (3 . ,(logior nelisp-os-O-RDWR
+                                   nelisp-os-O-APPEND)))))
     (should (= nelisp-os--windows-next-fd 11))
     (should (equal freed '(3000)))))
 
