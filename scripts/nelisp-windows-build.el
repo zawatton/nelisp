@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -70,6 +70,8 @@
 ;; 32-byte slot updates work over Windows arena-backed Cons boxes.
 ;; Stage 34 links the NlVector allocator/set-slot kernels and proves
 ;; vector header, Nil-filled slots, refcount, and element updates.
+;; Stage 35 links the immutable Str/Symbol allocator plus bytes-pointer
+;; helper and proves copied byte payloads are readable in Windows PE.
 
 ;;; Code:
 
@@ -1589,6 +1591,76 @@ link-units."
                     arena-rva iat-rvas)))
        (list start driver vec set arena)))))
 
+(defun nelisp-windows-build--standalone-str-driver42-bytes ()
+  "Return a PE32+ EXE proving Str/Symbol allocation helpers on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(seq
+                       (defun nl_win_str_check (slot tag)
+                         (let* ((bytes (nl_str_bytes_ptr slot)))
+                           (if (= (ptr-read-u8 slot 0) tag)
+                               (if (= (ptr-read-u64 (+ slot 8) 0) 5)
+                                   (if (= (ptr-read-u64 (+ slot 24) 0) 5)
+                                       (if (= bytes (ptr-read-u64 (+ slot 16) 0))
+                                           (if (= (ptr-read-u8 bytes 0) 104)
+                                               (if (= (ptr-read-u8 bytes 1) 101)
+                                                   (if (= (ptr-read-u8 bytes 4) 111)
+                                                       1
+                                                     0)
+                                                 0)
+                                             0)
+                                         0)
+                                     0)
+                                 0)
+                             0)))
+                       (defun driver ()
+                         (let* ((arena (nl_arena_init)))
+                           (if (= arena 0)
+                               71
+                             (let* ((buf (nl_alloc_bytes 8 1))
+                                    (str-slot (nl_alloc_bytes 32 8))
+                                    (sym-slot (nl_alloc_bytes 32 8)))
+                               (if (= sym-slot 0)
+                                   72
+                                 (seq
+                                  (ptr-write-u8 buf 0 104)
+                                  (ptr-write-u8 buf 1 101)
+                                  (ptr-write-u8 buf 2 108)
+                                  (ptr-write-u8 buf 3 108)
+                                  (ptr-write-u8 buf 4 111)
+                                  (nl_alloc_str buf 5 str-slot)
+                                  (nl_alloc_symbol buf 5 sym-slot)
+                                  (if (= (nl_win_str_check str-slot 5) 1)
+                                      (if (= (nl_win_str_check sym-slot 4) 1)
+                                          42
+                                        73)
+                                    74))))))))
+                     driver-rva iat-rvas))
+            (alloc-rva (+ driver-rva
+                          (nelisp-windows-build--unit-text-length driver)))
+            (alloc (nelisp-windows-build--compile-defuns-to-unit
+                    "alloc-str.o" nelisp-cc-nlstr-direct-ops--alloc-str-source
+                    alloc-rva iat-rvas))
+            (bytes-rva (+ alloc-rva
+                          (nelisp-windows-build--unit-text-length alloc)))
+            (bytes (nelisp-windows-build--compile-defuns-to-unit
+                    "str-bytes.o"
+                    nelisp-cc-nlstr-direct-ops--str-bytes-ptr-source
+                    bytes-rva iat-rvas))
+            (arena-rva (+ bytes-rva
+                          (nelisp-windows-build--unit-text-length bytes)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver alloc bytes arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1796,6 +1868,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone NlVector)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-str-driver42 ()
+  "Batch entry: build the standalone Str/Symbol allocation probe."
+  (let ((bytes (nelisp-windows-build--standalone-str-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-str-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone Str/Symbol)"
              out-path)
     out-path))
 

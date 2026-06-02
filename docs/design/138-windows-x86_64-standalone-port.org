@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 34 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 35 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -86,7 +86,9 @@
   NlConsBox set-car/set-cdr kernels and proves raw 32-byte slot updates work
   over Windows arena-backed Cons boxes.  Stage 34 links the NlVector
   allocator/set-slot kernels and proves vector header, Nil-filled slots,
-  refcount, and element updates.
+  refcount, and element updates.  Stage 35 links the immutable Str/Symbol
+  allocator plus bytes-pointer helper and proves copied byte payloads are
+  readable in Windows PE.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
