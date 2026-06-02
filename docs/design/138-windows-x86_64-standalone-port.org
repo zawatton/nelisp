@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-133-WINDOWS-TIMERFD-ALARM
+#+STATUS: STAGE-134-WINDOWS-OS-COMPAT-SMOKE
 
 * Status
 
-- *State*: STAGE 133 Windows timerfd alarm compatibility
+- *State*: STAGE 134 Windows OS compatibility smoke script
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -302,6 +302,10 @@
   credentials so =getsockopt-peercred= returns =(PID 0 0)= for tracked
   socketpair fds and socket duplicates; untracked arbitrary sockets remain
   explicit =ENOTSUP=.
+  =tools/windows-os-compat-test.ps1= now provides a Windows real-machine
+  PowerShell entry for the Emacs-side OS compatibility ERT suite, with focused
+  selectors for timerfd, socketpair, peercred, inotify, signals, eventfd, fd,
+  process, and socket paths.
   Windows abstract AF_UNIX =bind= / =connect= now map abstract names to stable
   hashed temporary filesystem socket paths and reuse the existing Winsock
   filesystem AF_UNIX path.
@@ -756,6 +760,9 @@
   =CLOCK_REALTIME_ALARM= / =CLOCK_BOOTTIME_ALARM=, absolute realtime alarm
   expirations convert against the realtime clock, and =SetWaitableTimer= is
   armed with the resume flag for alarm clocks.
+  Stage 134 coverage verifies the Windows OS compatibility PowerShell smoke
+  exposes stable focused suites and invokes =test/nelisp-stdlib-os-test.el=
+  through an environment-driven ERT selector.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1224,6 +1231,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =CLOCK_REALTIME_ALARM= / =CLOCK_BOOTTIME_ALARM= on Windows, treats realtime
   alarm absolute expirations as realtime clock values, and enables the
   =SetWaitableTimer= resume flag for alarm clock fds.
+  *Windows OS compatibility smoke progress 2026-06-03*:
+  =tools/windows-os-compat-test.ps1= now runs Windows-focused
+  =nelisp-stdlib-os= ERT selectors on real Windows machines, including the
+  timerfd, peercred, socketpair, inotify, signal, eventfd, fd, process, and
+  socket groups.
   *Windows sigprocmask compatibility progress 2026-06-03*: Windows
   =sigprocmask= now tracks an emulated mask for =SIG_BLOCK= /
   =SIG_UNBLOCK= / =SIG_SETMASK= without invoking POSIX signal-mask FFI.
@@ -1705,6 +1717,10 @@ largest uncertainty (B1 + B2) first.
    absolute realtime alarm expirations map through the realtime clock, and
    =timerfd_settime= arms alarm clock fds with the =SetWaitableTimer= resume
    flag.
+   *Windows OS compatibility smoke script SHIPPED 2026-06-03*:
+   =tools/windows-os-compat-test.ps1= provides a real-machine PowerShell entry
+   for the Windows-focused OS ERT suite and logs each selected suite under
+   =target/windows-os-compat=.
    *Windows inotify synthetic fd compatibility SHIPPED 2026-06-03*:
    =inotify_init= creates event HANDLE-backed fd-kind state,
    =inotify_add_watch= / =inotify_rm_watch= manage synthetic watch
