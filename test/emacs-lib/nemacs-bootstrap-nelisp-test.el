@@ -41,12 +41,16 @@ binary."
   (let* ((vendor (expand-file-name "vendor/nelisp"
                                    nemacs-bootstrap-nelisp-test--repo-root))
          (env (getenv "NELISP_HOME")))
-    (cl-find-if
-     (lambda (d)
-       (and d
-            (file-executable-p
-             (expand-file-name "target/nelisp-standalone-reader" d))))
-     (list env vendor))))
+    (let ((candidates (list env vendor))
+          (found nil))
+      (while (and candidates (not found))
+        (let ((dir (car candidates)))
+          (when (and dir
+                     (file-executable-p
+                      (expand-file-name "target/nelisp-standalone-reader" dir)))
+            (setq found dir)))
+        (setq candidates (cdr candidates)))
+      found)))
 
 (defmacro nemacs-bootstrap-nelisp-test--skip-unless-binary (&rest body)
   "Evaluate BODY only when the nelisp binary + bin/nemacs are present."
@@ -144,7 +148,16 @@ current ERT test with status/stdout/stderr diagnostics."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
    (let ((out (nemacs-bootstrap-nelisp-test--run
                "--batch" "--no-banner"
-               "--eval" "(princ (format \"BOOT=%S\\n\" t))")))
+               "--eval"
+               (concat
+                "(if (and (fboundp (quote nemacs-batch-main))"
+                "         (featurep (quote nemacs-main)))"
+                "    (if (fboundp (quote nelisp--write-stdout-bytes))"
+                "        (nelisp--write-stdout-bytes \"BOOT=t\\n\")"
+                "      (princ \"BOOT=t\\n\"))"
+                "  (if (fboundp (quote nelisp--write-stdout-bytes))"
+                "      (nelisp--write-stdout-bytes \"BOOT=nil\\n\")"
+                "    (princ \"BOOT=nil\\n\")))"))))
      (should (string-match-p "BOOT=t" out))
      (should (string-match-p "ok" out)))))
 
@@ -244,15 +257,18 @@ NeLisp v2 file syscall bridge (`nl-syscall-read-file' /
                "--batch" "--no-banner"
                "--eval"
                (concat
-                "(princ (format \"BOUND=%S\\n\""
-                "                (mapcar (function fboundp)"
-                "                        (list (quote find-file-noselect)"
-                "                              (quote save-buffer)"
-                "                              (quote write-region)"
-                "                              (quote insert-file-contents)"
-                "                              (quote buffer-file-name)"
-                "                              (quote set-visited-file-name)))))"))))
-     (should (string-match-p "BOUND=(t t t t t t)" out)))))
+                "(let ((bound (mapcar (function fboundp)"
+                "                     (list (quote find-file-noselect)"
+                "                           (quote save-buffer)"
+                "                           (quote write-region)"
+                "                           (quote insert-file-contents)"
+                "                           (quote buffer-file-name)"
+                "                           (quote set-visited-file-name)))))"
+                "  (if (fboundp (quote nelisp--write-stdout-bytes))"
+                "      (nelisp--write-stdout-bytes"
+                "       (if (memq nil bound) \"BOUND=nil\\n\" \"BOUND=t\\n\"))"
+                "    (princ (if (memq nil bound) \"BOUND=nil\\n\" \"BOUND=t\\n\"))))"))))
+     (should (string-match-p "BOUND=t" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/file-write-read-round-trip ()
   "Phase 5 close-gate: full write+read round-trip via the substrate.
@@ -266,9 +282,14 @@ suite stays clean — this is a real follow-up, not a regression."
            "--batch" "--no-banner"
            "--eval"
            (concat
-            "(princ (format \"S=%S\\n\""
-            "                (and (fboundp (quote nl-syscall-read-file))"
-            "                     (fboundp (quote nl-syscall-write-file)))))"))))
+            "(if (and (fboundp (quote nl-syscall-read-file))"
+            "         (fboundp (quote nl-syscall-write-file)))"
+            "    (if (fboundp (quote nelisp--write-stdout-bytes))"
+            "        (nelisp--write-stdout-bytes \"S=t\\n\")"
+            "      (princ \"S=t\\n\"))"
+            "  (if (fboundp (quote nelisp--write-stdout-bytes))"
+            "      (nelisp--write-stdout-bytes \"S=nil\\n\")"
+            "    (princ \"S=nil\\n\")))"))))
      (unless (string-match-p "S=t" have-syscalls)
        (ert-skip "NeLisp Doc 33 §3.1 nl-syscall-read-file / nl-syscall-write-file not wired"))
      (let* ((tmp (make-temp-file "nemacs-bootstrap-nelisp-"))
@@ -309,9 +330,12 @@ half of Phase 5 modulo file save (= which lives in
                (concat
                 "(progn"
                 "  (let ((h (nemacs-main--realise-tui)))"
-                "    (princ (format \"REALISED=%S\\n\""
-                "                    (and h nemacs-main--backend"
-                "                         nemacs-main--frame t))))"
+                "    (if (fboundp (quote nelisp--write-stdout-bytes))"
+                "        (nelisp--write-stdout-bytes"
+                "         (if (and h nemacs-main--backend nemacs-main--frame)"
+                "             \"REALISED=t\\n\" \"REALISED=nil\\n\"))"
+                "      (princ (if (and h nemacs-main--backend nemacs-main--frame)"
+                "                 \"REALISED=t\\n\" \"REALISED=nil\\n\"))))"
                 "  (let ((b (cdr (assoc \"*scratch*\" nelisp-ec--buffers))))"
                 "    (nelisp-ec-with-current-buffer b"
                 "      (nelisp-ec-insert \"phase5 tui smoke\"))"
@@ -320,9 +344,14 @@ half of Phase 5 modulo file save (= which lives in
                 "                      (nelisp-ec-buffer-string)))))"
                 "  (when (fboundp (function nemacs-main--shutdown-tui))"
                 "    (nemacs-main--shutdown-tui))"
-                "  (princ (format \"SHUTDOWN=%S\\n\""
-                "                  (and (null nemacs-main--backend)"
-                "                       (null nemacs-main--frame)))))"))))
+                "  (if (fboundp (quote nelisp--write-stdout-bytes))"
+                "      (nelisp--write-stdout-bytes"
+                "       (if (and (null nemacs-main--backend)"
+                "                (null nemacs-main--frame))"
+                "           \"SHUTDOWN=t\\n\" \"SHUTDOWN=nil\\n\"))"
+                "    (princ (if (and (null nemacs-main--backend)"
+                "                    (null nemacs-main--frame))"
+                "               \"SHUTDOWN=t\\n\" \"SHUTDOWN=nil\\n\"))))"))))
      (should (string-match-p "REALISED=t" out))
      (should (string-match-p "BUF=\"phase5 tui smoke\"" out))
      (should (string-match-p "SHUTDOWN=t" out)))))
