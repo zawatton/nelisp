@@ -1,10 +1,3 @@
-# Phase 7 Stage 7.7.a (Doc 72): bundled `.image` artifacts are
-# AOT-baked Sexp trees produced by `make bake-images` from the sibling
-# `.el` source.  They are git-tracked so that downstream cargo builds
-# can `include_bytes!` them without running the baker, but a textual
-# diff would be useless — review the `.el` change instead.
-*.image binary
-
 # NeLisp's nelisp-sys typed-elisp DSL sources use the `.nl' extension, which
 # GitHub Linguist otherwise misclassifies as the unrelated NewLisp language.
 # These files are NeLisp (an Emacs Lisp dialect) source -- count them as Emacs Lisp.

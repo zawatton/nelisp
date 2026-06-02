@@ -144,12 +144,9 @@ standalone-parallel-compile-test:
 standalone-eval-j:
 	@JOBS=$(JOBS) ./tools/build-standalone-parallel.sh $(JOBS)
 
-# Doc 126 (2026-05-18): `bake-images' + `bake-check' retired together
-# with the `lisp/*.image' production boot path.  `Env::new_global' now
-# loads `.el' sources directly via `reader::read_all + eval' (Doc 126.B),
-# so on-disk `.image' artifacts no longer exist and `nelisp-baker' has
-# no bake mode.  `verify-elisp-fixtures' below is the only surviving
-# baker invocation (= Doc 95 §95.e cross-impl gate).
+# Doc 126 (2026-05-18): the `bake-images'/`bake-check' `lisp/*.image'
+# boot path was retired -- the interpreter loads `.el' sources directly
+# via read + eval, so no on-disk `.image' artifacts exist.
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).
