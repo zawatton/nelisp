@@ -155,6 +155,13 @@ Emit helpers consult this dynvar for arg-register selection, shadow
 space allocation, and prologue/epilogue layout.  The aarch64 path
 ignores this var (= AAPCS64 only).")
 
+(defvar nelisp-phase47-compiler--os 'linux
+  "Target OS bound by the public compile entry points before emit.
+Selects the raw-syscall convention for `syscall-direct' on aarch64:
+  linux  (default) puts NR in x8 and emits SVC #0;
+  darwin puts NR in x16 and emits SVC #0x80 (macOS / Apple Silicon).
+x86_64 ignores this var (Linux SYSCALL only).")
+
 (defvar nelisp-phase47-compiler--next-rt-let-slot nil
   "Cons cell `(N)' holding the next free runtime-let frame slot index.
 Bound by the `defun' parser around body parsing; N starts at the
@@ -10504,6 +10511,16 @@ the node's class to consume the result correctly."
         ((= tag 28)             ; i64-to-f64 — aarch64: unsupported (x86_64-only)
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           'i64-to-f64 node))
+        ((= tag 78)             ; syscall-direct — aarch64 raw SVC (Linux/Darwin)
+         (nelisp-phase47-compiler--emit-syscall-direct-arm64 node buf))
+        ((= tag 41)             ; ptr-read-u64 — aarch64 LDR x0,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-read-u64-arm64 node buf))
+        ((= tag 45)             ; ptr-write-u64 — aarch64 STR x3,[x1,x2]
+         (nelisp-phase47-compiler--emit-ptr-write-u64-arm64 node buf))
+        ((= tag 3)              ; atomic-fetch-add — aarch64 LDADDAL
+         (nelisp-phase47-compiler--emit-atomic-fetch-add-arm64 node buf))
+        ((= tag 86)             ; while — aarch64 loop (cmp/b.eq/b)
+         (nelisp-phase47-compiler--emit-while node buf))
         ((memq tag '(5 23 61 57 56 55 27 ; call extern-call sexp-tag sexp-int-unwrap sexp-int-make sexp-float-unwrap f64-to-i64-trunc
                      17 12 13 14         ; cons-null-p cons-car cons-cdr cons-cdr-raw
                      59 60               ; sexp-payload-ptr sexp-payload-ptr-record
@@ -10520,18 +10537,16 @@ the node's class to consume the result correctly."
                      36 37 38            ; mut-str-make-empty mut-str-push-byte mut-str-push-codepoint
                      35 34               ; mut-str-len mut-str-finalize
                      71 72 74            ; str-char-count str-codepoint-at str-is-alphanumeric-at
-                     3 2                 ; atomic-fetch-add atomic-compare-exchange
-                     41 45               ; ptr-read-u64 ptr-write-u64
+                     2                   ; atomic-compare-exchange
                      42 46               ; ptr-read-u8 ptr-write-u8
                      39 43               ; ptr-read-u16 ptr-write-u16
                      40 44               ; ptr-read-u32 ptr-write-u32
-                     0 20 78             ; alloc-bytes dealloc-bytes syscall-direct
+                     0 20                ; alloc-bytes dealloc-bytes
                      15 16 18 19         ; cons-make cons-make-with-clone cons-set-car cons-set-cdr
-                     86 11 33            ; while cond logic
+                     11 33               ; cond logic
                      89                  ; let-rt-n
                      94 95               ; aot-machine-landing-jump aot-current-sp
-                     92                  ; aot-root-scope
-                     78))               ; syscall-direct
+                     92))                ; aot-root-scope
          (nelisp-phase47-compiler--emit-aarch64-unsupported
           (nelisp-phase47-compiler--ir-kind node) node))
         (t
@@ -13020,6 +13035,73 @@ not require 16-byte alignment, so no extra pad is needed."
   (nelisp-asm-x86_64-pop buf 'rax)
   (nelisp-asm-x86_64-syscall buf))
 
+(defun nelisp-phase47-compiler--emit-syscall-direct-arm64 (node buf)
+  "Emit `syscall-direct' for aarch64 — inline raw SVC with 7 args.
+ABI: x0=A0 x1=A1 x2=A2 x3=A3 x4=A4 x5=A5; syscall number in x8 (Linux,
+`SVC #0') or x16 (Darwin, `SVC #0x80').  The kernel result is left in
+x0.  Mirrors the x86_64 path: evaluate NR then A0..A5 into x0 and push
+each (STR Xn,[SP,#-16]!); pop in reverse so A5..A0 land in x5..x0 and
+NR in x8/x16; then SVC.  Push/pop/SVC widths are fixed, so the emitted
+byte count is identical across pass-1 and pass-2."
+  (let* ((darwin (eq nelisp-phase47-compiler--os 'darwin))
+         (nr-reg (if darwin 'x16 'x8))
+         (svc-imm (if darwin #x80 0)))
+    ;; Push NR, then A0..A5 (popped in reverse below).
+    (dolist (key '(:nr :a0 :a1 :a2 :a3 :a4 :a5))
+      (nelisp-phase47-compiler--emit-value
+       (nelisp-phase47-compiler--ir-get node key) buf)
+      (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
+    ;; Pop into syscall registers (reverse of push order).
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x5)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x4)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x3)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
+    (nelisp-asm-arm64-ldr-post-sp-16 buf nr-reg)
+    (nelisp-asm-arm64-svc buf svc-imm)))
+
+(defun nelisp-phase47-compiler--emit-ptr-read-u64-arm64 (node buf)
+  "Emit `ptr-read-u64' for aarch64 — inline `LDR x0, [x1, x2]'.
+ptr → x1, offset → x2; result *(u64*)(ptr+offset) lands in x0."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = offset
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+  (nelisp-asm-arm64-ldr-reg-reg buf 'x0 'x1 'x2))    ; x0 = [x1+x2]
+
+(defun nelisp-phase47-compiler--emit-ptr-write-u64-arm64 (node buf)
+  "Emit `ptr-write-u64' for aarch64 — inline `STR x3, [x1, x2]'.
+ptr → x1, offset → x2, val → x3; stores then leaves x0 = 1 sentinel."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push offset
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :val) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)         ; x3 = val
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = offset
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+  (nelisp-asm-arm64-str-reg-reg buf 'x3 'x1 'x2)     ; [x1+x2] = x3
+  (nelisp-asm-arm64-mov-imm64 buf 'x0 1))            ; rax-style sentinel
+
+(defun nelisp-phase47-compiler--emit-atomic-fetch-add-arm64 (node buf)
+  "Emit `atomic-fetch-add' for aarch64 — inline `LDADDAL x2, x0, [x1]'.
+ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :delta) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = delta (Xs)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Xn)
+  (nelisp-asm-arm64-ldaddal buf 'x2 'x0 'x1))        ; x0 = old [x1]
+
 ;; ---- Doc 101 §101.D Cons construction ops ----
 
 (defun nelisp-phase47-compiler--emit-cons-make (node buf)
@@ -13294,18 +13376,30 @@ Layout:
   (let* ((id (nelisp-phase47-compiler--ir-get node :id))
          (start-lbl (intern (format "%s-start" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-asm-x86_64-define-label buf start-lbl)
-    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
-    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
-    (nelisp-asm-x86_64-jz-rel32 buf end-lbl)
-    (dolist (form (nelisp-phase47-compiler--ir-get node :body))
-      (nelisp-phase47-compiler--emit-value form buf))
-    (nelisp-asm-x86_64-jmp-rel32 buf start-lbl)
-    (nelisp-asm-x86_64-define-label buf end-lbl)
-    ;; mov rax, 0 — 7 bytes, fixed; cheaper to use xor in real
-    ;; codegen but byte-length parity with mov-imm32 keeps the
-    ;; rest of the chain in lockstep.
-    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        ;; aarch64: cmp x0,xzr / b.eq end / ... / b start ; x0 = 0 sentinel.
+        (progn
+          (nelisp-asm-arm64-define-label buf start-lbl)
+          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
+          (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
+          (nelisp-asm-arm64-b-cond buf 'eq end-lbl)
+          (dolist (form (nelisp-phase47-compiler--ir-get node :body))
+            (nelisp-phase47-compiler--emit-value form buf))
+          (nelisp-asm-arm64-b buf start-lbl)
+          (nelisp-asm-arm64-define-label buf end-lbl)
+          (nelisp-asm-arm64-mov-imm64 buf 'x0 0))
+      (nelisp-asm-x86_64-define-label buf start-lbl)
+      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
+      (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
+      (nelisp-asm-x86_64-jz-rel32 buf end-lbl)
+      (dolist (form (nelisp-phase47-compiler--ir-get node :body))
+        (nelisp-phase47-compiler--emit-value form buf))
+      (nelisp-asm-x86_64-jmp-rel32 buf start-lbl)
+      (nelisp-asm-x86_64-define-label buf end-lbl)
+      ;; mov rax, 0 — 7 bytes, fixed; cheaper to use xor in real
+      ;; codegen but byte-length parity with mov-imm32 keeps the
+      ;; rest of the chain in lockstep.
+      (nelisp-asm-x86_64-mov-imm32 buf 'rax 0))))
 
 (defun nelisp-phase47-compiler--emit-cond (node buf)
   "Emit `cond' first-match-wins dispatch; result in rax.

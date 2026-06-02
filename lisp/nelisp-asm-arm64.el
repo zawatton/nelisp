@@ -714,6 +714,41 @@ Base 0xF84107E0 | Xt.  Stack stays 16-byte aligned per AAPCS."
     (nelisp-asm-arm64--emit-word
      buf (logior #xF84107E0 t-reg))))
 
+;; ---- §125.B-arm64 raw 64-bit load/store + LSE atomics ----
+;;
+;; These back the `ptr-read-u64' / `ptr-write-u64' / `atomic-fetch-add'
+;; substrate ops on aarch64 (= the arena allocator + refcount paths).
+;; Register-offset addressing mirrors the x86_64 `[base+index]' form.
+
+(defun nelisp-asm-arm64-ldr-reg-reg (buf rt rn rm)
+  "Emit `LDR Xt, [Xn, Xm]' (= 64-bit load, register offset, LSL #0).
+Base 0xF8606800 | (Rm<<16) | (Rn<<5) | Rt."
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F))
+        (m-reg (logand (nelisp-asm-arm64--reg-num rm) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF8606800 (ash m-reg 16) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-str-reg-reg (buf rt rn rm)
+  "Emit `STR Xt, [Xn, Xm]' (= 64-bit store, register offset, LSL #0).
+Base 0xF8206800 | (Rm<<16) | (Rn<<5) | Rt."
+  (let ((t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F))
+        (m-reg (logand (nelisp-asm-arm64--reg-num rm) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF8206800 (ash m-reg 16) (ash n-reg 5) t-reg))))
+
+(defun nelisp-asm-arm64-ldaddal (buf rs rt rn)
+  "Emit `LDADDAL Xs, Xt, [Xn]' (= LSE atomic add, acquire+release).
+Atomically: Xt = [Xn]; [Xn] = [Xn] + Xs (= fetch-add, returns old value).
+Base 0xF8E00000 | (Rs<<16) | (Rn<<5) | Rt.  Requires ARMv8.1 LSE
+(present on all Apple Silicon)."
+  (let ((s-reg (logand (nelisp-asm-arm64--reg-num rs) #x1F))
+        (t-reg (logand (nelisp-asm-arm64--reg-num rt) #x1F))
+        (n-reg (logand (nelisp-asm-arm64--reg-num rn) #x1F)))
+    (nelisp-asm-arm64--emit-word
+     buf (logior #xF8E00000 (ash s-reg 16) (ash n-reg 5) t-reg))))
+
 ;; ---- Doc 110 §110.D AArch64 SIMD/FP scalar-double helpers ----
 ;;
 ;; D-register encoding mirrors the X register table: low 5 bits land
