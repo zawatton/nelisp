@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 8 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 9 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -21,7 +21,10 @@
   =open(path, flags, mode)= / =read(handle, buf, len)= /
   =write(handle, buf, len)= / =close(handle)= chains to =CreateFileA=,
   =ReadFile= / =WriteFile= and =CloseHandle= for the path forms used by the
-  standalone reader/file-I/O kernels.
+  standalone reader/file-I/O kernels.  Stage 9 maps =mmap= / =munmap=-shaped
+  =syscall-direct= calls to =VirtualAlloc= / =VirtualFree= so the remaining
+  standalone arena/native-stack allocation shapes no longer emit Linux
+  =syscall= bytes on Windows.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

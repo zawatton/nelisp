@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -446,8 +446,59 @@
   "Windows rejects `syscall-direct' forms that are not mapped to Win32 APIs."
   (should-error
    (nelisp-windows-build--phase47-executable-bytes
-    '(exit (syscall-direct 9 0 4096 3 34 -1 0)))
+    '(exit (syscall-direct 56 768 0 0 0 0 0)))
    :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-windows-build-phase47-mmap-imports-virtualalloc-free ()
+  "Windows mmap/munmap-shaped syscalls import VirtualAlloc/VirtualFree."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun mmap_probe ()
+                     (let* ((p (syscall-direct 9 0 4096 3 34 -1 0)))
+                       (if (= p 0)
+                           13
+                         (seq
+                          (ptr-write-u8 p 0 77)
+                          (syscall-direct 11 p 4096 0 0 0 0)
+                          42))))
+                   (exit (mmap_probe)))))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (member "ExitProcess" imports))
+    (should (member "VirtualAlloc" imports))
+    (should (member "VirtualFree" imports))))
+
+(ert-deftest nelisp-windows-build-phase47-mmap-text-calls-virtualalloc-free ()
+  "Windows mmap/munmap-shaped syscalls emit VirtualAlloc/VirtualFree calls."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun mmap_probe ()
+                     (let* ((p (syscall-direct 9 0 4096 3 34 -1 0)))
+                       (if (= p 0)
+                           13
+                         (seq
+                          (ptr-write-u8 p 0 77)
+                          (syscall-direct 11 p 4096 0 0 0 0)
+                          42))))
+                   (exit (mmap_probe)))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 260)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 260))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x41 #xb8 #x00 #x30 #x00 #x00))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x41 #xb9 #x04 #x00 #x00 #x00))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x41 #xb8 #x00 #x80 #x00 #x00))
+             text))
+    (should (member #x2050 targets))
+    (should (member #x2058 targets))
+    (should (member #x2048 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
 
 (ert-deftest nelisp-windows-build-phase47-file-read-imports-file-apis ()
   "Windows file read syscall chain imports CreateFileA/ReadFile/CloseHandle."

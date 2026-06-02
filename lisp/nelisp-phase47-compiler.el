@@ -13746,6 +13746,68 @@ HANDLE, buffer and length expressions are evaluated left-to-right."
     (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)))
 
+(defun nelisp-phase47-compiler--emit-windows-mmap (node buf)
+  "Emit VirtualAlloc for Linux `mmap' syscall shape."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-virtualalloc-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-virtualalloc-import-missing)))
+  (let ((addr (nelisp-phase47-compiler--ir-get node :a0))
+        (len (nelisp-phase47-compiler--ir-get node :a1))
+        (prot (nelisp-phase47-compiler--ir-get node :a2))
+        (flags (nelisp-phase47-compiler--ir-get node :a3))
+        (fd (nelisp-phase47-compiler--ir-get node :a4))
+        (off (nelisp-phase47-compiler--ir-get node :a5))
+        (shadow (nelisp-phase47-compiler--windows-api-shadow-size)))
+    ;; Preserve syscall argument evaluation order.  VirtualAlloc only needs
+    ;; addr/len here; prot/flags/fd/off select Linux mmap semantics and are
+    ;; evaluated for side effects but otherwise ignored on Windows.
+    (nelisp-phase47-compiler--emit-value addr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value len buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value prot buf)
+    (nelisp-phase47-compiler--emit-value flags buf)
+    (nelisp-phase47-compiler--emit-value fd buf)
+    (nelisp-phase47-compiler--emit-value off buf)
+    (nelisp-asm-x86_64-pop buf 'rdx) ; dwSize
+    (nelisp-asm-x86_64-pop buf 'rcx) ; lpAddress
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x41 #xb8)) ; mov r8d, MEM_COMMIT|MEM_RESERVE
+    (nelisp-phase47-compiler--emit-le32-signed buf #x3000)
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x41 #xb9)) ; mov r9d, PAGE_READWRITE
+    (nelisp-phase47-compiler--emit-le32-signed buf #x04)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-virtualalloc-iat-rva)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)))
+
+(defun nelisp-phase47-compiler--emit-windows-munmap (node buf)
+  "Emit VirtualFree for Linux `munmap' syscall shape."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-virtualfree-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-virtualfree-import-missing)))
+  (let ((addr (nelisp-phase47-compiler--ir-get node :a0))
+        (len (nelisp-phase47-compiler--ir-get node :a1))
+        (shadow (nelisp-phase47-compiler--windows-api-shadow-size)))
+    ;; Linux munmap takes addr/len.  VirtualFree with MEM_RELEASE requires
+    ;; dwSize=0, so LEN is evaluated for side effects but not passed through.
+    (nelisp-phase47-compiler--emit-value addr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value len buf)
+    (nelisp-asm-x86_64-pop buf 'rcx) ; lpAddress
+    (nelisp-asm-x86_64-xor-reg-reg buf 'rdx 'rdx) ; dwSize = 0
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x41 #xb8)) ; mov r8d, MEM_RELEASE
+    (nelisp-phase47-compiler--emit-le32-signed buf #x8000)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-virtualfree-iat-rva)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)))
+
 (defun nelisp-phase47-compiler--emit-windows-syscall-direct (node buf)
   "Emit supported Windows replacements for Linux `syscall-direct'."
   (let ((nr (nelisp-phase47-compiler--ir-get node :nr))
@@ -13755,9 +13817,11 @@ HANDLE, buffer and length expressions are evaluated left-to-right."
         (a3 (nelisp-phase47-compiler--ir-get node :a3))
         (a4 (nelisp-phase47-compiler--ir-get node :a4))
         (a5 (nelisp-phase47-compiler--ir-get node :a5)))
-    (unless (and (nelisp-phase47-compiler--ir-imm-eq-p a3 0)
+    (unless (or (nelisp-phase47-compiler--ir-imm-eq-p nr 9)
+                (nelisp-phase47-compiler--ir-imm-eq-p nr 11)
+                (and (nelisp-phase47-compiler--ir-imm-eq-p a3 0)
                  (nelisp-phase47-compiler--ir-imm-eq-p a4 0)
-                 (nelisp-phase47-compiler--ir-imm-eq-p a5 0))
+                     (nelisp-phase47-compiler--ir-imm-eq-p a5 0)))
       (signal 'nelisp-phase47-compiler-error
               (list :windows-syscall-direct-trailing-args-unsupported)))
     (cond
@@ -13785,6 +13849,14 @@ HANDLE, buffer and length expressions are evaluated left-to-right."
            (nelisp-phase47-compiler--ir-imm-eq-p a1 0)
            (nelisp-phase47-compiler--ir-imm-eq-p a2 0))
       (nelisp-phase47-compiler--emit-windows-closehandle node buf))
+     ((nelisp-phase47-compiler--ir-imm-eq-p nr 9)
+      (nelisp-phase47-compiler--emit-windows-mmap node buf))
+     ((and (nelisp-phase47-compiler--ir-imm-eq-p nr 11)
+           (nelisp-phase47-compiler--ir-imm-eq-p a2 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a3 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a4 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a5 0))
+      (nelisp-phase47-compiler--emit-windows-munmap node buf))
      (t
       (signal 'nelisp-phase47-compiler-error
               (list :windows-syscall-direct-unsupported

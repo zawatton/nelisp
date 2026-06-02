@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -17,6 +17,8 @@
 ;; GetStdHandle + ReadFile/WriteFile.
 ;; Stage 8 maps file-shaped open/read/write/close calls to
 ;; CreateFileA + ReadFile/WriteFile + CloseHandle.
+;; Stage 9 maps mmap/munmap-shaped `syscall-direct' calls to
+;; VirtualAlloc/VirtualFree.
 
 ;;; Code:
 
@@ -137,6 +139,14 @@ FDS is the list of accepted immediate fd values."
       (setq names
             (nelisp-windows-build--append-import-names
              names '("CloseHandle"))))
+    (when (nelisp-windows-build--sexp-contains-syscall-nr-p sexp 9)
+      (setq names
+            (nelisp-windows-build--append-import-names
+             names '("VirtualAlloc"))))
+    (when (nelisp-windows-build--sexp-contains-syscall-nr-p sexp 11)
+      (setq names
+            (nelisp-windows-build--append-import-names
+             names '("VirtualFree"))))
     (when (nelisp-windows-build--sexp-contains-symbol-p sexp 'alloc-bytes)
       (setq names
             (nelisp-windows-build--append-import-names
@@ -363,6 +373,21 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
                    (if (= n 1) 42 16))))))))
        (exit (file_write_probe)))
      "target/nelisp-windows-phase47-file-write42.exe")))
+
+(defun nelisp-windows-build-phase47-mmap42 ()
+  "Batch entry: build target/nelisp-windows-phase47-mmap42.exe."
+  (nelisp-windows-build-phase47-exe
+   '(seq
+     (defun mmap_probe ()
+       (let* ((p (syscall-direct 9 0 4096 3 34 -1 0)))
+         (if (= p 0)
+             13
+           (seq
+            (ptr-write-u8 p 0 77)
+            (syscall-direct 11 p 4096 0 0 0 0)
+            42))))
+     (exit (mmap_probe)))
+   "target/nelisp-windows-phase47-mmap42.exe"))
 
 (provide 'nelisp-windows-build)
 
