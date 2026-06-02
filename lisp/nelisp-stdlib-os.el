@@ -55,8 +55,9 @@
 ;; scoped IPv6 variants through the same Winsock path.  Stage 31 maps filesystem
 ;; AF_UNIX bind / connect / accept through Winsock.  Stage 32 makes Linux-only
 ;; AF_UNIX abstract namespace / fd-passing / peercred helpers reject Windows
-;; before libc allocation.  The Linux/Darwin path remains the default until a
-;; real Windows standalone runtime selects `system-type' = `windows-nt'.
+;; before libc allocation.  Stage 33 maps getsockname / getpeername wrappers to
+;; Winsock.  The Linux/Darwin path remains the default until a real Windows
+;; standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -2173,13 +2174,21 @@ auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
     (unwind-protect
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in-len)
-          (let ((r (nelisp-os--libc-call "libc" (if is-peer "getpeername" "getsockname")
-                                [:sint32 :sint32 :pointer :pointer]
-                                fd addr-buf len-buf)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              (let ((hp (nelisp-os--decode-sockaddr-in addr-buf)))
-                (list (car hp) (cdr hp))))))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" (if is-peer "getpeername" "getsockname")
+                        [:sint32 :pointer :pointer :pointer]
+                        (nelisp-os--windows-socket-for-fd fd) addr-buf len-buf)
+                     (nelisp-os--libc-call "libc" (if is-peer "getpeername" "getsockname")
+                                  [:sint32 :sint32 :pointer :pointer]
+                                  fd addr-buf len-buf))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t (let ((hp (nelisp-os--decode-sockaddr-in addr-buf)))
+                  (list (car hp) (cdr hp)))))))
       (nelisp-os--free addr-buf)
       (nelisp-os--free len-buf))))
 
@@ -2189,13 +2198,21 @@ auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
     (unwind-protect
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-len)
-          (let ((r (nelisp-os--libc-call "libc" (if is-peer "getpeername" "getsockname")
-                                [:sint32 :sint32 :pointer :pointer]
-                                fd addr-buf len-buf)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              (let ((gp (nelisp-os--decode-sockaddr-in6 addr-buf)))
-                (list (car gp) (cdr gp))))))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" (if is-peer "getpeername" "getsockname")
+                        [:sint32 :pointer :pointer :pointer]
+                        (nelisp-os--windows-socket-for-fd fd) addr-buf len-buf)
+                     (nelisp-os--libc-call "libc" (if is-peer "getpeername" "getsockname")
+                                  [:sint32 :sint32 :pointer :pointer]
+                                  fd addr-buf len-buf))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t (let ((gp (nelisp-os--decode-sockaddr-in6 addr-buf)))
+                  (list (car gp) (cdr gp)))))))
       (nelisp-os--free addr-buf)
       (nelisp-os--free len-buf))))
 
@@ -2205,13 +2222,21 @@ auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
     (unwind-protect
         (progn
           (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-un-len)
-          (let ((r (nelisp-os--libc-call "libc" (if is-peer "getpeername" "getsockname")
-                                [:sint32 :sint32 :pointer :pointer]
-                                fd addr-buf len-buf)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              (nelisp-os--decode-sockaddr-un addr-buf
-                                              (nelisp-os-read-i32 len-buf 0)))))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" (if is-peer "getpeername" "getsockname")
+                        [:sint32 :pointer :pointer :pointer]
+                        (nelisp-os--windows-socket-for-fd fd) addr-buf len-buf)
+                     (nelisp-os--libc-call "libc" (if is-peer "getpeername" "getsockname")
+                                  [:sint32 :sint32 :pointer :pointer]
+                                  fd addr-buf len-buf))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t (nelisp-os--decode-sockaddr-un
+                 addr-buf (nelisp-os-read-i32 len-buf 0))))))
       (nelisp-os--free addr-buf)
       (nelisp-os--free len-buf))))
 
