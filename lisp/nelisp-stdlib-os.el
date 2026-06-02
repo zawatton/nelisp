@@ -212,6 +212,8 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-SO-BROADCAST #x0020)
 (defconst nelisp-os-WIN-SO-SNDBUF #x1001)
 (defconst nelisp-os-WIN-SO-RCVBUF #x1002)
+(defconst nelisp-os-WIN-SO-ERROR #x1007)
+(defconst nelisp-os-WIN-SO-TYPE #x1008)
 (defconst nelisp-os-WIN-TCP-NODELAY #x0001)
 (defconst nelisp-os-WIN-FIONBIO #x8004667e)
 
@@ -1799,6 +1801,8 @@ primitive; not supported in Phase 3."
 ;; setsockopt level / option (int-valued only in Phase 4)
 (defconst nelisp-os-SOL-SOCKET    1)
 (defconst nelisp-os-SO-REUSEADDR  2)
+(defconst nelisp-os-SO-TYPE       3)
+(defconst nelisp-os-SO-ERROR      4)
 (defconst nelisp-os-SO-BROADCAST  6)
 (defconst nelisp-os-SO-SNDBUF     7)
 (defconst nelisp-os-SO-RCVBUF     8)
@@ -2232,8 +2236,9 @@ host byte order."
    ((= level nelisp-os-IPPROTO-TCP) nelisp-os-IPPROTO-TCP)
    (t (nelisp-os--windows-unsupported))))
 
-(defun nelisp-os--windows-sockopt-option (level optname)
-  "Translate supported POSIX-like OPTNAME at LEVEL to Winsock."
+(defun nelisp-os--windows-sockopt-option (level optname &optional getter-p)
+  "Translate supported POSIX-like OPTNAME at LEVEL to Winsock.
+When GETTER-P is non-nil, include get-only options."
   (cond
    ((and (= level nelisp-os-SOL-SOCKET)
          (= optname nelisp-os-SO-REUSEADDR))
@@ -2250,6 +2255,14 @@ host byte order."
    ((and (= level nelisp-os-SOL-SOCKET)
          (= optname nelisp-os-SO-RCVBUF))
     nelisp-os-WIN-SO-RCVBUF)
+   ((and getter-p
+         (= level nelisp-os-SOL-SOCKET)
+         (= optname nelisp-os-SO-ERROR))
+    nelisp-os-WIN-SO-ERROR)
+   ((and getter-p
+         (= level nelisp-os-SOL-SOCKET)
+         (= optname nelisp-os-SO-TYPE))
+    nelisp-os-WIN-SO-TYPE)
    ((and (= level nelisp-os-IPPROTO-TCP)
          (= optname nelisp-os-TCP-NODELAY))
     nelisp-os-WIN-TCP-NODELAY)
@@ -2259,7 +2272,7 @@ host byte order."
   "Windows implementation of `nelisp-os-setsockopt-int'."
   (let ((sock (nelisp-os--windows-socket-for-fd fd))
         (win-level (nelisp-os--windows-sockopt-level level))
-        (win-optname (nelisp-os--windows-sockopt-option level optname))
+        (win-optname (nelisp-os--windows-sockopt-option level optname nil))
         (buf (nelisp-os--alloc 4)))
     (unwind-protect
         (progn
@@ -2277,7 +2290,7 @@ host byte order."
   "Windows implementation of `nelisp-os-getsockopt-int'."
   (let ((sock (nelisp-os--windows-socket-for-fd fd))
         (win-level (nelisp-os--windows-sockopt-level level))
-        (win-optname (nelisp-os--windows-sockopt-option level optname))
+        (win-optname (nelisp-os--windows-sockopt-option level optname t))
         (val-buf (nelisp-os--alloc 4))
         (len-buf (nelisp-os--alloc 4)))
     (unwind-protect
