@@ -76,6 +76,8 @@
 ;; socket option helpers.
 ;; Stage 102 maps `IPPROTO_IP' / `IP_HDRINCL' through the Windows int-valued
 ;; socket option helpers.
+;; Stage 103 maps `IPPROTO_IP' / `IP_MTU_DISCOVER' through the Windows
+;; int-valued socket option helpers.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -269,6 +271,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-IP-MULTICAST-LOOP 11)
 (defconst nelisp-os-WIN-IP-PKTINFO 19)
 (defconst nelisp-os-WIN-IP-UNICAST-IF 31)
+(defconst nelisp-os-WIN-IP-MTU-DISCOVER 71)
 (defconst nelisp-os-WIN-IPPROTO-IPV6 41)
 (defconst nelisp-os-WIN-IPV6-UNICAST-HOPS 4)
 (defconst nelisp-os-WIN-IPV6-UNICAST-IF 31)
@@ -1949,6 +1952,7 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-IP-HDRINCL 3)
 (defconst nelisp-os-IP-TTL        2)
 (defconst nelisp-os-IP-PKTINFO 8)
+(defconst nelisp-os-IP-MTU-DISCOVER 10)
 (defconst nelisp-os-IP-MULTICAST-IF 32)
 (defconst nelisp-os-IP-MULTICAST-TTL 33)
 (defconst nelisp-os-IP-MULTICAST-LOOP 34)
@@ -2451,6 +2455,9 @@ When GETTER-P is non-nil, include get-only options."
    ((and (= level nelisp-os-IPPROTO-IP)
          (= optname nelisp-os-IP-PKTINFO))
     nelisp-os-WIN-IP-PKTINFO)
+   ((and (= level nelisp-os-IPPROTO-IP)
+         (= optname nelisp-os-IP-MTU-DISCOVER))
+    nelisp-os-WIN-IP-MTU-DISCOVER)
    ((and (= level nelisp-os-IPPROTO-IP)
          (= optname nelisp-os-IP-UNICAST-IF))
     nelisp-os-WIN-IP-UNICAST-IF)
