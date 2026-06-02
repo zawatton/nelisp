@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-24-WINSOCK-ACCEPT-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-25-WINSOCK-RECV-SEND-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 24 Winsock accept + first real Windows smoke VALIDATED
+- *State*: STAGE 25 Winsock recv/send + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -84,7 +84,9 @@
   =sockaddr_in= encoder and Winsock error reporting.  =nelisp-os-accept-inet=
   now dispatches socket-kind Windows fds to =ws2_32!accept=, decodes the peer
   =sockaddr_in= with the existing decoder, and registers the accepted SOCKET as
-  a new socket-kind fd so later close uses =closesocket=.
+  a new socket-kind fd so later close uses =closesocket=.  Socket-kind
+  =nelisp-os-read/write= now route to Winsock =recv= / =send=, while regular
+  HANDLE fds continue to use =ReadFile= / =WriteFile=.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -133,7 +135,9 @@
   socket-kind fd validation, sockaddr buffer cleanup, and non-socket fd
   rejection before Winsock FFI.  Stage 24 coverage verifies Windows =accept=
   argument shape, accepted socket fd allocation, socket-kind registration,
-  peer-address decoding, and buffer cleanup.
+  peer-address decoding, and buffer cleanup.  Stage 25 coverage verifies socket
+  fd =read/write= dispatch through Winsock =recv= / =send= and preserves
+  regular HANDLE =ReadFile= / =WriteFile= dispatch.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -181,11 +185,12 @@
   starts Winsock support with =WSAStartup=, =socket=, socket-kind fd tracking,
   and =closesocket= close semantics.  Stage 23 adds Winsock =bind= / =connect=
   / =listen= for =AF_INET= socket-kind fds.  Stage 24 adds Winsock =accept= and
-  registers accepted sockets in the same fd table.
+  registers accepted sockets in the same fd table.  Stage 25 adds socket fd
+  =read/write= via Winsock =recv= / =send=.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
-  Windows OS APIs, complete Winsock send/recv/poll,
+  Windows OS APIs, complete Winsock poll,
   or cover the rest of the stdlib OS surface.
 
 * TL;DR
@@ -373,7 +378,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   separately from HANDLE fds, and =nelisp-os-close= dispatches socket fds to
   =closesocket=.  =nelisp-os-bind-inet= / =connect-inet= / =listen= now route
   socket-kind Windows fds to Winsock.  =nelisp-os-accept-inet= now routes to
-  =ws2_32!accept= and registers accepted sockets as socket-kind fds.
+  =ws2_32!accept= and registers accepted sockets as socket-kind fds.  Socket
+  fd =nelisp-os-read/write= now use =recv= / =send=.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -449,6 +455,8 @@ largest uncertainty (B1 + B2) first.
    socket-kind fds now route through =ws2_32!bind= / =connect= / =listen=.
    *Windows Winsock accept SHIPPED 2026-06-02*: accepted SOCKETs now become
    socket-kind fds and reuse the existing peer =sockaddr_in= decoder.
+   *Windows Winsock recv/send SHIPPED 2026-06-02*: socket-kind fds now route
+   =nelisp-os-read/write= through =ws2_32!recv= / =send=.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
@@ -468,7 +476,7 @@ largest uncertainty (B1 + B2) first.
    are also covered, and =getppid= now uses Tool Help snapshots.
    =fork/clone/CreateThread= and full child tracking remain pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
-   plus bind/connect/listen/accept; send/recv/poll remain pending.
+   plus bind/connect/listen/accept/read/write; poll remains pending.
 
 * One-line summary
 

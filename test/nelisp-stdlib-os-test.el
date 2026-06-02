@@ -1125,6 +1125,33 @@
     (should (equal read-request (list 1000 4)))
     (should (equal (sort freed #'<) '(1000 2000)))))
 
+(ert-deftest nelisp-stdlib-os-read-windows-socket-fd-uses-recv ()
+  "Windows socket fd read uses Winsock recv."
+  (let ((calls nil)
+        (freed nil)
+        (read-request nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr n)
+                 (setq read-request (list ptr n))
+                 "data"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-read 3 16) "data"))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "recv"
+                          [:sint32 :pointer :pointer :sint32 :sint32]
+                          (list #xabcdef 3000 16 0)))))
+    (should (equal read-request (list 3000 4)))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-write-windows-regular-fd-uses-writefile ()
   "Windows regular fd write uses the HANDLE table and WriteFile."
   (let ((calls nil)
@@ -1154,6 +1181,31 @@
                           (list #x55667788 1000 4 2000 0)))))
     (should (equal written-string (cons 1000 "data")))
     (should (equal (sort freed #'<) '(1000 2000)))))
+
+(ert-deftest nelisp-stdlib-os-write-windows-socket-fd-uses-send ()
+  "Windows socket fd write uses Winsock send."
+  (let ((calls nil)
+        (freed nil)
+        (written-string nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written-string (cons ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-write 3 "data") 4))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "send"
+                          [:sint32 :pointer :pointer :sint32 :sint32]
+                          (list #xabcdef 3000 4 0)))))
+    (should (equal written-string (cons 3000 "data")))
+    (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-close-windows-regular-fd-uses-closehandle ()
   "Windows regular fd close removes the table entry and calls CloseHandle."

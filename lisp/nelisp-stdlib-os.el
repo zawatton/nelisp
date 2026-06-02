@@ -46,8 +46,9 @@
 ;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
 ;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
 ;; Winsock.  Stage 24 maps AF_INET `accept' to Winsock and registers accepted
-;; sockets in the Windows fd table.  The Linux/Darwin path remains the default
-;; until a real Windows standalone runtime selects `system-type' = `windows-nt'.
+;; sockets in the Windows fd table.  Stage 25 maps socket fd `read' / `write'
+;; to Winsock `recv' / `send'.  The Linux/Darwin path remains the default until
+;; a real Windows standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -502,6 +503,39 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
    (nelisp-os--windows-get-std-handle fd)
    nbytes))
 
+(defun nelisp-os--windows-read-socket (fd nbytes)
+  "Read up to NBYTES bytes from a Windows socket fd using Winsock recv."
+  (let ((buf (nelisp-os--alloc nbytes)))
+    (unwind-protect
+        (let ((nread (nelisp-os--libc-call
+                      "ws2_32" "recv"
+                      [:sint32 :pointer :pointer :sint32 :sint32]
+                      (nelisp-os--windows-socket-for-fd fd)
+                      buf nbytes 0)))
+          (cond
+           ((= nread -1) (nelisp-os--windows-winsock-error-signal))
+           ((= nread 0) "")
+           (t (nelisp-os--read-bytes buf nread))))
+      (nelisp-os--free buf))))
+
+(defun nelisp-os--windows-write-socket (fd str)
+  "Write STR bytes to a Windows socket fd using Winsock send."
+  (let* ((nbytes (string-bytes str))
+         (buf (nelisp-os--alloc (max nbytes 1))))
+    (unwind-protect
+        (progn
+          (when (> nbytes 0)
+            (nelisp-os--write-bytes buf str))
+          (let ((sent (nelisp-os--libc-call
+                       "ws2_32" "send"
+                       [:sint32 :pointer :pointer :sint32 :sint32]
+                       (nelisp-os--windows-socket-for-fd fd)
+                       buf nbytes 0)))
+            (if (= sent -1)
+                (nelisp-os--windows-winsock-error-signal)
+              sent)))
+      (nelisp-os--free buf))))
+
 (defun nelisp-os-open (path flags mode)
   "POSIX open(2) — return integer fd, or signal `nelisp-os-error'.
 PATH is a string, FLAGS / MODE are integers."
@@ -527,6 +561,9 @@ PATH is a string, FLAGS / MODE are integers."
    ((and (nelisp-os--windows-p)
          (= fd nelisp-os-STDIN))
     (nelisp-os--windows-read-std-fd fd nbytes))
+   ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'socket))
+    (nelisp-os--windows-read-socket fd nbytes))
    ((nelisp-os--windows-p)
     (nelisp-os--windows-read-handle
      (nelisp-os--windows-fd-handle fd)
@@ -556,6 +593,9 @@ went through `:string' (= CString::new, NUL-rejecting)."
    ((and (nelisp-os--windows-p)
          (nelisp-os--windows-std-handle-selector fd))
     (nelisp-os--windows-write-std-fd fd str))
+   ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'socket))
+    (nelisp-os--windows-write-socket fd str))
    ((nelisp-os--windows-p)
     (nelisp-os--windows-write-handle
      (nelisp-os--windows-fd-handle fd)
