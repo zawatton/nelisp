@@ -17,6 +17,7 @@
 #   .\tools\windows-selfhost-test.ps1 -Smoke getfileinformation
 #   .\tools\windows-selfhost-test.ps1 -Smoke filemapping
 #   .\tools\windows-selfhost-test.ps1 -Smoke getcurrentprocessid
+#   .\tools\windows-selfhost-test.ps1 -Smoke getlasterror
 #   .\tools\windows-selfhost-test.ps1 -Smoke createprocess
 #   .\tools\windows-selfhost-test.ps1 -Smoke createthread
 #
@@ -122,6 +123,12 @@ $Smokes = @(
     @{
         Name = "getcurrentprocessid"
         Spec = "getcurrentprocessid-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
+        Name = "getlasterror"
+        Spec = "getlasterror-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
     },

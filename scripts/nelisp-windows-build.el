@@ -14,10 +14,11 @@
 ;; stdout/stdin HANDLE I/O via GetStdHandle + WriteFile / ReadFile,
 ;; CreateFileW file lifecycle, SetFilePointerEx seek wiring, GetFileType HANDLE
 ;; classification, GetFileInformationByHandle metadata queries, and file-backed
-;; mapping lifecycle wiring, GetCurrentProcessId process id discovery, CRT-free
-;; command-line discovery via GetCommandLineW / CommandLineToArgvW, and Winsock
-;; startup via WS2_32.dll!WSAStartup, plus CreateProcessW child launch / wait
-;; and CreateThread launch / join.
+;; mapping lifecycle wiring, GetCurrentProcessId process id discovery,
+;; GetLastError error propagation, CRT-free command-line discovery via
+;; GetCommandLineW / CommandLineToArgvW, and Winsock startup via WS2_32.dll!
+;; WSAStartup, plus CreateProcessW child launch / wait and CreateThread launch
+;; / join.
 ;;
 ;; Run on a Windows machine with Emacs installed via:
 ;;
@@ -37,6 +38,7 @@
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getfileinformation
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-filemapping
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getcurrentprocessid
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getlasterror
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getcommandline
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-commandlinetoargv
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-wsastartup
@@ -122,6 +124,11 @@
                     nelisp-windows-build--repo-root)
   "Default path for the single GetCurrentProcessId smoke EXE.")
 
+(defconst nelisp-windows-build--getlasterror-out
+  (expand-file-name "target/nelisp-windows-getlasterror.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single GetLastError smoke EXE.")
+
 (defconst nelisp-windows-build--getcommandline-out
   (expand-file-name "target/nelisp-windows-getcommandline.exe"
                     nelisp-windows-build--repo-root)
@@ -160,6 +167,7 @@
     (getfileinformation . getfileinformation-exit-42)
     (filemapping . filemapping-exit-42)
     (getcurrentprocessid . getcurrentprocessid-exit-42)
+    (getlasterror . getlasterror-exit-42)
     (getcommandline . getcommandline-exit-42)
     (commandlinetoargv . commandlinetoargv-exit-42)
     (wsastartup . wsastartup-exit-42)
@@ -302,6 +310,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'getcurrentprocessid-exit-42
    (or out-path nelisp-windows-build--getcurrentprocessid-out)
    "GetCurrentProcessId + ExitProcess 42"))
+
+(defun nelisp-windows-build-getlasterror (&optional out-path)
+  "Batch entry: build the Windows GetLastError smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'getlasterror-exit-42
+   (or out-path nelisp-windows-build--getlasterror-out)
+   "DeleteFileW failure + GetLastError + ExitProcess 42"))
 
 (defun nelisp-windows-build-getcommandline (&optional out-path)
   "Batch entry: build the Windows GetCommandLineW smoke EXE."

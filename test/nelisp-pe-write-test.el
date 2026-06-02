@@ -542,6 +542,66 @@
                    (unibyte-string #xff #x15)))
     (should (= (aref bytes (+ text-off 37)) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-getlasterror-section-table ()
+  "The GetLastError smoke EXE has an invalid filename in .rdata."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'getlasterror-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20))
+         (sect0 (+ pe-off 4 20 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (text-raw #x200)
+         (rdata-raw #x400)
+         (idata-raw #x600)
+         (path-bytes
+          (nelisp-pe--utf16le-z-bytes
+           "target\\windows-smoke\\nelisp-windows-getlasterror-?.tmp")))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ file-off 2)) 3))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 4)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 8)) #x400))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 56)) #x4000))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 20)) text-raw))
+    (should (string-prefix-p ".rdata" (substring bytes sect1 (+ sect1 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) rdata-raw))
+    (should (string-prefix-p ".idata" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 12)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 20)) idata-raw))
+    (should (equal (substring bytes rdata-raw (+ rdata-raw (length path-bytes)))
+                   path-bytes))))
+
+(ert-deftest nelisp-pe-write-exe-binary-getlasterror-import-directory ()
+  "The GetLastError smoke EXE imports error-propagation APIs."
+  (let ((bytes (nelisp-pe-write-test--emit-exe 'getlasterror-exit-42)))
+    (dolist (name '("KERNEL32.dll"
+                    "ExitProcess"
+                    "DeleteFileW"
+                    "GetLastError"))
+      (should (nelisp-pe-write-test--contains-p bytes name)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-getlasterror-entry-code ()
+  "The GetLastError smoke EXE checks a failed DeleteFileW error code."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'getlasterror-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (sect0 (+ pe-off 4 20 240))
+         (text-size (nelisp-pe-write-test--read-le32 bytes (+ sect0 8)))
+         (text-off #x200))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x28)))
+    (should (equal (substring bytes (+ text-off 4) (+ text-off 7))
+                   (unibyte-string #x48 #x8d #x0d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x85 #xc0 #x74 #x0b)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x85 #xc0 #x75 #x0b)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xb9 #x01 #x00 #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xb9 #x2a #x00 #x00 #x00)))
+    (should (= (aref bytes (+ text-off (1- text-size))) #xcc))))
+
 (ert-deftest nelisp-pe-write-exe-binary-wsastartup-section-table ()
   "The WSAStartup smoke EXE has .data WSADATA bytes and multi-DLL .idata."
   (let* ((bytes (nelisp-pe-write-test--emit-exe 'wsastartup-exit-42))
