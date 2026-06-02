@@ -1,5 +1,6 @@
 *.elc
 *.bak
+build/
 .worktrees/
 
 # Claude Code session ephemera — never commit

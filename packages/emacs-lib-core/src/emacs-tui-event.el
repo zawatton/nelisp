@@ -59,6 +59,7 @@
 ;;
 ;;   C. polling (1 API)
 ;;      emacs-tui-event-poll               — pull next event (Doc 43 §2.6)
+;;      emacs-tui-event-poll-printable-byte — fast ASCII key poll
 ;;
 ;;   D. SIGWINCH / resize (3 APIs)
 ;;      emacs-tui-event-install-sigwinch   — register callback
@@ -633,6 +634,33 @@ by `emacs-tui-event-poll' before checking the queue for events."
           (emacs-tui-event-feed-bytes handle str))))))
 
 ;;;###autoload
+(defun emacs-tui-event-poll-printable-byte (handle)
+  "Return the next plain printable ASCII byte from HANDLE, or nil.
+
+This is an event-loop fast path for the dominant typing case.  It only
+fires when HANDLE has no queued parsed events and no partial escape /
+UTF-8 input buffer.  Printable bytes are returned as integers without
+allocating the normal `(:type key :name CHAR :modifiers nil)' plist.
+
+Non-printable bytes are fed back through the normal parser and nil is
+returned so callers can immediately fall back to
+`emacs-tui-event-poll'."
+  (emacs-tui-event--check-handle handle)
+  (when (and emacs-tui-event-input-fn
+             (null (emacs-tui-event-handle-event-queue handle))
+             (= 0 (length (emacs-tui-event-handle-input-buffer handle))))
+    (let ((b (funcall emacs-tui-event-input-fn)))
+      (cond
+       ((null b) nil)
+       ((not (and (integerp b) (>= b 0) (<= b 255)))
+        (signal 'wrong-type-argument (list 'byte-in-range b)))
+       ((and (>= b 32) (<= b 126))
+        b)
+       (t
+        (emacs-tui-event-feed-bytes handle (unibyte-string b))
+        nil)))))
+
+;;;###autoload
 (defun emacs-tui-event-poll (handle &optional timeout-ms)
   "Pop and return the next pending event from HANDLE, or nil on empty.
 TIMEOUT-MS, if non-nil, is a non-negative integer giving a maximum
@@ -695,6 +723,23 @@ Returns the event (a plist) or nil."
 Module-private; manipulated by `emacs-tui-event-install-sigwinch' and
 `emacs-tui-event-uninstall-sigwinch'.")
 
+(defvar emacs-tui-event--terminal-winsize-handler-installed-p nil
+  "Non-nil after the pure-Elisp terminal resize handler is installed.")
+
+(defvar emacs-tui-event--terminal-jobctrl-handlers-installed-p nil
+  "Non-nil after the pure-Elisp terminal job-control handlers install.")
+
+(defvar emacs-tui-event--terminal-winsize-changed-p nil
+  "Pending terminal resize flag consumed by `terminal-take-winsize-changed'.")
+
+(defvar emacs-tui-event--terminal-sigcont-p nil
+  "Pending terminal resume flag consumed by `terminal-take-sigcont'.")
+
+(defvar emacs-tui-event--terminal-current-winsize nil
+  "Last known terminal size as `(WIDTH . HEIGHT)'.
+When nil, `terminal-current-winsize' computes the best available host
+frame size or falls back to the TUI event defaults.")
+
 (defun emacs-tui-event--window-size-change-hook (frame)
   "Hook fn for `window-size-change-functions' — fan out to handles.
 FRAME is the Emacs frame whose size changed; we read its current
@@ -752,6 +797,59 @@ fired yet."
             emacs-tui-event-default-window-width)
         (or (emacs-tui-event-handle-window-height handle)
             emacs-tui-event-default-window-height)))
+
+(defun emacs-tui-event--host-window-size ()
+  "Return the current host frame size as `(WIDTH . HEIGHT)'."
+  (let ((width nil)
+        (height nil))
+    (when (and (fboundp 'selected-frame)
+               (fboundp 'frame-width)
+               (fboundp 'frame-height))
+      (let ((frame (selected-frame)))
+        (setq width (frame-width frame)
+              height (frame-height frame))))
+    (cons (or width emacs-tui-event-default-window-width)
+          (or height emacs-tui-event-default-window-height))))
+
+(unless (fboundp 'install-winsize-handler)
+  (defun install-winsize-handler ()
+    "Install the pure-Elisp terminal resize compatibility handler.
+
+Standalone NeLisp may provide this as a runtime builtin.  The fallback
+keeps the same idempotent success contract and records the host frame
+size so `nemacs-main' can query it through `terminal-current-winsize'."
+    (setq emacs-tui-event--terminal-winsize-handler-installed-p t)
+    (unless emacs-tui-event--terminal-current-winsize
+      (setq emacs-tui-event--terminal-current-winsize
+            (emacs-tui-event--host-window-size)))
+    t))
+
+(unless (fboundp 'install-jobctrl-handlers)
+  (defun install-jobctrl-handlers ()
+    "Install pure-Elisp terminal job-control compatibility handlers."
+    (setq emacs-tui-event--terminal-jobctrl-handlers-installed-p t)
+    t))
+
+(unless (fboundp 'terminal-current-winsize)
+  (defun terminal-current-winsize ()
+    "Return the current terminal size as `(WIDTH . HEIGHT)'."
+    (or emacs-tui-event--terminal-current-winsize
+        (setq emacs-tui-event--terminal-current-winsize
+              (emacs-tui-event--host-window-size)))))
+
+(unless (fboundp 'terminal-take-winsize-changed)
+  (defun terminal-take-winsize-changed ()
+    "Return and clear the pending terminal resize flag."
+    (let ((pending emacs-tui-event--terminal-winsize-changed-p))
+      (setq emacs-tui-event--terminal-winsize-changed-p nil)
+      pending)))
+
+(unless (fboundp 'terminal-take-sigcont)
+  (defun terminal-take-sigcont ()
+    "Return and clear the pending terminal SIGCONT flag."
+    (let ((pending emacs-tui-event--terminal-sigcont-p))
+      (setq emacs-tui-event--terminal-sigcont-p nil)
+      pending)))
 
 (defun emacs-tui-event-dispatch-resize (handle width height)
   "Update HANDLE's stored window size and fire its resize callback.

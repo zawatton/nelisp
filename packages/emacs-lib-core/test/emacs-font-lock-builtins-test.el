@@ -41,8 +41,40 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
   (should (featurep 'emacs-font-lock-builtins))
   (dolist (sym '(font-lock-mode font-lock-fontify-region
                  font-lock-fontify-buffer font-lock-add-keywords
-                 font-lock-remove-keywords font-lock-set-defaults))
+                 font-lock-remove-keywords font-lock-set-defaults
+                 font-lock-unfontify-region font-lock-unfontify-buffer
+                 font-lock-default-fontify-region))
     (should (fboundp sym))))
+
+(ert-deftest emacs-font-lock-builtins-test/require-is-idempotent ()
+  (let ((before-mode (symbol-function 'font-lock-mode))
+        (before-fontify (symbol-function 'font-lock-fontify-region))
+        (before-add (symbol-function 'font-lock-add-keywords)))
+    (require 'emacs-font-lock-builtins)
+    (should (eq before-mode (symbol-function 'font-lock-mode)))
+    (should (eq before-fontify (symbol-function 'font-lock-fontify-region)))
+    (should (eq before-add (symbol-function 'font-lock-add-keywords)))))
+
+(ert-deftest emacs-font-lock-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-font-lock-builtins--install-function-p))
+  (should-not (emacs-font-lock-builtins--install-function-p 'font-lock-mode))
+  (let* ((file (locate-library "emacs-font-lock-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(font-lock-mode font-lock-fontify-region
+                     font-lock-fontify-buffer font-lock-unfontify-region
+                     font-lock-unfontify-buffer font-lock-default-fontify-region
+                     font-lock-add-keywords font-lock-remove-keywords
+                     font-lock-set-defaults))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-font-lock-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 (ert-deftest emacs-font-lock-builtins-test/standard-faces-registered ()
   (dolist (face '(font-lock-keyword-face font-lock-string-face
@@ -427,6 +459,15 @@ interval, NOT a list."
     (emacs-font-lock-mark-dirty-region 1 4 b)
     (let ((d (emacs-font-lock-pending-dirty-region b)))
       (should (equal '(1 . 5) d)))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-mark-dirty-reuses-interval ()
+  "Repeated dirty marks should extend the same cons cell."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-coalesce-eq" "abcdef"
+    (let ((first (emacs-font-lock-mark-dirty-region 3 4 b)))
+      (should (eq first (emacs-font-lock-mark-dirty-region 2 5 b)))
+      (should (eq first (emacs-font-lock-pending-dirty-region b)))
+      (should (equal '(2 . 5) first)))))
 
 (ert-deftest emacs-font-lock-builtins-test/track-s-flush-pending-clears-marker ()
   "After flush, the pending interval is nil regardless of whether

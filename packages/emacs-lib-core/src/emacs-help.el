@@ -32,6 +32,9 @@
 (defvar help-mode-map nil
   "Keymap for `help-mode'.")
 
+(defvar describe-symbol-backends nil
+  "Backends consulted by callers that extend `describe-symbol'.")
+
 (setq help-mode-map
       (let ((map (emacs-keymap-make-sparse-keymap)))
         (emacs-keymap-define-key map (kbd "q") #'emacs-help-quit-window)
@@ -276,6 +279,16 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
       (user-error "Current buffer is not a help buffer"))
     (funcall rerender)))
 
+(defun help-go-back ()
+  "Report that help history navigation is not implemented yet."
+  (interactive)
+  (user-error "Help history is not available"))
+
+(defun help-go-forward ()
+  "Report that help history navigation is not implemented yet."
+  (interactive)
+  (user-error "Help history is not available"))
+
 ;;;###autoload
 (defun describe-function (function)
   "Render help for FUNCTION in the shared `*Help*' buffer."
@@ -287,6 +300,23 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
   "Render help for VARIABLE in the shared `*Help*' buffer."
   (interactive (list (emacs-help--read-variable)))
   (emacs-help--render-variable variable))
+
+;;;###autoload
+(defun describe-symbol (symbol)
+  "Render help for SYMBOL as a function or variable."
+  (interactive
+   (list (emacs-help--read-symbol
+          "Describe symbol: "
+          (append (emacs-help--function-candidates)
+                  (emacs-help--variable-candidates))
+          (lambda (sym) (or (fboundp sym) (boundp sym))))))
+  (cond
+   ((fboundp symbol)
+    (describe-function symbol))
+   ((boundp symbol)
+    (describe-variable symbol))
+   (t
+    (user-error "%s is not a defined function or bound variable" symbol))))
 
 ;;;###autoload
 (defun describe-key (key &optional buffer)
@@ -314,6 +344,10 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
   (symbol-function 'describe-key)
   "Captured nelisp-emacs `describe-key' implementation.")
 
+(defvar emacs-help--describe-symbol-impl
+  (symbol-function 'describe-symbol)
+  "Captured nelisp-emacs `describe-symbol' implementation.")
+
 (defun emacs-help--reassert-overrides ()
   "Reinstall our `describe-*' implementations.
 Run from `emacs-help--ensure-global-bindings' so any host library that
@@ -321,6 +355,7 @@ re-defined these symbols (via `help-fns' autoload, `find-func' load,
 etc.) is silently re-shadowed before the binding step."
   (fset 'describe-function emacs-help--describe-function-impl)
   (fset 'describe-variable emacs-help--describe-variable-impl)
+  (fset 'describe-symbol emacs-help--describe-symbol-impl)
   (fset 'describe-key emacs-help--describe-key-impl))
 
 (defun emacs-help--ensure-global-bindings ()

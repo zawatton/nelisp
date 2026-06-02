@@ -3,8 +3,8 @@
 ;;; Commentary:
 
 ;; Tests for the Layer 2 Emacs frame.c builtin bridge.  Under batch
-;; host Emacs the host C builtins remain active (= the bridge's
-;; `unless (fboundp ...)' gate keeps them) so the substrate-direct
+;; host Emacs the host C builtins remain active (= the bridge's host
+;; gate keeps them) so the substrate-direct
 ;; `emacs-frame-*' API is used for semantic assertions; bridge-shape
 ;; assertions verify featurep + fboundp parity.
 
@@ -29,10 +29,16 @@
   (should (featurep 'emacs-frame-builtins))
   (should (featurep 'emacs-frame))
   (dolist (sym '(make-frame framep frame-live-p frame-list
-                 selected-frame
+                 selected-frame window-frame
+                 delete-frame delete-other-frames
+                 frame-width frame-height frame-char-width frame-char-height
+                 frame-pixel-width frame-pixel-height
+                 set-frame-size set-frame-position
                  frame-parameter frame-parameters
                  set-frame-parameter modify-frame-parameters
-                 delete-frame))
+                 frame-visible-p make-frame-visible make-frame-invisible
+                 raise-frame lower-frame select-frame frame-focus
+                 frame-windows display-pixel-width display-pixel-height))
     (should (fboundp sym))))
 
 ;;;; B. Substrate-direct: make-frame produces a framep object
@@ -89,16 +95,57 @@
   (emacs-frame-builtins-test--with-fresh-world
     (should (emacs-frame-framep (emacs-frame-selected-frame)))))
 
+(ert-deftest emacs-frame-builtins-test/extended-prefixed-surface-is-usable ()
+  (emacs-frame-builtins-test--with-fresh-world
+    (let ((f (emacs-frame-make-frame '((width . 90) (height . 30)))))
+      (should (= 90 (emacs-frame-frame-width f)))
+      (should (= 30 (emacs-frame-frame-height f)))
+      (emacs-frame-set-frame-size f 100 40)
+      (should (= 100 (emacs-frame-frame-width f)))
+      (should (= 40 (emacs-frame-frame-height f)))
+      (emacs-frame-make-frame-invisible f)
+      (should-not (emacs-frame-frame-visible-p f))
+      (emacs-frame-make-frame-visible f)
+      (should (emacs-frame-frame-visible-p f))
+      (emacs-frame-select-frame f)
+      (should (eq f (emacs-frame-selected-frame)))
+      (should (= emacs-frame--display-cols
+                 (emacs-frame-display-pixel-width))))))
+
+(ert-deftest emacs-frame-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  ;; The bridge must replace `emacs-stub.el' sentinels in standalone
+  ;; NeLisp, while preserving host Emacs builtins.
+  (should (fboundp 'emacs-frame-builtins--install-function-p))
+  (should-not (emacs-frame-builtins--install-function-p 'make-frame))
+  (let* ((file (locate-library "emacs-frame-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(make-frame framep frame-live-p frame-list
+                     selected-frame window-frame delete-frame
+                     delete-other-frames frame-width frame-height
+                     set-frame-size frame-visible-p select-frame
+                     frame-windows display-pixel-width display-pixel-height))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-frame-builtins--install-function-p '%s)" sym)
+                 nil t))))))
+
 ;;;; H. Idempotence
 
 (ert-deftest emacs-frame-builtins-test/require-is-idempotent ()
   (let ((before-make-frame      (symbol-function 'make-frame))
         (before-framep          (symbol-function 'framep))
-        (before-frame-parameter (symbol-function 'frame-parameter)))
+        (before-frame-parameter (symbol-function 'frame-parameter))
+        (before-frame-width     (symbol-function 'frame-width)))
     (require 'emacs-frame-builtins)
     (should (eq before-make-frame      (symbol-function 'make-frame)))
     (should (eq before-framep          (symbol-function 'framep)))
-    (should (eq before-frame-parameter (symbol-function 'frame-parameter)))))
+    (should (eq before-frame-parameter (symbol-function 'frame-parameter)))
+    (should (eq before-frame-width     (symbol-function 'frame-width)))))
 
 (provide 'emacs-frame-builtins-test)
 

@@ -9,8 +9,11 @@
 ;; Doc 51 Track H (2026-05-03) — Layer 2.
 ;;
 ;; Bridges the Emacs unprefixed major-mode framework to the
-;; substrate in `emacs-mode.el'.  Same `unless (fboundp ...)' /
-;; `unless (boundp ...)' pattern as every other Track bridge.
+;; substrate in `emacs-mode.el'.  Function definitions use a
+;; host-aware install gate: host Emacs keeps its builtin/simple.el
+;; mode framework, while standalone NeLisp overwrites bootstrap stubs
+;; with the real mode substrate.  Variables are still gated on
+;; `unless (boundp ...)' so host-owned special variables win.
 ;;
 ;; Bridged today:
 ;;   - Variables: major-mode / mode-name / auto-mode-alist /
@@ -67,28 +70,33 @@ parent mode is initialised but before the user hooks fire."))
 
 ;;;; --- function bridges ----------------------------------------------
 
-(unless (fboundp 'fundamental-mode)
+(defun emacs-mode-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-mode-builtins--install-function-p 'fundamental-mode)
   (defalias 'fundamental-mode #'emacs-mode-fundamental-mode))
 
-(unless (fboundp 'text-mode)
+(when (emacs-mode-builtins--install-function-p 'text-mode)
   (defalias 'text-mode #'emacs-mode-text-mode))
 
-(unless (fboundp 'emacs-lisp-mode)
+(when (emacs-mode-builtins--install-function-p 'emacs-lisp-mode)
   (defalias 'emacs-lisp-mode #'emacs-mode-emacs-lisp-mode))
 
-(unless (fboundp 'run-mode-hooks)
+(when (emacs-mode-builtins--install-function-p 'run-mode-hooks)
   (defalias 'run-mode-hooks #'emacs-mode-run-mode-hooks))
 
-(unless (fboundp 'kill-all-local-variables)
+(when (emacs-mode-builtins--install-function-p 'kill-all-local-variables)
   (defalias 'kill-all-local-variables
     #'emacs-mode-kill-all-local-variables))
 
-(unless (fboundp 'set-auto-mode)
+(when (emacs-mode-builtins--install-function-p 'set-auto-mode)
   (defalias 'set-auto-mode #'emacs-mode-set-auto-mode))
 
 ;;;; --- macro bridge --------------------------------------------------
 
-(unless (fboundp 'define-derived-mode)
+(when (emacs-mode-builtins--install-function-p 'define-derived-mode)
   (defmacro define-derived-mode (child parent name &optional doc &rest body)
     "Track H bridge: delegates to `emacs-mode-define-derived-mode'."
     `(emacs-mode-define-derived-mode

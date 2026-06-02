@@ -10,7 +10,7 @@ usable Emacs replacement and is unlikely to become one for several
 years.  Most user-visible Emacs features are absent, the API is
 unstable, and breaking changes are expected on most commits.
 
-Concretely, as of 2026-05-16:
+Concretely, as of 2026-05-27:
 
 - Phase 1 (= core editor substrate: =buffer.c=, =window.c=, =frame.c=,
   =keymap.c=, =minibuffer.c= ported to elisp) has its *§4 sub-tasks
@@ -75,10 +75,9 @@ Concretely, as of 2026-05-16:
   =bin/build-nelisp= launchers.  See =docs/design/02-v01-daily-
   driver.org= for the milestone breakdown.
 
-The repository ships *1281 ERT* across all phases, *1260 pass / 0
-fail / 21 skip* (the 21 skips are intentional =skip-unless= gates —
-nelisp-runtime probes, host-only OS clipboard fallbacks, the
-branch-specific 5x diff-redraw bench, etc.).  Highlights: 80
+The repository ships *1549 ERT* across all phases, *1540 pass / 0
+fail / 9 skip* (the 9 skips are intentional opt-in =skip-unless= gates
+for nelisp-runtime bootstrap probes).  Highlights: 80
 redisplay ERTs (=emacs-redisplay-test.el=) cover driver / matrix /
 face / overlay / scroll / mode-line / p99 latency; integration
 round-trip is exercised by 7 =phase1-close-demo-*= tests plus 11
@@ -135,8 +134,10 @@ without a hand-written C core.
 
 - =Layer 1 (NeLisp core runtime)= = upstream
   [[https://github.com/zawatton/nelisp][~nelisp~]] (vendored under
-  =vendor/nelisp/= via =bin/build-nelisp=).  This repo never modifies
-  Layer 1.
+  =vendor/nelisp/= via =bin/build-nelisp=, or supplied by a sibling
+  checkout via =NELISP_HOME=).  NeLisp provides the pure-Elisp
+  standalone reader at =target/nelisp-standalone-reader=, including
+  =repl [--no-prompt]= for persistent evaluator development.
 - =Layer 2 (extension package)= = partly upstream (the
   =nelisp-emacs-compat=, =nelisp-process=, =nelisp-regex=,
   =nelisp-coding=, =nelisp-sqlite=, =nelisp-base64=,
@@ -147,12 +148,8 @@ without a hand-written C core.
   from Emacs C.
 - =Layer 3 (display backend)= = TUI primary (in this repo).  The
   GTK4 GUI sibling lives in
-  [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]] (currently a
-  Rust boot-stub + elisp policy split, with a long-term goal of
-  collapsing the Rust layer in favour of pure-elisp NeLisp-native
-  GTK4 FFI bindings — see that repo's README "Long-term goal" section
-  for the B0/B/C plan).  Cocoa / Win32 / =wgpu= backends are open to
-  community contribution.
+  [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]].  Cocoa / Win32 /
+  =wgpu= backends are open to community contribution.
 
 * Repository layout
 
@@ -174,7 +171,9 @@ without a hand-written C core.
   =key-parse= / =key-valid-p= delegated by =emacs-keymap.el='s
   newer-API section; =vendor/emacs-lisp/org/= for the day when an
   =org-mode= bootstrap becomes meaningful)
-- =vendor/nelisp/= — produced by =bin/build-nelisp= (= =make nelisp=)
+- =vendor/nelisp/= — optional vendored NeLisp checkout produced by
+  =bin/build-nelisp= (= =make nelisp=).  A sibling =../nelisp= checkout
+  or explicit =NELISP_HOME= is also supported for local development.
 - =docs/design/= — design documents for each port phase
 - =bench/= — micro-benchmarks (advisory; not merge gates)
 
@@ -374,13 +373,14 @@ Module breakdown:
 
 Plus the GTK frontend stack:
 - =src/nemacs-gtk-frontend.el= — Layer 3 GTK4 GUI driver invoked
-  by the NeLisp Rust runtime (=(nemacs-gtk-main)=).
+  by the NeLisp driver / GTK host path (=(nemacs-gtk-main)=).
 - =src/nemacs-gtk-view-menu.el= — buffer-list dynamic submenu.
 - =bin/nemacs= — launcher script (host emacs driver default,
   =--driver=nelisp= for the experimental standalone driver).
-- =bin/build-nelisp= — fetches + builds the nelisp Rust runtime
-  into =vendor/nelisp/=.  =make nelisp= is the idempotent entry
-  point.
+- =bin/build-nelisp= — fetches + builds NeLisp into =vendor/nelisp/=.
+  Current NeLisp checkouts build =target/nelisp-standalone-reader=
+  through the pure-Elisp AOT path.  =make nelisp= is the idempotent
+  standalone-reader entry point.
 
 Known caveat: the GTK boot fix (commit =c70ec7b=, reorders
 =--prepare-welcome-buffer= ahead of =--load-user-init-file= so the
@@ -415,16 +415,283 @@ plausible; interactive editing in =nelisp-emacs= is not.
 * Building
 
 #+begin_src sh
-make nelisp        # populate vendor/nelisp/ from upstream
-make compile       # byte-compile src/
-make test          # run the ERT test suite (624 tests)
-make demo          # run the Phase 1 close mini demo and print result
-make demo-phase2   # run the Phase 2 close mini demo and print result
+make nelisp          # optional: populate vendor/nelisp/ from upstream
+make compile         # byte-compile src/
+make test            # run the host-Emacs ERT suite (1549 tests)
+make test-redisplay-core-smoke # isolated lightweight redisplay core smoke
+make doctor          # check host/NeLisp driver readiness
+make build-nelisp-bootstrap # generate build/nemacs-bootstrap.el
+make bake-image      # legacy .nli state image via emacs-dump
+make bake-runtime-image # generate build/nemacs-runtime.nlri via standalone reader
+make bake-interactive-runtime-image # include editor/TUI features
+make bake-vendor-core-runtime-image # experimental: include daily-driver core
+make test-nelisp     # build the bundle + run standalone/nelisp boot smokes
+make test-nelisp-runtime-image # bake + smoke-test runtime-image boot
+make test-nelisp-interactive-runtime-image # smoke-test TUI realise
+make test-nelisp-vendor-core-runtime-image # experimental vendor-core image
+make test-nelisp-ert # run the full opt-in nelisp-driver bootstrap ERTs
+make profile-nelisp-bootstrap # time standalone bootstrap bundle sections
+make diagnose-vendor-form-walk # form-by-form standalone vendor diagnostic
+make diagnose-vendor-load-replay # standalone true load replay diagnostic
+make verify-nelisp-standalone # pure standalone-reader gates
+make verify-vendor   # run vendor inventory + NeLisp vendor smoke gates
+make demo            # run the Phase 1 close mini demo and print result
+make demo-phase2     # run the Phase 2 close mini demo and print result
 #+end_src
 
-The nelisp binary tool is the source of truth for
-=vendor/nelisp/=; do not add Makefile targets or scripts that assume
-an external nelisp checkout outside =$NEMACS_HOME=.
+For regular development, =make test= stays on the host Emacs driver
+and keeps the suite fast.  The =--driver=nelisp= path now targets the
+pure-Elisp NeLisp stack and is much slower, so it is exposed as explicit
+smoke targets.  =make doctor= runs a fast readiness check for the clean
+host batch path plus the resolved NeLisp driver.  It checks literal and
+list-form eval through the standalone reader's exit-code contract.  If
+this fails before =nemacs-main= is entered, the next fix belongs in the
+driver/runtime layer rather than the editor bootstrap.
+=make build-nelisp-bootstrap=
+creates a plain Elisp preload bundle at =build/nemacs-bootstrap.el=;
+=bin/nemacs --driver=nelisp= uses it automatically when present.  This is
+a source preload bundle, not a pdump/AST image.  Set
+=NEMACS_BOOTSTRAP_BUNDLE=none= to force source-by-source cold loading.
+
+=make verify-nelisp-standalone= is the current pure standalone-reader
+gate.  It runs =make doctor=, =make test-nelisp=,
+=make test-nelisp-runtime-image=, =make verify-vendor-class-a=, and
+=make verify-vendor-core=, proving the reader binary, the
+=bin/nemacs --driver=nelisp --batch= boot script path, the source-v1
+runtime-image bake/replay path, the lightweight Class-A vendor smoke, and
+the current daily-driver vendor-core smoke without requiring the legacy
+command path.
+
+=make bake-image= still builds the older =build/nemacs-loadup.nli=
+state image through =emacs-dump= / =image-loader= for compatibility
+with =--load-image=.  The legacy loader is lazy and is not required by
+=nemacs-main= unless =:images= / =--load-image= is actually used; it is
+not the daily-driver startup path because it does not freeze the
+NeLisp runtime heap or function environment.
+
+=make bake-runtime-image= writes a NeLisp =.nlri= runtime image at
+=build/nemacs-runtime.nlri= using the resolved =NELISP_BIN=
+=dump-runtime-image= entry.  Current NeLisp standalone-reader builds
+provide the source-v1 =dump-runtime-image= / =extend-runtime-image=
+command surface.  With the source-v1 image format, that file is a
+replayable source bundle: loading it evaluates the stored bootstrap forms
+again in a fresh NeLisp environment.  It is therefore useful as a shared
+runtime-image entry point and for future snapshot-compatible preload
+lanes, but it should not be treated as a startup accelerator yet.
+
+On the standalone-reader path, =bin/nemacs --runtime-image FILE= now
+uses the direct standalone =exec-runtime-image= command.  The
+standalone reader builds direct exec/eval image commands into the same
+multi-form source replay path used by normal file evaluation.  Direct
+=exec-runtime-image= appends every supplied =FORM...= followed by an
+explicit zero exit sentinel; direct =eval-runtime-image= evaluates the
+supplied =FORM...= as a =progn=, prints the final value, and then exits
+zero.  The batch runtime-image smoke is part of =make
+verify-nelisp-standalone=; the interactive and vendor-core image smokes
+keep explicit longer bake/replay timeouts and remain opt-in diagnostics.
+
+The runtime-image bake recipes share
+=scripts/nemacs-runtime-image-preload.el=, which keeps preload policy
+out of the Makefile's quoted one-liners.  =make
+bake-interactive-runtime-image= preloads the pure-Elisp TUI backend,
+TUI event parser, lightweight first-frame redisplay core, and nemacs
+command keymap.  The full =emacs-redisplay.el= engine remains lazy;
+first TUI realisation uses =emacs-redisplay-core.el= so startup does
+not pay the full redisplay source load before a frame exists.  Use
+=NEMACS_RUNTIME_IMAGE=auto= to let =bin/nemacs --driver=nelisp= choose
+the batch or interactive image by mode when it exists.
+
+=make bake-vendor-core-runtime-image= uses the resolved NeLisp
+=extend-runtime-image= command: it reads =build/nemacs-runtime.nlri= as
+the base image and writes =build/nemacs-vendor-core-runtime.nlri= without
+overwriting the base image.  If =build/nemacs-runtime.nlri= already
+exists, this target extends that image directly instead of forcing a
+fresh bootstrap dump; it only invokes the base-image bake when the base
+file is missing.  On standalone-reader source-v1 images, extension writes
+the concatenated source bundle and leaves full replay validation to the
+wrapper smoke, because nested command-frame validation is not the stable
+path for images that contain `load'.  The first extension lane directly
+installs the daily-driver =files= and =simple= shim surface from the
+already-loaded preload helper, avoiding slow source =require= for those
+two shims.
+=test-nelisp-vendor-core-runtime-image= is still an experimental
+long-timeout smoke rather than a daily gate.  The direct vendor-core
+surface currently covers =files=, =simple=, and the Doc 03 Phase 1
+daily-driver command facades for =dired=, =help-mode=, =help-fns=,
+=lisp-mode=, =ielm=, =isearch=,
+=minibuffer=, and =project=.  It also directly installs the lightweight
+support and Class-A utility/i18n surfaces for =subr-x=, =seq=, =map=,
+=lisp=, =case-table=, =cdl=, =range=, =regi=, =hex-util=, =map-ynp=,
+=charprop=, =charscript=, =emoji-labels=, =iso-transl=, =cp51932=,
+=eucjp-ms=, =fontset=, =idna-mapping=, and =ja-dic-utl=.  In host
+smoke, running the vendor-core extension and then =VENDOR_CORE_LIMIT=0=
+now proves all 29 candidates without source =require= during extension.
+
+=make verify-vendor= includes the generated vendor inventory, a small
+Class-A load lane, and a strict daily-driver core lane.  Both smoke lanes
+are part of the pure standalone-reader gate.  The vendor-core lane uses a
+  temporary file-based boot script for the standalone reader.  By default the
+Class-A lane proves all eighteen lightweight modules
+(=case-table=, =cdl=, =backquote=, =lisp-float-type=,
+=hex-util=, =lisp=, =map-ynp=, =range=, =regi=,
+=charprop=, =charscript=, =emoji-labels=, =iso-transl=,
+=cp51932=, =eucjp-ms=, =fontset=, =idna-mapping=, and
+=ja-dic-utl=), while the
+core lane now defaults to =VENDOR_CORE_LIMIT=0=, proving all current
+daily-driver vendor-core candidates under the standalone reader.
+The same runner already has Doc 03 Phase 1 candidates for =simple=, =dired=,
+=help-mode=, =help-fns=, =subr-x=, =seq=, =map=, =lisp=, =case-table=, =cdl=, =range=, =regi=, =lisp-mode=,
+=ielm=, =isearch=, =minibuffer=, =project=, plus the Class-A utility/i18n
+facades =hex-util=, =map-ynp=, =charprop=, =charscript=, =emoji-labels=,
+=iso-transl=, =cp51932=, =eucjp-ms=, =fontset=, =idna-mapping=, and
+=ja-dic-utl=.  Set =VENDOR_CORE_LIMIT=N= to run only the first N
+modules when narrowing a regression.  Use
+=VENDOR_CORE_MODULES=simple= or a comma/space-separated list to diagnose
+a candidate without first paying the already-verified =files= lane.  The
+=simple= lane is currently satisfied by
+=src/simple.el=, a lightweight daily-driver shim that exposes
+=open-line=, =quoted-insert=, and =indent-for-tab-command= without
+forcing the full =emacs-init= bootstrap.  When the line/edit bridges
+are already loaded, the smoke also checks their core commands.  The
+=dired= lane is satisfied by =src/dired.el=, which exposes the existing
+=emacs-dired-min= daily-driver browser as the standard =dired= feature
+without forcing full vendor =dired.el=.  The =help-mode= and
+=help-fns= lanes are satisfied by =src/help-mode.el= and
+=src/help-fns.el=, which expose the existing =emacs-help= daily-driver
+help buffer and describe-* commands as standard feature names without
+forcing full vendor help loads.  The =lisp-mode=, =ielm=, =isearch=,
+=minibuffer=, and =project= lanes are satisfied by small standard-name
+facades over =emacs-elisp-mode= / =emacs-elisp-eval=, =emacs-ielm=,
+=emacs-isearch=, =emacs-minibuffer-builtins=, and =emacs-project=.
+The =subr-x= lane is satisfied by =src/subr-x.el=, which collects the
+common support helpers used throughout vendor files (=thread-first= /
+=thread-last= / =named-let=, hash table key/value helpers, string
+prefix/suffix/replacement/limit/padding helpers, =proper-list-p=, and
+=mapcan=) without forcing the full vendor =subr-x.el=.
+=seq= is likewise satisfied by =src/seq.el=, a small list/string/vector
+sequence facade covering the vendor helpers currently needed by common
+Emacs Lisp modules (=seq-map=, =seq-filter=, =seq-find=,
+=seq-reduce=, =seq-uniq=, =seq-concatenate=, and related accessors).
+=map= is satisfied by =src/map.el=, which covers common alist/plist /
+hash-table / array operations (=map-elt=, =map-keys=, =map-values=,
+=map-apply=, =map-do=, =map-empty-p=, =map-contains-key=,
+=map-merge=, =map-merge-with=, =map-into=, and mutation helpers).
+=lisp= is satisfied by =src/lisp.el=, which gives NeLisp a standard
+feature for common Lisp editing commands even though upstream
+=emacs-lisp/lisp.el= does not provide one.  The facade covers the
+daily-driver sexp/defun/pair surface (=forward-sexp=,
+=backward-sexp=, =mark-sexp=, =kill-sexp=, =beginning-of-defun=,
+=end-of-defun=, =insert-pair=, =delete-pair=, and =check-parens=)
+without loading the full vendor file.
+=case-table= is satisfied by =src/case-table.el=, which replaces the
+standalone nil-stubs for the early char-table/case-table surface with
+a lightweight ASCII char-table substrate and the standard
+=case-table-get-table= / =copy-case-table= / =set-case-syntax-*= helpers.
+=cdl= is satisfied by =src/cdl.el=, a small standard-name facade over
+the process bridge for =ncdump= / =ncgen= integration.  =cdl-get-file=
+preserves point after inserting =ncdump= output, and =cdl-put-region=
+routes the selected region through =ncgen -o= without loading the full
+vendor file.
+=hex-util= is satisfied by =src/hex-util.el=, a dependency-free
+octet-string encoder/decoder for =encode-hex-string= and
+=decode-hex-string=.  This keeps common mail/auth/network helper chains
+from pulling the full vendor file while the Class-A lane expands.
+=charprop= is satisfied by =src/charprop.el=, a lightweight
+char-code-property registry that installs the pure-Elisp
+=define-char-code-property= / =get-char-code-property= /
+=put-char-code-property= substrate under standalone NeLisp.  The large
+Unicode data tables remain lazy, so daily startup pays only for the
+property registry.
+=charscript= is satisfied by =src/charscript.el=, a lightweight
+=char-script-table= facade that covers the Latin daily-driver path and
+exposes the standard script list without materializing the generated
+Unicode range table at startup.
+=emoji-labels= is satisfied by =src/emoji-labels.el=, a representative
+emoji label/name/derivation subset with the same data shape as the
+generated vendor file.  This lets =emoji.el= initialize cheaply for
+basic insertion/search paths until the full generated table can be
+baked into a runtime image.
+=iso-transl= is satisfied by =src/iso-transl.el=, a compact keyboard
+translation facade that keeps =iso-transl-char-map=,
+=iso-transl-language-alist=, =iso-transl-define-keys=, and
+=iso-transl-set-language= available while installing representative
+Latin-1, punctuation, math, and language-specific =C-x 8= bindings.
+=cp51932= and =eucjp-ms= are satisfied by lightweight generated-table
+facades over =src/emacs-translation-table.el=.  They register the
+standard =cp51932-decode= / =cp51932-encode= and =eucjp-ms-decode= /
+=eucjp-ms-encode= translation-table names with representative Japanese
+extension mappings, leaving full table materialization for a runtime
+image or a later full Mule substrate.
+=fontset= is satisfied by =src/fontset.el=, a GUI-neutral facade for
+font encoding/script representative data and XLFD/fontset helper
+functions.  It deliberately avoids platform font discovery so the
+future GUI layer can move into a separate framework/repository without
+pulling display-specific behavior into the core bootstrap.
+=idna-mapping= is satisfied by =src/idna-mapping.el=, a compact IDNA
+mapping vector with direct =elt= compatibility for =textsec.el= and
+representative disallowed, ignored, and compatibility mappings.
+=ja-dic-utl= is satisfied by =src/ja-dic-utl.el=, a lightweight SKK
+dictionary lookup helper that preserves the public dictionary variables,
+okurigana table, and =skkdic-lookup-key= surface without loading the
+large generated =ja-dic= data during startup.
+=range= is satisfied by =src/range.el=, a pure-Elisp implementation of
+the vendor numeric range helpers (=range-compress-list=,
+=range-uncompress=, =range-difference=, =range-intersection=,
+=range-add-list=, =range-remove=, =range-member-p=,
+=range-list-intersection=, =range-list-difference=, =range-length=,
+=range-concat=, and =range-map=).
+=regi= is satisfied by =src/regi.el=, a pure-Elisp line-oriented
+regular-expression interpreter covering =regi-pos=, =regi-mapcar=,
+and =regi-interpret= on top of the existing buffer, line, and search
+bridges.  This also keeps lightweight =current-column= and
+=back-to-indentation= fallbacks available when standalone NeLisp
+would otherwise expose only stubs.
+=map-ynp= is satisfied by =src/map-ynp.el= for the Class-A confirmation
+loop path used by save/recover/delete workflows: =map-y-or-n-p=,
+=read-answer=, answer-all =!=, act-once =.=, and custom action keys
+work without loading the full vendor dialog/query-replace implementation.
+The full vendored =files.el=, =simple.el=, =dired.el=, =help-mode.el=,
+=help-fns.el=, =subr-x.el=, =seq.el=, =map.el=, =map-ynp.el=,
+=lisp.el=, =case-table.el=, =cdl.el=, =hex-util.el=, =charprop.el=, =charscript.el=, =emoji-labels.el=, =iso-transl.el=, =cp51932.el=, =eucjp-ms.el=, =fontset.el=, =idna-mapping.el=, =ja-dic-utl.el=, =range.el=, =regi.el=, =lisp-mode.el=, =ielm.el=, =isearch.el=, =minibuffer.el=, and =project.el= remain compatibility targets: the
+current standalone gate proves the daily-driver shims first.
+=profile-nelisp-bootstrap= now uses host Emacs to split the generated
+=build/nemacs-bootstrap.el= bundle into source sections, then runs the
+standalone reader on cumulative prefixes and reports host-measured wall
+time for each section.  Set =NELISP_BOOT_PROFILE_LIMIT=N= to stop after
+the first N bootstrap sections.  =diagnose-vendor-form-walk= likewise
+uses host Emacs to parse a vendor file into top-level forms, then runs
+the standalone reader on cumulative prefixes with a success sentinel.
+=diagnose-vendor-load-replay= goes one step closer to real loading: it
+generates a temporary standalone-reader script that loads the standalone
+stdlib prelude (=VENDOR_LOAD_PRELUDE=), the generated bootstrap bundle,
+and then the files in =VENDOR_LOAD_FILES= as top-level =load= forms.  It
+then requires =VENDOR_LOAD_PROOF_FORM= to become true before returning
+the sentinel.  This proof check is intentional: the standalone reader can
+continue after some failed forms, so a bare trailing sentinel would be a
+false positive.  The default replay currently proves true =load= replay
+for =lisp-mode.el=, =isearch.el=, =minibuffer.el=, and =project.el=.
+Because the current standalone reader does not yet print Lisp errors,
+the host-side runners treat reaching the sentinel exit code as success
+and report crashes or non-sentinel exits as the failing input.  Set
+=VENDOR_FORM_WALK_NORMALIZE_FLOATS=t= only for what-if diagnostics
+that need to compare against integer-normalized forms; the default raw
+path preserves the exact vendor form.  The previous raw
+=simple.el= form 429 crash is fixed in the sibling standalone reader by
+materializing reader floats as real =Sexp::Float= values.  Raw
+standalone form-walk diagnostics now also reach the sentinel across the
+full top-level form sets for =lisp-mode.el=, =isearch.el=,
+=minibuffer.el=, and =project.el=; the true file-load replay for the
+same default set is covered by =diagnose-vendor-load-replay=.
+Supported batch/interactive runtime image bakes use
+=NEMACS_RUNTIME_BAKE_TIMEOUT=900s=; source-v1 replay smokes use
+=NEMACS_RUNTIME_REPLAY_TIMEOUT=900s= and longer interactive/vendor
+variants.  Large pure-Elisp vendor loads run with
+=NELISP_STACK_LIMIT=unlimited= by default; override that variable if a
+platform rejects unlimited process stacks.
+=bin/nemacs= resolves NeLisp in this order: explicit =NELISP_HOME= /
+=NEMACS_NELISP=, =vendor/nelisp=, sibling =../nelisp=, then the legacy
+=~/Notes/dev/nelisp= path.  Within a checkout it uses
+=target/nelisp-standalone-reader=.
 
 =make demo= / =make demo-phase2= prints the demo's observable state
 plist so you can inspect the integration round-trip from the
@@ -440,7 +707,7 @@ shell — useful as a smoke test on a fresh clone.
 * Related repositories
 
 - [[https://github.com/zawatton/nelisp][~nelisp~]] — Layer 1 Lisp
-  runtime (Rust + ongoing pure-elisp migration)
+  runtime (v2.x: pure-Elisp runtime with a thin ABI/link shell)
 - [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]] — Layer 3
   GTK4 GUI sibling of the TUI backend in this repo
 

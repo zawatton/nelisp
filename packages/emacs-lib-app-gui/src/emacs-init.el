@@ -21,10 +21,12 @@
 ;;; Code:
 
 ;; Doc 51 Phase 3-A' — wire the vendored Emacs lisp/ tree into
-;; load-path so `(require 'cl-lib)' / `subr.el' / `seq' / etc. resolve
-;; against upstream Emacs sources rather than per-feature L2 polyfills.
+;; load-path so upstream Emacs Lisp sources are available after the
+;; local Layer-2 shims/bridges.  v2 standalone NeLisp must let `src/'
+;; win for compatibility shims such as `cl-lib' and `keymap'; vendored
+;; upstream fills the long tail only after those local overrides.
 ;; Caller must set `nelisp-emacs-vendor-root' before loading this file
-;; (= the directory containing `vendor/emacs-lisp/'); we prepend the
+;; (= the directory containing `vendor/emacs-lisp/'); we append the
 ;; standard subdirectories that the Emacs build adds to load-path.
 (when (and (boundp 'nelisp-emacs-vendor-root) nelisp-emacs-vendor-root)
   (let ((root (concat nelisp-emacs-vendor-root "/emacs-lisp")))
@@ -39,7 +41,9 @@
         (when (or (not (fboundp 'file-directory-p))
                   (file-directory-p path))
           (unless (and (boundp 'load-path) (member path load-path))
-            (setq load-path (cons path (and (boundp 'load-path) load-path)))))))))
+            (setq load-path
+                  (append (and (boundp 'load-path) load-path)
+                          (list path)))))))))
 
 ;; Phase B5 (= 2026-05-09): also surface this file's own directory on
 ;; load-path so that the `(require 'emacs-...)' lines below resolve
@@ -82,6 +86,10 @@
 ;; is the source of truth.  Required early so later modules can use
 ;; them at their own load-time.
 (require 'emacs-stub)
+;; Standalone NeLisp cannot yet macroexpand vendored easy-mmode.el's
+;; lexical-closure-heavy implementation.  Provide a small Layer 2
+;; fallback before vendor files ask for `(require 'easy-mmode)'.
+(require 'emacs-easy-mmode)
 ;; Phase 10 — emacs-stub.el split: pcase / cl-macs subset / time
 ;; polyfills are now in dedicated modules.  emacs-pcase first (= cl-macs
 ;; expansions reference pcase patterns).  emacs-time has no L2 deps.
@@ -169,24 +177,6 @@
 ;; process-send-eof / delete-process / shell-command /
 ;; shell-command-to-string + shell-file-name / shell-command-switch.
 (require 'emacs-process-builtins)
-;; Track K (2026-05-03) — font-lock MVP.  Bridges
-;; `font-lock-mode' / `font-lock-fontify-region' /
-;; `font-lock-fontify-buffer' / `font-lock-add-keywords' /
-;; `font-lock-remove-keywords' / `font-lock-set-defaults' on top
-;; of the text-property store in `emacs-buffer.el'.  Also
-;; registers the standard face symbols (font-lock-keyword-face
-;; etc) via the Track F face registry.
-(require 'emacs-font-lock-builtins)
-;; Track R (2026-05-04) — minimal syntax-table for font-lock's
-;; string / line-comment pre-pass.  Loaded *after*
-;; emacs-font-lock-builtins so the standard faces are defined.
-(require 'emacs-syntax-table)
-;; Track T (2026-05-04) — emacs-lisp-mode font-lock keyword set.
-;; Loaded *after* the syntax-table so the syntactic post-pass is
-;; available, and *after* emacs-mode (= the hook variable exists).
-(when (locate-library "emacs-mode")
-  (require 'emacs-mode))
-(require 'emacs-elisp-mode)
 ;; Phase 4 'C' (2026-05-06) — minimal `fill-region' / `count-matches'
 ;; polyfills so MELPA packages routing word-wrap / regex counting
 ;; through `with-temp-buffer' + buffer ops (canonical: s.el's
@@ -196,23 +186,63 @@
 ;; (= `re-search-forward' bridge) and `emacs-buffer-builtins' (=
 ;; `delete-region' / `insert' / `buffer-substring').
 (require 'emacs-textmodes-stub)
-;; Track G (2026-05-03) — Doc 43 redisplay close-gate trigger
-;; bridges.  Wires `force-mode-line-update' / `redraw-display' /
-;; `redraw-frame' / `redisplay' to the existing
-;; `emacs-redisplay.el' substrate via a current-handle slot.
-;; Optional require: only loads when emacs-redisplay's deps
-;; (= emacs-buffer / emacs-window / emacs-tui-backend) are
-;; available; missing-feature returns nil instead of erroring out.
-(when (and (locate-library "emacs-buffer")
-           (locate-library "emacs-window")
-           (locate-library "emacs-tui-backend"))
-  (require 'emacs-redisplay-builtins))
-;; (2026-05-04) — `emacs-tui-event' provides the byte-stream → key
-;; event parser that nemacs-main's event loop drains under the
-;; nelisp driver.  Without this require, `emacs-tui-event-init' is
-;; void-function and stdin input is silently discarded.
-(when (locate-library "emacs-tui-event")
-  (require 'emacs-tui-event))
+
+(defun emacs-init-load-tui-core-features ()
+  "Load the minimal TUI runtime features needed to realise a frame.
+
+The NeLisp driver pays source read/eval cost for every required module.
+Batch startup and simple `--eval' forms do not need redisplay or the
+TUI event parser, so they stay lazy until `nemacs-main' actually
+realises an interactive frame.  Keep this core loader smaller than
+`emacs-init-load-editor-features' so interactive startup does not pay
+font-lock / mode setup before the first frame exists."
+  ;; Use the fast first-frame core unless the full redisplay engine has
+  ;; already been loaded by tests or an editor feature.
+  (unless (featurep 'emacs-redisplay)
+    (require 'emacs-redisplay-core))
+  ;; `emacs-tui-event' provides the byte-stream -> key event parser
+  ;; that nemacs-main's event loop drains under the nelisp driver.
+  (when (locate-library "emacs-tui-event")
+    (require 'emacs-tui-event))
+  t)
+
+(defun emacs-init-load-editor-features ()
+  "Load interactive editor features not needed for first TUI realisation.
+
+This extends `emacs-init-load-tui-core-features' with mode/font-lock
+support and unprefixed redisplay trigger bridges.  Callers that only
+need a frame should use the core loader instead."
+  (emacs-init-load-tui-core-features)
+  ;; Track K (2026-05-03) — font-lock MVP.  Bridges
+  ;; `font-lock-mode' / `font-lock-fontify-region' /
+  ;; `font-lock-fontify-buffer' / `font-lock-add-keywords' /
+  ;; `font-lock-remove-keywords' / `font-lock-set-defaults' on top
+  ;; of the text-property store in `emacs-buffer.el'.  Also
+  ;; registers the standard face symbols (font-lock-keyword-face
+  ;; etc) via the Track F face registry.
+  (require 'emacs-font-lock-builtins)
+  ;; Track R (2026-05-04) — minimal syntax-table for font-lock's
+  ;; string / line-comment pre-pass.  Loaded *after*
+  ;; emacs-font-lock-builtins so the standard faces are defined.
+  (require 'emacs-syntax-table)
+  ;; Track T (2026-05-04) — emacs-lisp-mode font-lock keyword set.
+  ;; Loaded *after* the syntax-table so the syntactic post-pass is
+  ;; available, and *after* emacs-mode (= the hook variable exists).
+  (when (locate-library "emacs-mode")
+    (require 'emacs-mode))
+  (require 'emacs-elisp-mode)
+  ;; Track G (2026-05-03) — Doc 43 redisplay close-gate trigger
+  ;; bridges.  Wires `force-mode-line-update' / `redraw-display' /
+  ;; `redraw-frame' / `redisplay' to the existing
+  ;; `emacs-redisplay.el' substrate via a current-handle slot.
+  ;; Optional require: only loads when emacs-redisplay's deps
+  ;; (= emacs-buffer / emacs-window / emacs-tui-backend) are
+  ;; available; missing-feature returns nil instead of erroring out.
+  (when (and (locate-library "emacs-buffer")
+             (locate-library "emacs-window")
+             (locate-library "emacs-tui-backend"))
+    (require 'emacs-redisplay-builtins))
+  t)
 
 ;; Phase B2 — subr.el primitives that vendor `cl-lib.el' / `subr-x.el'
 ;; need at load time but standalone NeLisp does not ship.  Idempotent

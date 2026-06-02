@@ -66,7 +66,9 @@
   (or nemacs--initial-buffer
       (and (fboundp 'nelisp-ec-generate-new-buffer)
            (setq nemacs--initial-buffer
-                 (nelisp-ec-generate-new-buffer "*scratch*")))))
+                 (or (and (boundp 'nelisp-ec--buffers)
+                          (cdr (assoc "*scratch*" nelisp-ec--buffers)))
+                     (nelisp-ec-generate-new-buffer "*scratch*"))))))
 
 (defun nemacs--report-banner (batch-p)
   "Emit the readiness banner.  No-op under BATCH-P."

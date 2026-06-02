@@ -12,10 +12,10 @@
 ;; substrate in `emacs-command-loop.el', mirroring the bridge pattern
 ;; used by Track C / D / E / J / L1 / 11.C''.
 ;;
-;; Each definition is gated on `unless (fboundp ...)' / `unless
-;; (boundp ...)' so loading inside a host Emacs is a cheap no-op:
-;; the C builtins win and the substrate is exercised separately by
-;; ERTs that call the prefixed names directly.
+;; Function definitions use a host-aware install gate: host Emacs keeps
+;; its C builtins, while standalone NeLisp overwrites any bootstrap
+;; stubs with the real substrate functions.  Variables are still gated
+;; on `unless (boundp ...)' so host-owned special variables win.
 ;;
 ;; Bridged today (B.1 = foundation only):
 ;;
@@ -54,83 +54,128 @@
 
 ;;;; --- function bridges ----------------------------------------------
 
-(unless (fboundp 'read-event)
+(defun emacs-command-loop-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-command-loop-builtins--install-function-p 'read-event)
   (defalias 'read-event #'emacs-command-loop-read-event))
 
-(unless (fboundp 'read-char)
+(when (emacs-command-loop-builtins--install-function-p 'read-char)
   (defalias 'read-char #'emacs-command-loop-read-char))
 
-(unless (fboundp 'read-command)
+(when (emacs-command-loop-builtins--install-function-p 'read-command)
   (defalias 'read-command #'emacs-command-loop-read-command))
 
-(unless (fboundp 'this-command-keys)
+(when (emacs-command-loop-builtins--install-function-p 'this-command-keys)
   (defalias 'this-command-keys #'emacs-command-loop-this-command-keys))
 
-(unless (fboundp 'this-command-keys-vector)
+(when (emacs-command-loop-builtins--install-function-p 'this-command-keys-vector)
   (defalias 'this-command-keys-vector
     #'emacs-command-loop-this-command-keys-vector))
 
-(unless (fboundp 'this-single-command-keys)
+(when (emacs-command-loop-builtins--install-function-p 'this-single-command-keys)
   ;; MVP: no menu-event distinction; same as `this-command-keys'.
   (defalias 'this-single-command-keys
     #'emacs-command-loop-this-command-keys))
 
-(unless (fboundp 'this-single-command-raw-keys)
+(when (emacs-command-loop-builtins--install-function-p 'this-single-command-raw-keys)
   (defalias 'this-single-command-raw-keys
     #'emacs-command-loop-this-command-keys-vector))
 
-(unless (fboundp 'clear-this-command-keys)
+(when (emacs-command-loop-builtins--install-function-p 'clear-this-command-keys)
   (defalias 'clear-this-command-keys
     #'emacs-command-loop-clear-this-command-keys))
 
-(unless (fboundp 'read-key-sequence)
+(when (emacs-command-loop-builtins--install-function-p 'read-key-sequence)
   (defalias 'read-key-sequence
     #'emacs-command-loop-read-key-sequence))
 
-(unless (fboundp 'read-key-sequence-vector)
+(when (emacs-command-loop-builtins--install-function-p 'read-key-sequence-vector)
   (defalias 'read-key-sequence-vector
     #'emacs-command-loop-read-key-sequence-vector))
 
-(unless (fboundp 'call-interactively)
+(when (emacs-command-loop-builtins--install-function-p 'call-interactively)
   (defalias 'call-interactively #'emacs-command-loop-call-interactively))
 
-(unless (fboundp 'funcall-interactively)
+(when (emacs-command-loop-builtins--install-function-p 'funcall-interactively)
   (defalias 'funcall-interactively #'emacs-command-loop-funcall-interactively))
 
-(unless (fboundp 'command-execute)
+(when (emacs-command-loop-builtins--install-function-p 'command-execute)
   (defalias 'command-execute #'emacs-command-loop-command-execute))
 
-(unless (fboundp 'command-loop-1)
+(when (emacs-command-loop-builtins--install-function-p 'command-loop-1)
   (defalias 'command-loop-1 #'emacs-command-loop-1))
 
-(unless (fboundp 'top-level)
+(when (emacs-command-loop-builtins--install-function-p 'top-level)
   (defalias 'top-level #'emacs-command-loop-top-level))
 
-(unless (fboundp 'recursive-edit)
+(when (emacs-command-loop-builtins--install-function-p 'recursive-edit)
   (defalias 'recursive-edit #'emacs-command-loop-recursive-edit))
 
-(unless (fboundp 'recursion-depth)
+(when (emacs-command-loop-builtins--install-function-p 'recursion-depth)
   (defalias 'recursion-depth #'emacs-command-loop-recursion-depth))
 
-(unless (fboundp 'execute-extended-command)
+(when (emacs-command-loop-builtins--install-function-p 'execute-extended-command)
   (defalias 'execute-extended-command
     #'emacs-command-loop-execute-extended-command))
 
-(unless (fboundp 'universal-argument)
+(when (emacs-command-loop-builtins--install-function-p 'universal-argument)
   (defalias 'universal-argument #'emacs-command-loop-universal-argument))
 
-(unless (fboundp 'digit-argument)
+(when (emacs-command-loop-builtins--install-function-p 'digit-argument)
   (defalias 'digit-argument #'emacs-command-loop-digit-argument))
 
-(unless (fboundp 'negative-argument)
+(when (emacs-command-loop-builtins--install-function-p 'negative-argument)
   (defalias 'negative-argument #'emacs-command-loop-negative-argument))
 
-(unless (fboundp 'keyboard-quit)
+(when (emacs-command-loop-builtins--install-function-p 'keyboard-quit)
   (defalias 'keyboard-quit #'emacs-command-loop-keyboard-quit))
 
-(unless (fboundp 'exit-recursive-edit)
+(when (emacs-command-loop-builtins--install-function-p 'exit-recursive-edit)
   (defalias 'exit-recursive-edit
     #'emacs-command-loop-exit-recursive-edit))
+
+(defvar emacs-command-loop--sigint-handler-installed-p nil
+  "Non-nil after the pure-Elisp SIGINT compatibility handler is installed.")
+
+(when (emacs-command-loop-builtins--install-function-p 'install-sigint-handler)
+  (defun install-sigint-handler ()
+    "Install the pure-Elisp SIGINT compatibility handler.
+
+Standalone NeLisp may provide this as a runtime builtin.  When it does
+not, the Elisp fallback records installation and exposes the same
+idempotent success value expected by `nemacs-main'."
+    (setq emacs-command-loop--sigint-handler-installed-p t)
+    t))
+
+(when (emacs-command-loop-builtins--install-function-p '_sigint-handler-installed-p)
+  (defun _sigint-handler-installed-p ()
+    "Return non-nil when `install-sigint-handler' has been called."
+    emacs-command-loop--sigint-handler-installed-p))
+
+(when (emacs-command-loop-builtins--install-function-p 'set-quit-flag)
+  (defun set-quit-flag ()
+    "Set the command-loop quit flag and return t."
+    (when (not (boundp 'emacs-version))
+      (setq quit-flag t))
+    (setq emacs-command-loop--quit-flag t)
+    t))
+
+(when (emacs-command-loop-builtins--install-function-p 'clear-quit-flag)
+  (defun clear-quit-flag ()
+    "Clear the command-loop quit flag and return nil."
+    (when (not (boundp 'emacs-version))
+      (setq quit-flag nil))
+    (setq emacs-command-loop--quit-flag nil)
+    nil))
+
+(when (emacs-command-loop-builtins--install-function-p 'quit-flag-pending-p)
+  (defun quit-flag-pending-p ()
+    "Return non-nil when a quit is pending."
+    (or emacs-command-loop--quit-flag
+        (and (not (boundp 'emacs-version)) quit-flag))))
 
 ;; Real Emacs binds `recursive-edit' / `abort-recursive-edit' as C
 ;; primitives — same gating pattern.  Track C already aliased

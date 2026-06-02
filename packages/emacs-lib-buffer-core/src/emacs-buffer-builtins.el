@@ -23,9 +23,9 @@
 ;; Phase 9 replaces the accumulator with the real `nelisp-ec-*' buffer
 ;; substrate (T39, ~31 APIs), which already implements multi-buffer
 ;; current-buffer dispatch, narrow/widen, markers, and search.  This
-;; file is purely a *naming bridge* — every definition is gated on
-;; `unless (fboundp ...)' so loading inside a host Emacs is a cheap
-;; no-op and the host's own C builtins win.
+;; file is primarily a *naming bridge* — every definition is gated so
+;; loading inside a host Emacs is a cheap no-op and the host's own C
+;; builtins win.
 ;;
 ;; What this module unblocks (= deferred from Phase 8 commit):
 ;;
@@ -48,6 +48,20 @@
 
 (require 'nelisp-emacs-compat)
 
+(defun emacs-buffer-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this bridge."
+  (if (not (boundp 'emacs-version))
+      ;; Every call site in this file is part of the explicit bridge
+      ;; surface.  Under standalone, replace `emacs-stub' placeholders
+      ;; without repeated fboundp checks.
+      t
+    (not (fboundp symbol))))
+
+(defun emacs-buffer-builtins--call-emacs-buffer (function args)
+  "Lazy-load `emacs-buffer' and call FUNCTION with ARGS."
+  (require 'emacs-buffer)
+  (apply function args))
+
 ;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
 ;;
 ;; Pattern source: commit d3c17fa (emacs-stub-bulk Phase 11.D batch).  The
@@ -59,46 +73,103 @@
 ;; paying the per-form interpreter overhead only once.  Under host Emacs
 ;; the C subr wins fboundp so this is a no-op either way.
 
+(let ((--aliases--
+       '((generate-new-buffer        . nelisp-ec-generate-new-buffer)
+         (kill-buffer                . nelisp-ec-kill-buffer)
+         (bufferp                    . nelisp-ec-buffer-p)
+         (current-buffer             . nelisp-ec-current-buffer)
+         (set-buffer                 . nelisp-ec-set-buffer)
+         (point                      . nelisp-ec-point)
+         (point-min                  . nelisp-ec-point-min)
+         (point-max                  . nelisp-ec-point-max)
+         (goto-char                  . nelisp-ec-goto-char)
+         (buffer-size                . nelisp-ec-buffer-size)
+         (insert                     . nelisp-ec-insert)
+         (erase-buffer               . nelisp-ec-erase-buffer)
+         (delete-region              . nelisp-ec-delete-region)
+         (buffer-string              . nelisp-ec-buffer-string)
+         (buffer-substring           . nelisp-ec-buffer-substring)
+         ;; Phase 9 MVP: text properties are not yet stored on
+         ;; `nelisp-ec-buffer'; the substring already carries no
+         ;; properties so `-no-properties' is a plain alias.
+         (buffer-substring-no-properties . nelisp-ec-buffer-substring)
+         (narrow-to-region           . nelisp-ec-narrow-to-region)
+         (widen                      . nelisp-ec-widen)
+         (make-marker                . nelisp-ec-make-marker)
+         (set-marker                 . nelisp-ec-set-marker)
+         (marker-position            . nelisp-ec-marker-position)
+         (marker-buffer              . nelisp-ec-marker-buffer)
+         (point-marker               . nelisp-ec-point-marker))))
+  (if (not (boundp 'emacs-version))
+      (dolist (--cell-- --aliases--)
+        (fset (car --cell--) (cdr --cell--)))
+    (dolist (--cell-- --aliases--)
+      (let ((--name-- (car --cell--)) (--target-- (cdr --cell--)))
+        (unless (fboundp --name--)
+          (defalias --name-- --target--))))))
+
+(defun emacs-buffer-builtins-ensure-initial-buffer (&optional name)
+  "Ensure standalone NeLisp has a selected initial buffer.
+NAME defaults to \"*scratch*\".  If a current buffer already exists,
+return it.  Otherwise reuse an existing buffer named NAME or create it,
+select it, and return it."
+  (let* ((buffer-name (or name "*scratch*"))
+         (buf (or (nelisp-ec-current-buffer)
+                  (cdr (assoc buffer-name nelisp-ec--buffers))
+                  (nelisp-ec-generate-new-buffer buffer-name))))
+    (unless (eq (nelisp-ec-current-buffer) buf)
+      (nelisp-ec-set-buffer buf))
+    buf))
+
+(when (and (not (boundp 'emacs-version))
+           (not (nelisp-ec-current-buffer)))
+  (emacs-buffer-builtins-ensure-initial-buffer))
+
+;;;; --- overlays ---------------------------------------------------------
+
+;; Overlay support lives in `emacs-buffer.el', which is large because it
+;; also carries text-properties, buffer-local variables, modified ticks,
+;; and undo metadata.  Standalone bootstrap does not need that whole layer
+;; until an overlay API is actually called, so these unprefixed wrappers
+;; lazy-load it on demand.
+
+(when (emacs-buffer-builtins--install-function-p 'overlayp)
+  (defun overlayp (object)
+    "Return non-nil if OBJECT is an overlay."
+    (and (fboundp 'emacs-buffer-overlayp)
+         (emacs-buffer-overlayp object))))
+
 (dolist (--cell--
-         '((generate-new-buffer        . nelisp-ec-generate-new-buffer)
-           (kill-buffer                . nelisp-ec-kill-buffer)
-           (bufferp                    . nelisp-ec-buffer-p)
-           (current-buffer             . nelisp-ec-current-buffer)
-           (set-buffer                 . nelisp-ec-set-buffer)
-           (point                      . nelisp-ec-point)
-           (point-min                  . nelisp-ec-point-min)
-           (point-max                  . nelisp-ec-point-max)
-           (goto-char                  . nelisp-ec-goto-char)
-           (buffer-size                . nelisp-ec-buffer-size)
-           (insert                     . nelisp-ec-insert)
-           (erase-buffer               . nelisp-ec-erase-buffer)
-           (delete-region              . nelisp-ec-delete-region)
-           (buffer-string              . nelisp-ec-buffer-string)
-           (buffer-substring           . nelisp-ec-buffer-substring)
-           ;; Phase 9 MVP: text properties are not yet stored on
-           ;; `nelisp-ec-buffer'; the substring already carries no
-           ;; properties so `-no-properties' is a plain alias.
-           (buffer-substring-no-properties . nelisp-ec-buffer-substring)
-           (narrow-to-region           . nelisp-ec-narrow-to-region)
-           (widen                      . nelisp-ec-widen)
-           (make-marker                . nelisp-ec-make-marker)
-           (set-marker                 . nelisp-ec-set-marker)
-           (marker-position            . nelisp-ec-marker-position)
-           (marker-buffer              . nelisp-ec-marker-buffer)
-           (point-marker               . nelisp-ec-point-marker)))
-  (let ((--name-- (car --cell--)) (--target-- (cdr --cell--)))
-    (unless (fboundp --name--)
-      (defalias --name-- --target--))))
+         '((make-overlay       . emacs-buffer-make-overlay)
+           (overlay-start      . emacs-buffer-overlay-start)
+           (overlay-end        . emacs-buffer-overlay-end)
+           (overlay-buffer     . emacs-buffer-overlay-buffer)
+           (overlay-properties . emacs-buffer-overlay-properties)
+           (overlay-put        . emacs-buffer-overlay-put)
+           (overlay-get        . emacs-buffer-overlay-get)
+           (move-overlay       . emacs-buffer-move-overlay)
+           (delete-overlay     . emacs-buffer-delete-overlay)
+           (overlays-at        . emacs-buffer-overlays-at)
+           (overlays-in        . emacs-buffer-overlays-in)
+           (overlay-lists      . emacs-buffer-overlay-lists)))
+  (let ((--name-- (car --cell--))
+        (--target-- (cdr --cell--)))
+    (when (emacs-buffer-builtins--install-function-p --name--)
+      (fset --name--
+            (list 'lambda '(&rest args)
+                  (list 'emacs-buffer-builtins--call-emacs-buffer
+                        (list 'quote --target--)
+                        'args))))))
 
 ;;;; --- creation / liveness -----------------------------------------------
 
-(unless (fboundp 'buffer-live-p)
+(when (emacs-buffer-builtins--install-function-p 'buffer-live-p)
   (defun buffer-live-p (object)
     "Return non-nil when OBJECT is a live (non-killed) buffer."
     (and (nelisp-ec-buffer-p object)
          (not (nelisp-ec-buffer-killed-p object)))))
 
-(unless (fboundp 'buffer-name)
+(when (emacs-buffer-builtins--install-function-p 'buffer-name)
   (defun buffer-name (&optional buffer)
     "Return the name of BUFFER (default = current buffer)."
     (cond
@@ -113,17 +184,17 @@
 ;; unibyte representation, so the multibyte flag is a no-op.  We honour
 ;; the API surface (= return FLAG so callers that read the result still
 ;; see something sensible) without otherwise altering buffer state.
-(unless (fboundp 'set-buffer-multibyte)
+(when (emacs-buffer-builtins--install-function-p 'set-buffer-multibyte)
   (defun set-buffer-multibyte (flag)
     flag))
 
-(unless (fboundp 'multibyte-string-p)
+(when (emacs-buffer-builtins--install-function-p 'multibyte-string-p)
   (defun multibyte-string-p (object)
     (stringp object)))
 
 ;;;; --- registry lookup (Phase L1, 2026-05-03) --------------------------
 
-(unless (fboundp 'get-buffer)
+(when (emacs-buffer-builtins--install-function-p 'get-buffer)
   (defun get-buffer (buffer-or-name)
     "Phase L1 polyfill: look BUFFER-OR-NAME up in the `nelisp-ec' registry.
 When BUFFER-OR-NAME is a buffer object, return it if live else nil.
@@ -138,7 +209,7 @@ When it is a string, return the matching buffer record or nil."
       (cdr (assoc buffer-or-name nelisp-ec--buffers)))
      (t nil))))
 
-(unless (fboundp 'get-buffer-create)
+(when (emacs-buffer-builtins--install-function-p 'get-buffer-create)
   (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
     "Phase L1 polyfill: get an existing buffer or create a fresh one.
 INHIBIT-BUFFER-HOOKS is accepted for API parity but no buffer-hook
@@ -152,7 +223,7 @@ subsystem exists yet to honor it."
            (nelisp-ec-buffer-name buffer-or-name))
           (t " *unnamed*"))))))
 
-(unless (fboundp 'buffer-list)
+(when (emacs-buffer-builtins--install-function-p 'buffer-list)
   (defun buffer-list (&optional frame)
     "Phase L1 polyfill: return a list of every live buffer in the registry.
 FRAME is accepted for API parity (host filters by frame) but the
@@ -175,7 +246,7 @@ buffers are returned regardless."
 
 ;; current-buffer / set-buffer batched into the dolist near the top.
 
-(unless (fboundp 'with-current-buffer)
+(when (emacs-buffer-builtins--install-function-p 'with-current-buffer)
   (defmacro with-current-buffer (buf &rest body)
     "Phase 9 polyfill: forward to `nelisp-ec-with-current-buffer'."
     (declare (indent 1) (debug (form body)))
@@ -186,7 +257,7 @@ buffers are returned regardless."
 ;; point / point-min / point-max / goto-char batched into the dolist near
 ;; the top.
 
-(unless (fboundp 'forward-char)
+(when (emacs-buffer-builtins--install-function-p 'forward-char)
   (defun forward-char (&optional n)
     "Phase 9 polyfill: move point N (default 1) characters forward.
 Bound to C-f / <right>.
@@ -214,7 +285,7 @@ soft non-fatal end-of-buffer message; non-loop callers can wrap in
         (nelisp-ec-goto-char target)
         t)))))
 
-(unless (fboundp 'backward-char)
+(when (emacs-buffer-builtins--install-function-p 'backward-char)
   (defun backward-char (&optional n)
     "Phase 9 polyfill: move point N (default 1) characters backward.
 Bound to C-b / <left>.
@@ -231,7 +302,7 @@ clamp + signal semantics."
 ;; insert / erase-buffer / delete-region batched into the dolist near the
 ;; top.
 
-(unless (fboundp 'delete-char)
+(when (emacs-buffer-builtins--install-function-p 'delete-char)
   (defun delete-char (n &optional killflag)
     "Phase 9 polyfill: delete N characters forward (negative = backward).
 KILLFLAG accepted for host API parity but ignored in MVP.
@@ -251,19 +322,19 @@ required N parameter (= the same lambda-arity-mismatch that bit
 
 ;;;; --- save-* family ----------------------------------------------------
 
-(unless (fboundp 'save-excursion)
+(when (emacs-buffer-builtins--install-function-p 'save-excursion)
   (defmacro save-excursion (&rest body)
     "Phase 9 polyfill: forward to `nelisp-ec-save-excursion'."
     (declare (indent 0) (debug (body)))
     (cons 'nelisp-ec-save-excursion body)))
 
-(unless (fboundp 'save-restriction)
+(when (emacs-buffer-builtins--install-function-p 'save-restriction)
   (defmacro save-restriction (&rest body)
     "Phase 9 polyfill: forward to `nelisp-ec-save-restriction'."
     (declare (indent 0) (debug (body)))
     (cons 'nelisp-ec-save-restriction body)))
 
-(unless (fboundp 'save-current-buffer)
+(when (emacs-buffer-builtins--install-function-p 'save-current-buffer)
   (defmacro save-current-buffer (&rest body)
     "Phase 9 polyfill: forward to `nelisp-ec-save-current-buffer'."
     (declare (indent 0) (debug (body)))
@@ -285,7 +356,7 @@ required N parameter (= the same lambda-arity-mismatch that bit
 ;; with a real `nelisp-ec' buffer that participates in the current-buffer
 ;; dispatch and respects narrow / point.
 
-(unless (fboundp 'with-temp-buffer)
+(when (emacs-buffer-builtins--install-function-p 'with-temp-buffer)
   (defmacro with-temp-buffer (&rest body)
     "Phase 9 polyfill: real-buffer rewrite of `with-temp-buffer'.
 A fresh `nelisp-ec' buffer named ` *temp*' is created, made current
@@ -298,7 +369,7 @@ for BODY, then killed unconditionally on exit (= via `unwind-protect')."
                   (cons 'nelisp-ec-with-current-buffer (cons buf body))
                   (list 'nelisp-ec-kill-buffer buf))))))
 
-(unless (fboundp 'with-temp-file)
+(when (emacs-buffer-builtins--install-function-p 'with-temp-file)
   (defmacro with-temp-file (path &rest body)
     "Phase 9 polyfill: real-buffer rewrite of `with-temp-file'.
 BODY runs inside a fresh `nelisp-ec' buffer; on normal exit the buffer

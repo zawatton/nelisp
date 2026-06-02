@@ -20,12 +20,15 @@
 ;; `emacs-window.el' provides a real window-tree model rooted on a
 ;; `nelisp-emacs-compat' buffer.  Bridging unifies the two.
 ;;
-;; Each definition is gated on `unless (fboundp ...)' so loading inside
-;; a host Emacs is a cheap no-op (= host's C builtins win).
+;; Loading inside a host Emacs is a cheap no-op (= host's C builtins
+;; win).  Standalone NeLisp deliberately overwrites the earlier
+;; `emacs-stub.el' no-op shims.
 ;;
 ;; Bridgeable today (= covered by `emacs-window.el'):
 ;;
 ;;   - `selected-window' / `windowp'
+;;   - `window-live-p' / `window-valid-p'
+;;   - `frame-selected-window'
 ;;   - `window-list' / `window-list-1' / `next-window' / `previous-window'
 ;;   - `window-buffer' / `set-window-buffer'
 ;;   - `select-window'
@@ -36,103 +39,109 @@
 ;;   - `get-buffer-window' / `get-buffer-window-list'
 ;;   - `other-window' (polyfilled — `emacs-window.el' has no direct equivalent)
 ;;
-;; Deferred (= keep `emacs-stub.el' nil-stubs):
-;;
-;;   - `window-live-p': `emacs-window.el' has no `emacs-window-window-live-p'
-;;     yet — the host builtin checks the window's live flag, which the
-;;     prefixed model doesn't track explicitly.
-;;   - `frame-selected-window': straddles frame/window; the prefixed
-;;     side has no per-frame selected-window slot yet.
-
 ;;; Code:
 
 (require 'emacs-window)
 
+(defun emacs-window-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
 ;;;; --- predicates ------------------------------------------------------
 
-(unless (fboundp 'windowp)
+(when (emacs-window-builtins--install-function-p 'windowp)
   (defalias 'windowp #'emacs-window-windowp))
+
+(when (emacs-window-builtins--install-function-p 'window-live-p)
+  (defalias 'window-live-p #'emacs-window-window-live-p))
+
+(when (emacs-window-builtins--install-function-p 'window-valid-p)
+  (defalias 'window-valid-p #'emacs-window-window-valid-p))
 
 ;;;; --- accessors -------------------------------------------------------
 
-(unless (fboundp 'selected-window)
+(when (emacs-window-builtins--install-function-p 'selected-window)
   (defalias 'selected-window #'emacs-window-selected-window))
 
-(unless (fboundp 'window-list)
+(when (emacs-window-builtins--install-function-p 'frame-selected-window)
+  (defalias 'frame-selected-window #'emacs-window-frame-selected-window))
+
+(when (emacs-window-builtins--install-function-p 'window-list)
   (defalias 'window-list #'emacs-window-window-list))
 
-(unless (fboundp 'window-list-1)
+(when (emacs-window-builtins--install-function-p 'window-list-1)
   (defalias 'window-list-1 #'emacs-window-window-list-1))
 
-(unless (fboundp 'next-window)
+(when (emacs-window-builtins--install-function-p 'next-window)
   (defalias 'next-window #'emacs-window-next-window))
 
-(unless (fboundp 'previous-window)
+(when (emacs-window-builtins--install-function-p 'previous-window)
   (defalias 'previous-window #'emacs-window-previous-window))
 
-(unless (fboundp 'window-buffer)
+(when (emacs-window-builtins--install-function-p 'window-buffer)
   (defalias 'window-buffer #'emacs-window-window-buffer))
 
-(unless (fboundp 'one-window-p)
+(when (emacs-window-builtins--install-function-p 'one-window-p)
   (defalias 'one-window-p #'emacs-window-one-window-p))
 
-(unless (fboundp 'get-buffer-window)
+(when (emacs-window-builtins--install-function-p 'get-buffer-window)
   (defalias 'get-buffer-window #'emacs-window-get-buffer-window))
 
-(unless (fboundp 'get-buffer-window-list)
+(when (emacs-window-builtins--install-function-p 'get-buffer-window-list)
   (defalias 'get-buffer-window-list #'emacs-window-get-buffer-window-list))
 
 ;;;; --- mutation --------------------------------------------------------
 
-(unless (fboundp 'set-window-buffer)
+(when (emacs-window-builtins--install-function-p 'set-window-buffer)
   (defalias 'set-window-buffer #'emacs-window-set-window-buffer))
 
-(unless (fboundp 'select-window)
+(when (emacs-window-builtins--install-function-p 'select-window)
   (defalias 'select-window #'emacs-window-select-window))
 
 ;;;; --- split / delete (Track V, 2026-05-04) ----------------------------
 
-(unless (fboundp 'split-window)
+(when (emacs-window-builtins--install-function-p 'split-window)
   (defalias 'split-window #'emacs-window-split-window))
 
-(unless (fboundp 'split-window-below)
+(when (emacs-window-builtins--install-function-p 'split-window-below)
   (defun split-window-below (&optional size)
     "Phase 11 polyfill: split selected window into two stacked windows.
 Bound to C-x 2 in `nemacs-main-keymap'."
     (interactive "P")
     (emacs-window-split-window-vertically size)))
 
-(unless (fboundp 'split-window-right)
+(when (emacs-window-builtins--install-function-p 'split-window-right)
   (defun split-window-right (&optional size)
     "Phase 11 polyfill: split selected window into two side-by-side windows.
 Bound to C-x 3 in `nemacs-main-keymap'."
     (interactive "P")
     (emacs-window-split-window-horizontally size)))
 
-(unless (fboundp 'split-window-vertically)
+(when (emacs-window-builtins--install-function-p 'split-window-vertically)
   (defalias 'split-window-vertically #'emacs-window-split-window-vertically))
 
-(unless (fboundp 'split-window-horizontally)
+(when (emacs-window-builtins--install-function-p 'split-window-horizontally)
   (defalias 'split-window-horizontally #'emacs-window-split-window-horizontally))
 
-(unless (fboundp 'delete-window)
+(when (emacs-window-builtins--install-function-p 'delete-window)
   (defun delete-window (&optional window)
     "Phase 11 polyfill: delete WINDOW (default = selected).
 Bound to C-x 0 in `nemacs-main-keymap'."
     (interactive)
     (emacs-window-delete-window window)))
 
-(unless (fboundp 'delete-other-windows)
+(when (emacs-window-builtins--install-function-p 'delete-other-windows)
   (defun delete-other-windows (&optional window)
     "Phase 11 polyfill: delete every window except WINDOW (default = selected).
 Bound to C-x 1 in `nemacs-main-keymap'."
     (interactive)
     (emacs-window-delete-other-windows window)))
 
-(unless (fboundp 'delete-windows-on)
+(when (emacs-window-builtins--install-function-p 'delete-windows-on)
   (defalias 'delete-windows-on #'emacs-window-delete-windows-on))
 
-(unless (fboundp 'balance-windows)
+(when (emacs-window-builtins--install-function-p 'balance-windows)
   (defalias 'balance-windows #'emacs-window-balance-windows))
 
 ;;;; --- other-window (Track V) -----------------------------------------
@@ -160,7 +169,7 @@ accepted for API parity and ignored (= single-frame Phase 1)."
       (emacs-window-select-window target))
     target))
 
-(unless (fboundp 'other-window)
+(when (emacs-window-builtins--install-function-p 'other-window)
   (defalias 'other-window #'emacs-window-other-window-impl))
 
 (provide 'emacs-window-builtins)

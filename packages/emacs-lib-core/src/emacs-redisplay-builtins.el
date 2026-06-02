@@ -179,14 +179,19 @@ avoid clobbering the existing substrate `emacs-redisplay-redisplay'."
 
 ;;;; --- function bridges (gated) --------------------------------------
 
-(unless (fboundp 'force-mode-line-update)
+(defun emacs-redisplay-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-redisplay-builtins--install-function-p 'force-mode-line-update)
   (defalias 'force-mode-line-update
     #'emacs-redisplay-force-mode-line-update))
 
-(unless (fboundp 'redraw-display)
+(when (emacs-redisplay-builtins--install-function-p 'redraw-display)
   (defalias 'redraw-display #'emacs-redisplay-redraw-display))
 
-(unless (fboundp 'redraw-frame)
+(when (emacs-redisplay-builtins--install-function-p 'redraw-frame)
   (defalias 'redraw-frame #'emacs-redisplay-redraw-frame))
 
 ;; Note: `redisplay' under host Emacs is a C primitive that takes
@@ -194,7 +199,7 @@ avoid clobbering the existing substrate `emacs-redisplay-redisplay'."
 ;; gate the bridge so the host's C builtin keeps ownership; the
 ;; prefixed `emacs-redisplay-trigger-redisplay' helper above is
 ;; reachable explicitly from standalone callers.
-(unless (fboundp 'redisplay)
+(when (emacs-redisplay-builtins--install-function-p 'redisplay)
   (defalias 'redisplay #'emacs-redisplay-trigger-redisplay))
 
 (provide 'emacs-redisplay-builtins)

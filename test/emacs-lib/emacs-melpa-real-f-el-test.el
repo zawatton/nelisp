@@ -8,15 +8,16 @@
 ;;
 ;; f.el は path-manipulation (= 純文字列操作) と filesystem operation
 ;; (= file-exists? / read-bytes / write-text 等) の 2 segment が混在。
-;; 本 ERT では path subset のみ取扱う:
+;; 本 ERT では path subset と temp directory 内の filesystem subset を扱う:
 ;;   * §A path subset      — host load 経路で host 上の string/regex
 ;;                            primitive のみ使用、shim 不要で動作
-;;   * §B filesystem subset — `nl-syscall-*' 待ち (Doc 33 §3.1) なので
-;;                            ert-skip。Phase 5 syscall ship 後 un-skip
+;;   * §B filesystem subset — temp directory 内で read/write/mkdir/delete
+;;                            の real package smoke を行う
 
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 (defconst emacs-melpa-real-f-el-test--candidates
   '("/home/madblack-21/.emacs.d/external-packages/f.el/f.el"
@@ -100,14 +101,53 @@
     (should-not  (f-root? "/a"))
     (should (string= "/a/b" (f-parent "/a/b/c")))))
 
-;;;; B. filesystem subset — gated on Phase 5 nl-syscall-* (= follow-up)
+;;;; B. filesystem subset
 
-(ert-deftest emacs-melpa-real-f-el-test/filesystem-functions-are-skipped ()
-  "f-exists? / f-read-text / f-write-text / f-mkdir 等の filesystem
-operation は NeLisp Doc 33 §3.1 nl-syscall-* 未実装で nelisp driver
-での動作未保証。Phase 5 close gate 後 un-skip 予定。"
+(ert-deftest emacs-melpa-real-f-el-test/filesystem-functions ()
+  "f.el filesystem helpers must work inside a temporary directory."
   (emacs-melpa-real-f-el-test--skip-without-source
-    (ert-skip "filesystem subset: pending NeLisp Doc 33 §3.1 syscalls")))
+    (let ((root (make-temp-file "emacs-melpa-f-" t)))
+      (unwind-protect
+          (let* ((alpha (f-join root "alpha.txt"))
+                 (nested (f-join root "nested"))
+                 (deep (f-join nested "deeper"))
+                 (beta (f-join deep "beta.txt"))
+                 (touched (f-join root "touched.txt")))
+            (f-write-text "alpha" 'utf-8 alpha)
+            (should (f-exists? alpha))
+            (should (f-readable? alpha))
+            (should (f-file? alpha))
+            (should (string= "alpha" (f-read-text alpha 'utf-8)))
+
+            (f-append-text "\nbeta" 'utf-8 alpha)
+            (should (string= "alpha\nbeta" (f-read-text alpha 'utf-8)))
+
+            (f-mkdir-full-path deep)
+            (should (f-directory? deep))
+            (f-write-text "deep" 'utf-8 beta)
+            (should (string= "deep" (f-read-text beta 'utf-8)))
+
+            (f-touch touched)
+            (should (f-file? touched))
+            (should (equal '("alpha.txt" "touched.txt")
+                           (sort (mapcar #'file-name-nondirectory
+                                         (f-files root))
+                                 #'string<)))
+            (should (equal '("nested")
+                           (sort (mapcar #'file-name-nondirectory
+                                         (f-directories root))
+                                 #'string<)))
+            (should (equal '("alpha.txt" "nested" "touched.txt")
+                           (sort (mapcar #'file-name-nondirectory
+                                         (f-entries root))
+                                 #'string<)))
+
+            (f-delete alpha)
+            (should-not (f-exists? alpha))
+            (f-delete nested t)
+            (should-not (f-exists? nested)))
+        (when (file-exists-p root)
+          (delete-directory root t))))))
 
 (provide 'emacs-melpa-real-f-el-test)
 

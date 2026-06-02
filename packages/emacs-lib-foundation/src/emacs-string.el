@@ -11,7 +11,7 @@
 ;; Ports the string-utility primitives Emacs ships in `subr-x.el' /
 ;; `subr.el' that anvil modules use during normal operation
 ;; (`string-trim', `string-prefix-p', `string-suffix-p',
-;; `string-empty-p', `string-blank-p').  Each polyfill is gated on
+;; `string-empty-p', `string-blank-p', `string-lines').  Each polyfill is gated on
 ;; `unless (fboundp ...)'.
 
 ;;; Code:
@@ -65,6 +65,29 @@ Optional REGEXP overrides the default `[ \\t\\n\\r]+' pattern."
   (defun string-trim (string &optional trim-left trim-right)
     "Trim leading + trailing whitespace from STRING."
     (string-trim-left (string-trim-right string trim-right) trim-left)))
+
+(unless (fboundp 'string-lines)
+  (defun string-lines (string &optional omit-nulls keep-newlines)
+    "Split STRING into a list of lines.
+If OMIT-NULLS is non-nil, empty lines are removed.  If KEEP-NEWLINES
+is non-nil, each returned line keeps its trailing newline when present."
+    (let ((start 0)
+          (len (length string))
+          (out nil))
+      (if (= len 0)
+          (unless omit-nulls
+            (setq out (cons "" out)))
+        (while (< start len)
+          (let* ((pos (string-search "\n" string start))
+                 (end (or pos len))
+                 (raw (substring string start end))
+                 (line (if (and pos keep-newlines)
+                           (substring string start (1+ pos))
+                         raw)))
+          (unless (and omit-nulls (string-empty-p raw))
+            (setq out (cons line out)))
+          (setq start (if pos (1+ pos) len)))))
+      (nreverse out))))
 
 
 (provide 'emacs-string)

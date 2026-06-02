@@ -3,8 +3,8 @@
 ;;; Commentary:
 
 ;; Tests for the Layer 2 minibuffer / completion bridge.  Under host
-;; Emacs the unprefixed names stay bound to host C builtins (= our
-;; `unless (fboundp ...)' gates skip), so behavioural assertions
+;; Emacs the unprefixed names stay bound to host C builtins, while
+;; standalone NeLisp overwrites bootstrap stubs.  Behavioural assertions
 ;; exercise the prefixed `emacs-minibuffer-*' API directly via its
 ;; `emacs-minibuffer-feed-input' deterministic-input helper.
 ;; Featurep / fboundp / boundp parity is checked separately.
@@ -152,6 +152,29 @@
     (should (eq before-read-string (symbol-function 'read-string)))
     (should (eq before-y-or-n      (symbol-function 'y-or-n-p)))
     (should (eq before-completing  (symbol-function 'completing-read)))))
+
+(ert-deftest emacs-minibuffer-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-minibuffer-builtins--install-function-p))
+  (should-not (emacs-minibuffer-builtins--install-function-p 'read-string))
+  (let* ((file (locate-library "emacs-minibuffer-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(read-from-minibuffer read-string read-no-blanks-input
+                     read-key read-buffer read-file-name read-directory-name
+                     read-passwd read-number y-or-n-p yes-or-no-p
+                     completing-read minibufferp active-minibuffer-window
+                     minibuffer-window minibuffer-prompt minibuffer-contents
+                     minibuffer-prompt-end minibuffer-prompt-width
+                     exit-minibuffer abort-recursive-edit minibuffer-message))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-minibuffer-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 (provide 'emacs-minibuffer-builtins-test)
 

@@ -12,6 +12,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nemacs-main)
+(require 'emacs-tui-event)
 
 ;;;; --- fixtures ------------------------------------------------------
 
@@ -27,6 +28,9 @@
   `(let ((nemacs-main--backend nil)
          (nemacs-main--frame nil)
          (nemacs-main--redisplay nil)
+         (nemacs-main--event-handle nil)
+         (nemacs-main--tui-features-loaded-p nil)
+         (nemacs-main--tui-state-prepared-p nil)
          (nemacs-main--quit-flag nil))
      ,@body))
 
@@ -38,6 +42,18 @@
                  nemacs-main-option nemacs-main-status-banner
                  nemacs-main--realise-tui nemacs-main--shutdown-tui
                  nemacs-main--initial-paint nemacs-main--event-loop
+                 nemacs-main--event-loop-tick nemacs-main--repaint-tui
+                 nemacs-main--drain-input-burst
+                 nemacs-main--eval-option-form
+                 nemacs-main--rebuild-single-key-cache
+                 nemacs-main--dispatch-key-code
+                 nemacs-main--dispatch-printable-self-insert-direct
+                 nemacs-main--sync-selected-window-buffer
+                 nemacs-main--insert-repaint-hint-p
+                 nemacs-main-switch-to-buffer-interactive
+                 nemacs-main-list-buffers-interactive
+                 nemacs-main-kill-buffer-interactive
+                 nemacs-main-execute-extended-command
                  nemacs-main--apply-options nemacs-main--quit))
     (should (fboundp sym))))
 
@@ -95,6 +111,18 @@
   ;; second.
   (should nemacs-main-test--ran))
 
+(ert-deftest nemacs-main-test/apply-eval-source-string-uses-nelisp-eval ()
+  "Standalone NeLisp can pass --eval source without requiring `read'."
+  (let ((seen nil)
+        (nemacs-main-options
+         '(:eval-forms ("(setq nemacs-main-test--from-source t)"))))
+    (cl-letf (((symbol-function 'nelisp--eval-source-string)
+               (lambda (source)
+                 (setq seen source)
+                 'ok)))
+      (nemacs-main--apply-options))
+    (should (equal seen "(setq nemacs-main-test--from-source t)"))))
+
 ;;;; E. quit handler
 
 (ert-deftest nemacs-main-test/quit-sets-flag ()
@@ -136,6 +164,32 @@
           (should nemacs-main-test--from-eval))
       (when (file-exists-p tmp) (delete-file tmp)))))
 
+(ert-deftest nemacs-main-test/apply-options-skips-legacy-image-loader-without-images ()
+  "The .nlri path should not pay the legacy .nli loader cost."
+  (let ((nemacs-main-options '(:images nil :load nil :eval-forms nil)))
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &optional _filename _noerror)
+                 (when (eq feature 'image-loader)
+                   (error "image-loader should stay lazy"))
+                 feature)))
+      (nemacs-main--apply-options))))
+
+(ert-deftest nemacs-main-test/apply-options-loads-legacy-images-lazily ()
+  "Legacy --load-image still restores .nli files on demand."
+  (let ((nemacs-main-options '(:images ("legacy.nli")))
+        (required nil)
+        (loaded nil))
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &optional _filename _noerror)
+                 (push feature required)
+                 feature))
+              ((symbol-function 'image-loader-load)
+               (lambda (path restore-buffers)
+                 (setq loaded (list path restore-buffers)))))
+      (nemacs-main--apply-options)
+      (should (equal required '(image-loader)))
+      (should (equal loaded '("legacy.nli" t))))))
+
 ;;;; G. nemacs-main routes batch via :batch
 
 (ert-deftest nemacs-main-test/nemacs-main-honours-batch-option ()
@@ -162,6 +216,29 @@
             ;; Current handle is wired to the runner's redisplay handle.
             (when (fboundp 'emacs-redisplay-current-handle)
               (should (eq h (emacs-redisplay-current-handle))))))
+      (nemacs-main--shutdown-tui)
+      (nemacs-uninit))))
+
+(ert-deftest nemacs-main-test/realise-tui-reuses-prepared-image-state ()
+  "Runtime images can bake pure-Elisp TUI state before realisation."
+  (let ((nemacs-initialized nil)
+        (nemacs--initial-buffer nil))
+    (unwind-protect
+        (nemacs-main-test--fresh-runner
+          (nemacs-init t)
+          (let ((prepared (nemacs-main--prepare-tui-state))
+                (backend nil)
+                (frame nil))
+            (should prepared)
+            (setq backend nemacs-main--backend
+                  frame nemacs-main--frame)
+            (should backend)
+            (should frame)
+            (should nemacs-main--tui-state-prepared-p)
+            (let ((h (nemacs-main--realise-tui)))
+              (should (eq h prepared))
+              (should (eq nemacs-main--backend backend))
+              (should (eq nemacs-main--frame frame)))))
       (nemacs-main--shutdown-tui)
       (nemacs-uninit))))
 
@@ -195,6 +272,180 @@
     ;; Quit flag set up-front → loop exits immediately.
     (should-not (nemacs-main--event-loop))))
 
+(ert-deftest nemacs-main-test/event-loop-tick-idle-skips-repaint ()
+  "An idle poll must not redisplay/flush the TUI canvas."
+  (nemacs-main-test--fresh-runner
+    (let ((nemacs-main--backend 'backend)
+          (nemacs-main--frame 'frame)
+          (nemacs-main--redisplay 'redisplay)
+          (redisplays 0)
+          (flushes 0))
+      (cl-letf (((symbol-function 'nemacs-main--handle-sigcont)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--handle-winsize)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--drain-once)
+                 (lambda (_) nil))
+                ((symbol-function 'emacs-redisplay-redisplay)
+                 (lambda (&rest _) (setq redisplays (1+ redisplays))))
+                ((symbol-function 'emacs-redisplay-flush-frame)
+                 (lambda (&rest _) (setq flushes (1+ flushes)))))
+        (should-not (nemacs-main--event-loop-tick 0))
+        (should (= 0 redisplays))
+        (should (= 0 flushes))))))
+
+(ert-deftest nemacs-main-test/event-loop-tick-activity-repaints-once ()
+  "A key/input tick should repaint once after command dispatch."
+  (nemacs-main-test--fresh-runner
+    (let ((nemacs-main--backend 'backend)
+          (nemacs-main--frame 'frame)
+          (nemacs-main--redisplay 'redisplay)
+          (redisplays 0)
+          (flushes 0))
+      (cl-letf (((symbol-function 'nemacs-main--handle-sigcont)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--handle-winsize)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--drain-once)
+                 (lambda (_) t))
+                ((symbol-function 'emacs-redisplay-redisplay)
+                 (lambda (&rest _) (setq redisplays (1+ redisplays))))
+                ((symbol-function 'emacs-redisplay-flush-frame)
+                 (lambda (&rest _) (setq flushes (1+ flushes)))))
+        (should (nemacs-main--event-loop-tick 0))
+        (should (= 1 redisplays))
+        (should (= 1 flushes))))))
+
+(ert-deftest nemacs-main-test/event-loop-tick-burst-repaints-once ()
+  "Queued input should drain in one tick and repaint once."
+  (nemacs-main-test--fresh-runner
+    (let ((nemacs-main--backend 'backend)
+          (nemacs-main--frame 'frame)
+          (nemacs-main--redisplay 'redisplay)
+          (remaining 3)
+          (drains 0)
+          (repaints 0))
+      (cl-letf (((symbol-function 'nemacs-main--handle-sigcont)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--handle-winsize)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--drain-once)
+                 (lambda (_)
+                   (when (> remaining 0)
+                     (setq remaining (1- remaining)
+                           drains (1+ drains))
+                     t)))
+                ((symbol-function 'nemacs-main--repaint-tui)
+                 (lambda ()
+                   (setq repaints (1+ repaints)))))
+        (should (nemacs-main--event-loop-tick 0))
+        (should (= 3 drains))
+        (should (= 1 repaints))))))
+
+(ert-deftest nemacs-main-test/event-loop-tick-burst-passes-insert-text-to-core ()
+  "A printable input burst should reach the lightweight core as one hint."
+  (nemacs-main-test--fresh-runner
+    (let ((nemacs-main--backend 'backend)
+          (nemacs-main--frame 'frame)
+          (nemacs-main--redisplay 'redisplay)
+          (nemacs-main--repaint-hint nil)
+          (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1))
+          (nemacs-main--insert-text-repaint-hint (vector 'insert-text "" 1 1))
+          (events (list (list ?a 1 2)
+                        (list ?b 2 3)
+                        (list ?c 3 4)))
+          (featurep-original (symbol-function 'featurep))
+          (drains 0)
+          (current-line-repaints 0)
+          (full-repaints 0)
+          captured-hint)
+      (cl-letf (((symbol-function 'featurep)
+                 (lambda (feature &optional subfeature)
+                   (if (eq feature 'emacs-redisplay)
+                       nil
+                     (funcall featurep-original feature subfeature))))
+                ((symbol-function 'nemacs-main--handle-sigcont)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--handle-winsize)
+                 (lambda () nil))
+                ((symbol-function 'nemacs-main--drain-once)
+                 (lambda (_)
+                   (when events
+                     (let ((ev (car events)))
+                       (setq events (cdr events)
+                             drains (1+ drains))
+                       (nemacs-main--set-insert-repaint-hint
+                        (nth 0 ev) (nth 1 ev) (nth 2 ev))
+                       t))))
+                ((symbol-function 'emacs-redisplay-core-repaint-current-line)
+                 (lambda (_handle _frame hint)
+                   (setq current-line-repaints (1+ current-line-repaints)
+                         captured-hint (append hint nil))))
+                ((symbol-function 'emacs-redisplay-core-repaint)
+                 (lambda (&rest _)
+                   (setq full-repaints (1+ full-repaints)))))
+        (should (nemacs-main--event-loop-tick 0))
+        (should (= 3 drains))
+        (should (= 1 current-line-repaints))
+        (should (= 0 full-repaints))
+        (should (equal captured-hint (list 'insert-text "abc" 1 4)))
+        (should-not nemacs-main--repaint-hint)))))
+
+(ert-deftest nemacs-main-test/drain-input-burst-obeys-limit ()
+  "Burst draining is bounded when input never goes idle."
+  (nemacs-main-test--fresh-runner
+    (let ((nemacs-main--input-burst-limit 4)
+          (drains 0))
+      (cl-letf (((symbol-function 'nemacs-main--drain-once)
+                 (lambda (_)
+                   (setq drains (1+ drains))
+                   t)))
+        (should (nemacs-main--drain-input-burst 0))
+        (should (= 4 drains))))))
+
+(ert-deftest nemacs-main-test/drain-input-burst-coalesces-insert-hints ()
+  "Multiple consecutive inserts in one burst become one insert-text hint."
+  (nemacs-main-test--fresh-runner
+    (let ((remaining 2)
+          (nemacs-main--repaint-hint nil)
+          (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1))
+          (nemacs-main--insert-text-repaint-hint (vector 'insert-text "" 1 1)))
+      (cl-letf (((symbol-function 'nemacs-main--drain-once)
+                 (lambda (_)
+                   (when (> remaining 0)
+                     (setq remaining (1- remaining))
+                     (nemacs-main--set-insert-repaint-hint
+                      (if (= remaining 1) ?a ?b)
+                      (- 2 remaining)
+                      (- 3 remaining))
+                     t))))
+        (should (nemacs-main--drain-input-burst 0))
+        (should (eq nemacs-main--repaint-hint
+                    nemacs-main--insert-text-repaint-hint))
+        (should (equal (append nemacs-main--repaint-hint nil)
+                       (list 'insert-text "ab" 1 3)))))))
+
+(ert-deftest nemacs-main-test/drain-input-burst-drops-mixed-hint ()
+  "Mixed burst commands should force a full lightweight repaint."
+  (nemacs-main-test--fresh-runner
+    (let ((remaining 2)
+          (nemacs-main--repaint-hint nil)
+          (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1)))
+      (cl-letf (((symbol-function 'nemacs-main--drain-once)
+                 (lambda (_)
+                   (cond
+                    ((= remaining 2)
+                     (setq remaining 1)
+                     (nemacs-main--set-insert-repaint-hint ?a 1 2)
+                     t)
+                    ((= remaining 1)
+                     (setq remaining 0
+                           nemacs-main--repaint-hint 'current-line)
+                     t)
+                    (t nil)))))
+        (should (nemacs-main--drain-input-burst 0))
+        (should-not nemacs-main--repaint-hint)))))
+
 ;;;; K. shell wrapper surface
 
 (defconst nemacs-main-test--bin
@@ -218,7 +469,21 @@
                    (call-process nemacs-main-test--bin nil t nil
                                  "--print-paths")))))
       (should (string-match-p "NEMACS_HOME" out))
-      (should (string-match-p "NEMACS_DRIVER" out)))))
+      (should (string-match-p "NEMACS_DRIVER" out))
+      (should (string-match-p "NEMACS_BATCH_RUNTIME_IMAGE" out))
+      (should (string-match-p "NEMACS_INTERACTIVE_RUNTIME_IMAGE" out))
+      (should (string-match-p "NEMACS_VENDOR_CORE_RUNTIME_IMAGE" out)))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-help-distinguishes-image-kinds ()
+  (when (file-executable-p nemacs-main-test--bin)
+    (let ((out (with-output-to-string
+                 (with-current-buffer standard-output
+                   (call-process nemacs-main-test--bin nil t nil
+                                 "--help")))))
+      (should (string-match-p "--runtime-image FILE load a NeLisp \\.nlri" out))
+      (should (string-match-p "--runtime-image auto" out))
+      (should (string-match-p "--load-image FILE legacy" out))
+      (should (string-match-p "--doctor" out)))))
 
 (ert-deftest nemacs-main-test/shell-wrapper-batch-eval ()
   (when (file-executable-p nemacs-main-test--bin)
@@ -229,6 +494,258 @@
                                  "--eval"
                                  "(princ (format \"BATCH=%S\\n\" t))")))))
       (should (string-match-p "BATCH=t" out)))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-host-batch-uses-clean-emacs ()
+  "The host batch driver should not load user init or site-start files."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let ((stub (make-temp-file "nemacs-main-test-emacs-" nil ".sh")))
+      (unwind-protect
+          (progn
+            (with-temp-file stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "for arg in \"$@\"; do printf '<%s>\\n' \"$arg\"; done\n"))
+            (set-file-modes stub #o755)
+            (let* ((process-environment
+                    (cons (format "NEMACS_EMACS=%s" stub)
+                          process-environment))
+                   (out (with-output-to-string
+                          (with-current-buffer standard-output
+                            (call-process nemacs-main-test--bin nil t nil
+                                          "--driver=host"
+                                          "--batch" "--no-banner"
+                                          "--eval"
+                                          "(princ \"clean\\n\")")))))
+              (should (string-match-p "\\`<-Q>\n<--batch>\n<--eval>" out))
+              (should (string-match-p
+                       "native-comp-enable-subr-trampolines nil"
+                       out))))
+        (when (file-exists-p stub)
+          (delete-file stub))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-receives-batch-script ()
+  "The pure standalone reader path should receive a file-based boot script."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
+           (capture (make-temp-file "nemacs-main-test-boot-" nil ".el"))
+           (load-file (make-temp-file "nemacs-main-test-load-" nil ".el")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "cp \"$1\" \"$NEMACS_TEST_CAPTURE\"\n")
+              (insert "exit 0\n"))
+            (with-temp-file load-file
+              (insert "(setq nemacs-main-test--loaded t)\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let* ((process-environment
+                    (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                                  (format "NEMACS_TEST_CAPTURE=%s" capture)
+                                  "NEMACS_BOOTSTRAP_BUNDLE=none"
+                                  "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                            process-environment))
+                   (status
+                    (call-process nemacs-main-test--bin nil nil nil
+                                  "--driver=nelisp"
+                                  "--batch" "--no-banner"
+                                  "-l" load-file
+                                  "--eval"
+                                  "(setq nemacs-main-test--standalone 42)")))
+              (should (= 0 status)))
+            (with-temp-buffer
+              (insert-file-contents capture)
+              (let ((boot (buffer-string)))
+                (should (string-match-p "(require 'nemacs-main)" boot))
+                (should (string-match-p "(nemacs-batch-main)" boot))
+                (should (string-match-p
+                         (regexp-quote (format ":load (list \"%s\")" load-file))
+                         boot))
+                (should (string-match-p
+                         (regexp-quote
+                          ":eval-forms (list \"(setq nemacs-main-test--standalone 42)\")")
+                         boot)))))
+        (when (file-exists-p nelisp-stub)
+          (delete-file nelisp-stub))
+        (when (file-exists-p nelisp-dir)
+          (delete-directory nelisp-dir))
+        (when (file-exists-p capture)
+          (delete-file capture))
+        (when (file-exists-p load-file)
+          (delete-file load-file))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-execs-runtime-image ()
+  "Runtime images should use the standalone-reader exec command directly."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
+           (runtime-image (make-temp-file "nemacs-main-test-runtime-" nil ".nlri"))
+           (capture (make-temp-file "nemacs-main-test-runtime-args-" nil ".txt")))
+      (unwind-protect
+          (progn
+            (with-temp-file runtime-image
+              (insert ";;; nelisp-runtime-image source-v1\n")
+              (insert "(progn\n(setq nemacs-main-test-runtime-image t)\n)\n"))
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "printf '%s\\n' \"$@\" > \"$NEMACS_TEST_CAPTURE\"\n")
+              (insert "exit 0\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let* ((process-environment
+                    (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                                  (format "NEMACS_TEST_CAPTURE=%s" capture)
+                                  "NEMACS_BOOTSTRAP_BUNDLE=none"
+                                  "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                            process-environment))
+                   (status nil)
+                   (out (with-output-to-string
+                          (with-current-buffer standard-output
+                            (setq status
+                                  (call-process nemacs-main-test--bin nil t nil
+                                                "--driver=nelisp"
+                                                "--batch" "--no-banner"
+                                                "--runtime-image" runtime-image
+                                                "--eval" "42"))))))
+              (should (= 0 status))
+              (should (equal out ""))
+              (with-temp-buffer
+                (insert-file-contents capture)
+                (let ((text (buffer-string)))
+                  (should (string-match-p "\\`exec-runtime-image\n" text))
+                  (should (string-match-p
+                           (regexp-quote (concat runtime-image "\n"))
+                           text))
+                  (should (string-match-p "(require 'nemacs-main)" text))))))
+        (when (file-exists-p nelisp-stub)
+          (delete-file nelisp-stub))
+        (when (file-exists-p nelisp-dir)
+          (delete-directory nelisp-dir))
+        (when (file-exists-p runtime-image)
+          (delete-file runtime-image))
+        (when (file-exists-p capture)
+          (delete-file capture))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-cleans-temp-on-nonzero ()
+  "The file-based standalone-reader path should remove its boot script on failure."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let* ((nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t))
+           (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
+           (seen-path (make-temp-file "nemacs-main-test-seen-" nil ".txt")))
+      (unwind-protect
+          (progn
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "printf '%s\\n' \"$1\" > \"$NEMACS_TEST_SEEN_PATH\"\n")
+              (insert "exit 42\n"))
+            (set-file-modes nelisp-stub #o755)
+            (let* ((process-environment
+                    (append (list (format "NEMACS_NELISP=%s" nelisp-stub)
+                                  (format "NEMACS_TEST_SEEN_PATH=%s" seen-path)
+                                  "NEMACS_BOOTSTRAP_BUNDLE=none"
+                                  "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                            process-environment))
+                   (status
+                    (call-process nemacs-main-test--bin nil nil nil
+                                  "--driver=nelisp"
+                                  "--batch" "--no-banner"
+                                  "--eval" "42")))
+              (should (= 42 status)))
+            (with-temp-buffer
+              (insert-file-contents seen-path)
+              (let ((boot-path (replace-regexp-in-string
+                                "\n\\'" "" (buffer-string))))
+                (should (string-match-p "nemacs-boot\\." boot-path))
+                (should-not (file-exists-p boot-path)))))
+        (when (file-exists-p nelisp-stub)
+          (delete-file nelisp-stub))
+        (when (file-exists-p nelisp-dir)
+          (delete-directory nelisp-dir))
+        (when (file-exists-p seen-path)
+          (delete-file seen-path))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-doctor-reports-nelisp-eval-failure ()
+  "Doctor output should distinguish NeLisp driver health from nemacs boot."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let ((emacs-stub (make-temp-file "nemacs-main-test-emacs-" nil ".sh"))
+          (nelisp-stub (make-temp-file "nemacs-main-test-nelisp-" nil ".sh")))
+      (unwind-protect
+          (progn
+            (with-temp-file emacs-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "printf 'HOST=ok\\n'\n"))
+            (with-temp-file nelisp-stub
+              (insert "#!/usr/bin/env sh\n")
+              (insert "case \"$1:$2\" in\n")
+              (insert "  --version:) printf 'nelisp test\\n'; exit 0 ;;\n")
+              (insert "  eval:42) printf '42\\n'; exit 0 ;;\n")
+              (insert "  eval:*) printf 'panic: eval_inner\\n' >&2; exit 134 ;;\n")
+              (insert "esac\n")
+              (insert "exit 2\n"))
+            (set-file-modes emacs-stub #o755)
+            (set-file-modes nelisp-stub #o755)
+            (let* ((process-environment
+                    (append (list (format "NEMACS_EMACS=%s" emacs-stub)
+                                  (format "NEMACS_NELISP=%s" nelisp-stub)
+                                  "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                            process-environment))
+                   (status nil)
+                   (out (with-output-to-string
+                          (with-current-buffer standard-output
+                            (setq status
+                                  (call-process nemacs-main-test--bin nil t nil
+                                                "--doctor"))))))
+              (should (= 1 status))
+              (should (string-match-p "host-batch: ok" out))
+              (should (string-match-p "nemacs-host-batch: ok" out))
+              (should (string-match-p "nelisp-literal-eval: ok" out))
+              (should (string-match-p "nelisp-list-eval: fail" out))
+              (should (string-match-p "panic: eval_inner" out))))
+        (when (file-exists-p emacs-stub)
+          (delete-file emacs-stub))
+        (when (file-exists-p nelisp-stub)
+          (delete-file nelisp-stub))))))
+
+(ert-deftest nemacs-main-test/shell-wrapper-doctor-accepts-standalone-reader ()
+  "Doctor should treat the pure-Elisp standalone reader's exit value as eval output."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let ((emacs-stub (make-temp-file "nemacs-main-test-emacs-" nil ".sh"))
+          (nelisp-dir (make-temp-file "nemacs-main-test-nelisp-" t)))
+      (let ((nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir)))
+        (unwind-protect
+            (progn
+              (with-temp-file emacs-stub
+                (insert "#!/usr/bin/env sh\n")
+                (insert "printf 'HOST=ok\\n'\n"))
+              (with-temp-file nelisp-stub
+                (insert "#!/usr/bin/env sh\n")
+                (insert "src=$(cat \"$1\")\n")
+                (insert "case \"$src\" in\n")
+                (insert "  42) exit 42 ;;\n")
+                (insert "  'make-doctor-list-fail') exit 3 ;;\n")
+                (insert "  *) exit 42 ;;\n")
+                (insert "esac\n"))
+              (set-file-modes emacs-stub #o755)
+              (set-file-modes nelisp-stub #o755)
+              (let* ((process-environment
+                      (append (list (format "NEMACS_EMACS=%s" emacs-stub)
+                                    (format "NEMACS_NELISP=%s" nelisp-stub)
+                                    "NELISP_HOME=/tmp/nemacs-test-nelisp")
+                              process-environment))
+                     (status nil)
+                     (out (with-output-to-string
+                            (with-current-buffer standard-output
+                              (setq status
+                                    (call-process nemacs-main-test--bin nil t nil
+                                                  "--doctor"))))))
+                (should (= 0 status))
+                (should (string-match-p "nelisp-driver-kind: standalone-reader" out))
+                (should (string-match-p "nelisp-version: skip" out))
+                (should (string-match-p "nelisp-literal-eval: ok" out))
+                (should (string-match-p "nelisp-list-eval: ok" out))
+                (should (string-match-p "summary: ok" out))))
+          (when (file-exists-p emacs-stub)
+            (delete-file emacs-stub))
+          (when (file-directory-p nelisp-dir)
+            (delete-directory nelisp-dir t)))))))
 
 ;;;; G. Track C — keymap + interactive entry
 
@@ -249,6 +766,33 @@ bound to `nemacs-main-kill'."
     (let ((m1 (nemacs-main--init-keymap))
           (m2 (nemacs-main--init-keymap)))
       (should (eq m1 m2)))))
+
+(ert-deftest nemacs-main-test/init-keymap-builds-single-key-cache ()
+  "Prepared runtime images should have a direct ASCII lookup cache."
+  (skip-unless (fboundp 'self-insert-command))
+  (let ((nemacs-main--global-keymap nil)
+        (nemacs-main--single-key-cache nil)
+        (nemacs-main--single-key-cache-map nil))
+    (let ((m (nemacs-main--init-keymap)))
+      (should (vectorp nemacs-main--single-key-cache))
+      (should (eq m nemacs-main--single-key-cache-map))
+      (should (eq 'self-insert-command
+                  (aref nemacs-main--single-key-cache ?a)))
+      (should (eq 'self-insert-command
+                  (nemacs-main--lookup-single-key ?a))))))
+
+(ert-deftest nemacs-main-test/ensure-keymap-after-feature-load-rebuilds-missing-edit-bindings ()
+  "A keymap created before edit commands load should be repaired later."
+  (skip-unless (and (fboundp 'self-insert-command)
+                    (fboundp 'newline)))
+  (let ((nemacs-main--global-keymap (make-sparse-keymap)))
+    (should-not (eq 'self-insert-command
+                    (lookup-key nemacs-main--global-keymap (vector ?a))))
+    (nemacs-main--ensure-keymap-after-feature-load)
+    (should (eq 'self-insert-command
+                (lookup-key nemacs-main--global-keymap (vector ?a))))
+    (should (eq 'newline
+                (lookup-key nemacs-main--global-keymap (vector 13))))))
 
 (ert-deftest nemacs-main-test/install-keymap-host-sets-overriding ()
   "Under interactive Emacs the host install should set
@@ -395,7 +939,7 @@ this test skips the body."
                     (fboundp 'quit-flag-pending-p)))
   (clear-quit-flag)
   (should (eq nil (quit-flag-pending-p)))
-  ;; Setting + clearing via the Rust API path: clear before next
+  ;; Setting + clearing via the NeLisp API path: clear before next
   ;; eval boundary so the eval-time take does not raise.
   (set-quit-flag)
   (clear-quit-flag)
@@ -550,10 +1094,21 @@ encoding regardless of which property name held the char."
              (nemacs-main--key-event->key
               (list :type 'key :char ?x :mods '(control))))))
 
+(ert-deftest nemacs-main-test/track-b-key-event-meta-modifier ()
+  "Meta-modified events use the standard keymap integer bit."
+  (should (= (logior ?x nemacs-main--meta-modifier-mask)
+             (nemacs-main--key-event->key
+              (list :type 'key :name ?x :modifiers '(meta)))))
+  (should (= (logior ?x
+                     nemacs-main--control-modifier-mask
+                     nemacs-main--meta-modifier-mask)
+             (nemacs-main--key-event->key
+              (list :type 'key :name ?x :modifiers '(control meta))))))
+
 ;;;; N. Doc 51 Track C — find-file / save-buffer
 
 (ert-deftest nemacs-main-test/track-c-cx-prefix-keys-bound ()
-  "C-x C-c / C-x C-f / C-x C-s all resolve to distinct commands.
+  "Common C-x daily-driver keys resolve to distinct commands.
 Regression check: an earlier `?\\s' lex bug made `kbd' produce
 single-element vectors, collapsing all three onto whatever was
 last defined."
@@ -564,14 +1119,193 @@ last defined."
   (should (eq 'nemacs-main-find-file-interactive
               (lookup-key nemacs-main--global-keymap (kbd "C-x C-f"))))
   (should (eq 'nemacs-main-save-buffer-interactive
-              (lookup-key nemacs-main--global-keymap (kbd "C-x C-s")))))
+              (lookup-key nemacs-main--global-keymap (kbd "C-x C-s"))))
+  (should (eq 'nemacs-main-switch-to-buffer-interactive
+              (lookup-key nemacs-main--global-keymap (kbd "C-x b"))))
+  (should (eq 'nemacs-main-kill-buffer-interactive
+              (lookup-key nemacs-main--global-keymap (kbd "C-x k"))))
+  (should (eq 'nemacs-main-list-buffers-interactive
+              (lookup-key nemacs-main--global-keymap (kbd "C-x C-b"))))
+  (should (eq 'nemacs-main-execute-extended-command
+              (lookup-key nemacs-main--global-keymap
+                          (vector (logior nemacs-main--meta-modifier-mask
+                                          ?x))))))
 
 (ert-deftest nemacs-main-test/track-c-find-file-interactive-defined ()
   (should (fboundp 'nemacs-main-find-file-interactive))
-  (should (fboundp 'nemacs-main-save-buffer-interactive)))
+  (should (fboundp 'nemacs-main-save-buffer-interactive))
+  (should (fboundp 'nemacs-main-switch-to-buffer-interactive))
+  (should (fboundp 'nemacs-main-list-buffers-interactive))
+  (should (fboundp 'nemacs-main-kill-buffer-interactive))
+  (should (fboundp 'nemacs-main-execute-extended-command)))
 
 (ert-deftest nemacs-main-test/track-c-read-line-blocking-defined ()
   (should (fboundp 'nemacs-main--read-line-blocking)))
+
+(ert-deftest nemacs-main-test/track-c-read-line-blocking-raw-stdin-edits ()
+  "The prompt reader accepts printable input, backspace, and RET."
+  (let ((bytes (list ?a ?b 127 ?c 13)))
+    (cl-letf (((symbol-function 'read-stdin-byte-available)
+               (lambda (&optional _timeout-ms)
+                 (pop bytes))))
+      (should (equal "ac" (nemacs-main--read-line-blocking "Find file: ")))
+      (should-not bytes))))
+
+(ert-deftest nemacs-main-test/track-c-read-line-blocking-event-handle-fallback ()
+  "The prompt reader can consume the prepared TUI event parser path."
+  (let* ((bytes (list ?x ?y ?\C-m))
+         (emacs-tui-event-input-fn (lambda () (pop bytes)))
+         (h (emacs-tui-event-init))
+         (nemacs-main--event-handle h)
+         (real-fboundp (symbol-function 'fboundp)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'fboundp)
+                   (lambda (sym)
+                     (if (eq sym 'read-stdin-byte-available)
+                         nil
+                       (funcall real-fboundp sym)))))
+          (should (equal "xy" (nemacs-main--read-line-blocking "Find file: ")))
+          (should-not bytes))
+      (emacs-tui-event-shutdown h))))
+
+(ert-deftest nemacs-main-test/track-c-read-line-blocking-event-handle-cancel ()
+  "C-g through the TUI event parser cancels the prompt reader."
+  (let* ((bytes (list ?a ?\C-g))
+         (emacs-tui-event-input-fn (lambda () (pop bytes)))
+         (h (emacs-tui-event-init))
+         (nemacs-main--event-handle h)
+         (real-fboundp (symbol-function 'fboundp)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'fboundp)
+                   (lambda (sym)
+                     (if (eq sym 'read-stdin-byte-available)
+                         nil
+                       (funcall real-fboundp sym)))))
+          (should-not (nemacs-main--read-line-blocking "Find file: "))
+          (should-not bytes))
+      (emacs-tui-event-shutdown h))))
+
+(ert-deftest nemacs-main-test/track-c-find-file-selects-visited-window-buffer ()
+  "C-x C-f's command path must make the TUI window display the visited buffer."
+  (let ((nelisp-ec--buffers nil)
+        (nelisp-ec--current-buffer nil)
+        (nemacs-main--repaint-hint 'current-line))
+    (unwind-protect
+        (let* ((scratch (nelisp-ec-generate-new-buffer "*scratch*"))
+               (visited (nelisp-ec-generate-new-buffer "note.el"))
+               (w (emacs-window-selected-window)))
+          (nelisp-ec-set-buffer scratch)
+          (emacs-window-set-window-buffer w scratch)
+          (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+                     (lambda (_prompt) "note.el"))
+                    ((symbol-function 'find-file)
+                     (lambda (_filename)
+                       (nelisp-ec-set-buffer visited)
+                       visited)))
+            (should (eq (nemacs-main-find-file-interactive) visited)))
+          (should (eq (emacs-window-window-buffer w) visited))
+          (should-not nemacs-main--repaint-hint))
+      (when (fboundp 'emacs-window-reset)
+        (emacs-window-reset)))))
+
+(ert-deftest nemacs-main-test/track-c-switch-to-buffer-updates-window ()
+  "C-x b should switch both current-buffer and the selected TUI window."
+  (let ((nelisp-ec--buffers nil)
+        (nelisp-ec--current-buffer nil)
+        (nemacs-main--repaint-hint 'current-line))
+    (unwind-protect
+        (let* ((alpha (nelisp-ec-generate-new-buffer "alpha"))
+               (beta (nelisp-ec-generate-new-buffer "beta"))
+               (w (emacs-window-selected-window)))
+          (nelisp-ec-set-buffer alpha)
+          (emacs-window-set-window-buffer w alpha)
+          (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+                     (lambda (_prompt) "beta")))
+            (should (eq (nemacs-main-switch-to-buffer-interactive) beta)))
+          (should (eq (nelisp-ec-current-buffer) beta))
+          (should (eq (emacs-window-window-buffer w) beta))
+          (should-not nemacs-main--repaint-hint))
+      (when (fboundp 'emacs-window-reset)
+        (emacs-window-reset)))))
+
+(ert-deftest nemacs-main-test/track-c-list-buffers-updates-window ()
+  "C-x C-b should display the generated *Buffer List* buffer."
+  (let ((nelisp-ec--buffers nil)
+        (nelisp-ec--current-buffer nil)
+        (nemacs-main--repaint-hint 'current-line))
+    (unwind-protect
+        (let* ((alpha (nelisp-ec-generate-new-buffer "alpha"))
+               (w (emacs-window-selected-window)))
+          (nelisp-ec-set-buffer alpha)
+          (emacs-window-set-window-buffer w alpha)
+          (let ((out (nemacs-main-list-buffers-interactive)))
+            (should (equal "*Buffer List*" (nelisp-ec-buffer-name out)))
+            (should (eq (nelisp-ec-current-buffer) out))
+            (should (eq (emacs-window-window-buffer w) out))
+            (should-not nemacs-main--repaint-hint)))
+      (when (fboundp 'emacs-window-reset)
+        (emacs-window-reset)))))
+
+(ert-deftest nemacs-main-test/track-c-kill-buffer-retargets-window ()
+  "C-x k should kill the selected buffer and leave the window live."
+  (let ((nelisp-ec--buffers nil)
+        (nelisp-ec--current-buffer nil)
+        (nemacs-main--repaint-hint 'current-line))
+    (unwind-protect
+        (let* ((alpha (nelisp-ec-generate-new-buffer "alpha"))
+               (beta (nelisp-ec-generate-new-buffer "beta"))
+               (w (emacs-window-selected-window)))
+          (nelisp-ec-set-buffer alpha)
+          (emacs-window-set-window-buffer w alpha)
+          (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+                     (lambda (_prompt) "")))
+            (should (eq t (nemacs-main-kill-buffer-interactive))))
+          (should-not (memq alpha (emacs-buffer-buffer-list)))
+          (should (eq (nelisp-ec-current-buffer) beta))
+          (should (eq (emacs-window-window-buffer w) beta))
+          (should-not nemacs-main--repaint-hint))
+      (when (fboundp 'emacs-window-reset)
+        (emacs-window-reset)))))
+
+(defvar nemacs-main-test--mx-ran nil)
+
+(defun nemacs-main-test--mx-command ()
+  "Test command for the TUI M-x path."
+  (interactive)
+  (setq nemacs-main-test--mx-ran t)
+  'mx-ran)
+
+(ert-deftest nemacs-main-test/track-c-mx-dispatches-meta-x-command ()
+  "ESC+x / M-x should prompt and run the named command."
+  (let ((nemacs-main--global-keymap nil)
+        (nemacs-main--prefix-keys [])
+        (nemacs-main-test--mx-ran nil))
+    (nemacs-main--init-keymap)
+    (cl-letf (((symbol-function 'nemacs-main--read-line-blocking)
+               (lambda (_prompt) "nemacs-main-test--mx-command")))
+      (nemacs-main--dispatch-key-event
+       (list :type 'key :name ?x :modifiers '(meta))))
+    (should nemacs-main-test--mx-ran)
+    (should (equal [] nemacs-main--prefix-keys))))
+
+(ert-deftest nemacs-main-test/track-c-mx-dired-uses-tui-prompt ()
+  "M-x dired should read its directory through the TUI prompt path."
+  (let ((prompts nil)
+        (called nil))
+    (cl-letf (((symbol-function 'nemacs-main--ensure-mx-command)
+               (lambda (command)
+                 (eq command 'dired)))
+              ((symbol-function 'nemacs-main--read-line-blocking)
+               (lambda (prompt)
+                 (push prompt prompts)
+                 "/tmp"))
+              ((symbol-function 'dired)
+               (lambda (directory)
+                 (setq called directory)
+                 nil)))
+      (should-not (nemacs-main--execute-mx-command 'dired))
+      (should (equal called "/tmp"))
+      (should (member "Dired (directory): " prompts)))))
 
 (ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
   "When a key-bound command signals `quit', the dispatch handler
@@ -591,6 +1325,182 @@ Emacs's keyboard-quit-aborts-the-command-loop semantics."
     (nemacs-main--dispatch-key-event (list :type 'key :char 7 :mods nil))
     (should nemacs-main--quit-flag)
     (should (equal [] nemacs-main--prefix-keys))))
+
+(ert-deftest nemacs-main-test/dispatch-key-syncs-window-point-after-command ()
+  "Commands that move buffer point should update the selected window cache."
+  (let ((nelisp-ec--buffers nil)
+        (nelisp-ec--current-buffer nil)
+        (nemacs-main--global-keymap (make-sparse-keymap))
+        (nemacs-main--prefix-keys []))
+    (unwind-protect
+        (let* ((buf (nelisp-ec-generate-new-buffer "*scratch*"))
+               (w (emacs-window-selected-window)))
+          (nelisp-ec-set-buffer buf)
+          (nelisp-ec-insert "x")
+          (nelisp-ec-goto-char 1)
+          (emacs-window-set-window-buffer w buf)
+          (defun nemacs-main-test--move-point-command ()
+            (interactive)
+            (nelisp-ec-goto-char 2))
+          (define-key nemacs-main--global-keymap (vector ?a)
+                      'nemacs-main-test--move-point-command)
+          (should (= 1 (emacs-window-window-point w)))
+          (nemacs-main--dispatch-key-event
+           (list :type 'key :name ?a :modifiers nil))
+          (should (= 2 (nelisp-ec-point)))
+          (should (= 2 (emacs-window-window-point w))))
+      (when (fboundp 'emacs-window-reset)
+        (emacs-window-reset)))))
+
+(ert-deftest nemacs-main-test/dispatch-key-syncs-window-buffer-after-command ()
+  "Commands that switch current buffer should update the selected window."
+  (let ((nelisp-ec--buffers nil)
+        (nelisp-ec--current-buffer nil)
+        (nemacs-main--global-keymap (make-sparse-keymap))
+        (nemacs-main--prefix-keys [])
+        (nemacs-main--repaint-hint 'current-line))
+    (unwind-protect
+        (let* ((scratch (nelisp-ec-generate-new-buffer "*scratch*"))
+               (visited (nelisp-ec-generate-new-buffer "visited"))
+               (w (emacs-window-selected-window)))
+          (nelisp-ec-set-buffer scratch)
+          (emacs-window-set-window-buffer w scratch)
+          (defun nemacs-main-test--switch-buffer-command ()
+            (interactive)
+            (nelisp-ec-set-buffer visited)
+            (nelisp-ec-goto-char 1))
+          (define-key nemacs-main--global-keymap (vector ?f)
+                      'nemacs-main-test--switch-buffer-command)
+          (nemacs-main--dispatch-key-event
+           (list :type 'key :name ?f :modifiers nil))
+          (should (eq (emacs-window-window-buffer w) visited))
+          (should (= 1 (emacs-window-window-point w)))
+          (should-not nemacs-main--repaint-hint))
+      (when (fboundp 'emacs-window-reset)
+        (emacs-window-reset)))))
+
+(ert-deftest nemacs-main-test/dispatch-printable-self-insert-sets-current-line-repaint-hint ()
+  "Printable self-insert should bypass command-execute and hint repaint."
+  (let ((nemacs-main--global-keymap (make-sparse-keymap))
+        (nemacs-main--prefix-keys [])
+        (nemacs-main--repaint-hint nil)
+        (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1))
+        (inserted nil)
+        (undo nil)
+        (dirty nil)
+        (point 1)
+        (point-calls 0)
+        (fast-insert-calls 0))
+    (cl-letf (((symbol-function 'self-insert-command)
+               (lambda (&rest _)
+                 (error "self-insert-command should be inlined")))
+              ((symbol-function 'command-execute)
+               (lambda (&rest _)
+                 (error "command-execute should not run")))
+              ((symbol-function 'lookup-key)
+               (lambda (&rest _)
+                 (error "lookup-key should not run for single-key dispatch")))
+              ((symbol-function 'keymapp)
+               (lambda (&rest _)
+                 (error "keymapp should not run for printable direct dispatch")))
+              ((symbol-function 'nelisp-ec-point)
+               (lambda ()
+                 (setq point-calls (1+ point-calls))
+                 point))
+              ((symbol-function 'nelisp-ec-insert-char-code-fast)
+               (lambda (ch)
+                 (setq fast-insert-calls (1+ fast-insert-calls)
+                       inserted (string ch)
+                       point (1+ point))
+                 point))
+              ((symbol-function 'nelisp-ec-insert)
+               (lambda (s)
+                 (error "nelisp-ec-insert should not run, got %S" s)))
+              ((symbol-function 'emacs-undo-record-insert)
+               (lambda (beg end)
+                 (setq undo (list beg end))))
+              ((symbol-function 'emacs-font-lock-mark-dirty-region)
+               (lambda (beg end)
+                 (setq dirty (list beg end)))))
+      (define-key nemacs-main--global-keymap (vector ?a)
+                  'self-insert-command)
+      (nemacs-main--dispatch-key-event
+       (list :type 'key :name ?a :modifiers nil))
+      (should (equal inserted "a"))
+      (should (equal undo '(1 2)))
+      (should (equal dirty '(1 2)))
+      (should (eq nemacs-main--repaint-hint
+                  nemacs-main--insert-repaint-hint))
+      (should (nemacs-main--insert-repaint-hint-p nemacs-main--repaint-hint))
+      (should (equal (append nemacs-main--repaint-hint nil)
+                     (list 'insert-char ?a 1 2)))
+      (should (= point-calls 0))
+      (should (= fast-insert-calls 1)))))
+
+(ert-deftest nemacs-main-test/dispatch-key-event-accepts-integer-fast-path ()
+  "Plain integer key events avoid plist decoding before self-insert."
+  (let ((nemacs-main--global-keymap (make-sparse-keymap))
+        (nemacs-main--prefix-keys [])
+        (nemacs-main--repaint-hint nil)
+        (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1))
+        (point 1)
+        (inserted nil))
+    (cl-letf (((symbol-function 'nelisp-ec-insert-char-code-fast)
+               (lambda (ch)
+                 (setq inserted ch
+                       point (1+ point))
+                 point))
+              ((symbol-function 'nelisp-ec-point)
+               (lambda () point))
+              ((symbol-function 'emacs-undo-record-insert)
+               (lambda (&rest _) nil))
+              ((symbol-function 'emacs-font-lock-mark-dirty-region)
+               (lambda (&rest _) nil)))
+      (define-key nemacs-main--global-keymap (vector ?a)
+                  'self-insert-command)
+      (nemacs-main--rebuild-single-key-cache nemacs-main--global-keymap)
+      (nemacs-main--dispatch-key-event ?a)
+      (should (= inserted ?a))
+      (should (equal (append nemacs-main--repaint-hint nil)
+                     (list 'insert-char ?a 1 2))))))
+
+(ert-deftest nemacs-main-test/drain-once-consumes-printable-byte-fast-path ()
+  "The event loop can consume printable stdin bytes without key plists."
+  (let* ((bytes (list ?a))
+         (emacs-tui-event-input-fn (lambda () (pop bytes)))
+         (h (emacs-tui-event-init))
+         (nemacs-main--event-handle h)
+         (nemacs-main--backend nil)
+         (nemacs-main--global-keymap (make-sparse-keymap))
+         (nemacs-main--prefix-keys [])
+         (nemacs-main--repaint-hint nil)
+         (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1))
+         (point 1)
+         (inserted nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'emacs-tui-event-poll)
+                   (lambda (&rest _)
+                     (error "plist poll should not run for printable byte")))
+                  ((symbol-function 'nelisp-ec-insert-char-code-fast)
+                   (lambda (ch)
+                     (setq inserted ch
+                           point (1+ point))
+                     point))
+                  ((symbol-function 'nelisp-ec-point)
+                   (lambda () point))
+                  ((symbol-function 'emacs-undo-record-insert)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'emacs-font-lock-mark-dirty-region)
+                   (lambda (&rest _) nil)))
+          (define-key nemacs-main--global-keymap (vector ?a)
+                      'self-insert-command)
+          (nemacs-main--rebuild-single-key-cache nemacs-main--global-keymap)
+          (should (nemacs-main--drain-once 0))
+          (should (= inserted ?a))
+          (should-not bytes)
+          (should (equal (append nemacs-main--repaint-hint nil)
+                         (list 'insert-char ?a 1 2))))
+      (emacs-tui-event-shutdown h))))
 
 (ert-deftest nemacs-main-test/track-x-fullscreen-helpers-defined ()
   "Track X (2026-05-04): alt-screen entry / exit helpers exist."

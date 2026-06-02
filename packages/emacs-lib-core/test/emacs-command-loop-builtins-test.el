@@ -31,7 +31,15 @@
   (dolist (sym '(read-event read-char read-command
                  this-command-keys this-command-keys-vector
                  this-single-command-keys this-single-command-raw-keys
-                 clear-this-command-keys))
+                 clear-this-command-keys read-key-sequence
+                 read-key-sequence-vector call-interactively
+                 funcall-interactively command-execute command-loop-1
+                 top-level recursive-edit recursion-depth
+                 execute-extended-command universal-argument
+                 digit-argument negative-argument keyboard-quit
+                 exit-recursive-edit install-sigint-handler
+                 _sigint-handler-installed-p set-quit-flag
+                 clear-quit-flag quit-flag-pending-p))
     (should (fboundp sym)))
   (dolist (sym '(this-command last-command real-this-command
                  last-command-event last-input-event last-nonmenu-event
@@ -156,6 +164,19 @@
     ;; Flag still latched; B.6 will clear it explicitly.
     (should (eq t emacs-command-loop--quit-flag))))
 
+(ert-deftest emacs-command-loop-builtins-test/quit-flag-compat-roundtrip ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let ((quit-flag nil)
+          (emacs-command-loop--quit-flag nil))
+      (should (eq t (install-sigint-handler)))
+      (should (_sigint-handler-installed-p))
+      (clear-quit-flag)
+      (should-not (quit-flag-pending-p))
+      (should (eq t (set-quit-flag)))
+      (should (quit-flag-pending-p))
+      (should-not (clear-quit-flag))
+      (should-not (quit-flag-pending-p)))))
+
 ;;;; J. reset wipes everything
 
 (ert-deftest emacs-command-loop-builtins-test/reset-wipes-state ()
@@ -188,10 +209,40 @@
 
 (ert-deftest emacs-command-loop-builtins-test/require-is-idempotent ()
   (let ((before-read    (symbol-function 'read-event))
-        (before-keys-fn (symbol-function 'this-command-keys)))
+        (before-keys-fn (symbol-function 'this-command-keys))
+        (before-call    (symbol-function 'call-interactively))
+        (before-execute (symbol-function 'command-execute)))
     (require 'emacs-command-loop-builtins)
     (should (eq before-read    (symbol-function 'read-event)))
-    (should (eq before-keys-fn (symbol-function 'this-command-keys)))))
+    (should (eq before-keys-fn (symbol-function 'this-command-keys)))
+    (should (eq before-call    (symbol-function 'call-interactively)))
+    (should (eq before-execute (symbol-function 'command-execute)))))
+
+(ert-deftest emacs-command-loop-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-command-loop-builtins--install-function-p))
+  (should-not (emacs-command-loop-builtins--install-function-p 'read-event))
+  (let* ((file (locate-library "emacs-command-loop-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(read-event read-char read-command this-command-keys
+                     this-command-keys-vector this-single-command-keys
+                     this-single-command-raw-keys clear-this-command-keys
+                     read-key-sequence read-key-sequence-vector
+                     call-interactively funcall-interactively command-execute
+                     command-loop-1 top-level recursive-edit recursion-depth
+                     execute-extended-command universal-argument digit-argument
+                     negative-argument keyboard-quit exit-recursive-edit
+                     install-sigint-handler _sigint-handler-installed-p
+                     set-quit-flag clear-quit-flag quit-flag-pending-p))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-command-loop-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 ;;;; M. Phase B.2 — read-key-sequence
 

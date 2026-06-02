@@ -22,8 +22,9 @@
 ;; matches the same "L2 derivation on top of nelisp-ec-*" pattern used
 ;; by `emacs-buffer-builtins.el' (Phase 9) for its non-bridge forms.
 ;;
-;; Each definition is gated on `unless (fboundp ...)' so loading
-;; inside a host Emacs is a cheap no-op (= host's C builtins win).
+;; Function definitions use a host-aware install gate: host Emacs keeps
+;; its C builtins, while standalone NeLisp overwrites any bootstrap
+;; stubs with these line/column derivations.
 ;;
 ;; Phase J also deletes the no-op stubs that this file supersedes
 ;; from `emacs-stub.el' (= the same load-order shadowing risk that
@@ -36,6 +37,11 @@
 (require 'emacs-buffer-builtins)
 
 ;;;; --- private helpers --------------------------------------------------
+
+(defun emacs-line-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
 
 (defun emacs-line--bol-pos (&optional pos)
   "Return position of beginning of line containing POS (default = point).
@@ -73,19 +79,19 @@ point-max).  Does not move point."
 
 ;;;; --- bobp / eobp ------------------------------------------------------
 
-(unless (fboundp 'bobp)
+(when (emacs-line-builtins--install-function-p 'bobp)
   (defun bobp ()
     "Phase J polyfill: t when point is at point-min."
     (= (nelisp-ec-point) (nelisp-ec-point-min))))
 
-(unless (fboundp 'eobp)
+(when (emacs-line-builtins--install-function-p 'eobp)
   (defun eobp ()
     "Phase J polyfill: t when point is at point-max."
     (= (nelisp-ec-point) (nelisp-ec-point-max))))
 
 ;;;; --- eolp / bolp ------------------------------------------------------
 
-(unless (fboundp 'bolp)
+(when (emacs-line-builtins--install-function-p 'bolp)
   (defun bolp ()
     "Phase J polyfill: t when point is at start of a line.
 True at point-min (= no preceding char) or when the previous char is \\n."
@@ -94,7 +100,7 @@ True at point-min (= no preceding char) or when the previous char is \\n."
                (s (nelisp-ec-buffer-substring (- pt 1) pt)))
           (and (> (length s) 0) (eq (aref s 0) ?\n))))))
 
-(unless (fboundp 'eolp)
+(when (emacs-line-builtins--install-function-p 'eolp)
   (defun eolp ()
     "Phase J polyfill: t when point is at end of a line.
 True at point-max (= no following char) or when the next char is \\n."
@@ -105,7 +111,7 @@ True at point-max (= no following char) or when the next char is \\n."
 
 ;;;; --- line-beginning-position / line-end-position ---------------------
 
-(unless (fboundp 'line-beginning-position)
+(when (emacs-line-builtins--install-function-p 'line-beginning-position)
   (defun line-beginning-position (&optional n)
     "Phase J polyfill: position of beginning of (current + N - 1)-th line.
 N = 1 (default) = current line; N > 1 = forward; N < 1 = backward.
@@ -117,7 +123,7 @@ Does not move point."
           (forward-line offset)
           (nelisp-ec-point))))))
 
-(unless (fboundp 'line-end-position)
+(when (emacs-line-builtins--install-function-p 'line-end-position)
   (defun line-end-position (&optional n)
     "Phase J polyfill: position of end of (current + N - 1)-th line.
 N = 1 (default) = current line.  Does not move point."
@@ -130,14 +136,14 @@ N = 1 (default) = current line.  Does not move point."
 
 ;;;; --- beginning-of-line / end-of-line ---------------------------------
 
-(unless (fboundp 'beginning-of-line)
+(when (emacs-line-builtins--install-function-p 'beginning-of-line)
   (defun beginning-of-line (&optional n)
     "Phase J polyfill: move point to start of (current + N - 1)-th line.
 Returns the new point.  Bound to C-a."
     (interactive "p")
     (nelisp-ec-goto-char (line-beginning-position n))))
 
-(unless (fboundp 'end-of-line)
+(when (emacs-line-builtins--install-function-p 'end-of-line)
   (defun end-of-line (&optional n)
     "Phase J polyfill: move point to end of (current + N - 1)-th line.
 Returns the new point.  Bound to C-e."
@@ -146,7 +152,7 @@ Returns the new point.  Bound to C-e."
 
 ;;;; --- forward-line ----------------------------------------------------
 
-(unless (fboundp 'forward-line)
+(when (emacs-line-builtins--install-function-p 'forward-line)
   (defun forward-line (&optional n)
     "Phase J polyfill: move point forward N lines (= -N backward).
 N defaults to 1.  Returns the count of lines NOT moved — 0 on full
@@ -190,7 +196,7 @@ counts as 1 line consumed."
 
 ;;;; --- line-number-at-pos ---------------------------------------------
 
-(unless (fboundp 'line-number-at-pos)
+(when (emacs-line-builtins--install-function-p 'line-number-at-pos)
   (defun line-number-at-pos (&optional pos absolute)
     "Phase J polyfill: 1-based line number of POS (default = point).
 ABSOLUTE is accepted for API parity but ignored — the substrate has
@@ -212,7 +218,7 @@ no narrowing-aware absolute-vs-relative distinction."
 
 ;;;; --- next-line / previous-line (Doc 51 Track B) ---------------------------
 
-(unless (fboundp 'next-line)
+(when (emacs-line-builtins--install-function-p 'next-line)
   (defun next-line (&optional n _try-vscroll)
     "Doc 51 Track B (2026-05-04) MVP `next-line'.
 Move point N lines down, preserving the current column where
@@ -227,7 +233,7 @@ defaults to 1; negative N moves up.  Bound to C-n / <down>."
              (target (+ bol col)))
         (nelisp-ec-goto-char (min target eol))))))
 
-(unless (fboundp 'previous-line)
+(when (emacs-line-builtins--install-function-p 'previous-line)
   (defun previous-line (&optional n _try-vscroll)
     "Doc 51 Track B (2026-05-04) MVP `previous-line'.
 Forwarder to `next-line' with negated count.  Bound to C-p / <up>."

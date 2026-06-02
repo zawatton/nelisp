@@ -42,6 +42,7 @@
   (dolist (sym '(expand-file-name file-name-absolute-p
                  file-name-directory file-name-nondirectory
                  file-name-as-directory
+                 file-name-quoted-p file-name-quote file-name-unquote
                  file-exists-p file-readable-p file-directory-p
                  file-attributes directory-files executable-find
                  delete-file rename-file
@@ -51,6 +52,11 @@
                  save-buffer write-file revert-buffer))
     (should (fboundp sym)))
   (should (boundp 'emacs-fileio--buffer-files)))
+
+(ert-deftest emacs-fileio-builtins-test/file-name-quote-roundtrip ()
+  (should (file-name-quoted-p (file-name-quote "/tmp/foo")))
+  (should (equal "/tmp/foo" (file-name-unquote (file-name-quote "/tmp/foo"))))
+  (should (equal "/:/tmp/foo" (file-name-quote "/:/tmp/foo"))))
 
 ;;;; B. Substrate-direct: write + read roundtrip
 

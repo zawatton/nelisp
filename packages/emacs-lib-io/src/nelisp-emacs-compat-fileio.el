@@ -2,8 +2,8 @@
 
 ;; Phase 9d.A4 (T78) — extends `nelisp-emacs-compat' (Phase 9a SHIPPED,
 ;; T39) with the minimal Emacs file I/O surface required by anvil.el +
-;; downstream extension packages.  Sister task = T76 (Rust syscall
-;; extension) that lands `nelisp_syscall_opendir / readdir / mkdir /
+;; downstream extension packages.  Sister task = T76 (standalone syscall
+;; surface) that lands `nelisp_syscall_opendir / readdir / mkdir /
 ;; unlink / rename / access' as the eventual hard backend.
 ;;
 ;; Layer policy: this file follows the same dual-runtime contract as
@@ -11,7 +11,7 @@
 ;; 7.5 plan):
 ;;
 ;;   * Today (T76 in flight)     — host Emacs primitives are used as a
-;;                                  *simulator* for the Rust syscalls.
+;;                                  *simulator* for standalone syscalls.
 ;;                                  The wire shape (= argument layout
 ;;                                  and return value contract) is
 ;;                                  identical to what the FFI will
@@ -109,10 +109,19 @@
 (declare-function nl-syscall-stat-ex   "nelisp-runtime")
 (declare-function nl-syscall-read-file "nelisp-runtime")
 (declare-function nl-syscall-write-file "nelisp-runtime")
+(declare-function nelisp--syscall-stat "nelisp-runtime")
+(declare-function nelisp--syscall-readdir "nelisp-runtime")
+(declare-function nelisp--syscall-read-file "nelisp-runtime")
+(declare-function nl-write-file "nelisp-runtime")
 
 (defun nelisp-ec--syscall-available-p (sym)
-  "Return non-nil if the Rust syscall SYM is wired (T76 SHIPPED)."
+  "Return non-nil if standalone syscall SYM is wired (T76 SHIPPED)."
   (fboundp sym))
+
+(defun nelisp-ec--stat-kind (file)
+  "Return a coarse standalone stat kind for FILE, or nil when unavailable."
+  (and (fboundp 'nelisp--syscall-stat)
+       (nelisp--syscall-stat file)))
 
 ;;; ──────────────────────────────────────────────────────────────────────
 ;;; §1. Pure string-surgery APIs (no host syscall, deterministic)
@@ -129,6 +138,16 @@ helper does NOT touch the filesystem."
        (or (eq (aref name 0) ?/)
            (eq (aref name 0) ?~))))
 
+(defun nelisp-ec--last-index-of-char (char string)
+  "Return the last index of CHAR in STRING, or nil."
+  (let ((i (1- (length string)))
+        found)
+    (while (and (not found) (>= i 0))
+      (when (eq (aref string i) char)
+        (setq found i))
+      (setq i (1- i)))
+    found))
+
 ;;;###autoload
 (defun nelisp-ec-file-name-directory (name)
   "Return the directory part of NAME, or nil if NAME has no slash.
@@ -136,7 +155,7 @@ The trailing slash is preserved (= directory part is itself a
 directory name)."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
-  (let ((idx (cl-position ?/ name :from-end t)))
+  (let ((idx (nelisp-ec--last-index-of-char ?/ name)))
     (and idx (substring name 0 (1+ idx)))))
 
 ;;;###autoload
@@ -145,7 +164,7 @@ directory name)."
 Returns NAME itself if there is no slash."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
-  (let ((idx (cl-position ?/ name :from-end t)))
+  (let ((idx (nelisp-ec--last-index-of-char ?/ name)))
     (if idx (substring name (1+ idx)) name)))
 
 ;;;###autoload
@@ -158,7 +177,7 @@ returns `.bashrc').  No extension → NAME returned unchanged."
     (signal 'wrong-type-argument (list 'stringp name)))
   (let* ((dir (nelisp-ec-file-name-directory name))
          (base (nelisp-ec-file-name-nondirectory name))
-         (idx (cl-position ?. base :from-end t)))
+         (idx (nelisp-ec--last-index-of-char ?. base)))
     (cond
      ;; No `.' in basename, or `.' is the very first character (= hidden file).
      ((or (null idx) (zerop idx)) name)
@@ -239,6 +258,8 @@ invoked beyond reading `default-directory' for the seed CWD."
    ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
     (let ((rc (nl-syscall-stat-ex file)))
       (and rc (>= (or (plist-get rc :rc) 0) 0))))
+   ((fboundp 'nelisp--syscall-stat)
+    (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
    (t (file-exists-p file))))
 
 ;;;###autoload
@@ -249,6 +270,8 @@ invoked beyond reading `default-directory' for the seed CWD."
   (cond
    ((nelisp-ec--syscall-available-p 'nl-syscall-access)
     (zerop (nl-syscall-access file 4))) ;; R_OK = 4
+   ((fboundp 'nelisp--syscall-stat)
+    (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
    (t (file-readable-p file))))
 
 ;;;###autoload
@@ -260,6 +283,8 @@ invoked beyond reading `default-directory' for the seed CWD."
    ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
     (let ((rc (nl-syscall-stat-ex file)))
       (and rc (eq (plist-get rc :type) 'directory))))
+   ((fboundp 'nelisp--syscall-stat)
+    (eq (nelisp-ec--stat-kind file) 'directory))
    (t (file-directory-p file))))
 
 ;;;###autoload
@@ -291,6 +316,11 @@ forwarded to the underlying call.  Returns nil if FILE does not exist
                  nil
                  (plist-get s :inode)
                  (plist-get s :dev)))))
+   ((fboundp 'nelisp--syscall-stat)
+    (let ((kind (nelisp-ec--stat-kind file)))
+      (and (memq kind '(file directory symlink))
+           (list (eq kind 'directory)
+                 1 nil nil nil nil nil 0 nil nil nil nil))))
    (t (file-attributes file id-format))))
 
 ;;; ──────────────────────────────────────────────────────────────────────
@@ -318,6 +348,8 @@ COUNT non-nil → return at most COUNT entries (post-filter, post-sort)."
                      (push next acc)))
                (nl-syscall-closedir dh))
              (nreverse acc)))
+          ((fboundp 'nelisp--syscall-readdir)
+           (cdr (nelisp--syscall-readdir dir)))
           (t
            ;; Simulator: host directory-files but without sort here so
            ;; the NOSORT semantics flow through one code path.
@@ -429,6 +461,8 @@ currently a no-op (Phase 9d MVP is local-only)."
             (when (cond
                    ((nelisp-ec--syscall-available-p 'nl-syscall-access)
                     (zerop (nl-syscall-access cand 1))) ;; X_OK = 1
+                   ((fboundp 'nelisp--syscall-stat)
+                    (eq (nelisp-ec--stat-kind cand) 'file))
                    (t (and (file-exists-p cand)
                            (file-executable-p cand))))
               (setq found cand)
@@ -451,6 +485,14 @@ Returns a unibyte string of raw bytes.  Phase 7.5 will swap this to
   (cond
    ((nelisp-ec--syscall-available-p 'nl-syscall-read-file)
     (nl-syscall-read-file file (or beg 0) end))
+   ((fboundp 'nelisp--syscall-read-file)
+    (let* ((text (nelisp--syscall-read-file file))
+           (from (or beg 0))
+           (to (or end (and (stringp text) (length text)))))
+      (cond
+       ((not (stringp text)) "")
+       ((or beg end) (substring text from to))
+       (t text))))
    (t
     (with-temp-buffer
       (set-buffer-multibyte nil)
@@ -463,6 +505,9 @@ Phase 7.5 will swap this to `nl-syscall-write-file' once T76 lands."
   (cond
    ((nelisp-ec--syscall-available-p 'nl-syscall-write-file)
     (nl-syscall-write-file file unibyte (if append 1 0)))
+   ((and (fboundp 'nl-write-file) (not append))
+    (nl-write-file file unibyte)
+    (length unibyte))
    (t
     (let ((coding-system-for-write 'no-conversion)
           (write-region-annotate-functions nil)
@@ -494,8 +539,13 @@ file size."
   (unless (nelisp-ec-file-exists-p file)
     (signal 'nelisp-ec-file-missing (list file)))
   (let* ((raw (nelisp-ec--read-raw-bytes file beg end))
-         (plist (nelisp-coding-utf8-decode raw))
-         (decoded (plist-get plist :string)))
+         ;; The standalone NeLisp runtime's `nelisp--syscall-read-file'
+         ;; already returns a decoded Lisp string.  Re-decoding that text
+         ;; through the self-hosted byte codec is both redundant and, at
+         ;; current bootstrap speed, too slow for ordinary find-file.
+         (decoded (if (fboundp 'nelisp--syscall-read-file)
+                      raw
+                    (plist-get (nelisp-coding-utf8-decode raw) :string))))
     (when replace
       (nelisp-ec-erase-buffer))
     (nelisp-ec-insert decoded)

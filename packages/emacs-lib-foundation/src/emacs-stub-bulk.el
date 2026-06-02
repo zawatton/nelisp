@@ -20,8 +20,8 @@ Forwarder to `forward-char' with negated count."
 ;; current-prefix-arg moved to emacs-command-loop-builtins (Phase B.3).
 
 (unless (fboundp 'decode-coding-string)
-  ;; NeLisp の Sexp::Str = Rust String = UTF-8 内部表現なので、UTF-8
-  ;; の encode/decode は identity で十分。他の coding system は未対応
+  ;; NeLisp strings are UTF-8 internally, so UTF-8 encode/decode is
+  ;; identity. 他の coding system は未対応
   ;; (= encoded-coding-system 引数は無視)。
   (defun decode-coding-string (string _coding-system &optional _nocopy &rest _)
     (if (stringp string) string "")))
@@ -231,7 +231,8 @@ Forwarder to `forward-char' with negated count."
     y-or-n-p-with-timeout zlib-available-p)))
   (dolist (--s-- --stub-defuns--)
     (unless (fboundp --s--)
-      (fset --s-- (lambda (&rest _) nil)))))
+      (fset --s-- (lambda (&rest _) nil))
+      (put --s-- 'emacs-stub-bulk t))))
 
 (let ((--stub-defmacros--
        '(add-function bound-and-true-p cl--define-built-in-type define-inline define-minor-mode define-obsolete-function-alias define-obsolete-variable-alias defsubst
@@ -240,7 +241,8 @@ Forwarder to `forward-char' with negated count."
     with-temp-buffer-window)))
   (dolist (--s-- --stub-defmacros--)
     (unless (fboundp --s--)
-      (fset --s-- (cons 'macro (lambda (&rest _) nil))))))
+      (fset --s-- (cons 'macro (lambda (&rest _) nil)))
+      (put --s-- 'emacs-stub-bulk t))))
 
 (let ((--stub-defvars--
        '(after-change-functions after-load-alist before-change-functions buffer-invisibility-spec buffer-list-update-hook buffer-read-only case-fold-search cl--generic-derived-generalizer
@@ -262,6 +264,32 @@ Forwarder to `forward-char' with negated count."
   (dolist (--s-- --stub-defvars--)
     (unless (boundp --s--)
       (set --s-- nil))))
+
+(unless (fboundp 'define-abbrev-table)
+  (defun define-abbrev-table (symbol definitions &optional _docstring &rest _props)
+    "Standalone load-time stub for Emacs abbrev tables."
+    (set symbol definitions)
+    symbol))
+
+(unless (fboundp 'make-syntax-table)
+  (defun make-syntax-table (&optional _table)
+    "Standalone load-time stub for syntax tables."
+    (make-vector 256 nil)))
+
+(unless (fboundp 'modify-syntax-entry)
+  (defun modify-syntax-entry (_char _syntax &optional _table)
+    "Standalone load-time stub for syntax table mutation."
+    nil))
+
+(unless (fboundp 'let-when-compile)
+  (defmacro let-when-compile (bindings &rest body)
+    "Standalone load-time stub for compile-time lexical binding."
+    (cons 'let (cons bindings body))))
+
+(unless (fboundp 'defvar-keymap)
+  (defmacro defvar-keymap (name &rest _args)
+    "Standalone load-time stub for keymap variables."
+    (list 'defvar name (list 'make-sparse-keymap))))
 
 (provide 'emacs-stub-bulk)
 ;;; emacs-stub-bulk.el ends here

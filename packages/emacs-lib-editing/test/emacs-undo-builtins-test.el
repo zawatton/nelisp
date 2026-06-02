@@ -56,6 +56,23 @@ with a clean undo-list alist and kill-ring."
     (let ((lst (emacs-undo-buffer-undo-list)))
       (should (equal '((1 . 4)) lst)))))
 
+(ert-deftest emacs-undo-builtins-test/record-insert-coalesces-adjacent-head ()
+  "Consecutive printable inserts should extend one undo record."
+  (emacs-undo-builtins-test--with-fresh-buffer ""
+    (emacs-undo-record-insert 1 2)
+    (emacs-undo-record-insert 2 3)
+    (emacs-undo-record-insert 3 4)
+    (should (equal '((1 . 4)) (emacs-undo-buffer-undo-list)))))
+
+(ert-deftest emacs-undo-builtins-test/record-insert-does-not-coalesce-across-boundary ()
+  "A boundary keeps adjacent insertions in separate undo groups."
+  (emacs-undo-builtins-test--with-fresh-buffer ""
+    (emacs-undo-record-insert 1 2)
+    (emacs-undo-undo-boundary)
+    (emacs-undo-record-insert 2 3)
+    (should (equal '((2 . 3) nil (1 . 2))
+                   (emacs-undo-buffer-undo-list)))))
+
 ;;;; C. record-delete pushes (STRING . POS)
 
 (ert-deftest emacs-undo-builtins-test/record-delete-pushes-cons ()
@@ -202,11 +219,31 @@ with a clean undo-list alist and kill-ring."
 (ert-deftest emacs-undo-builtins-test/require-is-idempotent ()
   (let ((before-undo  (symbol-function 'undo))
         (before-bnd   (symbol-function 'undo-boundary))
-        (before-prim  (symbol-function 'primitive-undo)))
+        (before-prim  (symbol-function 'primitive-undo))
+        (before-disable (symbol-function 'buffer-disable-undo)))
     (require 'emacs-undo-builtins)
     (should (eq before-undo (symbol-function 'undo)))
     (should (eq before-bnd  (symbol-function 'undo-boundary)))
-    (should (eq before-prim (symbol-function 'primitive-undo)))))
+    (should (eq before-prim (symbol-function 'primitive-undo)))
+    (should (eq before-disable (symbol-function 'buffer-disable-undo)))))
+
+(ert-deftest emacs-undo-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
+  (should (fboundp 'emacs-undo-builtins--install-function-p))
+  (should-not (emacs-undo-builtins--install-function-p 'undo))
+  (let* ((file (locate-library "emacs-undo-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (sym '(undo undo-boundary primitive-undo
+                     buffer-disable-undo buffer-enable-undo))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(when (emacs-undo-builtins--install-function-p '%s)"
+                         sym)
+                 nil t))))))
 
 (provide 'emacs-undo-builtins-test)
 

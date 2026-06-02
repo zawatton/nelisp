@@ -9,10 +9,11 @@
 ;; Doc 51 Track I (2026-05-03) — Layer 2.
 ;;
 ;; Bridges the Emacs unprefixed process API to the substrate in
-;; `emacs-process.el'.  Same `unless (fboundp ...)' / `unless
-;; (boundp ...)' gating as every other Track bridge — under host
-;; Emacs the C builtins win and our substrate's `delegate-p' check
-;; routes through the host binding.
+;; `emacs-process.el'.  Function definitions use a host-aware install
+;; gate: host Emacs keeps its C builtins, while standalone NeLisp
+;; overwrites bootstrap stubs with the pure-Elisp process substrate.
+;; Variables are still gated on `unless (boundp ...)' so host-owned
+;; special variables win.
 ;;
 ;; Bridged today:
 ;;   - call-process / call-process-region
@@ -34,76 +35,81 @@
 
 ;;;; --- function bridges ----------------------------------------------
 
-(unless (fboundp 'call-process)
+(defun emacs-process-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-process-builtins--install-function-p 'call-process)
   (defalias 'call-process #'emacs-process-call-process))
 
-(unless (fboundp 'call-process-region)
+(when (emacs-process-builtins--install-function-p 'call-process-region)
   (defalias 'call-process-region #'emacs-process-call-process-region))
 
-(unless (fboundp 'start-process)
+(when (emacs-process-builtins--install-function-p 'start-process)
   (defalias 'start-process #'emacs-process-start-process))
 
-(unless (fboundp 'make-process)
+(when (emacs-process-builtins--install-function-p 'make-process)
   (defalias 'make-process #'emacs-process-make-process))
 
-(unless (fboundp 'processp)
+(when (emacs-process-builtins--install-function-p 'processp)
   (defalias 'processp #'emacs-process-processp))
 
-(unless (fboundp 'process-list)
+(when (emacs-process-builtins--install-function-p 'process-list)
   (defalias 'process-list #'emacs-process-process-list))
 
-(unless (fboundp 'process-status)
+(when (emacs-process-builtins--install-function-p 'process-status)
   (defalias 'process-status #'emacs-process-process-status))
 
-(unless (fboundp 'process-exit-status)
+(when (emacs-process-builtins--install-function-p 'process-exit-status)
   (defalias 'process-exit-status #'emacs-process-process-exit-status))
 
-(unless (fboundp 'process-buffer)
+(when (emacs-process-builtins--install-function-p 'process-buffer)
   (defalias 'process-buffer #'emacs-process-process-buffer))
 
-(unless (fboundp 'process-name)
+(when (emacs-process-builtins--install-function-p 'process-name)
   (defalias 'process-name #'emacs-process-process-name))
 
-(unless (fboundp 'process-command)
+(when (emacs-process-builtins--install-function-p 'process-command)
   (defalias 'process-command #'emacs-process-process-command))
 
-(unless (fboundp 'process-live-p)
+(when (emacs-process-builtins--install-function-p 'process-live-p)
   (defalias 'process-live-p #'emacs-process-process-live-p))
 
-(unless (fboundp 'process-id)
+(when (emacs-process-builtins--install-function-p 'process-id)
   (defalias 'process-id #'emacs-process-process-id))
 
-(unless (fboundp 'process-mark)
+(when (emacs-process-builtins--install-function-p 'process-mark)
   (defalias 'process-mark #'emacs-process-process-mark))
 
-(unless (fboundp 'set-process-filter)
+(when (emacs-process-builtins--install-function-p 'set-process-filter)
   (defalias 'set-process-filter #'emacs-process-set-process-filter))
 
-(unless (fboundp 'set-process-sentinel)
+(when (emacs-process-builtins--install-function-p 'set-process-sentinel)
   (defalias 'set-process-sentinel #'emacs-process-set-process-sentinel))
 
-(unless (fboundp 'accept-process-output)
+(when (emacs-process-builtins--install-function-p 'accept-process-output)
   (defalias 'accept-process-output #'emacs-process-accept-process-output))
 
-(unless (fboundp 'signal-process)
+(when (emacs-process-builtins--install-function-p 'signal-process)
   (defalias 'signal-process #'emacs-process-signal-process))
 
-(unless (fboundp 'kill-process)
+(when (emacs-process-builtins--install-function-p 'kill-process)
   (defalias 'kill-process #'emacs-process-kill-process))
 
-(unless (fboundp 'process-send-string)
+(when (emacs-process-builtins--install-function-p 'process-send-string)
   (defalias 'process-send-string #'emacs-process-process-send-string))
 
-(unless (fboundp 'process-send-eof)
+(when (emacs-process-builtins--install-function-p 'process-send-eof)
   (defalias 'process-send-eof #'emacs-process-process-send-eof))
 
-(unless (fboundp 'delete-process)
+(when (emacs-process-builtins--install-function-p 'delete-process)
   (defalias 'delete-process #'emacs-process-delete-process))
 
-(unless (fboundp 'shell-command)
+(when (emacs-process-builtins--install-function-p 'shell-command)
   (defalias 'shell-command #'emacs-process-shell-command))
 
-(unless (fboundp 'shell-command-to-string)
+(when (emacs-process-builtins--install-function-p 'shell-command-to-string)
   (defalias 'shell-command-to-string
     #'emacs-process-shell-command-to-string))
 

@@ -21,9 +21,10 @@
 ;; `emacs-minibuffer-feed-input' lets tests / future command-loop
 ;; inject deterministic input).
 ;;
-;; Each definition is gated on `unless (fboundp ...)' / `unless
-;; (boundp ...)' so loading inside a host Emacs is a cheap no-op
-;; (= host's C builtins win).
+;; Function definitions use a host-aware install gate: host Emacs keeps
+;; its C builtins, while standalone NeLisp overwrites any bootstrap
+;; stubs with the real minibuffer substrate.  Variables are still gated
+;; on `unless (boundp ...)' so host-owned special variables win.
 ;;
 ;; Bridgeable today (= covered by `emacs-minibuffer.el'):
 ;;
@@ -47,78 +48,83 @@
 
 ;;;; --- core readers ----------------------------------------------------
 
-(unless (fboundp 'read-from-minibuffer)
+(defun emacs-minibuffer-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-minibuffer-builtins--install-function-p 'read-from-minibuffer)
   (defalias 'read-from-minibuffer #'emacs-minibuffer-read-from-minibuffer))
 
-(unless (fboundp 'read-string)
+(when (emacs-minibuffer-builtins--install-function-p 'read-string)
   (defalias 'read-string #'emacs-minibuffer-read-string))
 
-(unless (fboundp 'read-no-blanks-input)
+(when (emacs-minibuffer-builtins--install-function-p 'read-no-blanks-input)
   (defalias 'read-no-blanks-input #'emacs-minibuffer-read-no-blanks-input))
 
-(unless (fboundp 'read-key)
+(when (emacs-minibuffer-builtins--install-function-p 'read-key)
   (defalias 'read-key #'emacs-minibuffer-read-key))
 
 ;;;; --- typed readers ---------------------------------------------------
 
-(unless (fboundp 'read-buffer)
+(when (emacs-minibuffer-builtins--install-function-p 'read-buffer)
   (defalias 'read-buffer #'emacs-minibuffer-read-buffer))
 
-(unless (fboundp 'read-file-name)
+(when (emacs-minibuffer-builtins--install-function-p 'read-file-name)
   (defalias 'read-file-name #'emacs-minibuffer-read-file-name))
 
-(unless (fboundp 'read-directory-name)
+(when (emacs-minibuffer-builtins--install-function-p 'read-directory-name)
   (defalias 'read-directory-name #'emacs-minibuffer-read-directory-name))
 
-(unless (fboundp 'read-passwd)
+(when (emacs-minibuffer-builtins--install-function-p 'read-passwd)
   (defalias 'read-passwd #'emacs-minibuffer-read-passwd))
 
-(unless (fboundp 'read-number)
+(when (emacs-minibuffer-builtins--install-function-p 'read-number)
   (defalias 'read-number #'emacs-minibuffer-read-number))
 
 ;;;; --- confirmation ---------------------------------------------------
 
-(unless (fboundp 'y-or-n-p)
+(when (emacs-minibuffer-builtins--install-function-p 'y-or-n-p)
   (defalias 'y-or-n-p #'emacs-minibuffer-y-or-n-p))
 
-(unless (fboundp 'yes-or-no-p)
+(when (emacs-minibuffer-builtins--install-function-p 'yes-or-no-p)
   (defalias 'yes-or-no-p #'emacs-minibuffer-yes-or-no-p))
 
 ;;;; --- completion -----------------------------------------------------
 
-(unless (fboundp 'completing-read)
+(when (emacs-minibuffer-builtins--install-function-p 'completing-read)
   (defalias 'completing-read #'emacs-minibuffer-completing-read))
 
 ;;;; --- minibuffer state / control --------------------------------------
 
-(unless (fboundp 'minibufferp)
+(when (emacs-minibuffer-builtins--install-function-p 'minibufferp)
   (defalias 'minibufferp #'emacs-minibuffer-minibufferp))
 
-(unless (fboundp 'active-minibuffer-window)
+(when (emacs-minibuffer-builtins--install-function-p 'active-minibuffer-window)
   (defalias 'active-minibuffer-window #'emacs-minibuffer-active-minibuffer-window))
 
-(unless (fboundp 'minibuffer-window)
+(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-window)
   (defalias 'minibuffer-window #'emacs-minibuffer-minibuffer-window))
 
-(unless (fboundp 'minibuffer-prompt)
+(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt)
   (defalias 'minibuffer-prompt #'emacs-minibuffer-minibuffer-prompt))
 
-(unless (fboundp 'minibuffer-contents)
+(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-contents)
   (defalias 'minibuffer-contents #'emacs-minibuffer-minibuffer-contents))
 
-(unless (fboundp 'minibuffer-prompt-end)
+(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt-end)
   (defalias 'minibuffer-prompt-end #'emacs-minibuffer-minibuffer-prompt-end))
 
-(unless (fboundp 'minibuffer-prompt-width)
+(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt-width)
   (defalias 'minibuffer-prompt-width #'emacs-minibuffer-minibuffer-prompt-width))
 
-(unless (fboundp 'exit-minibuffer)
+(when (emacs-minibuffer-builtins--install-function-p 'exit-minibuffer)
   (defalias 'exit-minibuffer #'emacs-minibuffer-exit-minibuffer))
 
-(unless (fboundp 'abort-recursive-edit)
+(when (emacs-minibuffer-builtins--install-function-p 'abort-recursive-edit)
   (defalias 'abort-recursive-edit #'emacs-minibuffer-abort-recursive-edit))
 
-(unless (fboundp 'minibuffer-message)
+(when (emacs-minibuffer-builtins--install-function-p 'minibuffer-message)
   (defalias 'minibuffer-message #'emacs-minibuffer-minibuffer-message))
 
 ;;;; --- history defvars ------------------------------------------------

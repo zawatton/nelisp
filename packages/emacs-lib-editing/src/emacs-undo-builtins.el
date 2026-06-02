@@ -9,10 +9,11 @@
 ;; Doc 51 Track E.2 (2026-05-03) — Layer 2.
 ;;
 ;; Bridges the Emacs C-core / `simple.el' undo surface to the
-;; substrate in `emacs-undo.el'.  Same gating pattern as Track B / C
-;; / D / E / F / J / 11.C'': `unless (fboundp ...)' / `unless
-;; (boundp ...)' so loading inside a host Emacs is a cheap no-op
-;; and the host's C builtins keep ownership of the unprefixed names.
+;; substrate in `emacs-undo.el'.  Function definitions use a
+;; host-aware install gate: host Emacs keeps its C/simple.el
+;; definitions, while standalone NeLisp overwrites bootstrap stubs
+;; with the real undo substrate.  Variables are still gated on
+;; `unless (boundp ...)' so host-owned special variables win.
 ;;
 ;; Bridged today:
 ;;
@@ -29,16 +30,21 @@
 
 (require 'emacs-undo)
 
-(unless (fboundp 'undo)
+(defun emacs-undo-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-undo-builtins--install-function-p 'undo)
   (defalias 'undo #'emacs-undo-undo))
 
-(unless (fboundp 'undo-boundary)
+(when (emacs-undo-builtins--install-function-p 'undo-boundary)
   (defalias 'undo-boundary #'emacs-undo-undo-boundary))
 
-(unless (fboundp 'primitive-undo)
+(when (emacs-undo-builtins--install-function-p 'primitive-undo)
   (defalias 'primitive-undo #'emacs-undo-primitive-undo))
 
-(unless (fboundp 'buffer-disable-undo)
+(when (emacs-undo-builtins--install-function-p 'buffer-disable-undo)
   (defun buffer-disable-undo (&optional buffer)
     "Track E.2 bridge: disable undo recording for BUFFER (= current).
 MVP: ignores BUFFER and operates on the substrate's notion of
@@ -47,7 +53,7 @@ MVP: ignores BUFFER and operates on the substrate's notion of
     (emacs-undo-set-buffer-undo-list t)
     nil))
 
-(unless (fboundp 'buffer-enable-undo)
+(when (emacs-undo-builtins--install-function-p 'buffer-enable-undo)
   (defun buffer-enable-undo (&optional buffer)
     "Track E.2 bridge: re-enable undo recording for BUFFER (= current).
 Mirror of `buffer-disable-undo' — sets the per-buffer undo list

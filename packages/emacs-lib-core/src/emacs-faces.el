@@ -8,11 +8,10 @@
 
 ;; Doc 51 Track F (2026-05-03) — Layer 2.
 ;;
-;; Substrate for the user-facing face API.  Sits on top of
-;; `emacs-redisplay's existing face registry
-;; (`emacs-redisplay--face-registry') + the realization helpers
-;; (`emacs-redisplay-defface' / `emacs-redisplay-face-attributes' /
-;; `emacs-redisplay-realize-face').
+;; Substrate for the user-facing face API.  Shares the face registry
+;; variable with `emacs-redisplay', but does not require redisplay at
+;; load time: batch/bootstrap paths need face definitions without paying
+;; the full renderer load cost.
 ;;
 ;; The data model:
 ;; - Each face is a symbol whose attribute plist lives in
@@ -38,7 +37,17 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'emacs-redisplay)
+
+(defvar emacs-redisplay--face-registry (make-hash-table :test 'eq)
+  "Shared face registry used by `emacs-faces' and `emacs-redisplay'.")
+
+(defvar emacs-redisplay--face-cache (make-hash-table :test 'equal)
+  "Shared realized-face cache used when `emacs-redisplay' is loaded.")
+
+(unless (fboundp 'emacs-redisplay-face-cache-clear)
+  (defun emacs-redisplay-face-cache-clear ()
+    "Clear the shared face realization cache."
+    (clrhash emacs-redisplay--face-cache)))
 
 (define-error 'emacs-faces-error "Face error")
 
@@ -133,6 +142,17 @@ lookups via `emacs-redisplay-realize-face' see the new state."
 
 ;;;; --- defface macro --------------------------------------------------
 
+(defun emacs-faces--entry-attrs (entry)
+  "Return the attribute plist stored in a face spec ENTRY.
+Emacs accepts both `(t :foreground \"red\")' and
+`(t (:foreground \"red\"))' shapes in `defface' specs.  The
+substrate stores the normalized flat plist."
+  (let ((attrs (cdr entry)))
+    (if (and (= (length attrs) 1)
+             (listp (car attrs)))
+        (car attrs)
+      attrs)))
+
 (defun emacs-faces--default-attrs-from-spec (spec)
   "Extract a flat attribute plist from a SPEC value.
 
@@ -159,7 +179,8 @@ Returns a flat plist or nil."
          ((eq (car e) 'default) (setq default-entry e))
          ((eq (car e) t)        (setq t-entry e))
          ((null first-entry)    (setq first-entry e)))))
-    (cdr (or default-entry t-entry first-entry))))
+    (let ((entry (or default-entry t-entry first-entry)))
+      (and entry (emacs-faces--entry-attrs entry)))))
 
 (defmacro emacs-faces-defface (name spec _doc &rest _opts)
   "Register face NAME with the SPEC's catch-all attributes.

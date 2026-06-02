@@ -8,8 +8,10 @@
 ;; assert the nelisp driver bootstraps cleanly without any host
 ;; Emacs runtime in the loop.
 ;;
-;; All tests skip gracefully when the nelisp binary is not present
-;; (= contributors who haven't run `make nelisp' yet).
+;; These tests are intentionally opt-in.  NeLisp pure-Elisp cold
+;; load is slow enough that the default host ERT suite should not run
+;; this subprocess gate accidentally; use `make test-nelisp-ert' or set
+;; NEMACS_RUN_NELISP_BOOTSTRAP=1.
 
 ;;; Code:
 
@@ -26,47 +28,105 @@
   (expand-file-name "bin/nemacs" nemacs-bootstrap-nelisp-test--repo-root)
   "Path to bin/nemacs from the test file.")
 
-(defun nemacs-bootstrap-nelisp-test--nelisp-home ()
-  "Resolve the directory holding the nelisp Rust runtime.
+(defun nemacs-bootstrap-nelisp-test--nelisp-candidate ()
+  "Resolve a NeLisp standalone reader candidate.
 
 Honours `NELISP_HOME' first (= contributor explicitly opted in to
 running the subprocess gate), then the vendored copy populated by
-`make nelisp'.  The legacy =~/Notes/dev/nelisp/= fallback used to
-be probed too, but it was matching cross-repo binaries whose
-bootstrap was incompatible with this branch's loadup, hanging
-=make test= for several minutes per CI run; ship-gate-grade soak
-should be opt-in via NELISP_HOME, not driven by an
-implicit-path heuristic.  Returns nil when no candidate has a
-built `target/release/nelisp' binary."
+`make nelisp'.  Sibling and legacy checkouts are deliberately not
+auto-probed here: the nelisp-driver bootstrap is a slow cold-load
+gate and should be entered explicitly via NELISP_HOME.  Returns nil
+when no candidate has a built `target/nelisp-standalone-reader'
+binary."
   (let* ((vendor (expand-file-name "vendor/nelisp"
                                    nemacs-bootstrap-nelisp-test--repo-root))
          (env (getenv "NELISP_HOME")))
     (cl-find-if
      (lambda (d)
-       (and d (file-executable-p (expand-file-name "target/release/nelisp" d))))
+       (and d
+            (file-executable-p
+             (expand-file-name "target/nelisp-standalone-reader" d))))
      (list env vendor))))
 
 (defmacro nemacs-bootstrap-nelisp-test--skip-unless-binary (&rest body)
   "Evaluate BODY only when the nelisp binary + bin/nemacs are present."
   (declare (indent 0) (debug t))
-  `(let ((home (nemacs-bootstrap-nelisp-test--nelisp-home)))
+  `(let ((home (nemacs-bootstrap-nelisp-test--nelisp-candidate)))
      (cond
+      ((not (getenv "NEMACS_RUN_NELISP_BOOTSTRAP"))
+       (ert-skip "set NEMACS_RUN_NELISP_BOOTSTRAP=1 or run `make test-nelisp-ert'"))
       ((not (file-executable-p nemacs-bootstrap-nelisp-test--bin))
        (ert-skip "bin/nemacs not executable"))
       ((not home)
-       (ert-skip "no nelisp binary found (run `make nelisp')"))
+       (ert-skip "no standalone reader found (set NELISP_HOME or run `make nelisp')"))
       (t
-       (let ((process-environment
-              (cons (format "NELISP_HOME=%s" home) process-environment)))
+       (let* ((reader (expand-file-name "target/nelisp-standalone-reader" home))
+              (process-environment
+               (append (list (format "NELISP_HOME=%s" home)
+                             (format "NEMACS_NELISP=%s" reader))
+                       process-environment)))
          ,@body)))))
 
+(cl-defstruct (nemacs-bootstrap-nelisp-test--result
+               (:constructor nemacs-bootstrap-nelisp-test--make-result))
+  status
+  stdout
+  stderr
+  args)
+
+(defun nemacs-bootstrap-nelisp-test--format-result (result)
+  "Return a diagnostic string for subprocess RESULT."
+  (format "bin/nemacs --driver=nelisp failed
+status: %S
+args: %S
+stdout:
+%s
+stderr:
+%s"
+          (nemacs-bootstrap-nelisp-test--result-status result)
+          (nemacs-bootstrap-nelisp-test--result-args result)
+          (nemacs-bootstrap-nelisp-test--result-stdout result)
+          (nemacs-bootstrap-nelisp-test--result-stderr result)))
+
+(defun nemacs-bootstrap-nelisp-test--run-result (&rest extra-args)
+  "Invoke `bin/nemacs --driver=nelisp' with EXTRA-ARGS.
+Return a `nemacs-bootstrap-nelisp-test--result' carrying exit status,
+stdout, stderr, and the argument vector."
+  (let ((stderr-file (make-temp-file "nemacs-bootstrap-nelisp-stderr-"))
+        (status nil)
+        (stdout nil)
+        (stderr nil))
+    (unwind-protect
+        (progn
+          (setq stdout
+                (with-temp-buffer
+                  (setq status
+                        (apply #'call-process
+                               nemacs-bootstrap-nelisp-test--bin
+                               nil (list t stderr-file) nil
+                               "--driver=nelisp" extra-args))
+                  (buffer-string)))
+          (setq stderr
+                (with-temp-buffer
+                  (when (file-readable-p stderr-file)
+                    (insert-file-contents stderr-file))
+                  (buffer-string)))
+          (nemacs-bootstrap-nelisp-test--make-result
+           :status status
+           :stdout stdout
+           :stderr stderr
+           :args (cons "--driver=nelisp" extra-args)))
+      (when (file-exists-p stderr-file)
+        (delete-file stderr-file)))))
+
 (defun nemacs-bootstrap-nelisp-test--run (&rest extra-args)
-  "Invoke `bin/nemacs --driver=nelisp' with EXTRA-ARGS, return stdout string."
-  (with-output-to-string
-    (with-current-buffer standard-output
-      (apply #'call-process
-             nemacs-bootstrap-nelisp-test--bin nil t nil
-             "--driver=nelisp" extra-args))))
+  "Invoke `bin/nemacs --driver=nelisp' with EXTRA-ARGS.
+Return stdout when the subprocess exits cleanly; otherwise fail the
+current ERT test with status/stdout/stderr diagnostics."
+  (let ((result (apply #'nemacs-bootstrap-nelisp-test--run-result extra-args)))
+    (unless (equal 0 (nemacs-bootstrap-nelisp-test--result-status result))
+      (ert-fail (nemacs-bootstrap-nelisp-test--format-result result)))
+    (nemacs-bootstrap-nelisp-test--result-stdout result)))
 
 ;;;; A. surface
 
@@ -89,9 +149,10 @@ built `target/release/nelisp' binary."
      (should (string-match-p "ok" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/loadup-feature-count ()
-  "Loadup under nelisp driver should pull in at least 60 features
-(= the substrate baseline; below that means the dependency chain
-broke and a require failed silently)."
+  "Batch loadup under nelisp driver should pull in the core feature set.
+Optional font-lock/redisplay/TUI modules load later when an interactive
+frame is realised; below the core baseline means a require failed
+silently."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
    (let* ((out (nemacs-bootstrap-nelisp-test--run
                 "--batch" "--no-banner"
@@ -99,7 +160,7 @@ broke and a require failed silently)."
                 "(princ (format \"FEATURES=%d\\n\" (length features)))"))
           (m (string-match "FEATURES=\\([0-9]+\\)" out)))
      (should m)
-     (should (>= (string-to-number (match-string 1 out)) 60)))))
+     (should (>= (string-to-number (match-string 1 out)) 45)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/core-features-present ()
   "Every nemacs-defined module that `nemacs-loadup' transitively requires
@@ -124,7 +185,10 @@ list below catches it."
                     ;; Layer-1 substrate
                     "nelisp-emacs-compat" "nelisp-emacs-compat-fileio"
                     "nelisp-text-buffer" "nelisp-regex"
-                    "nelisp-coding" "nelisp-coding-jis-tables"
+                    ;; `nelisp-coding-jis-tables' is intentionally
+                    ;; lazy-loaded by the Japanese codecs; UTF-8 file I/O
+                    ;; should not pay the 20K-line table cost at boot.
+                    "nelisp-coding"
                     ;; Layer-2 elisp builtin shims
                     "emacs-fns" "emacs-eval" "emacs-list"
                     "emacs-hash" "emacs-symbol" "emacs-vars"
@@ -141,16 +205,10 @@ list below catches it."
                     "emacs-undo" "emacs-undo-builtins"
                     "emacs-mode" "emacs-mode-builtins"
                     "emacs-faces" "emacs-faces-builtins"
-                    "emacs-font-lock" "emacs-font-lock-builtins"
-                    "emacs-syntax-table"
                     "emacs-edit-builtins" "emacs-line-builtins"
                     "emacs-search-builtins" "emacs-fileio-builtins"
                     "emacs-process" "emacs-process-builtins"
                     "emacs-command-loop" "emacs-command-loop-builtins"
-                    "emacs-elisp-mode"
-                    ;; Layer-3 TUI backend (= bootstrap close-gate path)
-                    "emacs-redisplay" "emacs-redisplay-builtins"
-                    "emacs-tui-backend" "emacs-tui-event"
                     "emacs-standalone"))
        (should (member sym loaded))))))
 
@@ -179,8 +237,8 @@ without a host Emacs."
   "The unprefixed fileio commands must resolve to substrate primitives
 under the nelisp driver.  This is the *static* half of the file-I/O
 gate — the round-trip half (= read+write actual bytes) requires the
-NeLisp Doc 33 §3.1 `nl-syscall-read-file' / `nl-syscall-write-file'
-externs, which are tracked by a separate skip below."
+NeLisp v2 file syscall bridge (`nl-syscall-read-file' /
+`nl-syscall-write-file'), which is tracked by a separate skip below."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
    (let ((out (nemacs-bootstrap-nelisp-test--run
                "--batch" "--no-banner"
@@ -198,8 +256,8 @@ externs, which are tracked by a separate skip below."
 
 (ert-deftest nemacs-bootstrap-nelisp-test/file-write-read-round-trip ()
   "Phase 5 close-gate: full write+read round-trip via the substrate.
-Blocks on NeLisp Doc 33 §3.1 (= `nl-syscall-write-file' /
-`nl-syscall-read-file' wired into the Rust runtime).  When the
+Blocks on NeLisp's v2 file syscall bridge (= `nl-syscall-write-file' /
+`nl-syscall-read-file' wired into the CLI runtime).  When the
 syscalls are missing this test ert-skip's so the rest of the
 suite stays clean — this is a real follow-up, not a regression."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary

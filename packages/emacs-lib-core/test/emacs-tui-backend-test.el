@@ -393,6 +393,19 @@ positioned at the run start (1-based)."
     (let ((pos (emacs-tui-backend-cursor-show h f 999 999)))
       (should (equal pos (cons 23 79))))))
 
+(ert-deftest emacs-tui-backend-test-cursor-show-if-changed-skips-duplicate ()
+  "cursor-show-if-changed avoids duplicate CUP output for stable position."
+  (emacs-tui-backend-test--with-capture
+    (let* ((h (emacs-tui-backend-init))
+           (f (emacs-tui-backend-frame-create h "x")))
+      (emacs-tui-backend-cursor-show-if-changed h f 3 7)
+      (should (string-match-p (regexp-quote "\e[4;8H")
+                              emacs-tui-backend-test--captured))
+      (setq emacs-tui-backend-test--captured "")
+      (should (equal (cons 3 7)
+                     (emacs-tui-backend-cursor-show-if-changed h f 3 7)))
+      (should (equal "" emacs-tui-backend-test--captured)))))
+
 (ert-deftest emacs-tui-backend-test-cursor-hide-emits-hide ()
   "cursor-hide emits the DECTCEM hide escape and clears stored pos."
   (emacs-tui-backend-test--with-capture

@@ -19,8 +19,9 @@
 ;; The `nelisp-ec-*' substrate already implements a working buffer-side
 ;; search, so we just wire the unprefixed names to it.
 ;;
-;; Each definition is gated on `unless (fboundp ...)' so loading inside
-;; a host Emacs is a cheap no-op (= host's C builtins win).
+;; Function definitions use a host-aware install gate: host Emacs keeps
+;; its C builtins, while standalone NeLisp overwrites any bootstrap
+;; stubs with the real search/match substrate.
 ;;
 ;; Bridgeable today (substrate present in `nelisp-emacs-compat.el'):
 ;;
@@ -64,6 +65,11 @@
 (require 'nelisp-emacs-compat)
 (require 'nelisp-regex)
 
+(defun emacs-search-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
 ;;;; --- string-match family (Phase 4 B, 2026-05-06) ---------------------
 
 ;; Bridge `nelisp-rx-string-match' (= plist return) to the standard
@@ -72,7 +78,7 @@
 ;; MELPA packages silently no-op under the nelisp driver because the
 ;; pre-existing `emacs-stub.el' polyfill returns nil unconditionally.
 
-(unless (fboundp 'string-match)
+(when (emacs-search-builtins--install-function-p 'string-match)
   (defun string-match (regexp string &optional start inhibit-modify)
     "Phase 4 B polyfill: substrate-backed `string-match'.
 Calls `nelisp-rx-string-match' for the actual scan.  On match,
@@ -91,13 +97,13 @@ contract that `string-match-p' relies on)."
           (nelisp-ec--rx-match-data-to-ec 0 m))
         (plist-get m :start))))))
 
-(unless (fboundp 'string-match-p)
+(when (emacs-search-builtins--install-function-p 'string-match-p)
   (defun string-match-p (regexp string &optional start)
     "Phase 4 B polyfill: predicate variant of `string-match'.
 Returns t / nil and does NOT bump the global match-data registry."
     (and (string-match regexp string start t) t)))
 
-(unless (fboundp 'replace-match)
+(when (emacs-search-builtins--install-function-p 'replace-match)
   (defun replace-match (newtext &optional fixedcase literal string subexp)
     "Phase 4 B polyfill: substrate-backed `replace-match'.
 After a successful `string-match', returns STRING with the matched
@@ -127,7 +133,7 @@ FIXEDCASE / LITERAL / SUBEXP are accepted for API parity:
               (list "replace-match without STRING needs a buffer-side"
                     "mutator that the substrate has not wired yet"))))))
 
-(unless (fboundp 'replace-regexp-in-string)
+(when (emacs-search-builtins--install-function-p 'replace-regexp-in-string)
   (defun replace-regexp-in-string
       (regexp rep string &optional fixedcase literal subexp start)
     "Phase 4 B polyfill: substrate-backed `replace-regexp-in-string'.
@@ -185,7 +191,7 @@ lands with Phase 9c backref groups."
 
 ;;;; --- regex / string-side search ---------------------------------------
 
-(unless (fboundp 're-search-forward)
+(when (emacs-search-builtins--install-function-p 're-search-forward)
   (defun re-search-forward (regexp &optional bound noerror count)
     "Phase 11.B' polyfill: forward to `nelisp-ec-re-search-forward'.
 COUNT (= repeat the search COUNT times) is accepted for API parity
@@ -197,7 +203,7 @@ with the host builtin but applied via a simple loop here."
         (setq c (1- c)))
       last)))
 
-(unless (fboundp 're-search-backward)
+(when (emacs-search-builtins--install-function-p 're-search-backward)
   (defun re-search-backward (regexp &optional bound noerror count)
     "Phase 11.B' polyfill: forward to `nelisp-ec-re-search-backward'."
     (let ((c (or count 1))
@@ -207,7 +213,7 @@ with the host builtin but applied via a simple loop here."
         (setq c (1- c)))
       last)))
 
-(unless (fboundp 'search-forward)
+(when (emacs-search-builtins--install-function-p 'search-forward)
   (defun search-forward (string &optional bound noerror count)
     "Phase 11.B' polyfill: forward to `nelisp-ec-search-forward'."
     (let ((c (or count 1))
@@ -217,7 +223,7 @@ with the host builtin but applied via a simple loop here."
         (setq c (1- c)))
       last)))
 
-(unless (fboundp 'search-backward)
+(when (emacs-search-builtins--install-function-p 'search-backward)
   (defun search-backward (string &optional bound noerror count)
     "Phase 11.B' polyfill: forward to `nelisp-ec-search-backward'."
     (let ((c (or count 1))
@@ -229,15 +235,15 @@ with the host builtin but applied via a simple loop here."
 
 ;;;; --- looking-at family ------------------------------------------------
 
-(unless (fboundp 'looking-at)
+(when (emacs-search-builtins--install-function-p 'looking-at)
   (defalias 'looking-at #'nelisp-ec-looking-at))
 
-(unless (fboundp 'looking-at-p)
+(when (emacs-search-builtins--install-function-p 'looking-at-p)
   (defalias 'looking-at-p #'nelisp-ec-looking-at-p))
 
 ;;;; --- match-data accessors --------------------------------------------
 
-(unless (fboundp 'match-data)
+(when (emacs-search-builtins--install-function-p 'match-data)
   (defun match-data (&optional integers reuse reseat)
     "Phase 11.B' polyfill: forward to `nelisp-ec-match-data'.
 INTEGERS / REUSE / RESEAT are accepted for API parity but ignored —
@@ -245,13 +251,13 @@ the L1.5 substrate already returns a plain integer list."
     (ignore integers reuse reseat)
     (nelisp-ec-match-data)))
 
-(unless (fboundp 'match-beginning)
+(when (emacs-search-builtins--install-function-p 'match-beginning)
   (defalias 'match-beginning #'nelisp-ec-match-beginning))
 
-(unless (fboundp 'match-end)
+(when (emacs-search-builtins--install-function-p 'match-end)
   (defalias 'match-end #'nelisp-ec-match-end))
 
-(unless (fboundp 'match-string)
+(when (emacs-search-builtins--install-function-p 'match-string)
   (defun match-string (num &optional string)
     "Phase 11.B' polyfill for `match-string'.
 When STRING is non-nil, slice the matched range out of STRING.
@@ -266,7 +272,7 @@ via `buffer-substring' (= bridged in Phase 9 to `nelisp-ec-buffer-substring')."
          (t
           (buffer-substring b e)))))))
 
-(unless (fboundp 'match-string-no-properties)
+(when (emacs-search-builtins--install-function-p 'match-string-no-properties)
   ;; Phase 11.B' MVP: substrate stores no text properties on matches,
   ;; so the no-properties variant is the same body.
   (defalias 'match-string-no-properties #'match-string))

@@ -210,16 +210,21 @@ single-frame backends (= some bare-minimum TUIs) ship."
   (ignore display)
   (not (null emacs-display-system)))
 
-(unless (fboundp 'window-system)
+(defun emacs-stub--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this shim layer."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-stub--install-function-p 'window-system)
   (defalias 'window-system #'emacs-display-window-system))
 
-(unless (fboundp 'display-graphic-p)
+(when (emacs-stub--install-function-p 'display-graphic-p)
   (defalias 'display-graphic-p #'emacs-display-graphic-p))
 
-(unless (fboundp 'display-color-p)
+(when (emacs-stub--install-function-p 'display-color-p)
   (defalias 'display-color-p #'emacs-display-color-p))
 
-(unless (fboundp 'display-multi-frame-p)
+(when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
 
 
@@ -1574,8 +1579,7 @@ Returns FILENAME unchanged when no extension is present."
 
 (unless (and (fboundp 'truncate)
              ;; If truncate is the no-op bulk stub, override with real impl.
-             (let ((t1 (truncate 3.7)))
-               (and (integerp t1) (= t1 3))))
+             (not (get 'truncate 'emacs-stub-bulk)))
   (defun truncate (number &optional divisor)
     "Phase 6 polyfill: integer truncation toward zero.
 NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
@@ -1584,19 +1588,14 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
      (divisor
       (truncate (/ number divisor)))
      ((integerp number) number)
-     ((floatp number)
-      (let ((n (if (>= number 0)
-                   (- number 0.0)
-                 (- 0.0 number)))
-            (sign (if (>= number 0) 1 -1)))
-        ;; floor-by-subtraction (no `floor' builtin available).  Adequate
-        ;; for the timestamp range we care about (< 2^53 seconds).
-        (let ((i 0))
-          (while (>= n 1.0)
-            (setq n (- n 1.0))
-            (setq i (+ i 1)))
-          (* sign i))))
-     (t 0))))
+     ((< number 0)
+      (- (truncate (- number))))
+     ((>= number 1)
+      ;; Avoid float literals and `while' in this early bootstrap body:
+      ;; standalone-reader currently segfaults while installing that shape.
+      (+ 1 (truncate (- number 1))))
+     (t 0)))
+  (put 'truncate 'emacs-stub-bulk nil))
 
 ;;;; --- terminal/IO no-op stubs (= avoid void-function during process load) ---
 
@@ -1636,6 +1635,25 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
   (defun sleep-for (&rest _) nil))
 (unless (boundp 'timer-list) (defvar timer-list nil))
 (unless (boundp 'timer-idle-list) (defvar timer-idle-list nil))
+
+;;;; --- Custom metadata helpers (= preloaded in real Emacs) ---
+
+(unless (fboundp 'custom-add-option)
+  (defun custom-add-option (symbol option)
+    "Polyfill: add OPTION to SYMBOL's `custom-options' metadata."
+    (let ((options (get symbol 'custom-options)))
+      (unless (member option options)
+        (put symbol 'custom-options (cons option options))))))
+
+(unless (fboundp 'custom-add-frequent-value)
+  (defalias 'custom-add-frequent-value 'custom-add-option))
+
+(unless (fboundp 'custom-variable-p)
+  (defun custom-variable-p (variable)
+    "Polyfill: return non-nil when VARIABLE has Custom metadata."
+    (and (symbolp variable)
+         (or (get variable 'standard-value)
+             (get variable 'custom-autoload)))))
 
 ;; Phase B5 globals — anvil-server.el / vendor cl-* reach for these as
 ;; `defcustom' defaults / load-path participants.  Empty defaults are

@@ -3,7 +3,7 @@
 ;;; Commentary:
 
 ;; Tests for the `emacs-fns' Emacs C core port (= mapcar / mapconcat /
-;; mapc / nreverse / reverse / plist-{get,put,member}).
+;; mapc / nreverse / reverse / plist-{get,put,member} / provide).
 ;;
 ;; Under regular Emacs every function is already provided by the C
 ;; core, so the polyfill `unless (fboundp ...)' guards make our
@@ -97,6 +97,16 @@
   (let ((result (plist-put (list :a 1) :b 2)))
     (should (equal (plist-get result :a) 1))
     (should (equal (plist-get result :b) 2))))
+
+
+;;;; --- provide ------------------------------------------------------------
+
+(ert-deftest emacs-fns-test/provide-accepts-subfeatures ()
+  (let ((features (remove 'emacs-fns-test-provide-subfeatures features)))
+    (should (eq (provide 'emacs-fns-test-provide-subfeatures
+                         '(remote-wildcards))
+                'emacs-fns-test-provide-subfeatures))
+    (should (featurep 'emacs-fns-test-provide-subfeatures))))
 
 
 (provide 'emacs-fns-test)

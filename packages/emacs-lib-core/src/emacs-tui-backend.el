@@ -209,7 +209,11 @@ Default nil keeps ERT runs silent."
   "Return the CUP (Cursor Position) escape moving to (ROW, COL).
 ROW and COL are 0-based on the public API; the wire protocol is
 1-based, so we add 1 internally."
-  (format "\e[%d;%dH" (1+ row) (1+ col)))
+  (concat "\e["
+          (number-to-string (1+ row))
+          ";"
+          (number-to-string (1+ col))
+          "H"))
 
 (defconst emacs-tui-backend--ansi-fg-base 30
   "ANSI SGR foreground base offset (= `30 + color').")
@@ -384,6 +388,41 @@ FMT and ARGS are passed straight to `format'."
   (dirty-rows nil)                        ;; bitvector of dirty rows
   (cursor-row nil)                        ;; nil = hidden, else integer
   (cursor-col nil))                       ;; nil = hidden, else integer
+
+(defun emacs-tui-backend-frame-set-dirty-rows (frame dirty-rows)
+  "Set FRAME's dirty row bitvector to DIRTY-ROWS and return DIRTY-ROWS."
+  (unless (emacs-tui-backend-framep frame)
+    (signal 'emacs-tui-backend-bad-frame (list frame)))
+  (setf (emacs-tui-backend-frame-dirty-rows frame) dirty-rows)
+  dirty-rows)
+
+(defconst emacs-tui-backend--blank-cell (cons ?\s nil)
+  "Shared immutable blank canvas cell.
+Canvas writes replace cells rather than mutating cell conses, so blank
+slots can safely share this object.  This keeps frame creation from
+allocating one cons per column before the first paint.")
+
+(defvar emacs-tui-backend--blank-row-cache nil
+  "Alist mapping row width to shared immutable blank row vectors.")
+
+(defun emacs-tui-backend--blank-row (width)
+  "Return the shared blank row vector for WIDTH."
+  (let ((cell (assq width emacs-tui-backend--blank-row-cache)))
+    (unless cell
+      (setq cell (cons width (make-vector width emacs-tui-backend--blank-cell)))
+      (push cell emacs-tui-backend--blank-row-cache))
+    (cdr cell)))
+
+(defun emacs-tui-backend--blank-string-p (string)
+  "Return non-nil if STRING contains only spaces."
+  (let ((i 0)
+        (n (length string))
+        (ok t))
+    (while (and ok (< i n))
+      (unless (eq (aref string i) ?\s)
+        (setq ok nil))
+      (setq i (1+ i)))
+    ok))
 
 ;;; Module-private id counter
 
@@ -640,10 +679,7 @@ next flush re-paints.  Returns the frame.  Signals
 Each cell is a (CHAR . FACE) cons; the canvas is a vector of vectors."
   (let ((rows (make-vector height nil)))
     (dotimes (r height)
-      (let ((row (make-vector width nil)))
-        (dotimes (c width)
-          (aset row c (cons ?\s nil)))
-        (aset rows r row)))
+      (aset rows r (emacs-tui-backend--blank-row width)))
     rows))
 
 (defun emacs-tui-backend--mark-row-dirty (frame row)
@@ -651,6 +687,21 @@ Each cell is a (CHAR . FACE) cons; the canvas is a vector of vectors."
   (let ((bv (emacs-tui-backend-frame-dirty-rows frame)))
     (when (and (>= row 0) (< row (length bv)))
       (aset bv row t))))
+
+(defun emacs-tui-backend--blank-row-p (row-vec)
+  "Return non-nil when ROW-VEC contains only blank nil-face cells."
+  (let ((i 0)
+        (n (length row-vec))
+        (blank t))
+    (while (and blank (< i n))
+      (let ((cell (aref row-vec i)))
+        (unless (or (eq cell emacs-tui-backend--blank-cell)
+                    (and (consp cell)
+                         (eq (car cell) ?\s)
+                         (null (cdr cell))))
+          (setq blank nil)))
+      (setq i (1+ i)))
+    blank))
 
 ;;;###autoload
 (defun emacs-tui-backend-canvas-clear (handle frame)
@@ -696,14 +747,29 @@ number of cells actually written (0 if fully clipped)."
          (canvas (emacs-tui-backend-frame-canvas frame))
          (written 0))
     (when (and (< row height) (< col width))
-      (let* ((row-vec (aref canvas row))
-             (n (length text))
+      (let* ((n (length text))
              (limit (min n (- width col))))
-        (dotimes (i limit)
-          (aset row-vec (+ col i) (cons (aref text i) face)))
-        (setq written limit)
-        (when (> written 0)
-          (emacs-tui-backend--mark-row-dirty frame row))))
+        (cond
+         ((and (null face)
+               (= col 0)
+               (>= n width)
+               (emacs-tui-backend--blank-string-p text))
+          (let ((old-row (aref canvas row)))
+            (aset canvas row (emacs-tui-backend--blank-row width))
+            (unless (eq old-row (emacs-tui-backend--blank-row width))
+              (emacs-tui-backend--mark-row-dirty frame row)))
+          (setq written width)
+          nil)
+         (t
+          (let ((row-vec (aref canvas row)))
+            (when (eq row-vec (emacs-tui-backend--blank-row width))
+              (setq row-vec (copy-sequence row-vec))
+              (aset canvas row row-vec))
+            (dotimes (i limit)
+              (aset row-vec (+ col i) (cons (aref text i) face)))
+            (setq written limit)
+            (when (> written 0)
+              (emacs-tui-backend--mark-row-dirty frame row)))))))
     (emacs-tui-backend--log "canvas-draw-text handle=%S id=%d (%d,%d) %S face=%S written=%d"
                             (emacs-tui-backend-handle-id handle)
                             (emacs-tui-backend-frame-id frame)
@@ -718,23 +784,31 @@ emits `RESET' at the end of the row to keep terminal state clean."
   (let* ((row-vec (aref (emacs-tui-backend-frame-canvas frame) row))
          (width (length row-vec))
          (col 0))
-    (while (< col width)
-      (let* ((cell (aref row-vec col))
-             (face (cdr cell))
-             (start col)
-             (chars (list (car cell))))
-        (setq col (1+ col))
-        (while (and (< col width)
-                    (equal face (cdr (aref row-vec col))))
-          (push (car (aref row-vec col)) chars)
-          (setq col (1+ col)))
-        (let ((sgr (emacs-tui-backend--sgr-from-face face)))
-          (emacs-tui-backend--emit (emacs-tui-backend--cup row start))
-          (when (> (length sgr) 0)
-            (emacs-tui-backend--emit sgr))
-          (emacs-tui-backend--emit (concat (nreverse chars)))
-          (when (> (length sgr) 0)
-            (emacs-tui-backend--emit emacs-tui-backend--reset)))))))
+    (cond
+     ((eq row-vec (emacs-tui-backend--blank-row width))
+      (emacs-tui-backend--emit (emacs-tui-backend--cup row 0))
+      (emacs-tui-backend--emit (make-string width ?\s)))
+     ((emacs-tui-backend--blank-row-p row-vec)
+      (emacs-tui-backend--emit (emacs-tui-backend--cup row 0))
+      (emacs-tui-backend--emit (make-string width ?\s)))
+     (t
+      (while (< col width)
+        (let* ((cell (aref row-vec col))
+               (face (cdr cell))
+               (start col)
+               (chars (list (car cell))))
+          (setq col (1+ col))
+          (while (and (< col width)
+                      (equal face (cdr (aref row-vec col))))
+            (push (car (aref row-vec col)) chars)
+            (setq col (1+ col)))
+          (let ((sgr (emacs-tui-backend--sgr-from-face face)))
+            (emacs-tui-backend--emit (emacs-tui-backend--cup row start))
+            (when (> (length sgr) 0)
+              (emacs-tui-backend--emit sgr))
+            (emacs-tui-backend--emit (concat (nreverse chars)))
+            (when (> (length sgr) 0)
+              (emacs-tui-backend--emit emacs-tui-backend--reset)))))))))
 
 ;;;###autoload
 (defun emacs-tui-backend-canvas-flush (handle frame)
@@ -840,6 +914,24 @@ position so subsequent `canvas-flush' calls re-park there."
                             (emacs-tui-backend-handle-id handle)
                             (emacs-tui-backend-frame-id frame) r c)
     (cons r c)))
+
+;;;###autoload
+(defun emacs-tui-backend-cursor-show-if-changed (handle frame row col)
+  "Show cursor at ROW/COL only when FRAME's stored cursor position differs."
+  (emacs-tui-backend--check-handle handle)
+  (emacs-tui-backend--check-frame handle frame)
+  (unless (and (integerp row) (>= row 0))
+    (signal 'wrong-type-argument (list 'natnum row)))
+  (unless (and (integerp col) (>= col 0))
+    (signal 'wrong-type-argument (list 'natnum col)))
+  (let* ((width  (emacs-tui-backend-frame-width  frame))
+         (height (emacs-tui-backend-frame-height frame))
+         (r (min row (1- height)))
+         (c (min col (1- width))))
+    (if (and (equal (emacs-tui-backend-frame-cursor-row frame) r)
+             (equal (emacs-tui-backend-frame-cursor-col frame) c))
+        (cons r c)
+      (emacs-tui-backend-cursor-show handle frame r c))))
 
 ;;;###autoload
 (defun emacs-tui-backend-cursor-hide (handle frame)

@@ -47,11 +47,31 @@
        (should (eq original (symbol-function 'truncate)))
        (should (= 3 (truncate 3.7)))))))
 
+(ert-deftest emacs-time-test/guard-replaces-marked-bulk-truncate-without-calling-it ()
+  (let ((original (and (fboundp 'truncate) (symbol-function 'truncate)))
+        (original-marker (get 'truncate 'emacs-stub-bulk))
+        (called nil))
+    (unwind-protect
+        (progn
+          (fset 'truncate
+                (lambda (&rest _)
+                  (setq called t)
+                  (error "bulk truncate stub should not be called")))
+          (put 'truncate 'emacs-stub-bulk t)
+          (load emacs-time-test--module-file t t)
+          (should-not called)
+          (should (= 3 (truncate 3.7)))
+          (should-not (get 'truncate 'emacs-stub-bulk)))
+      (if original
+          (fset 'truncate original)
+        (fmakunbound 'truncate))
+      (put 'truncate 'emacs-stub-bulk original-marker))))
+
 ;;;; Polyfill path
 
 (ert-deftest emacs-time-test/float-time-defaults-to-zero ()
   (emacs-time-test--with-reloaded-module
-   '(truncate float-time current-time nl-current-unix-time)
+   '(truncate float-time current-time nl-current-unix-time nelisp--syscall)
    (lambda ()
      (should (numberp (float-time)))
      (should (= 0 (float-time))))))
@@ -63,9 +83,18 @@
      (fset 'nl-current-unix-time (lambda () 1234))
      (should (= 1234 (float-time))))))
 
+(ert-deftest emacs-time-test/float-time-can-use-nelisp-syscall-time ()
+  (emacs-time-test--with-reloaded-module
+   '(truncate float-time current-time nl-current-unix-time nelisp--syscall)
+   (lambda ()
+     (fset 'nelisp--syscall
+           (lambda (nr ptr)
+             (and (= nr 201) (= ptr 0) 5678)))
+     (should (= 5678 (float-time))))))
+
 (ert-deftest emacs-time-test/current-time-is-a-four-element-list ()
   (emacs-time-test--with-reloaded-module
-   '(truncate float-time current-time nl-current-unix-time)
+   '(truncate float-time current-time nl-current-unix-time nelisp--syscall)
    (lambda ()
      (let ((now (current-time)))
        (should (listp now))

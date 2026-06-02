@@ -19,7 +19,7 @@
 ;;; Code:
 
 ;; `fset' — install FUNCTION as the function-cell of SYMBOL.  NeLisp's
-;; bootstrap evaluator does NOT expose this primitive (= function cells
+;; bootstrap evaluator may not expose this primitive (= function cells
 ;; are settable only via `defun' at evaluation time).  We approximate by
 ;; installing a forwarding `defun' that applies FUNCTION to its args.
 ;;
@@ -40,13 +40,21 @@ value cell is unbound but function cell is fine)."
                 (list 'apply (list 'quote function) 'args)))
     function))
 
-(unless (fboundp 'defalias)
+(when (or (not (boundp 'emacs-version))
+          (not (fboundp 'defalias)))
   (defun defalias (symbol definition &optional docstring)
-    "Polyfill: alias SYMBOL to DEFINITION via `fset'.
+    "Polyfill: alias SYMBOL to DEFINITION.
 DOCSTRING is accepted for arglist parity and currently ignored
 (= the polyfill does not yet wire docstrings into the function cell)."
     (ignore docstring)
-    (fset symbol definition)
+    (if (and (symbolp definition)
+             (not (fboundp definition)))
+        ;; NeLisp's native `fset' resolves symbol functions eagerly.
+        ;; Generate a late-bound forwarder for `#'foo' before `foo' is
+        ;; defined, as seen in vendor easy-mmode.el.
+        (eval (list 'defun symbol '(&rest args)
+                    (list 'apply (list 'quote definition) 'args)))
+      (fset symbol definition))
     symbol))
 
 ;; `declare-function' — Emacs byte-compiler hint, signalling that a
@@ -112,6 +120,16 @@ moment.  Live aliasing of subsequent assignments is Phase 4."
   (defun make-obsolete-variable (obsolete-name current-name &optional when access-type)
     "Polyfill: no-op deprecation hint."
     (ignore obsolete-name current-name when access-type)
+    nil))
+
+;; `internal-make-var-non-special' is an Emacs C-core helper used by a
+;; few dump/bootstrap files to mark variables as lexically bindable.
+;; NeLisp does not model specialness separately yet, so this is a
+;; metadata-only no-op on the standalone path.
+(unless (fboundp 'internal-make-var-non-special)
+  (defun internal-make-var-non-special (symbol)
+    "Polyfill: accept SYMBOL and return nil."
+    (ignore symbol)
     nil))
 
 ;; `defsubst' — Emacs special form for an inline-hinted function.  The

@@ -17,13 +17,19 @@
 (require 'emacs-numeric)
 (require 'cl-lib)
 
+(defconst emacs-numeric-test--module-file
+  (expand-file-name "../src/emacs-numeric.el"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Source file for reloading `emacs-numeric' in controlled tests.")
+
 ;;;; A. Load cleanly
 
 (ert-deftest emacs-numeric-test/require-loads-cleanly ()
   (should (featurep 'emacs-numeric))
   (dolist (sym '(min max abs zerop plusp minusp oddp evenp natnump
-                 1+ 1-
-                 logior logand logxor lognot ash lsh))
+                 1+ 1- %
+                 logior logand logxor lognot ash lsh
+                 atan exp))
     (should (fboundp sym))))
 
 ;;;; B. Numeric primitive results
@@ -47,7 +53,46 @@
   (should (natnump 7))
   (should-not (natnump -1))
   (should (= 11 (1+ 10)))
-  (should (= 9  (1- 10))))
+  (should (= 9  (1- 10)))
+  (should (= 1 (% 10 3)))
+  (should (= -1 (% -10 3))))
+
+(ert-deftest emacs-numeric-test/float-math-host-path-correct ()
+  (should (< (abs (- (atan 1) (/ float-pi 4))) 0.000001))
+  (should (< (abs (- (exp 1) float-e)) 0.000001)))
+
+(ert-deftest emacs-numeric-test/float-fallbacks-replace-marked-bulk-stubs ()
+  (let ((original-atan (and (fboundp 'atan) (symbol-function 'atan)))
+        (original-exp (and (fboundp 'exp) (symbol-function 'exp)))
+        (original-atan-marker (get 'atan 'emacs-stub-bulk))
+        (original-exp-marker (get 'exp 'emacs-stub-bulk))
+        (called nil))
+    (unwind-protect
+        (progn
+          (fset 'atan
+                (lambda (&rest _)
+                  (setq called t)
+                  (error "bulk atan stub should not be called")))
+          (fset 'exp
+                (lambda (&rest _)
+                  (setq called t)
+                  (error "bulk exp stub should not be called")))
+          (put 'atan 'emacs-stub-bulk t)
+          (put 'exp 'emacs-stub-bulk t)
+          (load emacs-numeric-test--module-file t t)
+          (should-not called)
+          (should (= 0 (atan 1)))
+          (should (= 1 (exp 1)))
+          (should-not (get 'atan 'emacs-stub-bulk))
+          (should-not (get 'exp 'emacs-stub-bulk)))
+      (if original-atan
+          (fset 'atan original-atan)
+        (fmakunbound 'atan))
+      (if original-exp
+          (fset 'exp original-exp)
+        (fmakunbound 'exp))
+      (put 'atan 'emacs-stub-bulk original-atan-marker)
+      (put 'exp 'emacs-stub-bulk original-exp-marker))))
 
 ;;;; C. Bitwise primitive results — host path (= correct)
 

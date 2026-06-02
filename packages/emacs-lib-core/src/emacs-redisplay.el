@@ -1728,12 +1728,13 @@ Adjacent glyphs sharing the same realized face are batched into a
 single segment so the backend `canvas-draw-text' call count stays low.
 The FACE element of each tuple is the *realized* SGR-ready alist (=
 Phase 3.B.1 face-realize MVP output) — not the raw spec — so the
-backend can emit the correct SGR escape directly without a per-segment
-realize call.  When `realized-face' is nil we fall back to the raw
-`face' slot for back-compat with overlays carrying spec the realizer
-does not know how to translate."
+  backend can emit the correct SGR escape directly without a per-segment
+  realize call.  When `realized-face' is nil we fall back to the raw
+  `face' slot for back-compat with overlays carrying spec the realizer
+  does not know how to translate."
   (let* ((vec (emacs-redisplay-glyph-row-glyphs row))
-         (n (min width (length vec)))
+         (used (max 0 (emacs-redisplay-glyph-row-used row)))
+         (n (min width (length vec) used))
          (segments nil)
          (col 0))
     (cl-flet ((paint-face (g)
@@ -1754,6 +1755,17 @@ does not know how to translate."
             (setq col (1+ col)))
           (push (list start (concat (nreverse chars)) face) segments))))
     (nreverse segments)))
+
+(defvar emacs-redisplay--flush-hash-cache (make-hash-table :test 'eq)
+  "Per-glyph-matrix vector of row hashes last emitted by flush-frame.")
+
+(defun emacs-redisplay--flush-hash-vector (matrix height)
+  "Return MATRIX's flush-hash vector, resizing it to HEIGHT as needed."
+  (let ((vec (gethash matrix emacs-redisplay--flush-hash-cache)))
+    (unless (and (vectorp vec) (= (length vec) height))
+      (setq vec (make-vector height nil))
+      (puthash matrix vec emacs-redisplay--flush-hash-cache))
+    vec))
 
 ;;;###autoload
 (defun emacs-redisplay-flush-frame (handle frame)
@@ -1783,23 +1795,29 @@ is a no-op returning 0.  Returns the total segment count emitted."
                      (h    (emacs-redisplay-glyph-matrix-height m))
                      (width (emacs-redisplay-glyph-matrix-width  m))
                      (rows  (emacs-redisplay-glyph-matrix-rows   m))
-                     (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
+                     (dirty (emacs-redisplay-glyph-matrix-dirty-set m))
+                     (flush-hashes
+                      (emacs-redisplay--flush-hash-vector m h)))
                 (dotimes (r h)
                   (when (aref dirty r)
                     (let ((row (aref rows r)))
-                      ;; Paint a clearing space band first to ensure
-                      ;; trailing area is wiped (= MVP full repaint).
-                      (emacs-tui-backend-canvas-draw-text
-                       backend frame (+ top r) left
-                       (make-string width ?\s) nil)
-                      (dolist (seg (emacs-redisplay--row-text-segments
-                                    row width))
-                        (let ((c (nth 0 seg))
-                              (txt (nth 1 seg))
-                              (face (nth 2 seg)))
-                          (emacs-tui-backend-canvas-draw-text
-                           backend frame (+ top r) (+ left c) txt face)
-                          (setq emitted (1+ emitted))))
+                      (unless (equal (aref flush-hashes r)
+                                     (emacs-redisplay-glyph-row-hash row))
+                        ;; Paint a clearing space band first to ensure
+                        ;; trailing area is wiped (= MVP full repaint).
+                        (emacs-tui-backend-canvas-draw-text
+                         backend frame (+ top r) left
+                         (make-string width ?\s) nil)
+                        (dolist (seg (emacs-redisplay--row-text-segments
+                                      row width))
+                          (let ((c (nth 0 seg))
+                                (txt (nth 1 seg))
+                                (face (nth 2 seg)))
+                            (emacs-tui-backend-canvas-draw-text
+                             backend frame (+ top r) (+ left c) txt face)
+                            (setq emitted (1+ emitted))))
+                        (aset flush-hashes r
+                              (emacs-redisplay-glyph-row-hash row)))
                       (aset dirty r nil))))))))
         ;; Drive the backend's own batching pass.
         (emacs-tui-backend-canvas-flush backend frame))
@@ -1825,28 +1843,17 @@ nil if no backend is bound."
              (c (+ left (or (and cursor (cdr cursor)) 0))))
         (emacs-tui-backend-cursor-show backend frame r c)))))
 
-;;; --- diff-redraw cache stub (Phase 3.B.5 forward-compat) -------------------
-;;
-;; Branch `feat/doc-51-emacs-builtins' shipped a Phase 3.B.5 step-1
-;; row-hash diff that lets `flush-frame' skip backend draw calls when
-;; a dirty row's hash matches the last successfully-emitted value.
-;; Main HEAD took a different optimization path (Phase 3.B.6 row-
-;; incremental rebuild + 3.B.7 buffer-string text-tick cache), so
-;; the hash cache itself isn't wired here.  We still expose the
-;; clear-cache API as a no-op so callers that depend on the symbol
-;; (= the 5x throughput bench in
-;; `emacs-redisplay-builtins-test/diff-redraw-5x-throughput') don't
-;; trip `void-function'.  The bench's ratio assertion still won't
-;; meet 5x without the row-hash optimisation, but it errors cleanly
-;; rather than aborting on a missing function.
+;;; --- diff-redraw cache (Phase 3.B.5) ---------------------------------------
 
 ;;;###autoload
-(defun emacs-redisplay-flush-hash-clear (&optional _matrix)
-  "No-op stub: drop the per-matrix flush-hash cache.
+(defun emacs-redisplay-flush-hash-clear (&optional matrix)
+  "Drop the row-hash cache used by `emacs-redisplay-flush-frame'.
 
-Main HEAD's flush path doesn't maintain a flush-hash cache; this stub
-satisfies callers that expect the API from the branch's Phase 3.B.5
-diff-redraw work.  Returns nil."
+When MATRIX is non-nil, clear only that glyph-matrix entry.  Otherwise
+clear the whole flush-hash cache.  Returns nil."
+  (if matrix
+      (remhash matrix emacs-redisplay--flush-hash-cache)
+    (clrhash emacs-redisplay--flush-hash-cache))
   nil)
 
 (provide 'emacs-redisplay)

@@ -10,9 +10,10 @@
 ;;
 ;; Bridges the Emacs unprefixed face API to the substrate in
 ;; `emacs-faces.el' (which sits on top of `emacs-redisplay's
-;; existing face registry).  Same `unless (fboundp ...)' /
-;; `unless (boundp ...)' gating used by every other Track bridge —
-;; loading inside a host Emacs is a cheap no-op.
+;; existing face registry).  Function definitions use a host-aware
+;; install gate: host Emacs keeps its faces.el implementation, while
+;; standalone NeLisp overwrites bootstrap stubs with the real face
+;; substrate.
 ;;
 ;; Bridged today (γ-stage MVP):
 ;;
@@ -33,43 +34,52 @@
 
 ;;;; --- predicates / lifecycle ----------------------------------------
 
-(unless (fboundp 'facep)
+(defun emacs-faces-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-faces-builtins--install-function-p 'facep)
   (defalias 'facep #'emacs-faces-facep))
 
-(unless (fboundp 'make-face)
+(when (emacs-faces-builtins--install-function-p 'make-face)
   (defalias 'make-face #'emacs-faces-make-face))
 
 ;;;; --- attribute accessors -------------------------------------------
 
-(unless (fboundp 'face-attribute)
+(when (emacs-faces-builtins--install-function-p 'face-attribute)
   (defalias 'face-attribute #'emacs-faces-attribute))
 
-(unless (fboundp 'set-face-attribute)
+(when (emacs-faces-builtins--install-function-p 'set-face-attribute)
   (defalias 'set-face-attribute #'emacs-faces-set-attribute))
 
-(unless (fboundp 'face-foreground)
+(when (emacs-faces-builtins--install-function-p 'face-foreground)
   (defalias 'face-foreground #'emacs-faces-foreground))
 
-(unless (fboundp 'face-background)
+(when (emacs-faces-builtins--install-function-p 'face-background)
   (defalias 'face-background #'emacs-faces-background))
 
-(unless (fboundp 'set-face-foreground)
+(when (emacs-faces-builtins--install-function-p 'set-face-foreground)
   (defalias 'set-face-foreground #'emacs-faces-set-foreground))
 
-(unless (fboundp 'set-face-background)
+(when (emacs-faces-builtins--install-function-p 'set-face-background)
   (defalias 'set-face-background #'emacs-faces-set-background))
 
 ;;;; --- enumeration ---------------------------------------------------
 
-(unless (fboundp 'face-list)
+(when (emacs-faces-builtins--install-function-p 'face-list)
   (defalias 'face-list #'emacs-faces-list))
 
 ;;;; --- defface macro -------------------------------------------------
 
-(unless (fboundp 'defface)
+(when (emacs-faces-builtins--install-function-p 'defface)
   (defmacro defface (name spec doc &rest opts)
     "Track F bridge: delegate to `emacs-faces-defface'."
-    `(emacs-faces-defface ,name ,spec ,doc ,@opts)))
+    (if (boundp 'nelisp-emacs-vendor-root)
+        `(progn
+           (emacs-faces-make-face ',name)
+           ',name)
+      `(emacs-faces-defface ,name ,spec ,doc ,@opts))))
 
 (provide 'emacs-faces-builtins)
 

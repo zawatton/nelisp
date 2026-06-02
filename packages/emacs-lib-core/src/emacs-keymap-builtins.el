@@ -20,23 +20,21 @@
 ;; bridge wires the two so callers using either spelling get the same
 ;; result.
 ;;
-;; Each definition is gated on `unless (fboundp ...)' so loading inside
-;; a host Emacs is a cheap no-op (= host's C builtins win).
+;; Loading inside a host Emacs is a cheap no-op (= host's C builtins
+;; win).  Standalone NeLisp deliberately overwrites the earlier
+;; `emacs-stub.el' no-op shims.
 ;;
 ;; Bridgeable today (= covered by `emacs-keymap.el'):
 ;;
 ;;   - `make-keymap' / `make-sparse-keymap' / `keymapp'
 ;;   - `define-key' (3-arg + ignored REMOVE)
+;;   - `define-key-after'
+;;   - `suppress-keymap'
 ;;   - `lookup-key' / `key-binding'
 ;;   - `set-keymap-parent' / `keymap-parent'
 ;;   - `current-global-map' / `current-local-map'
 ;;   - `use-global-map' / `use-local-map'
 ;;   - `where-is-internal'
-;;
-;; Deferred (= keep `emacs-stub.el' nil-stubs):
-;;
-;;   - `define-key-after': no `emacs-keymap-define-key-after' yet.
-;;     The 3-arg `define-key' is a strict subset of the API.
 ;;
 ;; Phase 11.C'' also deletes the duplicate stubs that this file
 ;; supersedes from `emacs-stub.el' (= same load-order shadowing risk
@@ -46,20 +44,25 @@
 
 (require 'emacs-keymap)
 
+(defun emacs-keymap-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
 ;;;; --- constructors ----------------------------------------------------
 
-(unless (fboundp 'make-keymap)
+(when (emacs-keymap-builtins--install-function-p 'make-keymap)
   (defalias 'make-keymap #'emacs-keymap-make-keymap))
 
-(unless (fboundp 'make-sparse-keymap)
+(when (emacs-keymap-builtins--install-function-p 'make-sparse-keymap)
   (defalias 'make-sparse-keymap #'emacs-keymap-make-sparse-keymap))
 
-(unless (fboundp 'keymapp)
+(when (emacs-keymap-builtins--install-function-p 'keymapp)
   (defalias 'keymapp #'emacs-keymap-keymapp))
 
 ;;;; --- mutation --------------------------------------------------------
 
-(unless (fboundp 'define-key)
+(when (emacs-keymap-builtins--install-function-p 'define-key)
   (defun define-key (keymap key def &optional remove)
     "Phase 11.C'' polyfill: forward to `emacs-keymap-define-key'.
 REMOVE (= unbind KEY when non-nil) is accepted for API parity but the
@@ -68,37 +71,100 @@ through."
     (ignore remove)
     (emacs-keymap-define-key keymap key def)))
 
-(unless (fboundp 'set-keymap-parent)
+(when (emacs-keymap-builtins--install-function-p 'define-key-after)
+  (defalias 'define-key-after #'emacs-keymap-define-key-after))
+
+(when (emacs-keymap-builtins--install-function-p 'suppress-keymap)
+  (defun suppress-keymap (keymap &optional nodigits)
+    "Make printable characters in KEYMAP undefined.
+When NODIGITS is nil, digits and `-' remain argument keys, matching
+the conventional shape expected by `defvar-keymap :suppress'."
+    (let ((slot (emacs-keymap--full-slot keymap)))
+      (unless slot
+        (setq slot (cons t (make-vector 256 nil)))
+        (setcdr keymap (cons slot (cdr keymap))))
+      (let ((vec (cdr slot))
+            (i 32))
+        (while (<= i 126)
+          (aset vec i 'undefined)
+          (setq i (1+ i)))
+        (unless nodigits
+          (let ((digit ?0))
+            (while (<= digit ?9)
+              (aset vec digit 'digit-argument)
+              (setq digit (1+ digit))))
+          (aset vec ?- 'negative-argument))))
+    keymap))
+
+(when (emacs-keymap-builtins--install-function-p 'set-keymap-parent)
   (defalias 'set-keymap-parent #'emacs-keymap-set-keymap-parent))
 
-(unless (fboundp 'keymap-parent)
+(when (emacs-keymap-builtins--install-function-p 'keymap-parent)
   (defalias 'keymap-parent #'emacs-keymap-keymap-parent))
 
 ;;;; --- lookup ----------------------------------------------------------
 
-(unless (fboundp 'lookup-key)
+(when (emacs-keymap-builtins--install-function-p 'lookup-key)
   (defalias 'lookup-key #'emacs-keymap-lookup-key))
 
-(unless (fboundp 'key-binding)
+(when (emacs-keymap-builtins--install-function-p 'key-binding)
   (defalias 'key-binding #'emacs-keymap-key-binding))
 
 ;;;; --- global / local map ----------------------------------------------
 
-(unless (fboundp 'current-global-map)
+(unless (boundp 'global-map)
+  (defvar global-map emacs-keymap-global-map
+    "Default global keymap for standalone NeLisp."))
+
+(unless (boundp 'ctl-x-map)
+  (defvar ctl-x-map (emacs-keymap-make-sparse-keymap)
+    "Standard C-x prefix keymap for standalone NeLisp."))
+
+(unless (boundp 'ctl-x-4-map)
+  (defvar ctl-x-4-map (emacs-keymap-make-sparse-keymap)
+    "Standard C-x 4 prefix keymap for standalone NeLisp."))
+
+(unless (boundp 'ctl-x-5-map)
+  (defvar ctl-x-5-map (emacs-keymap-make-sparse-keymap)
+    "Standard C-x 5 prefix keymap for standalone NeLisp."))
+
+(unless (boundp 'esc-map)
+  (defvar esc-map (emacs-keymap-make-sparse-keymap)
+    "Standard ESC prefix keymap for standalone NeLisp."))
+
+(unless (boundp 'help-map)
+  (defvar help-map (emacs-keymap-make-sparse-keymap)
+    "Standard help prefix keymap for standalone NeLisp."))
+
+(when (and (not (boundp 'emacs-version))
+           (emacs-keymap-keymapp global-map))
+  (setq emacs-keymap-global-map global-map)
+  (emacs-keymap-define-key global-map "\C-x" ctl-x-map)
+  (emacs-keymap-define-key global-map "\e" esc-map)
+  (emacs-keymap-define-key global-map "\C-h" help-map)
+  (emacs-keymap-define-key ctl-x-map "4" ctl-x-4-map)
+  (emacs-keymap-define-key ctl-x-map "5" ctl-x-5-map))
+
+(when (emacs-keymap-builtins--install-function-p 'current-global-map)
   (defalias 'current-global-map #'emacs-keymap-current-global-map))
 
-(unless (fboundp 'current-local-map)
+(when (emacs-keymap-builtins--install-function-p 'current-local-map)
   (defalias 'current-local-map #'emacs-keymap-current-local-map))
 
-(unless (fboundp 'use-global-map)
-  (defalias 'use-global-map #'emacs-keymap-use-global-map))
+(when (emacs-keymap-builtins--install-function-p 'use-global-map)
+  (defun use-global-map (keymap)
+    "Set the standalone NeLisp global keymap to KEYMAP."
+    (emacs-keymap-use-global-map keymap)
+    (when (boundp 'global-map)
+      (setq global-map keymap))
+    nil))
 
-(unless (fboundp 'use-local-map)
+(when (emacs-keymap-builtins--install-function-p 'use-local-map)
   (defalias 'use-local-map #'emacs-keymap-use-local-map))
 
 ;;;; --- reverse lookup --------------------------------------------------
 
-(unless (fboundp 'where-is-internal)
+(when (emacs-keymap-builtins--install-function-p 'where-is-internal)
   (defalias 'where-is-internal #'emacs-keymap-where-is-internal))
 
 (provide 'emacs-keymap-builtins)

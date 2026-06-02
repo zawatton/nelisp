@@ -9,9 +9,10 @@
 ;; Doc 51 Track K (2026-05-03) — Layer 2 γ-deeper.
 ;;
 ;; Bridges the Emacs core *unprefixed* font-lock surface to the
-;; prefixed substrate in `emacs-font-lock.el'.  Each definition is
-;; gated on `unless (fboundp ...)' so loading inside a host Emacs is
-;; a cheap no-op (= host's `font-lock.el' wins).
+;; prefixed substrate in `emacs-font-lock.el'.  Function definitions
+;; use a host-aware install gate: host Emacs keeps its font-lock.el
+;; implementation, while standalone NeLisp overwrites bootstrap stubs
+;; with the real font-lock substrate.
 ;;
 ;; Bridged today:
 ;;   - font-lock-mode                           (function)
@@ -42,32 +43,37 @@
 
 ;;;; --- function bridges -----------------------------------------------
 
-(unless (fboundp 'font-lock-mode)
+(defun emacs-font-lock-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-mode)
   (defalias 'font-lock-mode #'emacs-font-lock-mode))
 
-(unless (fboundp 'font-lock-fontify-region)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-fontify-region)
   (defalias 'font-lock-fontify-region #'emacs-font-lock-fontify-region))
 
-(unless (fboundp 'font-lock-fontify-buffer)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-fontify-buffer)
   (defalias 'font-lock-fontify-buffer #'emacs-font-lock-fontify-buffer))
 
-(unless (fboundp 'font-lock-unfontify-region)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-unfontify-region)
   (defalias 'font-lock-unfontify-region #'emacs-font-lock-unfontify-region))
 
-(unless (fboundp 'font-lock-unfontify-buffer)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-unfontify-buffer)
   (defalias 'font-lock-unfontify-buffer #'emacs-font-lock-unfontify-buffer))
 
-(unless (fboundp 'font-lock-default-fontify-region)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-default-fontify-region)
   (defalias 'font-lock-default-fontify-region
     #'emacs-font-lock-default-fontify-region))
 
-(unless (fboundp 'font-lock-add-keywords)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-add-keywords)
   (defalias 'font-lock-add-keywords #'emacs-font-lock-add-keywords))
 
-(unless (fboundp 'font-lock-remove-keywords)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-remove-keywords)
   (defalias 'font-lock-remove-keywords #'emacs-font-lock-remove-keywords))
 
-(unless (fboundp 'font-lock-set-defaults)
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-set-defaults)
   (defalias 'font-lock-set-defaults #'emacs-font-lock-set-defaults))
 
 ;;;; --- variable bridges ----------------------------------------------

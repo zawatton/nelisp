@@ -24,6 +24,9 @@
 (require 'emacs-minibuffer)
 (require 'emacs-window)
 
+(declare-function files--buffer-file-name "files-standalone-buffer"
+                  (&optional buffer))
+
 (defconst emacs-buffer-ui--list-buffer-name "*Buffer List*"
   "Buffer name used by `emacs-buffer-ui-list-buffers'.")
 
@@ -45,7 +48,11 @@
 
 (defun emacs-buffer-ui--buffer-file-name (buf)
   "Return BUF's visited file path, or nil."
-  (cdr (assq buf emacs-fileio--buffer-files)))
+  (or (cdr (assq buf emacs-fileio--buffer-files))
+      (and (fboundp 'files--buffer-file-name)
+           (condition-case nil
+               (files--buffer-file-name buf)
+             (error nil)))))
 
 (defun emacs-buffer-ui--replacement-buffer (killed)
   "Return a live replacement buffer after KILLED is removed."
