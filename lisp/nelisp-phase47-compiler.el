@@ -409,6 +409,16 @@ Doc 101 §101.B Wave 5: dispatches on `nelisp-phase47-compiler--abi'."
       nelisp-asm-x86_64--abi-win64-arg-regs
     nelisp-phase47-compiler--arg-regs))
 
+(defsubst nelisp-phase47-compiler--current-xmm-arg-regs ()
+  "Return the f64 argument register list for the current ABI.
+SysV/AAPCS keep the existing XMM0-XMM7 budget.  Win64 uses only
+XMM0-XMM3 for f64 args; XMM4/XMM5 are volatile but not arg regs, and
+XMM6-XMM15 are callee-saved under Microsoft x64."
+  (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
+           (eq nelisp-phase47-compiler--abi 'win64))
+      (cl-subseq nelisp-phase47-compiler--xmm-arg-regs 0 4)
+    nelisp-phase47-compiler--xmm-arg-regs))
+
 (defun nelisp-phase47-compiler--gensym (prefix)
   "Return a fresh symbol `PREFIX-N' for control-flow labelling.
 N is the next value of `nelisp-phase47-compiler--label-counter'.
@@ -570,7 +580,7 @@ already distinguishes `extern-call' (i64 return) from
                 (list :extern-call-too-many-gp-args name
                       (length gp-args))))
       (when (> (length f64-args)
-               (length nelisp-phase47-compiler--xmm-arg-regs))
+               (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-too-many-f64-args name
                       (length f64-args))))
@@ -9526,7 +9536,7 @@ Returns one of:
    ;; (= xmm register class).  Mixed-class defuns are rejected at
    ;; MVP scope — all params must share one class.  The defun's
    ;; class governs which reg pool the prologue allocates from
-   ;; (`--arg-regs' for GP, `--xmm-arg-regs' for f64).
+   ;; (`--arg-regs' for GP, `--current-xmm-arg-regs' for f64).
    ((and (consp sexp) (eq (car sexp) 'defun))
     (unless (>= (length sexp) 4)
       (signal 'nelisp-phase47-compiler-error
@@ -9570,7 +9580,7 @@ Returns one of:
       (let* ((max-arity
               (cond
                ((eq uniform-class 'f64)
-                (length nelisp-phase47-compiler--xmm-arg-regs))
+                (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
                ((and (eq uniform-class 'gp)
                      (eq nelisp-phase47-compiler--arch 'x86_64)
                      (eq nelisp-phase47-compiler--abi 'sysv))
@@ -9583,7 +9593,7 @@ Returns one of:
           (signal 'nelisp-phase47-compiler-error
                   (list :defun-too-many-params name arity uniform-class))))
       (let* ((reg-pool (if (eq uniform-class 'f64)
-                           nelisp-phase47-compiler--xmm-arg-regs
+                           (nelisp-phase47-compiler--current-xmm-arg-regs)
                          (nelisp-phase47-compiler--current-arg-regs)))
              (reg-budget (length reg-pool))
              (param-regs
@@ -11443,8 +11453,10 @@ same branch and emit the same byte count."
          (gp-reg-budget (length (nelisp-phase47-compiler--current-arg-regs)))
          (gp-regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs)
                              0 (min (length gp-args) gp-reg-budget)))
-         (xmm-regs (cl-subseq nelisp-phase47-compiler--xmm-arg-regs
-                              0 (length f64-args)))
+         (xmm-arg-regs (nelisp-phase47-compiler--current-xmm-arg-regs))
+         (xmm-reg-budget (length xmm-arg-regs))
+         (xmm-regs (cl-subseq xmm-arg-regs
+                              0 (min (length f64-args) xmm-reg-budget)))
          ;; Map each arg back to its target register so the reverse-
          ;; pop loop knows where to deposit the popped value.  GP args
          ;; beyond the register budget become `(:stack N)' outgoing
@@ -11524,6 +11536,10 @@ same branch and emit the same byte count."
           (= (logand (+ arity (length stack-args) arg-count) 1) 1))
          (call-temp-save-count 0)
          (call-needs-align needs-align))
+    (when (> (length f64-args) xmm-reg-budget)
+      (signal 'nelisp-phase47-compiler-error
+              (list :extern-call-too-many-f64-args name
+                    (length f64-args))))
     (when (and stack-args
                (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
                          (or sysv-p win64-p))))
@@ -11553,7 +11569,7 @@ same branch and emit the same byte count."
                    unless (and (consp target) (eq (car target) :stack))
                    do
                    (let ((disp (* 8 (- (1- arg-count) idx))))
-                     (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
+                     (if (memq target xmm-arg-regs)
                          (progn
                            (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
                             buf 'rax disp)
@@ -11591,7 +11607,7 @@ same branch and emit the same byte count."
         (nelisp-asm-x86_64-push buf 'rax))
       ;; (2) Pop in reverse (= last pushed → first popped) and dispatch.
       (dolist (target (reverse complex-targets))
-        (if (memq target nelisp-phase47-compiler--xmm-arg-regs)
+        (if (memq target xmm-arg-regs)
             ;; f64 target — pop into rax then MOVQ → xmm.
             (progn
               (nelisp-asm-x86_64-pop buf 'rax)
@@ -15370,6 +15386,11 @@ drift (= a Doc 92 emitter invariant violation)."
             (list :unsupported-arch arch)))
   (let* ((nelisp-phase47-compiler--label-counter 0)
          (nelisp-phase47-compiler--arch arch)
+         ;; Doc 101 §101.B Wave 5: COFF/Windows targets bind --abi to
+         ;; 'win64 before parsing, so arity validation and emission both
+         ;; see Win64 register budgets.
+         (nelisp-phase47-compiler--abi
+          (if (and (eq arch 'x86_64) (eq format 'coff)) 'win64 'sysv))
          (nelisp-phase47-compiler--allow-external-user-calls t)
          (source (if auto-frame-roots
                      (nelisp-phase47-compiler--select-auto-frame-roots
@@ -15446,11 +15467,9 @@ drift (= a Doc 92 emitter invariant violation)."
     ;; (= the linker only sees external R_X86_64_PC32 / R_X86_64_PLT32
     ;; entries when we eventually emit them; v1 has none).
     ;;
-    ;; Doc 101 §101.B Wave 5: COFF/Windows targets bind --abi to 'win64
-    ;; so that --emit-defun / --emit-call use Win64 register conventions.
-    (let* ((nelisp-phase47-compiler--abi
-            (if (and (eq arch 'x86_64) (eq format 'coff)) 'win64 'sysv))
-           (buf (if (eq arch 'aarch64)
+    ;; Doc 101 §101.B Wave 5: COFF/Windows targets use the parse-time ABI
+    ;; binding above for Win64 register conventions.
+    (let* ((buf (if (eq arch 'aarch64)
                     (nelisp-asm-arm64-make-buffer)
                   (nelisp-asm-x86_64-make-buffer
                    nelisp-phase47-compiler--abi))))

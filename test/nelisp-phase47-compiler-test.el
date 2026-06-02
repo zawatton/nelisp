@@ -2199,6 +2199,63 @@ with a slot index beyond the param count."
     (should (equal (nelisp-phase47-compiler--current-arg-regs)
                    '(rdi rsi rdx rcx r8 r9)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-abi-xmm-arg-regs-dynvar ()
+  "Win64 ABI dynvar limits f64 arg registers to XMM0-XMM3."
+  (let ((nelisp-phase47-compiler--arch 'x86_64)
+        (nelisp-phase47-compiler--abi 'win64))
+    (should (equal (nelisp-phase47-compiler--current-xmm-arg-regs)
+                   '(xmm0 xmm1 xmm2 xmm3)))))
+
+(ert-deftest nelisp-phase47-compiler/sysv-abi-xmm-arg-regs-dynvar ()
+  "SysV ABI keeps the existing XMM0-XMM7 f64 arg register budget."
+  (let ((nelisp-phase47-compiler--arch 'x86_64)
+        (nelisp-phase47-compiler--abi 'sysv))
+    (should (equal (nelisp-phase47-compiler--current-xmm-arg-regs)
+                   '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-defun-rejects-fifth-f64-param ()
+  "Win64 f64 defuns reject a fifth f64 param before reaching XMM4+."
+  (let ((path (make-temp-file "nelisp-win64-f64-param5-" nil ".obj")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(defun probe ((a :type f64) (b :type f64) (c :type f64)
+                         (d :type f64) (e :type f64))
+             a)
+          path :arch 'x86_64 :format 'coff)
+         :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-defun-accepts-four-f64-params ()
+  "Win64 f64 defuns accept the XMM0-XMM3 argument window."
+  (let ((path (make-temp-file "nelisp-win64-f64-param4-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe ((a :type f64) (b :type f64) (c :type f64)
+                          (d :type f64))
+              a)
+           path :arch 'x86_64 :format 'coff)
+          (should (file-exists-p path)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-extern-call-rejects-fifth-f64-arg ()
+  "Win64 extern-call rejects a fifth f64 arg before reaching XMM4+."
+  (let ((path (make-temp-file "nelisp-win64-f64-extern5-" nil ".obj")))
+    (unwind-protect
+        (should-error
+         (nelisp-phase47-compile-to-object
+          '(defun probe ()
+             (extern-call ext
+                          (:f64 (bits-to-f64 1))
+                          (:f64 (bits-to-f64 2))
+                          (:f64 (bits-to-f64 3))
+                          (:f64 (bits-to-f64 4))
+                          (:f64 (bits-to-f64 5))))
+          path :arch 'x86_64 :format 'coff)
+         :type 'nelisp-phase47-compiler-error)
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-compiler/win64-coff-smoke ()
   "Compile `(defun foo (a b) (+ a b))' to a COFF .o and check Win64 prologue.
 The first byte of .text must be 0x55 (push rbp).  The frame must NOT

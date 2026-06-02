@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-60-WIN64-GP-CALLEE-SAVE-COVERAGE
+#+STATUS: STAGE-61-WIN64-F64-XMM-ARG-LIMIT
 
 * Status
 
-- *State*: STAGE 60 Win64 GP callee-save coverage
+- *State*: STAGE 61 Win64 f64 XMM arg limit
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -47,7 +47,9 @@
   Win64 defun prologue/epilogue coverage now also preserves =RDI/RSI= in
   private frame slots below param and runtime-let storage, matching Microsoft
   x64 GP callee-save requirements even when body emitters use those registers
-  as scratch / argument registers.
+  as scratch / argument registers.  Win64 f64 argument coverage now limits
+  defuns and =extern-call= emission to =XMM0..XMM3= and rejects a fifth f64
+  argument before any =XMM4+= / callee-saved =XMM6+= register can be selected.
   =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
   =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
@@ -358,7 +360,9 @@
   rejection by verifying trivial and computed Win64 GP stack arguments are
   written at =[rsp+32]= and later after allocating shadow plus outgoing stack
   space.  Stage 60 coverage verifies Win64 defuns save and restore =RDI/RSI=
-  in private frame slots after param and runtime-let storage.
+  in private frame slots after param and runtime-let storage.  Stage 61
+  coverage verifies Win64 f64 defuns and =extern-call= use only
+  =XMM0..XMM3= and reject a fifth f64 argument before invalid XMM selection.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -572,8 +576,11 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   caller shadow space.  Stage 59 adds fifth-and-later GP stack arguments in the
   Win64 outgoing area above shadow space, including computed stack args copied
   from temporary spills.  Stage 60 adds Win64 =RDI/RSI= save/restore in private
-  frame slots below param and runtime-let storage.
-- Remaining diff: XMM6-XMM15 save rules and broader f64/cross-class coverage.
+  frame slots below param and runtime-let storage.  Stage 61 limits Win64 f64
+  args to =XMM0..XMM3= for both defuns and =extern-call=, rejecting a fifth f64
+  arg before =XMM4+= / callee-saved =XMM6+= can be selected.
+- Remaining diff: XMM6-XMM15 save rules if future emitters use callee-saved
+  XMM scratch registers, plus broader mixed GP/f64 cross-class coverage.
 - *Why Windows is easier than macOS here*: same x86_64 ISA → backend
   instructions are reused.  macOS arm64 needed *75 new ops* (7/82 implemented);
   Windows only needs the win64 ABI emit wired through every call
@@ -910,6 +917,9 @@ largest uncertainty (B1 + B2) first.
    *Win64 GP callee-save coverage SHIPPED 2026-06-03*: Win64 defuns now save
    and restore =RDI/RSI= in private frame slots below param/runtime-let storage,
    and COFF tests lock the prologue/epilogue byte shape.
+   *Win64 f64 XMM arg limit SHIPPED 2026-06-03*: Phase 47 COFF tests now verify
+   Win64 f64 defuns and =extern-call= use the =XMM0..XMM3= argument window and
+   reject a fifth f64 argument before selecting =XMM4+= / callee-saved =XMM6+=.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
