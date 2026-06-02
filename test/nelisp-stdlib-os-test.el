@@ -772,6 +772,84 @@
          :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-bind-inet-windows-uses-winsock ()
+  "Windows AF_INET bind passes encoded sockaddr_in to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in)
+               (lambda (buf host port) (setq encoded (list buf host port))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-bind-inet 3 nelisp-os-INADDR-LOOPBACK 4444) 0))))
+    (should (equal encoded (list 3000 nelisp-os-INADDR-LOOPBACK 4444)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "bind"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef 3000 nelisp-os--sockaddr-in-len)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-connect-inet-windows-uses-winsock ()
+  "Windows AF_INET connect passes encoded sockaddr_in to Winsock."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in)
+               (lambda (buf host port) (setq encoded (list buf host port))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-connect-inet 3 nelisp-os-INADDR-LOOPBACK 4444) 0))))
+    (should (equal encoded (list 3000 nelisp-os-INADDR-LOOPBACK 4444)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "connect"
+                          [:sint32 :pointer :pointer :sint32]
+                          (list #xabcdef 3000 nelisp-os--sockaddr-in-len)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-listen-windows-uses-winsock ()
+  "Windows listen dispatches to Winsock for socket-kind fds."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-listen 3 8) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "listen"
+                          [:sint32 :pointer :sint32]
+                          (list #xabcdef 8)))))))
+
+(ert-deftest nelisp-stdlib-os-listen-windows-rejects-non-socket-fd-before-ffi ()
+  "Windows listen rejects regular HANDLE fds before Winsock FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-listen 3 8) :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-kill-windows-uses-terminateprocess ()
   "Windows kill terminates a single PID through kernel32 process APIs."
   (let ((calls nil))

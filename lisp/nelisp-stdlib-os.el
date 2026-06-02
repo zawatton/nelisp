@@ -44,8 +44,9 @@
 ;; `F_SETFL'.  Stage 21 rejects Linux-only event/process fd APIs on Windows
 ;; before they can fall through to Linux syscall or libc paths.  Stage 22 starts
 ;; the Winsock branch with `WSAStartup' + `socket' and socket-specific close via
-;; `closesocket'.  The Linux/Darwin path remains the default until a real
-;; Windows standalone runtime selects `system-type' = `windows-nt'.
+;; `closesocket'.  Stage 23 maps AF_INET `bind' / `connect' / `listen' to
+;; Winsock.  The Linux/Darwin path remains the default until a real Windows
+;; standalone runtime selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -252,6 +253,12 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
   "Return the Windows resource kind for FD."
   (or (cdr (assq fd nelisp-os--windows-fd-kind-table))
       'handle))
+
+(defun nelisp-os--windows-socket-for-fd (fd)
+  "Return the Winsock SOCKET for FD, or signal EBADF."
+  (unless (eq (nelisp-os--windows-fd-kind fd) 'socket)
+    (signal 'nelisp-os-error (list 9))) ; EBADF
+  (nelisp-os--windows-fd-handle fd))
 
 (defun nelisp-os--windows-fd-handle (fd)
   "Return the Windows HANDLE for FD, or signal EBADF."
@@ -1422,17 +1429,36 @@ host byte order (e.g. `nelisp-os-INADDR-LOOPBACK').  PORT is a
     (unwind-protect
         (progn
           (nelisp-os--encode-sockaddr-in buf host-int port)
-          (let ((r (nelisp-os--libc-call "libc" "bind"
-                                [:sint32 :sint32 :pointer :uint32]
-                                fd buf nelisp-os--sockaddr-in-len)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              r)))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "bind"
+                        [:sint32 :pointer :pointer :sint32]
+                        (nelisp-os--windows-socket-for-fd fd)
+                        buf
+                        nelisp-os--sockaddr-in-len)
+                     (nelisp-os--libc-call "libc" "bind"
+                                  [:sint32 :sint32 :pointer :uint32]
+                                  fd buf nelisp-os--sockaddr-in-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
       (nelisp-os--free buf))))
 
 (defun nelisp-os-listen (fd backlog)
   "POSIX listen(2) — mark FD as accepting connections with BACKLOG."
-  (nelisp-os--check-errno (nelisp--syscall 'listen fd backlog)))
+  (if (nelisp-os--windows-p)
+      (let ((r (nelisp-os--libc-call
+                "ws2_32" "listen"
+                [:sint32 :pointer :sint32]
+                (nelisp-os--windows-socket-for-fd fd)
+                backlog)))
+        (if (= r -1)
+            (nelisp-os--windows-winsock-error-signal)
+          r))
+    (nelisp-os--check-errno (nelisp--syscall 'listen fd backlog))))
 
 (defun nelisp-os-accept-inet (sockfd)
   "POSIX accept(2) for AF_INET.  Returns list (NEWFD CLIENT-IP CLIENT-PORT)
@@ -1460,12 +1486,22 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
     (unwind-protect
         (progn
           (nelisp-os--encode-sockaddr-in buf host-int port)
-          (let ((r (nelisp-os--libc-call "libc" "connect"
-                                [:sint32 :sint32 :pointer :uint32]
-                                fd buf nelisp-os--sockaddr-in-len)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              r)))
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "connect"
+                        [:sint32 :pointer :pointer :sint32]
+                        (nelisp-os--windows-socket-for-fd fd)
+                        buf
+                        nelisp-os--sockaddr-in-len)
+                     (nelisp-os--libc-call "libc" "connect"
+                                  [:sint32 :sint32 :pointer :uint32]
+                                  fd buf nelisp-os--sockaddr-in-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
       (nelisp-os--free buf))))
 
 ;; ----- Multiplexing -----
