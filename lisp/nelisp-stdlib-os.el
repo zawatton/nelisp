@@ -86,6 +86,8 @@
 ;; Windows int-valued socket option helpers.
 ;; Stage 107 maps `IPPROTO_UDP' int-valued options through the Windows socket
 ;; option helpers.
+;; Stage 108 maps `IPPROTO_TCP' keepalive options through the Windows socket
+;; option helpers.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -296,6 +298,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-UDP-RECV-MAX-COALESCED-SIZE 3)
 (defconst nelisp-os-WIN-UDP-CHECKSUM-COVERAGE 20)
 (defconst nelisp-os-WIN-TCP-NODELAY #x0001)
+(defconst nelisp-os-WIN-TCP-KEEPIDLE 3)
+(defconst nelisp-os-WIN-TCP-KEEPCNT 16)
+(defconst nelisp-os-WIN-TCP-KEEPINTVL 17)
 (defconst nelisp-os-WIN-FIONBIO #x8004667e)
 
 ;; Windows process-launch structure sizes/offsets (x86_64).
@@ -1988,6 +1993,9 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-UDP-RECV-MAX-COALESCED-SIZE 3)
 (defconst nelisp-os-UDP-CHECKSUM-COVERAGE 20)
 (defconst nelisp-os-TCP-NODELAY   1)
+(defconst nelisp-os-TCP-KEEPIDLE 4)
+(defconst nelisp-os-TCP-KEEPINTVL 5)
+(defconst nelisp-os-TCP-KEEPCNT 6)
 
 ;; ----- Poll events -----
 
@@ -2462,6 +2470,15 @@ When GETTER-P is non-nil, include get-only options."
    ((and (= level nelisp-os-IPPROTO-TCP)
          (= optname nelisp-os-TCP-NODELAY))
     nelisp-os-WIN-TCP-NODELAY)
+   ((and (= level nelisp-os-IPPROTO-TCP)
+         (= optname nelisp-os-TCP-KEEPIDLE))
+    nelisp-os-WIN-TCP-KEEPIDLE)
+   ((and (= level nelisp-os-IPPROTO-TCP)
+         (= optname nelisp-os-TCP-KEEPINTVL))
+    nelisp-os-WIN-TCP-KEEPINTVL)
+   ((and (= level nelisp-os-IPPROTO-TCP)
+         (= optname nelisp-os-TCP-KEEPCNT))
+    nelisp-os-WIN-TCP-KEEPCNT)
    ((and (= level nelisp-os-IPPROTO-UDP)
          (= optname nelisp-os-UDP-NOCHECKSUM))
     nelisp-os-WIN-UDP-NOCHECKSUM)

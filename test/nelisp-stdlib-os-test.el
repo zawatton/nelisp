@@ -2669,6 +2669,51 @@
                                3000
                                4))))))
 
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-tcp-keepalive-options ()
+  "Windows TCP keepalive int options translate through Winsock setsockopt."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-KEEPIDLE 7200)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-KEEPINTVL 75)
+                   0))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-KEEPCNT 9)
+                   0))))
+    (should (equal (nreverse writes)
+                   '((3000 0 7200)
+                     (3000 0 75)
+                     (3000 0 9))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-IPPROTO-TCP
+                                nelisp-os-WIN-TCP-KEEPIDLE 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-IPPROTO-TCP
+                                nelisp-os-WIN-TCP-KEEPINTVL 3000 4))
+                    (list "ws2_32" "setsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-IPPROTO-TCP
+                                nelisp-os-WIN-TCP-KEEPCNT 3000 4)))))
+    (should (equal freed '(3000 3000 3000)))))
+
 (ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-udp-options ()
   "Windows IPPROTO_UDP int options translate through Winsock setsockopt."
   (let ((calls nil)
@@ -3389,6 +3434,55 @@
                                nelisp-os-WIN-TCP-NODELAY
                                3000
                                4000))))))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-tcp-keepalive-options ()
+  "Windows TCP keepalive int options translate through Winsock getsockopt."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr _off)
+                 (cdr (assq ptr '((3000 . 7200)
+                                  (5000 . 75)
+                                  (7000 . 9))))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-KEEPIDLE)
+                   7200))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-KEEPINTVL)
+                   75))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-KEEPCNT)
+                   9))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-IPPROTO-TCP
+                                nelisp-os-WIN-TCP-KEEPIDLE 3000 4000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-IPPROTO-TCP
+                                nelisp-os-WIN-TCP-KEEPINTVL 5000 6000))
+                    (list "ws2_32" "getsockopt"
+                          [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                          (list #xabcdef nelisp-os-IPPROTO-TCP
+                                nelisp-os-WIN-TCP-KEEPCNT 7000 8000)))))
+    (should (equal (sort freed #'<)
+                   '(3000 4000 5000 6000 7000 8000)))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-udp-options ()
   "Windows IPPROTO_UDP int options translate through Winsock getsockopt."
