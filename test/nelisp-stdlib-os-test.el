@@ -667,6 +667,75 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-wait-windows-uses-waitforsingleobject ()
+  "Windows wait opens a process, waits, reads exit code, and closes it."
+  (let ((calls nil)
+        (freed nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 7))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "OpenProcess") #xabcdef)
+                  ((equal fn "WaitForSingleObject") nelisp-os-WIN-WAIT-OBJECT-0)
+                  ((equal fn "GetExitCodeProcess") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-wait 1234 0)
+                       (cons 1234 (ash 7 8))))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "OpenProcess"
+                          [:pointer :uint32 :sint32 :uint32]
+                          (list (logior nelisp-os-WIN-SYNCHRONIZE
+                                        nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION)
+                                0 1234))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef nelisp-os-WIN-INFINITE))
+                    (list "kernel32" "GetExitCodeProcess"
+                          [:sint32 :pointer :pointer]
+                          (list #xabcdef 3000))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xabcdef)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-wait-windows-wnohang-timeout ()
+  "Windows WNOHANG wait returns (0 . 0) on timeout."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "OpenProcess") #xabcdef)
+                  ((equal fn "WaitForSingleObject") nelisp-os-WIN-WAIT-TIMEOUT)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-wait 1234 nelisp-os-WNOHANG)
+                       '(0 . 0)))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "OpenProcess"
+                          [:pointer :uint32 :sint32 :uint32]
+                          (list (logior nelisp-os-WIN-SYNCHRONIZE
+                                        nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION)
+                                0 1234))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef 0))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xabcdef)))))))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

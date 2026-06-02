@@ -37,9 +37,10 @@
 ;; Stage 14 maps the minimal `fstat' shape to `GetFileType' / `GetFileSizeEx'.
 ;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  Stage 16 maps
 ;; single-PID `kill' to `OpenProcess' / `TerminateProcess'.  Stage 17 maps
-;; `execve' to `CreateProcessW' + `ExitProcess'.  The Linux/Darwin path remains
-;; the default until a real Windows standalone runtime selects `system-type' =
-;; `windows-nt'.
+;; `execve' to `CreateProcessW' + `ExitProcess'.  Stage 18 maps `wait' to
+;; `OpenProcess' / `WaitForSingleObject' / `GetExitCodeProcess'.  The
+;; Linux/Darwin path remains the default until a real Windows standalone runtime
+;; selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -124,6 +125,13 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 ;; Windows process access constants.
 (defconst nelisp-os-WIN-PROCESS-TERMINATE #x0001)
+(defconst nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION #x1000)
+(defconst nelisp-os-WIN-SYNCHRONIZE #x00100000)
+
+;; Windows wait constants.
+(defconst nelisp-os-WIN-INFINITE #xffffffff)
+(defconst nelisp-os-WIN-WAIT-OBJECT-0 #x00000000)
+(defconst nelisp-os-WIN-WAIT-TIMEOUT #x00000102)
 
 ;; Windows process-launch structure sizes/offsets (x86_64).
 (defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
@@ -1016,6 +1024,51 @@ list and ENVP list of strings.  Only returns on failure (signals
         (nelisp-os--free-cstr-array argv-pair)
         (nelisp-os--free-cstr-array envp-pair)))))
 
+(defun nelisp-os--windows-wait (pid options)
+  "Windows implementation of `nelisp-os-wait' for a positive PID."
+  (when (or (<= pid 0)
+            (not (memq options (list 0 nelisp-os-WNOHANG))))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((handle (nelisp-os--libc-call
+                 "kernel32" "OpenProcess"
+                 [:pointer :uint32 :sint32 :uint32]
+                 (logior nelisp-os-WIN-SYNCHRONIZE
+                         nelisp-os-WIN-PROCESS-QUERY-LIMITED-INFORMATION)
+                 0
+                 pid)))
+    (if (= handle 0)
+        (nelisp-os--windows-ffi-error-signal)
+      (unwind-protect
+          (let* ((timeout (if (= options nelisp-os-WNOHANG)
+                              0
+                            nelisp-os-WIN-INFINITE))
+                 (wait-rc (nelisp-os--libc-call
+                           "kernel32" "WaitForSingleObject"
+                           [:uint32 :pointer :uint32]
+                           handle timeout)))
+            (cond
+             ((= wait-rc nelisp-os-WIN-WAIT-TIMEOUT)
+              (cons 0 0))
+             ((= wait-rc nelisp-os-WIN-WAIT-OBJECT-0)
+              (let ((exit-code-buf (nelisp-os--alloc 4)))
+                (unwind-protect
+                    (let ((ok (nelisp-os--libc-call
+                               "kernel32" "GetExitCodeProcess"
+                               [:sint32 :pointer :pointer]
+                               handle exit-code-buf)))
+                      (if (= ok 0)
+                          (nelisp-os--windows-ffi-error-signal)
+                          (cons pid (ash (nelisp-os-read-u32 exit-code-buf 0) 8))))
+                  (nelisp-os--free exit-code-buf))))
+             (t
+              (nelisp-os--windows-ffi-error-signal))))
+        (let ((close-ok (nelisp-os--libc-call
+                         "kernel32" "CloseHandle"
+                         [:sint32 :pointer]
+                         handle)))
+          (if (= close-ok 0)
+              (nelisp-os--windows-ffi-error-signal)))))))
+
 (defun nelisp-os-wait (pid options)
   "POSIX wait4(2) — wait for child PID with OPTIONS (= 0, WNOHANG, etc.).
 Returns cons (CHILD-PID . STATUS) on success, or signals
@@ -1023,15 +1076,17 @@ Returns cons (CHILD-PID . STATUS) on success, or signals
 returns (0 . 0)."
   ;; libc.wait4(pid_t pid, int *status, int options, struct rusage *ru).
   ;; rusage = NULL (= raw 0 via :pointer).
-  (let ((status-buf (nelisp-os--alloc 4)))
-    (unwind-protect
-        (let ((r (nelisp-os--libc-call "libc" "wait4"
-                              [:sint32 :sint32 :pointer :sint32 :pointer]
-                              pid status-buf options 0)))
-          (if (= r -1)
-              (nelisp-os--ffi-errno-signal)
-            (cons r (nelisp-os-read-i32 status-buf 0))))
-      (nelisp-os--free status-buf))))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-wait pid options)
+    (let ((status-buf (nelisp-os--alloc 4)))
+      (unwind-protect
+          (let ((r (nelisp-os--libc-call "libc" "wait4"
+                                [:sint32 :sint32 :pointer :sint32 :pointer]
+                                pid status-buf options 0)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (cons r (nelisp-os-read-i32 status-buf 0))))
+        (nelisp-os--free status-buf)))))
 
 (defun nelisp-os--windows-kill (pid sig)
   "Windows implementation of single-PID `nelisp-os-kill'."
