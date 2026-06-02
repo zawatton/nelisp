@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 30 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 31 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -78,7 +78,9 @@
   proves mark/sweep can push a dead arena block onto the free-list and reuse it
   without advancing the bump pointer.  Stage 30 links the standalone consbox
   allocator, Cons constructor, and Cons accessors, proving boxed Cons
-  construction works over the Windows arena.
+  construction works over the Windows arena.  Stage 31 links the NlConsBox
+  clone kernel and proves its inline =atomic-fetch-add= refcount bump works
+  in a Windows standalone PE.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

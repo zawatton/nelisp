@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -61,6 +61,8 @@
 ;; GC unit and proves mark/sweep can free and reuse an arena block.
 ;; Stage 30 links the consbox allocator, cons constructor, and cons accessors,
 ;; proving boxed Cons construction works over the Windows arena.
+;; Stage 31 links the NlConsBox clone kernel and proves its inline
+;; `atomic-fetch-add' refcount bump works in a Windows standalone PE.
 
 ;;; Code:
 
@@ -73,6 +75,7 @@
 (require 'nelisp-cc-jit-cons-car-ptr)
 (require 'nelisp-cc-jit-cons-cdr-ptr)
 (require 'nelisp-cc-nlconsbox-alloc)
+(require 'nelisp-cc-nlconsbox-clone)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
   "Write OUT-PATH as a PE32+ EXE calling ExitProcess(EXIT-CODE)."
@@ -1256,6 +1259,52 @@ link-units."
                     arena-rva iat-rvas)))
        (list start driver cons consbox car-ptr cdr-ptr arena)))))
 
+(defun nelisp-windows-build--standalone-consbox-clone-driver42-bytes ()
+  "Return a PE32+ EXE proving NlConsBox clone works on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(defun driver ()
+                        (let* ((arena (nl_arena_init)))
+                          (if (= arena 0)
+                              34
+                            (let* ((box (nl_alloc_consbox)))
+                              (if (= box 0)
+                                  35
+                                (let* ((ret (nelisp_nlconsbox_clone box)))
+                                  (if (= ret box)
+                                      (if (= (ptr-read-u64 (+ box 64) 0) 2)
+                                          (if (= (ptr-read-u64 box 0) 0)
+                                              (if (= (ptr-read-u64 (+ box 32) 0) 0)
+                                                  42
+                                                38)
+                                            37)
+                                        36)
+                                    35)))))))
+                     driver-rva iat-rvas))
+            (clone-rva (+ driver-rva
+                          (nelisp-windows-build--unit-text-length driver)))
+            (clone (nelisp-windows-build--compile-defuns-to-unit
+                    "consbox-clone.o" nelisp-cc-nlconsbox-clone--source
+                    clone-rva iat-rvas))
+            (consbox-rva (+ clone-rva
+                            (nelisp-windows-build--unit-text-length clone)))
+            (consbox (nelisp-windows-build--compile-defuns-to-unit
+                      "consbox.o" nelisp-cc-nlconsbox-alloc--source
+                      consbox-rva iat-rvas))
+            (arena-rva (+ consbox-rva
+                          (nelisp-windows-build--unit-text-length consbox)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver clone consbox arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1423,6 +1472,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone Cons construct)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-consbox-clone-driver42 ()
+  "Batch entry: build the standalone NlConsBox clone probe."
+  (let ((bytes (nelisp-windows-build--standalone-consbox-clone-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-consbox-clone-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone NlConsBox clone)"
              out-path)
     out-path))
 
