@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -1287,6 +1287,57 @@
                    #x00000020 #x00000028 #x00000030 #x00000038
                    #x00000040 #x0000006f #x000000de #x0000014d
                    #x000001bc #x0000022b #x0000029a))
+      (should (string-match-p
+               (regexp-quote
+                (unibyte-string (logand imm #xff)
+                                (logand (ash imm -8) #xff)
+                                (logand (ash imm -16) #xff)
+                                (logand (ash imm -24) #xff)))
+               text)))))
+
+(ert-deftest nelisp-windows-build-standalone-vector-imports-virtualalloc ()
+  "Stage 34 standalone NlVector PE imports ExitProcess and VirtualAlloc."
+  (let* ((bytes (nelisp-windows-build--standalone-vector-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (equal imports '("ExitProcess" "VirtualAlloc")))))
+
+(ert-deftest nelisp-windows-build-standalone-vector-text-calls-virtualalloc ()
+  "Stage 34 linked NlVector allocation calls VirtualAlloc through IAT."
+  (let* ((bytes (nelisp-windows-build--standalone-vector-driver42-bytes))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes))
+         (iat-rvas (nelisp-windows-build-test--kernel32-iat-rvas bytes))
+         (iat-map (cl-mapcar #'cons imports iat-rvas))
+         (text-bounds (nelisp-windows-build-test--section-raw-bounds
+                       bytes ".text"))
+         (text-raw (car text-bounds))
+         (text-end (cdr text-bounds))
+         (text (substring bytes text-raw text-end))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw text-end)))
+    (should (member (cdr (assoc "ExitProcess" iat-map)) targets))
+    (should (member (cdr (assoc "VirtualAlloc" iat-map)) targets))
+    (dolist (status '(#x3b #x3c #x3d #x3e #x3f #x40 #x41 #x42
+                      #x43 #x44 #x45 #x46 #x2a))
+      (should (string-match-p
+               (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                              status #x00 #x00 #x00))
+               text)))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-standalone-vector-checks-invariants ()
+  "Stage 34 driver checks vector header, Nil fill, and element copy."
+  (let* ((bytes (nelisp-windows-build--standalone-vector-driver42-bytes))
+         (text-bounds (nelisp-windows-build-test--section-raw-bounds
+                       bytes ".text"))
+         (text-raw (car text-bounds))
+         (text-end (cdr text-bounds))
+         (text (substring bytes text-raw text-end)))
+    (dolist (imm '(#x00000001 #x00000002 #x00000003
+                   #x00000008 #x00000010 #x00000018 #x00000020
+                   #x00000028 #x00000030 #x00000038 #x00000040
+                   #x00000309 #x00000378 #x000003e7))
       (should (string-match-p
                (regexp-quote
                 (unibyte-string (logand imm #xff)

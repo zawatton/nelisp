@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -68,6 +68,8 @@
 ;; work in a Windows standalone PE.
 ;; Stage 33 links the NlConsBox set-car/set-cdr kernels and proves raw
 ;; 32-byte slot updates work over Windows arena-backed Cons boxes.
+;; Stage 34 links the NlVector allocator/set-slot kernels and proves
+;; vector header, Nil-filled slots, refcount, and element updates.
 
 ;;; Code:
 
@@ -84,6 +86,8 @@
 (require 'nelisp-cc-nlconsbox-clone)
 (require 'nelisp-cc-nlconsbox-set-car)
 (require 'nelisp-cc-nlconsbox-set-cdr)
+(require 'nelisp-cc-nlvector-alloc)
+(require 'nelisp-cc-nlvector-set-slot)
 (require 'nelisp-cc-nlstr-direct-ops)
 (require 'nelisp-cc-nlstr-clone)
 (require 'nelisp-cc-nlvector-clone)
@@ -1520,6 +1524,71 @@ link-units."
                     arena-rva iat-rvas)))
        (list start driver setcar setcdr consbox arena)))))
 
+(defun nelisp-windows-build--standalone-vector-driver42-bytes ()
+  "Return a PE32+ EXE proving NlVector allocation and set-slot on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(defun driver ()
+                        (let* ((arena (nl_arena_init)))
+                          (if (= arena 0)
+                              59
+                            (let* ((vec (nl_alloc_vector 3))
+                                   (val (nl_alloc_bytes 32 8)))
+                              (if (= val 0)
+                                  60
+                                (let* ((data (ptr-read-u64 vec 8)))
+                                  (if (= (ptr-read-u64 vec 0) 3)
+                                      (if (= (ptr-read-u64 vec 16) 3)
+                                          (if (= (ptr-read-u64 (+ vec 24) 0) 1)
+                                              (if (= (ptr-read-u64 data 0) 0)
+                                                  (if (= (ptr-read-u64 (+ data 32) 0) 0)
+                                                      (if (= (ptr-read-u64 (+ data 64) 0) 0)
+                                                          (seq
+                                                           (ptr-write-u64 val 0 2)
+                                                           (ptr-write-u64 (+ val 8) 0 777)
+                                                           (ptr-write-u64 (+ val 16) 0 888)
+                                                           (ptr-write-u64 (+ val 24) 0 999)
+                                                           (nl_vector_set_slot vec 1 val)
+                                                           (if (= (ptr-read-u64 (+ data 32) 0) 2)
+                                                               (if (= (ptr-read-u64 (+ data 40) 0) 777)
+                                                                   (if (= (ptr-read-u64 (+ data 48) 0) 888)
+                                                                       (if (= (ptr-read-u64 (+ data 56) 0) 999)
+                                                                           42
+                                                                         70)
+                                                                     69)
+                                                                 68)
+                                                             67))
+                                                        66)
+                                                    65)
+                                                64)
+                                            63)
+                                        62)
+                                    61)))))))
+                     driver-rva iat-rvas))
+            (vec-rva (+ driver-rva
+                        (nelisp-windows-build--unit-text-length driver)))
+            (vec (nelisp-windows-build--compile-defuns-to-unit
+                  "vec-alloc.o" nelisp-cc-nlvector-alloc--source
+                  vec-rva iat-rvas))
+            (set-rva (+ vec-rva
+                        (nelisp-windows-build--unit-text-length vec)))
+            (set (nelisp-windows-build--compile-defuns-to-unit
+                  "vec-set.o" nelisp-cc-nlvector-set-slot--source
+                  set-rva iat-rvas))
+            (arena-rva (+ set-rva
+                          (nelisp-windows-build--unit-text-length set)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver vec set arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -1717,6 +1786,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone NlConsBox set)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-vector-driver42 ()
+  "Batch entry: build the standalone NlVector allocation/set probe."
+  (let ((bytes (nelisp-windows-build--standalone-vector-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-vector-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone NlVector)"
              out-path)
     out-path))
 
