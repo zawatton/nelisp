@@ -385,6 +385,42 @@
                      (3 . #x1111222233334444))))
     (should (equal (sort freed #'<) '(1000 2000)))))
 
+(ert-deftest nelisp-stdlib-os-lseek-windows-uses-setfilepointerex ()
+  "Windows lseek routes through SetFilePointerEx and returns new offset."
+  (let ((call nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #x445566778899aabb))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 0))
+                 123456))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-lseek 3 120 nelisp-os-SEEK-CUR) 123456))))
+    (should (equal call
+                   (list "kernel32" "SetFilePointerEx"
+                         [:sint32 :pointer :sint64 :pointer :uint32]
+                         (list #x445566778899aabb 120 3000
+                               nelisp-os-SEEK-CUR))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-lseek-windows-invalid-whence-errors ()
+  "Windows lseek rejects unsupported whence before calling FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #x1234))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-lseek 3 0 99)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-read-windows-regular-fd-uses-readfile ()
   "Windows regular fd read uses the HANDLE table and ReadFile."
   (let ((calls nil)

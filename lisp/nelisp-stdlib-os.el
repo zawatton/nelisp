@@ -33,8 +33,9 @@
 ;; `VirtualAlloc' / `VirtualProtect' / `VirtualFree'.  Stage 11 routes the
 ;; minimal process identity/exit surface through `GetCurrentProcessId' and
 ;; `ExitProcess'.  Stage 12 maps `pipe' to `CreatePipe' and stores both HANDLEs
-;; in the Windows fd table.  The Linux/Darwin path remains the default until a
-;; real Windows standalone runtime selects `system-type' = `windows-nt'.
+;; in the Windows fd table.  Stage 13 maps `lseek' to `SetFilePointerEx'.  The
+;; Linux/Darwin path remains the default until a real Windows standalone runtime
+;; selects `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -533,6 +534,26 @@ went through `:string' (= CString::new, NUL-rejecting)."
       (nelisp-os--free write-handle-buf)
       (nelisp-os--free read-handle-buf))))
 
+(defun nelisp-os--windows-lseek (fd offset whence)
+  "Windows implementation of `nelisp-os-lseek' via SetFilePointerEx."
+  (unless (memq whence (list nelisp-os-SEEK-SET
+                             nelisp-os-SEEK-CUR
+                             nelisp-os-SEEK-END))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((new-pos-buf (nelisp-os--alloc 8)))
+    (unwind-protect
+        (let* ((handle (if (nelisp-os--windows-std-handle-selector fd)
+                           (nelisp-os--windows-get-std-handle fd)
+                         (nelisp-os--windows-fd-handle fd)))
+               (ok (nelisp-os--libc-call
+                    "kernel32" "SetFilePointerEx"
+                    [:sint32 :pointer :sint64 :pointer :uint32]
+                    handle offset new-pos-buf whence)))
+          (if (= ok 0)
+              (nelisp-os--windows-ffi-error-signal)
+            (nelisp-os-read-i64 new-pos-buf 0)))
+      (nelisp-os--free new-pos-buf))))
+
 ;; struct stat st_mode bits
 (defconst nelisp-os-S-IFMT  61440)          ; 0o170000
 (defconst nelisp-os-S-IFREG 32768)          ; 0o100000
@@ -544,7 +565,9 @@ went through `:string' (= CString::new, NUL-rejecting)."
 (defun nelisp-os-lseek (fd offset whence)
   "POSIX lseek(2) — return new offset or signal `nelisp-os-error'.
 WHENCE = `nelisp-os-SEEK-SET' / `-CUR' / `-END'."
-  (nelisp-os--check-errno (nelisp--syscall 'lseek fd offset whence)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-lseek fd offset whence)
+    (nelisp-os--check-errno (nelisp--syscall 'lseek fd offset whence))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 76 Stage A.3 — Linux x86_64 / aarch64 struct stat field offsets.
