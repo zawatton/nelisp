@@ -690,6 +690,35 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-linux-only-apis-windows-error-before-syscall ()
+  "Linux-only event/process fd APIs reject Windows before raw syscall/libc."
+  (let ((called nil)
+        (forms
+         (list
+          (lambda () (nelisp-os-fork))
+          (lambda () (nelisp-os-pidfd-open 1234 0))
+          (lambda () (nelisp-os-pidfd-send-signal 3 nelisp-os-SIGTERM 0))
+          (lambda () (nelisp-os-inotify-init 0))
+          (lambda () (nelisp-os-inotify-add-watch 3 "x" nelisp-os-IN-ALL-EVENTS))
+          (lambda () (nelisp-os-inotify-rm-watch 3 1))
+          (lambda () (nelisp-os-inotify-read 3 1))
+          (lambda () (nelisp-os-eventfd 0 0))
+          (lambda () (nelisp-os-signalfd -1 (list nelisp-os-SIGTERM) 0))
+          (lambda () (nelisp-os-signalfd-read 3 1))
+          (lambda () (nelisp-os-timerfd-create 0 0))
+          (lambda () (nelisp-os-timerfd-settime 3 0 0 0 1 0))
+          (lambda () (nelisp-os-timerfd-gettime 3)))))
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (dolist (fn forms)
+          (should-error (funcall fn) :type 'nelisp-os-error))))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-kill-windows-uses-terminateprocess ()
   "Windows kill terminates a single PID through kernel32 process APIs."
   (let ((calls nil))

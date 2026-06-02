@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-20-WINDOWS-FCNTL-MINIMAL-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-21-LINUX-ONLY-API-WINDOWS-GUARDS-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 20 Windows fcntl minimal + first real Windows smoke VALIDATED
+- *State*: STAGE 21 Linux-only API Windows guards + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -69,7 +69,11 @@
   underlying HANDLE with =DuplicateHandle= and installs it in the Windows fd
   table, =F_GETFL= validates the fd and returns =0=, and =F_SETFL= supports the
   no-op =0= case while rejecting unsupported flag updates such as
-  =O_NONBLOCK=.
+  =O_NONBLOCK=.  Linux-only process/event fd APIs now reject Windows before
+  reaching Linux syscall or Linux libc paths: =fork=, =pidfd_*=, =inotify_*=,
+  =eventfd=, =signalfd=, and =timerfd_*= signal =nelisp-os-error= with
+  =ENOTSUP= on Windows.  This does not implement Windows replacements for those
+  Linux facilities; it removes another class of impossible raw-syscall fallbacks.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -109,7 +113,9 @@
   parent-PID extraction, no-more-files handling, and snapshot HANDLE cleanup.
   Stage 20 coverage verifies Windows =F_DUPFD= HANDLE duplication and fd-table
   allocation, =F_GETFL= / =F_SETFL= no-op behavior, and unsupported
-  =F_SETFL= flag rejection before FFI.
+  =F_SETFL= flag rejection before FFI.  Stage 21 coverage verifies Linux-only
+  process/event fd APIs reject Windows before invoking raw syscall, libc FFI, or
+  allocation helpers.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -152,7 +158,8 @@
   path over =OpenProcess= / =WaitForSingleObject= / =GetExitCodeProcess=.
   Stage 19 adds Windows =getppid= through Tool Help process snapshots.
   Stage 20 adds a minimal Windows =fcntl= branch for =F_DUPFD= / =F_GETFL= /
-  =F_SETFL=.
+  =F_SETFL=.  Stage 21 guards Linux-only process/event fd APIs on Windows so
+  they signal =ENOTSUP= instead of entering Linux syscall/libc code.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -335,6 +342,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows fcntl progress 2026-06-02*: =nelisp-os-fcntl= now handles =F_DUPFD=
   through =DuplicateHandle= + fd-table allocation, validates =F_GETFL=, and
   supports no-op =F_SETFL= while rejecting unsupported flag changes.
+  *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
+  =eventfd=, =signalfd=, and =timerfd= entry points now reject Windows before
+  reaching Linux syscall/libc paths.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -401,6 +411,9 @@ largest uncertainty (B1 + B2) first.
    *Windows fcntl branch SHIPPED 2026-06-02*: =nelisp-os-fcntl= supports the
    int-only =F_DUPFD= / =F_GETFL= / no-op =F_SETFL= subset without falling back
    to raw syscalls.
+   *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
+   fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
+   fallback.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
@@ -418,7 +431,8 @@ largest uncertainty (B1 + B2) first.
    =nelisp-os-getpid= route to =ExitProcess= / =GetCurrentProcessId= on
    Windows; single-PID =kill=, =execve= compatibility, and positive-PID =wait=
    are also covered, and =getppid= now uses Tool Help snapshots.
-   =fork/clone/CreateThread= and full child tracking remain pending.
+   =fork/clone/CreateThread= and full child tracking remain pending; Linux-only
+   event fd APIs are guarded, not ported.
 
 * One-line summary
 
