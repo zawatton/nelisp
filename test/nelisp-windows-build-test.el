@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -58,6 +58,25 @@
         (rdata-raw #x400))
     (nelisp-windows-build-test--read-cstr
      bytes (+ rdata-raw (- rva rdata-rva) 2))))
+
+(defun nelisp-windows-build-test--kernel32-import-names (bytes)
+  "Return KERNEL32 import names from EXE BYTES."
+  (let* ((peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-rva (nelisp-windows-build-test--read-le32 bytes (+ opt 120)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (import-off (+ rdata-raw (- import-rva rdata-rva)))
+         (oft (nelisp-windows-build-test--read-le32 bytes import-off))
+         (thunk-off (+ rdata-raw (- oft rdata-rva)))
+         (names nil)
+         (cursor thunk-off)
+         (rva nil))
+    (while (not (zerop (setq rva (nelisp-windows-build-test--read-le64
+                                  bytes cursor))))
+      (push (nelisp-windows-build-test--import-name-at bytes rva) names)
+      (setq cursor (+ cursor 8)))
+    (nreverse names)))
 
 (defun nelisp-windows-build-test--iat-call-targets (bytes start end)
   "Return target RVAs for `call qword [rip+disp32]' between START and END."
@@ -306,6 +325,109 @@
     (should-not (string-match-p
                  (regexp-quote (unibyte-string #x0f #x05))
                  text))))
+
+(ert-deftest nelisp-windows-build-phase47-syscall-read-imports-readfile ()
+  "Windows stdio `syscall-direct' read imports ReadFile."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun sysread_probe ()
+                     (let* ((p (alloc-bytes 1 1)))
+                       (if (= p 0)
+                           13
+                         (let* ((n (syscall-direct 0 0 p 1 0 0 0))
+                                (b (ptr-read-u8 p 0)))
+                           (seq
+                            (dealloc-bytes p 1 1)
+                            (if (= n 1) b 14))))))
+                   (exit (sysread_probe)))))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (member "ExitProcess" imports))
+    (should (member "GetStdHandle" imports))
+    (should (member "ReadFile" imports))
+    (should (member "VirtualAlloc" imports))
+    (should (member "VirtualFree" imports))))
+
+(ert-deftest nelisp-windows-build-phase47-syscall-read-text-calls-readfile ()
+  "Windows stdio `syscall-direct' read emits ReadFile IAT calls."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun sysread_probe ()
+                     (let* ((p (alloc-bytes 1 1)))
+                       (if (= p 0)
+                           13
+                         (let* ((n (syscall-direct 0 0 p 1 0 0 0))
+                                (b (ptr-read-u8 p 0)))
+                           (seq
+                            (dealloc-bytes p 1 1)
+                            (if (= n 1) b 14))))))
+                   (exit (sysread_probe)))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 360)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 360))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xb9 #xf6 #xff #xff #xff))
+             text))
+    (should (member #x2060 targets))
+    (should (member #x2068 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-phase47-syscall-write-imports-writefile ()
+  "Windows stdio `syscall-direct' write imports WriteFile."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun syswrite_probe ()
+                     (let* ((p (alloc-bytes 1 1)))
+                       (if (= p 0)
+                           13
+                         (seq
+                          (ptr-write-u8 p 0 88)
+                          (syscall-direct 1 1 p 1 0 0 0)
+                          (dealloc-bytes p 1 1)
+                          42))))
+                   (exit (syswrite_probe)))))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (member "ExitProcess" imports))
+    (should (member "GetStdHandle" imports))
+    (should (member "WriteFile" imports))
+    (should (member "VirtualAlloc" imports))
+    (should (member "VirtualFree" imports))))
+
+(ert-deftest nelisp-windows-build-phase47-syscall-write-text-calls-writefile ()
+  "Windows stdio `syscall-direct' write emits WriteFile IAT calls."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun syswrite_probe ()
+                     (let* ((p (alloc-bytes 1 1)))
+                       (if (= p 0)
+                           13
+                         (seq
+                          (ptr-write-u8 p 0 88)
+                          (syscall-direct 1 1 p 1 0 0 0)
+                          (dealloc-bytes p 1 1)
+                          42))))
+                   (exit (syswrite_probe)))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 340)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 340))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xb9 #xf5 #xff #xff #xff))
+             text))
+    (should (member #x2060 targets))
+    (should (member #x2068 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-phase47-unsupported-syscall-rejected ()
+  "Windows rejects `syscall-direct' forms that are not mapped to Win32 APIs."
+  (should-error
+   (nelisp-windows-build--phase47-executable-bytes
+    '(exit (syscall-direct 2 0 0 0 0 0 0)))
+   :type 'nelisp-phase47-compiler-error))
 
 (provide 'nelisp-windows-build-test)
 

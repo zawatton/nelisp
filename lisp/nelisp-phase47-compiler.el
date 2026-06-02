@@ -171,6 +171,9 @@ ignores this var (= AAPCS64 only).")
 (defvar nelisp-phase47-compiler--windows-writefile-iat-rva nil
   "RVA of KERNEL32.dll!WriteFile IAT slot for Windows executable emit.")
 
+(defvar nelisp-phase47-compiler--windows-readfile-iat-rva nil
+  "RVA of KERNEL32.dll!ReadFile IAT slot for Windows executable emit.")
+
 (defvar nelisp-phase47-compiler--windows-virtualalloc-iat-rva nil
   "RVA of KERNEL32.dll!VirtualAlloc IAT slot for Windows executable emit.")
 
@@ -13021,30 +13024,32 @@ order (A5→r9, A4→r8, A3→r10, A2→rdx, A1→rsi, A0→rdi, NR→rax).
 SYSCALL clobbers rcx and r11; the result is left in rax.
 Stack alignment: 7 pushes (= 56 bytes offset); SYSCALL itself does
 not require 16-byte alignment, so no extra pad is needed."
-  ;; Push NR first, then A0..A5 (will be popped in reverse).
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :nr) buf)
-  (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a0) buf)
-  (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a1) buf)
-  (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a2) buf)
-  (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a3) buf)
-  (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a4) buf)
-  (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a5) buf)
-  (nelisp-asm-x86_64-push buf 'rax)
-  ;; Pop into syscall registers (reverse of push order).
-  (nelisp-asm-x86_64-pop buf 'r9)
-  (nelisp-asm-x86_64-pop buf 'r8)
-  (nelisp-asm-x86_64-pop buf 'r10)
-  (nelisp-asm-x86_64-pop buf 'rdx)
-  (nelisp-asm-x86_64-pop buf 'rsi)
-  (nelisp-asm-x86_64-pop buf 'rdi)
-  (nelisp-asm-x86_64-pop buf 'rax)
-  (nelisp-asm-x86_64-syscall buf))
+  (if (eq nelisp-phase47-compiler--os 'windows)
+      (nelisp-phase47-compiler--emit-windows-syscall-direct node buf)
+    ;; Push NR first, then A0..A5 (will be popped in reverse).
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :nr) buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a0) buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a1) buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a2) buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a3) buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a4) buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a5) buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    ;; Pop into syscall registers (reverse of push order).
+    (nelisp-asm-x86_64-pop buf 'r9)
+    (nelisp-asm-x86_64-pop buf 'r8)
+    (nelisp-asm-x86_64-pop buf 'r10)
+    (nelisp-asm-x86_64-pop buf 'rdx)
+    (nelisp-asm-x86_64-pop buf 'rsi)
+    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-pop buf 'rax)
+    (nelisp-asm-x86_64-syscall buf)))
 
 ;; ---- Doc 101 §101.D Cons construction ops ----
 
@@ -13567,6 +13572,91 @@ the absolute virtual address of byte 0 of .rodata."
      buf nelisp-phase47-compiler--windows-writefile-iat-rva)
     (nelisp-asm-x86_64-emit-bytes
      buf (unibyte-string #x48 #x83 #xc4 #x38)))) ; add rsp, 56
+
+(defun nelisp-phase47-compiler--ir-imm-value (node)
+  "Return NODE's immediate value, or nil when NODE is not an immediate."
+  (when (= (nelisp-phase47-compiler--ir-kind-tag node) 30)
+    (nelisp-phase47-compiler--ir-get node :value)))
+
+(defun nelisp-phase47-compiler--ir-imm-eq-p (node value)
+  "Return non-nil when NODE is an immediate integer equal to VALUE."
+  (let ((actual (nelisp-phase47-compiler--ir-imm-value node)))
+    (and (integerp actual) (= actual value))))
+
+(defun nelisp-phase47-compiler--emit-windows-stdio-file-call
+    (node buf std-handle read-p)
+  "Emit a Win64 ReadFile/WriteFile call for a stdio `syscall-direct' NODE.
+STD-HANDLE is the signed GetStdHandle constant.  READ-P selects
+ReadFile when non-nil and WriteFile otherwise.  Returns the transferred
+byte count from the DWORD out parameter in rax."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-getstdhandle-iat-rva
+               (if read-p
+                   nelisp-phase47-compiler--windows-readfile-iat-rva
+                 nelisp-phase47-compiler--windows-writefile-iat-rva))
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-stdio-import-missing)))
+  (let ((ptr (nelisp-phase47-compiler--ir-get node :a1))
+        (len (nelisp-phase47-compiler--ir-get node :a2))
+        (frame (+ (nelisp-phase47-compiler--windows-api-shadow-size) 16))
+        (callee (if read-p
+                    nelisp-phase47-compiler--windows-readfile-iat-rva
+                  nelisp-phase47-compiler--windows-writefile-iat-rva)))
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value len buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #xb9)) ; mov ecx, STD_*_HANDLE
+    (nelisp-phase47-compiler--emit-le32-signed buf std-handle)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-getstdhandle-iat-rva)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax) ; hFile
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rdx (+ frame 8)) ; buffer
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'r8 frame) ; byte count
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x4c #x8d #x4c #x24 #x28)) ; lea r9, [rsp+40]
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x48 #xc7 #x44 #x24 #x20 0 0 0 0)) ; arg5 NULL
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #xc7 #x44 #x24 #x28 0 0 0 0)) ; out DWORD = 0
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva buf callee)
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x8b #x44 #x24 #x28)) ; mov eax, [rsp+40]
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp 16)))
+
+(defun nelisp-phase47-compiler--emit-windows-syscall-direct (node buf)
+  "Emit supported Windows replacements for Linux `syscall-direct'."
+  (let ((nr (nelisp-phase47-compiler--ir-get node :nr))
+        (a0 (nelisp-phase47-compiler--ir-get node :a0))
+        (a3 (nelisp-phase47-compiler--ir-get node :a3))
+        (a4 (nelisp-phase47-compiler--ir-get node :a4))
+        (a5 (nelisp-phase47-compiler--ir-get node :a5)))
+    (unless (and (nelisp-phase47-compiler--ir-imm-eq-p a3 0)
+                 (nelisp-phase47-compiler--ir-imm-eq-p a4 0)
+                 (nelisp-phase47-compiler--ir-imm-eq-p a5 0))
+      (signal 'nelisp-phase47-compiler-error
+              (list :windows-syscall-direct-trailing-args-unsupported)))
+    (cond
+     ((and (nelisp-phase47-compiler--ir-imm-eq-p nr 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a0 0))
+      (nelisp-phase47-compiler--emit-windows-stdio-file-call
+       node buf -10 t))
+     ((and (nelisp-phase47-compiler--ir-imm-eq-p nr 1)
+           (nelisp-phase47-compiler--ir-imm-eq-p a0 1))
+      (nelisp-phase47-compiler--emit-windows-stdio-file-call
+       node buf -11 nil))
+     ((and (nelisp-phase47-compiler--ir-imm-eq-p nr 1)
+           (nelisp-phase47-compiler--ir-imm-eq-p a0 2))
+      (nelisp-phase47-compiler--emit-windows-stdio-file-call
+       node buf -12 nil))
+     (t
+      (signal 'nelisp-phase47-compiler-error
+              (list :windows-syscall-direct-unsupported
+                    (nelisp-phase47-compiler--ir-imm-value nr)
+                    (nelisp-phase47-compiler--ir-imm-value a0)))))))
 
 (defun nelisp-phase47-compiler--emit-windows-alloc-bytes (node buf)
   "Emit Windows `alloc-bytes' through KERNEL32.dll!VirtualAlloc."
