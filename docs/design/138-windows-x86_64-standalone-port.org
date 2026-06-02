@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-83-WINDOWS-GETSOCKOPT-ERROR-TYPE
+#+STATUS: STAGE-84-WINDOWS-SOCKET-OPTION-DONTROUTE-ACCEPTCONN
 
 * Status
 
-- *State*: STAGE 83 Windows getsockopt error/type
+- *State*: STAGE 84 Windows socket option dontroute/acceptconn
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -117,6 +117,9 @@
   Windows =nelisp-os-getsockopt-int= now also supports get-only =SOL_SOCKET=
   =SO_ERROR= and =SO_TYPE=, while =setsockopt-int= keeps rejecting those options
   before Winsock FFI.
+  Windows int-valued socket options now also support =SO_DONTROUTE= through
+  both =setsockopt-int= and =getsockopt-int=, and =getsockopt-int= supports
+  get-only =SO_ACCEPTCONN= while =setsockopt-int= rejects it before Winsock FFI.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -406,6 +409,9 @@
   Stage 83 coverage verifies Windows =getsockopt-int= supports get-only
   =SO_ERROR= / =SO_TYPE= through Winsock and keeps =setsockopt-int= rejecting
   those options before FFI.
+  Stage 84 coverage verifies Windows =SO_DONTROUTE= set/get translation and
+  get-only =SO_ACCEPTCONN= through =getsockopt-int= while =setsockopt-int=
+  rejects =SO_ACCEPTCONN= before FFI.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -823,6 +829,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock buffer/broadcast socket options progress 2026-06-03*:
   =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =SOL_SOCKET=
   =SO_SNDBUF=, =SO_RCVBUF=, and =SO_BROADCAST= through Winsock.
+  *Windows Winsock route/listen socket options progress 2026-06-03*:
+  =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =SO_DONTROUTE=,
+  and =getsockopt-int= now translates get-only =SO_ACCEPTCONN= through Winsock.
   *Windows file-backed mmap progress 2026-06-03*: =nelisp-os-mmap= now maps
   HANDLE-backed =MAP_PRIVATE= file views with =CreateFileMappingW= /
   =MapViewOfFile=, and =nelisp-os-munmap= releases those views with
@@ -1033,6 +1042,10 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock getsockopt error/type SHIPPED 2026-06-03*: =getsockopt-int=
    now supports get-only =SO_ERROR= / =SO_TYPE= on Windows, while
    =setsockopt-int= still rejects those options before FFI.
+   *Windows Winsock route/listen options SHIPPED 2026-06-03*: int-valued
+   socket option helpers now support =SO_DONTROUTE= set/get on Windows, and
+   =getsockopt-int= supports get-only =SO_ACCEPTCONN= while =setsockopt-int=
+   rejects it before FFI.
    *Windows datagram socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair=
    now supports =SOCK_DGRAM= by creating connected UDP loopback socket-kind
    fd pairs with setup-failure cleanup.
@@ -1176,7 +1189,7 @@ largest uncertainty (B1 + B2) first.
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
    getname, read/write, poll, expanded int socket options including
-   =SO_ERROR= / =SO_TYPE=, and
+   =SO_ERROR= / =SO_TYPE= / =SO_DONTROUTE= / =SO_ACCEPTCONN=, and
    loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=, accepted
    socket nonblock flag tracking, and socket close-on-exec support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
