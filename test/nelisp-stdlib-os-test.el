@@ -312,6 +312,42 @@
                   (string #x41 #x3042 #x10437))
                  '(#x41 #x3042 #xd801 #xdc37))))
 
+(ert-deftest nelisp-stdlib-os-network-byte-order-windows-uses-ws2-32 ()
+  "Windows sockaddr byte-order helpers route through ws2_32."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig arg)
+                 (push (list dll fn sig arg) calls)
+                 (cond
+                  ((equal fn "htons") #x3412)
+                  ((equal fn "htonl") #x78563412)
+                  ((equal fn "ntohs") #x1234)
+                  ((equal fn "ntohl") #x12345678)
+                  (t (error "unexpected byte-order call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os--htons #x1234) #x3412))
+        (should (= (nelisp-os--htonl #x12345678) #x78563412))
+        (should (= (nelisp-os--ntohs #x3412) #x1234))
+        (should (= (nelisp-os--ntohl #x78563412) #x12345678))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "htons" [:uint16 :uint16] #x1234)
+                    (list "ws2_32" "htonl" [:uint32 :uint32] #x12345678)
+                    (list "ws2_32" "ntohs" [:uint16 :uint16] #x3412)
+                    (list "ws2_32" "ntohl" [:uint32 :uint32] #x78563412))))))
+
+(ert-deftest nelisp-stdlib-os-network-byte-order-non-windows-keeps-libc ()
+  "Non-Windows sockaddr byte-order helpers keep using libc."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig arg)
+                 (setq call (list dll fn sig arg))
+                 #x3412)))
+      (let ((system-type 'gnu/linux))
+        (should (= (nelisp-os--htons #x1234) #x3412))))
+    (should (equal call
+                   (list "libc" "htons" [:uint16 :uint16] #x1234)))))
+
 (ert-deftest nelisp-stdlib-os-windows-open-flag-translation ()
   "Windows open flag translation preserves key POSIX-like modes."
   (should (= (nelisp-os--windows-open-access nelisp-os-O-RDONLY)

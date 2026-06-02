@@ -49,8 +49,10 @@
 ;; sockets in the Windows fd table.  Stage 25 maps socket fd `read' / `write'
 ;; to Winsock `recv' / `send'.  Stage 26 maps socket fd `poll' to `WSAPoll'.
 ;; Stage 27 maps int-valued socket options to Winsock `setsockopt'.  The
-;; Linux/Darwin path remains the default until a real Windows standalone runtime
-;; selects `system-type' = `windows-nt'.
+;; Stage 28 removes the hidden Windows `libc' dependency from sockaddr byte-order
+;; conversion by using Winsock hton*/ntoh*.  The Linux/Darwin path remains the
+;; default until a real Windows standalone runtime selects `system-type' =
+;; `windows-nt'.
 
 ;;; Code:
 
@@ -1432,12 +1434,36 @@ returns (0 . 0)."
 (defconst nelisp-os--pollfd-len 8)
 (defconst nelisp-os--windows-wsapollfd-len 16)
 
+(defun nelisp-os--network-byte-order-dll ()
+  "Return the DLL/shared-library that provides hton*/ntoh* functions."
+  (if (nelisp-os--windows-p) "ws2_32" "libc"))
+
+(defun nelisp-os--htons (x)
+  "Convert 16-bit integer X from host to network byte order."
+  (nelisp-os--libc-call
+   (nelisp-os--network-byte-order-dll) "htons" [:uint16 :uint16] x))
+
+(defun nelisp-os--htonl (x)
+  "Convert 32-bit integer X from host to network byte order."
+  (nelisp-os--libc-call
+   (nelisp-os--network-byte-order-dll) "htonl" [:uint32 :uint32] x))
+
+(defun nelisp-os--ntohs (x)
+  "Convert 16-bit integer X from network to host byte order."
+  (nelisp-os--libc-call
+   (nelisp-os--network-byte-order-dll) "ntohs" [:uint16 :uint16] x))
+
+(defun nelisp-os--ntohl (x)
+  "Convert 32-bit integer X from network to host byte order."
+  (nelisp-os--libc-call
+   (nelisp-os--network-byte-order-dll) "ntohl" [:uint32 :uint32] x))
+
 (defun nelisp-os--encode-sockaddr-in (buf host-int port)
   "Populate BUF (= 16-byte zeroed `nelisp-os--alloc') with sockaddr_in
 fields: sin_family + sin_port (BE) + sin_addr (BE).  The 8 zero pad
 bytes at offset 8-15 are left as malloc'd zeros."
-  (let ((port-be (nelisp-os--libc-call "libc" "htons" [:uint16 :uint16] port))
-        (addr-be (nelisp-os--libc-call "libc" "htonl" [:uint32 :uint32] host-int)))
+  (let ((port-be (nelisp-os--htons port))
+        (addr-be (nelisp-os--htonl host-int)))
     (nelisp-os-write-i16 buf 0 nelisp-os--AF-INET)
     (nelisp-os-write-i16 buf 2 port-be)
     (nelisp-os-write-i32 buf 4 addr-be)))
@@ -1446,9 +1472,9 @@ bytes at offset 8-15 are left as malloc'd zeros."
   "Decode 16-byte sockaddr_in BUF.  Return cons (HOST-INT . PORT) in
 host byte order."
   (let* ((port-be (nelisp-os-read-u16 buf 2))
-         (port    (nelisp-os--libc-call "libc" "ntohs" [:uint16 :uint16] port-be))
+         (port    (nelisp-os--ntohs port-be))
          (addr-be (nelisp-os-read-u32 buf 4))
-         (addr    (nelisp-os--libc-call "libc" "ntohl" [:uint32 :uint32] addr-be)))
+         (addr    (nelisp-os--ntohl addr-be)))
     (cons addr port)))
 
 (defun nelisp-os--windows-sockopt-level (level)
@@ -1738,13 +1764,13 @@ accept(2) / getsockname(2).  Return:
   "Populate BUF (= 28-byte zeroed) with sockaddr_in6: family + port BE +
 flowinfo=0 + 8 BE u16 groups + scope_id=0."
   (nelisp-os-write-i16 buf 0 nelisp-os-AF-INET6)
-  (let ((port-be (nelisp-os--libc-call "libc" "htons" [:uint16 :uint16] port)))
+  (let ((port-be (nelisp-os--htons port)))
     (nelisp-os-write-i16 buf 2 port-be))
   ;; flowinfo at 4 stays 0
   (let ((idx 0))
     (dolist (g groups)
       (let* ((off (+ 8 (* idx 2)))
-             (g-be (nelisp-os--libc-call "libc" "htons" [:uint16 :uint16] g)))
+             (g-be (nelisp-os--htons g)))
         (nelisp-os-write-i16 buf off g-be))
       (setq idx (1+ idx))))
   ;; scope_id at 24 stays 0
@@ -1754,11 +1780,11 @@ flowinfo=0 + 8 BE u16 groups + scope_id=0."
   "Decode 28-byte sockaddr_in6 BUF.  Return cons (GROUPS-LIST . PORT) in
 host byte order."
   (let* ((port-be (nelisp-os-read-u16 buf 2))
-         (port    (nelisp-os--libc-call "libc" "ntohs" [:uint16 :uint16] port-be))
+         (port    (nelisp-os--ntohs port-be))
          (groups  nil))
     (dotimes (i 8)
       (let ((g-be (nelisp-os-read-u16 buf (+ 8 (* i 2)))))
-        (push (nelisp-os--libc-call "libc" "ntohs" [:uint16 :uint16] g-be) groups)))
+        (push (nelisp-os--ntohs g-be) groups)))
     (cons (nreverse groups) port)))
 
 ;; ----- AF_UNIX wrappers -----
@@ -2447,16 +2473,16 @@ Stops on a malformed cmsg (= len < cmsghdr_len) or buffer exhaustion."
   "Populate BUF (= 28-byte zeroed) with sockaddr_in6 carrying
 flowinfo (BE) and scope_id (host order) in addition to host/port."
   (nelisp-os-write-i16 buf 0 nelisp-os-AF-INET6)
-  (let ((port-be (nelisp-os--libc-call "libc" "htons" [:uint16 :uint16] port)))
+  (let ((port-be (nelisp-os--htons port)))
     (nelisp-os-write-i16 buf 2 port-be))
   ;; flowinfo @ 4: htonl, written as i32 LE bit pattern.
-  (let ((flowinfo-be (nelisp-os--libc-call "libc" "htonl" [:uint32 :uint32] flowinfo)))
+  (let ((flowinfo-be (nelisp-os--htonl flowinfo)))
     (nelisp-os-write-i32 buf 4 flowinfo-be))
   ;; sin6_addr @ 8 (8 BE u16 groups).
   (let ((idx 0))
     (dolist (g groups)
       (let* ((off  (+ 8 (* idx 2)))
-             (g-be (nelisp-os--libc-call "libc" "htons" [:uint16 :uint16] g)))
+             (g-be (nelisp-os--htons g)))
         (nelisp-os-write-i16 buf off g-be))
       (setq idx (1+ idx))))
   ;; scope_id @ 24 in host byte order.
@@ -2466,14 +2492,14 @@ flowinfo (BE) and scope_id (host order) in addition to host/port."
   "Decode 28-byte sockaddr_in6 BUF.  Return list
 (GROUPS PORT FLOWINFO SCOPE-ID) — all in host byte order."
   (let* ((port-be     (nelisp-os-read-u16 buf 2))
-         (port        (nelisp-os--libc-call "libc" "ntohs" [:uint16 :uint16] port-be))
+         (port        (nelisp-os--ntohs port-be))
          (flowinfo-be (nelisp-os-read-u32 buf 4))
-         (flowinfo    (nelisp-os--libc-call "libc" "ntohl" [:uint32 :uint32] flowinfo-be))
+         (flowinfo    (nelisp-os--ntohl flowinfo-be))
          (scope-id    (nelisp-os-read-u32 buf 24))
          (groups nil))
     (dotimes (i 8)
       (let ((g-be (nelisp-os-read-u16 buf (+ 8 (* i 2)))))
-        (push (nelisp-os--libc-call "libc" "ntohs" [:uint16 :uint16] g-be) groups)))
+        (push (nelisp-os--ntohs g-be) groups)))
     (list (nreverse groups) port flowinfo scope-id)))
 
 ;; ----- socketpair -----

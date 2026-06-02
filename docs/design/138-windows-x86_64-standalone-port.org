@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-27-WINSOCK-SETSOCKOPT-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-28-WINSOCK-BYTE-ORDER-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 27 Winsock setsockopt + first real Windows smoke VALIDATED
+- *State*: STAGE 28 Winsock byte-order conversion + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -92,6 +92,10 @@
   =nelisp-os-setsockopt-int= now routes supported socket-kind Windows fds
   through =ws2_32!setsockopt=, translating the POSIX-like =SOL_SOCKET= /
   =SO_REUSEADDR= / =SO_KEEPALIVE= constants to their Winsock values before FFI.
+  The sockaddr byte-order helpers now call Winsock =htons= / =htonl= /
+  =ntohs= / =ntohl= on Windows instead of assuming a POSIX =libc= provider,
+  so Windows =bind= / =connect= / =accept= no longer retain that hidden libc
+  dependency.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -148,7 +152,9 @@
   validation before Winsock FFI.  Stage 27 coverage verifies Windows
   =setsockopt-int= dispatch through Winsock, int option buffer writes,
   =SOL_SOCKET= / =SO_REUSEADDR= translation, cleanup, and non-socket fd
-  rejection before Winsock FFI.
+  rejection before Winsock FFI.  Stage 28 coverage verifies Windows sockaddr
+  byte-order helpers dispatch to =ws2_32= while non-Windows hosts keep the
+  existing =libc= provider.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -199,7 +205,8 @@
   registers accepted sockets in the same fd table.  Stage 25 adds socket fd
   =read/write= via Winsock =recv= / =send=.  Stage 26 adds socket fd =poll=
   via =WSAPoll=.  Stage 27 adds int-valued socket option setting via Winsock
-  =setsockopt= for =SO_REUSEADDR= / =SO_KEEPALIVE=.
+  =setsockopt= for =SO_REUSEADDR= / =SO_KEEPALIVE=.  Stage 28 routes
+  sockaddr byte-order conversion through Winsock on Windows.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -396,7 +403,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   fd =nelisp-os-read/write= now use =recv= / =send=, and socket fd
   =nelisp-os-poll= now uses =WSAPoll= with x64 =WSAPOLLFD= records.
   =nelisp-os-setsockopt-int= now translates supported =SOL_SOCKET= options to
-  Winsock and calls =ws2_32!setsockopt=.
+  Winsock and calls =ws2_32!setsockopt=.  sockaddr byte-order conversion now
+  uses Winsock hton*/ntoh* functions on Windows rather than POSIX =libc=.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -480,6 +488,8 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock setsockopt SHIPPED 2026-06-02*: socket-kind fds now route
    =nelisp-os-setsockopt-int= through =ws2_32!setsockopt= for the supported
    =SO_REUSEADDR= / =SO_KEEPALIVE= options.
+   *Windows Winsock byte-order SHIPPED 2026-06-02*: sockaddr encoders and
+   decoders now call =ws2_32!htons= / =htonl= / =ntohs= / =ntohl= on Windows.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
