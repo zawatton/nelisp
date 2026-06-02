@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-38-WINSOCK-GETSOCKOPT-INT
+#+STATUS: STAGE-39-WINSOCK-TCP-NODELAY
 
 * Status
 
-- *State*: STAGE 38 Winsock getsockopt-int
+- *State*: STAGE 39 Winsock TCP_NODELAY
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -125,7 +125,9 @@
   remaining native Windows checks can be re-run individually after a partial
   pass.  =nelisp-os-getsockopt-int= now routes socket-kind Windows fds through
   =ws2_32!getsockopt= for the same supported =SOL_SOCKET= int options as
-  =setsockopt-int=.
+  =setsockopt-int=.  Both =nelisp-os-setsockopt-int= and
+  =nelisp-os-getsockopt-int= now also translate =IPPROTO_TCP= /
+  =TCP_NODELAY= through Winsock.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -209,6 +211,8 @@
   Stage 38 coverage verifies Windows =getsockopt-int= dispatch through
   Winsock, option translation, option-length buffer setup, int value decoding,
   cleanup, and non-socket fd rejection before Winsock FFI.
+  Stage 39 coverage verifies Windows =setsockopt-int= / =getsockopt-int=
+  support =IPPROTO_TCP= / =TCP_NODELAY= through Winsock.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -272,6 +276,7 @@
   ERT coverage for the Windows smoke build manifest used by the PowerShell
   real-machine script.  Stage 37 lets that script run a selected smoke by name.
   Stage 38 routes int-valued =getsockopt= through Winsock on Windows.
+  Stage 39 adds TCP_NODELAY translation to the int-valued socket option helpers.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -488,6 +493,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows Winsock getsockopt progress 2026-06-03*:
   =nelisp-os-getsockopt-int= now translates supported =SOL_SOCKET= int options
   and calls =ws2_32!getsockopt= for socket-kind Windows fds.
+  *Windows Winsock TCP_NODELAY progress 2026-06-03*:
+  =nelisp-os-setsockopt-int= / =getsockopt-int= now translate =IPPROTO_TCP=
+  =TCP_NODELAY= through Winsock.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -603,6 +611,8 @@ largest uncertainty (B1 + B2) first.
    *Windows Winsock getsockopt SHIPPED 2026-06-03*: =nelisp-os-getsockopt-int=
    now uses =ws2_32!getsockopt= for supported =SO_REUSEADDR= / =SO_KEEPALIVE=
    int options on socket-kind fds.
+   *Windows Winsock TCP_NODELAY SHIPPED 2026-06-03*: int-valued socket option
+   helpers now support =IPPROTO_TCP= / =TCP_NODELAY= on Windows.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:

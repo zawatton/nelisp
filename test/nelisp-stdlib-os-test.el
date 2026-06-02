@@ -914,6 +914,31 @@
          :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-setsockopt-int-windows-supports-tcp-nodelay ()
+  "Windows TCP_NODELAY translates through Winsock setsockopt."
+  (let ((call nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (_ptr) nil))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-setsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-NODELAY 1)
+                   0))))
+    (should (equal call
+                   (list "ws2_32" "setsockopt"
+                         [:sint32 :pointer :sint32 :sint32 :pointer :sint32]
+                         (list #xabcdef
+                               nelisp-os-IPPROTO-TCP
+                               nelisp-os-WIN-TCP-NODELAY
+                               3000
+                               4))))))
+
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-uses-winsock ()
   "Windows int-valued socket options translate to Winsock getsockopt."
   (let ((alloc-next 3000)
@@ -970,6 +995,36 @@
           3 nelisp-os-SOL-SOCKET nelisp-os-SO-REUSEADDR)
          :type 'nelisp-os-error)))
     (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-tcp-nodelay ()
+  "Windows TCP_NODELAY translates through Winsock getsockopt."
+  (let ((alloc-next 3000)
+        (call nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (_ptr) nil))
+              ((symbol-function 'nelisp-os-write-i32) (lambda (_ptr _off val) val))
+              ((symbol-function 'nelisp-os-read-i32) (lambda (_ptr _off) 1))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getsockopt-int
+                    3 nelisp-os-IPPROTO-TCP nelisp-os-TCP-NODELAY)
+                   1))))
+    (should (equal call
+                   (list "ws2_32" "getsockopt"
+                         [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                         (list #xabcdef
+                               nelisp-os-IPPROTO-TCP
+                               nelisp-os-WIN-TCP-NODELAY
+                               3000
+                               4000))))))
 
 (ert-deftest nelisp-stdlib-os-bind-inet-windows-uses-winsock ()
   "Windows AF_INET bind passes encoded sockaddr_in to Winsock."

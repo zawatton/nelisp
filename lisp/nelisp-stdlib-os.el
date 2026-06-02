@@ -59,7 +59,8 @@
 ;; Winsock.  Stage 34 makes `sigprocmask' reject Windows before POSIX
 ;; signal-mask allocation or libc calls.  Stage 35 gives the timerfd relative
 ;; helper the same early Windows guard.  Stage 38 maps int-valued socket option
-;; reads to Winsock `getsockopt'.  The Linux/Darwin path remains the default
+;; reads to Winsock `getsockopt'.  Stage 39 adds TCP_NODELAY translation to the
+;; int-valued socket option helpers.  The Linux/Darwin path remains the default
 ;; until a real Windows standalone runtime selects `system-type' =
 ;; `windows-nt'.
 
@@ -169,6 +170,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-SOL-SOCKET #xffff)
 (defconst nelisp-os-WIN-SO-REUSEADDR #x0004)
 (defconst nelisp-os-WIN-SO-KEEPALIVE #x0008)
+(defconst nelisp-os-WIN-TCP-NODELAY #x0001)
 
 ;; Windows process-launch structure sizes/offsets (x86_64).
 (defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
@@ -1070,6 +1072,7 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-SOL-SOCKET    1)
 (defconst nelisp-os-SO-REUSEADDR  2)
 (defconst nelisp-os-SO-KEEPALIVE  9)
+(defconst nelisp-os-TCP-NODELAY   1)
 
 ;; ----- Poll events -----
 
@@ -1494,6 +1497,7 @@ host byte order."
   "Translate supported POSIX-like socket option LEVEL to Winsock."
   (cond
    ((= level nelisp-os-SOL-SOCKET) nelisp-os-WIN-SOL-SOCKET)
+   ((= level nelisp-os-IPPROTO-TCP) nelisp-os-IPPROTO-TCP)
    (t (nelisp-os--windows-unsupported))))
 
 (defun nelisp-os--windows-sockopt-option (level optname)
@@ -1505,6 +1509,9 @@ host byte order."
    ((and (= level nelisp-os-SOL-SOCKET)
          (= optname nelisp-os-SO-KEEPALIVE))
     nelisp-os-WIN-SO-KEEPALIVE)
+   ((and (= level nelisp-os-IPPROTO-TCP)
+         (= optname nelisp-os-TCP-NODELAY))
+    nelisp-os-WIN-TCP-NODELAY)
    (t (nelisp-os--windows-unsupported))))
 
 (defun nelisp-os--windows-setsockopt-int (fd level optname value)
