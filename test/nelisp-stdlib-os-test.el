@@ -1260,7 +1260,9 @@
         (nelisp-os--windows-next-fd 4)
         (nelisp-os--windows-winsock-started-p t)
         (nelisp-os--windows-fd-table '((3 . #xabcdef)))
-        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-fd-flags-table
+         `((3 . ,nelisp-os-O-NONBLOCK))))
     (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
               ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
               ((symbol-function 'nelisp-os--libc-call)
@@ -1293,6 +1295,9 @@
                    '((10 . #x123456) (3 . #xabcdef))))
     (should (equal nelisp-os--windows-fd-kind-table
                    '((10 . socket) (3 . socket))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((10 . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
     (should (= nelisp-os--windows-next-fd 11))
     (should (equal freed '(3000)))))
 
@@ -1330,6 +1335,57 @@
       (let ((system-type 'windows-nt))
         (should-error (nelisp-os-fcntl 3 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
                       :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-socket-setfl-nonblock ()
+  "Windows socket F_SETFL O_NONBLOCK uses ioctlsocket(FIONBIO)."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-fd-flags-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-SETFL
+                                    nelisp-os-O-NONBLOCK)
+                   0))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0)
+                   nelisp-os-O-NONBLOCK))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-SETFL 0) 0))
+        (should (= (nelisp-os-fcntl 3 nelisp-os-F-GETFL 0) 0))))
+    (should (equal (nreverse writes)
+                   '((3000 0 1) (3000 0 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "ioctlsocket"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef nelisp-os-WIN-FIONBIO 3000))
+                    (list "ws2_32" "ioctlsocket"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef nelisp-os-WIN-FIONBIO 3000)))))
+    (should (equal (sort freed #'<) '(3000 3000)))
+    (should-not nelisp-os--windows-fd-flags-table)))
+
+(ert-deftest nelisp-stdlib-os-fcntl-windows-socket-setfl-extra-flags-error ()
+  "Windows socket F_SETFL rejects unsupported flags before Winsock FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-fcntl 3 nelisp-os-F-SETFL
+                          (logior nelisp-os-O-NONBLOCK nelisp-os-O-APPEND))
+         :type 'nelisp-os-error)))
     (should-not called)))
 
 (ert-deftest nelisp-stdlib-os-linux-only-apis-windows-error-before-syscall ()
@@ -1647,8 +1703,55 @@
     (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
     (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))))
 
-(ert-deftest nelisp-stdlib-os-socket-windows-rejects-linux-socket-flags ()
-  "Windows socket rejects SOCK_NONBLOCK/SOCK_CLOEXEC before Winsock FFI."
+(ert-deftest nelisp-stdlib-os-socket-windows-supports-sock-nonblock ()
+  "Windows SOCK_NONBLOCK creates a socket then sets FIONBIO."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (writes nil)
+        (freed nil)
+        (nelisp-os--windows-next-fd 3)
+        (nelisp-os--windows-fd-table nil)
+        (nelisp-os--windows-fd-kind-table nil)
+        (nelisp-os--windows-fd-flags-table nil)
+        (nelisp-os--windows-winsock-started-p t))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "socket") #xabcdef)
+                  ((equal fn "ioctlsocket") 0)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-socket nelisp-os-AF-INET
+                                     (logior nelisp-os-SOCK-STREAM
+                                             nelisp-os-SOCK-NONBLOCK)
+                                     nelisp-os-IPPROTO-TCP)
+                   3))))
+    (should (equal (nreverse writes) '((3000 0 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "socket"
+                          [:pointer :sint32 :sint32 :sint32]
+                          (list nelisp-os-AF-INET nelisp-os-SOCK-STREAM
+                                nelisp-os-IPPROTO-TCP))
+                    (list "ws2_32" "ioctlsocket"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef nelisp-os-WIN-FIONBIO 3000)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-socket-windows-rejects-cloexec-before-ffi ()
+  "Windows socket rejects SOCK_CLOEXEC before Winsock FFI."
   (let ((called nil))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
                (lambda (&rest _args) (setq called t)))
@@ -1658,7 +1761,7 @@
         (should-error
          (nelisp-os-socket nelisp-os-AF-INET
                            (logior nelisp-os-SOCK-STREAM
-                                   nelisp-os-SOCK-NONBLOCK)
+                                   nelisp-os-SOCK-CLOEXEC)
                            nelisp-os-IPPROTO-TCP)
          :type 'nelisp-os-error)))
     (should-not called)))

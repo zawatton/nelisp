@@ -202,6 +202,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-SO-SNDBUF #x1001)
 (defconst nelisp-os-WIN-SO-RCVBUF #x1002)
 (defconst nelisp-os-WIN-TCP-NODELAY #x0001)
+(defconst nelisp-os-WIN-FIONBIO #x8004667e)
 
 ;; Windows process-launch structure sizes/offsets (x86_64).
 (defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
@@ -225,6 +226,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defvar nelisp-os--windows-fd-kind-table nil
   "Alist mapping POSIX-like Windows fds to resource kind symbols.")
+
+(defvar nelisp-os--windows-fd-flags-table nil
+  "Alist mapping POSIX-like Windows fds to POSIX-style status flags.")
 
 (defvar nelisp-os--windows-mmap-table nil
   "Alist mapping Windows mapping base addresses to mapping kind symbols.")
@@ -298,23 +302,43 @@ The payload is the raw `GetLastError' DWORD, not a POSIX errno."
           (nelisp-os--windows-ffi-error-signal)
         handle))))
 
-(defun nelisp-os--windows-fd-alloc (handle &optional kind)
+(defun nelisp-os--windows-fd-alloc (handle &optional kind flags)
   "Allocate a POSIX-like fd for Windows HANDLE.
-KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
+KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets.
+FLAGS are POSIX-style status flags tracked for fcntl compatibility."
   (let ((fd nelisp-os--windows-next-fd))
     (setq nelisp-os--windows-next-fd (1+ nelisp-os--windows-next-fd))
     (push (cons fd handle) nelisp-os--windows-fd-table)
     (when kind
       (push (cons fd kind) nelisp-os--windows-fd-kind-table))
+    (when (and flags (/= flags 0))
+      (push (cons fd flags) nelisp-os--windows-fd-flags-table))
     fd))
 
-(defun nelisp-os--windows-fd-alloc-at-least (handle min-fd)
+(defun nelisp-os--windows-fd-alloc-at-least (handle min-fd &optional flags)
   "Allocate a POSIX-like fd for Windows HANDLE with fd number >= MIN-FD."
   (when (< min-fd 0)
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (when (< nelisp-os--windows-next-fd min-fd)
     (setq nelisp-os--windows-next-fd min-fd))
-  (nelisp-os--windows-fd-alloc handle))
+  (nelisp-os--windows-fd-alloc handle nil flags))
+
+(defun nelisp-os--windows-fd-flags (fd)
+  "Return POSIX-style status flags tracked for Windows FD."
+  (or (cdr (assq fd nelisp-os--windows-fd-flags-table)) 0))
+
+(defun nelisp-os--windows-fd-set-flags (fd flags)
+  "Record POSIX-style status FLAGS for Windows FD."
+  (let ((cell (assq fd nelisp-os--windows-fd-flags-table)))
+    (cond
+     ((= flags 0)
+      (when cell
+        (setq nelisp-os--windows-fd-flags-table
+              (delq cell nelisp-os--windows-fd-flags-table))))
+     (cell
+      (setcdr cell flags))
+     (t
+      (push (cons fd flags) nelisp-os--windows-fd-flags-table)))))
 
 (defun nelisp-os--windows-fd-kind (fd)
   "Return the Windows resource kind for FD."
@@ -345,6 +369,10 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
       (when kind-cell
         (setq nelisp-os--windows-fd-kind-table
               (delq kind-cell nelisp-os--windows-fd-kind-table))))
+    (let ((flag-cell (assq fd nelisp-os--windows-fd-flags-table)))
+      (when flag-cell
+        (setq nelisp-os--windows-fd-flags-table
+              (delq flag-cell nelisp-os--windows-fd-flags-table))))
     (cdr cell)))
 
 (defun nelisp-os--windows-close-resource (handle kind)
@@ -377,9 +405,10 @@ silently sent through `DuplicateHandle'."
       (nelisp-os--windows-unsupported)
     (nelisp-os--windows-handle-for-fd fd)))
 
-(defun nelisp-os--windows-fd-install (fd handle &optional kind)
+(defun nelisp-os--windows-fd-install (fd handle &optional kind flags)
   "Install HANDLE at POSIX-like FD, replacing any existing HANDLE.
-KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
+KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets.
+FLAGS are POSIX-style status flags tracked for fcntl compatibility."
   (let ((cell (assq fd nelisp-os--windows-fd-table)))
     (when cell
       (nelisp-os--windows-close-resource
@@ -389,11 +418,17 @@ KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
         (when kind-cell
           (setq nelisp-os--windows-fd-kind-table
                 (delq kind-cell nelisp-os--windows-fd-kind-table))))
+      (let ((flag-cell (assq fd nelisp-os--windows-fd-flags-table)))
+        (when flag-cell
+          (setq nelisp-os--windows-fd-flags-table
+                (delq flag-cell nelisp-os--windows-fd-flags-table))))
       (setq nelisp-os--windows-fd-table
             (delq cell nelisp-os--windows-fd-table)))
     (push (cons fd handle) nelisp-os--windows-fd-table)
     (when kind
       (push (cons fd kind) nelisp-os--windows-fd-kind-table))
+    (when (and flags (/= flags 0))
+      (push (cons fd flags) nelisp-os--windows-fd-flags-table))
     (when (>= fd nelisp-os--windows-next-fd)
       (setq nelisp-os--windows-next-fd (1+ fd)))
     fd))
@@ -1365,7 +1400,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
           (nelisp-os--windows-fd-install
            newfd
            (nelisp-os--windows-duplicate-socket oldfd)
-           'socket))
+           'socket
+           (nelisp-os--windows-fd-flags oldfd)))
       (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
             (target-handle-buf (nelisp-os--alloc 8)))
         (unwind-protect
@@ -1411,7 +1447,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
           (setq nelisp-os--windows-next-fd min-fd))
         (nelisp-os--windows-fd-alloc
          (nelisp-os--windows-duplicate-socket oldfd)
-         'socket))
+         'socket
+         (nelisp-os--windows-fd-flags oldfd)))
     (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
           (target-process (nelisp-os--libc-call
                            "kernel32" "GetCurrentProcess"
@@ -1443,12 +1480,22 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
     (nelisp-os--windows-duplicate-fd fd arg))
    ((= cmd nelisp-os-F-GETFL)
     (nelisp-os--windows-handle-for-fd fd)
-    0)
+    (nelisp-os--windows-fd-flags fd))
    ((= cmd nelisp-os-F-SETFL)
     (nelisp-os--windows-handle-for-fd fd)
-    (if (/= arg 0)
-        (signal 'nelisp-os-error (list 95)) ; ENOTSUP
-      0))
+    (unless (= (logand arg (lognot nelisp-os-O-NONBLOCK)) 0)
+      (signal 'nelisp-os-error (list 95))) ; ENOTSUP
+    (if (eq (nelisp-os--windows-fd-kind fd) 'socket)
+        (progn
+          (nelisp-os--windows-set-socket-nonblock
+           (nelisp-os--windows-socket-for-fd fd)
+           (/= (logand arg nelisp-os-O-NONBLOCK) 0))
+          (nelisp-os--windows-fd-set-flags fd arg)
+          0)
+      (if (/= arg 0)
+          (signal 'nelisp-os-error (list 95)) ; ENOTSUP
+        (nelisp-os--windows-fd-set-flags fd 0)
+        0)))
    (t
     (signal 'nelisp-os-error (list 22))))) ; EINVAL
 
@@ -1910,25 +1957,51 @@ returns (0 . 0)."
               (setq nelisp-os--windows-winsock-started-p t)))
         (nelisp-os--free wsa-data)))))
 
+(defun nelisp-os--windows-set-socket-nonblock (sock enabled)
+  "Set Windows SOCK nonblocking mode to ENABLED through ioctlsocket(FIONBIO)."
+  (let ((arg-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-u32 arg-buf 0 (if enabled 1 0))
+          (let ((rc (nelisp-os--libc-call
+                     "ws2_32" "ioctlsocket"
+                     [:sint32 :pointer :uint32 :pointer]
+                     sock nelisp-os-WIN-FIONBIO arg-buf)))
+            (if (= rc -1)
+                (nelisp-os--windows-winsock-error-signal)
+              rc)))
+      (nelisp-os--free arg-buf))))
+
 (defun nelisp-os--windows-socket (domain type proto)
   "Windows implementation of `nelisp-os-socket' via Winsock."
   (unless (memq domain (list nelisp-os-AF-INET
                              nelisp-os-AF-INET6
                              nelisp-os-AF-UNIX))
     (nelisp-os--windows-unsupported))
-  (when (/= 0 (logand type (logior nelisp-os-SOCK-NONBLOCK
-                                   nelisp-os-SOCK-CLOEXEC)))
+  (when (/= 0 (logand type nelisp-os-SOCK-CLOEXEC))
     (nelisp-os--windows-unsupported))
-  (unless (memq type (list nelisp-os-SOCK-STREAM nelisp-os-SOCK-DGRAM))
-    (signal 'nelisp-os-error (list 22))) ; EINVAL
-  (nelisp-os--windows-winsock-ensure)
-  (let ((sock (nelisp-os--libc-call
-               "ws2_32" "socket"
-               [:pointer :sint32 :sint32 :sint32]
-               domain type proto)))
-    (if (= sock nelisp-os-WIN-INVALID-SOCKET)
-        (nelisp-os--windows-winsock-error-signal)
-      (nelisp-os--windows-fd-alloc sock 'socket))))
+  (let* ((nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
+         (base-type (logand type (lognot nelisp-os-SOCK-NONBLOCK)))
+         (flags (if nonblock-p nelisp-os-O-NONBLOCK 0)))
+    (unless (memq base-type (list nelisp-os-SOCK-STREAM nelisp-os-SOCK-DGRAM))
+      (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (nelisp-os--windows-winsock-ensure)
+    (let ((sock (nelisp-os--libc-call
+                 "ws2_32" "socket"
+                 [:pointer :sint32 :sint32 :sint32]
+                 domain base-type proto))
+          (installed nil))
+      (if (= sock nelisp-os-WIN-INVALID-SOCKET)
+          (nelisp-os--windows-winsock-error-signal)
+        (unwind-protect
+            (progn
+              (when nonblock-p
+                (nelisp-os--windows-set-socket-nonblock sock t))
+              (setq installed t)
+              (nelisp-os--windows-fd-alloc sock 'socket flags))
+          (unless installed
+            (ignore-errors
+              (nelisp-os--windows-close-resource sock 'socket))))))))
 
 (defun nelisp-os-socket (domain type proto)
   "POSIX socket(2) — return new fd or signal `nelisp-os-error'."

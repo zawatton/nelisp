@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-68-WINDOWS-DGRAM-SOCKETPAIR
+#+STATUS: STAGE-69-WINDOWS-SOCKET-NONBLOCK
 
 * Status
 
-- *State*: STAGE 68 Windows datagram socketpair
+- *State*: STAGE 69 Windows socket nonblocking
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -147,9 +147,10 @@
   the current PID is found, and returns =th32ParentProcessID=.  =nelisp-os-fcntl=
   now has a Windows branch for the int-only subset: =F_DUPFD= duplicates the
   underlying HANDLE with =DuplicateHandle= and installs it in the Windows fd
-  table, =F_GETFL= validates the fd and returns =0=, and =F_SETFL= supports the
-  no-op =0= case while rejecting unsupported flag updates such as
-  =O_NONBLOCK=.  Linux-only process/event fd APIs now reject Windows before
+  table, =F_GETFL= validates the fd and returns tracked status flags, and
+  =F_SETFL= supports socket-fd =O_NONBLOCK= through
+  =ws2_32!ioctlsocket(FIONBIO)= while regular HANDLE fds still reject nonzero
+  flag changes.  Linux-only process/event fd APIs now reject Windows before
   reaching Linux syscall or Linux libc paths: =fork=, =pidfd_*=, =inotify_*=,
   =eventfd=, =signalfd=, =sigprocmask=, and =timerfd_*= signal
   =nelisp-os-error= with =ENOTSUP= on Windows.  This does not implement Windows
@@ -158,8 +159,10 @@
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
-  the Windows fd table as a socket-kind fd, and =nelisp-os-close= now closes
-  socket fds with =closesocket= instead of =CloseHandle=.  =nelisp-os-bind-inet=,
+  the Windows fd table as a socket-kind fd, accepts =SOCK_NONBLOCK= by passing
+  the base socket type to Winsock and then enabling =FIONBIO=, and
+  =nelisp-os-close= now closes socket fds with =closesocket= instead of
+  =CloseHandle=.  =nelisp-os-bind-inet=,
   =nelisp-os-connect-inet=, and =nelisp-os-listen= now dispatch socket-kind
   Windows fds to =ws2_32!bind= / =connect= / =listen= using the existing
   =sockaddr_in= encoder and Winsock error reporting.  =nelisp-os-accept-inet=
@@ -271,11 +274,11 @@
   creation, =PROCESSENTRY32W.dwSize= initialization, process-entry walking,
   parent-PID extraction, no-more-files handling, and snapshot HANDLE cleanup.
   Stage 20 coverage verifies Windows =F_DUPFD= HANDLE duplication and fd-table
-  allocation, =F_GETFL= / =F_SETFL= no-op behavior, and unsupported
-  =F_SETFL= flag rejection before FFI.  Stage 21 coverage verifies Linux-only
+  allocation, =F_GETFL= / regular-fd =F_SETFL= no-op behavior, and unsupported
+  regular-fd =F_SETFL= flag rejection before FFI.  Stage 21 coverage verifies Linux-only
   process/event fd APIs reject Windows before invoking raw syscall, libc FFI, or
   allocation helpers.  Stage 22 coverage verifies Winsock initialization,
-  =socket= argument shape, socket-kind fd table registration, Linux socket flag
+  =socket= argument shape, socket-kind fd table registration, =SOCK_CLOEXEC=
   rejection before Winsock FFI, and socket close via =closesocket=.  Stage 23
   coverage verifies Windows =bind= / =connect= / =listen= argument shape,
   socket-kind fd validation, sockaddr buffer cleanup, and non-socket fd
@@ -326,6 +329,11 @@
   tracking, and =munmap= dispatch through =UnmapViewOfFile= for file views.
   Stage 41 coverage verifies failed Windows =VirtualFree= /
   =UnmapViewOfFile= calls keep mapping-kind tracking intact.
+  Stage 69 coverage verifies Windows socket =F_SETFL O_NONBLOCK= dispatch
+  through =ioctlsocket(FIONBIO)=, =F_GETFL= returns tracked socket flags,
+  unsupported extra =F_SETFL= bits reject before Winsock FFI, =F_DUPFD=
+  preserves tracked socket flags, and =SOCK_NONBLOCK= socket creation strips
+  the Linux type bit before the Winsock =socket= call.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -662,7 +670,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =th32ParentProcessID= instead of using the raw syscall path.
   *Windows fcntl progress 2026-06-02*: =nelisp-os-fcntl= now handles =F_DUPFD=
   through =DuplicateHandle= + fd-table allocation, validates =F_GETFL=, and
-  supports no-op =F_SETFL= while rejecting unsupported flag changes.
+  supports no-op regular-fd =F_SETFL= while rejecting unsupported flag changes.
   *Windows Linux-only guard progress 2026-06-02*: =fork=, =pidfd=, =inotify=,
   =eventfd=, =signalfd=, =sigprocmask=, and =timerfd= entry points now reject
   Windows before reaching Linux syscall/libc paths, including the relative-ms
@@ -686,6 +694,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.  =nelisp-os-socketpair=
   now synthesizes Windows stream pairs through a temporary AF_INET loopback
   listener and datagram pairs through connected UDP loopback sockets.
+  *Windows socket nonblocking progress 2026-06-03*: socket-kind Windows fds now
+  support =F_SETFL O_NONBLOCK= via =ioctlsocket(FIONBIO)=, and
+  =nelisp-os-socket= accepts =SOCK_NONBLOCK= by enabling =FIONBIO= after
+  creating the base Winsock socket.
   *Windows datagram socketpair progress 2026-06-03*:
   =nelisp-os-socketpair= now supports =SOCK_DGRAM= on Windows by binding two
   UDP loopback sockets to ephemeral ports and connecting each socket to the
@@ -821,8 +833,8 @@ largest uncertainty (B1 + B2) first.
    =CreateToolhelp32Snapshot= + =Process32FirstW= / =Process32NextW= over
    =PROCESSENTRY32W= and closes the snapshot HANDLE.
    *Windows fcntl branch SHIPPED 2026-06-02*: =nelisp-os-fcntl= supports the
-   int-only =F_DUPFD= / =F_GETFL= / no-op =F_SETFL= subset without falling back
-   to raw syscalls.
+   int-only =F_DUPFD= / =F_GETFL= / regular-fd no-op =F_SETFL= subset without
+   falling back to raw syscalls.
    *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
    fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
    fallback.
@@ -884,6 +896,10 @@ largest uncertainty (B1 + B2) first.
    *Windows datagram socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair=
    now supports =SOCK_DGRAM= by creating connected UDP loopback socket-kind
    fd pairs with setup-failure cleanup.
+   *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
+   =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
+   =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
+   same Winsock nonblocking mode after creation.
    *Windows file-backed mmap SHIPPED 2026-06-03*: =nelisp-os-mmap= now accepts
    HANDLE-backed =MAP_PRIVATE= mappings via =CreateFileMappingW= /
    =MapViewOfFile=, with =UnmapViewOfFile= cleanup.
