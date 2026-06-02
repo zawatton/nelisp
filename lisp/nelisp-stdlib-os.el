@@ -58,8 +58,9 @@
 ;; before libc allocation.  Stage 33 maps getsockname / getpeername wrappers to
 ;; Winsock.  Stage 34 makes `sigprocmask' reject Windows before POSIX
 ;; signal-mask allocation or libc calls.  Stage 35 gives the timerfd relative
-;; helper the same early Windows guard.  The Linux/Darwin path remains the
-;; default until a real Windows standalone runtime selects `system-type' =
+;; helper the same early Windows guard.  Stage 38 maps int-valued socket option
+;; reads to Winsock `getsockopt'.  The Linux/Darwin path remains the default
+;; until a real Windows standalone runtime selects `system-type' =
 ;; `windows-nt'.
 
 ;;; Code:
@@ -1524,6 +1525,26 @@ host byte order."
               r)))
       (nelisp-os--free buf))))
 
+(defun nelisp-os--windows-getsockopt-int (fd level optname)
+  "Windows implementation of `nelisp-os-getsockopt-int'."
+  (let ((sock (nelisp-os--windows-socket-for-fd fd))
+        (win-level (nelisp-os--windows-sockopt-level level))
+        (win-optname (nelisp-os--windows-sockopt-option level optname))
+        (val-buf (nelisp-os--alloc 4))
+        (len-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-i32 len-buf 0 4)
+          (let ((r (nelisp-os--libc-call
+                    "ws2_32" "getsockopt"
+                    [:sint32 :pointer :sint32 :sint32 :pointer :pointer]
+                    sock win-level win-optname val-buf len-buf)))
+            (if (= r -1)
+                (nelisp-os--windows-winsock-error-signal)
+              (nelisp-os-read-i32 val-buf 0))))
+      (nelisp-os--free val-buf)
+      (nelisp-os--free len-buf))))
+
 (defun nelisp-os-setsockopt-int (fd level optname value)
   "POSIX setsockopt(2) for an int-valued option (e.g. SO_REUSEADDR).
 Returns 0 on success."
@@ -1542,6 +1563,27 @@ Returns 0 on success."
                   (nelisp-os--ffi-errno-signal)
                 r)))
         (nelisp-os--free buf)))))
+
+(defun nelisp-os-getsockopt-int (fd level optname)
+  "POSIX getsockopt(2) for an int-valued option.
+Returns the option value as a signed 32-bit integer."
+  ;; libc::getsockopt(int sockfd, int level, int optname,
+  ;;                  void *optval, socklen_t *optlen) -> int.
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-getsockopt-int fd level optname)
+    (let ((val-buf (nelisp-os--alloc 4))
+          (len-buf (nelisp-os--alloc 4)))
+      (unwind-protect
+          (progn
+            (nelisp-os-write-i32 len-buf 0 4)
+            (let ((r (nelisp-os--libc-call "libc" "getsockopt"
+                                  [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                                  fd level optname val-buf len-buf)))
+              (if (= r -1)
+                  (nelisp-os--ffi-errno-signal)
+                (nelisp-os-read-i32 val-buf 0))))
+        (nelisp-os--free val-buf)
+        (nelisp-os--free len-buf)))))
 
 (defun nelisp-os-bind-inet (fd host-int port)
   "POSIX bind(2) for AF_INET.  HOST-INT is a 32-bit IPv4 address in
