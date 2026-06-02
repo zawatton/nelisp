@@ -1398,17 +1398,63 @@
                    '((5 . socket) (3 . socket))))
     (should (equal freed '(3000)))))
 
-(ert-deftest nelisp-stdlib-os-dup2-windows-rejects-socket-to-std-fd-before-ffi ()
-  "Windows socket dup2 to a standard HANDLE fd is not routed through Winsock."
-  (let ((called nil)
+(ert-deftest nelisp-stdlib-os-dup2-windows-socket-can-target-stdout ()
+  "Windows socket dup2 to stdout installs a socket-kind standard fd."
+  (let ((calls nil)
+        (freed nil)
+        (nelisp-os--windows-winsock-started-p t)
         (nelisp-os--windows-fd-table '((3 . #xabcdef)))
-        (nelisp-os--windows-fd-kind-table '((3 . socket))))
-    (cl-letf (((symbol-function 'nelisp-os--libc-call)
-               (lambda (&rest _args) (setq called t))))
+        (nelisp-os--windows-fd-kind-table '((3 . socket)))
+        (nelisp-os--windows-fd-flags-table
+         `((3 . ,nelisp-os-O-NONBLOCK))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcessId") 222)
+                  ((equal fn "WSADuplicateSocketW") 0)
+                  ((equal fn "WSASocketW") #x123456)
+                  ((equal fn "GetStdHandle") #xdddd)
+                  ((equal fn "SetStdHandle") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
       (let ((system-type 'windows-nt))
-        (should-error (nelisp-os-dup2 3 nelisp-os-STDOUT)
-                      :type 'nelisp-os-error)))
-    (should-not called)))
+        (should (= (nelisp-os-dup2 3 nelisp-os-STDOUT)
+                   nelisp-os-STDOUT))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcessId"
+                          [:uint32]
+                          nil)
+                    (list "ws2_32" "WSADuplicateSocketW"
+                          [:sint32 :pointer :uint32 :pointer]
+                          (list #xabcdef 222 3000))
+                    (list "ws2_32" "WSASocketW"
+                          [:pointer :sint32 :sint32 :sint32 :pointer :uint32 :uint32]
+                          (list nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                nelisp-os-WIN-FROM-PROTOCOL-INFO
+                                3000
+                                0
+                                nelisp-os-WIN-WSA-FLAG-OVERLAPPED))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "SetStdHandle"
+                          [:sint32 :sint32 :pointer]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE #x123456))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xdddd)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xabcdef))))
+    (should (equal nelisp-os--windows-fd-kind-table
+                   `((,nelisp-os-STDOUT . socket) (3 . socket))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((,nelisp-os-STDOUT . ,nelisp-os-O-NONBLOCK)
+                     (3 . ,nelisp-os-O-NONBLOCK))))
+    (should (equal freed '(3000)))))
 
 (ert-deftest nelisp-stdlib-os-fcntl-windows-dupfd-duplicates-handle ()
   "Windows F_DUPFD duplicates a HANDLE into the fd table at or above ARG."
@@ -3604,6 +3650,39 @@
     (should (equal read-request (list 3000 4)))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-read-windows-stdin-socket-uses-recv ()
+  "Windows stdin with socket kind reads through Winsock recv."
+  (let ((calls nil)
+        (freed nil)
+        (read-request nil)
+        (nelisp-os--windows-fd-kind-table
+         `((,nelisp-os-STDIN . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr n)
+                 (setq read-request (list ptr n))
+                 "data"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle") #xabcdef)
+                  ((equal fn "recv") 4)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-read nelisp-os-STDIN 16) "data"))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-INPUT-HANDLE))
+                    (list "ws2_32" "recv"
+                          [:sint32 :pointer :pointer :sint32 :sint32]
+                          (list #xabcdef 3000 16 0)))))
+    (should (equal read-request (list 3000 4)))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-write-windows-regular-fd-uses-writefile ()
   "Windows regular fd write uses the HANDLE table and WriteFile."
   (let ((calls nil)
@@ -3653,6 +3732,37 @@
         (should (= (nelisp-os-write 3 "data") 4))))
     (should (equal (nreverse calls)
                    (list
+                    (list "ws2_32" "send"
+                          [:sint32 :pointer :pointer :sint32 :sint32]
+                          (list #xabcdef 3000 4 0)))))
+    (should (equal written-string (cons 3000 "data")))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-write-windows-stdout-socket-uses-send ()
+  "Windows stdout with socket kind writes through Winsock send."
+  (let ((calls nil)
+        (freed nil)
+        (written-string nil)
+        (nelisp-os--windows-fd-kind-table
+         `((,nelisp-os-STDOUT . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written-string (cons ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle") #xabcdef)
+                  ((equal fn "send") 4)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-write nelisp-os-STDOUT "data") 4))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
                     (list "ws2_32" "send"
                           [:sint32 :pointer :pointer :sint32 :sint32]
                           (list #xabcdef 3000 4 0)))))
@@ -3788,6 +3898,41 @@
     (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
     (should (equal nelisp-os--windows-fd-flags-table
                    `((3 . ,nelisp-os-O-RDWR))))))
+
+(ert-deftest nelisp-stdlib-os-close-windows-stdout-socket-uses-closesocket ()
+  "Windows stdout close uses closesocket when stdout tracks socket kind."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table
+         `((,nelisp-os-STDOUT . socket) (3 . socket)))
+        (nelisp-os--windows-fd-flags-table
+         `((,nelisp-os-STDOUT . ,nelisp-os-O-NONBLOCK)
+           (3 . ,nelisp-os-O-NONBLOCK))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle") #xbbbb)
+                  ((equal fn "closesocket") 0)
+                  ((equal fn "SetStdHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should-not (nelisp-os-close nelisp-os-STDOUT))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "ws2_32" "closesocket"
+                          [:sint32 :pointer]
+                          (list #xbbbb))
+                    (list "kernel32" "SetStdHandle"
+                          [:sint32 :sint32 :pointer]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE 0)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-NONBLOCK))))))
 
 (ert-deftest nelisp-stdlib-os-read-windows-stdin-uses-kernel32 ()
   "On Windows, stdin read routes through GetStdHandle + ReadFile."

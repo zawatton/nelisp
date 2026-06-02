@@ -356,11 +356,24 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
   (or (cdr (assq fd nelisp-os--windows-fd-kind-table))
       'handle))
 
+(defun nelisp-os--windows-fd-set-kind (fd kind)
+  "Record Windows resource KIND for FD, or clear it when KIND is nil."
+  (let ((cell (assq fd nelisp-os--windows-fd-kind-table)))
+    (cond
+     ((not kind)
+      (when cell
+        (setq nelisp-os--windows-fd-kind-table
+              (delq cell nelisp-os--windows-fd-kind-table))))
+     (cell
+      (setcdr cell kind))
+     (t
+      (push (cons fd kind) nelisp-os--windows-fd-kind-table)))))
+
 (defun nelisp-os--windows-socket-for-fd (fd)
   "Return the Winsock SOCKET for FD, or signal EBADF."
   (unless (eq (nelisp-os--windows-fd-kind fd) 'socket)
     (signal 'nelisp-os-error (list 9))) ; EBADF
-  (nelisp-os--windows-fd-handle fd))
+  (nelisp-os--windows-handle-for-fd fd))
 
 (defun nelisp-os--windows-fd-handle (fd)
   "Return the Windows HANDLE for FD, or signal EBADF."
@@ -405,8 +418,9 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
 (defun nelisp-os--windows-close-std-fd (fd)
   "Close POSIX-like standard FD through the Windows standard HANDLE table."
   (let* ((selector (nelisp-os--windows-std-handle-selector fd))
-         (handle (nelisp-os--windows-get-std-handle fd)))
-    (nelisp-os--windows-close-resource handle 'handle)
+         (handle (nelisp-os--windows-get-std-handle fd))
+         (kind (nelisp-os--windows-fd-kind fd)))
+    (nelisp-os--windows-close-resource handle kind)
     (let ((ok (nelisp-os--libc-call
                "kernel32" "SetStdHandle"
                [:sint32 :sint32 :pointer]
@@ -414,13 +428,16 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
                0)))
       (if (= ok 0)
           (nelisp-os--windows-ffi-error-signal)
+        (nelisp-os--windows-fd-set-kind fd nil)
         (nelisp-os--windows-fd-set-flags fd 0)
         nil))))
 
-(defun nelisp-os--windows-install-std-fd (fd handle flags)
-  "Install HANDLE as Windows standard FD, replacing the old standard HANDLE."
+(defun nelisp-os--windows-install-std-fd (fd handle flags &optional kind)
+  "Install HANDLE as Windows standard FD, replacing the old standard HANDLE.
+KIND is nil for normal HANDLE-backed fds or `socket' for Winsock sockets."
   (let ((selector (nelisp-os--windows-std-handle-selector fd))
-        (old-handle (nelisp-os--windows-optional-std-handle fd)))
+        (old-handle (nelisp-os--windows-optional-std-handle fd))
+        (old-kind (nelisp-os--windows-fd-kind fd)))
     (let ((ok (nelisp-os--libc-call
                "kernel32" "SetStdHandle"
                [:sint32 :sint32 :pointer]
@@ -428,12 +445,15 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
                handle)))
       (if (= ok 0)
           (progn
-            (nelisp-os--libc-call
-             "kernel32" "CloseHandle"
-             [:sint32 :pointer] handle)
+            (condition-case nil
+                (nelisp-os--windows-close-resource handle kind)
+              (nelisp-os-error nil))
             (nelisp-os--windows-ffi-error-signal))
         (when old-handle
-          (nelisp-os--windows-close-resource old-handle 'handle))
+          (condition-case nil
+              (nelisp-os--windows-close-resource old-handle old-kind)
+            (nelisp-os-error nil)))
+        (nelisp-os--windows-fd-set-kind fd kind)
         (nelisp-os--windows-fd-set-flags fd flags)
         fd))))
 
@@ -1074,11 +1094,11 @@ PATH is a string, FLAGS / MODE are integers."
   (cond
    ((= nbytes 0) "")
    ((and (nelisp-os--windows-p)
-         (= fd nelisp-os-STDIN))
-    (nelisp-os--windows-read-std-fd fd nbytes))
-   ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'socket))
     (nelisp-os--windows-read-socket fd nbytes))
+   ((and (nelisp-os--windows-p)
+         (= fd nelisp-os-STDIN))
+    (nelisp-os--windows-read-std-fd fd nbytes))
    ((nelisp-os--windows-p)
     (nelisp-os--windows-read-handle
      (nelisp-os--windows-fd-handle fd)
@@ -1103,14 +1123,14 @@ Binary-safe: STR may contain interior NUL bytes and multi-byte UTF-8
 sequences; we route through `nelisp-os--alloc' / `-write-bytes' so the
 exact bytes (= `string-bytes' worth) reach libc.write — matching old
 Path A's `as_bytes()' semantics rather than the broken Path B that
-went through `:string' (= CString::new, NUL-rejecting)."
+ went through `:string' (= CString::new, NUL-rejecting)."
   (cond
-   ((and (nelisp-os--windows-p)
-         (nelisp-os--windows-std-handle-selector fd))
-    (nelisp-os--windows-write-std-fd fd str))
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'socket))
     (nelisp-os--windows-write-socket fd str))
+   ((and (nelisp-os--windows-p)
+         (nelisp-os--windows-std-handle-selector fd))
+    (nelisp-os--windows-write-std-fd fd str))
    ((nelisp-os--windows-p)
     (nelisp-os--windows-write-handle
      (nelisp-os--windows-fd-handle fd)
@@ -1457,18 +1477,21 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
   "Windows implementation of `nelisp-os-dup2' via DuplicateHandle."
   (when (< newfd 0)
     (signal 'nelisp-os-error (list 9))) ; EBADF
-  (if (= oldfd newfd)
+    (if (= oldfd newfd)
       (progn
         (nelisp-os--windows-handle-for-fd oldfd)
         newfd)
     (if (eq (nelisp-os--windows-fd-kind oldfd) 'socket)
-        (if (nelisp-os--windows-std-handle-selector newfd)
-            (nelisp-os--windows-unsupported)
-          (nelisp-os--windows-fd-install
-           newfd
-           (nelisp-os--windows-duplicate-socket oldfd)
-           'socket
-           (nelisp-os--windows-fd-flags oldfd)))
+        (let ((target-socket (nelisp-os--windows-duplicate-socket oldfd))
+              (flags (nelisp-os--windows-fd-flags oldfd)))
+          (if (nelisp-os--windows-std-handle-selector newfd)
+              (nelisp-os--windows-install-std-fd
+               newfd target-socket flags 'socket)
+            (nelisp-os--windows-fd-install
+             newfd
+             target-socket
+             'socket
+             flags)))
       (let ((source-handle (nelisp-os--windows-duplicable-handle-for-fd oldfd))
             (target-handle-buf (nelisp-os--alloc 8)))
         (unwind-protect
@@ -1493,7 +1516,8 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                       (nelisp-os--windows-install-std-fd
                        newfd
                        target-handle
-                       (nelisp-os--windows-fd-flags oldfd))
+                       (nelisp-os--windows-fd-flags oldfd)
+                       nil)
                     (nelisp-os--windows-fd-install
                      newfd
                      target-handle

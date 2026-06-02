@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-80-WINDOWS-DUP2-REPLACE-CLEANUP
+#+STATUS: STAGE-81-WINDOWS-SOCKET-STANDARD-DUP2
 
 * Status
 
-- *State*: STAGE 80 Windows dup2 replace cleanup
+- *State*: STAGE 81 Windows socket standard dup2
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -106,9 +106,11 @@
   standard HANDLE, clearing the process standard HANDLE slot, and removing
   tracked status flags for that fd.
   Socket-kind fds now use
-  =WSADuplicateSocketW= / =WSASocketW= for =F_DUPFD= and non-standard-target
-  =dup2=, while socket-to-standard-fd =dup2= remains explicitly unsupported
-  until standard fd routing can represent socket-kind replacements.
+  =WSADuplicateSocketW= / =WSASocketW= for =F_DUPFD=, non-standard-target
+  =dup2=, and standard-target =dup2=.  Standard fds can now carry socket-kind
+  tracking, so socket-backed stdin/stdout/stderr route subsequent
+  =read/write/close= through =recv= / =send= / =closesocket= instead of HANDLE
+  I/O.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -390,6 +392,9 @@
   standard HANDLE after installing the duplicated HANDLE with =SetStdHandle=.
   Stage 80 coverage verifies Windows non-standard-target =dup2= cleans up the
   newly duplicated HANDLE when closing the existing target fd fails.
+  Stage 81 coverage verifies Windows socket-kind =dup2= can target stdout,
+  records standard fd socket-kind / status tracking, and routes socket-kind
+  standard fd =read/write/close= through Winsock.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -947,6 +952,9 @@ largest uncertainty (B1 + B2) first.
    *Windows dup2 replace cleanup SHIPPED 2026-06-03*: non-standard-target
    =dup2= now closes the newly duplicated resource if replacing the existing fd
    fails while closing the old target resource.
+   *Windows socket standard dup2 SHIPPED 2026-06-03*: socket-kind =dup2= can
+   now target standard fds, records socket-kind standard fd tracking, and keeps
+   socket-backed standard fd =read/write/close= on Winsock.
    *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
    fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
    fallback.
@@ -1158,9 +1166,11 @@ largest uncertainty (B1 + B2) first.
    those flags through regular =dup2= / =F_DUPFD=, including standard fd
    targets.  Standard-target =dup2= now closes the previous standard HANDLE
    after replacement, and non-standard-target =dup2= cleans up its new duplicate
-   when replacing an existing target fd fails.  Standard fd =close= now clears
-   the Windows standard HANDLE slot and removes tracked fd status flags.  Broader
-   socket extensions remain pending.
+   when replacing an existing target fd fails.  Socket-kind =dup2= now supports
+   standard fd targets and routes socket-backed standard fd =read/write/close=
+   through Winsock.  Standard fd =close= now clears the Windows standard HANDLE
+   slot and removes tracked fd status flags.  Broader socket extensions remain
+   pending.
    Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 
