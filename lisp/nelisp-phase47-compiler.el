@@ -174,6 +174,12 @@ ignores this var (= AAPCS64 only).")
 (defvar nelisp-phase47-compiler--windows-readfile-iat-rva nil
   "RVA of KERNEL32.dll!ReadFile IAT slot for Windows executable emit.")
 
+(defvar nelisp-phase47-compiler--windows-createfilea-iat-rva nil
+  "RVA of KERNEL32.dll!CreateFileA IAT slot for Windows executable emit.")
+
+(defvar nelisp-phase47-compiler--windows-closehandle-iat-rva nil
+  "RVA of KERNEL32.dll!CloseHandle IAT slot for Windows executable emit.")
+
 (defvar nelisp-phase47-compiler--windows-virtualalloc-iat-rva nil
   "RVA of KERNEL32.dll!VirtualAlloc IAT slot for Windows executable emit.")
 
@@ -13627,10 +13633,125 @@ byte count from the DWORD out parameter in rax."
     (nelisp-asm-x86_64-add-imm32 buf 'rsp frame)
     (nelisp-asm-x86_64-add-imm32 buf 'rsp 16)))
 
+(defun nelisp-phase47-compiler--emit-windows-handle-file-call
+    (node buf read-p)
+  "Emit ReadFile/WriteFile for a HANDLE-valued `syscall-direct' NODE.
+READ-P selects ReadFile when non-nil and WriteFile otherwise.  The
+HANDLE, buffer and length expressions are evaluated left-to-right."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               (if read-p
+                   nelisp-phase47-compiler--windows-readfile-iat-rva
+                 nelisp-phase47-compiler--windows-writefile-iat-rva))
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-file-io-import-missing)))
+  (let ((handle (nelisp-phase47-compiler--ir-get node :a0))
+        (ptr (nelisp-phase47-compiler--ir-get node :a1))
+        (len (nelisp-phase47-compiler--ir-get node :a2))
+        (frame (if (integerp nelisp-phase47-compiler--current-defun-arity)
+                   56
+                 48))
+        (callee (if read-p
+                    nelisp-phase47-compiler--windows-readfile-iat-rva
+                  nelisp-phase47-compiler--windows-writefile-iat-rva)))
+    (nelisp-phase47-compiler--emit-value handle buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-phase47-compiler--emit-value len buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rcx (+ frame 16)) ; hFile
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rdx (+ frame 8)) ; buffer
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'r8 frame) ; byte count
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x4c #x8d #x4c #x24 #x28)) ; lea r9, [rsp+40]
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x48 #xc7 #x44 #x24 #x20 0 0 0 0)) ; arg5 NULL
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #xc7 #x44 #x24 #x28 0 0 0 0)) ; out DWORD = 0
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva buf callee)
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x8b #x44 #x24 #x28)) ; mov eax, [rsp+40]
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp 24)))
+
+(defun nelisp-phase47-compiler--emit-windows-mov-stack-imm32
+    (buf disp imm)
+  "Emit `mov qword ptr [rsp+DISP], IMM32'."
+  (unless (and (integerp disp) (<= 0 disp 127))
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-stack-disp8-required disp)))
+  (nelisp-asm-x86_64-emit-bytes
+   buf (unibyte-string #x48 #xc7 #x44 #x24 disp))
+  (nelisp-phase47-compiler--emit-le32-signed buf imm))
+
+(defun nelisp-phase47-compiler--emit-windows-createfile (node buf)
+  "Emit CreateFileA for supported Linux `open' syscall shapes."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-createfilea-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-createfile-import-missing)))
+  (let* ((path (nelisp-phase47-compiler--ir-get node :a0))
+         (flags-node (nelisp-phase47-compiler--ir-get node :a1))
+         (mode-node (nelisp-phase47-compiler--ir-get node :a2))
+         (flags (nelisp-phase47-compiler--ir-imm-value flags-node))
+         (mode (nelisp-phase47-compiler--ir-imm-value mode-node))
+         (read-p (and (integerp flags) (= flags 0)))
+         (write-p (and (integerp flags) (= flags 577)))
+         (frame (+ (nelisp-phase47-compiler--windows-api-shadow-size) 24)))
+    (unless (and (integerp mode) (or read-p write-p))
+      (signal 'nelisp-phase47-compiler-error
+              (list :windows-open-flags-unsupported flags mode)))
+    (nelisp-phase47-compiler--emit-value path buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rcx frame) ; lpFileName
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #xba)) ; mov edx, desired access
+    (nelisp-phase47-compiler--emit-le32-signed
+     buf (if read-p #x80000000 #x40000000)) ; GENERIC_READ/WRITE
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x41 #xb8)) ; mov r8d, share mode
+    (nelisp-phase47-compiler--emit-le32-signed buf (if read-p 3 0))
+    (nelisp-asm-x86_64-emit-bytes
+     buf (unibyte-string #x45 #x31 #xc9)) ; xor r9d, r9d = security attrs
+    (nelisp-phase47-compiler--emit-windows-mov-stack-imm32
+     buf #x20 (if read-p 3 2)) ; OPEN_EXISTING / CREATE_ALWAYS
+    (nelisp-phase47-compiler--emit-windows-mov-stack-imm32
+     buf #x28 #x80) ; FILE_ATTRIBUTE_NORMAL
+    (nelisp-phase47-compiler--emit-windows-mov-stack-imm32
+     buf #x30 0) ; hTemplateFile
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-createfilea-iat-rva)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
+
+(defun nelisp-phase47-compiler--emit-windows-closehandle (node buf)
+  "Emit CloseHandle for Linux `close' syscall shape."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-closehandle-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-closehandle-import-missing)))
+  (let ((handle (nelisp-phase47-compiler--ir-get node :a0))
+        (frame (if (integerp nelisp-phase47-compiler--current-defun-arity)
+                   40
+                 32)))
+    (nelisp-phase47-compiler--emit-value handle buf)
+    (nelisp-asm-x86_64-push buf 'rax)
+    (nelisp-asm-x86_64-sub-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp buf 'rcx frame)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-closehandle-iat-rva)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp frame)
+    (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)))
+
 (defun nelisp-phase47-compiler--emit-windows-syscall-direct (node buf)
   "Emit supported Windows replacements for Linux `syscall-direct'."
   (let ((nr (nelisp-phase47-compiler--ir-get node :nr))
         (a0 (nelisp-phase47-compiler--ir-get node :a0))
+        (a1 (nelisp-phase47-compiler--ir-get node :a1))
+        (a2 (nelisp-phase47-compiler--ir-get node :a2))
         (a3 (nelisp-phase47-compiler--ir-get node :a3))
         (a4 (nelisp-phase47-compiler--ir-get node :a4))
         (a5 (nelisp-phase47-compiler--ir-get node :a5)))
@@ -13644,6 +13765,9 @@ byte count from the DWORD out parameter in rax."
            (nelisp-phase47-compiler--ir-imm-eq-p a0 0))
       (nelisp-phase47-compiler--emit-windows-stdio-file-call
        node buf -10 t))
+     ((nelisp-phase47-compiler--ir-imm-eq-p nr 0)
+      (nelisp-phase47-compiler--emit-windows-handle-file-call
+       node buf t))
      ((and (nelisp-phase47-compiler--ir-imm-eq-p nr 1)
            (nelisp-phase47-compiler--ir-imm-eq-p a0 1))
       (nelisp-phase47-compiler--emit-windows-stdio-file-call
@@ -13652,6 +13776,15 @@ byte count from the DWORD out parameter in rax."
            (nelisp-phase47-compiler--ir-imm-eq-p a0 2))
       (nelisp-phase47-compiler--emit-windows-stdio-file-call
        node buf -12 nil))
+     ((nelisp-phase47-compiler--ir-imm-eq-p nr 1)
+      (nelisp-phase47-compiler--emit-windows-handle-file-call
+       node buf nil))
+     ((nelisp-phase47-compiler--ir-imm-eq-p nr 2)
+      (nelisp-phase47-compiler--emit-windows-createfile node buf))
+     ((and (nelisp-phase47-compiler--ir-imm-eq-p nr 3)
+           (nelisp-phase47-compiler--ir-imm-eq-p a1 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a2 0))
+      (nelisp-phase47-compiler--emit-windows-closehandle node buf))
      (t
       (signal 'nelisp-phase47-compiler-error
               (list :windows-syscall-direct-unsupported

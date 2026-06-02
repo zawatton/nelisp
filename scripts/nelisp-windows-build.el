@@ -8,13 +8,15 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
 ;; `alloc-bytes' / `dealloc-bytes' through VirtualAlloc / VirtualFree.
 ;; Stage 7 maps stdio-shaped `syscall-direct' read/write calls to
 ;; GetStdHandle + ReadFile/WriteFile.
+;; Stage 8 maps file-shaped open/read/write/close calls to
+;; CreateFileA + ReadFile/WriteFile + CloseHandle.
 
 ;;; Code:
 
@@ -79,6 +81,23 @@ FDS is the list of accepted immediate fd values."
           (setq tail (cdr tail)))
         found))))
 
+(defun nelisp-windows-build--sexp-contains-syscall-nr-p (sexp nr)
+  "Return non-nil when SEXP contains `(syscall-direct NR ...)'."
+  (cond
+   ((atom sexp) nil)
+   ((and (eq (car sexp) 'syscall-direct)
+         (= (length sexp) 8)
+         (equal (nth 1 sexp) nr))
+    t)
+   (t (let ((tail sexp)
+            (found nil))
+        (while (and tail (not found))
+          (setq found
+                (nelisp-windows-build--sexp-contains-syscall-nr-p
+                 (car tail) nr))
+          (setq tail (cdr tail)))
+        found))))
+
 (defun nelisp-windows-build--append-import-names (names additions)
   "Return NAMES with ADDITIONS appended once, preserving order."
   (let ((out names))
@@ -98,10 +117,26 @@ FDS is the list of accepted immediate fd values."
       (setq names
             (nelisp-windows-build--append-import-names
              names '("GetStdHandle" "ReadFile"))))
+    (when (nelisp-windows-build--sexp-contains-syscall-nr-p sexp 0)
+      (setq names
+            (nelisp-windows-build--append-import-names
+             names '("ReadFile"))))
     (when (nelisp-windows-build--sexp-contains-syscall-direct-p sexp 1 '(1 2))
       (setq names
             (nelisp-windows-build--append-import-names
              names '("GetStdHandle" "WriteFile"))))
+    (when (nelisp-windows-build--sexp-contains-syscall-nr-p sexp 1)
+      (setq names
+            (nelisp-windows-build--append-import-names
+             names '("WriteFile"))))
+    (when (nelisp-windows-build--sexp-contains-syscall-nr-p sexp 2)
+      (setq names
+            (nelisp-windows-build--append-import-names
+             names '("CreateFileA"))))
+    (when (nelisp-windows-build--sexp-contains-syscall-nr-p sexp 3)
+      (setq names
+            (nelisp-windows-build--append-import-names
+             names '("CloseHandle"))))
     (when (nelisp-windows-build--sexp-contains-symbol-p sexp 'alloc-bytes)
       (setq names
             (nelisp-windows-build--append-import-names
@@ -126,7 +161,9 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
   (let ((exitprocess-iat (cdr (assoc "ExitProcess" iat-rvas)))
         (getstdhandle-iat (cdr (assoc "GetStdHandle" iat-rvas)))
         (writefile-iat (cdr (assoc "WriteFile" iat-rvas)))
-        (readfile-iat (cdr (assoc "ReadFile" iat-rvas))))
+        (readfile-iat (cdr (assoc "ReadFile" iat-rvas)))
+        (createfilea-iat (cdr (assoc "CreateFileA" iat-rvas)))
+        (closehandle-iat (cdr (assoc "CloseHandle" iat-rvas))))
     (unless exitprocess-iat
       (error "nelisp-windows-build: missing ExitProcess IAT RVA"))
     (let* ((nelisp-phase47-compiler--label-counter 0)
@@ -138,6 +175,8 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
            (nelisp-phase47-compiler--windows-getstdhandle-iat-rva getstdhandle-iat)
            (nelisp-phase47-compiler--windows-writefile-iat-rva writefile-iat)
            (nelisp-phase47-compiler--windows-readfile-iat-rva readfile-iat)
+           (nelisp-phase47-compiler--windows-createfilea-iat-rva createfilea-iat)
+           (nelisp-phase47-compiler--windows-closehandle-iat-rva closehandle-iat)
            (nelisp-phase47-compiler--windows-virtualalloc-iat-rva
             (cdr (assoc "VirtualAlloc" iat-rvas)))
            (nelisp-phase47-compiler--windows-virtualfree-iat-rva
@@ -253,6 +292,77 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
               (if (= n 1) b 14))))))
      (exit (sysread_probe)))
    "target/nelisp-windows-phase47-sysread-byte.exe"))
+
+(defun nelisp-windows-build--cstr-fill-forms (ptr bytes)
+  "Return Phase47 forms that write BYTES plus NUL into PTR."
+  (let ((i 0)
+        (forms nil))
+    (dolist (b bytes)
+      (push `(ptr-write-u8 ,ptr ,i ,b) forms)
+      (setq i (1+ i)))
+    (push `(ptr-write-u8 ,ptr ,i 0) forms)
+    (nreverse forms)))
+
+(defun nelisp-windows-build--ascii-bytes (string)
+  "Return list of ASCII byte values in STRING."
+  (let ((i 0)
+        (bytes nil))
+    (while (< i (length string))
+      (push (aref string i) bytes)
+      (setq i (1+ i)))
+    (nreverse bytes)))
+
+(defun nelisp-windows-build-phase47-file-read-byte ()
+  "Batch entry: build target/nelisp-windows-phase47-file-read-byte.exe."
+  (let* ((path "nelisp-win-read.txt")
+         (path-bytes (nelisp-windows-build--ascii-bytes path)))
+    (nelisp-windows-build-phase47-exe
+     `(seq
+       (defun file_read_probe ()
+         (let* ((path (alloc-bytes ,(1+ (length path-bytes)) 1))
+                (buf (alloc-bytes 1 1)))
+           (if (= path 0)
+               13
+             (if (= buf 0)
+                 14
+               (seq
+                ,@(nelisp-windows-build--cstr-fill-forms 'path path-bytes)
+                (let* ((fd (syscall-direct 2 path 0 0 0 0 0))
+                       (n (syscall-direct 0 fd buf 1 0 0 0))
+                       (b (ptr-read-u8 buf 0)))
+                  (seq
+                   (syscall-direct 3 fd 0 0 0 0 0)
+                   (dealloc-bytes path ,(1+ (length path-bytes)) 1)
+                   (dealloc-bytes buf 1 1)
+                   (if (= n 1) b 15))))))))
+       (exit (file_read_probe)))
+     "target/nelisp-windows-phase47-file-read-byte.exe")))
+
+(defun nelisp-windows-build-phase47-file-write42 ()
+  "Batch entry: build target/nelisp-windows-phase47-file-write42.exe."
+  (let* ((path "nelisp-win-write.txt")
+         (path-bytes (nelisp-windows-build--ascii-bytes path)))
+    (nelisp-windows-build-phase47-exe
+     `(seq
+       (defun file_write_probe ()
+         (let* ((path (alloc-bytes ,(1+ (length path-bytes)) 1))
+                (buf (alloc-bytes 1 1)))
+           (if (= path 0)
+               13
+             (if (= buf 0)
+                 14
+               (seq
+                ,@(nelisp-windows-build--cstr-fill-forms 'path path-bytes)
+                (ptr-write-u8 buf 0 90)
+                (let* ((fd (syscall-direct 2 path 577 420 0 0 0))
+                       (n (syscall-direct 1 fd buf 1 0 0 0)))
+                  (seq
+                   (syscall-direct 3 fd 0 0 0 0 0)
+                   (dealloc-bytes path ,(1+ (length path-bytes)) 1)
+                   (dealloc-bytes buf 1 1)
+                   (if (= n 1) 42 16))))))))
+       (exit (file_write_probe)))
+     "target/nelisp-windows-phase47-file-write42.exe")))
 
 (provide 'nelisp-windows-build)
 

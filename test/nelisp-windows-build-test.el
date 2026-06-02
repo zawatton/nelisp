@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -48,27 +48,47 @@
       (setq end (1+ end)))
     (substring bytes offset end)))
 
+(defun nelisp-windows-build-test--rva-to-raw (bytes rva)
+  "Translate RVA to file offset using section headers in BYTES."
+  (let* ((peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
+         (num-sections (logior (aref bytes (+ peoff 6))
+                               (ash (aref bytes (+ peoff 7)) 8)))
+         (opt-size (logior (aref bytes (+ peoff 20))
+                           (ash (aref bytes (+ peoff 21)) 8)))
+         (section-off (+ peoff 24 opt-size))
+         (i 0)
+         (found nil))
+    (while (and (< i num-sections) (not found))
+      (let* ((off (+ section-off (* i 40)))
+             (virtual-size (nelisp-windows-build-test--read-le32 bytes (+ off 8)))
+             (virtual-address (nelisp-windows-build-test--read-le32 bytes (+ off 12)))
+             (raw-size (nelisp-windows-build-test--read-le32 bytes (+ off 16)))
+             (raw-ptr (nelisp-windows-build-test--read-le32 bytes (+ off 20)))
+             (span (max virtual-size raw-size)))
+        (when (and (<= virtual-address rva)
+                   (< rva (+ virtual-address span)))
+          (setq found (+ raw-ptr (- rva virtual-address)))))
+      (setq i (1+ i)))
+    (or found
+        (error "RVA not covered by any section: %#x" rva))))
+
 (defun nelisp-windows-build-test--phase47-exe (&optional sexp)
   "Return PE32+ EXE bytes for SEXP, defaulting to `(exit 42)'."
   (nelisp-windows-build--phase47-executable-bytes (or sexp '(exit 42))))
 
 (defun nelisp-windows-build-test--import-name-at (bytes rva)
   "Read IMAGE_IMPORT_BY_NAME function name at RVA from BYTES."
-  (let ((rdata-rva #x2000)
-        (rdata-raw #x400))
-    (nelisp-windows-build-test--read-cstr
-     bytes (+ rdata-raw (- rva rdata-rva) 2))))
+  (nelisp-windows-build-test--read-cstr
+   bytes (+ (nelisp-windows-build-test--rva-to-raw bytes rva) 2)))
 
 (defun nelisp-windows-build-test--kernel32-import-names (bytes)
   "Return KERNEL32 import names from EXE BYTES."
   (let* ((peoff (nelisp-windows-build-test--read-le32 bytes #x3c))
          (opt (+ peoff 24))
          (import-rva (nelisp-windows-build-test--read-le32 bytes (+ opt 120)))
-         (rdata-rva #x2000)
-         (rdata-raw #x400)
-         (import-off (+ rdata-raw (- import-rva rdata-rva)))
+         (import-off (nelisp-windows-build-test--rva-to-raw bytes import-rva))
          (oft (nelisp-windows-build-test--read-le32 bytes import-off))
-         (thunk-off (+ rdata-raw (- oft rdata-rva)))
+         (thunk-off (nelisp-windows-build-test--rva-to-raw bytes oft))
          (names nil)
          (cursor thunk-off)
          (rva nil))
@@ -426,8 +446,126 @@
   "Windows rejects `syscall-direct' forms that are not mapped to Win32 APIs."
   (should-error
    (nelisp-windows-build--phase47-executable-bytes
-    '(exit (syscall-direct 2 0 0 0 0 0 0)))
+    '(exit (syscall-direct 9 0 4096 3 34 -1 0)))
    :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-windows-build-phase47-file-read-imports-file-apis ()
+  "Windows file read syscall chain imports CreateFileA/ReadFile/CloseHandle."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun file_read_probe ()
+                     (let* ((path (alloc-bytes 2 1))
+                            (buf (alloc-bytes 1 1)))
+                       (seq
+                        (ptr-write-u8 path 0 120)
+                        (ptr-write-u8 path 1 0)
+                        (let* ((fd (syscall-direct 2 path 0 0 0 0 0))
+                               (n (syscall-direct 0 fd buf 1 0 0 0))
+                               (b (ptr-read-u8 buf 0)))
+                          (seq
+                           (syscall-direct 3 fd 0 0 0 0 0)
+                           (if (= n 1) b 15))))))
+                   (exit (file_read_probe)))))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (member "ExitProcess" imports))
+    (should (member "CreateFileA" imports))
+    (should (member "ReadFile" imports))
+    (should (member "CloseHandle" imports))
+    (should (member "VirtualAlloc" imports))))
+
+(ert-deftest nelisp-windows-build-phase47-file-read-text-calls-file-apis ()
+  "Windows file read syscall chain emits CreateFileA/ReadFile/CloseHandle calls."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun file_read_probe ()
+                     (let* ((path (alloc-bytes 2 1))
+                            (buf (alloc-bytes 1 1)))
+                       (seq
+                        (ptr-write-u8 path 0 120)
+                        (ptr-write-u8 path 1 0)
+                        (let* ((fd (syscall-direct 2 path 0 0 0 0 0))
+                               (n (syscall-direct 0 fd buf 1 0 0 0))
+                               (b (ptr-read-u8 buf 0)))
+                          (seq
+                           (syscall-direct 3 fd 0 0 0 0 0)
+                           (if (= n 1) b 15))))))
+                   (exit (file_read_probe)))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 520)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 520))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xba #x00 #x00 #x00 #x80))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #xc7 #x44 #x24 #x20
+                                            #x03 #x00 #x00 #x00))
+             text))
+    (should (member #x2070 targets))
+    (should (member #x2068 targets))
+    (should (member #x2078 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-phase47-file-write-imports-file-apis ()
+  "Windows file write syscall chain imports CreateFileA/WriteFile/CloseHandle."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun file_write_probe ()
+                     (let* ((path (alloc-bytes 2 1))
+                            (buf (alloc-bytes 1 1)))
+                       (seq
+                        (ptr-write-u8 path 0 120)
+                        (ptr-write-u8 path 1 0)
+                        (ptr-write-u8 buf 0 90)
+                        (let* ((fd (syscall-direct 2 path 577 420 0 0 0))
+                               (n (syscall-direct 1 fd buf 1 0 0 0)))
+                          (seq
+                           (syscall-direct 3 fd 0 0 0 0 0)
+                           (if (= n 1) 42 16))))))
+                   (exit (file_write_probe)))))
+         (imports (nelisp-windows-build-test--kernel32-import-names bytes)))
+    (should (member "ExitProcess" imports))
+    (should (member "CreateFileA" imports))
+    (should (member "WriteFile" imports))
+    (should (member "CloseHandle" imports))
+    (should (member "VirtualAlloc" imports))))
+
+(ert-deftest nelisp-windows-build-phase47-file-write-text-calls-file-apis ()
+  "Windows file write syscall chain emits CreateFileA/WriteFile/CloseHandle calls."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(seq
+                   (defun file_write_probe ()
+                     (let* ((path (alloc-bytes 2 1))
+                            (buf (alloc-bytes 1 1)))
+                       (seq
+                        (ptr-write-u8 path 0 120)
+                        (ptr-write-u8 path 1 0)
+                        (ptr-write-u8 buf 0 90)
+                        (let* ((fd (syscall-direct 2 path 577 420 0 0 0))
+                               (n (syscall-direct 1 fd buf 1 0 0 0)))
+                          (seq
+                           (syscall-direct 3 fd 0 0 0 0 0)
+                           (if (= n 1) 42 16))))))
+                   (exit (file_write_probe)))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 520)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 520))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #xba #x00 #x00 #x00 #x40))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #xc7 #x44 #x24 #x20
+                                            #x02 #x00 #x00 #x00))
+             text))
+    (should (member #x2070 targets))
+    (should (member #x2068 targets))
+    (should (member #x2078 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
 
 (provide 'nelisp-windows-build-test)
 
