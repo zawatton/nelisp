@@ -60,6 +60,7 @@
                    (arena . virtualalloc-arena-exit-42)
                    (writefile-stdout . writefile-stdout-exit-42)
                    (getcommandline . getcommandline-exit-42)
+                   (commandlinetoargv . commandlinetoargv-exit-42)
                    (wsastartup . wsastartup-exit-42))))
   (dolist (entry nelisp-windows-build-smoke-specs)
     (should (eq (nelisp-windows-build--normalize-spec (car entry))
@@ -91,6 +92,7 @@
                            "nelisp-windows-arena.exe"
                            "nelisp-windows-writefile-stdout.exe"
                            "nelisp-windows-getcommandline.exe"
+                           "nelisp-windows-commandlinetoargv.exe"
                            "nelisp-windows-wsastartup.exe")))
           (dolist (path paths)
             (let ((bytes (nelisp-windows-build-test--read-file-bytes path)))

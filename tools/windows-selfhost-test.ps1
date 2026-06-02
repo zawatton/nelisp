@@ -68,6 +68,12 @@ $Smokes = @(
         ExpectedStdout = $null
     },
     @{
+        Name = "commandlinetoargv"
+        Spec = "commandlinetoargv-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
         Name = "wsastartup"
         Spec = "wsastartup-exit-42"
         ExpectedExit = 42
