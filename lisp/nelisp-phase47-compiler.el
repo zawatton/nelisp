@@ -10565,6 +10565,10 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-sexp-tag-arm64 node buf))
         ((= tag 57)             ; sexp-int-unwrap — aarch64 LDR payload
          (nelisp-phase47-compiler--emit-sexp-int-unwrap-arm64 node buf))
+        ((= tag 75)             ; str-len — aarch64 LDR [ptr+24]
+         (nelisp-phase47-compiler--emit-str-len-arm64 node buf))
+        ((= tag 68)             ; str-byte-at — aarch64 buf[idx] LDRB
+         (nelisp-phase47-compiler--emit-str-byte-at-arm64 node buf))
         ((= tag 89)             ; let-rt-n — spill bindings to slots, emit body
          (nelisp-phase47-compiler--emit-let-rt-n-bindings node buf)
          (nelisp-phase47-compiler--emit-value
@@ -10589,7 +10593,7 @@ the node's class to consume the result correctly."
                      82                  ; vector-make
                      47                  ; record-make
                      9 8 6 7             ; cell-value cell-set-value cell-make cell-null-p
-                     75 69 70 68 73 76   ; str-len str-bytes str-bytes-ptr str-byte-at str-eq symbol-eq
+                     69 70 73 76         ; str-bytes str-bytes-ptr str-eq symbol-eq
                      77 58               ; symbol-name-eq sexp-name-eq
                      63 66               ; sexp-write-nil sexp-write-t
                      64 65 90 91 62      ; sexp-write-str sexp-write-symbol sexp-write-symbol-lit sexp-write-str-lit sexp-write-float
@@ -13277,6 +13281,28 @@ No tag check; caller guarantees :ptr is a `Sexp::Int'."
   (nelisp-phase47-compiler--emit-value
    (nelisp-phase47-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-int-payload))
+
+(defun nelisp-phase47-compiler--emit-str-len-arm64 (node buf)
+  "Emit `str-len' for aarch64 — x0 = i64 length at [ptr+24]."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-length))
+
+(defun nelisp-phase47-compiler--emit-str-byte-at-arm64 (node buf)
+  "Emit `str-byte-at' for aarch64 — byte at index IDX of a String buffer.
+ptr -> x1, idx -> x2; load buffer ptr from [ptr+16], add idx, LDRB;
+result (zero-extended byte) in x0."
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push idx
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = idx (top)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-ptr) ; x0 = buf ptr
+  (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x2)     ; x0 = buf + idx
+  (nelisp-asm-arm64-ldrb-imm buf 'x0 'x0 0))         ; x0 = byte
 
 (defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
   "Emit a fixed-arity direct call for aarch64 (AAPCS64).

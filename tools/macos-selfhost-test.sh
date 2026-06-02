@@ -108,6 +108,20 @@ build_run let '(seq
   (defun f (x) (let ((y (+ x 1))) (+ y y)))
   (exit (f 5)))' 12
 
+# string readers: hand-build a Sexp::Str over a "Hi" buffer (tag@0=5,
+# ptr@16=buf, length@24=2), then str-len (= 2) + str-byte-at index 1
+# (= 'i' = 105) -> 107.  These are the reader's input-scanning ops.
+build_run str '(seq
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 256 26952)
+      (ptr-write-u64 8589934656 0 5)
+      (ptr-write-u64 8589934656 16 8589934848)
+      (ptr-write-u64 8589934656 24 2)
+      (+ (str-len 8589934656) (str-byte-at 8589934656 1))))
+  (exit (run)))' 107
+
 if [ "$fail" = 0 ]; then
   echo "[macos] all PASS — pure-elisp aarch64 -> native macOS arm64 self-host smoke OK"
   exit 0
