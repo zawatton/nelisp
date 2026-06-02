@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 3/4/5/6/7/8/9 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
+;; Doc 138 Stage 3/4/5/6/7/8/9/10 — structure tests for Phase47 -> Win64 PE32+ EXE emit.
 
 ;;; Code:
 
@@ -448,6 +448,43 @@
    (nelisp-windows-build--phase47-executable-bytes
     '(exit (syscall-direct 56 768 0 0 0 0 0)))
    :type 'nelisp-phase47-compiler-error))
+
+(ert-deftest nelisp-windows-build-phase47-syscall-exit-calls-exitprocess ()
+  "Windows exit-shaped `syscall-direct' emits ExitProcess, not Linux syscall."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(exit (syscall-direct 60 42 0 0 0 0 0))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 96)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 96))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                            #x2a #x00 #x00 #x00))
+             text))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #x89 #xc1))
+             text))
+    (should (member #x2038 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
+
+(ert-deftest nelisp-windows-build-phase47-syscall-exit-group-calls-exitprocess ()
+  "Windows exit_group-shaped `syscall-direct' emits ExitProcess."
+  (let* ((bytes (nelisp-windows-build-test--phase47-exe
+                 '(exit (syscall-direct 231 43 0 0 0 0 0))))
+         (text-raw #x200)
+         (text (substring bytes text-raw (+ text-raw 96)))
+         (targets (nelisp-windows-build-test--iat-call-targets
+                   bytes text-raw (+ text-raw 96))))
+    (should (string-match-p
+             (regexp-quote (unibyte-string #x48 #xc7 #xc0
+                                            #x2b #x00 #x00 #x00))
+             text))
+    (should (member #x2038 targets))
+    (should-not (string-match-p
+                 (regexp-quote (unibyte-string #x0f #x05))
+                 text))))
 
 (ert-deftest nelisp-windows-build-phase47-mmap-imports-virtualalloc-free ()
   "Windows mmap/munmap-shaped syscalls import VirtualAlloc/VirtualFree."

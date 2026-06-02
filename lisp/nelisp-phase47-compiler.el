@@ -13808,6 +13808,21 @@ HANDLE, buffer and length expressions are evaluated left-to-right."
     (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)))
 
+(defun nelisp-phase47-compiler--emit-windows-syscall-exit (node buf)
+  "Emit ExitProcess for Linux `exit' / `exit_group' syscall shapes."
+  (unless (and (eq nelisp-phase47-compiler--abi 'win64)
+               nelisp-phase47-compiler--windows-exitprocess-iat-rva)
+    (signal 'nelisp-phase47-compiler-error
+            (list :windows-exitprocess-import-missing)))
+  (let ((status (nelisp-phase47-compiler--ir-get node :a0)))
+    (nelisp-phase47-compiler--emit-value status buf)
+    (nelisp-asm-x86_64-sub-imm32
+     buf 'rsp (nelisp-phase47-compiler--windows-api-shadow-size))
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rax)
+    (nelisp-phase47-compiler--emit-windows-call-iat-rva
+     buf nelisp-phase47-compiler--windows-exitprocess-iat-rva)
+    (nelisp-asm-x86_64-int3 buf)))
+
 (defun nelisp-phase47-compiler--emit-windows-syscall-direct (node buf)
   "Emit supported Windows replacements for Linux `syscall-direct'."
   (let ((nr (nelisp-phase47-compiler--ir-get node :nr))
@@ -13857,6 +13872,14 @@ HANDLE, buffer and length expressions are evaluated left-to-right."
            (nelisp-phase47-compiler--ir-imm-eq-p a4 0)
            (nelisp-phase47-compiler--ir-imm-eq-p a5 0))
       (nelisp-phase47-compiler--emit-windows-munmap node buf))
+     ((and (or (nelisp-phase47-compiler--ir-imm-eq-p nr 60)
+               (nelisp-phase47-compiler--ir-imm-eq-p nr 231))
+           (nelisp-phase47-compiler--ir-imm-eq-p a1 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a2 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a3 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a4 0)
+           (nelisp-phase47-compiler--ir-imm-eq-p a5 0))
+      (nelisp-phase47-compiler--emit-windows-syscall-exit node buf))
      (t
       (signal 'nelisp-phase47-compiler-error
               (list :windows-syscall-direct-unsupported

@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -19,6 +19,8 @@
 ;; CreateFileA + ReadFile/WriteFile + CloseHandle.
 ;; Stage 9 maps mmap/munmap-shaped `syscall-direct' calls to
 ;; VirtualAlloc/VirtualFree.
+;; Stage 10 maps exit/exit_group-shaped `syscall-direct' calls to
+;; ExitProcess.
 
 ;;; Code:
 
@@ -388,6 +390,12 @@ slot RVAs, and RODATA-RVA is byte 0 of the appended string rodata."
             42))))
      (exit (mmap_probe)))
    "target/nelisp-windows-phase47-mmap42.exe"))
+
+(defun nelisp-windows-build-phase47-sysexit42 ()
+  "Batch entry: build target/nelisp-windows-phase47-sysexit42.exe."
+  (nelisp-windows-build-phase47-exe
+   '(exit (syscall-direct 60 42 0 0 0 0 0))
+   "target/nelisp-windows-phase47-sysexit42.exe"))
 
 (provide 'nelisp-windows-build)
 
