@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -45,6 +45,8 @@
 ;; loop shape before full reader integration.
 ;; Stage 22 skips the executable token and checks the first argument marker,
 ;; adding the minimal Windows argv parser shape needed by reader startup.
+;; Stage 23 computes argv1 bounds and requires the first argument token to be
+;; exactly the marker.
 
 ;;; Code:
 
@@ -598,6 +600,68 @@ link-units."
                      (if (= (ptr-read-u16 cmdline (* i 2)) 33) 42 16)
                    17)))))))))))
 
+(defun nelisp-windows-build--standalone-commandline-argv1-exact-driver42-bytes ()
+  "Return a PE32+ EXE proving `driver' can bound and check argv1 exactly."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "GetCommandLineW" "lstrlenW")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (list
+      (nelisp-windows-build--standalone-commandline-len-start-unit
+       text-rva
+       (cdr (assoc "ExitProcess" iat-rvas))
+       (cdr (assoc "GetCommandLineW" iat-rvas))
+       (cdr (assoc "lstrlenW" iat-rvas)))
+      (nelisp-windows-build--compile-defuns-to-unit
+       "driver.o"
+       '(defun driver (cmdline len)
+          (if (= cmdline 0)
+              13
+            (if (= len 0)
+                14
+              (let* ((i 0)
+                     (ch 0)
+                     (start 0)
+                     (end 0))
+                (seq
+                 (setq ch (ptr-read-u16 cmdline 0))
+                 (if (= ch 34)
+                     (seq
+                      (setq i 1)
+                      (while (and (< i len)
+                                  (= (= (ptr-read-u16 cmdline (* i 2)) 34) 0))
+                        (setq i (+ i 1)))
+                      (if (< i len) (setq i (+ i 1)) 0))
+                   (while (and (< i len)
+                               (and (= (= (ptr-read-u16 cmdline (* i 2)) 32) 0)
+                                    (= (= (ptr-read-u16 cmdline (* i 2)) 9) 0)))
+                     (setq i (+ i 1))))
+                 (while (and (< i len)
+                             (or (= (ptr-read-u16 cmdline (* i 2)) 32)
+                                 (= (ptr-read-u16 cmdline (* i 2)) 9)))
+                   (setq i (+ i 1)))
+                 (if (< i len)
+                     (seq
+                      (if (= (ptr-read-u16 cmdline (* i 2)) 34)
+                          (seq
+                           (setq i (+ i 1))
+                           (setq start i)
+                           (while (and (< i len)
+                                       (= (= (ptr-read-u16 cmdline (* i 2)) 34) 0))
+                             (setq i (+ i 1)))
+                           (setq end i))
+                        (seq
+                         (setq start i)
+                         (while (and (< i len)
+                                     (and (= (= (ptr-read-u16 cmdline (* i 2)) 32) 0)
+                                          (= (= (ptr-read-u16 cmdline (* i 2)) 9) 0)))
+                           (setq i (+ i 1)))
+                         (setq end i)))
+                      (if (and (= (- end start) 1)
+                               (= (ptr-read-u16 cmdline (* start 2)) 33))
+                          42
+                        16))
+                   17)))))))))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -685,6 +749,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (argv1 UTF-16 command line)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-commandline-argv1-exact-driver42 ()
+  "Batch entry: build the standalone command-line exact argv1 probe."
+  (let ((bytes (nelisp-windows-build--standalone-commandline-argv1-exact-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-commandline-argv1-exact-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (exact argv1 UTF-16 command line)"
              out-path)
     out-path))
 

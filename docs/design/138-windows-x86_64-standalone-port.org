@@ -4,7 +4,7 @@
 
 * Status
 
-- *State*: STAGE 22 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
+- *State*: STAGE 23 IMPLEMENTATION STARTED 2026-06-02.  Stage 1 ships a
   pure-elisp PE32+ console EXE that imports =kernel32.dll!ExitProcess=.
   Stage 2 extends the import table to =VirtualAlloc= and probes
   arena-style page allocation without an external linker or CRT.  Stage 3
@@ -59,7 +59,9 @@
   needed by a minimal Windows argv parser before reader/manifest integration.
   Stage 22 skips the executable token, handles the quoted-exe-path case, and
   checks whether the first argument begins with the marker, bringing startup
-  parsing closer to the reader path's argv needs.
+  parsing closer to the reader path's argv needs.  Stage 23 computes argv1
+  start/end bounds and only accepts the exact one-code-unit marker token,
+  proving startup can distinguish =!= from longer first arguments.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
