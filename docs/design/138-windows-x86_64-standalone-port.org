@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-77-WINDOWS-STANDARD-DUP-STATUS-FLAGS
+#+STATUS: STAGE-78-WINDOWS-STANDARD-CLOSE-FLAG-CLEANUP
 
 * Status
 
-- *State*: STAGE 77 Windows standard dup status flags
+- *State*: STAGE 78 Windows standard close flag cleanup
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -96,6 +96,9 @@
   preserving tracked access / =O_APPEND= status flags, and standard targets use
   =SetStdHandle= while also preserving tracked status flags for =F_GETFL= on
   the standard fd.  Regular =F_DUPFD= now preserves the same tracked status flags.
+  =nelisp-os-close= now handles Windows standard fds by closing the current
+  standard HANDLE, clearing the process standard HANDLE slot, and removing
+  tracked status flags for that fd.
   Socket-kind fds now use
   =WSADuplicateSocketW= / =WSASocketW= for =F_DUPFD= and non-standard-target
   =dup2=, while socket-to-standard-fd =dup2= remains explicitly unsupported
@@ -374,6 +377,9 @@
   Stage 77 coverage verifies Windows regular =dup2= to a standard fd preserves
   tracked access / =O_APPEND= status flags for later =F_GETFL= on that standard
   fd.
+  Stage 78 coverage verifies Windows =close= on a standard fd closes the current
+  standard HANDLE, clears the =SetStdHandle= slot, and removes tracked standard
+  fd status flags.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -922,6 +928,9 @@ largest uncertainty (B1 + B2) first.
    *Windows standard dup status flags SHIPPED 2026-06-03*: regular =dup2= to
    standard fds now preserves source fd access / =O_APPEND= tracking for
    subsequent =F_GETFL=.
+   *Windows standard close flag cleanup SHIPPED 2026-06-03*: standard fd
+   =close= now clears the Windows standard HANDLE slot and removes any tracked
+   access / =O_APPEND= status flags.
    *Windows Linux-only guard SHIPPED 2026-06-02*: Linux-specific process/event
    fd APIs now return explicit =ENOTSUP= on Windows before raw syscall/libc
    fallback.
@@ -1131,7 +1140,8 @@ largest uncertainty (B1 + B2) first.
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd
-   targets.  Broader socket extensions remain pending.
+   targets.  Standard fd =close= now clears the Windows standard HANDLE slot and
+   removes tracked fd status flags.  Broader socket extensions remain pending.
    Linux-only AF_UNIX
    fd-passing/peercred helpers are guarded, not ported.
 

@@ -3693,6 +3693,39 @@
                          [:sint32 :pointer]
                          (list #xabcdef))))))
 
+(ert-deftest nelisp-stdlib-os-close-windows-stdout-closes-standard-handle ()
+  "Windows stdout close clears the standard HANDLE slot and tracked flags."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-flags-table
+         `((,nelisp-os-STDOUT . ,(logior nelisp-os-O-WRONLY
+                                         nelisp-os-O-APPEND))
+           (3 . ,nelisp-os-O-RDWR))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle") #xbbbb)
+                  ((equal fn "CloseHandle") 1)
+                  ((equal fn "SetStdHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should-not (nelisp-os-close nelisp-os-STDOUT))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xbbbb))
+                    (list "kernel32" "SetStdHandle"
+                          [:sint32 :sint32 :pointer]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE 0)))))
+    (should (equal nelisp-os--windows-fd-table '((3 . #xaaaa))))
+    (should (equal nelisp-os--windows-fd-flags-table
+                   `((3 . ,nelisp-os-O-RDWR))))))
+
 (ert-deftest nelisp-stdlib-os-read-windows-stdin-uses-kernel32 ()
   "On Windows, stdin read routes through GetStdHandle + ReadFile."
   (let ((calls nil)

@@ -402,6 +402,21 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
           (nelisp-os--windows-ffi-error-signal)
         nil)))))
 
+(defun nelisp-os--windows-close-std-fd (fd)
+  "Close POSIX-like standard FD through the Windows standard HANDLE table."
+  (let* ((selector (nelisp-os--windows-std-handle-selector fd))
+         (handle (nelisp-os--windows-get-std-handle fd)))
+    (nelisp-os--windows-close-resource handle 'handle)
+    (let ((ok (nelisp-os--libc-call
+               "kernel32" "SetStdHandle"
+               [:sint32 :sint32 :pointer]
+               selector
+               0)))
+      (if (= ok 0)
+          (nelisp-os--windows-ffi-error-signal)
+        (nelisp-os--windows-fd-set-flags fd 0)
+        nil))))
+
 (defun nelisp-os--windows-handle-for-fd (fd)
   "Return a Windows HANDLE for POSIX-like FD."
   (if (nelisp-os--windows-std-handle-selector fd)
@@ -1092,9 +1107,11 @@ went through `:string' (= CString::new, NUL-rejecting)."
 (defun nelisp-os-close (fd)
   "POSIX close(2) — close FD, return nil or signal `nelisp-os-error'."
   (if (nelisp-os--windows-p)
-      (let* ((kind (nelisp-os--windows-fd-kind fd))
-             (handle (nelisp-os--windows-fd-remove fd)))
-        (nelisp-os--windows-close-resource handle kind))
+      (if (nelisp-os--windows-std-handle-selector fd)
+          (nelisp-os--windows-close-std-fd fd)
+        (let* ((kind (nelisp-os--windows-fd-kind fd))
+               (handle (nelisp-os--windows-fd-remove fd)))
+          (nelisp-os--windows-close-resource handle kind)))
     (if nelisp-os--use-direct-syscall
       (progn (nelisp-os--check-errno (nelisp--syscall 'close fd)) nil)
     (progn
