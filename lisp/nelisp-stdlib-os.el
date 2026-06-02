@@ -171,6 +171,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-FILE-TYPE-DISK    1)
 (defconst nelisp-os-WIN-FILE-TYPE-CHAR    2)
 (defconst nelisp-os-WIN-FILE-TYPE-PIPE    3)
+(defconst nelisp-os-WIN-NO-ERROR 0)
 
 ;; Windows BY_HANDLE_FILE_INFORMATION layout.
 (defconst nelisp-os-WIN-BY-HANDLE-FILE-INFORMATION-SIZE 52)
@@ -1432,6 +1433,8 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
 
 ;; struct stat st_mode bits
 (defconst nelisp-os-S-IFMT  61440)          ; 0o170000
+(defconst nelisp-os-S-IFIFO 4096)           ; 0o010000
+(defconst nelisp-os-S-IFCHR 8192)           ; 0o020000
 (defconst nelisp-os-S-IFREG 32768)          ; 0o100000
 (defconst nelisp-os-S-IFDIR 16384)          ; 0o040000
 (defconst nelisp-os-S-IFLNK 40960)          ; 0o120000
@@ -1526,6 +1529,13 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
      (car ctime) (cdr ctime)
      nlink ino dev)))
 
+(defun nelisp-os--windows-unknown-file-type-stat ()
+  "Return a stat for FILE_TYPE_UNKNOWN or signal GetFileType failure."
+  (let ((err (nelisp-os--libc-call "kernel32" "GetLastError" [:uint32])))
+    (if (= err nelisp-os-WIN-NO-ERROR)
+        (nelisp-os--windows-stat-list 0 0)
+      (signal 'nelisp-os-error (list err)))))
+
 (defun nelisp-os--windows-fstat (fd)
   "Windows implementation of `nelisp-os-fstat' for HANDLE-backed fds."
   (if (eq (nelisp-os--windows-fd-kind fd) 'socket)
@@ -1544,10 +1554,18 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
                            [:sint32 :pointer :pointer]
                            handle info-buf)))
                   (if (= ok 0)
-                      (nelisp-os--windows-ffi-error-signal)
-                    (nelisp-os--windows-stat-from-file-information info-buf)))
+                    (nelisp-os--windows-ffi-error-signal)
+                  (nelisp-os--windows-stat-from-file-information info-buf)))
               (nelisp-os--free info-buf)))
-        (nelisp-os--windows-stat-list 0 0)))))
+        (cond
+         ((= file-type nelisp-os-WIN-FILE-TYPE-CHAR)
+          (nelisp-os--windows-stat-list 0 nelisp-os-S-IFCHR))
+         ((= file-type nelisp-os-WIN-FILE-TYPE-PIPE)
+          (nelisp-os--windows-stat-list 0 nelisp-os-S-IFIFO))
+         ((= file-type nelisp-os-WIN-FILE-TYPE-UNKNOWN)
+          (nelisp-os--windows-unknown-file-type-stat))
+         (t
+          (nelisp-os--windows-stat-list 0 0)))))))
 
 (defun nelisp-os--windows-dup2 (oldfd newfd)
   "Windows implementation of `nelisp-os-dup2' via DuplicateHandle."

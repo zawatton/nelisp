@@ -1243,7 +1243,7 @@
         (should (= (nelisp-os-stat-mode st) nelisp-os-S-IFDIR))))))
 
 (ert-deftest nelisp-stdlib-os-fstat-windows-pipe-skips-file-information ()
-  "Windows fstat on pipe HANDLE returns a zero-size non-regular stat."
+  "Windows fstat on pipe HANDLE returns a zero-size FIFO stat."
   (let ((calls nil)
         (nelisp-os--windows-fd-table '((4 . #x55667788))))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
@@ -1255,13 +1255,77 @@
       (let* ((system-type 'windows-nt)
              (st (nelisp-os-fstat 4)))
         (should (= (nelisp-os-stat-size st) 0))
-        (should (= (nelisp-os-stat-mode st) 0))
+        (should (= (nelisp-os-stat-mode st) nelisp-os-S-IFIFO))
         (should (= (nelisp-os-stat-nlink st) 1))))
     (should (equal (nreverse calls)
                    (list
                     (list "kernel32" "GetFileType"
                           [:uint32 :pointer]
                           (list #x55667788)))))))
+
+(ert-deftest nelisp-stdlib-os-fstat-windows-char-returns-char-mode ()
+  "Windows fstat on char HANDLE returns a zero-size character stat."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((4 . #x55667788))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetFileType") nelisp-os-WIN-FILE-TYPE-CHAR)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat 4)))
+        (should (= (nelisp-os-stat-size st) 0))
+        (should (= (nelisp-os-stat-mode st) nelisp-os-S-IFCHR))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetFileType"
+                          [:uint32 :pointer]
+                          (list #x55667788)))))))
+
+(ert-deftest nelisp-stdlib-os-fstat-windows-unknown-type-checks-lasterror ()
+  "Windows fstat treats FILE_TYPE_UNKNOWN with NO_ERROR as unknown mode."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((4 . #x55667788))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetFileType") nelisp-os-WIN-FILE-TYPE-UNKNOWN)
+                  ((equal fn "GetLastError") nelisp-os-WIN-NO-ERROR)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat 4)))
+        (should (= (nelisp-os-stat-size st) 0))
+        (should (= (nelisp-os-stat-mode st) 0))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetFileType"
+                          [:uint32 :pointer]
+                          (list #x55667788))
+                    (list "kernel32" "GetLastError" [:uint32] nil))))))
+
+(ert-deftest nelisp-stdlib-os-fstat-windows-unknown-type-errors-on-lasterror ()
+  "Windows fstat signals GetLastError for failed FILE_TYPE_UNKNOWN."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((4 . #x55667788))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetFileType") nelisp-os-WIN-FILE-TYPE-UNKNOWN)
+                  ((equal fn "GetLastError") 1234)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-fstat 4) :type 'nelisp-os-error)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetFileType"
+                          [:uint32 :pointer]
+                          (list #x55667788))
+                    (list "kernel32" "GetLastError" [:uint32] nil))))))
 
 (ert-deftest nelisp-stdlib-os-fstat-windows-socket-returns-socket-mode ()
   "Windows fstat on socket-kind fd returns S_IFSOCK before kernel32 FFI."

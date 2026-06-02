@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-87-WINDOWS-FSTAT-SOCKET-MODE
+#+STATUS: STAGE-88-WINDOWS-FSTAT-HANDLE-TYPES
 
 * Status
 
-- *State*: STAGE 87 Windows fstat socket mode
+- *State*: STAGE 88 Windows fstat handle types
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -88,9 +88,10 @@
   the already-covered HANDLE path.  =nelisp-os-lseek= now routes Windows fds
   through =kernel32!SetFilePointerEx=, returning the new 64-bit file offset and
   rejecting unsupported =whence= values before FFI.  =nelisp-os-fstat= now has
-  a Windows HANDLE-backed branch: =GetFileType= classifies the HANDLE and
-  disk files use =GetFileSizeEx= to populate the stat size plus regular-file
-  mode.  Pipe/console HANDLEs return a zero-size non-regular minimal stat.
+  a Windows branch: socket-kind fds return =S_IFSOCK= before HANDLE APIs,
+  disk HANDLEs use =GetFileInformationByHandle= for richer stat fields, and
+  =GetFileType= classifies character / pipe / unknown HANDLEs into
+  =S_IFCHR= / =S_IFIFO= / unknown-or-error stat results.
   =nelisp-os-dup2= now routes Windows fd duplication through
   =DuplicateHandle=; regular targets update the Windows fd table while
   preserving tracked access / =O_APPEND= status flags, and standard targets use
@@ -128,6 +129,9 @@
   only a minimal size/mode stat.
   Windows socket-kind =nelisp-os-fstat= now returns a zero-size =S_IFSOCK= stat
   before entering kernel32 HANDLE APIs.
+  Windows =GetFileType= =FILE_TYPE_CHAR= and =FILE_TYPE_PIPE= now map to
+  zero-size =S_IFCHR= / =S_IFIFO= stats, and =FILE_TYPE_UNKNOWN= checks
+  =GetLastError= to distinguish a valid unknown type from a HANDLE API failure.
   =nelisp-os-kill= now supports single-PID
   Windows termination for =SIGTERM= / =SIGKILL= via
   =OpenProcess(PROCESS_TERMINATE)= + =TerminateProcess= + =CloseHandle= when
@@ -303,8 +307,8 @@
   shape, HANDLE decoding, fd-table allocation, and cleanup.  Stage 13 coverage
   verifies =SetFilePointerEx= argument shape, new-offset decoding, and
   invalid-=whence= rejection.  Stage 14 coverage verifies =GetFileType= /
-  =GetFileSizeEx= argument shape and the minimal positional stat list for disk
-  and pipe HANDLEs.  Stage 15 coverage verifies =DuplicateHandle= argument
+  =GetFileInformationByHandle= argument shape and the positional stat list for
+  disk and non-disk HANDLEs.  Stage 15 coverage verifies =DuplicateHandle= argument
   shape, regular-fd table replacement, old HANDLE close, and =SetStdHandle= for
   stdout redirection.  Stage 16 coverage verifies =OpenProcess= /
   =TerminateProcess= / =CloseHandle= argument shape and unsupported signal
@@ -427,6 +431,9 @@
   regular-file vs directory mode and preserving pipe/console minimal stats.
   Stage 87 coverage verifies Windows socket-kind =fstat= reports =S_IFSOCK=
   without calling kernel32 HANDLE APIs.
+  Stage 88 coverage verifies Windows =fstat= maps =FILE_TYPE_CHAR= /
+  =FILE_TYPE_PIPE= to =S_IFCHR= / =S_IFIFO= and checks =GetLastError= for
+  =FILE_TYPE_UNKNOWN=.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -746,8 +753,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =CreatePipe= and registers both HANDLEs in the Windows fd table.
   *Windows seek progress 2026-06-02*: =nelisp-os-lseek= now routes through
   =SetFilePointerEx= for Windows HANDLE-backed fds.
-  *Windows fstat progress 2026-06-02*: =nelisp-os-fstat= now returns a minimal
-  HANDLE-backed stat list via =GetFileType= / =GetFileSizeEx=.
+  *Windows fstat progress 2026-06-02*: =nelisp-os-fstat= now returns a
+  HANDLE-backed stat list via =GetFileType= / =GetFileInformationByHandle=.
   *Windows dup progress 2026-06-02*: =nelisp-os-dup2= now routes through
   =DuplicateHandle=, updating regular fd-table targets and std targets via
   =SetStdHandle=.
@@ -856,6 +863,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows fstat socket mode progress 2026-06-03*: socket-kind
   =nelisp-os-fstat= now reports =S_IFSOCK= without routing the SOCKET through
   kernel32 HANDLE metadata APIs.
+  *Windows fstat handle type progress 2026-06-03*: =FILE_TYPE_CHAR= and
+  =FILE_TYPE_PIPE= now report =S_IFCHR= / =S_IFIFO=, and =FILE_TYPE_UNKNOWN=
+  now checks =GetLastError= before deciding whether to return unknown mode or
+  signal a HANDLE API failure.
   *Windows file-backed mmap progress 2026-06-03*: =nelisp-os-mmap= now maps
   HANDLE-backed =MAP_PRIVATE= file views with =CreateFileMappingW= /
   =MapViewOfFile=, and =nelisp-os-munmap= releases those views with
@@ -952,7 +963,7 @@ largest uncertainty (B1 + B2) first.
    *Windows seek branch SHIPPED 2026-06-02*: =nelisp-os-lseek= uses
    =SetFilePointerEx= and returns the decoded 64-bit file offset.
    *Windows fstat branch SHIPPED 2026-06-02*: =nelisp-os-fstat= uses
-   =GetFileType= / =GetFileSizeEx= for a minimal positional stat list.
+   =GetFileType= / =GetFileInformationByHandle= for a positional stat list.
    *Windows dup branch SHIPPED 2026-06-02*: =nelisp-os-dup2= uses
    =DuplicateHandle= and can retarget stdout/stderr/stdin through
    =SetStdHandle=.
@@ -1080,6 +1091,9 @@ largest uncertainty (B1 + B2) first.
    *Windows fstat socket mode SHIPPED 2026-06-03*: socket-kind
    =nelisp-os-fstat= now returns an =S_IFSOCK= positional stat before entering
    kernel32 HANDLE metadata APIs.
+   *Windows fstat handle types SHIPPED 2026-06-03*: non-disk HANDLE =fstat=
+   now maps =FILE_TYPE_CHAR= / =FILE_TYPE_PIPE= to =S_IFCHR= / =S_IFIFO= and
+   treats =FILE_TYPE_UNKNOWN= as an error only when =GetLastError= is nonzero.
    *Windows datagram socketpair SHIPPED 2026-06-03*: =nelisp-os-socketpair=
    now supports =SOCK_DGRAM= by creating connected UDP loopback socket-kind
    fd pairs with setup-failure cleanup.
@@ -1237,7 +1251,8 @@ largest uncertainty (B1 + B2) first.
    through Winsock.  Standard fd =close= now clears the Windows standard HANDLE
    slot and removes tracked fd status flags.  Disk HANDLE =fstat= now returns
    richer file information from =GetFileInformationByHandle=, and socket-kind
-   =fstat= reports =S_IFSOCK=.  The native Windows smoke runner
+   =fstat= reports =S_IFSOCK=; pipe and character HANDLEs report =S_IFIFO= /
+   =S_IFCHR=.  The native Windows smoke runner
    can list its full smoke manifest with =-List=.  Broader socket extensions
    remain pending.
    Linux-only AF_UNIX
