@@ -89,15 +89,32 @@ must contain STR{B,H,}/LDR{B,H,} `[X1, X2]' words (val→x3, result→x0)."
                  '(seq (write "hi\n") (exit 0))))
          (words (nelisp-macos-dataops-test--words bytes)))
     (should (> (length bytes) 0))
+    (should (equal (substring bytes (- (length bytes) 3)) "hi\n"))
     (should (member #xD2800090 words))  ; MOV X16, #4  (Darwin write)
     (should (member #xD4001001 words)))) ; SVC #0x80
+
+(ert-deftest nelisp-macos-dataops/static-imm32-table-lookup-compiles ()
+  "static-imm32-table-lookup compiles on aarch64 with table rodata."
+  (let* ((table-bytes (unibyte-string 1 0 0 0 42 0 0 0 7 0 0 0))
+         (bytes (nelisp-macos-dataops-test--emit
+                 '(seq
+                   (static-imm32-table-define "t" (1 42 7))
+                   (defun look (i) (static-imm32-table-lookup "t" i))
+                   (exit (look 1)))))
+         (words (nelisp-macos-dataops-test--words bytes)))
+    (should (> (length bytes) (length table-bytes)))
+    (should (equal (substring bytes (- (length bytes) (length table-bytes)))
+                   table-bytes))
+    (should (member #x8B000002 words))  ; ADD X2, X0, X0
+    (should (member #x8B020042 words))  ; ADD X2, X2, X2
+    (should (member #xB8626820 words)))) ; LDR W0, [X1, X2]
 
 ;; ---- atomic-compare-exchange -------------------------------------
 
 (ert-deftest nelisp-macos-dataops/atomic-compare-exchange-compile-and-encode ()
   "atomic-compare-exchange compiles on aarch64 and emits CASAL.
 The compiler lowers ptr/expected/new-val to x1/x2/x3, so the CAS word is
-CASAL X2, X3, [X1] = 0xC8E2FC23."
+CASAL X3, X2, [X1] = 0xC8E3FC22."
   (let* ((bytes (nelisp-macos-dataops-test--emit
                  '(seq
                    (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
@@ -105,7 +122,7 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                    (atomic-compare-exchange 8589934592 7 42))))
          (words (nelisp-macos-dataops-test--words bytes)))
     (should (> (length bytes) 0))
-    (should (member #xC8E2FC23 words))))
+    (should (member #xC8E3FC22 words))))
 
 ;; ---- dealloc-bytes -----------------------------------------------
 
@@ -384,6 +401,7 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                      (sexp-write-str 8589934656 8589934848 2)
                      (sexp-write-symbol 8589934720 8589934848 2)
                      (mut-str-make-empty 8589934784 3)
+                     (str-codepoint-at 8589934656 0 8589934976 8589935040)
                      (+ (sexp-tag 8589934656)
                         (+ (sexp-tag 8589934720)
                            (+ (sexp-tag 8589934784)
@@ -392,7 +410,7 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                                     (+ (mut-str-len 8589934784)
                                        (+ (sexp-tag (mut-str-finalize 8589934784 8589934912))
                                           (+ (str-char-count 8589934656)
-                                             (+ (str-codepoint-at 8589934656 0 8589934976 8589935040)
+                                             (+ 1
                                                 (+ (ptr-read-u64 8589934976 0)
                                                    (+ (ptr-read-u64 8589935040 0)
                                                       (str-is-alphanumeric-at 8589934656 0))))))))))))))
@@ -401,31 +419,33 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
 
 (ert-deftest nelisp-macos-dataops/string-symbol-literal-writers-compile ()
   "sexp-write-symbol-lit / str-lit compile on aarch64."
-  (let ((bytes (nelisp-macos-dataops-test--emit
-                '(seq
-                  (defun nl_alloc_symbol (bytes len slot)
-                    (seq
-                     (ptr-write-u64 slot 0 4)
-                     (ptr-write-u64 slot 8 (ptr-read-u8 bytes 0))
-                     (ptr-write-u64 slot 24 len)
-                     slot))
-                  (defun nl_alloc_str (bytes len slot)
-                    (seq
-                     (ptr-write-u64 slot 0 5)
-                     (ptr-write-u64 slot 8 (ptr-read-u8 bytes 0))
-                     (ptr-write-u64 slot 24 len)
-                     slot))
-                  (defun run ()
-                    (seq
-                     (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-                     (sexp-write-symbol-lit 8589934656 "ab")
-                     (sexp-write-str-lit 8589934720 "ab")
-                     (+ (sexp-tag 8589934656)
-                        (+ (ptr-read-u64 8589934656 8)
-                           (+ (sexp-tag 8589934720)
-                              (ptr-read-u64 8589934720 8))))))
-                  (exit (run))))))
-    (should (> (length bytes) 0))))
+  (let* ((bytes (nelisp-macos-dataops-test--emit
+                 '(seq
+                   (defun nl_alloc_symbol (bytes len slot)
+                     (seq
+                      (ptr-write-u64 slot 0 4)
+                      (ptr-write-u64 slot 8 (ptr-read-u8 bytes 0))
+                      (ptr-write-u64 slot 24 len)
+                      slot))
+                   (defun nl_alloc_str (bytes len slot)
+                     (seq
+                      (ptr-write-u64 slot 0 5)
+                      (ptr-write-u64 slot 8 (ptr-read-u8 bytes 0))
+                      (ptr-write-u64 slot 24 len)
+                      slot))
+                   (defun run ()
+                     (seq
+                      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+                      (sexp-write-symbol-lit 8589934656 "ab")
+                      (sexp-write-str-lit 8589934720 "ab")
+                      (+ (sexp-tag 8589934656)
+                         (+ (ptr-read-u64 8589934656 8)
+                            (+ (sexp-tag 8589934720)
+                               (ptr-read-u64 8589934720 8))))))
+                   (exit (run)))))
+         (words (nelisp-macos-dataops-test--words bytes)))
+    (should (> (length bytes) 0))
+    (should (member #x910003E0 words)))) ; ADD X0, SP, #0 (not ORR/MOV X0,SP)
 
 ;; ---- extern-call --------------------------------------------------
 
