@@ -182,8 +182,10 @@ build_run cas '(seq
     (seq
       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
       (ptr-write-u64 8589934592 0 7)
-      (+ (* 10 (atomic-compare-exchange 8589934592 8 99))
-         (+ (* 20 (atomic-compare-exchange 8589934592 7 42))
+      (ptr-write-u64 8589935104 0 (atomic-compare-exchange 8589934592 8 99))
+      (ptr-write-u64 8589935104 8 (atomic-compare-exchange 8589934592 7 42))
+      (+ (* 10 (ptr-read-u64 8589935104 0))
+         (+ (* 20 (ptr-read-u64 8589935104 8))
             (ptr-read-u64 8589934592 0)))))
   (exit (run)))' 62
 

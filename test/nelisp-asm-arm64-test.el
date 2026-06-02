@@ -850,12 +850,12 @@ exec a probe and check exit status."
                   (lambda (b) (nelisp-asm-arm64-ldrb-reg-reg b 'x3 'x5 'x7)))
                  (nelisp-asm-arm64-test--word #x386768A3))))
 
-(ert-deftest nelisp-asm-arm64-casal-x3-x2-x1 ()
-  "CASAL X3, X2, [X1] encodes new=x3, compare/old=x2."
-  ;; 64-bit CASAL: base 0xC8E0FC00 | (Rs=3<<16) | (Rn=1<<5) | Rt=2.
+(ert-deftest nelisp-asm-arm64-casal-x2-x3-x1 ()
+  "CASAL X2, X3, [X1] encodes compare/old=x2, new=x3."
+  ;; 64-bit CASAL: base 0xC8E0FC00 | (Rs=2<<16) | (Rn=1<<5) | Rt=3.
   (should (equal (nelisp-asm-arm64-test--bytes
-                  (lambda (b) (nelisp-asm-arm64-casal b 'x3 'x2 'x1)))
-                 (nelisp-asm-arm64-test--word #xC8E3FC22))))
+                  (lambda (b) (nelisp-asm-arm64-casal b 'x2 'x3 'x1)))
+                 (nelisp-asm-arm64-test--word #xC8E2FC23))))
 
 (ert-deftest nelisp-asm-arm64-casal-register-fields ()
   "Rs / Rn / Rt land in bits [20:16] / [9:5] / [4:0]."
