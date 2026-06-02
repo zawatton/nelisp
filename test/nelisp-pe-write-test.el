@@ -47,6 +47,23 @@
           (ash (aref bytes (+ offset 2)) 16)
           (ash (aref bytes (+ offset 3)) 24)))
 
+(defun nelisp-pe-write-test--read-le64 (bytes offset)
+  "Read unsigned 64-bit little-endian integer from BYTES at OFFSET."
+  (let ((acc 0)
+        (i 7))
+    (while (>= i 0)
+      (setq acc (logior (ash acc 8) (aref bytes (+ offset i))))
+      (setq i (1- i)))
+    acc))
+
+(defun nelisp-pe-write-test--read-cstr (bytes offset)
+  "Read a NUL-terminated ASCII string from BYTES at OFFSET."
+  (let ((end offset))
+    (while (and (< end (length bytes))
+                (/= (aref bytes end) 0))
+      (setq end (1+ end)))
+    (substring bytes offset end)))
+
 ;; ---- sample input ----
 
 (defconst nelisp-pe-write-test--sample-text
@@ -72,6 +89,16 @@
     (unwind-protect
         (progn
           (nelisp-pe-write-binary path nelisp-pe-write-test--sample-plist)
+          (nelisp-pe-write-test--read-file-bytes path))
+      (when (file-exists-p path)
+        (delete-file path)))))
+
+(defun nelisp-pe-write-test--emit-exitprocess (&optional code)
+  "Emit the sample PE32+ ExitProcess executable and return its bytes."
+  (let ((path (make-temp-file "nelisp-pe-exe-test-" nil ".exe")))
+    (unwind-protect
+        (progn
+          (nelisp-pe-write-exitprocess-executable path (or code 42))
           (nelisp-pe-write-test--read-file-bytes path))
       (when (file-exists-p path)
         (delete-file path)))))
@@ -156,6 +183,86 @@
       (should (= va 1))
       ;; Type = IMAGE_REL_AMD64_REL32 = 0x0004.
       (should (= type #x0004)))))
+
+;; ---- PE32+ executable tests --------------------------------------
+
+(ert-deftest nelisp-pe-write-executable-mz-pe32plus-headers ()
+  "ExitProcess EXE has MZ, PE signature, AMD64 machine and PE32+ optional header."
+  (let* ((bytes (nelisp-pe-write-test--emit-exitprocess 42))
+         (peoff (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24)))
+    (should (= (aref bytes 0) #x4d))
+    (should (= (aref bytes 1) #x5a))
+    (should (= peoff #x80))
+    (should (equal (substring bytes peoff (+ peoff 4))
+                   (unibyte-string #x50 #x45 #x00 #x00)))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ peoff 4)) #x8664))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ peoff 6)) 2))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ peoff 20)) 240))
+    (should (= (nelisp-pe-write-test--read-le16 bytes opt) #x20b))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ opt 68)) 3))
+    (should (= (nelisp-pe-write-test--read-le64 bytes (+ opt 24))
+               #x140000000))))
+
+(ert-deftest nelisp-pe-write-executable-sections-and-entry ()
+  "ExitProcess EXE has page-aligned .text/.rdata sections and entry RVA."
+  (let* ((bytes (nelisp-pe-write-test--emit-exitprocess 42))
+         (peoff (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (sect0 (+ opt 240))
+         (sect1 (+ sect0 40)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt 16)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt 32)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt 36)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt 60)) #x200))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 12)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 20)) #x200))
+    (should (string-prefix-p ".rdata" (substring bytes sect1 (+ sect1 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) #x400))))
+
+(ert-deftest nelisp-pe-write-executable-imports-exitprocess ()
+  "ExitProcess EXE import directory names KERNEL32.dll and ExitProcess."
+  (let* ((bytes (nelisp-pe-write-test--emit-exitprocess 42))
+         (peoff (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt (+ peoff 24))
+         (import-rva (nelisp-pe-write-test--read-le32 bytes (+ opt 120)))
+         (import-size (nelisp-pe-write-test--read-le32 bytes (+ opt 124)))
+         (rdata-rva #x2000)
+         (rdata-raw #x400)
+         (import-off (+ rdata-raw (- import-rva rdata-rva)))
+         (oft (nelisp-pe-write-test--read-le32 bytes import-off))
+         (name-rva (nelisp-pe-write-test--read-le32 bytes (+ import-off 12)))
+         (iat-rva (nelisp-pe-write-test--read-le32 bytes (+ import-off 16)))
+         (hint-name-rva (nelisp-pe-write-test--read-le64
+                         bytes (+ rdata-raw (- oft rdata-rva))))
+         (dll-name-off (+ rdata-raw (- name-rva rdata-rva)))
+         (hint-name-off (+ rdata-raw (- hint-name-rva rdata-rva))))
+    (should (= import-rva #x2000))
+    (should (> import-size 80))
+    (should (= oft #x2028))
+    (should (= iat-rva #x2038))
+    (should (equal (nelisp-pe-write-test--read-cstr bytes dll-name-off)
+                   "KERNEL32.dll"))
+    (should (= (nelisp-pe-write-test--read-le16 bytes hint-name-off) 0))
+    (should (equal (nelisp-pe-write-test--read-cstr bytes (+ hint-name-off 2))
+                   "ExitProcess"))))
+
+(ert-deftest nelisp-pe-write-executable-text-calls-iat ()
+  "ExitProcess EXE entry code moves 42 into ECX and calls the IAT slot."
+  (let* ((bytes (nelisp-pe-write-test--emit-exitprocess 42))
+         (text-raw #x200)
+         (text-rva #x1000)
+         (iat-rva #x2038)
+         (disp (nelisp-pe-write-test--read-le32 bytes (+ text-raw 11))))
+    (should (equal (substring bytes text-raw (+ text-raw 4))
+                   (unibyte-string #x48 #x83 #xec #x28)))
+    (should (= (aref bytes (+ text-raw 4)) #xb9))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-raw 5)) 42))
+    (should (equal (substring bytes (+ text-raw 9) (+ text-raw 11))
+                   (unibyte-string #xff #x15)))
+    (should (= (+ text-rva 15 disp) iat-rva))))
 
 (provide 'nelisp-pe-write-test)
 

@@ -4,10 +4,9 @@
 
 * Status
 
-- *State*: ANALYSIS / PROPOSAL 2026-06-02.  Read-only investigation, no
-  implementation yet.  Authored while the macOS M1 (arm64 / Mach-O) native
-  port proceeds in a *separate* session — Windows is the next target after
-  macOS lands.
+- *State*: STAGE 1 IMPLEMENTATION STARTED 2026-06-02.  The first
+  de-risk target is a pure-elisp PE32+ console EXE that imports
+  =kernel32.dll!ExitProcess= and returns a chosen exit status.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
 - *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the

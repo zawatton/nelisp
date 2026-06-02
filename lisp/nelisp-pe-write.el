@@ -110,6 +110,43 @@
 (defconst nelisp-pe--rel-section   #x000A "IMAGE_REL_AMD64_SECTION.")
 (defconst nelisp-pe--rel-secrel    #x000B "IMAGE_REL_AMD64_SECREL.")
 
+;; ---- PE32+ executable constants (= Doc 138 Stage 1) ----
+
+(defconst nelisp-pe--dos-stub-size #x80
+  "Minimal DOS stub size.  e_lfanew points to the PE signature at 0x80.")
+
+(defconst nelisp-pe--optional-header-pe32plus-size 240
+  "sizeof(IMAGE_OPTIONAL_HEADER64) with 16 data directories.")
+
+(defconst nelisp-pe--section-alignment #x1000
+  "PE image SectionAlignment for executable images.")
+
+(defconst nelisp-pe--file-alignment #x200
+  "PE image FileAlignment for executable images.")
+
+(defconst nelisp-pe--image-base-x86-64 #x140000000
+  "Default Windows x86_64 ImageBase used by MSVC-style PE32+ executables.")
+
+(defconst nelisp-pe--subsystem-console 3
+  "IMAGE_SUBSYSTEM_WINDOWS_CUI.")
+
+(defconst nelisp-pe--file-executable-image #x0002
+  "IMAGE_FILE_EXECUTABLE_IMAGE.")
+
+(defconst nelisp-pe--file-large-address-aware #x0020
+  "IMAGE_FILE_LARGE_ADDRESS_AWARE.")
+
+(defconst nelisp-pe--exe-text-flags
+  (logior nelisp-pe--scn-cnt-code
+          nelisp-pe--scn-mem-execute
+          nelisp-pe--scn-mem-read)
+  "Section Characteristics for an executable image .text section.")
+
+(defconst nelisp-pe--exe-rdata-flags
+  (logior nelisp-pe--scn-cnt-init-data
+          nelisp-pe--scn-mem-read)
+  "Section Characteristics for an executable image .rdata section.")
+
 ;; ---- chunk-buffer abstraction (= same pattern as nelisp-elf-write) ----
 
 (defun nelisp-pe--make-buffer ()
@@ -194,6 +231,11 @@ Returns a plist (:chunks REVERSE-LIST :length N)."
   "Append NBYTES zero bytes to CBUF."
   (when (> nbytes 0)
     (nelisp-pe--buf-emit cbuf (make-string nbytes 0))))
+
+(defun nelisp-pe--write-align-pad (cbuf align)
+  "Pad CBUF with zero bytes until its length is aligned to ALIGN."
+  (let ((target (nelisp-pe--align-up (nelisp-pe--buffer-length cbuf) align)))
+    (nelisp-pe--write-pad cbuf (- target (nelisp-pe--buffer-length cbuf)))))
 
 (defun nelisp-pe--write-fixed-string (cbuf s width)
   "Append S to CBUF, NUL-padded or truncated to WIDTH bytes."
@@ -729,6 +771,228 @@ Section numbers (1-based, per COFF spec §4):
     (ignore symtab-size) ; used for offset documentation only
     (nelisp-pe--buffer-bytes cbuf)))
 
+;; ---- Doc 138 Stage 1: minimal PE32+ executable writer ------------
+
+(defun nelisp-pe--write-dos-stub (cbuf pe-offset)
+  "Write a minimal DOS header/stub to CBUF with e_lfanew = PE-OFFSET."
+  (let ((start (nelisp-pe--buffer-length cbuf)))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x4D #x5A)) ; MZ
+    (nelisp-pe--write-pad cbuf (- #x3C 2))
+    (nelisp-pe--write-le32 cbuf pe-offset)
+    (nelisp-pe--write-pad cbuf (- nelisp-pe--dos-stub-size
+                                  (- (nelisp-pe--buffer-length cbuf)
+                                     start)))))
+
+(defun nelisp-pe--write-pe32plus-optional-header (cbuf fields)
+  "Write IMAGE_OPTIONAL_HEADER64 for a PE32+ executable.
+FIELDS is a plist carrying the fixed image layout values."
+  (let ((size-code        (plist-get fields :size-code))
+        (size-init-data   (plist-get fields :size-init-data))
+        (entry-rva        (plist-get fields :entry-rva))
+        (base-code        (plist-get fields :base-code))
+        (image-base       (plist-get fields :image-base))
+        (size-image       (plist-get fields :size-image))
+        (size-headers     (plist-get fields :size-headers))
+        (import-rva       (plist-get fields :import-rva))
+        (import-size      (plist-get fields :import-size)))
+    ;; Standard fields.
+    (nelisp-pe--write-le16 cbuf #x20B) ; PE32+
+    (nelisp-pe--write-u8 cbuf 0)       ; MajorLinkerVersion
+    (nelisp-pe--write-u8 cbuf 0)       ; MinorLinkerVersion
+    (nelisp-pe--write-le32 cbuf size-code)
+    (nelisp-pe--write-le32 cbuf size-init-data)
+    (nelisp-pe--write-le32 cbuf 0)     ; SizeOfUninitializedData
+    (nelisp-pe--write-le32 cbuf entry-rva)
+    (nelisp-pe--write-le32 cbuf base-code)
+    ;; Windows-specific fields.
+    (nelisp-pe--write-le64 cbuf image-base)
+    (nelisp-pe--write-le32 cbuf nelisp-pe--section-alignment)
+    (nelisp-pe--write-le32 cbuf nelisp-pe--file-alignment)
+    (nelisp-pe--write-le16 cbuf 6)     ; MajorOperatingSystemVersion
+    (nelisp-pe--write-le16 cbuf 0)     ; MinorOperatingSystemVersion
+    (nelisp-pe--write-le16 cbuf 0)     ; MajorImageVersion
+    (nelisp-pe--write-le16 cbuf 0)     ; MinorImageVersion
+    (nelisp-pe--write-le16 cbuf 6)     ; MajorSubsystemVersion
+    (nelisp-pe--write-le16 cbuf 0)     ; MinorSubsystemVersion
+    (nelisp-pe--write-le32 cbuf 0)     ; Win32VersionValue
+    (nelisp-pe--write-le32 cbuf size-image)
+    (nelisp-pe--write-le32 cbuf size-headers)
+    (nelisp-pe--write-le32 cbuf 0)     ; CheckSum
+    (nelisp-pe--write-le16 cbuf nelisp-pe--subsystem-console)
+    (nelisp-pe--write-le16 cbuf 0)     ; DllCharacteristics
+    (nelisp-pe--write-le64 cbuf #x100000) ; SizeOfStackReserve
+    (nelisp-pe--write-le64 cbuf #x1000)   ; SizeOfStackCommit
+    (nelisp-pe--write-le64 cbuf #x100000) ; SizeOfHeapReserve
+    (nelisp-pe--write-le64 cbuf #x1000)   ; SizeOfHeapCommit
+    (nelisp-pe--write-le32 cbuf 0)     ; LoaderFlags
+    (nelisp-pe--write-le32 cbuf 16)    ; NumberOfRvaAndSizes
+    ;; IMAGE_DATA_DIRECTORY[0] Export.
+    (nelisp-pe--write-le32 cbuf 0)
+    (nelisp-pe--write-le32 cbuf 0)
+    ;; IMAGE_DATA_DIRECTORY[1] Import.
+    (nelisp-pe--write-le32 cbuf import-rva)
+    (nelisp-pe--write-le32 cbuf import-size)
+    ;; IMAGE_DATA_DIRECTORY[2..15].
+    (dotimes (_ 14)
+      (nelisp-pe--write-le32 cbuf 0)
+      (nelisp-pe--write-le32 cbuf 0))))
+
+(defun nelisp-pe--build-kernel32-exitprocess-imports (rdata-rva)
+  "Build .rdata import data for kernel32.dll!ExitProcess at RDATA-RVA.
+Returns a plist (:bytes BYTES :import-rva RVA :import-size SIZE
+:iat-rva RVA)."
+  (let* ((desc-off 0)
+         (null-desc-off 20)
+         (ilt-off 40)
+         (iat-off 56)
+         (hint-name-off 72)
+         (dll-name-off (+ hint-name-off 2 (length "ExitProcess") 1))
+         (import-size (+ dll-name-off (length "KERNEL32.dll") 1))
+         (hint-name-rva (+ rdata-rva hint-name-off))
+         (dll-name-rva (+ rdata-rva dll-name-off))
+         (ilt-rva (+ rdata-rva ilt-off))
+         (iat-rva (+ rdata-rva iat-off))
+         (cbuf (nelisp-pe--make-buffer)))
+    (ignore null-desc-off)
+    ;; IMAGE_IMPORT_DESCRIPTOR for KERNEL32.dll.
+    (nelisp-pe--write-le32 cbuf ilt-rva)      ; OriginalFirstThunk
+    (nelisp-pe--write-le32 cbuf 0)            ; TimeDateStamp
+    (nelisp-pe--write-le32 cbuf 0)            ; ForwarderChain
+    (nelisp-pe--write-le32 cbuf dll-name-rva) ; Name
+    (nelisp-pe--write-le32 cbuf iat-rva)      ; FirstThunk
+    ;; Null descriptor.
+    (nelisp-pe--write-pad cbuf 20)
+    ;; Import lookup table.
+    (nelisp-pe--write-le64 cbuf hint-name-rva)
+    (nelisp-pe--write-le64 cbuf 0)
+    ;; Import address table.
+    (nelisp-pe--write-le64 cbuf hint-name-rva)
+    (nelisp-pe--write-le64 cbuf 0)
+    ;; IMAGE_IMPORT_BY_NAME.
+    (nelisp-pe--write-le16 cbuf 0)            ; Hint
+    (nelisp-pe--write-bytes cbuf "ExitProcess")
+    (nelisp-pe--write-u8 cbuf 0)
+    ;; DLL name.
+    (nelisp-pe--write-bytes cbuf "KERNEL32.dll")
+    (nelisp-pe--write-u8 cbuf 0)
+    (unless (= (nelisp-pe--buffer-length cbuf) import-size)
+      (error "nelisp-pe: import blob size drift (at %d expected %d)"
+             (nelisp-pe--buffer-length cbuf) import-size))
+    (ignore desc-off)
+    (list :bytes (nelisp-pe--buffer-bytes cbuf)
+          :import-rva rdata-rva
+          :import-size import-size
+          :iat-rva iat-rva)))
+
+(defun nelisp-pe--build-exitprocess-text (exit-code text-rva iat-rva)
+  "Build x86_64 Win64 entry code calling ExitProcess(EXIT-CODE).
+TEXT-RVA is the RVA of the .text section and IAT-RVA is the RVA of the
+ExitProcess IAT slot."
+  (let* ((call-off 9)
+         (next-rva (+ text-rva call-off 6))
+         (disp (- iat-rva next-rva))
+         (cbuf (nelisp-pe--make-buffer)))
+    (unless (and (integerp exit-code) (<= 0 exit-code #xFFFFFFFF))
+      (error "nelisp-pe: exit code must fit u32: %S" exit-code))
+    (unless (and (<= (- (ash 1 31)) disp) (< disp (ash 1 31)))
+      (error "nelisp-pe: ExitProcess call displacement out of rel32 range: %S"
+             disp))
+    ;; Microsoft x64 ABI: reserve 32-byte shadow space plus alignment pad.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xEC #x28)) ; sub rsp, 40
+    (nelisp-pe--write-u8 cbuf #xB9) ; mov ecx, imm32
+    (nelisp-pe--write-le32 cbuf exit-code)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xFF #x15)) ; call qword [rip+disp32]
+    (nelisp-pe--write-le32-signed cbuf disp)
+    (nelisp-pe--write-u8 cbuf #xCC) ; should not return
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defun nelisp-pe--build-exitprocess-executable (exit-code)
+  "Build a minimal PE32+ console executable that calls ExitProcess(EXIT-CODE)."
+  (let* ((pe-offset nelisp-pe--dos-stub-size)
+         (num-sections 2)
+         (headers-raw
+          (+ pe-offset 4 nelisp-pe--header-size
+             nelisp-pe--optional-header-pe32plus-size
+             (* num-sections nelisp-pe--section-header-size)))
+         (size-headers (nelisp-pe--align-up headers-raw
+                                            nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (rdata-rva (* 2 nelisp-pe--section-alignment))
+         (imports0 (nelisp-pe--build-kernel32-exitprocess-imports rdata-rva))
+         (text (nelisp-pe--build-exitprocess-text
+                exit-code text-rva (plist-get imports0 :iat-rva)))
+         (imports (plist-get imports0 :bytes))
+         (text-raw-size (nelisp-pe--align-up (length text)
+                                             nelisp-pe--file-alignment))
+         (rdata-raw-size (nelisp-pe--align-up (length imports)
+                                              nelisp-pe--file-alignment))
+         (text-raw-ptr size-headers)
+         (rdata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (size-image (nelisp-pe--align-up
+                      (+ rdata-rva (length imports))
+                      nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (unless (= (nelisp-pe--buffer-length cbuf) pe-offset)
+      (error "nelisp-pe: DOS stub size drift"))
+    ;; PE signature.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    ;; IMAGE_FILE_HEADER.
+    (nelisp-pe--write-le16 cbuf nelisp-pe--machine-amd64)
+    (nelisp-pe--write-le16 cbuf num-sections)
+    (nelisp-pe--write-le32 cbuf 0) ; TimeDateStamp
+    (nelisp-pe--write-le32 cbuf 0) ; PointerToSymbolTable
+    (nelisp-pe--write-le32 cbuf 0) ; NumberOfSymbols
+    (nelisp-pe--write-le16 cbuf nelisp-pe--optional-header-pe32plus-size)
+    (nelisp-pe--write-le16
+     cbuf (logior nelisp-pe--file-executable-image
+                  nelisp-pe--file-large-address-aware))
+    ;; IMAGE_OPTIONAL_HEADER64.
+    (nelisp-pe--write-pe32plus-optional-header
+     cbuf
+     (list :size-code text-raw-size
+           :size-init-data rdata-raw-size
+           :entry-rva text-rva
+           :base-code text-rva
+           :image-base nelisp-pe--image-base-x86-64
+           :size-image size-image
+           :size-headers size-headers
+           :import-rva (plist-get imports0 :import-rva)
+           :import-size (plist-get imports0 :import-size)))
+    ;; IMAGE_SECTION_HEADER[.text, .rdata].
+    (nelisp-pe--write-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :reloc-ptr 0
+           :num-relocs 0
+           :characteristics nelisp-pe--exe-text-flags))
+    (nelisp-pe--write-section-header
+     cbuf
+     (list :name ".rdata"
+           :virtual-size (length imports)
+           :virtual-address rdata-rva
+           :raw-data-size rdata-raw-size
+           :raw-data-ptr rdata-raw-ptr
+           :reloc-ptr 0
+           :num-relocs 0
+           :characteristics nelisp-pe--exe-rdata-flags))
+    (unless (<= (nelisp-pe--buffer-length cbuf) size-headers)
+      (error "nelisp-pe: headers exceed SizeOfHeaders"))
+    (nelisp-pe--write-pad cbuf (- size-headers (nelisp-pe--buffer-length cbuf)))
+    (unless (= (nelisp-pe--buffer-length cbuf) text-raw-ptr)
+      (error "nelisp-pe: .text raw offset drift"))
+    (nelisp-pe--write-bytes cbuf text)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text)))
+    (unless (= (nelisp-pe--buffer-length cbuf) rdata-raw-ptr)
+      (error "nelisp-pe: .rdata raw offset drift"))
+    (nelisp-pe--write-bytes cbuf imports)
+    (nelisp-pe--write-pad cbuf (- rdata-raw-size (length imports)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
   "Emit a PE32+/COFF relocatable object file to FILE-PATH.
@@ -756,6 +1020,16 @@ writer's ET_REL input (see `nelisp-elf-write-binary' :e-type `rel'):
 Writes the resulting .obj bytes to FILE-PATH using `no-conversion'
 so raw binary content is preserved.  Returns FILE-PATH."
   (let ((bytes (nelisp-pe--build-object build-plist))
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil file-path nil 'silent)
+    file-path))
+
+;;;###autoload
+(defun nelisp-pe-write-exitprocess-executable (file-path exit-code)
+  "Emit a minimal PE32+ console EXE that calls ExitProcess(EXIT-CODE).
+This is Doc 138 Stage 1: prove Windows native execution through a real
+PE import table, without an external linker or CRT."
+  (let ((bytes (nelisp-pe--build-exitprocess-executable exit-code))
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil file-path nil 'silent)
     file-path))
