@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-18-WAITFORSINGLEOBJECT-WAIT-AND-EXIT42-REAL-WINDOWS-VALIDATED
+#+STATUS: STAGE-19-TOOLHELP-GETPPID-AND-EXIT42-REAL-WINDOWS-VALIDATED
 
 * Status
 
-- *State*: STAGE 18 WaitForSingleObject wait + first real Windows smoke VALIDATED
+- *State*: STAGE 19 Tool Help getppid + first real Windows smoke VALIDATED
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -61,7 +61,10 @@
   =WaitForSingleObject=, reads the exit code with =GetExitCodeProcess=, closes
   the HANDLE, and returns the POSIX-style encoded status =exit-code << 8=.
   =WNOHANG= maps to a zero-timeout wait and returns =(0 . 0)= when the process
-  is still running.
+  is still running.  =nelisp-os-getppid= now has a Windows branch that uses
+  =CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)=, initializes
+  =PROCESSENTRY32W.dwSize=, walks =Process32FirstW= / =Process32NextW= until
+  the current PID is found, and returns =th32ParentProcessID=.
 - *Host validation*: =test/nelisp-pe-write-test.el= validates the DOS/PE
   headers, PE32+ optional header, section table, import descriptor / IAT / ILT,
   =.data= arena metadata section, =.rdata= stdout message section, and entry
@@ -96,7 +99,9 @@
   process/thread HANDLE close, and final =ExitProcess=.  Stage 18 coverage
   verifies =OpenProcess= / =WaitForSingleObject= / =GetExitCodeProcess= /
   =CloseHandle= argument shape, =WNOHANG= timeout behavior, and POSIX-style
-  exit-status encoding.
+  exit-status encoding.  Stage 19 coverage verifies Tool Help snapshot
+  creation, =PROCESSENTRY32W.dwSize= initialization, process-entry walking,
+  parent-PID extraction, no-more-files handling, and snapshot HANDLE cleanup.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -137,6 +142,7 @@
   adds a Windows =execve= compatibility path over =CreateProcessW= plus
   =ExitProcess=.  Stage 18 adds a positive-PID Windows =wait= compatibility
   path over =OpenProcess= / =WaitForSingleObject= / =GetExitCodeProcess=.
+  Stage 19 adds Windows =getppid= through Tool Help process snapshots.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -247,9 +253,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
 - *Minimal process progress 2026-06-02*: =nelisp-os-exit= now uses
   =ExitProcess= and =nelisp-os-getpid= now uses =GetCurrentProcessId= on
   Windows.  Compatibility branches now cover single-PID =kill=, =execve= via
-  =CreateProcessW=, and positive-PID =wait= via =WaitForSingleObject=.
-  =fork/clone/CreateThread/getppid= and full child-process tracking still
-  require the broader Windows process model.
+  =CreateProcessW=, positive-PID =wait= via =WaitForSingleObject=, and
+  =getppid= via Tool Help process snapshots.  =fork/clone/CreateThread= and
+  full child-process tracking still require the broader Windows process model.
 
 * Tier 2 — scaffolded but incomplete (Doc 101 / Doc 132 already started)
 
@@ -313,6 +319,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows wait progress 2026-06-02*: =nelisp-os-wait= now waits on a positive
   PID with =WaitForSingleObject=, reads =GetExitCodeProcess=, supports
   =WNOHANG= timeout as =(0 . 0)=, and returns POSIX-style encoded status.
+  *Windows getppid progress 2026-06-02*: =nelisp-os-getppid= now enumerates
+  Tool Help =PROCESSENTRY32W= records and returns the current process'
+  =th32ParentProcessID= instead of using the raw syscall path.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -373,6 +382,9 @@ largest uncertainty (B1 + B2) first.
    PIDs with =SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION=, waits with
    =WaitForSingleObject=, reads =GetExitCodeProcess=, closes the HANDLE, and
    handles =WNOHANG= timeout.
+   *Windows getppid branch SHIPPED 2026-06-02*: =nelisp-os-getppid= uses
+   =CreateToolhelp32Snapshot= + =Process32FirstW= / =Process32NextW= over
+   =PROCESSENTRY32W= and closes the snapshot HANDLE.
 4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
@@ -389,8 +401,8 @@ largest uncertainty (B1 + B2) first.
    *Minimal process API SHIPPED 2026-06-02*: =nelisp-os-exit= and
    =nelisp-os-getpid= route to =ExitProcess= / =GetCurrentProcessId= on
    Windows; single-PID =kill=, =execve= compatibility, and positive-PID =wait=
-   are also covered.  =fork/clone/CreateThread= and full child tracking remain
-   pending.
+   are also covered, and =getppid= now uses Tool Help snapshots.
+   =fork/clone/CreateThread= and full child tracking remain pending.
 
 * One-line summary
 

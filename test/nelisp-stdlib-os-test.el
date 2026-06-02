@@ -667,6 +667,105 @@
                       :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-getppid-windows-uses-toolhelp-snapshot ()
+  "Windows getppid walks PROCESSENTRY32W records and returns parent PID."
+  (let ((calls nil)
+        (freed nil)
+        (dwsize-write nil)
+        (entry-index nil)
+        (entries '((111 . 7) (222 . 44))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val)
+                 (setq dwsize-write (list ptr off val))
+                 val))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (let ((entry (nth entry-index entries)))
+                   (cond
+                    ((= off nelisp-os-WIN-PROCESSENTRY32W-PID-OFFSET)
+                     (car entry))
+                    ((= off nelisp-os-WIN-PROCESSENTRY32W-PPID-OFFSET)
+                     (cdr entry))
+                    (t (error "unexpected PROCESSENTRY32W offset %S" off))))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcessId") 222)
+                  ((equal fn "CreateToolhelp32Snapshot") #xaaaa)
+                  ((equal fn "Process32FirstW") (setq entry-index 0) 1)
+                  ((equal fn "Process32NextW") (setq entry-index 1) 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-getppid) 44))))
+    (should (equal dwsize-write
+                   (list 3000
+                         nelisp-os-WIN-PROCESSENTRY32W-DWSIZE-OFFSET
+                         nelisp-os-WIN-PROCESSENTRY32W-SIZE)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcessId" [:uint32] nil)
+                    (list "kernel32" "CreateToolhelp32Snapshot"
+                          [:pointer :uint32 :uint32]
+                          (list nelisp-os-WIN-TH32CS-SNAPPROCESS 0))
+                    (list "kernel32" "Process32FirstW"
+                          [:sint32 :pointer :pointer]
+                          (list #xaaaa 3000))
+                    (list "kernel32" "Process32NextW"
+                          [:sint32 :pointer :pointer]
+                          (list #xaaaa 3000))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xaaaa)))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-getppid-windows-missing-current-pid-errors ()
+  "Windows getppid signals ESRCH when the snapshot lacks the current PID."
+  (let ((calls nil)
+        (freed nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u32) (lambda (&rest _args) nil))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (_ptr off)
+                 (if (= off nelisp-os-WIN-PROCESSENTRY32W-PID-OFFSET)
+                     111
+                   7)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetCurrentProcessId") 222)
+                  ((equal fn "CreateToolhelp32Snapshot") #xaaaa)
+                  ((equal fn "Process32FirstW") 1)
+                  ((equal fn "Process32NextW") 0)
+                  ((equal fn "GetLastError") nelisp-os-WIN-ERROR-NO-MORE-FILES)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-getppid) :type 'nelisp-os-error)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetCurrentProcessId" [:uint32] nil)
+                    (list "kernel32" "CreateToolhelp32Snapshot"
+                          [:pointer :uint32 :uint32]
+                          (list nelisp-os-WIN-TH32CS-SNAPPROCESS 0))
+                    (list "kernel32" "Process32FirstW"
+                          [:sint32 :pointer :pointer]
+                          (list #xaaaa 3000))
+                    (list "kernel32" "Process32NextW"
+                          [:sint32 :pointer :pointer]
+                          (list #xaaaa 3000))
+                    (list "kernel32" "GetLastError" [:uint32] nil)
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xaaaa)))))
+    (should (equal freed '(3000)))))
+
 (ert-deftest nelisp-stdlib-os-wait-windows-uses-waitforsingleobject ()
   "Windows wait opens a process, waits, reads exit code, and closes it."
   (let ((calls nil)

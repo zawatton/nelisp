@@ -38,9 +38,10 @@
 ;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  Stage 16 maps
 ;; single-PID `kill' to `OpenProcess' / `TerminateProcess'.  Stage 17 maps
 ;; `execve' to `CreateProcessW' + `ExitProcess'.  Stage 18 maps `wait' to
-;; `OpenProcess' / `WaitForSingleObject' / `GetExitCodeProcess'.  The
-;; Linux/Darwin path remains the default until a real Windows standalone runtime
-;; selects `system-type' = `windows-nt'.
+;; `OpenProcess' / `WaitForSingleObject' / `GetExitCodeProcess'.  Stage 19
+;; maps `getppid' to the Tool Help process snapshot APIs.  The Linux/Darwin path
+;; remains the default until a real Windows standalone runtime selects
+;; `system-type' = `windows-nt'.
 
 ;;; Code:
 
@@ -132,6 +133,14 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-INFINITE #xffffffff)
 (defconst nelisp-os-WIN-WAIT-OBJECT-0 #x00000000)
 (defconst nelisp-os-WIN-WAIT-TIMEOUT #x00000102)
+
+;; Windows Tool Help constants and PROCESSENTRY32W layout for x86_64.
+(defconst nelisp-os-WIN-TH32CS-SNAPPROCESS #x00000002)
+(defconst nelisp-os-WIN-ERROR-NO-MORE-FILES 18)
+(defconst nelisp-os-WIN-PROCESSENTRY32W-SIZE 568)
+(defconst nelisp-os-WIN-PROCESSENTRY32W-DWSIZE-OFFSET 0)
+(defconst nelisp-os-WIN-PROCESSENTRY32W-PID-OFFSET 8)
+(defconst nelisp-os-WIN-PROCESSENTRY32W-PPID-OFFSET 32)
 
 ;; Windows process-launch structure sizes/offsets (x86_64).
 (defconst nelisp-os-WIN-STARTUPINFOW-SIZE 104)
@@ -1128,9 +1137,69 @@ returns (0 . 0)."
       (nelisp-os--libc-call "kernel32" "GetCurrentProcessId" [:uint32])
     (nelisp-os--check-errno (nelisp--syscall 'getpid))))
 
+(defun nelisp-os--windows-getppid ()
+  "Windows implementation of `nelisp-os-getppid' using Tool Help snapshots."
+  (let ((current-pid (nelisp-os-getpid))
+        (snapshot (nelisp-os--libc-call
+                   "kernel32" "CreateToolhelp32Snapshot"
+                   [:pointer :uint32 :uint32]
+                   nelisp-os-WIN-TH32CS-SNAPPROCESS
+                   0))
+        (entry-buf nil))
+    (if (or (= snapshot 0) (= snapshot -1))
+        (nelisp-os--windows-ffi-error-signal)
+      (unwind-protect
+          (progn
+            (setq entry-buf (nelisp-os--alloc nelisp-os-WIN-PROCESSENTRY32W-SIZE))
+            (nelisp-os-write-u32 entry-buf
+                                 nelisp-os-WIN-PROCESSENTRY32W-DWSIZE-OFFSET
+                                 nelisp-os-WIN-PROCESSENTRY32W-SIZE)
+            (let ((ok (nelisp-os--libc-call
+                       "kernel32" "Process32FirstW"
+                       [:sint32 :pointer :pointer]
+                       snapshot entry-buf)))
+              (if (= ok 0)
+                  (nelisp-os--windows-ffi-error-signal)
+                (let ((found nil)
+                      (found-p nil)
+                      (done nil))
+                  (while (not done)
+                    (if (= (nelisp-os-read-u32
+                            entry-buf nelisp-os-WIN-PROCESSENTRY32W-PID-OFFSET)
+                           current-pid)
+                        (setq found
+                              (nelisp-os-read-u32
+                               entry-buf
+                               nelisp-os-WIN-PROCESSENTRY32W-PPID-OFFSET)
+                              found-p t
+                              done t)
+                      (let ((next-ok (nelisp-os--libc-call
+                                      "kernel32" "Process32NextW"
+                                      [:sint32 :pointer :pointer]
+                                      snapshot entry-buf)))
+                        (if (/= next-ok 0)
+                            nil
+                          (let ((err (nelisp-os--libc-call
+                                      "kernel32" "GetLastError" [:uint32])))
+                            (if (= err nelisp-os-WIN-ERROR-NO-MORE-FILES)
+                                (setq done t)
+                              (signal 'nelisp-os-error (list err))))))))
+                  (if found-p
+                      found
+                    (signal 'nelisp-os-error (list 3))))))) ; ESRCH
+        (when entry-buf (nelisp-os--free entry-buf))
+        (let ((close-ok (nelisp-os--libc-call
+                         "kernel32" "CloseHandle"
+                         [:sint32 :pointer]
+                         snapshot)))
+          (if (= close-ok 0)
+              (nelisp-os--windows-ffi-error-signal)))))))
+
 (defun nelisp-os-getppid ()
   "POSIX getppid(2) — return parent process id."
-  (nelisp-os--check-errno (nelisp--syscall 'getppid)))
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-getppid)
+    (nelisp-os--check-errno (nelisp--syscall 'getppid))))
 
 ;; wait status decoders.  Linux puts the exit status in bits 8-15, the
 ;; termination signal in bits 0-6, and 0x7F as the marker for "stopped"
