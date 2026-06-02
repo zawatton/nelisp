@@ -98,7 +98,8 @@
         (wide-writes nil)
         (startup-u32-writes nil)
         (startup-handle-writes nil)
-        (calls nil))
+        (calls nil)
+        (nelisp-os--windows-process-table nil))
     (cl-letf (((symbol-function 'nelisp-os--alloc)
                (lambda (_n)
                  (prog1 alloc-next
@@ -126,6 +127,12 @@
                   ((= off nelisp-os-WIN-PROCESS-INFORMATION-HPROCESS-OFFSET)
                    #x2222)
                   (t (error "unexpected PROCESS_INFORMATION offset %S" off)))))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 5000))
+                 (if (= off nelisp-os-WIN-PROCESS-INFORMATION-DWPROCESSID-OFFSET)
+                     4321
+                   (error "unexpected PROCESS_INFORMATION offset %S" off))))
               ((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (push (list dll fn sig args) calls)
@@ -188,14 +195,104 @@
                     (list "kernel32" "CloseHandle"
                           [:sint32 :pointer]
                           (list #x1111))
-                    (list "kernel32" "CloseHandle"
-                          [:sint32 :pointer]
-                          (list #x2222))
                     (list "kernel32" "ExitProcess"
                           [:void :uint32]
                           (list 0)))))
     (should (equal (sort freed #'<) '(1000 2000 3000 4000 5000)))
+    (should (equal nelisp-os--windows-process-table
+                   '((4321 . #x2222))))
     (should wide-writes)))
+
+(ert-deftest nelisp-stdlib-os-windows-create-process-registers-child-handle ()
+  "Windows CreateProcess helper returns PID and registers the process HANDLE."
+  (let ((alloc-next 1000)
+        (freed nil)
+        (wide-writes nil)
+        (u32-writes nil)
+        (i64-writes nil)
+        (calls nil)
+        (nelisp-os--windows-process-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u16)
+               (lambda (ptr off val)
+                 (push (list ptr off val) wide-writes)
+                 val))
+              ((symbol-function 'nelisp-os-write-u32)
+               (lambda (ptr off val)
+                 (push (list ptr off val) u32-writes)
+                 val))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) i64-writes)
+                 val))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (ptr off)
+                 (should (= ptr 5000))
+                 (cond
+                  ((= off nelisp-os-WIN-PROCESS-INFORMATION-HTHREAD-OFFSET)
+                   #x1111)
+                  ((= off nelisp-os-WIN-PROCESS-INFORMATION-HPROCESS-OFFSET)
+                   #x2222)
+                  (t (error "unexpected PROCESS_INFORMATION offset %S" off)))))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (should (= ptr 5000))
+                 (if (= off nelisp-os-WIN-PROCESS-INFORMATION-DWPROCESSID-OFFSET)
+                     4321
+                   (error "unexpected PROCESS_INFORMATION offset %S" off))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetStdHandle")
+                   (pcase (car args)
+                     ((pred (lambda (selector)
+                              (= selector nelisp-os-WIN-STD-INPUT-HANDLE)))
+                      #x1010)
+                     ((pred (lambda (selector)
+                              (= selector nelisp-os-WIN-STD-OUTPUT-HANDLE)))
+                      #x2020)
+                     ((pred (lambda (selector)
+                              (= selector nelisp-os-WIN-STD-ERROR-HANDLE)))
+                      #x3030)
+                     (_ (error "unexpected GetStdHandle selector %S" args))))
+                  ((equal fn "CreateProcessW") 1)
+                  ((equal fn "CloseHandle") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (should (= (nelisp-os--windows-create-process
+                  "prog.exe"
+                  '("prog.exe" "two words")
+                  '("A=1"))
+                 4321)))
+    (should (equal nelisp-os--windows-process-table
+                   '((4321 . #x2222))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-INPUT-HANDLE))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-ERROR-HANDLE))
+                    (list "kernel32" "CreateProcessW"
+                          [:sint32 :pointer :pointer :pointer :pointer :sint32
+                           :uint32 :pointer :pointer :pointer :pointer]
+                          (list 1000 2000 0 0 1 0 3000 0 4000 5000))
+                    (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #x1111)))))
+    (should (equal (sort freed #'<) '(1000 2000 3000 4000 5000)))
+    (should wide-writes)
+    (should u32-writes)
+    (should i64-writes)))
 
 (ert-deftest nelisp-stdlib-os-windows-std-handle-selectors ()
   "POSIX-like std fds map to Windows GetStdHandle selector constants."

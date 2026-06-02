@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-49-WINDOWS-CHILD-HANDLE-REGISTRY
+#+STATUS: STAGE-50-WINDOWS-CREATEPROCESS-SPAWN-HELPER
 
 * Status
 
-- *State*: STAGE 49 Windows child HANDLE registry
+- *State*: STAGE 50 Windows CreateProcess spawn helper
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -90,8 +90,13 @@
   is still running.  Windows =wait= can now also reuse a registered child
   process HANDLE instead of reopening by PID; a successful wait closes and
   forgets the registered HANDLE, while a registered =WNOHANG= timeout keeps the
-  HANDLE available for the later reap.  =nelisp-os-getppid= now has a Windows
-  branch that uses
+  HANDLE available for the later reap.  The =CreateProcessW= setup is now
+  factored into =nelisp-os--windows-create-process=, a parent-surviving helper
+  that returns =PROCESS_INFORMATION.dwProcessId=, closes the temporary thread
+  HANDLE, and registers the process HANDLE for later =wait=.  Windows
+  =execve= reuses this helper before preserving its compatibility behavior of
+  exiting the current process on successful launch.  =nelisp-os-getppid= now
+  has a Windows branch that uses
   =CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)=, initializes
   =PROCESSENTRY32W.dwSize=, walks =Process32FirstW= / =Process32NextW= until
   the current PID is found, and returns =th32ParentProcessID=.  =nelisp-os-fcntl=
@@ -289,7 +294,10 @@
   without failing when a standard HANDLE is unavailable.  Stage 49 coverage
   verifies Windows =wait= reuses registered child process HANDLEs without
   calling =OpenProcess=, closes/forgets them after a successful reap, and keeps
-  registered HANDLEs alive across =WNOHANG= timeouts.
+  registered HANDLEs alive across =WNOHANG= timeouts.  Stage 50 coverage
+  verifies the parent-surviving =CreateProcessW= helper returns the child PID,
+  closes only the thread HANDLE, registers the process HANDLE, and is reused by
+  Windows =execve=.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -616,6 +624,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows child HANDLE registry progress 2026-06-03*: Windows =wait= now
   reuses registered child process HANDLEs and preserves them across registered
   =WNOHANG= timeouts.
+  *Windows CreateProcess spawn helper progress 2026-06-03*:
+  =nelisp-os--windows-create-process= now returns the child PID, closes the
+  temporary thread HANDLE, and registers the child process HANDLE for =wait=.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -764,6 +775,11 @@ largest uncertainty (B1 + B2) first.
    reuses registered child process HANDLEs without =OpenProcess=, closes and
    forgets them after successful reap, and keeps them registered across
    =WNOHANG= timeouts.
+   *Windows CreateProcess spawn helper SHIPPED 2026-06-03*:
+   =nelisp-os--windows-create-process= now provides a parent-surviving
+   =CreateProcessW= path that returns the child PID, closes only the temporary
+   thread HANDLE, and registers the process HANDLE for =wait=; Windows
+   =execve= reuses this helper before exiting the current process.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
@@ -788,9 +804,9 @@ largest uncertainty (B1 + B2) first.
    =nelisp-os-getpid= route to =ExitProcess= / =GetCurrentProcessId= on
    Windows; single-PID =kill=, =execve= compatibility, and positive-PID =wait=
    are also covered, registered child HANDLEs can now feed =wait= without
-   reopening by PID, and =getppid= now uses Tool Help snapshots.
-   =fork/clone/CreateThread= and process-spawn integration remain pending;
-   Linux-only
+   reopening by PID, the shared =CreateProcessW= helper can now spawn and
+   register child HANDLEs without exiting the parent, and =getppid= now uses
+   Tool Help snapshots.  =fork/clone/CreateThread= remain pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close
    plus IPv4/IPv6/scoped-IPv6/filesystem-AF_UNIX bind/connect/accept,
    getname, read/write, poll, and setsockopt-int; broader socket extensions
