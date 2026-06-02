@@ -2213,17 +2213,32 @@ with a slot index beyond the param count."
     (should (equal (nelisp-phase47-compiler--current-xmm-arg-regs)
                    '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-rejects-fifth-f64-param ()
-  "Win64 f64 defuns reject a fifth f64 param before reaching XMM4+."
+(ert-deftest nelisp-phase47-compiler/win64-defun-fifth-f64-param-spills-from-stack ()
+  "Win64 f64 defuns spill a fifth f64 param from the incoming stack area."
   (let ((path (make-temp-file "nelisp-win64-f64-param5-" nil ".obj")))
     (unwind-protect
-        (should-error
-         (nelisp-phase47-compile-to-object
-          '(defun probe ((a :type f64) (b :type f64) (c :type f64)
-                         (d :type f64) (e :type f64))
-             a)
-          path :arch 'x86_64 :format 'coff)
-         :type 'nelisp-phase47-compiler-error)
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe ((a :type f64) (b :type f64) (c :type f64)
+                          (d :type f64) (e :type f64))
+              e)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp,48
+                     (unibyte-string #x48 #x81 #xec #x30 #x00 #x00 #x00)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; movsd xmm0,[rbp+48]; movsd [rbp-40],xmm0
+                     (unibyte-string #xf2 #x0f #x10 #x45 #x30
+                                     #xf2 #x0f #x11 #x45 #xd8)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; body return: movsd xmm0,[rbp-40]
+                     (unibyte-string #xf2 #x0f #x10 #x45 #xd8)))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-compiler/win64-defun-accepts-four-f64-params ()
@@ -2281,15 +2296,48 @@ with a slot index beyond the param count."
                      (unibyte-string #xf2 #x0f #x10 #x45 #xf0)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-rejects-fifth-mixed-param ()
-  "Win64 mixed defuns currently cover the four register argument slots."
+(ert-deftest nelisp-phase47-compiler/win64-defun-mixed-fifth-param-spills-from-stack ()
+  "Win64 mixed defuns spill a fifth param from the incoming stack area."
   (let ((path (make-temp-file "nelisp-win64-mixed-defun5-" nil ".obj")))
     (unwind-protect
-        (should-error
-         (nelisp-phase47-compile-to-object
-          '(defun probe (a (b :type f64) c (d :type f64) e) a)
-          path :arch 'x86_64 :format 'coff)
-         :type 'nelisp-phase47-compiler-error)
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe (a (b :type f64) c (d :type f64) (e :type f64)) e)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; movsd xmm0,[rbp+48]; movsd [rbp-40],xmm0
+                     (unibyte-string #xf2 #x0f #x10 #x45 #x30
+                                     #xf2 #x0f #x11 #x45 #xd8)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; body return: movsd xmm0,[rbp-40]
+                     (unibyte-string #xf2 #x0f #x10 #x45 #xd8)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-defun-gp-fifth-param-spills-from-stack ()
+  "Win64 GP defuns spill a fifth GP param from the incoming stack area."
+  (let ((path (make-temp-file "nelisp-win64-gp-defun5-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe (a b c d e) e)
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; mov rax,[rbp+48]; mov [rbp-40],rax
+                     (unibyte-string #x48 #x8b #x45 #x30
+                                     #x48 #x89 #x45 #xd8)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; body return: mov rax,[rbp-40]
+                     (unibyte-string #x48 #x8b #x45 #xd8)))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-compiler/win64-extern-call-places-fifth-f64-arg-on-stack ()

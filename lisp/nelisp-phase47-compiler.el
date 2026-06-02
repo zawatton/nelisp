@@ -9584,8 +9584,12 @@ Returns one of:
                     (list :defun-mixed-param-classes name classes)))))
       (let* ((max-arity
               (cond
-               (mixed-win64-p
-                4)
+               ((and (eq nelisp-phase47-compiler--arch 'x86_64)
+                     (eq nelisp-phase47-compiler--abi 'win64))
+                ;; Win64 register args cover slots 0..3 and stack args
+                ;; start at slot 4.  Keep the existing disp8 local-slot
+                ;; cap used by the SysV 7+ GP path.
+                14)
                ((eq uniform-class 'f64)
                 (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
                ((and (eq uniform-class 'gp)
@@ -9609,9 +9613,22 @@ Returns one of:
                (mixed-win64-p
                 (cl-loop for cls in classes
                          for i from 0
-                         collect (if (eq cls 'f64)
-                                     (nth i (nelisp-phase47-compiler--current-xmm-arg-regs))
-                                   (nth i (nelisp-phase47-compiler--current-arg-regs)))))
+                         collect
+                         (if (< i 4)
+                             (if (eq cls 'f64)
+                                 (nth i (nelisp-phase47-compiler--current-xmm-arg-regs))
+                               (nth i (nelisp-phase47-compiler--current-arg-regs)))
+                           (list :stack (- i 4)))))
+               ((and (eq nelisp-phase47-compiler--arch 'x86_64)
+                     (eq nelisp-phase47-compiler--abi 'win64))
+                (cl-loop for cls in classes
+                         for i from 0
+                         collect
+                         (if (< i 4)
+                             (if (eq cls 'f64)
+                                 (nth i (nelisp-phase47-compiler--current-xmm-arg-regs))
+                               (nth i (nelisp-phase47-compiler--current-arg-regs)))
+                           (list :stack (- i 4)))))
                ((and (eq uniform-class 'gp)
                      (eq nelisp-phase47-compiler--arch 'x86_64)
                      (eq nelisp-phase47-compiler--abi 'sysv)
@@ -15082,6 +15099,7 @@ return reg, untouched by epilogue)."
             ;;   a. `sub rsp, 8*ROUNDED' to allocate the spill frame.
             ;;   b. Store each arg-position register into its frame slot:
             ;;      GP uses RCX/RDX/R8/R9; f64 uses XMM0..XMM3.
+            ;;      Stack args start at `[rbp+48]' after `push rbp'.
             ;;   The frame layout matches the SysV path so `--emit-ref-load'
             ;;   / `--emit-f64-ref-load' (= `[rbp - 8*(slot+1)]') read the
             ;;   right value.
@@ -15099,16 +15117,18 @@ return reg, untouched by epilogue)."
                 ;; byte count regardless of arity, matching pass-1 = pass-2).
                 (when (> arity 0)
                   (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
-                ;; Spill each incoming Win64 arg register to its frame slot
-                ;; via `mov [rbp - 8*(i+1)], REG'.  disp8 covers [-128,127]
-                ;; so slot offsets up to 15 args are in range.
                 (let ((i 0))
                   (dolist (preg param-regs)
-                    (ignore preg)
-                    (let ((src-reg (nth i win64-arg-regs))
-                          (disp (- (* 8 (1+ i)))))
-                      (nelisp-asm-x86_64-mov-mem-reg-disp8
-                       buf 'rbp disp src-reg))
+                    (let ((disp (- (* 8 (1+ i)))))
+                      (if (and (consp preg) (eq (car preg) :stack))
+                          (let ((src-disp (+ 48 (* 8 (cadr preg)))))
+                            (nelisp-asm-x86_64-mov-reg-mem-disp8
+                             buf 'rax 'rbp src-disp)
+                            (nelisp-asm-x86_64-mov-mem-reg-disp8
+                             buf 'rbp disp 'rax))
+                        (let ((src-reg (nth i win64-arg-regs)))
+                          (nelisp-asm-x86_64-mov-mem-reg-disp8
+                           buf 'rbp disp src-reg))))
                     (setq i (1+ i))))))
              ;; f64 class under Win64: XMM0-XMM3 carry the first 4 float args
              ;; (same xmm reg numbers as SysV, just fewer GP-class args allowed
@@ -15121,8 +15141,15 @@ return reg, untouched by epilogue)."
                   (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
                 (dolist (xreg param-regs)
                   (setq slot-idx (1+ slot-idx))
-                  (nelisp-asm-x86_64-movsd-mem-disp8-xmm
-                   buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
+                  (let ((dst-disp (- (* 8 (1+ slot-idx)))))
+                    (if (and (consp xreg) (eq (car xreg) :stack))
+                        (let ((src-disp (+ 48 (* 8 (cadr xreg)))))
+                          (nelisp-asm-x86_64-movsd-xmm-mem-disp8
+                           buf 'xmm0 'rbp src-disp)
+                          (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+                           buf 'rbp dst-disp 'xmm0))
+                      (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+                       buf 'rbp dst-disp xreg))))))
              ;; Mixed Win64 register params: each arg position has a paired
              ;; GP/XMM register.  Spill the selected class for each position
              ;; into the normal rbp-negative frame slot.
@@ -15137,10 +15164,22 @@ return reg, untouched by epilogue)."
                    (setq slot-idx (1+ slot-idx))
                    (let ((disp (- (* 8 (1+ slot-idx)))))
                      (if (eq cls 'f64)
-                         (nelisp-asm-x86_64-movsd-mem-disp8-xmm
-                          buf 'rbp disp preg)
-                       (nelisp-asm-x86_64-mov-mem-reg-disp8
-                        buf 'rbp disp preg))))
+                         (if (and (consp preg) (eq (car preg) :stack))
+                             (let ((src-disp (+ 48 (* 8 (cadr preg)))))
+                               (nelisp-asm-x86_64-movsd-xmm-mem-disp8
+                                buf 'xmm0 'rbp src-disp)
+                               (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+                                buf 'rbp disp 'xmm0))
+                           (nelisp-asm-x86_64-movsd-mem-disp8-xmm
+                            buf 'rbp disp preg))
+                       (if (and (consp preg) (eq (car preg) :stack))
+                           (let ((src-disp (+ 48 (* 8 (cadr preg)))))
+                             (nelisp-asm-x86_64-mov-reg-mem-disp8
+                              buf 'rax 'rbp src-disp)
+                             (nelisp-asm-x86_64-mov-mem-reg-disp8
+                              buf 'rbp disp 'rax))
+                         (nelisp-asm-x86_64-mov-mem-reg-disp8
+                          buf 'rbp disp preg)))))
                  param-regs param-classes)))
              (t
               (signal 'nelisp-phase47-compiler-error
