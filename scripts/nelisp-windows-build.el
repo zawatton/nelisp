@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37.  Build native Windows PE32+ executables through
+;; Doc 138 Stage 1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34/35/36/37/38.  Build native Windows PE32+ executables through
 ;; the pure-elisp PE writer, starting with ExitProcess and VirtualAlloc
 ;; import-table probes, then wiring Phase47 `(exit ...)' through Win64
 ;; KERNEL32.dll!ExitProcess, `(write ...)' through WriteFile, and
@@ -76,6 +76,8 @@
 ;; mutable string boxes can become immutable Str slots in Windows PE.
 ;; Stage 37 links the NlRecord allocator/set-slot kernels and proves
 ;; Record type-tag clone, slots Vec header, refcount, and slot updates.
+;; Stage 38 links the lowered MutStr push-byte/push-codepoint kernel and
+;; proves growth plus UTF-8 emission in a Windows standalone PE.
 
 ;;; Code:
 
@@ -103,6 +105,7 @@
 (require 'nelisp-cc-nlrecord-alloc)
 (require 'nelisp-cc-nlrecord-clone)
 (require 'nelisp-cc-nlrecord-set-slot)
+(require 'nelisp-cc-evalport-nonenv-mut-str-push)
 
 (defun nelisp-windows-build-exitprocess (out-path exit-code)
   "Write OUT-PATH as a PE32+ EXE calling ExitProcess(EXIT-CODE)."
@@ -1893,6 +1896,113 @@ link-units."
              vector-clone chartable-clone boolvector-clone cell-clone
              record-clone alloc-str arena)))))
 
+(defun nelisp-windows-build--standalone-mut-str-push-driver42-bytes ()
+  "Return a PE32+ EXE proving MutStr push-byte/codepoint on Windows."
+  (nelisp-windows-build--link-units-executable-bytes
+   '("ExitProcess" "VirtualAlloc")
+   (lambda (text-rva iat-rvas _rdata-rva)
+     (let* ((start (nelisp-windows-build--standalone-start-unit
+                    text-rva (cdr (assoc "ExitProcess" iat-rvas))))
+            (driver-rva (+ text-rva
+                           (nelisp-windows-build--unit-text-length start)))
+            (driver (nelisp-windows-build--compile-defuns-to-unit
+                     "driver.o"
+                     '(seq
+                       (defun nl_win_mut_str_push_bytes_ok (slot)
+                         (let* ((data (nl_str_bytes_ptr slot)))
+                           (and (= (nl_mut_str_len slot) 7)
+                                (= (ptr-read-u8 data 0) 65)
+                                (= (ptr-read-u8 data 1) 66)
+                                (= (ptr-read-u8 data 2) 194)
+                                (= (ptr-read-u8 data 3) 162)
+                                (= (ptr-read-u8 data 4) 226)
+                                (= (ptr-read-u8 data 5) 130)
+                                (= (ptr-read-u8 data 6) 172))))
+                       (defun nl_win_mut_str_final_bytes_ok (slot)
+                         (let* ((data (ptr-read-u64 (+ slot 16) 0)))
+                           (and (= (ptr-read-u8 slot 0) 5)
+                                (= (ptr-read-u64 (+ slot 8) 0) 7)
+                                (= (ptr-read-u64 (+ slot 24) 0) 7)
+                                (= (ptr-read-u8 data 0) 65)
+                                (= (ptr-read-u8 data 1) 66)
+                                (= (ptr-read-u8 data 2) 194)
+                                (= (ptr-read-u8 data 3) 162)
+                                (= (ptr-read-u8 data 4) 226)
+                                (= (ptr-read-u8 data 5) 130)
+                                (= (ptr-read-u8 data 6) 172))))
+                       (defun driver ()
+                         (let* ((arena (nl_arena_init)))
+                           (if (= arena 0)
+                               102
+                             (let* ((mut-slot (nl_alloc_bytes 32 8))
+                                    (out-slot (nl_alloc_bytes 32 8)))
+                               (if (= out-slot 0)
+                                   103
+                                 (seq
+                                  (nl_alloc_mut_str 1 mut-slot)
+                                  (nl_mut_str_push_byte mut-slot 65)
+                                  (nl_mut_str_push_byte mut-slot 66)
+                                  (nl_mut_str_push_codepoint mut-slot 162)
+                                  (nl_mut_str_push_codepoint mut-slot 8364)
+                                  (if (= (nl_win_mut_str_push_bytes_ok mut-slot) 1)
+                                      (seq
+                                       (nl_mut_str_finalize mut-slot out-slot)
+                                       (if (= (nl_win_mut_str_final_bytes_ok out-slot) 1)
+                                           42
+                                         104))
+                                    105))))))))
+                     driver-rva iat-rvas))
+            (alloc-rva (+ driver-rva
+                          (nelisp-windows-build--unit-text-length driver)))
+            (alloc (nelisp-windows-build--compile-defuns-to-unit
+                    "alloc-mut-str.o"
+                    nelisp-cc-nlstr-direct-ops--alloc-mut-str-source
+                    alloc-rva iat-rvas))
+            (push-rva (+ alloc-rva
+                         (nelisp-windows-build--unit-text-length alloc)))
+            (push (nelisp-windows-build--compile-defuns-to-unit
+                   "mut-str-push.o"
+                   nelisp-cc-evalport-nonenv-mut-str-push--source
+                   push-rva iat-rvas))
+            (len-rva (+ push-rva
+                        (nelisp-windows-build--unit-text-length push)))
+            (len (nelisp-windows-build--compile-defuns-to-unit
+                  "mut-str-len.o"
+                  nelisp-cc-nlstr-direct-ops--mut-str-len-source
+                  len-rva iat-rvas))
+            (bytes-rva (+ len-rva
+                          (nelisp-windows-build--unit-text-length len)))
+            (bytes (nelisp-windows-build--compile-defuns-to-unit
+                    "str-bytes.o"
+                    nelisp-cc-nlstr-direct-ops--str-bytes-ptr-source
+                    bytes-rva iat-rvas))
+            (finalize-rva (+ bytes-rva
+                             (nelisp-windows-build--unit-text-length bytes)))
+            (finalize (nelisp-windows-build--compile-defuns-to-unit
+                       "mut-str-finalize.o"
+                       nelisp-cc-nlstr-direct-ops--mut-str-finalize-source
+                       finalize-rva iat-rvas))
+            (bridge-rva (+ finalize-rva
+                           (nelisp-windows-build--unit-text-length finalize)))
+            (bridge (nelisp-windows-build--compile-defuns-to-unit
+                     "alloc-bridge.o"
+                     '(seq
+                       (defun nelisp_alloc_bytes (size align)
+                         (nl_alloc_bytes size align))
+                       (defun nelisp_dealloc_bytes (ptr size align)
+                         (nl_dealloc_bytes ptr size align))
+                       (defun nelisp_ptr_read_u8 (ptr off)
+                         (ptr-read-u8 ptr off))
+                       (defun nelisp_ptr_write_u8 (ptr off val)
+                         (ptr-write-u8 ptr off val)))
+                     bridge-rva iat-rvas))
+            (arena-rva (+ bridge-rva
+                          (nelisp-windows-build--unit-text-length bridge)))
+            (arena (nelisp-windows-build--compile-defuns-to-unit
+                    "arena.o" nelisp-standalone--arena-source
+                    arena-rva iat-rvas)))
+       (list start driver alloc push len bytes finalize bridge arena)))))
+
 (defun nelisp-windows-build-linked-call42 ()
   "Batch entry: build target/nelisp-windows-linked-call42.exe."
   (let ((bytes (nelisp-windows-build--linked-call42-bytes))
@@ -2130,6 +2240,16 @@ link-units."
         (coding-system-for-write 'no-conversion))
     (write-region bytes nil out-path nil 'silent)
     (message "nelisp-windows-build: wrote %s (standalone NlRecord)"
+             out-path)
+    out-path))
+
+(defun nelisp-windows-build-standalone-mut-str-push-driver42 ()
+  "Batch entry: build the standalone MutStr push-byte/codepoint probe."
+  (let ((bytes (nelisp-windows-build--standalone-mut-str-push-driver42-bytes))
+        (out-path "target/nelisp-windows-standalone-mut-str-push-driver42.exe")
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil out-path nil 'silent)
+    (message "nelisp-windows-build: wrote %s (standalone MutStr push)"
              out-path)
     out-path))
 
