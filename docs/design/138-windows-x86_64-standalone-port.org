@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-55-WINDOWS-WAIT-MANY-LIMIT
+#+STATUS: STAGE-56-WINDOWS-CREATEPROCESS-PE-SMOKE
 
 * Status
 
-- *State*: STAGE 55 Windows wait-many HANDLE limit
+- *State*: STAGE 56 Windows CreateProcessW PE smoke
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -31,7 +31,12 @@
   =VirtualAlloc= / =VirtualProtect= / =VirtualFree=, allocates one page,
   changes it to read-only through a =.data= old-protection slot, releases it
   with =VirtualFree(MEM_RELEASE)=, and exits 42 only when the full lifecycle
-  succeeds.  =lisp/nelisp-stdlib-os.el= now also routes Windows
+  succeeds.  The ninth EXE spec, =createprocess-wait-exit-42=, imports
+  =CreateProcessW= / =WaitForSingleObject= / =GetExitCodeProcess= /
+  =CloseHandle= / =ExitProcess=, starts =cmd.exe /c exit 42= through a
+  writable UTF-16LE command line, waits for the child, checks its exit code,
+  closes HANDLEs, and exits 42 only when the full child lifecycle succeeds.
+  =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
   =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
   =kernel32!ReadFile= instead of POSIX integer-fd =libc.read/write=.  Regular
@@ -328,7 +333,10 @@
   join-any over registered thread HANDLEs, timeout retention, and =ECHILD= when
   no registered thread exists.  Stage 55 coverage verifies process
   =wait(-1)= and thread join-any both reject more than 64 registered HANDLEs
-  before HANDLE-array allocation or FFI.
+  before HANDLE-array allocation or FFI.  Stage 56 coverage verifies the
+  =createprocess-wait-exit-42= PE layout, process API imports, writable
+  command/startup/process data, and Win64 argument setup for
+  =CreateProcessW= / wait / exit-code validation.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
@@ -336,24 +344,26 @@
   =virtualalloc-exit-42=, =virtualprotect-free-exit-42=,
   =virtualalloc-arena-exit-42=, and
   =writefile-stdout-exit-42=, =getcommandline-exit-42=,
-  =commandlinetoargv-exit-42=, and
-  =wsastartup-exit-42=.  They can now be built individually on native
+  =commandlinetoargv-exit-42=, =wsastartup-exit-42=, and
+  =createprocess-wait-exit-42=.  They can now be built individually on native
   Windows with =nelisp-windows-build-virtualalloc=,
   =nelisp-windows-build-virtualprotect-free=,
   =nelisp-windows-build-arena=, and
   =nelisp-windows-build-writefile-stdout=, and
   =nelisp-windows-build-getcommandline=,
   =nelisp-windows-build-commandlinetoargv=, and
-  =nelisp-windows-build-wsastartup=, producing
+  =nelisp-windows-build-wsastartup=, and
+  =nelisp-windows-build-createprocess=, producing
   =target/nelisp-windows-virtualalloc.exe=,
   =target/nelisp-windows-virtualprotect-free.exe=,
   =target/nelisp-windows-arena.exe=, and
   =target/nelisp-windows-writefile-stdout.exe=, and
   =target/nelisp-windows-getcommandline.exe=,
   =target/nelisp-windows-commandlinetoargv.exe=, and
-  =target/nelisp-windows-wsastartup.exe=.  This Linux host does not have
+  =target/nelisp-windows-wsastartup.exe=, and
+  =target/nelisp-windows-createprocess.exe=.  This Linux host does not have
   =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
-  it builds and runs the eight PE32+ smoke EXEs on native Windows, checking exit
+  it builds and runs the nine PE32+ smoke EXEs on native Windows, checking exit
   code 42 and the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE
   generation without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
@@ -672,6 +682,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows wait-many limit progress 2026-06-03*: process =wait(-1)= and
   internal thread join-any now reject more than 64 registered HANDLEs before
   allocation / FFI, matching =WaitForMultipleObjects= limits.
+  *Windows CreateProcess PE smoke progress 2026-06-03*: pure-Elisp PE emit now
+  has a =createprocess-wait-exit-42= smoke that launches =cmd.exe /c exit 42=,
+  waits, reads the child exit code, closes HANDLEs, and is wired into the
+  native Windows PowerShell smoke runner.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -845,6 +859,10 @@ largest uncertainty (B1 + B2) first.
    internal thread join-any now reject registered HANDLE counts above the
    =WaitForMultipleObjects= limit before allocating the HANDLE array or calling
    kernel32.
+   *Windows CreateProcess PE smoke SHIPPED 2026-06-03*: pure-Elisp PE emit now
+   has a native =CreateProcessW= child-launch smoke that waits for
+   =cmd.exe /c exit 42=, validates the child exit code, closes HANDLEs, and is
+   included in =tools/windows-selfhost-test.ps1=.
 4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
    Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
@@ -854,15 +872,16 @@ largest uncertainty (B1 + B2) first.
    =virtualprotect-free-exit-42=, =virtualalloc-arena-exit-42=,
    =writefile-stdout-exit-42=, and
    =getcommandline-exit-42=, =commandlinetoargv-exit-42=, and
-   =wsastartup-exit-42=, then validates process exit status and stdout on
-   Windows.  Individual real-machine build
+   =wsastartup-exit-42=, and =createprocess-wait-exit-42=, then validates
+   process exit status and stdout on Windows.  Individual real-machine build
    entries are also READY 2026-06-02:
    =nelisp-windows-build-exit42=, =nelisp-windows-build-virtualalloc=,
    =nelisp-windows-build-arena=, and
    =nelisp-windows-build-writefile-stdout=.  =nelisp-windows-build-getcommandline=
    =nelisp-windows-build-commandlinetoargv=,
    =nelisp-windows-build-wsastartup=, and
-   =nelisp-windows-build-virtualprotect-free= are READY 2026-06-03.
+   =nelisp-windows-build-virtualprotect-free=, and
+   =nelisp-windows-build-createprocess= are READY 2026-06-03.
 5. Replace parallel/MT with =CreateProcess= / =CreateThread= (B4) — last,
    since it is a feature extension, not a boot blocker.
    *Minimal process API SHIPPED 2026-06-02*: =nelisp-os-exit= and
@@ -874,7 +893,9 @@ largest uncertainty (B1 + B2) first.
    registered child HANDLEs, =wait(-1)= can now reap any registered child, and
    internal =CreateThread= helpers can create, join, and join-any Windows
    thread HANDLEs.  Both process/thread wait-many paths now guard the native
-   64-HANDLE limit before FFI.  =getppid= now uses Tool Help snapshots.  Full
+   64-HANDLE limit before FFI.  A native PE smoke is now ready to verify
+   =CreateProcessW= / wait / child-exit-code wiring on real Windows.  =getppid=
+   now uses Tool Help snapshots.  Full
    =fork/clone=
    integration remains pending; Linux-only
    event fd APIs are guarded, not ported.  Winsock has socket creation/close

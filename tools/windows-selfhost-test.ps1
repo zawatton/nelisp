@@ -10,6 +10,7 @@
 #
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualalloc
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualprotect-free
+#   .\tools\windows-selfhost-test.ps1 -Smoke createprocess
 #
 # To validate generation without running the EXEs:
 #
@@ -83,6 +84,12 @@ $Smokes = @(
     @{
         Name = "wsastartup"
         Spec = "wsastartup-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
+        Name = "createprocess"
+        Spec = "createprocess-wait-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
     }

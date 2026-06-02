@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 (let* ((this (or load-file-name buffer-file-name))
        (test-dir (and this (file-name-directory this)))
@@ -55,6 +56,10 @@
       (setq acc (logior acc (ash (aref bytes (+ offset i)) (* i 8))))
       (setq i (1+ i)))
     acc))
+
+(defun nelisp-pe-write-test--contains-p (bytes needle)
+  "Return non-nil when BYTES contains NEEDLE."
+  (not (null (cl-search needle bytes :test #'char-equal))))
 
 ;; ---- sample input ----
 
@@ -734,6 +739,81 @@
     (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 69)) 1))
     (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 75)) #x201d))
     (should (= (aref bytes (+ text-off 79)) #xcc))))
+
+(ert-deftest nelisp-pe-write-exe-binary-createprocess-section-table ()
+  "The CreateProcessW smoke EXE has writable command/startup/process data."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'createprocess-wait-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20))
+         (sect0 (+ pe-off 4 20 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (text-raw #x200)
+         (data-raw #x400)
+         (idata-raw #x600)
+         (command (nelisp-pe--utf16le-z-bytes "cmd.exe /c exit 42")))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ file-off 2)) 3))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 4)) #x200))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 8)) #x400))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 56)) #x4000))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 20)) text-raw))
+    (should (string-prefix-p ".data" (substring bytes sect1 (+ sect1 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 8)) #xac))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) data-raw))
+    (should (string-prefix-p ".idata" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 12)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 20)) idata-raw))
+    (should (equal (substring bytes data-raw (+ data-raw (length command)))
+                   command))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ data-raw #x28)) 104))
+    (dotimes (i 24)
+      (should (= (aref bytes (+ data-raw #x90 i)) 0)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-createprocess-import-directory ()
+  "The CreateProcessW smoke EXE imports the process wait API set."
+  (let ((bytes (nelisp-pe-write-test--emit-exe 'createprocess-wait-exit-42)))
+    (dolist (name '("KERNEL32.dll"
+                    "ExitProcess"
+                    "CreateProcessW"
+                    "WaitForSingleObject"
+                    "GetExitCodeProcess"
+                    "CloseHandle"))
+      (should (nelisp-pe-write-test--contains-p bytes name)))))
+
+(ert-deftest nelisp-pe-write-exe-binary-createprocess-entry-code ()
+  "The CreateProcessW smoke EXE sets Win64 args and checks child exit 42."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'createprocess-wait-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (sect0 (+ pe-off 4 20 240))
+         (text-size (nelisp-pe-write-test--read-le32 bytes (+ sect0 8)))
+         (text-off #x200))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x68)))
+    (should (equal (substring bytes (+ text-off 4) (+ text-off 13))
+                   (unibyte-string #x31 #xc9 #x48 #x8d #x15
+                                   #xf3 #x0f #x00 #x00)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x45 #x31 #xc0 #x45 #x31 #xc9)))
+    (dolist (slot '(#x20 #x28 #x30 #x38))
+      (should (nelisp-pe-write-test--contains-p
+               bytes
+               (unibyte-string #x48 #xc7 #x44 #x24 slot
+                               #x00 #x00 #x00 #x00))))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x89 #x44 #x24 #x40)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x48 #x89 #x44 #x24 #x48)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #xba #xff #xff #xff #xff)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x83 #x3d)))
+    (should (nelisp-pe-write-test--contains-p
+             bytes (unibyte-string #x2a #x74 #x0b #xb9
+                                   #x01 #x00 #x00 #x00)))
+    (should (= (aref bytes (+ text-off (1- text-size))) #xcc))))
 
 (ert-deftest nelisp-pe-write-exe-binary-virtualalloc-arena-section-table ()
   "The arena smoke EXE adds a .data section for base/cursor/end metadata."

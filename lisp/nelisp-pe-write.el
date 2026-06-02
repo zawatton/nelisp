@@ -48,6 +48,8 @@
 ;; `WSAStartup' smoke for the standalone Winsock import path.  Stage 44 adds
 ;; `Shell32.dll!CommandLineToArgvW' for CRT-free argv materialization.  Stage
 ;; 45 adds a `VirtualProtect' + `VirtualFree' memory-lifecycle smoke.
+;; Stage 56 adds a `CreateProcessW' smoke that starts `cmd.exe /c exit 42',
+;; waits for the child, reads its exit code, and closes the process HANDLE.
 ;; Production standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
@@ -248,6 +250,16 @@ Returns a plist (:chunks REVERSE-LIST :length N)."
   "Append NBYTES zero bytes to CBUF."
   (when (> nbytes 0)
     (nelisp-pe--buf-emit cbuf (make-string nbytes 0))))
+
+(defun nelisp-pe--utf16le-z-bytes (s)
+  "Return S encoded as UTF-16LE with a trailing NUL WCHAR.
+This helper is intentionally limited to BMP code points, which is enough for
+the ASCII Windows smoke command lines."
+  (let ((cbuf (nelisp-pe--make-buffer)))
+    (dotimes (idx (length s))
+      (nelisp-pe--write-le16 cbuf (aref s idx)))
+    (nelisp-pe--write-le16 cbuf 0)
+    (nelisp-pe--buffer-bytes cbuf)))
 
 (defun nelisp-pe--write-fixed-string (cbuf s width)
   "Append S to CBUF, NUL-padded or truncated to WIDTH bytes."
@@ -1420,6 +1432,124 @@ LocalFree, and exits 42 when argc >= 1."
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--createprocess-wait-data ()
+  "Return data layout for the CreateProcessW wait smoke.
+The command line is writable because CreateProcessW may modify it in place."
+  (let* ((command-bytes (nelisp-pe--utf16le-z-bytes "cmd.exe /c exit 42"))
+         (startup-info-size 104)
+         (process-info-size 24)
+         (startup-info-off (nelisp-pe--align-up (length command-bytes) 8))
+         (process-info-off (+ startup-info-off startup-info-size))
+         (exit-code-off (+ process-info-off process-info-size))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-bytes cbuf command-bytes)
+    (nelisp-pe--write-pad cbuf (- startup-info-off (length command-bytes)))
+    ;; STARTUPINFOW.cb.
+    (nelisp-pe--write-le32 cbuf startup-info-size)
+    (nelisp-pe--write-pad cbuf (- startup-info-size 4))
+    (nelisp-pe--write-pad cbuf process-info-size)
+    (nelisp-pe--write-pad cbuf 4)
+    (list :bytes (nelisp-pe--buffer-bytes cbuf)
+          :command-off 0
+          :startup-info-off startup-info-off
+          :process-info-off process-info-off
+          :exit-code-off exit-code-off
+          :startup-info-size startup-info-size)))
+
+(defun nelisp-pe--minimal-createprocess-wait-text
+    (text-rva exit-iat-rva createprocess-iat-rva wait-iat-rva
+              get-exit-code-iat-rva close-handle-iat-rva data-rva
+              command-off startup-info-off process-info-off exit-code-off)
+  "Return x86_64 bytes for a CreateProcessW + wait smoke.
+The generated code starts `cmd.exe /c exit 42', waits for the child process,
+reads its exit code, closes its HANDLEs, and exits 42 only when the child
+reported exit code 42."
+  (let ((cbuf (nelisp-pe--make-buffer)))
+    (let (emit-call
+          emit-lea-rax-data
+          emit-lea-rdx-data
+          emit-mov-rcx-data-qword
+          emit-fail-exit)
+      (setq emit-call
+            (lambda (iat-rva)
+              (let ((call-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- iat-rva (+ text-rva call-off 6))))))
+      (setq emit-lea-rax-data
+            (lambda (off)
+              (let ((lea-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x05))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- (+ data-rva off) (+ text-rva lea-off 7))))))
+      (setq emit-lea-rdx-data
+            (lambda (off)
+              (let ((lea-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x15))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- (+ data-rva off) (+ text-rva lea-off 7))))))
+      (setq emit-mov-rcx-data-qword
+            (lambda (off)
+              (let ((mov-off (nelisp-pe--buffer-length cbuf)))
+                (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8b #x0d))
+                (nelisp-pe--write-le32-signed
+                 cbuf (- (+ data-rva off) (+ text-rva mov-off 7))))))
+      (setq emit-fail-exit
+            (lambda ()
+              (nelisp-pe--write-u8 cbuf #xb9)
+              (nelisp-pe--write-le32 cbuf 1)
+              (funcall emit-call exit-iat-rva)))
+      ;; Win64 ABI: 32-byte shadow space, six stack arguments, plus alignment.
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x68))
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x31 #xc9)) ; appName = NULL
+      (funcall emit-lea-rdx-data command-off) ; writable command line
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x45 #x31 #xc0)) ; proc attr
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x45 #x31 #xc9)) ; thread attr
+      (dolist (slot '(#x20 #x28 #x30 #x38))
+        (nelisp-pe--write-bytes cbuf
+                                (unibyte-string #x48 #xc7 #x44 #x24 slot
+                                                #x00 #x00 #x00 #x00)))
+      (funcall emit-lea-rax-data startup-info-off)
+      (nelisp-pe--write-bytes cbuf
+                              (unibyte-string #x48 #x89 #x44 #x24 #x40))
+      (funcall emit-lea-rax-data process-info-off)
+      (nelisp-pe--write-bytes cbuf
+                              (unibyte-string #x48 #x89 #x44 #x24 #x48))
+      (funcall emit-call createprocess-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-fail-exit)
+      ;; Close PROCESS_INFORMATION.hThread.
+      (funcall emit-mov-rcx-data-qword (+ process-info-off 8))
+      (funcall emit-call close-handle-iat-rva)
+      ;; WaitForSingleObject(PROCESS_INFORMATION.hProcess, INFINITE).
+      (funcall emit-mov-rcx-data-qword process-info-off)
+      (nelisp-pe--write-u8 cbuf #xba)
+      (nelisp-pe--write-le32 cbuf #xffffffff)
+      (funcall emit-call wait-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x74 #x0b))
+      (funcall emit-fail-exit)
+      ;; GetExitCodeProcess(PROCESS_INFORMATION.hProcess, &exitCode).
+      (funcall emit-mov-rcx-data-qword process-info-off)
+      (funcall emit-lea-rdx-data exit-code-off)
+      (funcall emit-call get-exit-code-iat-rva)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+      (funcall emit-fail-exit)
+      (funcall emit-mov-rcx-data-qword process-info-off)
+      (funcall emit-call close-handle-iat-rva)
+      ;; Exit 42 only if the child process exited 42.
+      (let ((cmp-off (nelisp-pe--buffer-length cbuf)))
+        (nelisp-pe--write-bytes cbuf (unibyte-string #x83 #x3d))
+        (nelisp-pe--write-le32-signed
+         cbuf (- (+ data-rva exit-code-off) (+ text-rva cmp-off 7)))
+        (nelisp-pe--write-u8 cbuf 42))
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x74 #x0b))
+      (funcall emit-fail-exit)
+      (nelisp-pe--write-u8 cbuf #xb9)
+      (nelisp-pe--write-le32 cbuf 42)
+      (funcall emit-call exit-iat-rva)
+      (nelisp-pe--write-u8 cbuf #xcc)
+      (nelisp-pe--buffer-bytes cbuf))))
+
 (defun nelisp-pe--build-minimal-exitprocess-exe (exit-code)
   "Build a minimal PE32+ console EXE that exits with EXIT-CODE."
   (let* ((num-sections 2)
@@ -2163,6 +2293,111 @@ LocalFree, and exits 42 when argc >= 1."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-createprocess-wait-exitprocess-exe ()
+  "Build a PE32+ EXE that proves CreateProcessW child wait wiring."
+  (let* ((num-sections 3)
+         (data-info (nelisp-pe--createprocess-wait-data))
+         (data-bytes (plist-get data-info :bytes))
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (data-rva (* 2 nelisp-pe--section-alignment))
+         (idata-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva
+           (list "ExitProcess" "CreateProcessW" "WaitForSingleObject"
+                 "GetExitCodeProcess" "CloseHandle")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-createprocess-wait-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "CreateProcessW" iat-map))
+           (cdr (assoc "WaitForSingleObject" iat-map))
+           (cdr (assoc "GetExitCodeProcess" iat-map))
+           (cdr (assoc "CloseHandle" iat-map))
+           data-rva
+           (plist-get data-info :command-off)
+           (plist-get data-info :startup-info-off)
+           (plist-get data-info :process-info-off)
+           (plist-get data-info :exit-code-off)))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length data-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (data-raw-ptr (+ text-raw-ptr text-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ data-raw-size idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length data-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf data-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length data-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
   "Emit a PE32+/COFF relocatable object file to FILE-PATH.
@@ -2201,9 +2436,9 @@ SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `virtualprotect-free-exit-42', `virtualalloc-arena-exit-42',
 `writefile-stdout-exit-42',
 `getcommandline-exit-42', `wsastartup-exit-42',
-`commandlinetoargv-exit-42', or a plist with :exit-code.  The output imports
-DLL functions through a real PE import directory and writes raw bytes with
-`no-conversion'.  Returns FILE-PATH."
+`commandlinetoargv-exit-42', `createprocess-wait-exit-42', or a plist with
+:exit-code.  The output imports DLL functions through a real PE import
+directory and writes raw bytes with `no-conversion'.  Returns FILE-PATH."
   (let* ((exit-code
           (cond
            ((eq spec 'minimal-exit-42) 42)
@@ -2214,6 +2449,7 @@ DLL functions through a real PE import directory and writes raw bytes with
            ((eq spec 'getcommandline-exit-42) nil)
            ((eq spec 'wsastartup-exit-42) nil)
            ((eq spec 'commandlinetoargv-exit-42) nil)
+           ((eq spec 'createprocess-wait-exit-42) nil)
            ((listp spec) (or (plist-get spec :exit-code) 42))
            (t (error "nelisp-pe-write-exe-binary: invalid SPEC %S" spec))))
          (bytes (cond
@@ -2231,6 +2467,8 @@ DLL functions through a real PE import directory and writes raw bytes with
                   (nelisp-pe--build-wsastartup-exitprocess-exe))
                  ((eq spec 'commandlinetoargv-exit-42)
                   (nelisp-pe--build-commandlinetoargv-exitprocess-exe))
+                 ((eq spec 'createprocess-wait-exit-42)
+                  (nelisp-pe--build-createprocess-wait-exitprocess-exe))
                  (t
                   (nelisp-pe--build-minimal-exitprocess-exe exit-code))))
          (coding-system-for-write 'no-conversion))
