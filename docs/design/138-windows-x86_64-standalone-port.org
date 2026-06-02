@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-113-WINDOWS-EVENTFD
+#+STATUS: STAGE-114-WINDOWS-EVENTFD-FCNTL
 
 * Status
 
-- *State*: STAGE 113 Windows eventfd compatibility
+- *State*: STAGE 114 Windows eventfd fcntl compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -283,7 +283,11 @@
   impossible raw-syscall fallbacks.  =nelisp-os-eventfd= now has a Windows
   compatibility implementation backed by a synthetic fd-kind counter, with
   8-byte little-endian =read/write= counter semantics, =EFD_SEMAPHORE=, and
-  =EFD_NONBLOCK= status tracking.  The Winsock branch has started:
+  =EFD_NONBLOCK= status tracking.  The synthetic eventfd fd also has Windows
+  =fcntl= compatibility for =F_DUPFD=, =F_GETFD=, and =F_SETFD=: duplicates
+  share the same counter state, =EFD_CLOEXEC= maps to tracked descriptor
+  flags, and no fake HANDLE calls are made for descriptor metadata.  The
+  Winsock branch has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -603,6 +607,10 @@
   eventfd-compatible fds, tracks =EFD_NONBLOCK= through =F_GETFL=, supports
   8-byte counter =read/write=, honors =EFD_SEMAPHORE= decrement-by-one reads,
   and removes all eventfd table state on close.
+  Stage 114 coverage verifies synthetic Windows eventfd fds support
+  =F_DUPFD= without HANDLE duplication, share the eventfd counter state across
+  the duplicate, map =EFD_CLOEXEC= through =F_GETFD= / =F_SETFD= descriptor
+  flags, and reject unsupported descriptor flag bits before FFI.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1015,6 +1023,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   Windows synthetic counter fd whose =nelisp-os-read/write= implement 8-byte
   eventfd counter transfers, including =EFD_SEMAPHORE= and =EFD_NONBLOCK=
   tracking.
+  *Windows eventfd fcntl progress 2026-06-03*: synthetic Windows eventfd fds
+  now support =F_DUPFD= by creating another synthetic fd that shares the same
+  counter state, and =F_GETFD= / =F_SETFD= track descriptor =FD_CLOEXEC=
+  without calling HANDLE metadata APIs on fd kind =eventfd=.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1432,6 +1444,10 @@ largest uncertainty (B1 + B2) first.
    now returns synthetic Windows fd-kind counter fds with 8-byte
    =nelisp-os-read/write= counter semantics, =EFD_SEMAPHORE= reads, tracked
    =EFD_NONBLOCK= status, and close-time table cleanup.
+   *Windows eventfd fcntl compatibility SHIPPED 2026-06-03*: synthetic
+   Windows eventfd fds now support =F_DUPFD= with shared counter state and
+   =F_GETFD= / =F_SETFD= descriptor flag tracking for =FD_CLOEXEC= without
+   fake HANDLE metadata calls.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -1592,7 +1608,8 @@ largest uncertainty (B1 + B2) first.
    =TCP_KEEPCNT= / =TCP_MAXSEG= / =TCP_TIMESTAMPS= / =TCP_FASTOPEN=, and
    IPv4/IPv6 loopback-backed stream/datagram socketpair with =SOCK_NONBLOCK=,
    accepted socket nonblock flag tracking, socket close-on-exec support, and
-   Windows-compatible =eventfd= counters; regular
+   Windows-compatible =eventfd= counters with synthetic =fcntl= dup/cloexec
+   support; regular
    =CreateFileW= opens now honor =O_CLOEXEC= through HANDLE inheritance
    updates, preserve access / =O_APPEND= status flags for =F_GETFL=, and carry
    those flags through regular =dup2= / =F_DUPFD=, including standard fd
