@@ -85,6 +85,7 @@ $Smokes = @(
         Spec = "readfile-stdin-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
+        StdinText = "nelisp readfile smoke"
     },
     @{
         Name = "createfile-write"
@@ -223,10 +224,15 @@ function Run-SmokeExe {
         [string]$Name,
         [string]$ExePath,
         [int]$ExpectedExit,
-        [AllowNull()][string]$ExpectedStdout
+        [AllowNull()][string]$ExpectedStdout,
+        [AllowNull()][string]$StdinText
     )
 
-    $output = & $ExePath 2>&1
+    if ($null -ne $StdinText) {
+        $output = $StdinText | & $ExePath 2>&1
+    } else {
+        $output = & $ExePath 2>&1
+    }
     $exitCode = $LASTEXITCODE
     $stdout = if ($null -eq $output) { "" } else { ($output -join "`n") }
 
@@ -266,6 +272,11 @@ foreach ($SmokeItem in $SmokesToRun) {
     $Spec = [string]$SmokeItem.Spec
     $ExpectedExit = [int]$SmokeItem.ExpectedExit
     $ExpectedStdout = $SmokeItem.ExpectedStdout
+    $StdinText = if ($SmokeItem.ContainsKey("StdinText")) {
+        [string]$SmokeItem.StdinText
+    } else {
+        $null
+    }
     $ExePath = Join-Path $OutDir ("nelisp-windows-" + $Name + ".exe")
 
     if (-not (Build-SmokeExe -Name $Name -Spec $Spec -OutPath $ExePath)) {
@@ -279,7 +290,8 @@ foreach ($SmokeItem in $SmokesToRun) {
     }
 
     if (-not (Run-SmokeExe -Name $Name -ExePath $ExePath `
-                -ExpectedExit $ExpectedExit -ExpectedStdout $ExpectedStdout)) {
+                -ExpectedExit $ExpectedExit -ExpectedStdout $ExpectedStdout `
+                -StdinText $StdinText)) {
         $Failed = $true
     }
 }

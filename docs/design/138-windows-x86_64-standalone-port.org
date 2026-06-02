@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-142-WINDOWS-GETFILEINFORMATION-SMOKE
+#+STATUS: STAGE-143-WINDOWS-READFILE-STDIN-RUNNER-FIX
 
 * Status
 
-- *State*: STAGE 142 Windows GetFileInformationByHandle PE smoke
+- *State*: STAGE 143 Windows ReadFile stdin runner fix
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -869,6 +869,9 @@
   =CreateFileW= / =GetFileInformationByHandle= / =CloseHandle= /
   =DeleteFileW= imports, two-argument Win64 file-information call setup, and
   cleanup success checks.
+  Stage 143 coverage verifies the PowerShell real-machine smoke runner feeds a
+  small stdin payload to =readfile-stdin= so =STD_INPUT_HANDLE= is a readable
+  pipe during the native =ReadFile= smoke run.
   Stage 58 coverage verifies Win64 =extern-call= COFF
   emit uses =RCX/RDX/R8/R9= for four GP arguments, emits 32-byte caller shadow
   space around =CALL=, and rejects GP stack arguments beyond that register
@@ -929,8 +932,15 @@
   =target/nelisp-windows-createthread.exe=.  This Linux host does not have
   =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
   it builds and runs the fifteen PE32+ smoke EXEs on native Windows, checking exit
-  code 42 and the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE
-  generation without executing them.
+  code 42 and the =WriteFile= stdout payload.  A native Windows full-smoke run
+  on 2026-06-03 passed =exit42=, =virtualalloc=, =virtualprotect-free=,
+  =arena=, =writefile-stdout=, =createfile-write=, =setfilepointer=,
+  =getfiletype=, =getfileinformation=, =getcommandline=,
+  =commandlinetoargv=, =wsastartup=, =createprocess=, and =createthread=.
+  That run reported =readfile-stdin= exit 1 when launched without runner-fed
+  stdin; Stage 143 updates the runner to pipe a small stdin payload for that
+  smoke, and the full native run should be repeated after this fix.  Use
+  =-EmitOnly= to validate EXE generation without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
   in a *separate* session — Windows is the next target after macOS lands.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
@@ -1522,6 +1532,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =GetFileInformationByHandle= into writable =BY_HANDLE_FILE_INFORMATION=
   storage, closes/deletes the file, and is wired into the native Windows
   PowerShell smoke runner.
+  *Windows ReadFile stdin runner progress 2026-06-03*: native full-smoke
+  execution passed fourteen of fifteen smokes; =readfile-stdin= returned exit
+  1 when launched without stdin.  =tools/windows-selfhost-test.ps1= now pipes a
+  small stdin payload for that smoke so =STD_INPUT_HANDLE= is a readable pipe.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -1690,6 +1704,11 @@ largest uncertainty (B1 + B2) first.
    =getfileinformation-exit-42= creates a temporary file, calls
    =GetFileInformationByHandle= into writable =BY_HANDLE_FILE_INFORMATION=
    storage, closes/deletes the file, and exits 42 on success.
+   *Windows ReadFile stdin runner fix SHIPPED 2026-06-03*:
+   =tools/windows-selfhost-test.ps1= now pipes a small stdin payload when
+   running =readfile-stdin=, matching the smoke's =STD_INPUT_HANDLE= dependency
+   instead of launching it with an implementation-dependent console input
+   handle.
    *Windows Winsock getsockopt SHIPPED 2026-06-03*: =nelisp-os-getsockopt-int=
    now uses =ws2_32!getsockopt= for supported =SO_REUSEADDR= / =SO_KEEPALIVE=
    int options on socket-kind fds.

@@ -105,6 +105,21 @@
                (regexp-quote (format "Spec = \"%s\"" (cdr entry)))
                script)))))
 
+(ert-deftest nelisp-windows-build-powershell-pipes-readfile-stdin ()
+  "The real-machine runner feeds stdin for the ReadFile stdin smoke."
+  (let* ((script-path (expand-file-name "tools/windows-selfhost-test.ps1"
+                                        nelisp-windows-build-test--repo-root))
+         (script (nelisp-windows-build-test--read-file-text script-path)))
+    (should (string-match-p
+             (regexp-quote "Name = \"readfile-stdin\"")
+             script))
+    (should (string-match-p
+             (regexp-quote "StdinText = \"nelisp readfile smoke\"")
+             script))
+    (should (string-match-p
+             (regexp-quote "$StdinText | & $ExePath")
+             script))))
+
 (ert-deftest nelisp-windows-build-smoke-exes-emits-all-pe-images ()
   "The Windows smoke build entry can emit every real-machine smoke EXE."
   (let ((out-dir (make-temp-file "nelisp-windows-smoke-" t)))
