@@ -538,8 +538,9 @@
   =mmap/mprotect/munmap= compatibility branch over Windows virtual memory APIs.
   Stage 11 adds minimal =exit/getpid= process API wiring over kernel32.  Stage
   12 adds anonymous pipe creation through =CreatePipe=.  Stage 13 adds
-  HANDLE-backed =lseek= through =SetFilePointerEx=.  Stage 14 adds minimal
-  HANDLE-backed =fstat= through =GetFileType= / =GetFileSizeEx=.  Stage 15 adds
+  HANDLE-backed =lseek= through =SetFilePointerEx=.  Stage 14 and later add
+  HANDLE-backed =fstat= through =GetFileType= /
+  =GetFileInformationByHandle= plus handle-type mode classification.  Stage 15 adds
   fd duplication through =DuplicateHandle= / =SetStdHandle=.  Stage 16 adds
   single-PID termination through =OpenProcess= / =TerminateProcess=.  Stage 17
   adds a Windows =execve= compatibility path over =CreateProcessW= plus

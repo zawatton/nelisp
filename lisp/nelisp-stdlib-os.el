@@ -34,7 +34,8 @@
 ;; minimal process identity/exit surface through `GetCurrentProcessId' and
 ;; `ExitProcess'.  Stage 12 maps `pipe' to `CreatePipe' and stores both HANDLEs
 ;; in the Windows fd table.  Stage 13 maps `lseek' to `SetFilePointerEx'.
-;; Stage 14 maps the minimal `fstat' shape to `GetFileType' / `GetFileSizeEx'.
+;; Stage 14+ maps Windows `fstat' through `GetFileType' /
+;; `GetFileInformationByHandle' plus handle-type mode classification.
 ;; Stage 15 maps `dup2' to `DuplicateHandle' / `SetStdHandle'.  Stage 16 maps
 ;; single-PID `kill' to `OpenProcess' / `TerminateProcess'.  Stage 17 maps
 ;; `execve' to `CreateProcessW' + `ExitProcess'.  Stage 48 fills
