@@ -2305,8 +2305,6 @@
           (lambda () (nelisp-os-inotify-read 3 1))
           (lambda () (nelisp-os-signalfd -1 (list nelisp-os-SIGTERM) 0))
           (lambda () (nelisp-os-signalfd-read 3 1))
-          (lambda () (nelisp-os-sigprocmask nelisp-os-SIG-BLOCK
-                                            (list nelisp-os-SIGTERM)))
           (lambda () (nelisp-os-bind-unix-abstract 3 "x"))
           (lambda () (nelisp-os-connect-unix-abstract 3 "x"))
           (lambda () (nelisp-os-sendmsg-fds 3 (list 4) "x"))
@@ -2375,6 +2373,54 @@
                           (list #xabcdef 3000 16 0)))))
     (should (equal read-request (list 3000 4)))
     (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-sigprocmask-windows-tracks-emulated-mask ()
+  "Windows sigprocmask tracks an emulated mask without POSIX FFI."
+  (let ((called nil)
+        (nelisp-os--windows-signal-mask nil))
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-not
+         (nelisp-os-sigprocmask
+          nelisp-os-SIG-BLOCK
+          (list nelisp-os-SIGTERM nelisp-os-SIGUSR1 nelisp-os-SIGTERM)))
+        (should (equal nelisp-os--windows-signal-mask
+                       (list nelisp-os-SIGUSR1 nelisp-os-SIGTERM)))
+        (should (equal
+                 (nelisp-os-sigprocmask
+                  nelisp-os-SIG-BLOCK
+                  (list nelisp-os-SIGUSR2))
+                 (list nelisp-os-SIGUSR1 nelisp-os-SIGTERM)))
+        (should (equal nelisp-os--windows-signal-mask
+                       (list nelisp-os-SIGUSR1
+                             nelisp-os-SIGUSR2
+                             nelisp-os-SIGTERM)))
+        (should (equal
+                 (nelisp-os-sigprocmask
+                  nelisp-os-SIG-UNBLOCK
+                  (list nelisp-os-SIGUSR1))
+                 (list nelisp-os-SIGUSR1
+                       nelisp-os-SIGUSR2
+                       nelisp-os-SIGTERM)))
+        (should (equal nelisp-os--windows-signal-mask
+                       (list nelisp-os-SIGUSR2 nelisp-os-SIGTERM)))
+        (should (equal
+                 (nelisp-os-sigprocmask
+                  nelisp-os-SIG-SETMASK
+                  (list nelisp-os-SIGCHLD))
+                 (list nelisp-os-SIGUSR2 nelisp-os-SIGTERM)))
+        (should (equal nelisp-os--windows-signal-mask
+                       (list nelisp-os-SIGCHLD)))
+        (should-error (nelisp-os-sigprocmask 99 nil)
+                      :type 'nelisp-os-error)
+        (should-error (nelisp-os-sigprocmask nelisp-os-SIG-BLOCK '(0))
+                      :type 'nelisp-os-error)))
+    (should-not called)))
 
 (ert-deftest nelisp-stdlib-os-pidfd-open-windows-opens-process-handle ()
   "Windows pidfd_open returns a process HANDLE-backed fd."

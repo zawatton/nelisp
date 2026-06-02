@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-125-WINDOWS-TIMERFD-DUP
+#+STATUS: STAGE-126-WINDOWS-SIGPROCMASK
 
 * Status
 
-- *State*: STAGE 125 Windows timerfd dup compatibility
+- *State*: STAGE 126 Windows sigprocmask compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -281,8 +281,10 @@
   =SIGKILL= and validates the fd kind before FFI.  Synthetic process fds now
   also avoid regular HANDLE file APIs for =read/write/lseek/fstat/poll=.
   =fork= plus Linux-only event fd APIs still reject Windows before reaching Linux syscall or Linux libc paths:
-  =fork=, =inotify_*=, =signalfd=, and =sigprocmask= signal
-  =nelisp-os-error= with =ENOTSUP= on Windows.  Windows =timerfd_create= now
+  =fork=, =inotify_*=, and =signalfd= signal =nelisp-os-error= with
+  =ENOTSUP= on Windows.  Windows =sigprocmask= now tracks an emulated signal
+  mask for =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK= without POSIX
+  =sigset_t= allocation or libc FFI.  Windows =timerfd_create= now
   creates a waitable-timer HANDLE-backed fd-kind entry, =timerfd_settime= /
   =timerfd_set_relative_ms= arm relative timers through =SetWaitableTimer=,
   =timerfd_gettime= derives tracked remaining time from =GetTickCount64=,
@@ -378,8 +380,9 @@
   and filesystem AF_UNIX
   =getsockname= / =getpeername= wrappers now dispatch socket-kind Windows fds
   through =ws2_32!getsockname= / =getpeername= and reuse the existing family
-  decoders.  =nelisp-os-sigprocmask= now rejects Windows before allocating a
-  POSIX =sigset_t= or calling =libc!pthread_sigmask=.  Windows timerfd
+  decoders.  =nelisp-os-sigprocmask= now avoids POSIX =sigset_t= allocation
+  and =libc!pthread_sigmask= by maintaining a Windows-local emulated mask.
+  Windows timerfd
   compatibility now uses waitable timers for relative one-shot / interval
   timers and keeps absolute =TFD_TIMER_ABSTIME= explicitly unsupported.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
@@ -481,8 +484,9 @@
   allocation helpers or libc FFI.  Stage 33 coverage verifies Windows
   IPv4 =getsockname=, IPv6 =getpeername=, and AF_UNIX =getsockname= dispatch
   through Winsock, length-buffer setup, family decoder calls, and cleanup.
-  Stage 34 coverage verifies =nelisp-os-sigprocmask= rejects Windows before
-  POSIX =sigset_t= allocation, libc FFI, or raw syscall entry.
+  Stage 34 coverage verifies the former =nelisp-os-sigprocmask= Windows guard
+  before POSIX =sigset_t= allocation, libc FFI, or raw syscall entry; Stage
+  126 supersedes this with emulated mask tracking.
   Stage 35 coverage verifies the former =nelisp-os-timerfd-set-relative-ms=
   Windows guard before delegating into timerfd allocation or libc/syscall
   paths; Stage 124 supersedes this with waitable timer-backed compatibility.
@@ -687,6 +691,9 @@
   Stage 125 coverage verifies Windows timerfd duplicates preserve timerfd
   kind/status flags and share timer state across =dup2=, stdout =dup2=, and
   =F_DUPFD=, including reads from duplicated timer fds.
+  Stage 126 coverage verifies Windows =sigprocmask= tracks an emulated mask
+  across =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK=, returns the previous
+  mask, rejects invalid arguments, and avoids syscall/libc/allocation paths.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1146,6 +1153,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows timerfd dup progress 2026-06-03*: timerfd duplicates now preserve
   fd-kind/status flag tracking and share timer state across =dup2=, standard
   fd targets, and =F_DUPFD=.
+  *Windows sigprocmask compatibility progress 2026-06-03*: Windows
+  =sigprocmask= now tracks an emulated mask for =SIG_BLOCK= /
+  =SIG_UNBLOCK= / =SIG_SETMASK= without invoking POSIX signal-mask FFI.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1438,7 +1448,8 @@ largest uncertainty (B1 + B2) first.
    listener on success, and cleans up already-created fds on setup failure.
    *Windows sigprocmask guard SHIPPED 2026-06-02*: =nelisp-os-sigprocmask=
    now rejects Windows before POSIX =sigset_t= allocation or
-   =libc!pthread_sigmask=.
+   =libc!pthread_sigmask=.  Superseded 2026-06-03 by emulated Windows mask
+   tracking.
    *Windows timerfd helper guard SHIPPED 2026-06-02*:
    =nelisp-os-timerfd-set-relative-ms= now rejects Windows directly before
    delegating into Linux timerfd paths.  Superseded 2026-06-03 by waitable
@@ -1606,6 +1617,9 @@ largest uncertainty (B1 + B2) first.
    *Windows timerfd dup compatibility SHIPPED 2026-06-03*: timerfd =dup2=,
    stdout-target =dup2=, and =F_DUPFD= preserve timerfd kind/status flags and
    share timer state with the source descriptor.
+   *Windows sigprocmask compatibility SHIPPED 2026-06-03*: =sigprocmask=
+   now maintains an emulated Windows signal mask and returns previous masks
+   for =SIG_BLOCK= / =SIG_UNBLOCK= / =SIG_SETMASK= without POSIX FFI.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the

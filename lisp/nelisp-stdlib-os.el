@@ -109,6 +109,7 @@
 ;; Stage 123 adds payload-only Windows sendmsg/recvmsg compatibility.
 ;; Stage 124 adds Windows waitable-timer backed timerfd compatibility.
 ;; Stage 125 verifies Windows timerfd kind/state preservation across dup.
+;; Stage 126 adds an emulated Windows sigprocmask mask tracker.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -128,8 +129,9 @@
 ;; AF_UNIX abstract namespace / fd-passing / peercred helpers reject Windows
 ;; before libc allocation.  Stage 33 maps getsockname / getpeername wrappers to
 ;; Winsock.  Stage 34 makes `sigprocmask' reject Windows before POSIX
-;; signal-mask allocation or libc calls.  Stage 35 gives the timerfd relative
-;; helper the same early Windows guard.  Stage 38 maps int-valued socket option
+;; signal-mask allocation or libc calls; Stage 126 supersedes it with an
+;; emulated Windows mask.  Stage 35 gives the timerfd relative
+;; helper an early Windows guard.  Stage 38 maps int-valued socket option
 ;; reads to Winsock `getsockopt'.  Stage 39 adds TCP_NODELAY translation to the
 ;; int-valued socket option helpers.  Stage 40 maps file-backed Windows `mmap'
 ;; to CreateFileMappingW / MapViewOfFile.  Stage 46 keeps Windows socket fd
@@ -421,6 +423,9 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 
 (defvar nelisp-os--windows-timerfd-table nil
   "Alist mapping Windows timerfd-compatible fds to state vectors.")
+
+(defvar nelisp-os--windows-signal-mask nil
+  "Emulated Windows signal mask used by `nelisp-os-sigprocmask'.")
 
 (defvar nelisp-os--windows-winsock-started-p nil
   "Non-nil after this process successfully calls WSAStartup.")
@@ -4036,12 +4041,45 @@ no events are ready (only on FD opened `SFD-NONBLOCK')."
                 (nreverse events))))
         (nelisp-os--free buf)))))
 
+(defun nelisp-os--windows-normalize-signal-mask (mask)
+  "Return MASK as a duplicate-free ascending list of positive signal numbers."
+  (let ((out nil))
+    (dolist (sig mask)
+      (unless (and (integerp sig) (> sig 0))
+        (signal 'nelisp-os-error (list 22))) ; EINVAL
+      (unless (memq sig out)
+        (push sig out)))
+    (sort out #'<)))
+
+(defun nelisp-os--windows-sigprocmask (how mask)
+  "Windows compatibility implementation for `nelisp-os-sigprocmask'."
+  (unless (memq how (list nelisp-os-SIG-BLOCK
+                         nelisp-os-SIG-UNBLOCK
+                         nelisp-os-SIG-SETMASK))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((old nelisp-os--windows-signal-mask)
+        (normalized (nelisp-os--windows-normalize-signal-mask mask)))
+    (setq nelisp-os--windows-signal-mask
+          (cond
+           ((= how nelisp-os-SIG-BLOCK)
+            (nelisp-os--windows-normalize-signal-mask
+             (append normalized nelisp-os--windows-signal-mask)))
+           ((= how nelisp-os-SIG-UNBLOCK)
+            (let ((current nil))
+              (dolist (sig nelisp-os--windows-signal-mask)
+                (unless (memq sig normalized)
+                  (push sig current)))
+              (nreverse current)))
+           (t
+            normalized)))
+    old))
+
 (defun nelisp-os-sigprocmask (how mask)
   "POSIX pthread_sigmask(3) — apply MASK with HOW (= `SIG-BLOCK' /
 `SIG-UNBLOCK' / `SIG-SETMASK').  Returns the previous mask as a
 list of signal numbers."
   (if (nelisp-os--windows-p)
-      (nelisp-os--windows-unsupported)
+      (nelisp-os--windows-sigprocmask how mask)
     (let ((new-buf (nelisp-os--alloc nelisp-os--sigset-len))
           (old-buf (nelisp-os--alloc nelisp-os--sigset-len)))
       (unwind-protect
