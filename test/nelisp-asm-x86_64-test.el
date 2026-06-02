@@ -232,6 +232,21 @@
                  (nelisp-asm-x86_64-test--ub
                   #x48 #x8B #x84 #x24 #x00 #x01 #x00 #x00))))
 
+(ert-deftest nelisp-asm-x86_64-mov-rsp-disp8-rax ()
+  ;; `mov [rsp+32], rax' -> REX.W, 89, ModR/M=44, SIB=24, disp8=20.
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-x86_64-mov-mem-rsp-disp-reg b 32 'rax)))
+                 (nelisp-asm-x86_64-test--ub #x48 #x89 #x44 #x24 #x20))))
+
+(ert-deftest nelisp-asm-x86_64-mov-rsp-disp32-r10 ()
+  ;; `mov [rsp+256], r10' -> REX.WR, 89, ModR/M=94, SIB=24, disp32=0x100.
+  (should (equal (nelisp-asm-x86_64-test--bytes
+                  (lambda (b)
+                    (nelisp-asm-x86_64-mov-mem-rsp-disp-reg b 256 'r10)))
+                 (nelisp-asm-x86_64-test--ub
+                  #x4C #x89 #x94 #x24 #x00 #x01 #x00 #x00))))
+
 ;; ---- ADD / SUB / CMP ----
 
 (ert-deftest nelisp-asm-x86_64-add-rax-rcx ()

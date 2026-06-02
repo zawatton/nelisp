@@ -2317,15 +2317,48 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-rejects-stack-gp-args ()
-  "Win64 extern-call rejects GP args beyond RCX/RDX/R8/R9 before bad emit."
+(ert-deftest nelisp-phase47-compiler/win64-extern-call-stack-gp-arg ()
+  "Win64 extern-call places the fifth GP arg above the shadow space."
   (let ((path (make-temp-file "nelisp-win64-extern-call-stack-" nil ".obj")))
     (unwind-protect
-        (should-error
-         (nelisp-phase47-compile-to-object
-          '(defun probe () (extern-call ext5 1 2 3 4 5))
-          path :arch 'x86_64 :format 'coff)
-         :type 'nelisp-phase47-compiler-error)
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () (extern-call ext5 1 2 3 4 5))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp, 48; mov rax,5; mov [rsp+32],rax;
+                     ;; call rel32; add rsp,48
+                     (unibyte-string #x48 #x81 #xec #x30 #x00 #x00 #x00
+                                     #x48 #xc7 #xc0 #x05 #x00 #x00 #x00
+                                     #x48 #x89 #x44 #x24 #x20
+                                     #xe8 #x00 #x00 #x00 #x00
+                                     #x48 #x81 #xc4 #x30 #x00 #x00 #x00)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-extern-call-nontrivial-stack-gp-arg ()
+  "Win64 extern-call can copy a computed fifth GP arg into the outgoing area."
+  (let ((path (make-temp-file "nelisp-win64-extern-call-stack-computed-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () (extern-call ext5 1 2 3 4 (extern-call ext_arg)))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp, 40; mov r10,[rsp+40]; mov [rsp+32],r10;
+                     ;; call rel32; add rsp,40
+                     (unibyte-string #x48 #x81 #xec #x28 #x00 #x00 #x00
+                                     #x4c #x8b #x54 #x24 #x28
+                                     #x4c #x89 #x54 #x24 #x20
+                                     #xe8 #x00 #x00 #x00 #x00
+                                     #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
 (provide 'nelisp-phase47-compiler-test)

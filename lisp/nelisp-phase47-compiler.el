@@ -491,8 +491,8 @@ a `:cls' (= `gp' or `f64') tag and a `:varargs-p' flag for emit
 to inspect when fixing register placement + the SysV AMD64 AL
 register before the call instruction.  f64 args are validated
 against the xmm register budget (= 8).  GP args may exceed the
-six-register budget on x86_64 SysV, where the emitter can place
-trivial seventh-and-later args on the call stack; other ABIs still
+register budget on x86_64 SysV / Win64, where the emitter can place
+later args on the ABI-specific outgoing call stack; other ABIs still
 raise `:extern-call-too-many-gp-args'.
 
 Per-class budget is total across the fixed + varargs sets — SysV
@@ -565,7 +565,7 @@ already distinguishes `extern-call' (i64 return) from
       (when (and (> (length gp-args)
                     (length (nelisp-phase47-compiler--current-arg-regs)))
                  (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                           (eq nelisp-phase47-compiler--abi 'sysv))))
+                           (memq nelisp-phase47-compiler--abi '(sysv win64)))))
         (signal 'nelisp-phase47-compiler-error
                 (list :extern-call-too-many-gp-args name
                       (length gp-args))))
@@ -11428,6 +11428,8 @@ same branch and emit the same byte count."
          (varargs-p (nelisp-phase47-compiler--ir-get node :varargs-p))
          (f64-count (or (nelisp-phase47-compiler--ir-get node :f64-count) 0))
          (arg-count (length args))
+         (win64-p (eq nelisp-phase47-compiler--abi 'win64))
+         (sysv-p (eq nelisp-phase47-compiler--abi 'sysv))
          ;; Per-class register pools, sliced to the number of args
          ;; of that class.  Iteration order matches source order:
          ;; the Nth gp arg → Nth GP reg, the Nth f64 arg → Nth xmm
@@ -11445,8 +11447,8 @@ same branch and emit the same byte count."
                               0 (length f64-args)))
          ;; Map each arg back to its target register so the reverse-
          ;; pop loop knows where to deposit the popped value.  GP args
-         ;; beyond the register budget become `(:stack N)' SysV stack
-         ;; targets; those are emitted separately after register args
+         ;; beyond the register budget become `(:stack N)' outgoing
+         ;; stack targets; those are emitted per ABI after register args
          ;; are in place.
          (gp-cursor 0)
          (f64-cursor 0)
@@ -11524,7 +11526,7 @@ same branch and emit the same byte count."
          (call-needs-align needs-align))
     (when (and stack-args
                (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                         (eq nelisp-phase47-compiler--abi 'sysv))))
+                         (or sysv-p win64-p))))
       (signal 'nelisp-phase47-compiler-error
               (list :extern-call-stack-gp-args-unsupported name
                     nelisp-phase47-compiler--arch
@@ -11546,8 +11548,7 @@ same branch and emit the same byte count."
             (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
               (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
             (nelisp-asm-x86_64-push buf 'rax))
-          (cl-loop for a in args
-                   for target in arg-targets
+          (cl-loop for target in arg-targets
                    for idx from 0
                    unless (and (consp target) (eq (car target) :stack))
                    do
@@ -11560,20 +11561,21 @@ same branch and emit the same byte count."
                             buf target 'rax))
                        (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
                         buf target disp))))
-          (when call-needs-align
-            (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
-          (let ((pushed-stack 0))
-            (dolist (entry (reverse stack-indexed))
-              (let* ((idx (nth 0 entry))
-                     (source-disp (* 8 (- (1- arg-count) idx)))
-                     (align-disp (if call-needs-align 8 0))
-                     (disp (+ source-disp
-                              align-disp
-                              (* 8 pushed-stack))))
-                (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
-                 buf 'r10 disp)
-                (nelisp-asm-x86_64-push buf 'r10)
-                (setq pushed-stack (1+ pushed-stack))))))
+          (when sysv-p
+            (when call-needs-align
+              (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+            (let ((pushed-stack 0))
+              (dolist (entry (reverse stack-indexed))
+                (let* ((idx (nth 0 entry))
+                       (source-disp (* 8 (- (1- arg-count) idx)))
+                       (align-disp (if call-needs-align 8 0))
+                       (disp (+ source-disp
+                                align-disp
+                                (* 8 pushed-stack))))
+                  (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                   buf 'r10 disp)
+                  (nelisp-asm-x86_64-push buf 'r10)
+                  (setq pushed-stack (1+ pushed-stack)))))))
       (dolist (a stack-args)
         (unless (nelisp-phase47-compiler--call-arg-trivial-p a)
           (signal 'nelisp-phase47-compiler-error
@@ -11606,13 +11608,14 @@ same branch and emit the same byte count."
       ;; Insert the 8-byte alignment correction before stack args are
       ;; pushed.  That keeps the first stack arg at the ABI-visible top
       ;; of the outgoing argument area while any pad lives below it.
-      (when call-needs-align
+      (when (and sysv-p call-needs-align)
         (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
       ;; SysV outgoing stack args are pushed right-to-left so the first
       ;; stack arg ends up closest to the return address in the callee.
-      (dolist (a (reverse stack-args))
-        (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
-        (nelisp-asm-x86_64-push buf 'rax)))
+      (when sysv-p
+        (dolist (a (reverse stack-args))
+          (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
+          (nelisp-asm-x86_64-push buf 'rax))))
     ;; Materialise AL = f64-count for variadic calls (SysV ABI §3.5.7).
     ;; `mov eax, imm32' is a 5-byte sequence (= REX-less; the imm32
     ;; zero-extends into RAX, clearing the upper 32 bits which is
@@ -11621,27 +11624,53 @@ same branch and emit the same byte count."
     ;; GP target and after stack args have been copied out.
     (when varargs-p
       (nelisp-asm-x86_64-mov-imm32 buf 'rax f64-count))
-    ;; Win64: allocate 32-byte shadow space before CALL.
-    ;; SysV: shadow = 0, this is a no-op.
-    (let ((shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
-      (when (> shadow 0)
-        (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow))
+    ;; Win64: allocate the complete outgoing area before CALL:
+    ;; 32-byte shadow space, any GP stack args at [rsp+32...],
+    ;; plus an optional high-address alignment pad.  SysV has already
+    ;; pushed outgoing stack args above and uses no shadow space.
+    (let* ((shadow (if win64-p 32 0))
+           (win64-stack-bytes (if win64-p (* 8 (length stack-args)) 0))
+           (win64-pad (if (and win64-p call-needs-align) 8 0))
+           (win64-outgoing (+ shadow win64-stack-bytes win64-pad)))
+      (when (> win64-outgoing 0)
+        (nelisp-asm-x86_64-sub-imm32 buf 'rsp win64-outgoing))
+      (when (and win64-p stack-args)
+        (if general-stack-spill-p
+            (dolist (entry stack-indexed)
+              (let* ((idx (nth 0 entry))
+                     (target (nth 2 entry))
+                     (stack-slot (cadr target))
+                     (source-disp (+ win64-outgoing
+                                     (* 8 (- (1- arg-count) idx))))
+                     (dest-disp (+ shadow (* 8 stack-slot))))
+                (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                 buf 'r10 source-disp)
+                (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
+                 buf dest-disp 'r10)))
+          (dolist (entry stack-indexed)
+            (let* ((a (nth 1 entry))
+                   (target (nth 2 entry))
+                   (stack-slot (cadr target))
+                   (dest-disp (+ shadow (* 8 stack-slot))))
+              (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
+              (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
+               buf dest-disp 'rax)))))
       ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
       ;; + record a PLT32 reloc at the placeholder offset.  Section is
       ;; `text' (default) since we are inside an `.text' defun body.
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
       (nelisp-asm-x86_64-reloc-plt32-here
        buf (symbol-name name) -4 'text)
-      ;; Reclaim shadow space.
-      (when (> shadow 0)
-        (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow)))
+      ;; Reclaim the Win64 outgoing area.
+      (when (> win64-outgoing 0)
+        (nelisp-asm-x86_64-add-imm32 buf 'rsp win64-outgoing)))
     ;; Reclaim outgoing SysV stack arguments, preserving rax/xmm0.
-    (when stack-args
+    (when (and sysv-p stack-args)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (length stack-args))))
     ;; Undo the alignment correction.  rax (= i64 return) or xmm0
     ;; (= f64 return) is preserved because `add rsp, 8' doesn't
     ;; touch any GPR / xmm.
-    (when call-needs-align
+    (when (and sysv-p call-needs-align)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))
     (when (> call-temp-save-count 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 call-temp-save-count)))

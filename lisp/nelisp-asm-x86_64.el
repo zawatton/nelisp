@@ -303,8 +303,9 @@ to avoid the plist materialization cost."
 ;;
 ;; Win64 integer argument remapping and caller shadow-space helpers are
 ;; operational.  Remaining Win64-specific expansion is kept explicit at
-;; the compiler call sites, especially GP stack arguments and XMM callee
-;; saves, so unsupported shapes fail before emitting silently wrong COFF.
+;; the compiler call sites, especially XMM callee saves and broader
+;; prologue coverage, so unsupported shapes fail before emitting silently
+;; wrong COFF.
 
 (defconst nelisp-asm-x86_64--abi-sysv-arg-regs
   '(rdi rsi rdx rcx r8 r9)
@@ -991,6 +992,40 @@ minimal RSP-base load needed by Doc 129 call-spill assembly."
      (t
       (nelisp-asm-x86_64--append-bytes
        buf (concat (unibyte-string rex #x8B
+                                   (nelisp-asm-x86_64--modrm 2 reg 4)
+                                   sib)
+                   (nelisp-asm-x86_64--imm32-bytes disp)))))))
+
+(defun nelisp-asm-x86_64-mov-mem-rsp-disp-reg (buf disp src)
+  "Emit `MOV QWORD PTR [RSP + DISP], SRC' using SIB addressing.
+DISP=0 uses no displacement, signed disp8 uses the compact form, and
+larger signed/unsigned i32 displacements use disp32.  This is the
+RSP-base store companion to `nelisp-asm-x86_64-mov-reg-mem-rsp-disp'."
+  (unless (and (integerp disp) (<= 0 disp (1- (ash 1 32))))
+    (signal 'nelisp-asm-x86_64-error
+            (list :rsp-disp-out-of-range disp)))
+  (let* ((rex (nelisp-asm-x86_64--rex
+               1
+               (nelisp-asm-x86_64--reg-ext src)
+               0
+               0))
+         (reg (nelisp-asm-x86_64--reg-low3 src))
+         (sib #x24))
+    (cond
+     ((zerop disp)
+      (nelisp-asm-x86_64--append-bytes
+       buf (unibyte-string rex #x89
+                           (nelisp-asm-x86_64--modrm 0 reg 4)
+                           sib)))
+     ((<= -128 disp 127)
+      (nelisp-asm-x86_64--append-bytes
+       buf (unibyte-string rex #x89
+                           (nelisp-asm-x86_64--modrm 1 reg 4)
+                           sib
+                           (logand disp #xFF))))
+     (t
+      (nelisp-asm-x86_64--append-bytes
+       buf (concat (unibyte-string rex #x89
                                    (nelisp-asm-x86_64--modrm 2 reg 4)
                                    sib)
                    (nelisp-asm-x86_64--imm32-bytes disp)))))))
