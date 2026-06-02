@@ -42,8 +42,9 @@
 ;; arena-allocation dependency can be tested without a linker.  Stage 3 writes
 ;; the allocated arena base/cursor/end triple into a PE .data section.  Stage 4
 ;; adds a HANDLE-based stdout smoke via `GetStdHandle' + `WriteFile'.  This is
-;; intentionally small; production standalone wiring still needs the wider OS
-;; import surface.
+;; intentionally small.  Stage 42 adds `GetCommandLineW' so CRT-free startup
+;; can prove command-line discovery through the PE import table.  Production
+;; standalone wiring still needs the wider OS import surface.
 
 ;;; Code:
 
@@ -1128,6 +1129,41 @@ success / 1 on failure."
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--minimal-getcommandline-text
+    (text-rva exit-iat-rva get-command-line-iat-rva)
+  "Return x86_64 entry bytes that call GetCommandLineW, then ExitProcess.
+The generated code exits 42 when GetCommandLineW returns a non-NULL pointer
+and exits 1 otherwise."
+  (let* ((get-call-off 4)
+         (success-exit-call-off 20)
+         (fail-off 26)
+         (fail-exit-call-off 31)
+         (call-len 6)
+         (get-disp (- get-command-line-iat-rva
+                      (+ text-rva get-call-off call-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (jz-disp (- fail-off (+ 13 2)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: reserve the 32-byte shadow space and keep call alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf get-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x85 #xc0)) ; test rax,rax
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 (logand jz-disp #xff)))
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--build-minimal-exitprocess-exe (exit-code)
   "Build a minimal PE32+ console EXE that exits with EXIT-CODE."
   (let* ((num-sections 2)
@@ -1497,6 +1533,85 @@ success / 1 on failure."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-getcommandline-exitprocess-exe ()
+  "Build a PE32+ EXE that proves GetCommandLineW import wiring."
+  (let* ((num-sections 2)
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (idata-rva (* 2 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-kernel32-idata
+           idata-rva (list "ExitProcess" "GetCommandLineW")))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-getcommandline-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "GetCommandLineW" iat-map))))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (idata-raw-ptr (+ text-raw-ptr text-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data idata-raw-size
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
   "Emit a PE32+/COFF relocatable object file to FILE-PATH.
@@ -1532,16 +1647,17 @@ so raw binary content is preserved.  Returns FILE-PATH."
 (defun nelisp-pe-write-exe-binary (file-path spec)
   "Emit a PE32+ console executable to FILE-PATH.
 SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
-`virtualalloc-arena-exit-42', `writefile-stdout-exit-42', or a plist with
-:exit-code.  The output imports KERNEL32.dll functions through a real PE
-import directory and writes raw bytes with `no-conversion'.  Returns
-FILE-PATH."
+`virtualalloc-arena-exit-42', `writefile-stdout-exit-42',
+`getcommandline-exit-42', or a plist with :exit-code.  The output imports
+KERNEL32.dll functions through a real PE import directory and writes raw bytes
+with `no-conversion'.  Returns FILE-PATH."
   (let* ((exit-code
           (cond
            ((eq spec 'minimal-exit-42) 42)
            ((eq spec 'virtualalloc-exit-42) nil)
            ((eq spec 'virtualalloc-arena-exit-42) nil)
            ((eq spec 'writefile-stdout-exit-42) nil)
+           ((eq spec 'getcommandline-exit-42) nil)
            ((listp spec) (or (plist-get spec :exit-code) 42))
            (t (error "nelisp-pe-write-exe-binary: invalid SPEC %S" spec))))
          (bytes (cond
@@ -1551,6 +1667,8 @@ FILE-PATH."
                   (nelisp-pe--build-virtualalloc-arena-exitprocess-exe))
                  ((eq spec 'writefile-stdout-exit-42)
                   (nelisp-pe--build-writefile-stdout-exitprocess-exe))
+                 ((eq spec 'getcommandline-exit-42)
+                  (nelisp-pe--build-getcommandline-exitprocess-exe))
                  (t
                   (nelisp-pe--build-minimal-exitprocess-exe exit-code))))
          (coding-system-for-write 'no-conversion))

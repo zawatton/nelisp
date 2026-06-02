@@ -60,6 +60,12 @@ $Smokes = @(
         Spec = "writefile-stdout-exit-42"
         ExpectedExit = 42
         ExpectedStdout = "hello from nelisp windows"
+    },
+    @{
+        Name = "getcommandline"
+        Spec = "getcommandline-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
     }
 )
 

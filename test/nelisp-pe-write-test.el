@@ -331,6 +331,63 @@
     (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 52)) #x1008))
     (should (= (aref bytes (+ text-off 56)) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-getcommandline-import-directory ()
+  "The GetCommandLineW smoke EXE imports ExitProcess and GetCommandLineW."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'getcommandline-exit-42))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt-off (+ pe-off 4 20))
+         (iat-dir-off (+ opt-off 112 (* 12 8)))
+         (idata-raw #x400)
+         (idata-rva #x2000)
+         (ilt-rva (nelisp-pe-write-test--read-le32 bytes idata-raw))
+         (name-rva (nelisp-pe-write-test--read-le32 bytes (+ idata-raw 12)))
+         (first-thunk-rva (nelisp-pe-write-test--read-le32 bytes (+ idata-raw 16)))
+         (iat-rva (nelisp-pe-write-test--read-le32 bytes iat-dir-off))
+         (iat-size (nelisp-pe-write-test--read-le32 bytes (+ iat-dir-off 4)))
+         (exit-hint-rva (nelisp-pe-write-test--read-le64
+                         bytes (+ idata-raw (- iat-rva idata-rva))))
+         (cmdline-hint-rva
+          (nelisp-pe-write-test--read-le64
+           bytes (+ idata-raw (- (+ iat-rva 8) idata-rva))))
+         (dll-name-off (+ idata-raw (- name-rva idata-rva)))
+         (exit-hint-off (+ idata-raw (- exit-hint-rva idata-rva)))
+         (cmdline-hint-off (+ idata-raw (- cmdline-hint-rva idata-rva))))
+    (should (= ilt-rva #x2028))
+    (should (= first-thunk-rva #x2040))
+    (should (= iat-rva #x2040))
+    (should (= iat-size 24))
+    (should (string-prefix-p "KERNEL32.dll"
+                             (substring bytes dll-name-off (+ dll-name-off 13))))
+    (should (string-prefix-p "ExitProcess"
+                             (substring bytes (+ exit-hint-off 2)
+                                        (+ exit-hint-off 14))))
+    (should (string-prefix-p "GetCommandLineW"
+                             (substring bytes (+ cmdline-hint-off 2)
+                                        (+ cmdline-hint-off 17))))))
+
+(ert-deftest nelisp-pe-write-exe-binary-getcommandline-entry-code ()
+  "The GetCommandLineW smoke EXE exits 42 when the command line pointer exists."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe 'getcommandline-exit-42))
+         (text-off #x200))
+    (should (equal (substring bytes text-off (+ text-off 4))
+                   (unibyte-string #x48 #x83 #xec #x28)))
+    (should (equal (substring bytes (+ text-off 4) (+ text-off 6))
+                   (unibyte-string #xff #x15)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 6)) #x103e))
+    (should (equal (substring bytes (+ text-off 10) (+ text-off 15))
+                   (unibyte-string #x48 #x85 #xc0 #x74 #x0b)))
+    (should (= (aref bytes (+ text-off 15)) #xb9))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 16)) 42))
+    (should (equal (substring bytes (+ text-off 20) (+ text-off 22))
+                   (unibyte-string #xff #x15)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 22)) #x1026))
+    (should (= (aref bytes (+ text-off 26)) #xb9))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 27)) 1))
+    (should (equal (substring bytes (+ text-off 31) (+ text-off 33))
+                   (unibyte-string #xff #x15)))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ text-off 33)) #x101b))
+    (should (= (aref bytes (+ text-off 37)) #xcc))))
+
 (ert-deftest nelisp-pe-write-exe-binary-virtualalloc-arena-section-table ()
   "The arena smoke EXE adds a .data section for base/cursor/end metadata."
   (let* ((bytes (nelisp-pe-write-test--emit-exe 'virtualalloc-arena-exit-42))

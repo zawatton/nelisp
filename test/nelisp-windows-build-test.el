@@ -53,12 +53,13 @@
     (buffer-substring-no-properties (point-min) (point-max))))
 
 (ert-deftest nelisp-windows-build-smoke-specs-are-stable ()
-  "The Windows real-machine smoke manifest covers the expected four PE specs."
+  "The Windows real-machine smoke manifest covers the expected PE specs."
   (should (equal nelisp-windows-build-smoke-specs
                  '((exit42 . minimal-exit-42)
                    (virtualalloc . virtualalloc-exit-42)
                    (arena . virtualalloc-arena-exit-42)
-                   (writefile-stdout . writefile-stdout-exit-42))))
+                   (writefile-stdout . writefile-stdout-exit-42)
+                   (getcommandline . getcommandline-exit-42))))
   (dolist (entry nelisp-windows-build-smoke-specs)
     (should (eq (nelisp-windows-build--normalize-spec (car entry))
                 (cdr entry)))
@@ -87,7 +88,8 @@
                          '("nelisp-windows-exit42.exe"
                            "nelisp-windows-virtualalloc.exe"
                            "nelisp-windows-arena.exe"
-                           "nelisp-windows-writefile-stdout.exe")))
+                           "nelisp-windows-writefile-stdout.exe"
+                           "nelisp-windows-getcommandline.exe")))
           (dolist (path paths)
             (let ((bytes (nelisp-windows-build-test--read-file-bytes path)))
               (should (> (length bytes) #x400))

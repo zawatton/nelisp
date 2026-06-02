@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-41-WINDOWS-MMAP-RELEASE-FAILURE-SAFETY
+#+STATUS: STAGE-42-WINDOWS-GETCOMMANDLINE-SMOKE
 
 * Status
 
-- *State*: STAGE 41 Windows mmap release failure safety
+- *State*: STAGE 42 Windows GetCommandLineW smoke
   2026-06-02.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -17,7 +17,9 @@
   block before exiting 42.  The fourth EXE spec, =writefile-stdout-exit-42=,
   imports =GetStdHandle= and =WriteFile=, obtains =STD_OUTPUT_HANDLE=, writes
   a short message from =.rdata= to stdout using HANDLE I/O, and exits 42 on
-  success / 1 on failure.  =lisp/nelisp-stdlib-os.el= now also routes Windows
+  success / 1 on failure.  The fifth EXE spec, =getcommandline-exit-42=,
+  imports =GetCommandLineW=, exits 42 when the CRT-free command-line pointer
+  is non-NULL, and exits 1 otherwise.  =lisp/nelisp-stdlib-os.el= now also routes Windows
   stdout/stderr =nelisp-os-write= calls through =kernel32!GetStdHandle= +
   =kernel32!WriteFile= and stdin =nelisp-os-read= calls through
   =kernel32!ReadFile= instead of POSIX integer-fd =libc.read/write=.  Regular
@@ -123,9 +125,9 @@
   =nelisp-os-timerfd-set-relative-ms= helper now also rejects Windows directly
   instead of relying on the lower-level timerfd wrapper to fail first.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
-  smoke manifest and emits all four PE32+ smoke EXEs on the host side before
+  smoke manifest and emits all five PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
-  accepts =-Smoke exit42|virtualalloc|arena|writefile-stdout|all= so the
+  accepts =-Smoke exit42|virtualalloc|arena|writefile-stdout|getcommandline|all= so the
   remaining native Windows checks can be re-run individually after a partial
   pass.  =nelisp-os-getsockopt-int= now routes socket-kind Windows fds through
   =ws2_32!getsockopt= for the same supported =SOL_SOCKET= int options as
@@ -141,7 +143,11 @@
   also parse the generated =writefile-stdout-exit-42= EXE as PE32+ x86-64
   with four sections, list =KERNEL32.dll!ExitProcess= / =GetStdHandle= /
   =WriteFile=, and decode the expected Win64 register setup including the
-  fifth =WriteFile= stack argument.  =test/nelisp-stdlib-os-test.el= mocks the
+  fifth =WriteFile= stack argument.  Stage 42 host coverage parses
+  =getcommandline-exit-42= as a PE32+ x86-64 EXE importing
+  =KERNEL32.dll!ExitProcess= / =GetCommandLineW=, and verifies the entry bytes
+  call =GetCommandLineW= with Win64 shadow space before exiting 42 or 1 based
+  on the returned pointer.  =test/nelisp-stdlib-os-test.el= mocks the
   runtime FFI/memory boundary and verifies the Windows std fd selector mapping,
   stdin/stdout/stderr =GetStdHandle= selectors, =ReadFile= / =WriteFile=
   argument shape, buffer cleanup, catchable =nelisp-os-error=, non-Windows
@@ -210,8 +216,9 @@
   Stage 35 coverage verifies =nelisp-os-timerfd-set-relative-ms= rejects
   Windows before delegating into timerfd allocation or libc/syscall paths.
   Stage 36 coverage verifies =scripts/nelisp-windows-build.el= keeps the
-  =exit42= / =virtualalloc= / =arena= / =writefile-stdout= manifest stable and
-  can emit all four PE32+ smoke EXEs from that manifest.  Stage 37 coverage
+  =exit42= / =virtualalloc= / =arena= / =writefile-stdout= / =getcommandline=
+  manifest stable and can emit all five PE32+ smoke EXEs from that manifest.
+  Stage 37 coverage
   checks that the PowerShell real-machine script exposes a =-Smoke= selector
   with the same smoke names.
   Stage 38 coverage verifies Windows =getsockopt-int= dispatch through
@@ -224,20 +231,24 @@
   tracking, and =munmap= dispatch through =UnmapViewOfFile= for file views.
   Stage 41 coverage verifies failed Windows =VirtualFree= /
   =UnmapViewOfFile= calls keep mapping-kind tracking intact.
+  Stage 42 coverage verifies the CRT-free command-line PE smoke imports
+  =GetCommandLineW= and checks the returned pointer before exiting.
 - *Execution status*: =minimal-exit-42= has now been executed on native Windows:
   =emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f
   nelisp-windows-build-exit42= wrote =target/nelisp-windows-exit42.exe=, running
   that EXE returned =$LASTEXITCODE = 42=.  Remaining real Windows checks:
   =virtualalloc-exit-42=, =virtualalloc-arena-exit-42=, and
-  =writefile-stdout-exit-42=.  They can now be built individually on native
+  =writefile-stdout-exit-42=, and =getcommandline-exit-42=.  They can now be built individually on native
   Windows with =nelisp-windows-build-virtualalloc=,
   =nelisp-windows-build-arena=, and
-  =nelisp-windows-build-writefile-stdout=, producing
+  =nelisp-windows-build-writefile-stdout=, and
+  =nelisp-windows-build-getcommandline=, producing
   =target/nelisp-windows-virtualalloc.exe=,
   =target/nelisp-windows-arena.exe=, and
-  =target/nelisp-windows-writefile-stdout.exe=.  This Linux host does not have
+  =target/nelisp-windows-writefile-stdout.exe=, and
+  =target/nelisp-windows-getcommandline.exe=.  This Linux host does not have
   =wine=.  The real-machine smoke entry is =tools/windows-selfhost-test.ps1=;
-  it builds and runs the four PE32+ smoke EXEs on native Windows, checking exit
+  it builds and runs the five PE32+ smoke EXEs on native Windows, checking exit
   code 42 and the =WriteFile= stdout payload.  Use =-EmitOnly= to validate EXE
   generation without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
@@ -289,7 +300,9 @@
   Stage 38 routes int-valued =getsockopt= through Winsock on Windows.
   Stage 39 adds TCP_NODELAY translation to the int-valued socket option helpers.
   Stage 40 adds file-backed =MAP_PRIVATE= =mmap= through Windows file mapping
-  APIs.
+  APIs.  Stage 41 preserves Windows mmap bookkeeping on native release
+  failure.  Stage 42 adds a =GetCommandLineW= PE smoke for CRT-free startup
+  argument discovery.
   These stages do not yet replace the Linux standalone allocator, complete real
   Windows execution of every smoke, implement fork/clone/CreateThread
   parallelism, provide full child-process tracking semantics, support all
@@ -497,7 +510,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   IPv4, IPv6, and filesystem AF_UNIX socket-kind fds.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
-  =scripts/nelisp-windows-build.el= exposes the four real-machine smoke specs
+  =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
   and can emit each PE32+ image from that manifest.
   *Windows smoke selector progress 2026-06-03*:
   =tools/windows-selfhost-test.ps1= now supports =-Smoke NAME= for selected
@@ -513,6 +526,9 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   HANDLE-backed =MAP_PRIVATE= file views with =CreateFileMappingW= /
   =MapViewOfFile=, and =nelisp-os-munmap= releases those views with
   =UnmapViewOfFile=.
+  *Windows GetCommandLineW smoke progress 2026-06-03*:
+  =getcommandline-exit-42= imports =GetCommandLineW= and exits 42 when the
+  CRT-free command-line pointer is present.
   *Next*: execute the remaining PE smokes on real Windows, then broaden the
   remaining OS APIs.
 
@@ -621,7 +637,7 @@ largest uncertainty (B1 + B2) first.
    delegating into Linux timerfd paths.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
-   manifest and host-side emission of all four PE32+ smoke EXEs.
+   manifest and host-side emission of all five PE32+ smoke EXEs.
    *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
    be re-run when checking =virtualalloc=, =arena=, or =writefile-stdout=.
@@ -637,17 +653,23 @@ largest uncertainty (B1 + B2) first.
    =munmap= now drops mapping-kind bookkeeping only after native release
    success, keeping retry state intact after =VirtualFree= /
    =UnmapViewOfFile= failure.
-4. Execute the remaining Stage 2-4 smokes on real Windows / Wine, then wire
+   *Windows GetCommandLineW smoke SHIPPED 2026-06-03*: =getcommandline-exit-42=
+   imports =GetCommandLineW= and proves the CRT-free command-line pointer path
+   through a native PE32+ smoke.
+4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
+   Wine, then wire
    win64 ABI emit through all ops (B5).  *Real-machine script READY
    2026-06-02*:
    =tools/windows-selfhost-test.ps1= drives =scripts/nelisp-windows-build.el=
    to emit =minimal-exit-42=, =virtualalloc-exit-42=,
-   =virtualalloc-arena-exit-42=, and =writefile-stdout-exit-42=, then validates
-   process exit status and stdout on Windows.  Individual real-machine build
+   =virtualalloc-arena-exit-42=, =writefile-stdout-exit-42=, and
+   =getcommandline-exit-42=, then validates process exit status and stdout on
+   Windows.  Individual real-machine build
    entries are also READY 2026-06-02:
    =nelisp-windows-build-exit42=, =nelisp-windows-build-virtualalloc=,
    =nelisp-windows-build-arena=, and
-   =nelisp-windows-build-writefile-stdout=.
+   =nelisp-windows-build-writefile-stdout=.  =nelisp-windows-build-getcommandline=
+   is READY 2026-06-03.
 5. Replace parallel/MT with =CreateProcess= / =CreateThread= (B4) — last,
    since it is a feature extension, not a boot blocker.
    *Minimal process API SHIPPED 2026-06-02*: =nelisp-os-exit= and
@@ -675,7 +697,7 @@ writer (import directory).  That single coupling (B1+B2) is the whole game.
 - =lisp/nelisp-elf-write.el= — ET_EXEC / PT_LOAD emit.
 - =lisp/nelisp-mach-o-write.el= — MH_EXECUTE emit (M1 exit=42).
 - =lisp/nelisp-pe-write.el= — PE32+ console EXE smoke specs for ExitProcess,
-  VirtualAlloc, arena metadata, and WriteFile stdout.
+  VirtualAlloc, arena metadata, WriteFile stdout, and GetCommandLineW.
 - =lisp/nelisp-asm-x86_64.el= — =('sysv | 'win64)= ABI slot.
 - =lisp/nelisp-phase47-compiler.el:149= — =--abi= dynvar (sysv/win64).
 - =lisp/nelisp-stdlib-os.el= — Linux/Darwin POSIX-like path plus Windows
