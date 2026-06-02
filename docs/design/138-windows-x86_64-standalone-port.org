@@ -1,0 +1,189 @@
+#+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
+#+DATE: 2026-06-02
+#+STATUS: ANALYSIS
+
+* Status
+
+- *State*: ANALYSIS / PROPOSAL 2026-06-02.  Read-only investigation, no
+  implementation yet.  Authored while the macOS M1 (arm64 / Mach-O) native
+  port proceeds in a *separate* session — Windows is the next target after
+  macOS lands.
+- *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
+  the =x86_64-pc-windows-msvc= target).
+- *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
+  =win64= ABI scaffolding), Doc 114 (x86_64-linux-pivot).
+- *Scope*: Identify the bottlenecks that block running the *standalone
+  self-host binary* natively on Windows x86_64, rank them, and give a
+  de-risk-first staged plan modeled on the macOS port.
+- *Non-goal*: Implementation.  This doc is the bottleneck map only.
+
+* TL;DR
+
+The real Windows bottleneck collapses to *two* coupled items — the *OS
+interface* and the *executable-format writer* — plus a thread/process model
+rewrite.  Unlike the macOS port, the *instruction set is free* (the existing
+x86_64 backend is reused) and *code signing is not required*.  The single
+Windows-specific weight that macOS never had: *raw syscalls are
+structurally impossible on Windows*, so every OS call must route through a
+PE import table (=ntdll.dll= / =kernel32.dll=), which is inseparable from a
+real PE32+ *executable* writer.
+
+* Baseline — what exists today (confirmed from source + worklog)
+
+** Two distinct meanings of "Windows support"
+
+1. *AOT cross-emit* — emitting Windows PE/COFF *objects* from the elisp
+   compiler.  =README.org= advertises "5 targets (incl. windows/x86_64)";
+   this is object/code emission capability, *not* standalone-run-on-Windows.
+2. *Standalone self-host binary running natively ON Windows* (zero-Emacs) —
+   the actual goal.  Currently *Linux x86_64 ONLY*.
+
+This doc is about (2).  Confirmed via the 2026-06-02 macOS feasibility
+worklog: the standalone runtime is Linux x86_64 specific (raw syscall
+=mmap=9= / =clone=56= / =fork=57= / =exit_group=231= + ELF + x86_64).
+
+** Existing Windows scaffolding (good news)
+
+- =lisp/nelisp-asm-x86_64.el= — ABI slot models =('sysv | 'win64)=
+  (Doc 101 §101.B Wave 4 framework).  win64 = RCX/RDX/R8/R9 + shadow space.
+- =lisp/nelisp-phase47-compiler.el:149= — =nelisp-phase47-compiler--abi=
+  dynvar selects =sysv= vs =win64= emit paths (Doc 101 §101.B Wave 5).
+- =lisp/nelisp-pe-write.el= — PE32+/COFF *relocatable object* writer
+  (Doc 101 §101.A).  Accepts =link.exe= / =lld-link=.  *Not* wired into the
+  production STDLIB load (freestanding).
+- =docs/design/132-...org= — platform model already declares
+  =x86_64-pc-windows-msvc | x86_64 | windows | PE/COFF | Microsoft x64=
+  (:80), shadow space (:188), PE/COFF (:234), custom PE entry /
+  mainCRTStartup (:278), and "Windows uses OS API imports, not POSIX
+  syscall assumptions" (:307-310).
+
+** Reference points from the sibling ports
+
+| Axis            | Linux (done)            | macOS arm64 (in progress)        | Windows x86_64 (this doc)         |
+|-----------------+-------------------------+----------------------------------+-----------------------------------|
+| ISA backend     | x86_64 (complete)       | aarch64 (7/82 op — 75 new!)      | x86_64 *reused* — ABI diff only   |
+| Exec format     | ELF ET_EXEC (done)      | Mach-O MH_EXECUTE (exit=42 ✓)    | PE32+ EXE — *missing* (.obj only) |
+| OS interface    | raw syscall + Linux nr  | dyld + libSystem (no-dyld fails) | *PE imports* ntdll/kernel32       |
+| Mem alloc       | mmap(9)                 | mmap + __PAGEZERO rebase         | VirtualAlloc                      |
+| Parallel/MT     | fork(2) / clone(2)      | (Darwin equivalents)             | CreateProcess / CreateThread      |
+| Code signing    | none                    | ad-hoc codesign *required*       | *not required* (Authenticode opt) |
+
+* Tier 1 — structural, architecture-incompatible (new implementation)
+
+** B1. No stable raw-syscall ABI on Windows  [BIGGEST BLOCKER]
+
+- Today the standalone binary talks to the OS via the raw =syscall=
+  instruction + Linux numbers.  =lisp/nelisp-syscall-table.el= is
+  build.rs-auto-generated *Linux values* (=read=0 write=1 mmap=9 fork=57
+  exit_group=231=).
+- Windows does *not* publish stable syscall numbers; they are ntdll-internal
+  and change per build.  Raw syscall is structurally unusable.
+- *Required*: Windows standalone must call =ntdll.dll= / =kernel32.dll=
+  functions through a *PE import table*.  This is the "OS layer moves from
+  raw syscall to DLL import" design fork.  Doc 132 already states it (:307-310).
+- macOS hit a softer version (no-dyld impossible → dyld + libSystem
+  required); Windows is stricter — the raw path is fully closed.
+- *Coupling*: inseparable from B2 (the import directory lives in the PE EXE).
+
+** B2. No PE32+ *executable* writer (only a .obj writer exists)
+
+- ELF: =nelisp-elf-write.el= emits *ET_EXEC* (PT_LOAD + entry).  Mach-O:
+  =nelisp-mach-o-write.el= emits *MH_EXECUTE* (proven exit=42 on M1).
+- PE: =nelisp-pe-write.el= emits *relocatable object (.obj) only* and is
+  explicitly "accepted by link.exe / lld-link" + "not yet wired into
+  production STDLIB load".  External-linker dependent → violates the
+  zero-toolchain standalone policy.
+- *Required*: a PE32+ *EXE* writer — DOS stub + PE signature + Optional
+  Header (ImageBase / AddressOfEntryPoint / Subsystem) + section table +
+  *import directory (IAT / ILT)* + base relocations.  The import directory
+  is the core that realizes B1.
+
+** B3. Memory: mmap → VirtualAlloc (incl. arena base)
+
+- The standalone arena is a raw =mmap= SeqCst-atomic bump allocator
+  (=README.org:164=).
+- Windows has no mmap → =kernel32!VirtualAlloc= / =VirtualProtect= via
+  import.  Preferred-base / ASLR constraints differ (analogous to the macOS
+  =__PAGEZERO=4GB= rebase issue).
+
+** B4. Parallel build's fork(2)/clone(2) absent on Windows
+
+- Stage 4 N-way parallel compile uses *fork(2)* workers; the MT eval (Step 2
+  Option A) uses *clone(2)* + SeqCst atomics (=README.org:145-146=).  These
+  are the most recent flagship features.
+- Windows has no fork → full replacement with =CreateProcess= (process
+  parallelism) / =CreateThread= (threads).  The "parallel build" and "true
+  multi-threaded eval" features are rewritten wholesale for Windows.
+
+* Tier 2 — scaffolded but incomplete (Doc 101 / Doc 132 already started)
+
+** B5. Win64 calling convention (Microsoft x64 ABI) emit completion
+
+- *Scaffold present*: =nelisp-asm-x86_64.el= ABI slot =('sysv | 'win64)=;
+  =nelisp-phase47-compiler--abi= dynvar.
+- Remaining diff: integer args *RCX/RDX/R8/R9* (SysV: RDI/RSI/RDX/RCX/R8/R9),
+  *32-byte shadow space*, different callee-saved set, xmm save rules.
+- *Why Windows is easier than macOS here*: same x86_64 ISA → backend
+  instructions are reused.  macOS arm64 needed *75 new ops* (7/82 implemented);
+  Windows only needs the win64 ABI emit wired through every call
+  site / prologue.
+
+** B6. PE entry / CRT startup
+
+- =nelisp-crt0.el= / =nelisp-crt0-arm64.el= assume ELF =_start=.  Doc 132
+  §"mainCRTStartup / custom PE entry on Windows" (:278).
+- *Required*: own PE entry point (=AddressOfEntryPoint=), Subsystem=console,
+  freestanding argv via =GetCommandLineW= (no CRT).
+
+** B7. OS stdlib Windows branch
+
+- =lisp/nelisp-stdlib-os.el= unifies open/read/write/close via libc-call
+  (Path B = Darwin/Windows), but its layout constants are "64-bit Linux
+  glibc/musl hardcoded" (:1275).
+- Windows differs: *HANDLE model (fd is not an integer)*, =CreateFileW= /
+  =ReadFile= / =WriteFile=, path separators, CRLF.
+
+* Tier 3 — relatively easy / non-blockers (good news)
+
+- *No code signing*: macOS required ad-hoc codesign (CodeDirectory +
+  per-page SHA-256); Windows runs unsigned (Authenticode optional,
+  SmartScreen warning only).  Clearly easier than macOS.
+- *ISA reuse*: the x86_64 backend is already proven on Linux (see B5).
+- *Platform model designed*: Doc 132 already defines the Windows target
+  descriptor, PE/COFF, Microsoft x64, shadow space.
+
+* Recommended de-risk order (modeled on the macOS port)
+
+macOS succeeded by de-risk-first: prove a minimal =exit(42)= on real
+hardware, then mass-produce backend ops.  Windows should likewise kill the
+largest uncertainty (B1 + B2) first.
+
+1. *Minimal =exit(42)= PE32+ EXE in pure elisp* → import table resolving
+   only =kernel32!ExitProcess= → run on real Windows, check exit code.
+   De-risks B1 + B2 in one shot (the crux of all uncertainty).
+2. =VirtualAlloc= import → arena allocation (B3).
+3. Wire win64 ABI emit through all ops (B5).
+4. Replace parallel/MT with =CreateProcess= / =CreateThread= (B4) — last,
+   since it is a feature extension, not a boot blocker.
+
+* One-line summary
+
+macOS was a triple burden — new ISA (arm64, 75 ops) + exec format + signing.
+Windows trades that for *free ISA + no signing*, but carries one weight
+macOS never had: *raw syscalls are impossible*, so all OS calls must route
+through PE imports — which is inseparable from building a real PE32+ EXE
+writer (import directory).  That single coupling (B1+B2) is the whole game.
+
+* Evidence index (files / lines confirmed 2026-06-02)
+
+- =lisp/nelisp-syscall-table.el= — Linux nr table, build.rs-generated.
+- =lisp/nelisp-elf-write.el= — ET_EXEC / PT_LOAD emit.
+- =lisp/nelisp-mach-o-write.el= — MH_EXECUTE emit (M1 exit=42).
+- =lisp/nelisp-pe-write.el= — COFF .obj only, external-linker dependent.
+- =lisp/nelisp-asm-x86_64.el= — =('sysv | 'win64)= ABI slot.
+- =lisp/nelisp-phase47-compiler.el:149= — =--abi= dynvar (sysv/win64).
+- =lisp/nelisp-stdlib-os.el:1275= — Linux glibc/musl hardcoded layout.
+- =lisp/nelisp-crt0.el= / =nelisp-crt0-arm64.el= — ELF _start entry.
+- =docs/design/132-...org:80,188,234,278,307= — Windows target model.
+- =README.org:25,145-146,164= — 5-target claim, fork/clone tests, mmap arena.
+- Worklog 2026-06-02 (macOS feasibility) — standalone = Linux x86_64 only.

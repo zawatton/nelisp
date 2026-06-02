@@ -1,0 +1,260 @@
+#+TITLE: Doc 139 — Rust removal roadmap (inventory → staged teardown)
+#+DATE: 2026-06-02
+#+STATUS: ROADMAP
+
+* Status
+
+- *State*: ROADMAP / PROPOSAL 2026-06-02.  Read-only inventory + staged plan.
+  No code deleted yet.  Authored after confirming the standalone binary is
+  built by Emacs + elisp with *zero Rust* (Makefile: "No cargo / rustc /
+  target binary involved").
+- *Driving question* (user, 2026-06-02): "Emacs でビルドできるなら Rust は
+  不要では?" — *Yes, for building.* This doc maps everything that still
+  ties the repo to Rust and sequences the teardown.
+- *Relationship to existing docs*: This is the *top-level sequencing +
+  tooling/verify/release/CI decoupling* layer.  The eval-core / kernel
+  cutover itself is already designed in Docs 130–135 (nelisp-sys vehicle)
+  and the granular substrate docs 102/114/115/117/123/124/125/126/127/128.
+  Doc 139 ties them together and adds the parts those docs do *not* cover:
+  the test-oracle, release-artifact, ABI-gate, and CI ties.
+- *Gate*: main 統合 / 物理削除はこの roadmap の Stage 合意後に着手 (user 指示)。
+
+* TL;DR
+
+The repo no longer needs Rust *to build* — `make standalone-reader` =
+`emacs --batch -l nelisp-standalone-build`, zero cargo.  The ~18.7K Rust LOC
+that remains is *not a build dependency*; it survives as four things:
+
+1. *Test oracle* — the Rust reader/evaluator is the cross-impl reference the
+   81 probe tests + 13 ERT files compare elisp output against.  (Most of
+   build-tool's LOC is this test harness, NOT a production interpreter.)
+2. *Release artifact* — current tarballs bundle the Rust `nelisp` binary +
+   `libnelisp_runtime.a`/cdylib.
+3. *ABI drift gate* — `make sexp-abi-check` diffs elisp layout constants
+   against Rust `const` values.
+4. *Substrate kernel* — `nelisp-runtime` (~1K LOC syscall stub + seed
+   loader) + optional syscall/sqlite extension crates.
+
+Removing Rust = *decoupling these four consumers* (mostly S/M effort) +
+*finishing the in-flight nelisp-sys substrate cutover* (Docs 124/125/126/134/
+135, the real remaining elisp work).  The eval-core Rust is already ~75%
+demolished; this roadmap finishes the job and tears down the crates.
+
+* Current Rust footprint (measured at 1c0561d6 = main-bound HEAD)
+
+101 `.rs` files, ~18,725 LOC, 9 crates (9 `Cargo.toml`).  By crate:
+
+| crate                      | ~LOC  | what it really is                                              | role                         |
+|----------------------------+-------+---------------------------------------------------------------+------------------------------|
+| =build-tool/=              | ~14.7K| 4 minified src files (~1.5K equiv) + *81 test files (14.2K)* + build.rs (508) | legacy interpreter + *test oracle* |
+| =nelisp-runtime/=          | 1,008 | OS syscall stub + `nelisp_seed_load_and_run` (442 LOC loader)  | substrate kernel             |
+| =nelisp-syscall-process/=  | 824   | fork/execve/waitpid/pipe2/dup2/kill/select/rlimit             | substrate (Optional, *orphaned*) |
+| =nelisp-syscall-fileio/=   | 562   | opendir/readdir/mkdir/unlink/rename/access/stat_ex            | substrate (Optional, partial)|
+| =nelisp-sqlite-rs/=        | 539   | SQLite FFI (nl_sqlite_open/exec/query/...)                    | substrate (Optional)         |
+| =nelisp-syscall-filenotify/= | 215 | inotify init/add/rm/read                                       | substrate (Optional, partial)|
+| =nelisp-runtime-cli/=      | 138   | `nelisp-exec-bytes` dev tool (no exported symbols)            | dev tool                     |
+| =nelisp-syscall-types/=    | 19    | `#[repr(C)] NelispStat` shared ABI struct                     | ABI type only                |
+
+*Key reframing*: build-tool's bulk LOC is the *cross-impl test harness*
+(81 `tests/*.rs` probe files = 14.2K lines), not a production interpreter.
+The actual Rust *src* (`src/eval/mod.rs` evaluator/reader/builtins) is
+heavily minified (~1.5K equiv) and is itself a *dispatch shell that delegates
+to the compiled-elisp `.o` objects* via `elisp_cc_spike` FFI.  The Rust
+reader/eval/special-forms/builtins/nlboxes subsystems are *SUPERSEDED* — they
+exist only as the Rust side of the test oracle.
+
+* What is genuinely LOAD-BEARING (the hard core)
+
+Per the build-tool audit, only ~10 `#[no_mangle]` symbols in
+`build-tool/src/eval/mod.rs` are still link-time dependencies of the
+compiled-elisp `.o` objects (the `.el` sources emit PLT32 `extern-call`
+relocs against them):
+
+| symbol                          | called from                                      |
+|---------------------------------+--------------------------------------------------|
+| `nl_bi_f64_trunc_div_bits`      | `lisp/nelisp-cc-bi-f64-trunc.el`                 |
+| `nl_tty_saved_flag_ptr`         | `lisp/nelisp-cc-bi-tty-raw.el`                   |
+| `nl_tty_fd_ptr`                 | `lisp/nelisp-cc-bi-tty-raw.el`                   |
+| `nl_tty_saved_termios_ptr`      | `lisp/nelisp-cc-bi-tty-raw.el`                   |
+| `nl_tty_raw_install_hooks`      | `lisp/nelisp-cc-bi-tty-raw.el`                   |
+| `nl_make_symbol_counter_ptr`    | `lisp/nelisp-cc-jit-make-symbol.el`              |
+| `nl_is_char_alphanumeric`       | `lisp/nelisp-cc-jit-split-by-non-alnum.el`       |
+| `nl_quit_flag_ptr`              | `lisp/nelisp-cc-evalport-combiner-entry.el`      |
+| `nl_i64_append_to_mut_str`      | `lisp/nelisp-cc-sexp-fmt.el`                      |
+| `nl_f64_bits_append_to_mut_str` | `lisp/nelisp-cc-sexp-fmt.el`                      |
+
+~6–8 KB of Rust.  These (tty raw-mode statics, atomic counters, a float
+helper, two MutStr formatters) need pure-elisp Phase-47 replacements before
+build-tool can be deleted.  They are exactly the targets of Doc 117
+(builtins sweep) / Doc 123-124 (rc + MutStr/float) / Doc 134 (re-provision).
+
+NOTE (to verify in Stage 0): `make standalone-reader` builds zero-Rust today,
+so the *reader* object subset does not need these symbols; the question is
+which symbols the *full evaluator* standalone (`standalone-eval`) link needs,
+and whether elisp stubs already cover them.
+
+* Decoupling map — the four consumer categories
+
+** (1) BUILD — already Rust-free ✅
+- `make standalone-reader` / `standalone-eval` / `standalone-selfhost-*` /
+  `standalone-parallel-compile-test`: all `emacs --batch -l
+  nelisp-standalone-build`, *no cargo*.  `scripts/compile-elisp-objects.el`
+  (the Phase-47 object compiler) is pure elisp and is the *output* of
+  decoupling, not a blocker.  Nothing to do.
+
+** (2) VERIFY / CI — effort S
+| consumer                              | uses Rust as     | decouple by                                                    |
+|---------------------------------------+------------------+----------------------------------------------------------------|
+| `scripts/verify-quick.sh`             | oracle+test-run  | swap `target/release/nelisp` → `target/nelisp-standalone-reader`; `cargo test` → ERT |
+| `scripts/verify-full.sh`              | oracle+test-run  | same; `verify-full-correctness.el` is pure elisp, runs unchanged |
+| `scripts/verify-cross-platform.sh/.ps1` | oracle (soft)  | already `Test-Path`/skip guarded — delete the cargo clause      |
+| `.github/workflows/ci.yml` smoke job  | —                | already zero-Rust (runs `make standalone-*`)                    |
+| `.github/workflows/ci.yml` cargo job  | test-runner      | delete the job or convert to `make compile` lint-only           |
+
+** (3) RELEASE / ARTIFACTS — effort M
+| consumer                          | uses Rust as | decouple by                                                       |
+|-----------------------------------+--------------+-------------------------------------------------------------------|
+| `tools/build-standalone-tarball.sh` | artifact   | *hard-exits* if `target/release/nelisp` absent → substitute the standalone binary; drop cdylib/staticlib block |
+| `tools/build-release-artifact.sh` | artifact     | drop `make runtime-staticlib stage-d-v2-bin`; ship standalone binary |
+| `tools/build-bundled-tarball.sh`  | artifact     | drop `make runtime` Rust-artifact section (lines ~97–135)         |
+| `.github/workflows/release-qualification.yml` | artifact | redirect to standalone tarball; soak runs against standalone binary |
+
+(`anvil-runtime` is already a pure-shell wrapper post-Phase-B, so only the
+`nelisp` binary substitution matters in the tarballs.)
+
+** (4) ABI GATE — effort L (hard blocker)
+- `make sexp-abi-check` → `cargo build ... --bin sexp-abi-emit` →
+  `./target/release/sexp-abi-emit` prints Rust `ABI_EXPORT` layout constants,
+  diffed against `lisp/nelisp-sexp-layout.el` `nelisp-sexp--abi-export`.
+- Decouple by *promoting the elisp constants to canonical*: make the ERT
+  suite `nelisp-sys-sexp-abi-test.el` (already runs under Emacs alone, no
+  Rust) the *sole* gate, OR emit the same `NAME=VALUE` table from a tiny C
+  `offsetof`/`sizeof` probe.  Requires a deliberate "elisp is ground truth"
+  decision.
+
+* Substrate crates — coverage vs gaps (Stage 4/5 work)
+
+| crate / function group                | elisp Phase-47 covered?                         | action                              |
+|---------------------------------------+-------------------------------------------------+-------------------------------------|
+| read/write/open/close/stat/mmap/exit  | YES — `nelisp-os--libc-call` in stdlib-os.el    | delete after callers re-pointed     |
+| fork/execve/wait/kill/dup2/pipe (process crate) | YES — `nelisp--syscall` JIT `syscall-direct` *bypasses* the Rust symbols entirely (already orphaned) | delete crate                        |
+| mmap_jit / clear_icache / jit_write_protect | NO — JIT primitives, no libc-call yet      | Phase-47 elisp (Doc 117/133 Ph6)    |
+| `nelisp_seed_load_and_run` (442 LOC image loader) | NO — Doc 126 retires via pure-elisp boot | finish Doc 126                      |
+| opendir/readdir/closedir/rename/access (fileio) | PARTIAL — stat/mkdir done; dir-enum not | Phase-47 elisp or drop if unused    |
+| inotify (filenotify)                  | PARTIAL — parallel libc-call path exists        | finish or drop (Optional)           |
+| SQLite FFI (sqlite-rs)                | NO — no elisp SQLite path; `packages/nelisp-sqlite/` routes through it | keep Optional, or port FFI, or drop |
+
+* Relationship to the existing (already-decided) kernel cutover
+
+The eval-core / substrate Rust removal is *already designed* — Doc 139 does
+not redesign it, it sequences around it:
+
+| doc | status | role |
+|-----+--------+------|
+| 130/131/132 | IMPLEMENTED 2026-05-28 | `packages/nelisp-sys/` = the typed-elisp→native-`.o` *vehicle* for all Rust replacement (zero new Rust per step) |
+| 133 | PROPOSAL | master 8-phase kernel-replacement (Sexp ADT → refcount/alloc → MutStr/float → eval kernel → dispatch → OS/JIT → FFI collapse → crate teardown) |
+| 134 | PROPOSAL | tactical: re-provision the 23 helper symbols left `U` after fa8932eb's premature delete |
+| 135 | DRAFT (spike validated 2026-05-30) | port eval driver (`nelisp_eval_call`/`nl_eval_inner_cons`/`apply_*`) to nelisp-sys via `EvalCtx` Sexp record; dissolves 14 env-group symbols |
+| 102/115/117/123/124/125/126/127/128 | mixed DRAFT/SHIPPED | granular substrate migrations (env, lexframe shims, builtins sweep, rc/clone-drop, alloc grammar, image retire, lib.rs shrink, bin stub) |
+| 137 | ACTIVE | self-host interpreter track (zero-Emacs) — parallel, blocked on GC/reader/TCO |
+
+*Current frontier per those docs*: Doc 134 + 135 (eval-driver cutover).
+Commit `0e7db686` reports "cargo build LINK-GREEN — all ~20 deleted eval
+symbols resolved by elisp/nelisp-sys eval-port", so the link was re-greened
+inside the 110 commits; Stage 0 should confirm current `cargo build` state.
+
+* Strategic fork (decide in Stage 0)
+
+Two ways to reach zero-Rust; both end identically, differ in path:
+
+- *Path A — finish nelisp-sys cutover (Docs 133/134/135)*: keep a green
+  `cargo build` with *shrinking* Rust at every step until the crate is empty,
+  then delete.  Preserves the cross-impl test oracle longest.  Slower.
+- *Path B — aggressive decouple-then-delete*: stop maintaining the Rust
+  build; decouple verify/release/CI/ABI onto the standalone+ERT path
+  (Stages 1–3), Phase-47-replace only the ~10 load-bearing symbols + the
+  substrate gaps actually used (Stage 4), then delete all crates (Stage 6).
+  Faster, aligned with "Emacs builds it"; cost = lose the Rust oracle, so
+  ERT/probe coverage must be re-homed onto the elisp impl first.
+
+Recommendation: *Path B for tooling (Stages 1–3 now, cheap, high-leverage),
+Path A's mechanism (nelisp-sys) for the load-bearing substrate (Stage 4),
+since that elisp work is already in flight.*
+
+* Staged teardown plan
+
+- *Stage 0 — Baseline & decision* (S):
+  - Confirm current `cargo build --bin nelisp` state at HEAD (green/red).
+  - Verify which load-bearing symbols the `standalone-eval` (full evaluator)
+    link actually needs vs already-elisp-stubbed.
+  - Pick Path A vs B per area; record in this doc.
+  - *Gate*: decision recorded → proceed.
+
+- *Stage 1 — Decouple VERIFY/CI* (S):
+  - verify-*.sh: `target/release/nelisp` → `target/nelisp-standalone-reader`;
+    `cargo test` → ERT.  Delete/lint-ify the cargo CI job.
+  - *Gate*: green CI with no cargo invocation in verify/smoke.
+
+- *Stage 2 — Decouple RELEASE/ARTIFACTS* (M):
+  - Tarball builders ship the standalone binary; drop Rust runtime
+    cdylib/staticlib/`nelisp` binary.  Redirect release workflow.
+  - *Gate*: a release tarball built + soak-passed with zero Rust artifacts.
+
+- *Stage 3 — Decouple ABI GATE* (L):
+  - Make `nelisp-sexp-layout.el` canonical; `nelisp-sys-sexp-abi-test.el`
+    (ERT) becomes the sole drift gate; retire `sexp-abi-emit.rs`.
+  - *Gate*: `make sexp-abi-check` (or its ERT successor) green without cargo.
+
+- *Stage 4 — Replace load-bearing substrate in elisp* (L, = Docs 117/123/124/
+  125/126/134/135):
+  - Port the ~10 `#[no_mangle]` helpers (tty statics, counters, f64/MutStr)
+    to Phase-47 `.o`.
+  - Port mmap_jit/clear_icache/jit_write_protect + seed loader (Doc 126).
+  - *Gate*: standalone-eval links with no Rust-provided symbols.
+
+- *Stage 5 — Optional extension crates* (M):
+  - `syscall-process`: already orphaned by the JIT `syscall-direct` path →
+    delete.  `fileio`/`filenotify`: finish dir-enum/inotify elisp or drop.
+  - `sqlite-rs`: decide keep-as-Optional vs port FFI vs drop
+    `packages/nelisp-sqlite/`.
+  - *Gate*: each remaining crate has a green elisp path or a documented drop.
+
+- *Stage 6 — Physical crate teardown* (M):
+  - Delete `build-tool/` (incl. `build.rs`, `tests/*.rs` once re-homed to
+    ERT), `nelisp-runtime/`, `nelisp-runtime-cli/`, all `nelisp-syscall-*`,
+    `nelisp-sqlite-rs/`.  Remove the workspace `Cargo.toml`/`Cargo.lock`.
+  - *Gate*: `rg --type rust` returns nothing; full test/verify/release green
+    on the elisp path; README + CLAUDE.md updated.
+
+* Risks / watch-items
+
+- *Losing the cross-impl oracle*: the 81 probe tests are the main correctness
+  net.  Before deleting build-tool's tests, the equivalent assertions must be
+  re-homed as ERT against the elisp impl, else regressions go silent.
+- *Hidden load-bearing symbols*: Stage 0 must enumerate the *full* evaluator
+  link's externals, not just the reader's.
+- *Bootstrap is still Emacs*: zero-Rust ≠ zero-Emacs.  Emacs-less is Doc 137's
+  separate track (self-host interpreter).  This roadmap reaches "zero Rust,
+  Emacs-hosted build"; Emacs-independence is downstream.
+- *Optional features default-ON*: process/fileio/filenotify/sqlite crates are
+  feature-gated but default ON; flipping defaults off is a cheap intermediate
+  step to surface real consumers before deletion.
+- *Rust LOC hard rule*: per user policy, no stage may *add* Rust; every step
+  is delete-Rust / add-elisp (nelisp-sys vehicle guarantees this).
+
+* Evidence index (confirmed 2026-06-02, parallel sub-agent audit)
+
+- Build path Rust-free: `Makefile` standalone section ("No cargo / rustc /
+  target binary involved"); `lisp/nelisp-standalone-build.el` (zero cargo
+  refs).
+- Load-bearing symbols: `build-tool/src/eval/mod.rs` `#[no_mangle]` ↔
+  `lisp/nelisp-cc-bi-tty-raw.el`, `-bi-f64-trunc.el`, `-jit-make-symbol.el`,
+  `-jit-split-by-non-alnum.el`, `-sexp-fmt.el`, `-evalport-combiner-entry.el`.
+- Consumers: `scripts/verify-{quick,full,cross-platform}.{sh,ps1}`,
+  `tools/build-{release-artifact,standalone-tarball,bundled-tarball}.sh`,
+  `.github/workflows/{ci,release-qualification}.yml`, `Makefile sexp-abi-check`.
+- Substrate: `nelisp-runtime/`, `nelisp-syscall-{process,fileio,filenotify,
+  types}/`, `nelisp-sqlite-rs/` vs `lisp/nelisp-stdlib-os.el` +
+  `lisp/nelisp-cc-jit-syscall-call.el` + `lisp/nelisp-syscall-table.el`.
+- Existing roadmap: `docs/design/{102,114,115,117,123,124,125,126,127,128,
+  130,131,132,133,134,135,137}-*.org`.
