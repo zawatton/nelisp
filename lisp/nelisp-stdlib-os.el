@@ -104,6 +104,7 @@
 ;; Stage 118 adds lseek behavior for Windows socket and eventfd fds.
 ;; Stage 119 maps common Winsock errors to Linux/POSIX errno payloads.
 ;; Stage 120 adds Windows pidfd compatibility backed by process HANDLE fds.
+;; Stage 121 adds non-file behavior for Windows process fd compatibility.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -1358,6 +1359,7 @@ thread HANDLE from `PROCESS_INFORMATION' is closed before returning."
 (defconst nelisp-os--eventfd-max-counter (- (ash 1 64) 2))
 (defconst nelisp-os--eventfd-invalid-value (1- (ash 1 64)))
 (defconst nelisp-os--eventfd-stat-mode 384) ; 0o600
+(defconst nelisp-os--pidfd-stat-mode 448) ; 0o700
 
 (defun nelisp-os--u64le-string (value)
   "Return VALUE encoded as an unsigned 64-bit little-endian byte string."
@@ -1446,6 +1448,10 @@ PATH is a string, FLAGS / MODE are integers."
          (eq (nelisp-os--windows-fd-kind fd) 'eventfd))
     (nelisp-os--windows-read-eventfd fd nbytes))
    ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'process))
+    (nelisp-os--windows-processfd-handle fd)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+   ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'socket))
     (nelisp-os--windows-read-socket fd nbytes))
    ((and (nelisp-os--windows-p)
@@ -1480,6 +1486,10 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'eventfd))
     (nelisp-os--windows-write-eventfd fd str))
+   ((and (nelisp-os--windows-p)
+         (eq (nelisp-os--windows-fd-kind fd) 'process))
+    (nelisp-os--windows-processfd-handle fd)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
    ((and (nelisp-os--windows-p)
          (eq (nelisp-os--windows-fd-kind fd) 'socket))
     (nelisp-os--windows-write-socket fd str))
@@ -1756,6 +1766,9 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
    ((eq (nelisp-os--windows-fd-kind fd) 'socket)
     (nelisp-os--windows-socket-for-fd fd)
     (signal 'nelisp-os-error (list 29))) ; ESPIPE
+   ((eq (nelisp-os--windows-fd-kind fd) 'process)
+    (nelisp-os--windows-processfd-handle fd)
+    (signal 'nelisp-os-error (list 29))) ; ESPIPE
    ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
     (nelisp-os--windows-eventfd-cell fd)
     0)
@@ -1886,6 +1899,9 @@ for any common arch's `struct stat'; Linux x86_64 actual = 144).")
    ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
     (nelisp-os--windows-eventfd-cell fd)
     (nelisp-os--windows-stat-list 0 nelisp-os--eventfd-stat-mode))
+   ((eq (nelisp-os--windows-fd-kind fd) 'process)
+    (nelisp-os--windows-processfd-handle fd)
+    (nelisp-os--windows-stat-list 0 nelisp-os--pidfd-stat-mode))
    (t
     (let* ((handle (nelisp-os--windows-handle-for-fd fd))
            (file-type (nelisp-os--libc-call
@@ -3120,10 +3136,26 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
       (setq revents (logior revents nelisp-os-POLLOUT)))
     revents))
 
+(defun nelisp-os--windows-processfd-revents (fd events)
+  "Return synthetic poll revents for Windows process fd FD."
+  (let* ((handle (nelisp-os--windows-processfd-handle fd))
+         (rc (nelisp-os--libc-call
+              "kernel32" "WaitForSingleObject"
+              [:uint32 :pointer :uint32]
+              handle 0)))
+    (cond
+     ((= rc nelisp-os-WIN-WAIT-TIMEOUT) 0)
+     ((= rc nelisp-os-WIN-WAIT-OBJECT-0)
+      (if (/= (logand events nelisp-os-POLLIN) 0)
+          nelisp-os-POLLIN
+        0))
+     (t
+      (nelisp-os--windows-ffi-error-signal)))))
+
 (defun nelisp-os--windows-poll (pfds timeout-ms)
-  "Windows implementation of `nelisp-os-poll' for sockets and eventfd fds."
+  "Windows implementation of `nelisp-os-poll' for sockets and synthetic fds."
   (let ((socket-pfds nil)
-        (eventfd-ready-p nil))
+        (ready-p nil))
     (dolist (entry pfds)
       (let ((fd (car entry)))
         (cond
@@ -3131,11 +3163,14 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
           (push entry socket-pfds))
          ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
           (when (/= (nelisp-os--windows-eventfd-revents fd (cdr entry)) 0)
-            (setq eventfd-ready-p t)))
+            (setq ready-p t)))
+         ((eq (nelisp-os--windows-fd-kind fd) 'process)
+          (when (/= (nelisp-os--windows-processfd-revents fd (cdr entry)) 0)
+            (setq ready-p t)))
          (t
           (signal 'nelisp-os-error (list 9)))))) ; EBADF
     (setq socket-pfds (nreverse socket-pfds))
-    (let* ((socket-timeout (if eventfd-ready-p
+    (let* ((socket-timeout (if ready-p
                                0
                              timeout-ms))
            (socket-results (and socket-pfds
@@ -3148,6 +3183,8 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
            (cond
             ((eq (nelisp-os--windows-fd-kind fd) 'eventfd)
              (cons fd (nelisp-os--windows-eventfd-revents fd events)))
+            ((eq (nelisp-os--windows-fd-kind fd) 'process)
+             (cons fd (nelisp-os--windows-processfd-revents fd events)))
             ((eq (nelisp-os--windows-fd-kind fd) 'socket)
              (cons fd (or (cdr (assq fd socket-results)) 0)))
             (t

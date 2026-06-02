@@ -1184,6 +1184,21 @@
         (should (= (nelisp-os-lseek 3 120 nelisp-os-SEEK-SET) 0))))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-lseek-windows-process-signals-espipe-before-ffi ()
+  "Windows lseek on process-kind fd signals ESPIPE like Linux pidfd."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . process))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (let ((err (should-error (nelisp-os-lseek 3 0 nelisp-os-SEEK-SET)
+                                 :type 'nelisp-os-error)))
+          (should (equal (cdr err) '(29))))))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-fstat-windows-disk-uses-file-information ()
   "Windows fstat on disk HANDLE decodes BY_HANDLE_FILE_INFORMATION."
   (let* ((mtime-sec 1700000000)
@@ -1406,6 +1421,21 @@
              (st (nelisp-os-fstat 3)))
         (should (= (nelisp-os-stat-size st) 0))
         (should (= (nelisp-os-stat-mode st) nelisp-os--eventfd-stat-mode))
+        (should (= (logand (nelisp-os-stat-mode st) nelisp-os-S-IFMT) 0))
+        (should (= (nelisp-os-stat-nlink st) 1))))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-fstat-windows-process-returns-pidfd-stat ()
+  "Windows fstat on process-kind fd returns Linux pidfd-compatible metadata."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . process))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let* ((system-type 'windows-nt)
+             (st (nelisp-os-fstat 3)))
+        (should (= (nelisp-os-stat-size st) 0))
+        (should (= (nelisp-os-stat-mode st) nelisp-os--pidfd-stat-mode))
         (should (= (logand (nelisp-os-stat-mode st) nelisp-os-S-IFMT) 0))
         (should (= (nelisp-os-stat-nlink st) 1))))
     (should-not called)))
@@ -6033,6 +6063,24 @@
     (should (equal read-request (list 3000 4)))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-read-write-windows-process-errors-before-ffi ()
+  "Windows process fd read/write signal EINVAL like Linux pidfd."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . process))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (let ((read-err (should-error (nelisp-os-read 3 1)
+                                      :type 'nelisp-os-error))
+              (write-err (should-error (nelisp-os-write 3 "x")
+                                       :type 'nelisp-os-error)))
+          (should (equal (cdr read-err) '(22)))
+          (should (equal (cdr write-err) '(22))))))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-read-windows-stdin-socket-uses-recv ()
   "Windows stdin with socket kind reads through Winsock recv."
   (let ((calls nil)
@@ -6279,6 +6327,93 @@
     (should (equal (nreverse writes)
                    (list
                     (list 'i64 3000 0 #xbbbb)
+                    (list 'i16 3000 8 nelisp-os-POLLOUT))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-poll-windows-process-uses-waitforsingleobject ()
+  "Windows poll reports process fd readiness from WaitForSingleObject."
+  (let ((calls nil)
+        (wait-results (list nelisp-os-WIN-WAIT-TIMEOUT
+                            nelisp-os-WIN-WAIT-TIMEOUT
+                            nelisp-os-WIN-WAIT-OBJECT-0
+                            nelisp-os-WIN-WAIT-OBJECT-0))
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . process))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForSingleObject")
+                   (pop wait-results))
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
+                       (list (cons 3 0))))
+        (should (equal (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
+                       (list (cons 3 nelisp-os-POLLIN))))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef 0))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef 0))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef 0))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #xabcdef 0)))))))
+
+(ert-deftest nelisp-stdlib-os-poll-windows-process-socket-mix-preserves-order ()
+  "Windows poll combines process readiness with WSAPoll socket results."
+  (let ((calls nil)
+        (freed nil)
+        (writes nil)
+        (nelisp-os--windows-fd-table '((3 . #x1111) (4 . #x2222)))
+        (nelisp-os--windows-fd-kind-table '((3 . process) (4 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val) (push (list 'i64 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-write-i16)
+               (lambda (ptr off val) (push (list 'i16 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-read-i16)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (should (= off 10))
+                 nelisp-os-POLLOUT))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "WaitForSingleObject")
+                   nelisp-os-WIN-WAIT-OBJECT-0)
+                  ((equal fn "WSAPoll") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should
+         (equal (nelisp-os-poll
+                 (list (cons 3 nelisp-os-POLLIN)
+                       (cons 4 nelisp-os-POLLOUT))
+                500)
+               (list (cons 3 nelisp-os-POLLIN)
+                      (cons 4 nelisp-os-POLLOUT))))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #x1111 0))
+                    (list "ws2_32" "WSAPoll"
+                          [:sint32 :pointer :uint32 :sint32]
+                          (list 3000 1 0))
+                    (list "kernel32" "WaitForSingleObject"
+                          [:uint32 :pointer :uint32]
+                          (list #x1111 0)))))
+    (should (equal (nreverse writes)
+                   (list
+                    (list 'i64 3000 0 #x2222)
                     (list 'i16 3000 8 nelisp-os-POLLOUT))))
     (should (equal freed '(3000)))))
 

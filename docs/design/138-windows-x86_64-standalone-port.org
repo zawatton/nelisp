@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-120-WINDOWS-PIDFD-COMPAT
+#+STATUS: STAGE-121-WINDOWS-PROCESSFD-NONFILE
 
 * Status
 
-- *State*: STAGE 120 Windows pidfd compatibility
+- *State*: STAGE 121 Windows process fd non-file compatibility
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -278,8 +278,9 @@
   flag changes.  =nelisp-os-pidfd-open= now has a Windows compatibility branch
   that opens a process HANDLE and returns a synthetic process fd; matching
   =nelisp-os-pidfd-send-signal= uses =TerminateProcess= for =SIGTERM= /
-  =SIGKILL= and validates the fd kind before FFI.  =fork= plus Linux-only
-  event fd APIs still reject Windows before reaching Linux syscall or Linux libc paths:
+  =SIGKILL= and validates the fd kind before FFI.  Synthetic process fds now
+  also avoid regular HANDLE file APIs for =read/write/lseek/fstat/poll=.
+  =fork= plus Linux-only event fd APIs still reject Windows before reaching Linux syscall or Linux libc paths:
   =fork=, =inotify_*=, =signalfd=, =sigprocmask=, and =timerfd_*= signal
   =nelisp-os-error= with =ENOTSUP= on Windows.  =nelisp-os-eventfd= now has a Windows
   compatibility implementation backed by a synthetic fd-kind counter, with
@@ -302,8 +303,11 @@
   to the POSIX errno payloads used by the Linux path, so nonblocking socket
   errors such as =WSAEWOULDBLOCK= surface as =EAGAIN=.  Windows =pidfd_open=
   now returns synthetic process HANDLE fds, and =pidfd_send_signal= terminates
-  only those process-kind fds after argument validation.  The Winsock branch
-  has started:
+  only those process-kind fds after argument validation.  Process-kind fds now
+  stay off regular HANDLE file I/O paths as well: =read/write= signal
+  =EINVAL=, =lseek= signals =ESPIPE=, =fstat= returns Linux pidfd-like
+  zero-size =0700= metadata, and =poll= synthesizes =POLLIN= readiness from
+  =WaitForSingleObject(..., 0)=.  The Winsock branch has started:
   =nelisp-os-socket= now initializes
   Winsock once with =WSAStartup(MAKEWORD(2,2))=, calls =ws2_32!socket= for
   supported =AF_INET= stream/datagram sockets, records the returned socket in
@@ -649,6 +653,11 @@
   a synthetic process fd, tracks =PIDFD_NONBLOCK= through =F_GETFL=, closes the
   HANDLE through the normal fd close path, and validates =pidfd_send_signal=
   fd kind / signal / flags before =TerminateProcess=.
+  Stage 121 coverage verifies Windows process-kind fds do not route through
+  regular HANDLE file APIs: =read/write= return =EINVAL=, =lseek= returns
+  =ESPIPE=, =fstat= returns Linux pidfd-like =0700= metadata, and =poll=
+  derives readiness from =WaitForSingleObject= while preserving mixed
+  process/socket result ordering.
   Stage 42 coverage verifies the CRT-free command-line PE smoke imports
   =GetCommandLineW= and checks the returned pointer before exiting.
   Stage 43 coverage verifies multi-DLL PE imports through =KERNEL32.dll= plus
@@ -1089,6 +1098,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   a Windows process HANDLE into a synthetic process fd, and
   =pidfd_send_signal= validates process fd kind plus signal/flags before
   routing =SIGTERM= / =SIGKILL= through =TerminateProcess=.
+  *Windows process fd non-file progress 2026-06-03*: synthetic process fds
+  now match Linux pidfd non-file behavior for =read/write/lseek/fstat= and
+  expose process completion readiness through =poll= via
+  =WaitForSingleObject(..., 0)=.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1530,6 +1543,9 @@ largest uncertainty (B1 + B2) first.
    *Windows pidfd compatibility SHIPPED 2026-06-03*: =pidfd_open= now returns
    synthetic process HANDLE fds and =pidfd_send_signal= terminates only
    process-kind fds after validating signal and flags.
+   *Windows process fd non-file compatibility SHIPPED 2026-06-03*: synthetic
+   process fds no longer fall through regular file HANDLE paths for
+   =read/write/lseek/fstat/poll=.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
