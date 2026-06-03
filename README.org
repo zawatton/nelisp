@@ -119,7 +119,17 @@ standalone-reader= — that runs with *no Emacs in the loop
 at all*: it loads an =.el= file via =argv[1]=, evaluates it, and exits
 with the low byte of the last form's integer value.  It also exposes
 =repl [--no-prompt]= for line-oriented interactive development against
-one live evaluator environment.  Its OS connection is also written on
+one live evaluator environment, plus short CLI commands:
+
+#+begin_src shell
+target/nelisp --help
+target/nelisp eval '(+ 40 2)'        # prints 42, exits 0
+target/nelisp -e '(vector 1 "a")'    # prints [1 "a"], exits 0
+target/nelisp load /tmp/prog.el      # prints the last value, exits 0
+target/nelisp /tmp/prog.el           # exits with the last integer value
+#+end_src
+
+Its OS connection is also written on
 the Elisp side: opening and reading files, reading stdin, writing
 stdout/stderr, exiting, allocating memory, spawning OS threads, and
 forking compile workers all flow through Elisp-generated native code
@@ -385,6 +395,10 @@ make standalone-reader
 printf '(+ 40 2)\n' >/tmp/prog.el
 target/nelisp /tmp/prog.el
 echo $?                                # => 42
+
+# evaluate or load and print the result
+target/nelisp eval '(concat "hello" " " "world")'
+target/nelisp load /tmp/prog.el
 
 # interactive runtime development
 target/nelisp repl

@@ -864,6 +864,10 @@ argument (reachability + in-arena bounds checks).")
                                         (m5_fmt_loop ms fmt 0 (str-len fmt)
                                                      (nl_cons_cdr_ptr args))
                                         (mut-str-finalize ms out) 0)))
+    ((:lit "nelisp--repr")     . (let* ((ms (alloc-bytes 32 8)))
+                                   (seq (mut-str-make-empty ms 32)
+                                        (m5_prin1 ms (wf_arg_ptr args 0))
+                                        (mut-str-finalize ms out) 0)))
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
     ((:u8 "wrf")  . (seq (nl_bi_write_file args out) 0))
     ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
@@ -1153,6 +1157,71 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
       (if (< v 0)
           (seq (mut-str-push-byte ms 45) (m5_push_uhex ms (- 0 v)))
         (m5_push_uhex ms v)))
+    (defun m5_push_lit_nil (ms)
+      (seq (mut-str-push-byte ms 110) (mut-str-push-byte ms 105)
+           (mut-str-push-byte ms 108) 1))
+    (defun m5_push_lit_t (ms)
+      (seq (mut-str-push-byte ms 116) 1))
+    (defun m5_push_lit_object (ms)
+      (seq (mut-str-push-byte ms 35) (mut-str-push-byte ms 60)
+           (mut-str-push-byte ms 111) (mut-str-push-byte ms 98)
+           (mut-str-push-byte ms 106) (mut-str-push-byte ms 101)
+           (mut-str-push-byte ms 99) (mut-str-push-byte ms 116)
+           (mut-str-push-byte ms 62) 1))
+    (defun m5_prin1_string_byte (ms b)
+      (cond
+       ((= b 34) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 34)))
+       ((= b 92) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 92)))
+       ((= b 10) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 110)))
+       ((= b 13) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 114)))
+       ((= b 9) (seq (mut-str-push-byte ms 92) (mut-str-push-byte ms 116)))
+       (t (mut-str-push-byte ms b))))
+    (defun m5_prin1_string_bytes (ms src_ptr i n)
+      (if (>= i n)
+          1
+        (seq
+         (m5_prin1_string_byte ms (str-byte-at src_ptr i))
+         (m5_prin1_string_bytes ms src_ptr (+ i 1) n))))
+    (defun m5_prin1_string (ms vptr)
+      (seq (mut-str-push-byte ms 34)
+           (m5_prin1_string_bytes ms vptr 0 (str-len vptr))
+           (mut-str-push-byte ms 34)))
+    (defun m5_prin1_list_tail (ms node first)
+      (let* ((tag (ptr-read-u64 node 0)))
+        (if (= tag 7)
+            (seq
+             (if (= first 1) 0 (mut-str-push-byte ms 32))
+             (m5_prin1 ms (nl_cons_car_ptr node))
+             (m5_prin1_list_tail ms (nl_cons_cdr_ptr node) 0))
+          (if (= tag 0)
+              (mut-str-push-byte ms 41)
+            (seq
+             (mut-str-push-byte ms 32) (mut-str-push-byte ms 46)
+             (mut-str-push-byte ms 32)
+             (m5_prin1 ms node)
+             (mut-str-push-byte ms 41))))))
+    (defun m5_prin1_vector_loop (ms vec i n)
+      (if (>= i n)
+          (mut-str-push-byte ms 93)
+        (seq
+         (if (= i 0) 0 (mut-str-push-byte ms 32))
+         (m5_prin1 ms (vector-ref-ptr vec i))
+         (m5_prin1_vector_loop ms vec (+ i 1) n))))
+    (defun m5_prin1 (ms vptr)
+      (let* ((tag (ptr-read-u64 vptr 0)))
+        (cond
+         ((= tag 0) (m5_push_lit_nil ms))
+         ((= tag 1) (m5_push_lit_t ms))
+         ((= tag 2) (m5_push_dec ms (ptr-read-u64 vptr 8)))
+         ((= tag 3) (m5_push_float ms vptr))
+         ((= tag 4) (m5_push_str ms vptr))
+         ((= tag 5) (m5_prin1_string ms vptr))
+         ((= tag 6) (m5_prin1_string ms vptr))
+         ((= tag 7) (seq (mut-str-push-byte ms 40)
+                         (m5_prin1_list_tail ms vptr 1)))
+         ((= tag 8) (seq (mut-str-push-byte ms 91)
+                         (m5_prin1_vector_loop ms vptr 0 (vector-len vptr))))
+         (t (m5_push_lit_object ms)))))
     (defun m5_emit_value (ms vptr)
       (let* ((tag (ptr-read-u64 vptr 0)))
         (if (= tag 2) (m5_push_dec ms (ptr-read-u64 vptr 8))
@@ -2715,6 +2784,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
+    "nelisp--repr"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
@@ -2976,6 +3046,16 @@ reused buffer and >8-byte names install correctly."
                                        "exec-runtime-image")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_repl
                                        "repl")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_eval
+                                       "eval")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_e
+                                       "-e")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_load
+                                       "load")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
+                                       "--help")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_h
+                                       "-h")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_prompt
                                        "--no-prompt")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_print
@@ -2985,16 +3065,25 @@ reused buffer and >8-byte names install correctly."
       "(let ((v (progn\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_runtime_image_eval_suffix
-      "))) (nelisp--write-stdout-bytes (format \"%S\" v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
+      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_runtime_image_success_suffix
       "0\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_cli_eval_prefix
+      "(let ((v (progn\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_cli_eval_suffix
+      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_cli_help_text
+      "Usage: nelisp [--help] [repl [--no-prompt] [--no-print]] [eval|-e EXPR] [load FILE] [FILE]\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_suffix
-      "))) (if (= (ptr-read-u64 268435464 0) 0) (progn (nelisp--write-stdout-bytes (format \"%S\" v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0) 0))\n")
+      "))) (if (= (ptr-read-u64 268435464 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0) 0))\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_no_print_suffix
       "))) 0)\n")
@@ -3013,6 +3102,17 @@ reused buffer and >8-byte names install correctly."
       (if (= (nl_cstr_eq_eval_runtime_image ptr) 1)
           1
         (nl_cstr_eq_exec_runtime_image ptr)))
+    (defun nl_cli_eval_command_p (ptr)
+      (if (= (nl_cstr_eq_eval ptr) 1)
+          1
+        (nl_cstr_eq_dash_e ptr)))
+    (defun nl_cli_help_command_p (ptr)
+      (if (= (nl_cstr_eq_help ptr) 1)
+          1
+        (nl_cstr_eq_dash_h ptr)))
+    (defun nl_cli_write_help (fbuf)
+      (let* ((n (nl_cli_help_text fbuf 0)))
+        (nl_os_write_stdout fbuf n)))
     (defun nl_cstr_copy_into (src dst off)
       (if (= src 0)
           off
@@ -3053,6 +3153,25 @@ reused buffer and >8-byte names install correctly."
          (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
          (setq off (nl_runtime_image_eval_suffix fbuf off))
          (nl_alloc_str fbuf off src))))
+    (defun nl_cli_wrap_source_at (fbuf off src)
+      (seq
+       (ptr-write-u8 fbuf off 10)
+       (setq off (+ off 1))
+       (setq off (nl_cli_eval_suffix fbuf off))
+       (nl_alloc_str fbuf off src)))
+    (defun nl_cli_eval_source (sp fbuf src)
+      (let* ((form_ptr (ptr-read-u64 sp 24))
+             (off (nl_cli_eval_prefix fbuf 0)))
+        (seq
+         (setq off (nl_cstr_copy_into form_ptr fbuf off))
+         (nl_cli_wrap_source_at fbuf off src))))
+    (defun nl_cli_load_source (sp fbuf src)
+      (let* ((path_ptr (ptr-read-u64 sp 24))
+             (off (nl_cli_eval_prefix fbuf 0))
+             (n (nl_os_read_file_cpath
+                 path_ptr (+ fbuf off)
+                 (- ,nelisp-standalone--reader-read-cap off))))
+        (nl_cli_wrap_source_at fbuf (+ off (if (< n 0) 0 n)) src)))
     (defun nl_copy_bytes_into (src dst i n off)
       (if (= i n)
           off
@@ -3231,20 +3350,42 @@ reused buffer and >8-byte names install correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
-        (if (= (nl_cstr_eq_repl path) 1)
-            (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
-                2
+        (cond
+         ((= (nl_cli_help_command_p path) 1)
+          (seq (nl_cli_write_help fbuf) 0))
+         ((= (nl_cli_eval_command_p path) 1)
+          (if (> argc 2)
               (seq
-               (sexp-write-str-lit src ,(with-temp-buffer
-                                          (insert-file-contents
-                                           (expand-file-name "scripts/nelisp-stdlib-prelude.el"
-                                                             nelisp-standalone--repo-root))
-                                          (buffer-string)))
+               (nl_cli_eval_source sp0 fbuf src)
                (nl_eval_source_all src cursor result pool out ctx builtin_sym)
-               (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
                (if (= (ptr-read-u64 268435464 0) 0)
                    0
-                 (- (ptr-read-u64 268435464 0) 1))))
+                 (- (ptr-read-u64 268435464 0) 1)))
+            (seq (nl_cli_write_help fbuf) 2)))
+         ((= (nl_cstr_eq_load path) 1)
+          (if (> argc 2)
+              (seq
+               (nl_cli_load_source sp0 fbuf src)
+               (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+               (if (= (ptr-read-u64 268435464 0) 0)
+                   0
+                 (- (ptr-read-u64 268435464 0) 1)))
+            (seq (nl_cli_write_help fbuf) 2)))
+         ((= (nl_cstr_eq_repl path) 1)
+          (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
+              2
+            (seq
+             (sexp-write-str-lit src ,(with-temp-buffer
+                                        (insert-file-contents
+                                         (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                                                           nelisp-standalone--repo-root))
+                                        (buffer-string)))
+             (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+             (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
+             (if (= (ptr-read-u64 268435464 0) 0)
+                 0
+               (- (ptr-read-u64 268435464 0) 1)))))
+         (t
           (seq
            ;; --- source selection: embedded vs. file (M7 dual mode) ---
            (if (= (nl_cstr_eq_eval_runtime_image path) 1)
@@ -3272,7 +3413,7 @@ reused buffer and >8-byte names install correctly."
            ;; value.  parse_one advances the shared cursor; it returns 1 per form
            ;; and != 1 (e.g. -1 at EOF) when no more forms remain.
            (nl_eval_source_all src cursor result pool out ctx builtin_sym)
-           (ptr-read-u64 out 8)))))))
+           (ptr-read-u64 out 8))))))))
 
 ;; REAL special-form + env machinery (Doc 137 M2/M3 un-trap).  Replaces the
 ;; baked path's trap.o stubs so the binary is a GENUINE general interpreter for
@@ -3870,6 +4011,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
               (nelisp-standalone--reader-large-quoted-alist-mutation-smoke)
               (nelisp-standalone--reader-setcar-setcdr-type-smoke)
               (nelisp-standalone--reader-runtime-image-smoke)
+              (nelisp-standalone--reader-cli-smoke)
               (nelisp-standalone--reader-repl-smoke)
               (message "[standalone-reader] PASS: %S -> exit %d (expected %d)"
                        (nelisp-standalone--reader-src) code expected)
@@ -3881,6 +4023,51 @@ genuine general interpreter for the 11 special forms + installed builtins."
       (message "[standalone-reader] FAIL: %S -> exit %d (expected %d)"
                (nelisp-standalone--reader-src) code expected)
       (kill-emacs 1))))
+
+(defun nelisp-standalone--reader-cli-smoke ()
+  "Assert the short CLI supports help/eval/load and readable printed values."
+  (let ((tmp (make-temp-file "nelisp-reader-cli-" nil ".el"))
+        (help-out nil)
+        (eval-out nil)
+        (dash-e-out nil)
+        (escape-out nil)
+        (load-out nil)
+        (rc nil))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil "--help"))
+            (setq help-out (buffer-string)))
+          (unless (and (= rc 0) (string-match-p "Usage: nelisp" help-out))
+            (error "--help exit=%S stdout=%S" rc help-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "eval" "(vector 1 \"a\" nil t)"))
+            (setq eval-out (buffer-string)))
+          (unless (and (= rc 0) (equal eval-out "[1 \"a\" nil t]\n"))
+            (error "eval exit=%S stdout=%S" rc eval-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "-e" "(quote (1 2 3))"))
+            (setq dash-e-out (buffer-string)))
+          (unless (and (= rc 0) (equal dash-e-out "(1 2 3)\n"))
+            (error "-e exit=%S stdout=%S" rc dash-e-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "eval" "(concat \"\\\"\" \"\\\\\")"))
+            (setq escape-out (buffer-string)))
+          (unless (and (= rc 0) (equal escape-out "\"\\\"\\\\\"\n"))
+            (error "eval escape exit=%S stdout=%S" rc escape-out))
+          (with-temp-file tmp
+            (insert "(list 1 2 3)\n"))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "load" tmp))
+            (setq load-out (buffer-string)))
+          (unless (and (= rc 0) (equal load-out "(1 2 3)\n"))
+            (error "load exit=%S stdout=%S" rc load-out))
+          (message "[standalone-reader] cli smoke PASS"))
+      (ignore-errors (delete-file tmp)))))
 
 (defun nelisp-standalone--reader-hash-table-literal-smoke ()
   "Assert standalone-reader materialises generated reader literals."
@@ -4013,6 +4200,10 @@ guards the slot-pool floor directly without loading the full vendor file."
                 "(nelisp--eval-source-string \"(defun hot () 99)\")\n"
                 "(hot)\n"
                 "(condition-case e (signal 'quit nil) (quit 42))\n"
+                "nil\n"
+                "t\n"
+                "(quote (1 2 3))\n"
+                "(vector 1 \"a\" nil t)\n"
                 "(exit)\n"))
         (repl-rc nil)
         (repl-out nil)
@@ -4028,7 +4219,7 @@ guards the slot-pool floor directly without loading the full vendor file."
                                  "repl" "--no-prompt"))
       (setq repl-out (buffer-string)))
     (unless (and (= repl-rc 0)
-                 (equal repl-out "hot\n1\nhot\n42\nhot\n99\n42\n"))
+                 (equal repl-out "hot\n1\nhot\n42\nhot\n99\n42\nnil\nt\n(1 2 3)\n[1 \"a\" nil t]\n"))
       (error "repl exit=%S stdout=%S" repl-rc repl-out))
     (with-temp-buffer
       (insert "(defun hot () 1)\n")

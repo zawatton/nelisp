@@ -113,7 +113,72 @@ Invoke-ReaderFileSmoke -Path $SpacedFileSmoke -Source "(* 6 7)`n" -Label "file a
 $UnicodeFileSmoke = Join-Path $SmokeDir "unicode-あ.el"
 Invoke-ReaderFileSmoke -Path $UnicodeFileSmoke -Source "(- 50 8)`n" -Label "unicode file arg"
 
-$ReplOutput = @("(+ 40 2)", "(exit)") | & $Exe repl --no-prompt
+function Assert-Output {
+    param(
+        [string]$Label,
+        [string[]]$Output,
+        [int]$Code,
+        [string]$Expected
+    )
+
+    $Text = $Output -join "`n"
+    if ($Code -ne 0) {
+        Write-Host ("[windows-standalone-reader] FAIL: " + $Label +
+                    " exited " + $Code)
+        Write-Host $Text
+        exit 1
+    }
+    if ($Text -ne $Expected) {
+        Write-Host ("[windows-standalone-reader] FAIL: " + $Label +
+                    " output mismatch")
+        Write-Host ("expected: " + $Expected)
+        Write-Host ("actual  : " + $Text)
+        exit 1
+    }
+    Write-Host ("[windows-standalone-reader] PASS: " + $Label)
+}
+
+$HelpOutput = & $Exe --help
+$HelpCode = $LASTEXITCODE
+if ($null -eq $HelpCode) {
+    $HelpCode = 0
+}
+if ($HelpCode -ne 0 -or -not (($HelpOutput -join "`n") -match "Usage: nelisp")) {
+    Write-Host "[windows-standalone-reader] FAIL: --help"
+    Write-Host ($HelpOutput -join "`n")
+    exit 1
+}
+Write-Host "[windows-standalone-reader] PASS: --help"
+
+$EvalOutput = & $Exe eval "(+ 40 2)"
+$EvalCode = $LASTEXITCODE
+if ($null -eq $EvalCode) {
+    $EvalCode = 0
+}
+Assert-Output -Label "eval" -Output $EvalOutput -Code $EvalCode -Expected "42"
+
+$DashEvalOutput = & $Exe -e "(vector 1 `"a`" nil t)"
+$DashEvalCode = $LASTEXITCODE
+if ($null -eq $DashEvalCode) {
+    $DashEvalCode = 0
+}
+Assert-Output -Label "-e" -Output $DashEvalOutput -Code $DashEvalCode -Expected "[1 `"a`" nil t]"
+
+$LoadOutput = & $Exe load $FileSmoke
+$LoadCode = $LASTEXITCODE
+if ($null -eq $LoadCode) {
+    $LoadCode = 0
+}
+Assert-Output -Label "load" -Output $LoadOutput -Code $LoadCode -Expected "42"
+
+$ReplOutput = @(
+    "(+ 40 2)",
+    "nil",
+    "t",
+    "(quote (1 2 3))",
+    "(vector 1 `"a`" nil t)",
+    "(exit)"
+) | & $Exe repl --no-prompt
 $ReplCode = $LASTEXITCODE
 if ($null -eq $ReplCode) {
     $ReplCode = 0
@@ -122,11 +187,8 @@ if ($ReplCode -ne 0) {
     Write-Host ("[windows-standalone-reader] FAIL: repl exited " + $ReplCode)
     exit 1
 }
-if (-not (($ReplOutput -join "`n") -match "(^|`n)42(`n|$)")) {
-    Write-Host "[windows-standalone-reader] FAIL: repl output did not contain 42"
-    Write-Host ($ReplOutput -join "`n")
-    exit 1
-}
+Assert-Output -Label "repl stdin/stdout" -Output $ReplOutput -Code $ReplCode `
+    -Expected "42`nnil`nt`n(1 2 3)`n[1 `"a`" nil t]"
 Write-Host "[windows-standalone-reader] PASS: repl stdin/stdout -> 42"
 Write-Host "[windows-standalone-reader] all PASS - Windows-native standalone reader OK"
 exit 0
