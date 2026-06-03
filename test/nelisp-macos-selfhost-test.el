@@ -95,6 +95,7 @@
             (with-current-buffer buf
               (let ((out (buffer-string)))
                 (should (= status 0))
+                (should (string-match-p "output: .*/target/macos-smoke" out))
                 (should (string-match-p
                          (regexp-quote "[macos] PASS: exit42 -> built")
                          out))
@@ -104,7 +105,14 @@
                 (should (string-match-p
                          (regexp-quote
                           "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
-                         out))))))
+                         out))))
+            (should (file-exists-p
+                     (expand-file-name "target/macos-smoke/nelisp-macos-exit42"
+                                       root)))
+            (should (file-exists-p
+                     (expand-file-name
+                      "target/macos-smoke/nelisp-macos-exit42.build.log"
+                      root)))))
       (kill-buffer buf))))
 
 (ert-deftest nelisp-macos-selfhost/all-smoke-alias ()

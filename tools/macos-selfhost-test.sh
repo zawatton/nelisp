@@ -25,6 +25,7 @@ EMACS="${EMACS:-emacs}"
 EMIT_ONLY="${EMIT_ONLY:-0}"
 fail=0
 SELECTED_SMOKES=()
+OUT_DIR="$here/target/macos-smoke"
 
 usage() {
   echo "usage: $0 [--emit-only] [--smoke all|NAME] [--emacs EMACS] [--list]" >&2
@@ -91,6 +92,13 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+mkdir -p "$OUT_DIR"
+
+echo "--- macOS arm64 Mach-O self-host smoke ---"
+uname -a
+"$EMACS" --version | head -1
+echo "output: $OUT_DIR"
+
 selected_smoke_p() {
   local name="$1" item
   if [ "${#SELECTED_SMOKES[@]}" -eq 0 ]; then
@@ -105,15 +113,16 @@ selected_smoke_p() {
 }
 
 build_run() {            # NAME  PROGRAM-SEXP  EXPECTED-EXIT
-  local name="$1" prog="$2" want="$3" out="/tmp/nelisp-macos-$1"
+  local name="$1" prog="$2" want="$3" out="$OUT_DIR/nelisp-macos-$1"
+  local log="$OUT_DIR/nelisp-macos-$1.build.log"
   if ! selected_smoke_p "$name"; then
     return
   fi
-  rm -f "$out"
+  rm -f "$out" "$log"
   if ! "$EMACS" --batch -Q -L lisp -L src -L scripts -l nelisp-macos-build \
         --eval "(nelisp-macos-build-program (quote $prog) \"$out\")" \
-        >/dev/null 2>"/tmp/nelisp-macos-$1.log"; then
-    echo "[macos] FAIL: $name — build error:"; sed 's/^/    /' "/tmp/nelisp-macos-$1.log" | tail -4
+        >"$log" 2>&1; then
+    echo "[macos] FAIL: $name — build error:"; sed 's/^/    /' "$log" | tail -4
     fail=1; return
   fi
   if [ "$EMIT_ONLY" = 1 ]; then

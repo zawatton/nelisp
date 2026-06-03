@@ -160,18 +160,25 @@
     (should (string-match-p (regexp-quote "[ \"$(uname -s)\" = \"Darwin\" ]")
                             script))
     (should (string-match-p "macOS arm64 Mach-O self-host smoke" script))
-    (should (string-match-p "tools/macos-selfhost-test.sh" script))
+    (should (string-match-p "tools/macos-selfhost-test.sh --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "macOS OS compatibility ERT smoke" script))
-    (should (string-match-p "tools/macos-os-compat-test.sh" script))
+    (should (string-match-p "tools/macos-os-compat-test.sh --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "macOS standalone parallel build" script))
     (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64"
                             script))
+    (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64 --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "macOS standalone eval native smoke" script))
-    (should (string-match-p "tools/macos-standalone-eval-test.sh" script))
+    (should (string-match-p "tools/macos-standalone-eval-test.sh --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "macOS standalone cache identity smoke" script))
-    (should (string-match-p "tools/macos-standalone-cache-identity-test.sh" script))
+    (should (string-match-p "tools/macos-standalone-cache-identity-test.sh --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "macOS standalone reader native smoke" script))
-    (should (string-match-p "tools/macos-standalone-reader-test.sh" script))))
+    (should (string-match-p "tools/macos-standalone-reader-test.sh --emacs \"\\$EMACS\""
+                            script))))
 
 (ert-deftest nelisp-standalone-parallel-posix-linux-verify-runs-parity-gates ()
   "The POSIX cross-platform verifier includes Linux standalone parity gates."
@@ -181,18 +188,25 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (string-match-p "Linux OS compatibility ERT smoke" script))
-    (should (string-match-p "tools/linux-os-compat-test.sh" script))
+    (should (string-match-p "tools/linux-os-compat-test.sh --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "Linux x86_64 ELF self-host smoke" script))
-    (should (string-match-p "tools/selfhost-test.sh" script))
+    (should (string-match-p "EMACS=\"\\$EMACS\" tools/selfhost-test.sh"
+                            script))
     (should (string-match-p "Linux standalone parallel build" script))
     (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64"
                             script))
+    (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64 --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "Linux standalone eval native smoke" script))
-    (should (string-match-p "tools/linux-standalone-eval-test.sh" script))
+    (should (string-match-p "tools/linux-standalone-eval-test.sh --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "Linux standalone cache identity smoke" script))
-    (should (string-match-p "tools/linux-standalone-cache-identity-test.sh" script))
+    (should (string-match-p "tools/linux-standalone-cache-identity-test.sh --emacs \"\\$EMACS\""
+                            script))
     (should (string-match-p "Linux standalone reader native smoke" script))
-    (should (string-match-p "tools/linux-standalone-reader-test.sh" script))))
+    (should (string-match-p "tools/linux-standalone-reader-test.sh --emacs \"\\$EMACS\""
+                            script))))
 
 (provide 'nelisp-standalone-parallel-posix-test)
 
