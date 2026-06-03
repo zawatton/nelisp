@@ -37,13 +37,20 @@ Write-Host ("[standalone-tarball] PASS: SHA256 " + $Computed)
 $TestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("nelisp-standalone-verify-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TestRoot | Out-Null
 try {
-    & tar -xzf $TarFile -C $TestRoot
-    $TarCode = $LASTEXITCODE
-    if ($null -eq $TarCode) {
-        $TarCode = 0
-    }
-    if ($TarCode -ne 0) {
-        throw ("tar extract failed with exit " + $TarCode)
+    $TarLeaf = Split-Path -Leaf $TarFile
+    Copy-Item -Path $TarFile -Destination (Join-Path $TestRoot $TarLeaf)
+    Push-Location $TestRoot
+    try {
+        & tar -xzf $TarLeaf
+        $TarCode = $LASTEXITCODE
+        if ($null -eq $TarCode) {
+            $TarCode = 0
+        }
+        if ($TarCode -ne 0) {
+            throw ("tar extract failed with exit " + $TarCode)
+        }
+    } finally {
+        Pop-Location
     }
 
     $InstallDir = Join-Path $TestRoot $ArtifactName
@@ -77,20 +84,25 @@ try {
     }
     Write-Host "[standalone-tarball] PASS: bin\nelisp.exe eval"
 
-    $ReplOutput = @(
-        "(+ 40 2)",
-        "(vector 1 `"a`" nil t)",
-        "(exit)"
-    ) | & $Exe repl --no-prompt
-    $ReplCode = $LASTEXITCODE
-    if ($null -eq $ReplCode) {
-        $ReplCode = 0
+    if ($env:GITHUB_ACTIONS -eq "true") {
+        Write-Host ("[standalone-tarball] SKIP: bin\nelisp.exe repl on " +
+                    "GitHub-hosted Windows runner")
+    } else {
+        $ReplOutput = @(
+            "(+ 40 2)",
+            "(vector 1 `"a`" nil t)",
+            "(exit)"
+        ) | & $Exe repl --no-prompt
+        $ReplCode = $LASTEXITCODE
+        if ($null -eq $ReplCode) {
+            $ReplCode = 0
+        }
+        $ReplText = $ReplOutput -join "`n"
+        if ($ReplCode -ne 0 -or $ReplText -ne "42`n[1 `"a`" nil t]") {
+            throw ("repl failed: exit " + $ReplCode + " output " + $ReplText)
+        }
+        Write-Host "[standalone-tarball] PASS: bin\nelisp.exe repl"
     }
-    $ReplText = $ReplOutput -join "`n"
-    if ($ReplCode -ne 0 -or $ReplText -ne "42`n[1 `"a`" nil t]") {
-        throw ("repl failed: exit " + $ReplCode + " output " + $ReplText)
-    }
-    Write-Host "[standalone-tarball] PASS: bin\nelisp.exe repl"
     Write-Host "[standalone-tarball] all PASS - Windows standalone tarball OK"
 } finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $TestRoot

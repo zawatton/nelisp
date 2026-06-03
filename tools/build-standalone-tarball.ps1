@@ -102,13 +102,18 @@ Set-Content -Path (Join-Path $StageDir "PLATFORM") -Encoding ascii -Value $Targe
 ) | Set-Content -Path (Join-Path $StageDir "MANIFEST.txt") -Encoding ascii
 
 Remove-Item -Force -ErrorAction SilentlyContinue $TarFile, $ShaFile
-& tar -czf $TarFile -C $DistDir ($ArtifactName + "/")
-$TarCode = $LASTEXITCODE
-if ($null -eq $TarCode) {
-    $TarCode = 0
-}
-if ($TarCode -ne 0) {
-    throw ("tar failed with exit " + $TarCode)
+Push-Location $DistDir
+try {
+    & tar -czf ($ArtifactName + ".tar.gz") ($ArtifactName + "/")
+    $TarCode = $LASTEXITCODE
+    if ($null -eq $TarCode) {
+        $TarCode = 0
+    }
+    if ($TarCode -ne 0) {
+        throw ("tar failed with exit " + $TarCode)
+    }
+} finally {
+    Pop-Location
 }
 
 $Hash = (Get-FileHash -Algorithm SHA256 -Path $TarFile).Hash.ToLowerInvariant()
