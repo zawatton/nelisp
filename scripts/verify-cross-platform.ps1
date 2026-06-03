@@ -6,7 +6,8 @@
 param(
     [string]$Emacs = $env:EMACS,
     [int]$ParallelJobs = 0,
-    [switch]$SkipNativeSmokes
+    [switch]$SkipNativeSmokes,
+    [switch]$IncludeTarball
 )
 
 Set-StrictMode -Version Latest
@@ -81,6 +82,18 @@ Invoke-Checked "Windows standalone cache identity smoke" {
 Invoke-Checked "Windows standalone reader native smoke" {
     & (Join-Path $RepoRoot "tools\windows-standalone-reader-test.ps1") `
         -Emacs $Emacs
+}
+
+if ($IncludeTarball) {
+    Invoke-Checked "Windows standalone tarball smoke" {
+        & (Join-Path $RepoRoot "tools\build-standalone-tarball.ps1") `
+            -Emacs $Emacs `
+            -Version "stage-d-v3.0" `
+            -Target "windows-x86_64"
+        & (Join-Path $RepoRoot "tools\verify-standalone-tarball.ps1") `
+            -Version "stage-d-v3.0" `
+            -Target "windows-x86_64"
+    }
 }
 
 Write-Host ""

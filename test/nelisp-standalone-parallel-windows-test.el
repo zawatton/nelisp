@@ -112,7 +112,11 @@
     (should (string-match-p "Windows standalone cache identity smoke" script))
     (should (string-match-p "windows-standalone-cache-identity-test.ps1" script))
     (should (string-match-p "Windows standalone reader native smoke" script))
-    (should (string-match-p "windows-standalone-reader-test.ps1" script))))
+    (should (string-match-p "windows-standalone-reader-test.ps1" script))
+    (should (string-match-p "\\[switch\\]\\$IncludeTarball" script))
+    (should (string-match-p "Windows standalone tarball smoke" script))
+    (should (string-match-p "build-standalone-tarball.ps1" script))
+    (should (string-match-p "verify-standalone-tarball.ps1" script))))
 
 (ert-deftest nelisp-standalone-parallel-windows-eval-smoke-script ()
   "The Windows native standalone eval smoke builds and executes the PE EXE."
@@ -176,6 +180,37 @@
     (should (string-match-p "\\[windows-standalone-cache\\] PASS" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
+
+(ert-deftest nelisp-standalone-parallel-windows-tarball-scripts ()
+  "The Windows tarball scripts build and verify the short nelisp.exe CLI."
+  (let* ((build-path
+          (expand-file-name "tools/build-standalone-tarball.ps1"
+                            nelisp-standalone-parallel-windows-test--repo-root))
+         (verify-path
+          (expand-file-name "tools/verify-standalone-tarball.ps1"
+                            nelisp-standalone-parallel-windows-test--repo-root))
+         (build (nelisp-standalone-parallel-windows-test--read-file-text
+                 build-path))
+         (verify (nelisp-standalone-parallel-windows-test--read-file-text
+                  verify-path)))
+    (should (file-exists-p build-path))
+    (should (file-exists-p verify-path))
+    (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" build))
+    (should (string-match-p "\\$env:NELISP_STANDALONE_TARGET = \\$Target" build))
+    (should (string-match-p "nelisp-standalone-build-reader" build))
+    (should (string-match-p "bin\\\\nelisp.exe" build))
+    (should (string-match-p "Get-FileHash -Algorithm SHA256" build))
+    (should (string-match-p "tar -czf" build))
+    (should (string-match-p "15 MB cap" build))
+    (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" verify))
+    (should (string-match-p "tar -xzf" verify))
+    (should (string-match-p "bin\\\\nelisp.exe eval" verify))
+    (should (string-match-p "repl --no-prompt" verify))
+    (should (string-match-p "Windows standalone tarball OK" verify))
+    (should-not (string-match-p "\\_<cargo\\_>" build))
+    (should-not (string-match-p "\\_<rustc\\_>" build))
+    (should-not (string-match-p "\\_<cargo\\_>" verify))
+    (should-not (string-match-p "\\_<rustc\\_>" verify))))
 
 (provide 'nelisp-standalone-parallel-windows-test)
 

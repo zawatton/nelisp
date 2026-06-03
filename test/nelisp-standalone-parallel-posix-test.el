@@ -213,6 +213,7 @@
                             script))
     (should (string-match-p "--parallel-jobs" script))
     (should (string-match-p "--skip-native-smokes" script))
+    (should (string-match-p "--include-tarball" script))
     (should (string-match-p "macOS arm64 Mach-O self-host smoke" script))
     (should (string-match-p "tools/macos-selfhost-test.sh --emacs \"\\$EMACS\""
                             script))
@@ -232,6 +233,11 @@
                             script))
     (should (string-match-p "macOS standalone reader native smoke" script))
     (should (string-match-p "tools/macos-standalone-reader-test.sh --emacs \"\\$EMACS\""
+                            script))
+    (should (string-match-p "macOS standalone tarball smoke" script))
+    (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64"
+                            script))
+    (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64"
                             script))))
 
 (ert-deftest nelisp-standalone-parallel-posix-linux-verify-runs-parity-gates ()
@@ -243,6 +249,7 @@
                   script-path)))
     (should (string-match-p "--parallel-jobs" script))
     (should (string-match-p "--skip-native-smokes" script))
+    (should (string-match-p "--include-tarball" script))
     (should (string-match-p "Linux OS compatibility ERT smoke" script))
     (should (string-match-p "tools/linux-os-compat-test.sh --emacs \"\\$EMACS\""
                             script))
@@ -262,6 +269,11 @@
                             script))
     (should (string-match-p "Linux standalone reader native smoke" script))
     (should (string-match-p "tools/linux-standalone-reader-test.sh --emacs \"\\$EMACS\""
+                            script))
+    (should (string-match-p "Linux standalone tarball smoke" script))
+    (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64"
+                            script))
+    (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 linux-x86_64"
                             script))))
 
 (provide 'nelisp-standalone-parallel-posix-test)

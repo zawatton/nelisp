@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-PC verification script for NeLisp — Linux / macOS
-# Usage: bash scripts/verify-cross-platform.sh [--parallel-jobs N] [--skip-native-smokes]
+# Usage: bash scripts/verify-cross-platform.sh [--parallel-jobs N] [--skip-native-smokes] [--include-tarball]
 # Expected: last line = "=== Cross-platform verify PASS ==="
 set -euo pipefail
 
@@ -9,6 +9,7 @@ cd "$REPO_ROOT"
 EMACS="${EMACS:-emacs}"
 PARALLEL_JOBS=0
 SKIP_NATIVE_SMOKES=0
+INCLUDE_TARBALL=0
 
 default_parallel_jobs() {
   local cpus=2
@@ -29,11 +30,12 @@ while [ "$#" -gt 0 ]; do
     --emacs) EMACS="$2"; shift 2 ;;
     --parallel-jobs|--jobs|-j) PARALLEL_JOBS="$2"; shift 2 ;;
     --skip-native-smokes) SKIP_NATIVE_SMOKES=1; shift ;;
+    --include-tarball) INCLUDE_TARBALL=1; shift ;;
     -h|--help)
-      echo "usage: $0 [--emacs EMACS] [--parallel-jobs N] [--skip-native-smokes]"
+      echo "usage: $0 [--emacs EMACS] [--parallel-jobs N] [--skip-native-smokes] [--include-tarball]"
       exit 0
       ;;
-    *) echo "usage: $0 [--emacs EMACS] [--parallel-jobs N] [--skip-native-smokes]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--emacs EMACS] [--parallel-jobs N] [--skip-native-smokes] [--include-tarball]" >&2; exit 2 ;;
   esac
 done
 
@@ -83,6 +85,13 @@ if [ "$(uname -s)" = "Darwin" ]; then
   echo "--- macOS standalone reader native smoke ---"
   tools/macos-standalone-reader-test.sh --emacs "$EMACS"
 
+  if [ "$INCLUDE_TARBALL" -eq 1 ]; then
+    echo ""
+    echo "--- macOS standalone tarball smoke ---"
+    tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64
+    tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64
+  fi
+
   echo ""
   echo "=== Cross-platform verify PASS ==="
   exit 0
@@ -117,6 +126,13 @@ tools/linux-standalone-cache-identity-test.sh --emacs "$EMACS"
 echo ""
 echo "--- Linux standalone reader native smoke ---"
 tools/linux-standalone-reader-test.sh --emacs "$EMACS"
+
+if [ "$INCLUDE_TARBALL" -eq 1 ]; then
+  echo ""
+  echo "--- Linux standalone tarball smoke ---"
+  tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64
+  tools/verify-standalone-tarball.sh stage-d-v3.0 linux-x86_64
+fi
 
 echo ""
 echo "=== Cross-platform verify PASS ==="

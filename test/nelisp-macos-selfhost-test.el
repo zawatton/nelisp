@@ -46,6 +46,30 @@
    (format "target/macos-smoke-test/%s" name)
    root))
 
+(defun nelisp-macos-selfhost-test--script-text ()
+  "Return the macOS self-host smoke script text."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "tools/macos-selfhost-test.sh"
+                       (nelisp-macos-selfhost-test--repo-root)))
+    (buffer-string)))
+
+(ert-deftest nelisp-macos-selfhost/darwin-pipe-smokes-use-fd-buffer ()
+  "Darwin pipe smokes pass an fd[2] buffer instead of reading x1."
+  (let ((script (nelisp-macos-selfhost-test--script-text)))
+    (should (string-match-p
+             (regexp-quote "(syscall-direct 42 8589934848 0 0 0 0 0)")
+             script))
+    (should (string-match-p
+             (regexp-quote "(ptr-read-u32 8589934592 256)")
+             script))
+    (should (string-match-p
+             (regexp-quote "(ptr-read-u32 8589934592 260)")
+             script))
+    (should-not (string-match-p
+                 (regexp-quote "syscall-direct-store-x1 42")
+                 script))))
+
 (ert-deftest nelisp-macos-selfhost/emit-only-script-builds-all-smokes ()
   "The macOS self-host smoke harness builds every case in emit-only mode."
   (let* ((root (nelisp-macos-selfhost-test--repo-root))
