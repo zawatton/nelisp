@@ -41,6 +41,7 @@ function Invoke-NelispTar {
         [void]$Psi.ArgumentList.Add($Argument)
     }
 
+    Write-Host ("[standalone-tarball] tar " + ($Arguments -join " "))
     $Process = [System.Diagnostics.Process]::Start($Psi)
     $Stdout = $Process.StandardOutput.ReadToEnd()
     $Stderr = $Process.StandardError.ReadToEnd()
@@ -134,7 +135,8 @@ Remove-Item -Force -ErrorAction SilentlyContinue $TarFile, $ShaFile
 $TarCode = Invoke-NelispTar -WorkingDirectory $DistDir -Arguments @(
     "-czf",
     ($ArtifactName + ".tar.gz"),
-    ($ArtifactName + "/")
+    "--",
+    $ArtifactName
 )
 if ($TarCode -ne 0) {
     throw ("tar failed with exit " + $TarCode)

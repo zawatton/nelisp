@@ -29,6 +29,7 @@ function Invoke-NelispTar {
         [void]$Psi.ArgumentList.Add($Argument)
     }
 
+    Write-Host ("[standalone-tarball] tar " + ($Arguments -join " "))
     $Process = [System.Diagnostics.Process]::Start($Psi)
     $Stdout = $Process.StandardOutput.ReadToEnd()
     $Stderr = $Process.StandardError.ReadToEnd()
