@@ -11593,14 +11593,21 @@ same branch and emit the same byte count."
          ;; rsp is already aligned post-spill (= see `--emit-defun');
          ;; only gp-class defuns need the runtime correction below.
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (= (logand (+ arity (length stack-args)) 1) 1))
+         (needs-align
+          (if win64-p
+              ;; Win64 defun prologues round the local frame so body calls start
+              ;; 16-byte aligned.  Only outgoing stack arguments disturb that.
+              (= (logand (length stack-args) 1) 1)
+            (= (logand (+ arity (length stack-args)) 1) 1)))
          (general-stack-spill-p
           (cl-some
            (lambda (a)
              (not (nelisp-phase47-compiler--call-arg-trivial-p a)))
            stack-args))
          (spill-needs-align
-          (= (logand (+ arity (length stack-args) arg-count) 1) 1))
+          (if win64-p
+              (= (logand (+ (length stack-args) arg-count) 1) 1)
+            (= (logand (+ arity (length stack-args) arg-count) 1) 1)))
          (call-temp-save-count 0)
          (call-needs-align needs-align))
     (when (and (not win64-p)
@@ -13052,20 +13059,12 @@ form remains valid in ET_REL object mode."
       (nelisp-asm-x86_64-mov-reg-reg buf 'r8 'rdx)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
-      (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
-                       1)
-               1)
-        (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf helper-name -4 'text)
     (when (eq nelisp-phase47-compiler--abi 'win64)
-      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32)
-      (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
-                       1)
-               1)
-        (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (when (> stack-slots 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-slots)))))
 
@@ -13158,10 +13157,6 @@ pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
           (progn
             (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
             (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'rax)
-            (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
-                             1)
-                     1)
-              (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
             (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
         (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)
         ;; Step 5: alignment pad.
@@ -13174,11 +13169,7 @@ pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
       ;; the value-form result.
       (if (eq nelisp-phase47-compiler--abi 'win64)
           (progn
-            (nelisp-asm-x86_64-add-imm32 buf 'rsp 32)
-            (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
-                             1)
-                     1)
-              (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
+            (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
         (nelisp-asm-x86_64-pop buf 'r11)))))
 
 
@@ -13488,7 +13479,8 @@ shadow space, and call-site alignment must follow the current x86_64 ABI."
   (let* ((n (length args))
          (regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs) 0 n))
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (= (logand arity 1) 1))
+         (needs-align (and (not (eq nelisp-phase47-compiler--abi 'win64))
+                           (= (logand arity 1) 1)))
          (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
     (dolist (arg args)
       (nelisp-phase47-compiler--emit-value arg buf)
