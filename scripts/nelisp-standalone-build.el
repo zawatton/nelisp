@@ -2679,15 +2679,24 @@ for the baked-form path, then exits through KERNEL32!ExitProcess."
   "Return the macOS arm64 Mach-O `_main' start unit.
 Dyld enters `_main(argc, argv, envp)'.  The reader driver expects the Linux
 entry-stack argv shape (`argc' at slot 0, argv pointers inline after it), so
-this trampoline switches onto a large anonymous mmap'd native stack, copies
-argc and argv[0..3] into a small stack block, and passes that block to
-`driver'.  It then exits through the Darwin raw syscall ABI with x16=1 and
-SVC #0x80."
+this trampoline first snapshots argc and argv[0..3] on the original stack,
+switches onto a large anonymous mmap'd native stack, copies the snapshot into a
+fresh driver stack block, and passes that block to `driver'.  It then exits
+through the Darwin raw syscall ABI with x16=1 and SVC #0x80."
   (let* ((size nelisp-standalone--native-stack-size)
          (buf (nelisp-asm-arm64-make-buffer))
          (reloc-off nil))
-    (nelisp-asm-arm64-mov-reg-reg buf 'x19 'x0) ; argc
-    (nelisp-asm-arm64-mov-reg-reg buf 'x20 'x1) ; argv
+    (nelisp-asm-arm64-sub-imm buf 'sp 'sp 48)
+    (nelisp-asm-arm64-str-imm buf 'x0 'sp 0)  ; argc
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 0)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 8)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 8)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 16)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 16)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 24)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 24)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 32)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x19 'sp)
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-mov-imm64 buf 'x1 size)
     (nelisp-asm-arm64-mov-imm64 buf 'x2 3)       ; PROT_READ|PROT_WRITE
@@ -2700,14 +2709,15 @@ SVC #0x80."
     (nelisp-asm-arm64-add-reg-reg buf 'x9 'x0 'x10)
     (nelisp-asm-arm64-sub-imm buf 'x9 'x9 64)
     (nelisp-asm-arm64-add-imm buf 'sp 'x9 0)
-    (nelisp-asm-arm64-str-imm buf 'x19 'sp 0)    ; argc
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x20 0)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x19 0)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 0)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x19 8)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 8)
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x20 8)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x19 16)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 16)
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x20 16)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x19 24)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 24)
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x20 24)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x19 32)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 32)
     (nelisp-asm-arm64-mov-reg-reg buf 'x0 'sp)
     (setq reloc-off (nelisp-asm-arm64-buffer-pos buf))

@@ -87,7 +87,8 @@ function Invoke-ReaderFileSmoke {
     param(
         [string]$Path,
         [string]$Source,
-        [string]$Label
+        [string]$Label,
+        [int]$Expected
     )
 
     Set-Content -Path $Path -Encoding ascii -NoNewline -Value $Source
@@ -96,22 +97,26 @@ function Invoke-ReaderFileSmoke {
     if ($null -eq $FileCode) {
         $FileCode = 0
     }
-    if ($FileCode -ne 42) {
+    if ($FileCode -ne $Expected) {
         Write-Host ("[windows-standalone-reader] FAIL: " + $Label + " " + $Path +
-                    " -> exit " + $FileCode + " (expected 42)")
+                    " -> exit " + $FileCode + " (expected " + $Expected + ")")
         exit 1
     }
-    Write-Host ("[windows-standalone-reader] PASS: " + $Label + " -> exit 42")
+    Write-Host ("[windows-standalone-reader] PASS: " + $Label +
+                " -> exit " + $Expected)
 }
 
 $FileSmoke = Join-Path $SmokeDir "file-smoke.el"
-Invoke-ReaderFileSmoke -Path $FileSmoke -Source "(+ 39 3)`n" -Label "file arg"
+Invoke-ReaderFileSmoke -Path $FileSmoke -Source "(+ 40 3)`n" `
+    -Label "file arg" -Expected 43
 
 $SpacedFileSmoke = Join-Path $SmokeDir "file smoke spaced.el"
-Invoke-ReaderFileSmoke -Path $SpacedFileSmoke -Source "(* 6 7)`n" -Label "file arg with spaces"
+Invoke-ReaderFileSmoke -Path $SpacedFileSmoke -Source "(+ 40 4)`n" `
+    -Label "file arg with spaces" -Expected 44
 
 $UnicodeFileSmoke = Join-Path $SmokeDir "unicode-あ.el"
-Invoke-ReaderFileSmoke -Path $UnicodeFileSmoke -Source "(- 50 8)`n" -Label "unicode file arg"
+Invoke-ReaderFileSmoke -Path $UnicodeFileSmoke -Source "(+ 40 5)`n" `
+    -Label "unicode file arg" -Expected 45
 
 function Assert-Output {
     param(
@@ -212,7 +217,7 @@ $LoadCode = $LASTEXITCODE
 if ($null -eq $LoadCode) {
     $LoadCode = 0
 }
-Assert-Output -Label "load" -Output $LoadOutput -Code $LoadCode -Expected "42"
+Assert-Output -Label "load" -Output $LoadOutput -Code $LoadCode -Expected "43"
 
 $RuntimeImage = Join-Path $SmokeDir "runtime-smoke.nlri"
 

@@ -103,17 +103,20 @@ mkdir -p "$SMOKE_DIR"
 FILE_SMOKE="$SMOKE_DIR/file-smoke.el"
 SPACED_FILE_SMOKE="$SMOKE_DIR/file smoke spaced.el"
 UNICODE_FILE_SMOKE="$SMOKE_DIR/unicode-あ.el"
-printf '%s\n' "(+ 39 3)" >"$FILE_SMOKE"
-printf '%s\n' "(* 6 7)" >"$SPACED_FILE_SMOKE"
-printf '%s\n' "(- 50 8)" >"$UNICODE_FILE_SMOKE"
+printf '%s\n' "(+ 40 3)" >"$FILE_SMOKE"
+printf '%s\n' "(+ 40 4)" >"$SPACED_FILE_SMOKE"
+printf '%s\n' "(+ 40 5)" >"$UNICODE_FILE_SMOKE"
 
-run_expect_code "file arg" 42 "$EXE" "$FILE_SMOKE"
-run_expect_code "file arg with spaces" 42 "$EXE" "$SPACED_FILE_SMOKE"
-run_expect_code "unicode file arg" 42 "$EXE" "$UNICODE_FILE_SMOKE"
+run_expect_code "file arg" 43 "$EXE" "$FILE_SMOKE"
+run_expect_code "file arg with spaces" 44 "$EXE" "$SPACED_FILE_SMOKE"
+run_expect_code "unicode file arg" 45 "$EXE" "$UNICODE_FILE_SMOKE"
 
+set +e
 HELP_OUTPUT="$("$EXE" --help)"
-if ! printf '%s\n' "$HELP_OUTPUT" | grep -q "Usage: nelisp"; then
-  echo "[macos-standalone-reader] FAIL: --help"
+HELP_CODE=$?
+set -e
+if [ "$HELP_CODE" -ne 0 ] || ! printf '%s\n' "$HELP_OUTPUT" | grep -q "Usage: nelisp"; then
+  echo "[macos-standalone-reader] FAIL: --help -> exit $HELP_CODE"
   printf '%s\n' "$HELP_OUTPUT"
   exit 1
 fi
@@ -121,7 +124,7 @@ echo "[macos-standalone-reader] PASS: --help"
 
 run_expect_output "eval" "42" "$EXE" eval "(+ 40 2)"
 run_expect_output "-e" '[1 "a" nil t]' "$EXE" -e '(vector 1 "a" nil t)'
-run_expect_output "load" "42" "$EXE" load "$FILE_SMOKE"
+run_expect_output "load" "43" "$EXE" load "$FILE_SMOKE"
 
 RUNTIME_IMAGE="$SMOKE_DIR/runtime-smoke.nlri"
 run_expect_output "dump-runtime-image" "" \
