@@ -1046,6 +1046,18 @@ the quotient in rax — the companion of the `mod' remainder path)."
   "Return non-nil when BYTES contains NEEDLE."
   (not (null (cl-search needle bytes :test #'eql))))
 
+(defun nelisp-phase47-compiler-test--coff-text-for (form)
+  "Compile FORM as x86_64 COFF and return its `.text' section bytes."
+  (let ((path (make-temp-file "nelisp-win64-text-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           form path :arch 'x86_64 :format 'coff)
+          (nelisp-phase47-compiler-test--coff-section-bytes
+           (nelisp-phase47-compiler-test--read-bytes path)
+           ".text"))
+      (ignore-errors (delete-file path)))))
+
 (defun nelisp-phase47-compiler-test--elf-section-header (bytes index)
   "Return plist for section header INDEX in ELF BYTES."
   (let* ((shoff (nelisp-elf--read-le64 bytes 40))
@@ -2661,6 +2673,93 @@ SysV would emit `push rdi' = 57 instead."
                          ;; pop rdi; push rax; call.
                          (unibyte-string #x5a #x5e #x5f #x50 #xe8)))))
       (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-boxed-allocators-use-shadow ()
+  "Win64 boxed alloc primitives reserve caller shadow space."
+  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+               '(seq
+                 (defun probe_cons () (cons-make 4096 8192 12288))
+                 (defun probe_record () (record-make 4096 2 12288))
+                 (defun probe_vector () (vector-make 2 12288))
+                 (defun probe_cell () (cell-make 4096 12288))))))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; cons-make: 4 saved pushes, then shadow/call/unshadow.
+             (unibyte-string #x50
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; record-make: pop slot/count/tag -> RAX/RDX/RCX.
+             (unibyte-string #x58 #x5a #x59 #x50 #x50
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; vector-make: pop slot/cap -> RSI/RCX, preserve slot, shadow.
+             (unibyte-string #x41 #x5b #x5e #x59 #x56 #x56
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; cell-make: RCX = val-ptr before shadow/call.
+             (unibyte-string #x41 #x5b #x5e #x5f #x56 #x56
+                             #x48 #x89 #xf9
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-boxed-setters-use-gp-args-and-shadow ()
+  "Win64 boxed setter primitives use RCX/RDX/R8 and caller shadow space."
+  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+               '(seq
+                 (defun probe_cons_set () (cons-set-car 4096 8192))
+                 (defun probe_cell_set () (cell-set-value 4096 8192))
+                 (defun probe_rec_set () (record-slot-set 4096 0 8192))
+                 (defun probe_vec_set () (vector-slot-set 4096 0 8192))))))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; cons-set-car/cell-set-value: RDX = value, RCX = boxed payload.
+             (unibyte-string #x5e #x5f #x57 #x56
+                             #x48 #x89 #xf2
+                             #x48 #x8b #x4f #x08
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; record/vector-slot-set: R8 = value, RDX = index, RCX = payload.
+             (unibyte-string #x41 #x58 #x5a #x59
+                             #x48 #x8b #x49 #x08
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-cons-make-with-clone-uses-gp-args ()
+  "Win64 cons-make-with-clone calls clone helper with RCX/RDX."
+  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+               '(defun probe ()
+                  (cons-make-with-clone 4096 8192 12288)))))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; car clone: RCX = car-ptr, RDX = box.
+             (unibyte-string #x48 #x89 #xf9
+                             #x4c #x89 #xd2
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; cdr clone: RCX = cdr-ptr, RDX = box + cdr offset.
+             (unibyte-string #x48 #x89 #xd1
+                             #x4c #x89 #xd2
+                             #x48 #x81 #xc2 #x20 #x00 #x00 #x00
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
 
 (ert-deftest nelisp-phase47-compiler/win64-extern-call-stack-gp-arg ()
   "Win64 extern-call places the fifth GP arg above the shadow space."

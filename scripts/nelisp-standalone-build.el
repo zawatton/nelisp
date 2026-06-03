@@ -321,11 +321,11 @@ or the toolchain is newer than the cached object."
     (defun nl_dealloc_bytes (_p _s _a) 1)
     (defun nl_quit_flag_ptr () 268435464)))
 
-(defconst nelisp-standalone--windows-arena-size #x10000000
+(defconst nelisp-standalone--windows-arena-size #x4000000
   "Windows standalone fixed arena size.
 The arena still starts at 0x10000000 for the existing pointer constants, but it
 must stop below the PE image base 0x140000000.  Keep the committed mapping at
-256 MiB: Windows `VirtualAlloc' with MEM_COMMIT charges the full range up front,
+64 MiB: Windows `VirtualAlloc' with MEM_COMMIT charges the full range up front,
 unlike Linux's demand-paged mmap, and 1 GiB can fail on normal developer
 machines before the first metadata write.")
 
@@ -340,20 +340,22 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
      (let ((p (extern-call VirtualAlloc 268435456
                            ,nelisp-standalone--windows-arena-size
                            12288 4)))
-       (nl_seq2 (ptr-write-u64 268435456 0 256)        ; bump starts at 256
-        (nl_seq2 (ptr-write-u64 268435464 0 0)         ; quit flag
-         (nl_seq2 (ptr-write-u64 268435472 0 0)        ; throw flag
-          (nl_seq2 (ptr-write-u64 268435552 0 0)       ; free-list head
-           (nl_seq2 (ptr-write-u64 268435560 0 0)      ; gc trigger
-            (nl_seq2 (ptr-write-u64 268435568 0 (+ 268435456 256))
-             (nl_seq2 (ptr-write-u64 268435576 0 0)    ; live bytes
-              (nl_seq2 (ptr-write-u64 268435584 0 0)   ; sweep mode
-               (nl_seq2 (ptr-write-u64 268435592 0 0)  ; mark enabled
-                (nl_seq2 (ptr-write-u64 268435616 0 1) ; collect disabled
-                 (nl_seq2 (ptr-write-u64 268435624 0 0) ; free-list reuse
-                  (nl_seq2 (ptr-write-u64 268435648 0 0) ; probe off
-                   (nl_seq2 (ptr-write-u64 268435656 0 0)
-                            p))))))))))))))))
+       (if (= p 0)
+           (extern-call ExitProcess 88)
+         (nl_seq2 (ptr-write-u64 268435456 0 256)        ; bump starts at 256
+          (nl_seq2 (ptr-write-u64 268435464 0 0)         ; quit flag
+           (nl_seq2 (ptr-write-u64 268435472 0 0)        ; throw flag
+            (nl_seq2 (ptr-write-u64 268435552 0 0)       ; free-list head
+             (nl_seq2 (ptr-write-u64 268435560 0 0)      ; gc trigger
+              (nl_seq2 (ptr-write-u64 268435568 0 (+ 268435456 256))
+               (nl_seq2 (ptr-write-u64 268435576 0 0)    ; live bytes
+                (nl_seq2 (ptr-write-u64 268435584 0 0)   ; sweep mode
+                 (nl_seq2 (ptr-write-u64 268435592 0 0)  ; mark enabled
+                  (nl_seq2 (ptr-write-u64 268435616 0 1) ; collect disabled
+                   (nl_seq2 (ptr-write-u64 268435624 0 0) ; free-list reuse
+                    (nl_seq2 (ptr-write-u64 268435648 0 0) ; probe off
+                     (nl_seq2 (ptr-write-u64 268435656 0 0)
+                              p)))))))))))))))))
 
 (defun nelisp-standalone--target-arena-source ()
   "Return the arena source adjusted for the current standalone target."

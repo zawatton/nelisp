@@ -12148,27 +12148,40 @@ that result slots start as `Sexp::Nil' bit-pattern."
     ;; Compute the destination `*mut Sexp' pointer (= result_slot).
     (nelisp-phase47-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    ;; SysV AMD64 arg order: rdi = src, rsi = dst.  Pop in reverse
-    ;; push order: last pushed (= dst) -> rsi, first pushed (= src)
-    ;; pointer is still on the stack — pop into rdi.
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; Stack alignment + dst preservation:
-    ;; Body entry rsp ≡ 8 (mod 16) (= post-prologue, post-param-pushes
-    ;; for a 3-arg GP defun).  After the two pops above we are back
-    ;; at body entry alignment.  A single `push rsi' brings rsp to
-    ;; ≡ 0 (mod 16) which is what `call' requires, AND it doubles as
-    ;; the dst-preservation save (rsi is caller-saved and may be
-    ;; clobbered inside `nl_sexp_clone_into').
-    (nelisp-asm-x86_64-push buf 'rsi)
-    ;; call nl_sexp_clone_into
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_sexp_clone_into" -4 'text)
-    ;; Restore dst into rax (= the conventional return register for
-    ;; record-slot-ref ops; callers treat rax as the destination
-    ;; pointer they just wrote into).
-    (nelisp-asm-x86_64-pop buf 'rax)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-pop buf 'rdx) ; dst
+          (nelisp-asm-x86_64-pop buf 'rcx) ; src
+          (nelisp-asm-x86_64-push buf 'rdx)
+          (nelisp-asm-x86_64-push buf 'rdx)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+          (nelisp-asm-x86_64-reloc-plt32-here
+           buf "nl_sexp_clone_into" -4 'text)
+          (nelisp-asm-x86_64-add-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-pop buf 'r11)
+          (nelisp-asm-x86_64-pop buf 'rax))
+      ;; SysV AMD64 arg order: rdi = src, rsi = dst.  Pop in reverse
+      ;; push order: last pushed (= dst) -> rsi, first pushed (= src)
+      ;; pointer is still on the stack — pop into rdi.
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      ;; Stack alignment + dst preservation:
+      ;; Body entry rsp ≡ 8 (mod 16) (= post-prologue, post-param-pushes
+      ;; for a 3-arg GP defun).  After the two pops above we are back
+      ;; at body entry alignment.  A single `push rsi' brings rsp to
+      ;; ≡ 0 (mod 16) which is what `call' requires, AND it doubles as
+      ;; the dst-preservation save (rsi is caller-saved and may be
+      ;; clobbered inside `nl_sexp_clone_into').
+      (nelisp-asm-x86_64-push buf 'rsi)
+      ;; call nl_sexp_clone_into
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_sexp_clone_into" -4 'text)
+      ;; Restore dst into rax (= the conventional return register for
+      ;; record-slot-ref ops; callers treat rax as the destination
+      ;; pointer they just wrote into).
+      (nelisp-asm-x86_64-pop buf 'rax))))
 
 (defun nelisp-phase47-compiler--emit-record-slot-set (node buf)
   "Call the Rust helper that refcount-safely overwrites a record slot.
@@ -12207,32 +12220,34 @@ undefined-rax behaviour."
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'rdi 'rdi nelisp-sexp--offset-payload)
-    ;; Dynamic rsp alignment around the call.  Save old rsp on the
-    ;; aligned stack (via caller-saved r10, plus a stack mirror so we
-    ;; survive the callee's r10 clobber).  Sequence:
-    ;;   mov r10, rsp          ; 49 89 e2 — r10 = old rsp
-    ;;   and rsp, -16          ; 48 83 e4 f0 — rsp aligned to 16
-    ;;   push r10              ; 41 52 — save old rsp on stack (rsp -= 8, now 8 off)
-    ;;   sub rsp, 8            ; 48 83 ec 08 — pad to 0 mod 16 for call
-    ;;   call nl_record_set_slot
-    ;;   add rsp, 8            ; 48 83 c4 08 — remove pad
-    ;;   pop r10               ; 41 5a — reload old rsp (callee may have clobbered r10)
-    ;;   mov rsp, r10          ; 4c 89 d4 — restore rsp
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x49 #x89 #xE2))
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x41 #x52))
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xEC #x08))
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_record_set_slot" -4 'text)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xC4 #x08))
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x41 #x5A))
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x4C #x89 #xD4))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-pop buf 'r8)
+          (nelisp-asm-x86_64-pop buf 'rdx)
+          (nelisp-asm-x86_64-pop buf 'rcx)
+          (nelisp-asm-x86_64-mov-reg-mem-disp8
+           buf 'rcx 'rcx nelisp-sexp--offset-payload)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+          (nelisp-asm-x86_64-reloc-plt32-here
+           buf "nl_record_set_slot" -4 'text)
+          (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
+      (nelisp-asm-x86_64-pop buf 'rdx)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-mov-reg-mem-disp8
+       buf 'rdi 'rdi nelisp-sexp--offset-payload)
+      ;; Dynamic rsp alignment around the call.
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x49 #x89 #xE2))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x41 #x52))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xEC #x08))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_record_set_slot" -4 'text)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xC4 #x08))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x41 #x5A))
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x4C #x89 #xD4)))
     ;; rax = 1 (truthy sentinel for value-form chaining).
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
@@ -12293,14 +12308,26 @@ yields a stable truthy value)."
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-phase47-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'rdi 'rdi nelisp-sexp--offset-payload)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_vector_set_slot" -4 'text)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-pop buf 'r8)
+          (nelisp-asm-x86_64-pop buf 'rdx)
+          (nelisp-asm-x86_64-pop buf 'rcx)
+          (nelisp-asm-x86_64-mov-reg-mem-disp8
+           buf 'rcx 'rcx nelisp-sexp--offset-payload)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+          (nelisp-asm-x86_64-reloc-plt32-here
+           buf "nl_vector_set_slot" -4 'text)
+          (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
+      (nelisp-asm-x86_64-pop buf 'rdx)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-mov-reg-mem-disp8
+       buf 'rdi 'rdi nelisp-sexp--offset-payload)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_vector_set_slot" -4 'text))
     ;; rax = 1 (truthy sentinel for value-form chaining).
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
@@ -12327,20 +12354,33 @@ on box-tagged variants) before writing into the destination."
     ;; Compute destination `*mut Sexp' -> rax.
     (nelisp-phase47-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    ;; SysV AMD64: rdi = src, rsi = dst.  Pop in reverse push order.
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; Stack alignment + dst preservation (see `--emit-record-slot-
-    ;; ref' comment for the full rsp accounting): one `push rsi'
-    ;; brings rsp to ≡ 0 (mod 16) for the call AND saves dst since
-    ;; rsi is caller-saved across `nl_sexp_clone_into'.
-    (nelisp-asm-x86_64-push buf 'rsi)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_sexp_clone_into" -4 'text)
-    ;; Restore dst into rax — convention for vector-ref / record-
-    ;; slot-ref: rax = the destination pointer the op just wrote into.
-    (nelisp-asm-x86_64-pop buf 'rax)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-pop buf 'rdx)
+          (nelisp-asm-x86_64-pop buf 'rcx)
+          (nelisp-asm-x86_64-push buf 'rdx)
+          (nelisp-asm-x86_64-push buf 'rdx)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+          (nelisp-asm-x86_64-reloc-plt32-here
+           buf "nl_sexp_clone_into" -4 'text)
+          (nelisp-asm-x86_64-add-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-pop buf 'r11)
+          (nelisp-asm-x86_64-pop buf 'rax))
+      ;; SysV AMD64: rdi = src, rsi = dst.  Pop in reverse push order.
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      ;; Stack alignment + dst preservation (see `--emit-record-slot-
+      ;; ref' comment for the full rsp accounting): one `push rsi'
+      ;; brings rsp to ≡ 0 (mod 16) for the call AND saves dst since
+      ;; rsi is caller-saved across `nl_sexp_clone_into'.
+      (nelisp-asm-x86_64-push buf 'rsi)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_sexp_clone_into" -4 'text)
+      ;; Restore dst into rax — convention for vector-ref / record-
+      ;; slot-ref: rax = the destination pointer the op just wrote into.
+      (nelisp-asm-x86_64-pop buf 'rax))))
 
 ;; ---- Doc 111 §111.D Cell read+write ops emit ----
 ;;
@@ -12419,12 +12459,21 @@ original H pointer in rax."
     ;; boundary at the call site (SysV AMD64 alignment).
     (nelisp-asm-x86_64-push buf 'rdi)
     (nelisp-asm-x86_64-push buf 'rsi)
-    ;; rdi = NlCell* (= payload pointer at offset 8 of the Sexp slot).
-    (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
+          ;; rcx = NlCell* (= payload pointer at offset 8 of the Sexp slot).
+          (nelisp-asm-x86_64-mov-reg-mem-disp8
+           buf 'rcx 'rdi nelisp-sexp--offset-payload)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
+      ;; rdi = NlCell* (= payload pointer at offset 8 of the Sexp slot).
+      (nelisp-asm-x86_64-mov-reg-mem-disp8
+       buf 'rdi 'rdi nelisp-sexp--offset-payload))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_cell_set_value" -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'rax)))
 
@@ -12457,16 +12506,27 @@ elements by `nl_alloc_vector' (= refcount-1 box, ready for
     ;; Mirror cell-make's "one extra scratch slot" alignment pad.
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'r11)        ; r11 = pad (discard)
-    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot (will save to stack)
-    (nelisp-asm-x86_64-pop buf 'rdi)        ; rdi = cap (= arg 0)
-    ;; Save slot across the helper call.  Two extra pushes (= slot +
-    ;; one pad) keep the call site at a 16-byte boundary, matching
-    ;; cell-make's idiom.
-    (nelisp-asm-x86_64-push buf 'rsi)
-    (nelisp-asm-x86_64-push buf 'rsi)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_alloc_vector" -4 'text)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-pop buf 'rsi)  ; slot
+          (nelisp-asm-x86_64-pop buf 'rcx)  ; cap
+          (nelisp-asm-x86_64-push buf 'rsi)
+          (nelisp-asm-x86_64-push buf 'rsi)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+          (nelisp-asm-x86_64-reloc-plt32-here
+           buf "nl_alloc_vector" -4 'text)
+          (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
+      (nelisp-asm-x86_64-pop buf 'rsi)      ; rsi = slot (will save to stack)
+      (nelisp-asm-x86_64-pop buf 'rdi)      ; rdi = cap (= arg 0)
+      ;; Save slot across the helper call.  Two extra pushes (= slot +
+      ;; one pad) keep the call site at a 16-byte boundary, matching
+      ;; cell-make's idiom.
+      (nelisp-asm-x86_64-push buf 'rsi)
+      (nelisp-asm-x86_64-push buf 'rsi)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_alloc_vector" -4 'text))
     ;; rax = NlVector*.  Move to r10.
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     ;; Discard alignment pad, recover slot.
@@ -12515,16 +12575,27 @@ for `record-slot-set'-based init."
     ;; Pop in reverse push order: slot -> rax (will save), slot-count ->
     ;; rsi (= arg 1), tag-ptr -> rdi (= arg 0).
     (nelisp-asm-x86_64-pop buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; Save slot across the helper call.  Two pushes (= slot + one pad)
-    ;; keep the call site at a 16-byte boundary, matching the idiom in
-    ;; `vector-make' / `cons-make'.
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_alloc_record" -4 'text)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-pop buf 'rdx)
+          (nelisp-asm-x86_64-pop buf 'rcx)
+          (nelisp-asm-x86_64-push buf 'rax)
+          (nelisp-asm-x86_64-push buf 'rax)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+          (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+          (nelisp-asm-x86_64-reloc-plt32-here
+           buf "nl_alloc_record" -4 'text)
+          (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      ;; Save slot across the helper call.  Two pushes (= slot + one pad)
+      ;; keep the call site at a 16-byte boundary, matching the idiom in
+      ;; `vector-make' / `cons-make'.
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_alloc_record" -4 'text))
     ;; rax = *mut NlRecord.  Move to r10.
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     ;; Discard alignment pad, recover slot.
@@ -12581,9 +12652,14 @@ See `cons-make' comment for the alignment rationale."
     ;; cons-make / cons-set-slot's idiom.
     (nelisp-asm-x86_64-push buf 'rsi)
     (nelisp-asm-x86_64-push buf 'rsi)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_alloc_cell" -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     ;; rax = NlCell*.  Move to r10.
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     ;; Discard alignment pad, recover slot.
@@ -14411,9 +14487,13 @@ refcount-aware nested-box increments."
     ;; values would misalign the call site, so reserve one extra
     ;; scratch slot and discard it after the call.
     (nelisp-asm-x86_64-push buf 'rax)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_alloc_consbox" -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     (nelisp-asm-x86_64-pop buf 'r11)
     ;; last pushed (= slot) -> rsi, cdr-ptr -> rdx, car-ptr -> rdi
@@ -14475,9 +14555,13 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Step 2: call nl_alloc_consbox -> rax; stash in r10.
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_alloc_consbox" -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     ;; Step 3: restore alignment / slot / cdr-ptr / car-ptr.
     (nelisp-asm-x86_64-pop buf 'r11)
@@ -14491,10 +14575,17 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-push buf 'rdx)
     (nelisp-asm-x86_64-push buf 'r10)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r10)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r10)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r10))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_sexp_clone_into" -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'r10)
     (nelisp-asm-x86_64-pop buf 'rdx)
@@ -14506,12 +14597,20 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-push buf 'r10)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rdx)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r10)
-    (nelisp-asm-x86_64-add-imm32 buf 'rsi nelisp-nlconsbox--offset-cdr)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdx)
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r10)
+          (nelisp-asm-x86_64-add-imm32 buf 'rdx nelisp-nlconsbox--offset-cdr)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rdx)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r10)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsi nelisp-nlconsbox--offset-cdr))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_sexp_clone_into" -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'r10)
@@ -14544,11 +14643,19 @@ original handle pointer in rax."
     ;; Same alignment rule as `cons-make': two extra pushes keep the
     ;; call site at a 16-byte boundary.
     (nelisp-asm-x86_64-push buf 'rsi)
-    (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'rdi 'rdi nelisp-sexp--offset-payload)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
+          (nelisp-asm-x86_64-mov-reg-mem-disp8
+           buf 'rcx 'rdi nelisp-sexp--offset-payload)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
+      (nelisp-asm-x86_64-mov-reg-mem-disp8
+       buf 'rdi 'rdi nelisp-sexp--offset-payload))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf (symbol-name helper-name) -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'rax)))
 

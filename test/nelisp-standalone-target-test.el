@@ -97,15 +97,26 @@
                     (flatten-tree
                      (nelisp-standalone--target-arena-source))))))
 
-(ert-deftest nelisp-standalone-target-windows-arena-commits-256m ()
-  "Windows arena avoids a 1 GiB upfront commit in VirtualAlloc."
+(ert-deftest nelisp-standalone-target-windows-arena-commits-64m ()
+  "Windows arena avoids a large upfront commit in VirtualAlloc."
   (let ((nelisp-standalone--target 'windows-x86_64))
-    (should (member #x10000000
-                    (flatten-tree
-                     (nelisp-standalone--target-arena-source))))
-    (should-not (member #x40000000
-                        (flatten-tree
-                         (nelisp-standalone--target-arena-source))))))
+    (cl-labels ((tree-member-p
+                 (needle tree)
+                 (cond
+                  ((equal needle tree) t)
+                  ((consp tree)
+                   (or (tree-member-p needle (car tree))
+                       (tree-member-p needle (cdr tree)))))))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p
+                 '(extern-call VirtualAlloc 268435456 #x4000000 12288 4)
+                 arena))
+        (should-not (tree-member-p
+                     '(extern-call VirtualAlloc 268435456 #x10000000 12288 4)
+                     arena))
+        (should-not (tree-member-p
+                     '(extern-call VirtualAlloc 268435456 #x40000000 12288 4)
+                     arena))))))
 
 (ert-deftest nelisp-standalone-target-windows-reserves-1g-stack ()
   "Windows standalone reserves a Linux-trampoline-sized native stack."
