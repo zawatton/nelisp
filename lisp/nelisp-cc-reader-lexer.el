@@ -34,6 +34,7 @@
 ;;   9   FunctionQuote `#''
 ;;   10  Dot      `.'
 ;;   11  SharpsParen `#s('
+;;   12  CharTableBracket `#^[' / `#^^['
 ;;   20  Int                   payload = Sexp::Str of digit text
 ;;   21  Float                 payload = Sexp::Str of text
 ;;   22  Str                   payload = Sexp::Str of resolved body
@@ -60,7 +61,8 @@
 ;;   - Lexer ONLY.  Parser is §116.B.  Top-level wrapper is §116.C.
 ;;   - Token kinds covered: lparen / rparen / lbracket / rbracket /
 ;;     quote / backquote / comma / comma-at / function-quote / dot /
-;;     sharps-paren / int / float / str / sym / char / radix-int / eof.
+;;     sharps-paren / char-table bracket / int / float / str / sym / char /
+;;     radix-int / eof.
 ;;   - String escapes: \\n, \\t, \\r, \\\\, \\\"; line continuation
 ;;     `\\<LF>'; any other `\\X' drops the backslash + pushes X
 ;;     (= Doc 51 Phase 3-A''-1 Emacs reader compat).
@@ -69,6 +71,8 @@
 ;;     in `nelisp-cc-reader-parser.el' handles the escape + Meta-modifier
 ;;     reduction.  Bare `?' (followed by whitespace / EOF) still lexes
 ;;     as the 1-char symbol `?'.
+;;   - Escaped symbol bytes `\"' / `\(' / `foo\ bar' covered by dropping
+;;     the backslash and admitting the escaped byte into the atom payload.
 ;;   - Radix integers `#x10' / `#o17' / `#b1010' covered (Doc 116 §116.B+).
 ;;     Payload first byte = base marker (`x'/`o'/`b'); remaining bytes =
 ;;     the digit text (incl. optional `+'/`-' sign).  Parser converts.
@@ -183,11 +187,26 @@
     (defun nelisp_reader_scan_atom (str-ptr cursor n scratch)
       (if (>= cursor n)
           cursor
-        (if (= (nelisp_reader_is_atom_term (str-byte-at str-ptr cursor)) 1)
-            cursor
+        (if (= (str-byte-at str-ptr cursor) 92)
+            (nelisp_reader_scan_atom_escape
+             str-ptr cursor n scratch)
+          (if (= (nelisp_reader_is_atom_term (str-byte-at str-ptr cursor)) 1)
+              cursor
+            (nelisp_reader_prog2
+             (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
+             (nelisp_reader_scan_atom str-ptr (+ cursor 1) n scratch))))))
+
+    (defun nelisp_reader_scan_atom_escape (str-ptr cursor n scratch)
+      ;; Emacs Lisp symbol escape: `\X' contributes X to the symbol name,
+      ;; even when X would normally terminate an atom (space, quote, paren).
+      ;; A trailing bare backslash is kept as a literal backslash.
+      (if (>= (+ cursor 1) n)
           (nelisp_reader_prog2
            (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
-           (nelisp_reader_scan_atom str-ptr (+ cursor 1) n scratch)))))
+           (+ cursor 1))
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch (str-byte-at str-ptr (+ cursor 1)))
+         (nelisp_reader_scan_atom str-ptr (+ cursor 2) n scratch))))
 
     ;; ===========================================================
     ;; Atom classification (= re-scan the source byte range).
@@ -507,6 +526,10 @@
       (nelisp_reader_prog2
        (sexp-int-make cursor-out-slot (+ cursor 3)) kind))
 
+    (defun nelisp_reader_emit_quadruple (cursor-out-slot cursor kind)
+      (nelisp_reader_prog2
+       (sexp-int-make cursor-out-slot (+ cursor 4)) kind))
+
     (defun nelisp_reader_emit_error (cursor-out-slot cursor)
       (nelisp_reader_prog2 (sexp-int-make cursor-out-slot cursor) -1))
 
@@ -541,10 +564,48 @@
 
     (defun nelisp_reader_lex_atom
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
-      (nelisp_reader_lex_atom_finalize
-       str-ptr cursor
-       (nelisp_reader_scan_atom str-ptr cursor n scratch)
-       payload-slot cursor-out-slot scratch))
+      (if (= (nelisp_reader_leading_dot_float_p str-ptr cursor n) 1)
+          (nelisp_reader_prog2
+           (mut-str-push-byte scratch 48)
+           (nelisp_reader_lex_atom_finalize
+            str-ptr cursor
+            (nelisp_reader_scan_atom str-ptr cursor n scratch)
+            payload-slot cursor-out-slot scratch))
+        (if (= (nelisp_reader_signed_leading_dot_float_p str-ptr cursor n) 1)
+            (nelisp_reader_prog2
+             (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
+             (nelisp_reader_prog2
+              (mut-str-push-byte scratch 48)
+              (nelisp_reader_lex_atom_finalize
+               str-ptr cursor
+               (nelisp_reader_scan_atom str-ptr (+ cursor 1) n scratch)
+               payload-slot cursor-out-slot scratch)))
+          (nelisp_reader_lex_atom_finalize
+           str-ptr cursor
+           (nelisp_reader_scan_atom str-ptr cursor n scratch)
+           payload-slot cursor-out-slot scratch))))
+
+    (defun nelisp_reader_leading_dot_float_p (str-ptr cursor n)
+      (if (>= (+ cursor 1) n)
+          0
+        (if (= (str-byte-at str-ptr cursor) 46)
+            (= (nelisp_reader_is_digit (str-byte-at str-ptr (+ cursor 1))) 1)
+          0)))
+
+    (defun nelisp_reader_signed_leading_dot_float_p (str-ptr cursor n)
+      (if (>= (+ cursor 2) n)
+          0
+        (if (= (str-byte-at str-ptr cursor) 43)
+            (if (= (str-byte-at str-ptr (+ cursor 1)) 46)
+                (= (nelisp_reader_is_digit
+                    (str-byte-at str-ptr (+ cursor 2))) 1)
+              0)
+          (if (= (str-byte-at str-ptr cursor) 45)
+              (if (= (str-byte-at str-ptr (+ cursor 1)) 46)
+                  (= (nelisp_reader_is_digit
+                      (str-byte-at str-ptr (+ cursor 2))) 1)
+                0)
+            0))))
 
     ;; ===========================================================
     ;; String lex driver.
@@ -570,8 +631,8 @@
        payload-slot cursor-out-slot scratch))
 
     ;; ===========================================================
-    ;; Sharpsign dispatch: `#'' / `#s(' / `#x..' / `#o..' / `#b..' /
-    ;; fail.
+    ;; Sharpsign dispatch: `#'' / `##' / `#s(' / `#^[' / `#^^[' /
+    ;; `#x..' / `#o..' / `#b..' / fail.
     ;; ===========================================================
 
     (defun nelisp_reader_lex_sharpsign
@@ -582,6 +643,12 @@
          ;; `#''  -> function-quote (kind 9), 2-byte token.
          ((= (str-byte-at str-ptr (+ cursor 1)) 39)
           (nelisp_reader_emit_double cursor-out-slot cursor 9))
+         ;; `##' is an ordinary symbol in Emacs Lisp arglists, notably
+         ;; in Org's declare-function hints.  Other unknown # dispatches
+         ;; remain reader errors.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 35)
+          (nelisp_reader_lex_atom
+           str-ptr cursor n payload-slot cursor-out-slot scratch))
          ;; `#s(' -> sharps-paren (kind 11), 3-byte token.
          ((= (str-byte-at str-ptr (+ cursor 1)) 115)
           (if (>= (+ cursor 2) n)
@@ -589,6 +656,23 @@
             (if (= (str-byte-at str-ptr (+ cursor 2)) 40)
                 (nelisp_reader_emit_triple cursor-out-slot cursor 11)
               (nelisp_reader_emit_error cursor-out-slot (+ cursor 2)))))
+         ;; `#^[' / `#^^[' -> char-table/sub-char-table bracket.  Parser
+         ;; currently materialises these as vector literals so generated
+         ;; vendor char-table data can pass through the standalone reader.
+         ((= (str-byte-at str-ptr (+ cursor 1)) 94)
+          (if (>= (+ cursor 2) n)
+              (nelisp_reader_emit_error cursor-out-slot (+ cursor 2))
+            (if (= (str-byte-at str-ptr (+ cursor 2)) 91)
+                (nelisp_reader_emit_triple cursor-out-slot cursor 12)
+              (if (= (str-byte-at str-ptr (+ cursor 2)) 94)
+                  (if (>= (+ cursor 3) n)
+                      (nelisp_reader_emit_error cursor-out-slot (+ cursor 3))
+                    (if (= (str-byte-at str-ptr (+ cursor 3)) 91)
+                        (nelisp_reader_emit_quadruple
+                         cursor-out-slot cursor 12)
+                      (nelisp_reader_emit_error
+                       cursor-out-slot (+ cursor 3))))
+                (nelisp_reader_emit_error cursor-out-slot (+ cursor 2))))))
          ;; `#x..' / `#X..' -> RadixInt (kind 25, base 16).  Pre-push
          ;; the lowercase `x' marker onto SCRATCH so `lex_radix' fits
          ;; the 6-reg ABI.
@@ -719,8 +803,8 @@ Sexp::Cons that the §116.B parser will consume.
 
 Kinds: 0 EOF, 1 LParen, 2 RParen, 3 LBracket, 4 RBracket, 5 Quote,
 6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot,
-11 SharpsParen, 20 Int, 21 Float, 22 Str, 23 Sym, 24 Char,
-25 RadixInt, -1 Error.")
+11 SharpsParen, 12 CharTableBracket, 20 Int, 21 Float, 22 Str,
+23 Sym, 24 Char, 25 RadixInt, -1 Error.")
 
 (provide 'nelisp-cc-reader-lexer)
 

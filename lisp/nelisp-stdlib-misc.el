@@ -25,8 +25,33 @@
 ;; one routes through `compare-strings' for proper case-fold
 ;; comparison.
 
+(defun nelisp--number-to-string-float (n)
+  "Return a compact decimal rendering for finite float N.
+This is a small standalone fallback for `%s' / `prin1-to-string'
+paths that reach `number-to-string' before the native float-format
+trampoline is available."
+  (cond
+   ((< n 0) (concat "-" (nelisp--number-to-string-float (- n))))
+   (t
+    (let* ((whole (truncate n))
+           (frac (- n whole))
+           (digits nil)
+           (i 0))
+      (while (and (< i 6) (not (= frac 0.0)))
+        (setq frac (* frac 10.0))
+        (let ((digit (truncate frac)))
+          (setq digits (cons (+ ?0 digit) digits))
+          (setq frac (- frac digit)))
+        (setq i (1+ i)))
+      (if (null digits)
+          (concat (format "%d" whole) ".0")
+        (concat (format "%d" whole) "." (concat (nreverse digits))))))))
+
 (defun number-to-string (n)
-  (if (integerp n) (format "%d" n) (format "%g" n)))
+  (cond
+   ((integerp n) (format "%d" n))
+   ((floatp n) (nelisp--number-to-string-float n))
+   (t (signal 'wrong-type-argument (list 'numberp n)))))
 
 ;; Rust-min batch 6a (2026-05-06): `gensym' migrated from Rust to
 ;; elisp.  `make-symbol' stays in Rust because uninterned-symbol

@@ -98,6 +98,9 @@
 ;; `url-parse'; without an explicit require they remain unbound and the
 ;; primitive install loop trips on `symbol-function'.
 (require 'url-parse)
+;; `url-hexify-string' is autoloaded from url-util.  Store the actual function
+;; object in the NeLisp primitive table, not the autoload placeholder.
+(require 'url-util)
 
 (define-error 'nelisp-eval-error
   "NeLisp evaluation error")
@@ -152,9 +155,25 @@ returned and `nelisp--apply-closure' handles it."
            (funcall 'nelisp-bc-try-compile-lambda env params body))
       (list 'nelisp-closure env params body)))
 
+(defun nelisp--lambda-body (body)
+  "Return BODY with an optional leading docstring removed.
+Emacs treats a string after the lambda list in `defun' and `lambda'
+as documentation, not as an executable body form.  Dropping it before
+closure creation also keeps vendor docstrings out of the bytecode
+precompile probe."
+  (if (and (consp body) (stringp (car body)))
+      (cdr body)
+    body))
+
 (defsubst nelisp--closure-env    (c) (nth 1 c))
 (defsubst nelisp--closure-params (c) (nth 2 c))
 (defsubst nelisp--closure-body   (c) (nth 3 c))
+
+(defun nelisp--ensure-macro-system ()
+  "Load the NeLisp macro implementation when evaluator dispatch needs it."
+  (unless (and (fboundp 'nelisp--eval-defmacro)
+               (fboundp 'nelisp-macroexpand))
+    (require 'nelisp-macro)))
 
 ;;; Lookup -------------------------------------------------------------
 
@@ -217,7 +236,8 @@ Signal `nelisp-void-function' if none is bound."
        ((eq head 'let)       (nelisp--eval-let args env))
        ((eq head 'let*)      (nelisp--eval-let* args env))
        ((eq head 'lambda)
-        (nelisp--make-closure env (car args) (cdr args)))
+        (nelisp--make-closure env (car args)
+                              (nelisp--lambda-body (cdr args))))
        ((eq head 'defun)     (nelisp--eval-defun args env))
        ((eq head 'defvar)    (nelisp--eval-defvar args env))
        ((eq head 'defconst)  (nelisp--eval-defconst args env))
@@ -227,10 +247,13 @@ Signal `nelisp-void-function' if none is bound."
        ((eq head 'throw)           (nelisp--eval-throw args env))
        ((eq head 'unwind-protect)  (nelisp--eval-unwind-protect args env))
        ((eq head 'condition-case)  (nelisp--eval-condition-case args env))
-       ((eq head 'defmacro)        (nelisp--eval-defmacro args env))
+       ((eq head 'defmacro)
+        (nelisp--ensure-macro-system)
+        (nelisp--eval-defmacro args env))
        ((and (symbolp head)
              (not (eq (gethash head nelisp--macros nelisp--unbound)
                       nelisp--unbound)))
+        (nelisp--ensure-macro-system)
         (nelisp-eval-form (nelisp-macroexpand (cons head args)) env))
        (t (nelisp--eval-call head args env)))))
    (t
@@ -315,7 +338,8 @@ If a clause has no body, the test value itself is returned."
   "(function FORM) — quote a lambda as a NeLisp closure over ENV."
   (cond
    ((and (consp form) (eq (car form) 'lambda))
-    (nelisp--make-closure env (cadr form) (cddr form)))
+    (nelisp--make-closure env (cadr form)
+                          (nelisp--lambda-body (cddr form))))
    ((symbolp form) (nelisp--function-of form))
    (t (signal 'nelisp-eval-error
               (list "cannot take function value of" form)))))
@@ -394,7 +418,7 @@ has just mutated."
   "(defun NAME (PARAMS) BODY...) — install a global closure."
   (let ((name (car args))
         (params (cadr args))
-        (body (cddr args)))
+        (body (nelisp--lambda-body (cddr args))))
     (unless (symbolp name)
       (signal 'nelisp-eval-error (list "defun needs a symbol" name)))
     (puthash name (nelisp--make-closure env params body)

@@ -154,10 +154,35 @@
 				  nil)))))
 	    (cons result-form nil))))))
 
+(defmacro dotimes (spec &rest body)
+  "(dotimes (VAR COUNT [RESULT]) BODY...) - iterate VAR from 0 below COUNT."
+  (let* ((var (car spec))
+         (count-form (car (cdr spec)))
+         (result-form (car (cdr (cdr spec)))))
+    (cons 'let*
+          (cons
+           (cons (cons '--nl-dotimes-limit (cons count-form nil))
+                 (cons (cons var (cons 0 nil)) nil))
+           (cons
+            (cons 'while
+                  (cons (cons '< (cons var (cons '--nl-dotimes-limit nil)))
+                        (append body
+                                (cons
+                                 (cons 'setq
+                                       (cons var
+                                             (cons (cons '1+ (cons var nil))
+                                                   nil)))
+                                 nil))))
+            (cons result-form nil))))))
+
 (defmacro defun (name args &rest body)
   "(defun NAME ARGS BODY...) → (progn (fset 'NAME (lambda ARGS BODY...)) 'NAME).\nUnlike Rust `sf_defun' which stores the raw `(lambda ...)' form\nunmodified, the elisp expansion goes through evaluation of\n`(lambda ARGS BODY...)' = produces a closure with the current lexical\nenv captured.  For top-level defun the captured env is empty so\nsemantics match Rust; defuns nested inside `let' would receive a\nnon-empty captured env in elisp but the bare form in Rust — this is\nan intentional improvement, not a regression."
-  (let
-      ((lambda-form (cons 'lambda (cons args body)))
+  (let*
+      ((real-body
+	(if (and body (stringp (car body)))
+	    (cdr body)
+	  body))
+       (lambda-form (cons 'lambda (cons args real-body)))
        (qname (cons 'quote (cons name nil))))
     (cons 'progn
 	  (cons (cons 'fset (cons qname (cons lambda-form nil)))
@@ -204,6 +229,9 @@
   "Alias for `defvar' in the standalone."
   (cons 'defvar (cons name (cons value (cons docstring nil)))))
 
+(defvar lexical-binding t
+  "Standalone default: evaluated source is treated as lexical.")
+
 (defmacro defconst (name value &optional _docstring)
   "Define NAME as a constant with VALUE in the standalone."
   (cons 'progn
@@ -225,6 +253,12 @@
 
 (defun nthcdr (n list)
   (if (= n 0) list (if (null list) nil (nthcdr (1- n) (cdr list)))))
+
+(defun car-safe (object)
+  (if (consp object) (car object) nil))
+
+(defun cdr-safe (object)
+  (if (consp object) (cdr object) nil))
 
 (defun nth (n list) (car (nthcdr n list)))
 
@@ -448,6 +482,22 @@ reader resolves macros through the global function mirror)."
         (setq again nil)))
     cur))
 
+(unless (fboundp 'macroexp-parse-body)
+  (defun macroexp-parse-body (body)
+    "Split BODY into declarations and remaining forms.
+Return (DECLARATIONS . BODY-FORMS), matching the shape used by Emacs
+macro helpers such as `iter-defun'.  A leading docstring and any
+following `(declare ...)' forms are treated as declarations."
+    (let ((declarations nil)
+          (cur body))
+      (when (and cur (stringp (car cur)))
+        (setq declarations (cons (car cur) declarations))
+        (setq cur (cdr cur)))
+      (while (and cur (consp (car cur)) (eq (car (car cur)) 'declare))
+        (setq declarations (cons (car cur) declarations))
+        (setq cur (cdr cur)))
+      (cons (nreverse declarations) cur))))
+
 (defun nelisp--bq-expand (form)
   "Return the expansion of FORM under `backquote'."
   (cond
@@ -458,7 +508,10 @@ reader resolves macros through the global function mirror)."
    ((eq (car form) 'comma-at)
     (signal 'error (list "nelisp-bq: top-level ,@ not allowed")))
    ((eq (car form) 'backquote)
-    (signal 'error (list "nelisp-bq: nested backquote not supported")))
+    ;; Preserve nested backquote forms for the inner macro expansion
+    ;; pass.  This is enough for local macros such as generator.el's
+    ;; `(cl-macrolet ... `(cps-internal-yield ,value))' body.
+    (list 'quote form))
    (t (nelisp--bq-expand-list form))))
 
 (defun nelisp--bq-expand-list (form)
@@ -575,6 +628,29 @@ targets the nearest *unnamed* block (= NAME = nil), matching CL."
 
 ;;;; --- loop builder ------------------------------------------------------
 
+(defun nelisp-cl-macros--loop-destructure-bindings (pattern source)
+  "Return `let' bindings destructuring PATTERN from SOURCE."
+  (let ((bindings nil)
+        (cur pattern)
+        (access source))
+    (while (consp cur)
+      (when (car cur)
+        (setq bindings
+              (cons (list (car cur) (list 'car access)) bindings)))
+      (setq access (list 'cdr access))
+      (setq cur (cdr cur)))
+    (when cur
+      (setq bindings (cons (list cur access) bindings)))
+    (nreverse bindings)))
+
+(defun nelisp-cl-macros--loop-wrap-body (pattern item forms)
+  "Return one loop body form for PATTERN bound from ITEM and FORMS."
+  (if (symbolp pattern)
+      (cons 'progn forms)
+    (cons 'let
+          (cons (nelisp-cl-macros--loop-destructure-bindings pattern item)
+                forms))))
+
 (defun nelisp-cl-macros--loop-build (clauses)
   "Build expansion for `cl-loop' CLAUSES.
 
@@ -585,6 +661,7 @@ expansion rather than a runtime error)."
         (sum-form nil) (count-form nil) (with-bindings nil)
         (when-return-cond nil) (when-return-form nil)
         (when-do-cond nil) (when-do-forms nil)
+        (when-collect-cond nil) (when-collect-form nil)
         (numeric-from nil) (numeric-to nil) (numeric-below nil)
         (while-cond nil) (until-cond nil)
         (bodyless-forms nil)
@@ -657,6 +734,23 @@ expansion rather than a runtime error)."
              ((eq next-kw 'do)
               (setq when-do-cond cond-form
                     when-do-forms (cons next-form when-do-forms)
+                    cur (cdr (cdr (cdr (cdr cur)))))
+              (while (and cur (eq (car cur) 'and))
+                (let ((and-kw (car (cdr cur)))
+                      (and-form (car (cdr (cdr cur)))))
+                  (cond
+                   ((eq and-kw 'do)
+                    (setq when-do-forms (cons and-form when-do-forms)
+                          cur (cdr (cdr (cdr cur)))))
+                   ((eq and-kw 'collect)
+                    (setq when-collect-cond cond-form
+                          when-collect-form and-form
+                          cur (cdr (cdr (cdr cur)))))
+                   (t (setq recognised nil
+                            cur nil))))))
+             ((eq next-kw 'collect)
+              (setq when-collect-cond cond-form
+                    when-collect-form next-form
                     cur (cdr (cdr (cdr (cdr cur))))))
              (t (setq recognised nil)))))
          (t (setq recognised nil)))))
@@ -700,52 +794,88 @@ expansion rather than a runtime error)."
      ;; `for VAR in LIST when COND return FORM' — early exit pattern.
      (when-return-cond
       (let ((tag-sym (make-symbol "--loop-tag--"))
-            (result-sym (make-symbol "--loop-r--")))
+            (result-sym (make-symbol "--loop-r--"))
+            (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
         (list 'let (cons (list result-sym nil) with-bindings)
               (list 'catch (list 'quote tag-sym)
-                    (list 'dolist (list var list-form)
-                          (list 'when when-return-cond
-                                (list 'setq result-sym when-return-form)
-                                (list 'throw (list 'quote tag-sym) nil))))
+                    (list 'dolist (list loop-var list-form)
+                          (nelisp-cl-macros--loop-wrap-body
+                           var loop-var
+                           (list (list 'when when-return-cond
+                                       (list 'setq result-sym when-return-form)
+                                       (list 'throw (list 'quote tag-sym) nil))))))
               result-sym)))
      ;; `for VAR in LIST collect FORM'
-     (collect-form
-      (let ((acc-sym (make-symbol "--loop-acc--")))
+     ((or collect-form when-collect-cond)
+      (let ((acc-sym (make-symbol "--loop-acc--"))
+            (loop-var (if (symbolp var) var (make-symbol "--loop-item--")))
+            (body nil)
+            (rev nil))
+        (when collect-form
+          (setq body
+                (append body
+                        (list (list 'setq acc-sym
+                                    (list 'cons collect-form acc-sym))))))
+        (when when-do-cond
+          (while when-do-forms
+            (setq rev (cons (car when-do-forms) rev))
+            (setq when-do-forms (cdr when-do-forms)))
+          (setq body
+                (append body
+                        (list (cons 'when
+                                    (cons when-do-cond rev))))))
+        (when when-collect-cond
+          (setq body
+                (append body
+                        (list (list 'when when-collect-cond
+                                    (list 'setq acc-sym
+                                          (list 'cons when-collect-form acc-sym)))))))
         (list 'let (cons (list acc-sym nil) with-bindings)
-              (list 'dolist (list var list-form)
-                    (list 'setq acc-sym (list 'cons collect-form acc-sym)))
+              (list 'dolist (list loop-var list-form)
+                    (nelisp-cl-macros--loop-wrap-body var loop-var body))
               (list 'nreverse acc-sym))))
      ;; `for VAR in LIST sum FORM'
      (sum-form
-      (let ((acc-sym (make-symbol "--loop-sum--")))
+      (let ((acc-sym (make-symbol "--loop-sum--"))
+            (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
         (list 'let (cons (list acc-sym 0) with-bindings)
-              (list 'dolist (list var list-form)
-                    (list 'setq acc-sym (list '+ acc-sym sum-form)))
+              (list 'dolist (list loop-var list-form)
+                    (nelisp-cl-macros--loop-wrap-body
+                     var loop-var
+                     (list (list 'setq acc-sym (list '+ acc-sym sum-form)))))
               acc-sym)))
      ;; `for VAR in LIST count FORM'
      (count-form
-      (let ((acc-sym (make-symbol "--loop-count--")))
+      (let ((acc-sym (make-symbol "--loop-count--"))
+            (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
         (list 'let (cons (list acc-sym 0) with-bindings)
-              (list 'dolist (list var list-form)
-                    (list 'when count-form
-                          (list 'setq acc-sym (list '+ acc-sym 1))))
+              (list 'dolist (list loop-var list-form)
+                    (nelisp-cl-macros--loop-wrap-body
+                     var loop-var
+                     (list (list 'when count-form
+                                 (list 'setq acc-sym (list '+ acc-sym 1))))))
               acc-sym)))
      ;; `for VAR in LIST when COND do FORM …'
      (when-do-cond
-      (let ((rev nil))
+      (let ((rev nil)
+            (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
         (while when-do-forms
           (setq rev (cons (car when-do-forms) rev))
           (setq when-do-forms (cdr when-do-forms)))
         (list 'let with-bindings
-              (list 'dolist (list var list-form)
-                    (cons 'when (cons when-do-cond rev))))))
+              (list 'dolist (list loop-var list-form)
+                    (nelisp-cl-macros--loop-wrap-body
+                     var loop-var
+                     (list (cons 'when (cons when-do-cond rev))))))))
      ;; `for VAR in LIST do FORM …'
      (do-forms
-      (let ((rev nil))
+      (let ((rev nil)
+            (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
         (while do-forms (setq rev (cons (car do-forms) rev))
                (setq do-forms (cdr do-forms)))
         (list 'let with-bindings
-              (cons 'dolist (cons (list var list-form) rev)))))
+              (list 'dolist (list loop-var list-form)
+                    (nelisp-cl-macros--loop-wrap-body var loop-var rev)))))
      (t (list 'let with-bindings nil)))))
 
 (defmacro cl-loop (&rest clauses)
@@ -795,6 +925,37 @@ when absent.  Used by the constructor expanded from `cl-defstruct'."
 (defun nelisp-cl-macros--struct-slot-default (slot-spec)
   "Return the default-value form for SLOT-SPEC (nil if symbol-only)."
   (if (consp slot-spec) (car (cdr slot-spec)) nil))
+
+(defun nelisp-cl-macros--defstruct-ctor-parts (arglist)
+  "Return (FORMALS AUX-BINDINGS VALUE-SYMS) for constructor ARGLIST."
+  (let ((cur arglist)
+        (formals nil)
+        (aux-bindings nil)
+        (value-syms nil)
+        (in-aux nil))
+    (while cur
+      (let ((item (car cur)))
+        (cond
+         ((eq item '&aux)
+          (setq in-aux t))
+         (in-aux
+          (let ((var (if (consp item) (car item) item))
+                (init (and (consp item) (consp (cdr item)) (cadr item))))
+            (push (list var init) aux-bindings)
+            (push var value-syms)))
+         ((memq item '(&optional &rest))
+          (push item formals))
+         ((consp item)
+          (let ((var (car item)))
+            (push var formals)
+            (push var value-syms)))
+         (t
+          (push item formals)
+          (push item value-syms))))
+      (setq cur (cdr cur)))
+    (list (nreverse formals)
+          (nreverse aux-bindings)
+          (nreverse value-syms))))
 
 (defun nelisp-cl-macros--struct-name-or-options (head)
   "Return the type symbol from HEAD (a symbol or `(NAME OPTION ...)').
@@ -931,10 +1092,25 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
           (let ((pads nil) (rem parent-slot-names))
             (while rem (setq pads (cons nil pads)) (setq rem (cdr rem)))
             (append pads own-slot-defaults)))
+         (slot-default-alist
+          (let ((names slot-names)
+                (defaults slot-defaults)
+                (out nil))
+            (while names
+              (push (cons (car names) (car defaults)) out)
+              (setq names (cdr names)
+                    defaults (cdr defaults)))
+            (nreverse out)))
          (predicate (intern (format "%s-p" name)))
+         (constructor-cell (assq :constructor options))
+         (constructor-arglist
+          (and constructor-cell (consp (cdr (cdr constructor-cell)))
+               (car (cdr (cdr constructor-cell)))))
          (constructor
           (nelisp-cl-macros--struct-resolve-name
-           (nelisp-cl-macros--struct-opt :constructor options)
+           (if constructor-cell
+               (car (cdr constructor-cell))
+             nelisp-cl-macros--struct-absent)
            (intern (format "make-%s" name))))
          (copier
           (nelisp-cl-macros--struct-resolve-name
@@ -990,14 +1166,40 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                               (list 'nelisp--record-type 'obj)
                               (list 'quote name))))
             forms)
-      ;; Constructor form (keyword-args via &rest).
+      ;; Constructor form (keyword args by default; positional
+      ;; `(:constructor NAME ARGLIST)' when requested).
       (when constructor
-        (push (list 'defun constructor (list '&rest args-sym)
+        (if constructor-arglist
+            (let* ((ctor-parts
+                    (nelisp-cl-macros--defstruct-ctor-parts
+                     constructor-arglist))
+                   (ctor-formals (car ctor-parts))
+                   (ctor-aux-bindings (cadr ctor-parts))
+                   (ctor-value-syms (caddr ctor-parts))
+                   (body
                     (cons 'apply
                           (cons (list 'quote 'nelisp--make-record)
                                 (cons (list 'quote name)
-                                      (list (cons 'list slot-arg-forms))))))
-              forms))
+                                      (list
+                                       (cons
+                                        'list
+                                        (mapcar
+                                         (lambda (slot)
+                                           (if (memq slot ctor-value-syms)
+                                               slot
+                                             (cdr (assq slot slot-default-alist))))
+                                         slot-names))))))))
+              (push (list 'defun constructor ctor-formals
+                          (if ctor-aux-bindings
+                              (list 'let ctor-aux-bindings body)
+                            body))
+                    forms))
+          (push (list 'defun constructor (list '&rest args-sym)
+                      (cons 'apply
+                            (cons (list 'quote 'nelisp--make-record)
+                                  (cons (list 'quote name)
+                                        (list (cons 'list slot-arg-forms))))))
+                forms)))
       ;; Copier form (shallow copy via record-ref / make-record).
       (when copier
         (push (list 'defun copier (list src-sym)
@@ -1202,7 +1404,10 @@ miss bug, returns garbage instead of signalling and corrupts the compile."
    ((eq (car form) 'comma-at)
     (signal 'error (list "nelisp-bq: top-level ,@ not allowed")))
    ((eq (car form) 'backquote)
-    (signal 'error (list "nelisp-bq: nested backquote not supported")))
+    ;; Preserve nested backquote forms for the inner macro expansion
+    ;; pass.  This is enough for local macros such as generator.el's
+    ;; `(cl-macrolet ... `(cps-internal-yield ,value))' body.
+    (list 'quote form))
    (t (nelisp--bq-expand-list form))))
 
 (defun nelisp--bq-expand-list (form)
@@ -1519,6 +1724,8 @@ Each pair PLACE VAL assigns VAL to PLACE.  Supported PLACE shapes:
                             slot accessor → `(nelisp--record-set REC I VAL)'
   - (car X)  / (cdr X)     → `(setcar X VAL)' / `(setcdr X VAL)'
   - (aref V I) / (nth I L) → `(aset V I VAL)' / `(setcar (nthcdr I L) VAL)'
+  - registered simple setter → calls setter with PLACE args + VAL
+  - registered struct setter → calls setter with REC + VAL
 Other shapes signal a host `error' at expand time."
   (when (null pairs) (signal 'error (list "setf: empty body")))
   (let ((forms nil))
@@ -1538,6 +1745,17 @@ Other shapes signal a host `error' at expand time."
            (list 'aset (cadr place) (caddr place) val))
           ((and (consp place) (eq (car place) 'nth))
            (list 'setcar (list 'nthcdr (cadr place) (caddr place)) val))
+          ((and (consp place) (symbolp (car place))
+                (get (car place) 'cl-simple-setter))
+           (cons 'funcall
+                 (cons (list 'quote (get (car place) 'cl-simple-setter))
+                       (append (cdr place) (list val)))))
+          ((and (consp place) (symbolp (car place))
+                (get (car place) 'cl-struct-setter))
+           (list 'funcall
+                 (list 'quote (get (car place) 'cl-struct-setter))
+                 (cadr place)
+                 val))
           ((and (consp place) (symbolp (car place))
                 (assq (car place) nelisp-cl-macros--accessor-info))
            (let ((idx (cdr (assq (car place)
@@ -1569,6 +1787,71 @@ bindings provide.  &rest is honoured."
     (cons 'progn
           (mapcar (lambda (s)
                     (nelisp-cl-macros--macrolet-walk s env))
+                  body))))
+
+(defun nelisp-cl-macros--symbol-macrolet-walk (form env)
+  "Replace symbol references in FORM according to ENV."
+  (cond
+   ((symbolp form)
+    (let ((cell (assq form env)))
+      (if cell (cdr cell) form)))
+   ((not (consp form)) form)
+   ((memq (car form) '(quote function)) form)
+   ((eq (car form) 'setq)
+    (let ((pairs (cdr form))
+          (out nil))
+      (while pairs
+        (let* ((place (car pairs))
+               (value (cadr pairs))
+               (cell (and (symbolp place) (assq place env))))
+          (setq out
+                (append out
+                        (list (if cell (cdr cell) place)
+                              (nelisp-cl-macros--symbol-macrolet-walk
+                               value env)))))
+        (setq pairs (cddr pairs)))
+      (cons 'setq out)))
+   ((memq (car form) '(let let*))
+    (let ((bindings (cadr form))
+          (body (cddr form))
+          (shadowed nil)
+          (new-bindings nil)
+          new-env)
+      (dolist (binding bindings)
+        (let ((var (if (symbolp binding) binding (car binding))))
+          (push var shadowed)
+          (push (if (symbolp binding)
+                    binding
+                  (list var
+                        (nelisp-cl-macros--symbol-macrolet-walk
+                         (cadr binding) env)))
+                new-bindings)))
+      (setq new-env
+            (let ((cur env) (acc nil))
+              (while cur
+                (unless (memq (caar cur) shadowed)
+                  (push (car cur) acc))
+                (setq cur (cdr cur)))
+              (nreverse acc)))
+      (cons (car form)
+            (cons (nreverse new-bindings)
+                  (mapcar (lambda (body-form)
+                            (nelisp-cl-macros--symbol-macrolet-walk
+                             body-form new-env))
+                          body)))))
+   (t
+    (mapcar (lambda (item)
+              (nelisp-cl-macros--symbol-macrolet-walk item env))
+            form))))
+
+(defmacro cl-symbol-macrolet (bindings &rest body)
+  "Minimal symbol macro substitution used by generator.el CPS rewrites."
+  (let ((env (mapcar (lambda (binding)
+                       (cons (car binding) (cadr binding)))
+                     bindings)))
+    (cons 'progn
+          (mapcar (lambda (body-form)
+                    (nelisp-cl-macros--symbol-macrolet-walk body-form env))
                   body))))
 
 (provide 'cl-lib)
@@ -1762,7 +2045,13 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
   (defun set (sym val)
     (nelisp--env-globals-set-value sym val)
     val))
-(unless (fboundp 'defalias) (defun defalias (sym def &rest _) (fset sym def) sym))
+(unless (fboundp 'defalias)
+  (defun defalias (sym def &rest _)
+    (if (and (symbolp def) (not (fboundp def)))
+        (eval (list 'defun sym '(&rest args)
+                    (list 'apply (list 'quote def) 'args)))
+      (fset sym def))
+    sym))
 (unless (fboundp 'fmakunbound) (defun fmakunbound (sym) (fset sym nil) sym))
 (unless (fboundp 'functionp) (defun functionp (x) (or (and (consp x) (eq (car x) 'lambda)) (and (symbolp x) (fboundp x)))))
 (unless (fboundp 'recordp) (defun recordp (x) nil))

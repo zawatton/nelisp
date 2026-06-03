@@ -61,7 +61,7 @@ Install a macro closure in `nelisp--macros'.  Signal
 NAME."
   (let ((name (car args))
         (params (cadr args))
-        (body (cddr args)))
+        (body (nelisp--lambda-body (cddr args))))
     (unless (symbolp name)
       (signal 'nelisp-eval-error (list "defmacro needs a symbol" name)))
     (unless (eq (gethash name nelisp--functions nelisp--unbound)

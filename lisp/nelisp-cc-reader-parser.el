@@ -111,6 +111,7 @@
     (defun nelisp_reader_p_car_idx   (d) (+ 3 (* d 4)))
     (defun nelisp_reader_p_cdr_idx   (d) (+ 4 (* d 4)))
     (defun nelisp_reader_p_head_idx  (d) (+ 5 (* d 4)))
+    (defun nelisp_reader_p_spare_idx (d) (+ 6 (* d 4)))
 
     ;; ===========================================================
     ;; ASCII digit predicate.
@@ -620,6 +621,16 @@
        ((= kind 9)
         (nelisp_reader_p_wrap str-ptr cursor-slot result-slot
                               slot-pool depth 102))
+       ;; `#s(hash-table ... data (...))' literals.
+       ((= kind 11)
+        (nelisp_reader_p_parse_sharps_paren
+         str-ptr cursor-slot result-slot slot-pool depth 0))
+       ;; `#^[...]' / `#^^[...]' char-table printer literals.  The
+       ;; standalone runtime has no dedicated char-table Sexp yet, so we
+       ;; preserve the bracket body as a vector-shaped value.
+       ((= kind 12)
+        (nelisp_reader_p_parse_vector
+         str-ptr cursor-slot result-slot slot-pool depth 0))
        ;; Leaf payloads.
        ((>= kind 20)
         (nelisp_reader_p_leaf kind result-slot
@@ -704,12 +715,6 @@
        ((= kind 0) -1)
        ((= kind 4) -1)
        ((< kind 0) -1)
-       ;; Record `#s(...)' / byte-code `#[...]' (kind 11) still
-       ;; out-of-scope for §116.B (= the stdlib subset does not need
-       ;; them, only the user-facing reader in `nelisp-stdlib-reader.el'
-       ;; does); kind 3 LBracket falls through to the recursive parse
-       ;; arm below so `[..]' vectors compose inside lists.
-       ((= kind 11) -1)
        (t
         (and (= (nelisp_reader_p_dispatch
                  str-ptr cursor-slot
@@ -729,6 +734,174 @@
                                                    (nelisp_reader_p_cdr_idx depth))
                                    result-slot)
              1))))
+
+    ;; ===========================================================
+    ;; `#s(hash-table ... data (...))' reader literal support.
+    ;;
+    ;; Emacs prints hash tables as a special `#s(hash-table ... data
+    ;; (KEY VAL ...))' record.  Vendor data files such as emoji-labels.el
+    ;; use this inside a quoted defconst, so the parser must materialise
+    ;; the runtime hash-table value directly instead of returning a
+    ;; constructor form.
+    ;;
+    ;; The standalone reader's current hash-table representation is
+    ;; `(MARKER . ALIST)' where ALIST is `((KEY . VALUE) ...)'.
+    ;; The marker is ignored by gethash/puthash and exists only to keep
+    ;; the table distinguishable from a plain alist in diagnostics.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_symbol_hash_table_p (sym)
+      (if (= (ptr-read-u64 sym 0) 4)
+          (if (and (= (str-len sym) 10)
+                   (= (str-byte-at sym 0) 104)
+                   (= (str-byte-at sym 1) 97)
+                   (= (str-byte-at sym 2) 115)
+                   (= (str-byte-at sym 3) 104)
+                   (= (str-byte-at sym 4) 45)
+                   (= (str-byte-at sym 5) 116)
+                   (= (str-byte-at sym 6) 97)
+                   (= (str-byte-at sym 7) 98)
+                   (= (str-byte-at sym 8) 108)
+                   (= (str-byte-at sym 9) 101))
+              1
+            0)
+        0))
+
+    (defun nelisp_reader_p_symbol_data_p (sym)
+      (if (= (ptr-read-u64 sym 0) 4)
+          (if (and (= (str-len sym) 4)
+                   (= (str-byte-at sym 0) 100)
+                   (= (str-byte-at sym 1) 97)
+                   (= (str-byte-at sym 2) 116)
+                   (= (str-byte-at sym 3) 97))
+              1
+            0)
+        0))
+
+    (defun nelisp_reader_p_hash_table_body_p (body)
+      (if (= (ptr-read-u64 body 0) 7)
+          (nelisp_reader_p_symbol_hash_table_p
+           (nl_cons_car_ptr body))
+        0))
+
+    (defun nelisp_reader_p_hash_plist_find_data (plist)
+      (if (= (ptr-read-u64 plist 0) 7)
+          (let* ((key (nl_cons_car_ptr plist))
+                 (rest (nl_cons_cdr_ptr plist)))
+            (if (= (ptr-read-u64 rest 0) 7)
+                (if (= (nelisp_reader_p_symbol_data_p key) 1)
+                    (nl_cons_car_ptr rest)
+                  (nelisp_reader_p_hash_plist_find_data
+                   (nl_cons_cdr_ptr rest)))
+              0))
+        0))
+
+    (defun nelisp_reader_p_list_nth_ptr (node n)
+      (if (= (ptr-read-u64 node 0) 7)
+          (if (= n 0)
+              (nl_cons_car_ptr node)
+            (nelisp_reader_p_list_nth_ptr (nl_cons_cdr_ptr node) (- n 1)))
+        0))
+
+    (defun nelisp_reader_p_hash_fill_table
+        (data table pair-slot newhead-slot)
+      (while (= (ptr-read-u64 data 0) 7)
+        (let* ((rest (nl_cons_cdr_ptr data)))
+          (if (= (ptr-read-u64 rest 0) 7)
+              (seq
+               (cons-make-with-clone
+                (nl_cons_car_ptr data)
+                (nl_cons_car_ptr rest)
+                pair-slot)
+               (cons-make-with-clone
+                pair-slot
+                (nl_cons_cdr_ptr table)
+                newhead-slot)
+               (cons-set-cdr table newhead-slot)
+               (setq data (nl_cons_cdr_ptr rest)))
+            (setq data 0))))
+      1)
+
+    (defun nelisp_reader_p_build_hash_table
+        (body result-slot slot-pool depth)
+      (let* ((data (nelisp_reader_p_hash_plist_find_data
+                    (nl_cons_cdr_ptr body))))
+        ;; Generated Emacs hash-table literals use:
+        ;;   #s(hash-table test equal data (KEY VAL ...))
+        ;; Keep this positional fallback while full symbol-name checks
+        ;; are still maturing in the standalone parser.
+        (if (= data 0)
+            (setq data (nelisp_reader_p_list_nth_ptr body 4))
+          0)
+        (and (sexp-int-make
+              (vector-ref-ptr slot-pool
+                              (nelisp_reader_p_head_idx depth))
+              0)
+             (cons-make-with-clone
+              (vector-ref-ptr slot-pool
+                              (nelisp_reader_p_head_idx depth))
+              (vector-ref-ptr slot-pool 2)
+              result-slot)
+             (if (= data 0)
+                 1
+               (nelisp_reader_p_hash_fill_table
+                data result-slot
+                (vector-ref-ptr slot-pool
+                                (nelisp_reader_p_cdr_idx depth))
+                (vector-ref-ptr slot-pool
+                                (nelisp_reader_p_spare_idx depth)))))))
+
+    (defun nelisp_reader_p_record_tag_p (tag)
+      (let* ((kind (ptr-read-u64 tag 0)))
+        (if (= kind 0) 1
+          (if (= kind 4) 1 0))))
+
+    (defun nelisp_reader_p_record_count (slots n)
+      (let* ((kind (ptr-read-u64 slots 0)))
+        (if (= kind 0)
+            n
+          (if (= kind 7)
+              (nelisp_reader_p_record_count
+               (nl_cons_cdr_ptr slots) (+ n 1))
+            -1))))
+
+    (defun nelisp_reader_p_record_fill (slots idx result-slot)
+      (let* ((kind (ptr-read-u64 slots 0)))
+        (if (= kind 0)
+            1
+          (if (= kind 7)
+              (and (record-slot-set result-slot idx
+                                    (nl_cons_car_ptr slots))
+                   (nelisp_reader_p_record_fill
+                    (nl_cons_cdr_ptr slots) (+ idx 1) result-slot))
+            0))))
+
+    (defun nelisp_reader_p_build_record (body result-slot)
+      (if (= (ptr-read-u64 body 0) 7)
+          (let* ((tag (nl_cons_car_ptr body))
+                 (slots (nl_cons_cdr_ptr body))
+                 (count (nelisp_reader_p_record_count slots 0)))
+            (if (and (= (nelisp_reader_p_record_tag_p tag) 1)
+                     (>= count 0))
+                (and (record-make tag count result-slot)
+                     (nelisp_reader_p_record_fill slots 0 result-slot))
+              0))
+        0))
+
+    (defun nelisp_reader_p_parse_sharps_paren
+        (str-ptr cursor-slot result-slot slot-pool depth _pad)
+      (and (= (nelisp_reader_p_parse_list_step
+               str-ptr cursor-slot
+               (vector-ref-ptr slot-pool
+                               (nelisp_reader_p_car_idx depth))
+               slot-pool (+ depth 1))
+              1)
+           (let* ((body (vector-ref-ptr slot-pool
+                                        (nelisp_reader_p_car_idx depth))))
+             (if (= (nelisp_reader_p_hash_table_body_p body) 1)
+                 (nelisp_reader_p_build_hash_table
+                  body result-slot slot-pool depth)
+               (nelisp_reader_p_build_record body result-slot)))))
 
     ;; ===========================================================
     ;; Vector body parser (= mirror of `parse_list_step' but with
@@ -884,11 +1057,17 @@ token stream via `extern-call nelisp_reader_lex_one' and produces
 Sexp values via the §101 / §111 / §122 grammar primitives.
 
 Kinds dispatched: 0 EOF, 1 LParen, 2 RParen, 3 LBracket, 5 Quote,
-6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 20 Int,
-21 Float, 22 Str, 23 Sym, 24 Char, 25 RadixInt.  Kind 3 LBracket
-drives the vector parser (Doc 116 §116.B+ — `parse_vector_step'
-+ `parse_vector' + `fill_vec' + `cons_list_len_walk').  Kind 11
-SharpsParen (record `#s(...)') still surfaces as a parse error.
+6 Backquote, 7 Comma, 8 CommaAt, 9 FunctionQuote, 10 Dot, 11
+SharpsParen, 12 CharTableBracket, 20 Int, 21 Float, 22 Str, 23 Sym,
+24 Char, 25 RadixInt.
+Kind 3 LBracket drives the vector parser (Doc 116 §116.B+ —
+`parse_vector_step' + `parse_vector' + `fill_vec' +
+`cons_list_len_walk').  Kind 11 materialises Emacs hash-table reader
+literals in the `#s(hash-table ... data (...))' shape used by generated
+vendor data files; other record literals still surface as parse errors.
+Kind 12 preserves `#^[...]' / `#^^[...]' char-table printer literals as
+plain vectors until the standalone runtime grows a dedicated char-table
+representation.
 Doc 122 §122.G unlocks kind 21 Float by routing the payload bytes
 through the `nl_str_to_float' extern (= `str::parse::<f64>()' with
 direct `Sexp::Float' write into RESULT-SLOT).

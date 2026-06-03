@@ -1,5 +1,13 @@
 ;;; nelisp-stdlib-list.el --- Sweep 9 G1 list operations  -*- lexical-binding: t; -*-
 
+(defun car-safe (object)
+  "Return the car of OBJECT if it is a cons cell, otherwise nil."
+  (if (consp object) (car object) nil))
+
+(defun cdr-safe (object)
+  "Return the cdr of OBJECT if it is a cons cell, otherwise nil."
+  (if (consp object) (cdr object) nil))
+
 (defun nthcdr (n list)
   (if (= n 0) list
     (if (null list) nil

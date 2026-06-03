@@ -111,6 +111,14 @@
   (should (equal (nelisp-eval '((lambda (x &optional y) (list x y)) 1 2))
                  '(1 2))))
 
+(ert-deftest nelisp-eval-lambda-docstring-is-not-body ()
+  (nelisp--reset)
+  (should (= (nelisp-eval
+              '((lambda ()
+                  "This string is documentation, not a return value."
+                  42)))
+             42)))
+
 (ert-deftest nelisp-eval-lambda-too-few ()
   (should-error (nelisp-eval '((lambda (x y) x) 1))
                 :type 'nelisp-eval-error))
@@ -125,6 +133,15 @@
   (nelisp--reset)
   (nelisp-eval '(defun add1 (n) (+ n 1)))
   (should (= (nelisp-eval '(add1 5)) 6)))
+
+(ert-deftest nelisp-eval-defun-docstring-installs-function ()
+  (nelisp--reset)
+  (nelisp-eval
+   '(defun docstring-probe ()
+      "A long vendor-style docstring should not become the body."
+      42))
+  (should (nelisp-eval '(fboundp (quote docstring-probe))))
+  (should (= (nelisp-eval '(docstring-probe)) 42)))
 
 (ert-deftest nelisp-eval-defvar-sets-global ()
   (nelisp--reset)

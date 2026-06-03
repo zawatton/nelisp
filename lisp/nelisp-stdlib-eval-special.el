@@ -359,8 +359,11 @@ env captured.  For top-level defun the captured env is empty so
 semantics match Rust; defuns nested inside `let' would receive a
 non-empty captured env in elisp but the bare form in Rust — this is
 an intentional improvement, not a regression."
-  (let ((lambda-form (cons 'lambda (cons args body)))
-        (qname (cons 'quote (cons name nil))))
+  (let* ((real-body (if (and body (stringp (car body)))
+                        (cdr body)
+                      body))
+         (lambda-form (cons 'lambda (cons args real-body)))
+         (qname (cons 'quote (cons name nil))))
     (cons 'progn
           (cons (cons 'fset (cons qname (cons lambda-form nil)))
                 (cons qname nil)))))
@@ -374,7 +377,10 @@ the lambda after stripping the `macro' tag.  As with `defun', the
 embedded lambda evaluates to a closure (not a raw `(lambda ARGS ...)'
 form), so `expand_macro' receives the closure and `apply_function'
 dispatches via the `closure' arm."
-  (let* ((lambda-form (cons 'lambda (cons args body)))
+  (let* ((real-body (if (and body (stringp (car body)))
+                        (cdr body)
+                      body))
+         (lambda-form (cons 'lambda (cons args real-body)))
          (qname (cons 'quote (cons name nil)))
          ;; Inner cons cell: builds (LAMBDA-FORM nil) at evaluation time.
          (inner-cons (cons 'cons

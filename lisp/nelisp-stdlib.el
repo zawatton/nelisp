@@ -1,5 +1,8 @@
 ;;; nelisp-stdlib.el --- Sweep 9 S0 Elisp stdlib (Rust→Elisp migration)  -*- lexical-binding: t; -*-
 
+(defvar lexical-binding t
+  "Standalone default: evaluated source is treated as lexical.")
+
 (defun identity (x) x)
 (defun null (x) (eq x nil))
 (defun not (x) (eq x nil))
@@ -246,6 +249,21 @@
               form))
         form)
     form))
+
+(defun macroexp-parse-body (body)
+  "Split BODY into declarations and remaining forms.
+Return (DECLARATIONS . BODY-FORMS), matching the shape used by Emacs
+macro helpers such as `iter-defun'.  A leading docstring and any
+following `(declare ...)' forms are treated as declarations."
+  (let ((declarations nil)
+        (cur body))
+    (when (and cur (stringp (car cur)))
+      (setq declarations (cons (car cur) declarations))
+      (setq cur (cdr cur)))
+    (while (and cur (consp (car cur)) (eq (car (car cur)) 'declare))
+      (setq declarations (cons (car cur) declarations))
+      (setq cur (cdr cur)))
+    (cons (nreverse declarations) cur)))
 
 ;; Doc 111 §111.B — `recordp' now routes through the internal
 ;; `nelisp--recordp-cc' bridge.  Linux x86_64 uses the new
