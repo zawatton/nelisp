@@ -3553,7 +3553,7 @@ correctly."
             (argv_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "nelisp-standalone-argv"))) 1))
             (argv_sym (alloc-bytes 32 8))
             (sp0 (nl_os_argv_init sp))
-            (argc (if (= sp0 0) 1 (ptr-read-u64 sp0 0)))
+            (argc (if (= sp0 0) 1 (logand (ptr-read-u64 sp0 0) 4294967295)))
             ;; argv[1] = C-string path pointer at [sp + 16] (0 if argc==1).
             (path (if (= sp0 0) 0 (ptr-read-u64 sp0 16)))
             (arg2 (if (> argc 2)

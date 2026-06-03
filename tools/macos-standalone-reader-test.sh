@@ -60,6 +60,12 @@ run_expect_code() {
   set -e
   if [ "$code" -ne "$want" ]; then
     echo "[macos-standalone-reader] FAIL: $label -> exit $code (expected $want)"
+    if command -v lldb >/dev/null 2>&1; then
+      echo "[macos-standalone-reader] lldb backtrace for: $*"
+      set +e
+      lldb --batch -o run -o "bt all" -- "$@"
+      set -e
+    fi
     exit 1
   fi
   echo "[macos-standalone-reader] PASS: $label -> exit $want"
