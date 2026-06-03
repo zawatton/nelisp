@@ -14,6 +14,8 @@
 
 ;;; Code:
 
+(setq load-prefer-newer t)
+
 (require 'ert)
 (require 'cl-lib)
 
@@ -233,6 +235,24 @@
              '(seq (ptr-write-u64 #x200000010 0 1)
                    (atomic-fetch-add #x200000058 1)
                    (ptr-write-u64 4096 0 #x200000000))))))
+
+(ert-deftest nelisp-standalone-target-macos-arena-uses-bounded-mmap ()
+  "macOS arena avoids an oversized fixed mmap reservation."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (cl-labels ((tree-member-p
+                 (needle tree)
+                 (cond
+                  ((equal needle tree) t)
+                  ((consp tree)
+                   (or (tree-member-p needle (car tree))
+                       (tree-member-p needle (cdr tree)))))))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p
+                 '(syscall-direct 197 #x200000000 #x40000000 3 4114 -1 0)
+                 arena))
+        (should-not (tree-member-p
+                     '(syscall-direct 197 #x200000000 8589934592 3 4114 -1 0)
+                     arena))))))
 
 (ert-deftest nelisp-standalone-target-windows-reserves-1g-stack ()
   "Windows standalone reserves a Linux-trampoline-sized native stack."

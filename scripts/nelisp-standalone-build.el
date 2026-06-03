@@ -88,7 +88,13 @@ below 2 GiB so Phase47's current signed imm32 materialization remains valid.")
 (defconst nelisp-standalone--macos-arena-base #x200000000
   "macOS standalone arena base.
 Must live above the 4 GiB __PAGEZERO segment used by the Mach-O executable
-writer; 8 GiB matches the existing macOS self-host smoke programs.")
+writer.")
+
+(defconst nelisp-standalone--macos-arena-size #x40000000
+  "macOS standalone fixed arena size.
+Keep the mapping large enough for standalone reader/eval work, but avoid the
+historical 8 GiB fixed reservation: some Darwin environments reject that before
+the first page is touched.")
 
 (defun nelisp-standalone--target-abi (&optional target)
   "Return the compiler ABI for standalone TARGET."
@@ -627,7 +633,7 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
   "Return the macOS `nl_arena_init' form using Darwin mmap."
   `(defun nl_arena_init ()
      (let ((p (syscall-direct 197 ,nelisp-standalone--macos-arena-base
-                              8589934592 3 4114 -1 0)))
+                              ,nelisp-standalone--macos-arena-size 3 4114 -1 0)))
        (if (= p ,nelisp-standalone--macos-arena-base)
            (seq
             (ptr-write-u64 ,nelisp-standalone--macos-arena-base 0 256)
