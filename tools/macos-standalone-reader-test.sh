@@ -91,6 +91,40 @@ run_expect_output() {
   echo "[macos-standalone-reader] PASS: $label"
 }
 
+run_lldb_with_stdin() {
+  local input="$1"; shift
+  if command -v lldb >/dev/null 2>&1; then
+    echo "[macos-standalone-reader] lldb backtrace for stdin case: $* < $input"
+    set +e
+    lldb --batch \
+      -o "process launch --stdin '$input'" \
+      -o "bt all" \
+      -- "$@"
+    set -e
+  fi
+}
+
+run_expect_pipe_output() {
+  local label="$1" expected="$2" input="$3"; shift 3
+  local output code
+  set +e
+  output="$(cat "$input" | "$@")"
+  code=$?
+  set -e
+  if [ "$code" -ne 0 ]; then
+    echo "[macos-standalone-reader] FAIL: $label exited $code"
+    printf 'stdout:\n%s\n' "$output"
+    run_lldb_with_stdin "$input" "$@"
+    exit 1
+  fi
+  if [ "$output" != "$expected" ]; then
+    echo "[macos-standalone-reader] FAIL: $label output mismatch"
+    printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$output"
+    exit 1
+  fi
+  echo "[macos-standalone-reader] PASS: $label"
+}
+
 run_expect_code "embedded src=$SOURCE" "$EXPECTED" "$EXE"
 
 if [ "$EMBEDDED_ONLY" -eq 1 ]; then
@@ -136,34 +170,30 @@ run_expect_output "exec-runtime-image" "" \
 run_expect_code "exec-runtime-image missing form" 1 \
   "$EXE" exec-runtime-image "$RUNTIME_IMAGE"
 
-REPL_OUTPUT="$(printf '%s\n' \
-  "(+ 40 2)" \
-  "nil" \
-  "t" \
-  "(quote (1 2 3))" \
-  '(vector 1 "a" nil t)' \
-  "(exit)" | "$EXE" repl --no-prompt)"
+REPL_INPUT="$SMOKE_DIR/repl-input.el"
+cat >"$REPL_INPUT" <<'EOF'
+(+ 40 2)
+nil
+t
+(quote (1 2 3))
+(vector 1 "a" nil t)
+(exit)
+EOF
 EXPECTED_REPL=$'42\nnil\nt\n(1 2 3)\n[1 "a" nil t]'
-if [ "$REPL_OUTPUT" != "$EXPECTED_REPL" ]; then
-  echo "[macos-standalone-reader] FAIL: repl stdin/stdout output mismatch"
-  printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED_REPL" "$REPL_OUTPUT"
-  exit 1
-fi
-echo "[macos-standalone-reader] PASS: repl stdin/stdout -> 42"
+run_expect_pipe_output "repl stdin/stdout" "$EXPECTED_REPL" "$REPL_INPUT" \
+  "$EXE" repl --no-prompt
 
-QUIET_REPL_OUTPUT="$(printf '%s\n' \
-  "(defun hot () 1)" \
-  "(hot)" \
-  "(condition-case e (signal 'quit nil) (quit 42))" \
-  '(nelisp--write-stdout-bytes "explicit\n")' \
-  "(hot)" \
-  "(exit)" | "$EXE" repl --no-prompt --no-print)"
-if [ "$QUIET_REPL_OUTPUT" != "explicit" ]; then
-  echo "[macos-standalone-reader] FAIL: repl --no-print output mismatch"
-  printf 'expected:\n%s\nactual:\n%s\n' "explicit" "$QUIET_REPL_OUTPUT"
-  exit 1
-fi
-echo "[macos-standalone-reader] PASS: repl --no-print"
+QUIET_REPL_INPUT="$SMOKE_DIR/repl-quiet-input.el"
+cat >"$QUIET_REPL_INPUT" <<'EOF'
+(defun hot () 1)
+(hot)
+(condition-case e (signal 'quit nil) (quit 42))
+(nelisp--write-stdout-bytes "explicit\n")
+(hot)
+(exit)
+EOF
+run_expect_pipe_output "repl --no-print" "explicit" "$QUIET_REPL_INPUT" \
+  "$EXE" repl --no-prompt --no-print
 
 run_expect_code "repl bad option" 2 "$EXE" repl --bad
 echo "[macos-standalone-reader] all PASS - macOS-native standalone reader OK"
