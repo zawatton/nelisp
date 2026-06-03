@@ -61,6 +61,16 @@ sometimes induces sentinel races that do not occur on developer hosts."
        (nelisp-process--reset-registry)
        (nelisp-actor--reset))))
 
+(defun nelisp-process-test--run-until (predicate &optional timeout)
+  "Run process and actor dispatch until PREDICATE returns non-nil."
+  (let ((deadline (+ (float-time) (or timeout 2.0)))
+        done)
+    (while (and (not done) (< (float-time) deadline))
+      (accept-process-output nil 0.02)
+      (nelisp-actor-run-until-idle)
+      (setq done (funcall predicate)))
+    done))
+
 ;;; Basic lifecycle ---------------------------------------------------
 
 (ert-deftest nelisp-process-spawn-true-exits-zero ()
@@ -206,7 +216,8 @@ exit time (before the user sentinel fires)."
                :command '("true")
                :actor collector)))
        (nelisp-process-wait-for-exit p 2.0)
-       (nelisp-actor-run-until-idle)
+       (nelisp-process-test--run-until
+        (lambda () (memq 'process-state collector-seen)))
        (nelisp-send collector (nelisp-make-event 'quit nil))
        (nelisp-actor-run-until-idle)
        (should (memq 'process-state collector-seen))))))
