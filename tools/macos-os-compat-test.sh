@@ -16,14 +16,14 @@ while [ "$#" -gt 0 ]; do
     --suite) SUITE="$2"; shift 2 ;;
     --selector) SELECTOR="$2"; shift 2 ;;
     --list)
-      printf '%s\n' all fds vm sockets
+      printf '%s\n' all fds vm process sockets
       exit 0
       ;;
     -h|--help)
-      echo "usage: $0 [--suite all|fds|vm|sockets] [--selector REGEXP] [--emacs EMACS]"
+      echo "usage: $0 [--suite all|fds|vm|process|sockets] [--selector REGEXP] [--emacs EMACS]"
       exit 0
       ;;
-    *) echo "usage: $0 [--suite all|fds|vm|sockets] [--selector REGEXP] [--emacs EMACS]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--suite all|fds|vm|process|sockets] [--selector REGEXP] [--emacs EMACS]" >&2; exit 2 ;;
   esac
 done
 
@@ -31,10 +31,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 case "$SUITE" in
-  all) DEFAULT_SELECTOR="darwin"; EXPECTED_COUNT=13 ;;
-  fds) DEFAULT_SELECTOR="open-darwin\\|close-darwin\\|read-darwin\\|write-darwin\\|pipe-darwin\\|poll-darwin"; EXPECTED_COUNT=6 ;;
+  all) DEFAULT_SELECTOR="darwin"; EXPECTED_COUNT=21 ;;
+  fds) DEFAULT_SELECTOR="open-darwin\\|close-darwin\\|read-darwin\\|write-darwin\\|pipe-darwin\\|poll-darwin\\|dup2-darwin\\|fcntl-darwin\\|fstat-darwin"; EXPECTED_COUNT=9 ;;
   vm) DEFAULT_SELECTOR="vm-darwin"; EXPECTED_COUNT=1 ;;
-  sockets) DEFAULT_SELECTOR="network-byte-order-darwin\\|sockopts-darwin\\|shutdown-darwin\\|basic-syscalls-darwin"; EXPECTED_COUNT=4 ;;
+  process) DEFAULT_SELECTOR="exit-darwin\\|execve-darwin\\|wait-darwin\\|kill-darwin\\|getppid-darwin"; EXPECTED_COUNT=5 ;;
+  sockets) DEFAULT_SELECTOR="network-byte-order-darwin\\|sockopts-darwin\\|shutdown-darwin\\|basic-syscalls-darwin\\|socketpair-darwin"; EXPECTED_COUNT=5 ;;
   *) echo "[macos-os] FAIL: unknown suite $SUITE" >&2; exit 2 ;;
 esac
 
