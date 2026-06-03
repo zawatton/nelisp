@@ -2912,11 +2912,15 @@ reused buffer and >8-byte names install correctly."
             (argv_list (alloc-bytes 32 8))
             (argv_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "nelisp-standalone-argv"))) 1))
             (argv_sym (alloc-bytes 32 8))
-            (argc (ptr-read-u64 sp 0))
+            (argc (if (= sp 0) 1 (ptr-read-u64 sp 0)))
             ;; argv[1] = C-string path pointer at [sp + 16] (0 if argc==1).
-            (path (ptr-read-u64 sp 16))
-            (arg2 (if (> argc 2) (ptr-read-u64 sp 24) 0))
-            (arg3 (if (> argc 3) (ptr-read-u64 sp 32) 0))
+            (path (if (= sp 0) 0 (ptr-read-u64 sp 16)))
+            (arg2 (if (> argc 2)
+                      (if (= sp 0) 0 (ptr-read-u64 sp 24))
+                    0))
+            (arg3 (if (> argc 3)
+                      (if (= sp 0) 0 (ptr-read-u64 sp 32))
+                    0))
             (prompt_p (if (= (nl_cstr_eq_no_prompt arg2) 1)
                           0
                         (if (= (nl_cstr_eq_no_prompt arg3) 1) 0 1)))
@@ -3470,7 +3474,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
   "Build the ORDERED reader-path unit list (start first, arena last).
 Links the REAL special-form + env machinery (no trap stubs) so the binary is a
 genuine general interpreter for the 11 special forms + installed builtins."
-  (let* ((start (nelisp-standalone--start-unit))
+  (let* ((start (nelisp-standalone--target-start-unit))
          (driver (let ((u (nelisp-standalone--compile-to-unit
                            "driver.o" (nelisp-standalone--reader-driver-source))))
                    (push "driver.o" nelisp-standalone--recompiled) u))
@@ -3581,21 +3585,25 @@ genuine general interpreter for the 11 special forms + installed builtins."
 
 ;;;###autoload
 (defun nelisp-standalone-build-reader ()
-  "Incrementally build the reader-path standalone ELF; return its path."
+  "Incrementally build the reader-path standalone binary; return its path."
   (setq nelisp-standalone--recompiled nil)
-  (let ((units (nelisp-standalone--reader-units)))
-    (nelisp-link-units nelisp-standalone--reader-out units)
-    (set-file-modes nelisp-standalone--reader-out #o755)
+  (let* ((units (nelisp-standalone--reader-units))
+         (out (nelisp-standalone--output-path t)))
+    (if (eq nelisp-standalone--target 'windows-x86_64)
+        (nelisp-link-units-pe32 out units "_start"
+                                '("ExitProcess" "VirtualAlloc"))
+      (nelisp-link-units out units)
+      (set-file-modes out #o755))
     (message "[standalone-reader] linked %d units -> %s (src=%S)"
-             (length units) nelisp-standalone--reader-out
+             (length units) out
              (nelisp-standalone--reader-src))
-    nelisp-standalone--reader-out))
+    out))
 
 ;;;###autoload
 (defun nelisp-standalone-reader-test ()
   "Build the reader binary, run it, assert exit == eval(NELISP_SRC).  Exits 0/1."
-  (nelisp-standalone-build-reader)
-  (let ((code (call-process nelisp-standalone--reader-out nil nil nil))
+  (let* ((out (nelisp-standalone-build-reader))
+         (code (call-process out nil nil nil))
         (expected (nelisp-standalone--reader-expected)))
     (if (= code expected)
         (condition-case err
