@@ -107,6 +107,10 @@
                         (flatten-tree
                          (nelisp-standalone--target-arena-source))))))
 
+(ert-deftest nelisp-standalone-target-windows-reserves-1g-stack ()
+  "Windows standalone reserves a Linux-trampoline-sized native stack."
+  (should (= nelisp-standalone--windows-stack-reserve #x40000000)))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

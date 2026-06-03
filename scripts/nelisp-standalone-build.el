@@ -329,6 +329,11 @@ must stop below the PE image base 0x140000000.  Keep the committed mapping at
 unlike Linux's demand-paged mmap, and 1 GiB can fail on normal developer
 machines before the first metadata write.")
 
+(defconst nelisp-standalone--windows-stack-reserve #x40000000
+  "Windows standalone PE stack reserve size.
+This matches the Linux standalone trampoline's 1 GiB native stack, but remains a
+virtual reservation in the PE header; committed stack pages grow on demand.")
+
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc."
   `(defun nl_arena_init ()
@@ -2458,7 +2463,9 @@ is faster.  Parallelism pays off only once per-unit compilation dominates startu
          (out (nelisp-standalone--output-path nil)))
     (if (eq nelisp-standalone--target 'windows-x86_64)
         (nelisp-link-units-pe32 out units "_start"
-                                '("ExitProcess" "VirtualAlloc"))
+                                '("ExitProcess" "VirtualAlloc")
+                                (list :stack-reserve
+                                      nelisp-standalone--windows-stack-reserve))
       (nelisp-link-units out units)
       (set-file-modes out #o755))
     (message "[standalone] linked %d units -> %s" (length units) out)
@@ -3702,7 +3709,9 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (out (nelisp-standalone--output-path t)))
     (if (eq nelisp-standalone--target 'windows-x86_64)
         (nelisp-link-units-pe32 out units "_start"
-                                (nelisp-standalone--reader-pe-imports))
+                                (nelisp-standalone--reader-pe-imports)
+                                (list :stack-reserve
+                                      nelisp-standalone--windows-stack-reserve))
       (nelisp-link-units out units)
       (set-file-modes out #o755))
     (message "[standalone-reader] linked %d units -> %s (src=%S)"

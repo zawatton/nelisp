@@ -221,6 +221,20 @@
     (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 60)) #x200))
     (should (= (nelisp-pe-write-test--read-le16 bytes (+ opt-off 68)) 3))))
 
+(ert-deftest nelisp-pe-write-exe-binary-generic-stack-reserve ()
+  "Generic PE specs can override SizeOfStackReserve without changing smokes."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe
+                 (list :text (unibyte-string #xcc)
+                       :stack-reserve #x40000000
+                       :stack-commit #x1000)))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20)))
+    (should (= (nelisp-pe-write-test--read-le64 bytes (+ opt-off 72))
+               #x40000000))
+    (should (= (nelisp-pe-write-test--read-le64 bytes (+ opt-off 80))
+               #x1000))))
+
 (ert-deftest nelisp-pe-write-exe-binary-section-table ()
   "The minimal EXE has .text at RVA 0x1000 and .idata at RVA 0x2000."
   (let* ((bytes (nelisp-pe-write-test--emit-minimal-exe))

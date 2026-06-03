@@ -733,9 +733,10 @@ function so direct `call rel32 Function' relocations can target it."
    nil nil))
 
 (defun nelisp-link-units-pe32 (file-path units
-                                         &optional entry-sym imports)
+                                         &optional entry-sym imports options)
   "Link UNITS and emit a PE32+ executable to FILE-PATH.
 IMPORTS has the same shape as `nelisp-pe-write-exe-binary' generic :imports.
+OPTIONS is a plist accepting PE image options such as :stack-reserve.
 Imported function names are resolved by synthesized in-image thunks, so normal
 Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
   (require 'nelisp-pe-write)
@@ -785,7 +786,11 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
            :rodata rodata
            :data data
            :entry-rva entry-rva
-           :imports normalized-imports))
+           :imports normalized-imports
+           :stack-reserve (plist-get options :stack-reserve)
+           :stack-commit (plist-get options :stack-commit)
+           :heap-reserve (plist-get options :heap-reserve)
+           :heap-commit (plist-get options :heap-commit)))
     file-path))
 
 (provide 'nelisp-static-linker)

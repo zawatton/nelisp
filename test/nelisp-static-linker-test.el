@@ -1188,6 +1188,33 @@ the lea)."
                                                 (+ hint-off 14))))))
       (when (file-exists-p path) (delete-file path)))))
 
+(ert-deftest nelisp-link-units-pe32-stack-reserve-option ()
+  "PE linking forwards stack reserve options to the EXE writer."
+  (let* ((text (unibyte-string #xcc))
+         (unit (nelisp-link-unit-make
+                "start.o"
+                (list (cons 'text text))
+                (list (nelisp-link-symbol "_start" 0
+                                          :section 'text
+                                          :bind 'global
+                                          :type 'func))
+                nil))
+         (path (make-temp-file "nelisp-link-pe32-stack-" nil ".exe")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units-pe32 path (list unit) "_start" nil
+                                  '(:stack-reserve #x40000000
+                                    :stack-commit #x1000))
+          (let* ((bytes (nelisp-link-test--read-file-bytes path))
+                 (pe-off (nelisp-link-test--read-le32 bytes #x3c))
+                 (file-off (+ pe-off 4))
+                 (opt-off (+ file-off 20)))
+            (should (= (nelisp-link-test--read-le64 bytes (+ opt-off 72))
+                       #x40000000))
+            (should (= (nelisp-link-test--read-le64 bytes (+ opt-off 80))
+                       #x1000))))
+      (when (file-exists-p path) (delete-file path)))))
+
 (provide 'nelisp-static-linker-test)
 
 ;;; nelisp-static-linker-test.el ends here

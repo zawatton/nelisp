@@ -868,7 +868,11 @@ Section numbers (1-based, per COFF spec §4):
         (import-rva (or (plist-get fields :import-rva) 0))
         (import-size (or (plist-get fields :import-size) 0))
         (iat-rva (or (plist-get fields :iat-rva) 0))
-        (iat-size (or (plist-get fields :iat-size) 0)))
+        (iat-size (or (plist-get fields :iat-size) 0))
+        (stack-reserve (or (plist-get fields :stack-reserve) #x100000))
+        (stack-commit (or (plist-get fields :stack-commit) #x1000))
+        (heap-reserve (or (plist-get fields :heap-reserve) #x100000))
+        (heap-commit (or (plist-get fields :heap-commit) #x1000)))
     (nelisp-pe--write-le16 cbuf #x020b) ; PE32+
     (nelisp-pe--write-u8 cbuf 0)        ; MajorLinkerVersion
     (nelisp-pe--write-u8 cbuf 1)        ; MinorLinkerVersion
@@ -892,10 +896,10 @@ Section numbers (1-based, per COFF spec §4):
     (nelisp-pe--write-le32 cbuf 0)      ; CheckSum
     (nelisp-pe--write-le16 cbuf nelisp-pe--subsystem-windows-cui)
     (nelisp-pe--write-le16 cbuf nelisp-pe--dll-characteristics-nx-compat)
-    (nelisp-pe--write-le64 cbuf #x100000) ; SizeOfStackReserve
-    (nelisp-pe--write-le64 cbuf #x1000)   ; SizeOfStackCommit
-    (nelisp-pe--write-le64 cbuf #x100000) ; SizeOfHeapReserve
-    (nelisp-pe--write-le64 cbuf #x1000)   ; SizeOfHeapCommit
+    (nelisp-pe--write-le64 cbuf stack-reserve) ; SizeOfStackReserve
+    (nelisp-pe--write-le64 cbuf stack-commit)  ; SizeOfStackCommit
+    (nelisp-pe--write-le64 cbuf heap-reserve)  ; SizeOfHeapReserve
+    (nelisp-pe--write-le64 cbuf heap-commit)   ; SizeOfHeapCommit
     (nelisp-pe--write-le32 cbuf 0)        ; LoaderFlags
     (nelisp-pe--write-le32 cbuf 16)       ; NumberOfRvaAndSizes
     (nelisp-pe--write-data-directory-table
@@ -2750,7 +2754,8 @@ SPEC keys:
   :rodata     optional .rdata bytes
   :data       optional .data bytes
   :entry-rva  optional entry RVA, defaults to .text RVA (#x1000)
-  :imports    optional import list accepted by `nelisp-pe--normalize-imports'."
+  :imports    optional import list accepted by `nelisp-pe--normalize-imports'
+  :stack-reserve / :stack-commit optional PE stack sizes."
   (let* ((text (or (plist-get spec :text)
                    (error "nelisp-pe: generic EXE :text is required")))
          (rodata (plist-get spec :rodata))
@@ -2848,7 +2853,11 @@ SPEC keys:
            :import-rva (if idata-info (plist-get idata-info :import-rva) 0)
            :import-size (if idata-info (plist-get idata-info :import-size) 0)
            :iat-rva (if idata-info (plist-get idata-info :iat-rva) 0)
-           :iat-size (if idata-info (plist-get idata-info :iat-size) 0)))
+           :iat-size (if idata-info (plist-get idata-info :iat-size) 0)
+           :stack-reserve (plist-get spec :stack-reserve)
+           :stack-commit (plist-get spec :stack-commit)
+           :heap-reserve (plist-get spec :heap-reserve)
+           :heap-commit (plist-get spec :heap-commit)))
     (nelisp-pe--write-pe-section-header
      cbuf
      (list :name ".text"
@@ -5113,7 +5122,8 @@ SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `winsock-socket-exit-42',
 `commandlinetoargv-exit-42', `createprocess-wait-exit-42',
 `createthread-wait-exit-42', a plist with :exit-code, or a generic plist with
-:text/:rodata/:data/:entry-rva/:imports.  The output imports DLL functions
+:text/:rodata/:data/:entry-rva/:imports/:stack-reserve/:stack-commit.
+The output imports DLL functions
 through a real PE import directory and writes raw bytes with `no-conversion'.
 Returns FILE-PATH."
   (let* ((exit-code
