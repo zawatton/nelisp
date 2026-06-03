@@ -30,7 +30,8 @@
   (let ((makefile (nelisp-standalone-tarball-test--read "Makefile"))
         (build (nelisp-standalone-tarball-test--read "tools/build-standalone-tarball.sh"))
         (verify (nelisp-standalone-tarball-test--read "tools/verify-standalone-tarball.sh"))
-        (installer (nelisp-standalone-tarball-test--read "release/stage-d-v3.0/install-v3.sh")))
+        (installer (nelisp-standalone-tarball-test--read "release/stage-d-v3.0/install-v3.sh"))
+        (windows-installer (nelisp-standalone-tarball-test--read "release/stage-d-v3.0/install-v3.ps1")))
     (should (string-match-p "standalone-tarball:" makefile))
     (should (string-match-p "standalone-tarball-verify:" makefile))
     (should (string-match-p "build-standalone-tarball.sh" makefile))
@@ -58,7 +59,13 @@
     (should (string-match-p "missing tool: codesign" installer))
     (should (string-match-p "codesign --verify \"\\${ANVIL_PREFIX}/bin/nelisp\"" installer))
     (should (string-match-p "installed bin/nelisp is not signed; rebuild the macOS tarball" installer))
-    (should-not (string-match-p "codesign -f -s - \"\\${ANVIL_PREFIX}/bin/nelisp\"" installer))))
+    (should-not (string-match-p "codesign -f -s - \"\\${ANVIL_PREFIX}/bin/nelisp\"" installer))
+    (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" windows-installer))
+    (should (string-match-p "Get-FileHash -Algorithm SHA256" windows-installer))
+    (should (string-match-p "tar -xzf \\$TarPath -C \\$Prefix --strip-components=1" windows-installer))
+    (should (string-match-p "installed bin\\\\nelisp.exe missing" windows-installer))
+    (should-not (string-match-p "\\_<cargo\\_>" windows-installer))
+    (should-not (string-match-p "\\_<rustc\\_>" windows-installer))))
 
 (ert-deftest nelisp-standalone-tarball-build-script-usage-is-checked-before-build ()
   "The POSIX tarball builder rejects usage errors before invoking make."
@@ -98,12 +105,16 @@
                        "README-stage-d-v3.0.org")))
     (should (string-match-p "scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball"
                             root-readme))
-    (should (string-match-p "POSIX verification also runs =install-v3.sh="
+    (should (string-match-p "verification also installs from the freshly built"
                             root-readme))
-    (should (string-match-p "POSIX tarball gate includes a real =install-v3.sh --from dist= smoke"
+    (should (string-match-p "executes the installed =bin/nelisp= or =bin/nelisp.exe="
+                            root-readme))
+    (should (string-match-p "The tarball gate includes a real install smoke"
                             root-readme))
     (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
                             root-readme))
+    (should (string-match-p "\\.\\\\install-v3\\.ps1" root-readme))
+    (should (string-match-p "\\$env:LOCALAPPDATA\\\\anvil-stage-d-v3.0" root-readme))
     (should (string-match-p "Standalone native CLI matrix" root-readme))
     (should (string-match-p "macos-aarch64.*signed CLI tarball"
                             root-readme))
@@ -114,7 +125,11 @@
     (should (string-match-p "codesign -s -" stage-readme))
     (should (string-match-p "does not[ \n]+repair or re-sign" stage-readme))
     (should (string-match-p "install-v3.sh= also verifies" stage-readme))
-    (should (string-match-p "POSIX verification also installs" stage-readme))
+    (should (string-match-p "verification also installs from the freshly built"
+                            stage-readme))
+    (should (string-match-p "runs the installed =bin/nelisp= or =bin/nelisp.exe="
+                            stage-readme))
+    (should (string-match-p "\\.\\\\release\\\\stage-d-v3.0\\\\install-v3\\.ps1" stage-readme))
     (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
                             stage-readme))
     (should (string-match-p "macOS arm64 native verification also checks the existing code signature"

@@ -38,6 +38,38 @@ function Invoke-Checked {
     }
 }
 
+function Invoke-WindowsStandaloneInstallSmoke {
+    $Root = Join-Path ([System.IO.Path]::GetTempPath()) ("nelisp-install-smoke-" + [guid]::NewGuid().ToString("N"))
+    $Prefix = Join-Path $Root "install"
+    try {
+        & (Join-Path $RepoRoot "release\stage-d-v3.0\install-v3.ps1") `
+            -From (Join-Path $RepoRoot "dist") `
+            -Prefix $Prefix `
+            -Version "stage-d-v3.0"
+        $InstallCode = $LASTEXITCODE
+        if ($null -eq $InstallCode) {
+            $InstallCode = 0
+        }
+        if ($InstallCode -ne 0) {
+            throw ("installer failed with exit " + $InstallCode)
+        }
+
+        $Exe = Join-Path $Prefix "bin\nelisp.exe"
+        $Output = & $Exe eval "(+ 40 2)"
+        $Code = $LASTEXITCODE
+        if ($null -eq $Code) {
+            $Code = 0
+        }
+        $Text = $Output -join "`n"
+        if ($Code -ne 0 -or $Text -ne "42") {
+            throw ("installed nelisp.exe failed: exit " + $Code + " output " + $Text)
+        }
+        Write-Host "[installer] PASS: windows-x86_64 installed bin\nelisp.exe eval -> 42"
+    } finally {
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Root
+    }
+}
+
 if ($ParallelJobs -le 0) {
     $ParallelJobs = [Math]::Min(2, [System.Environment]::ProcessorCount)
 }
@@ -93,6 +125,10 @@ if ($IncludeTarball) {
         & (Join-Path $RepoRoot "tools\verify-standalone-tarball.ps1") `
             -Version "stage-d-v3.0" `
             -Target "windows-x86_64"
+    }
+
+    Invoke-Checked "Windows standalone installer smoke" {
+        Invoke-WindowsStandaloneInstallSmoke
     }
 }
 

@@ -116,7 +116,11 @@
     (should (string-match-p "\\[switch\\]\\$IncludeTarball" script))
     (should (string-match-p "Windows standalone tarball smoke" script))
     (should (string-match-p "build-standalone-tarball.ps1" script))
-    (should (string-match-p "verify-standalone-tarball.ps1" script))))
+    (should (string-match-p "verify-standalone-tarball.ps1" script))
+    (should (string-match-p "function Invoke-WindowsStandaloneInstallSmoke" script))
+    (should (string-match-p "Windows standalone installer smoke" script))
+    (should (string-match-p "release\\\\stage-d-v3.0\\\\install-v3.ps1" script))
+    (should (string-match-p "installed bin\\\\nelisp.exe eval -> 42" script))))
 
 (ert-deftest nelisp-standalone-parallel-windows-eval-smoke-script ()
   "The Windows native standalone eval smoke builds and executes the PE EXE."
@@ -189,12 +193,18 @@
          (verify-path
           (expand-file-name "tools/verify-standalone-tarball.ps1"
                             nelisp-standalone-parallel-windows-test--repo-root))
+         (install-path
+          (expand-file-name "release/stage-d-v3.0/install-v3.ps1"
+                            nelisp-standalone-parallel-windows-test--repo-root))
          (build (nelisp-standalone-parallel-windows-test--read-file-text
                  build-path))
          (verify (nelisp-standalone-parallel-windows-test--read-file-text
-                  verify-path)))
+                  verify-path))
+         (install (nelisp-standalone-parallel-windows-test--read-file-text
+                   install-path)))
     (should (file-exists-p build-path))
     (should (file-exists-p verify-path))
+    (should (file-exists-p install-path))
     (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" build))
     (should (string-match-p "\\$env:NELISP_STANDALONE_TARGET = \\$Target" build))
     (should (string-match-p "nelisp-standalone-build-reader" build))
@@ -207,10 +217,17 @@
     (should (string-match-p "bin\\\\nelisp.exe eval" verify))
     (should (string-match-p "repl --no-prompt" verify))
     (should (string-match-p "Windows standalone tarball OK" verify))
+    (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" install))
+    (should (string-match-p "Get-FileHash -Algorithm SHA256" install))
+    (should (string-match-p "tar -xzf \\$TarPath -C \\$Prefix --strip-components=1" install))
+    (should (string-match-p "installed bin\\\\nelisp.exe missing" install))
+    (should (string-match-p "anvil-\" \\+ \\$Version" install))
     (should-not (string-match-p "\\_<cargo\\_>" build))
     (should-not (string-match-p "\\_<rustc\\_>" build))
     (should-not (string-match-p "\\_<cargo\\_>" verify))
-    (should-not (string-match-p "\\_<rustc\\_>" verify))))
+    (should-not (string-match-p "\\_<rustc\\_>" verify))
+    (should-not (string-match-p "\\_<cargo\\_>" install))
+    (should-not (string-match-p "\\_<rustc\\_>" install))))
 
 (provide 'nelisp-standalone-parallel-windows-test)
 

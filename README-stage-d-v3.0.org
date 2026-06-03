@@ -43,6 +43,15 @@ installed =bin/nelisp= signature on Apple Silicon before reporting success.
 
 On Windows x86_64 the tarball contains =bin/nelisp.exe=.
 
+For local Windows PowerShell iteration:
+
+#+begin_src powershell
+.\tools\build-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
+.\tools\verify-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
+.\release\stage-d-v3.0\install-v3.ps1 -From .\dist -Prefix "$env:TEMP\nelisp-install-smoke"
+& "$env:TEMP\nelisp-install-smoke\bin\nelisp.exe" eval "(+ 40 2)"
+#+end_src
+
 * Verify the CLI
 
 #+begin_src shell
@@ -73,9 +82,8 @@ For Windows x86_64 PowerShell:
 #+end_src
 
 Expected output ends with =Cross-platform verify PASS=.
-With =--include-tarball=, POSIX verification also installs from the freshly
-built =dist= tarball with =install-v3.sh --from dist= and runs the installed
-=bin/nelisp=.
+With =--include-tarball=, verification also installs from the freshly built
+=dist= tarball and runs the installed =bin/nelisp= or =bin/nelisp.exe=.
 
 * Build Artifacts
 
