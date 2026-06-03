@@ -24,8 +24,9 @@
 (defconst nelisp-macos-selfhost-test--smoke-names
   '("exit42" "loop" "fact" "alloc" "cons" "sexp" "let" "str"
     "setq-local" "ptr" "cas" "dealloc" "cons-set" "cond" "logic"
-    "cons-clone" "boxed" "names" "call4-outs" "str-helpers" "lits" "extern"
-    "aot-jump" "aot-roots" "f64-sexp" "callptr")
+    "write-stdout" "read-stdin" "cons-clone" "boxed" "names" "call4-outs"
+    "str-helpers" "lits" "extern" "aot-jump" "aot-roots" "f64-sexp"
+    "callptr")
   "Smoke case names expected from `tools/macos-selfhost-test.sh'.")
 
 (defun nelisp-macos-selfhost-test--repo-root ()

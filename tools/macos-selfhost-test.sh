@@ -33,8 +33,8 @@ usage() {
 
 SMOKE_NAMES=(
   exit42 loop fact alloc cons sexp let setq-local str ptr cas dealloc
-  cons-set cond logic cons-clone boxed names call4-outs str-helpers lits
-  extern aot-jump aot-roots f64-sexp callptr
+  cons-set cond logic write-stdout read-stdin cons-clone boxed names
+  call4-outs str-helpers lits extern aot-jump aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -112,9 +112,10 @@ selected_smoke_p() {
   return 1
 }
 
-build_run() {            # NAME  PROGRAM-SEXP  EXPECTED-EXIT
+build_run() {            # NAME  PROGRAM-SEXP  EXPECTED-EXIT [EXPECTED-STDOUT] [STDIN-TEXT]
   local name="$1" prog="$2" want="$3" out="$OUT_DIR/nelisp-macos-$1"
   local log="$OUT_DIR/nelisp-macos-$1.build.log"
+  local want_stdout="${4-}" stdin_text="${5-}" output got stdin_file
   if ! selected_smoke_p "$name"; then
     return
   fi
@@ -131,9 +132,25 @@ build_run() {            # NAME  PROGRAM-SEXP  EXPECTED-EXIT
   fi
   codesign -f -s - "$out" >/dev/null 2>&1 || { echo "[macos] FAIL: $name — codesign"; fail=1; return; }
   chmod +x "$out"
-  set +e; "$out"; local got=$?; set -e
+  set +e
+  if [ -n "$stdin_text" ]; then
+    stdin_file="$OUT_DIR/nelisp-macos-$name.stdin"
+    printf '%s' "$stdin_text" >"$stdin_file"
+    output="$("$out" <"$stdin_file")"
+    got=$?
+  else
+    output="$("$out")"
+    got=$?
+  fi
+  set -e
   if [ "$got" = "$want" ]; then
-    echo "[macos] PASS: $name -> exit $got"
+    if [ -n "$want_stdout" ] && [ "$output" != "$want_stdout" ]; then
+      echo "[macos] FAIL: $name -> stdout mismatch"
+      printf '    expected: %s\n    actual  : %s\n' "$want_stdout" "$output"
+      fail=1
+    else
+      echo "[macos] PASS: $name -> exit $got"
+    fi
   else
     echo "[macos] FAIL: $name -> exit $got (expected $want)"; fail=1
   fi
@@ -324,6 +341,37 @@ build_run cond '(seq
 build_run logic '(seq
   (defun run () (+ (if (and 1 1) 10 0) (if (or 0 1) 5 0)))
   (exit (run)))' 15
+
+# raw Darwin write(2) to stdout: verifies native Mach-O can write to fd 1.
+build_run write-stdout '(seq
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 256 8243311830880773480)
+      (ptr-write-u64 8589934592 264 8316297369811447151)
+      (ptr-write-u64 8589934592 272 32492094948712560)
+      (syscall-direct 4 1 8589934848 23 0 0 0)
+      (syscall-direct 1 42 0 0 0 0 0)))
+  (exit (run)))' 42 "hello from nelisp macos"
+
+# raw Darwin read(2) from stdin: verifies native Mach-O can read fd 0.
+build_run read-stdin '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (let ((n (syscall-direct 3 0 8589934848 17 0 0 0)))
+        (if (= n 17)
+            (if (= (ptr-read-u8 8589934592 256) 110)
+                (if (= (ptr-read-u8 8589934592 263) 114)
+                    (if (= (ptr-read-u8 8589934592 272) 101)
+                        (ok)
+                      (fail))
+                  (fail))
+              (fail))
+          (fail)))))
+  (exit (run)))' 42 "" "nelisp read smoke"
 
 # cons-make-with-clone: fused (alloc box + deep-clone car/cdr).  Clone
 # Int(20) into car and Int(3) into cdr, read both back -> 20 + 3 = 23.
