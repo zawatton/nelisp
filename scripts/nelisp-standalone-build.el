@@ -91,11 +91,11 @@ Must live above the 4 GiB __PAGEZERO segment used by the Mach-O executable
 writer, and away from the dyld shared cache region used by normal Mach-O
 executables.")
 
-(defconst nelisp-standalone--macos-arena-size #x4000000
+(defconst nelisp-standalone--macos-arena-size #x20000000
   "macOS standalone fixed arena size.
-Matches the Windows standalone arena size.  Keep the mapping large enough for
-reader/eval smoke coverage, while avoiding oversized fixed reservations that
-some Darwin environments reject before the first page is touched.")
+Large enough for the reader/bootstrap path while avoiding the historical 8 GiB
+fixed reservation that some Darwin environments reject before the first page is
+touched.")
 
 (defun nelisp-standalone--target-abi (&optional target)
   "Return the compiler ABI for standalone TARGET."

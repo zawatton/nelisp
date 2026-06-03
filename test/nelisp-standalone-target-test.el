@@ -248,7 +248,7 @@
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(syscall-direct 197 #x800000000 #x4000000 3 4114 -1 0)
+                 '(syscall-direct 197 #x800000000 #x20000000 3 4114 -1 0)
                  arena))
         (should-not (tree-member-p
                      '(syscall-direct 197 #x800000000 8589934592 3 4114 -1 0)
