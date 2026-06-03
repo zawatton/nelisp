@@ -80,12 +80,28 @@ cache builds do not accidentally mix Win64 units into the SysV cache.")
   (expand-file-name "target/nelisp-standalone-eval" nelisp-standalone--repo-root)
   "Output standalone ELF path (baked-form eval).")
 
+(defconst nelisp-standalone--windows-out
+  (expand-file-name "target/nelisp-standalone-eval.exe" nelisp-standalone--repo-root)
+  "Output standalone PE32+ path (baked-form eval).")
+
 (defconst nelisp-standalone--reader-out
   (expand-file-name "target/nelisp-standalone-reader" nelisp-standalone--repo-root)
   "Output standalone ELF path (reader path: text -> AOT reader -> eval).")
 
+(defconst nelisp-standalone--windows-reader-out
+  (expand-file-name "target/nelisp-standalone-reader.exe" nelisp-standalone--repo-root)
+  "Output standalone PE32+ path (reader path: text -> AOT reader -> eval).")
+
 (defvar nelisp-standalone--recompiled nil
   "Names of units recompiled in the current build (vs. served from cache).")
+
+(defun nelisp-standalone--output-path (&optional reader-p)
+  "Return the current target's standalone output path."
+  (pcase nelisp-standalone--target
+    ('windows-x86_64 (if reader-p
+                         nelisp-standalone--windows-reader-out
+                       nelisp-standalone--windows-out))
+    (_ (if reader-p nelisp-standalone--reader-out nelisp-standalone--out))))
 
 (defun nelisp-standalone--dep-files ()
   "Toolchain source files; any newer than a cache entry forces recompile."
@@ -304,6 +320,46 @@ or the toolchain is newer than the cached object."
             reused))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
     (defun nl_quit_flag_ptr () 268435464)))
+
+(defconst nelisp-standalone--windows-arena-size #x40000000
+  "Windows standalone fixed arena size.
+The arena still starts at 0x10000000 for the existing pointer constants, but it
+must stop below the PE image base 0x140000000.  1 GiB is enough for current
+reader/eval gates and avoids colliding with the loaded image.")
+
+(defun nelisp-standalone--windows-arena-init-form ()
+  "Return the Windows `nl_arena_init' form using VirtualAlloc."
+  `(defun nl_arena_init ()
+     (let ((p (extern-call VirtualAlloc 268435456
+                           ,nelisp-standalone--windows-arena-size
+                           12288 4)))
+       (nl_seq2 (ptr-write-u64 268435456 0 256)        ; bump starts at 256
+        (nl_seq2 (ptr-write-u64 268435464 0 0)         ; quit flag
+         (nl_seq2 (ptr-write-u64 268435472 0 0)        ; throw flag
+          (nl_seq2 (ptr-write-u64 268435552 0 0)       ; free-list head
+           (nl_seq2 (ptr-write-u64 268435560 0 0)      ; gc trigger
+            (nl_seq2 (ptr-write-u64 268435568 0 (+ 268435456 256))
+             (nl_seq2 (ptr-write-u64 268435576 0 0)    ; live bytes
+              (nl_seq2 (ptr-write-u64 268435584 0 0)   ; sweep mode
+               (nl_seq2 (ptr-write-u64 268435592 0 0)  ; mark enabled
+                (nl_seq2 (ptr-write-u64 268435616 0 1) ; collect disabled
+                 (nl_seq2 (ptr-write-u64 268435624 0 0) ; free-list reuse
+                  (nl_seq2 (ptr-write-u64 268435648 0 0) ; probe off
+                   (nl_seq2 (ptr-write-u64 268435656 0 0)
+                            p))))))))))))))))
+
+(defun nelisp-standalone--target-arena-source ()
+  "Return the arena source adjusted for the current standalone target."
+  (if (eq nelisp-standalone--target 'windows-x86_64)
+      (cons 'seq
+            (mapcar (lambda (form)
+                      (if (and (consp form)
+                               (eq (car form) 'defun)
+                               (eq (cadr form) 'nl_arena_init))
+                          (nelisp-standalone--windows-arena-init-form)
+                        form))
+                    (cdr nelisp-standalone--arena-source)))
+    nelisp-standalone--arena-source))
 
 ;; ===================================================================
 ;; TRACING MARK-SWEEP GC (the correct reclaimer — reachability, not
@@ -2199,6 +2255,46 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
      (list (nelisp-link-symbol "_start" 0 :section 'text :bind 'global :type 'func))
      (list (list :offset reloc-off :type 'pc32 :symbol "driver" :addend 0 :section 'text)))))
 
+(defun nelisp-standalone--windows-start-unit ()
+  "Return the Win64 PE `_start' unit.
+Windows enters this CRT-free entry directly.  It passes NULL as driver arg0
+for the baked-form path, then exits through KERNEL32!ExitProcess."
+  (let* ((head (append
+                (list #x48 #x83 #xec #x28) ; sub rsp, 40 (shadow + align)
+                (list #x31 #xc9)           ; xor ecx, ecx
+                (list #xe8)))              ; call driver
+         (driver-reloc-off (length head))
+         (mid (append head
+                      (list 0 0 0 0)
+                      (list #x89 #xc1)     ; mov ecx, eax
+                      (list #xe8)))        ; call ExitProcess
+         (exit-reloc-off (length mid))
+         (text (apply #'unibyte-string
+                      (append mid
+                              (list 0 0 0 0)
+                              (list #xcc)))))
+    (nelisp-link-unit-make
+     "start.o"
+     (list (cons 'text text))
+     (list (nelisp-link-symbol "_start" 0
+                               :section 'text :bind 'global :type 'func))
+     (list (list :offset driver-reloc-off
+                 :type 'pc32
+                 :symbol "driver"
+                 :addend 0
+                 :section 'text)
+           (list :offset exit-reloc-off
+                 :type 'plt32
+                 :symbol "ExitProcess"
+                 :addend 0
+                 :section 'text)))))
+
+(defun nelisp-standalone--target-start-unit ()
+  "Return the target-specific standalone start unit."
+  (if (eq nelisp-standalone--target 'windows-x86_64)
+      (nelisp-standalone--windows-start-unit)
+    (nelisp-standalone--start-unit)))
+
 ;; ===================================================================
 ;; Parametrized driver (FULL real path).  Bootstrap mirror + 60 system builtins,
 ;; install OP via REAL nl_install_one (arithmetic is not in the bootstrap set),
@@ -2306,13 +2402,18 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
   "Produce the link-unit for a manifest ENTRY."
   (pcase-let ((`(,name ,kind ,src) entry))
     (pcase kind
-      (:start (nelisp-standalone--start-unit))
+      (:start (nelisp-standalone--target-start-unit))
       ;; driver is form-dependent and tiny: always recompiled, never cached.
       (:driver (let ((u (nelisp-standalone--compile-to-unit "driver.o"
                                                             (nelisp-standalone--driver-source))))
                  (push "driver.o" nelisp-standalone--recompiled) u))
-      (:glue (nelisp-standalone--cached-unit name (symbol-value src)
-                                             nelisp-standalone--this-file))
+      (:glue (nelisp-standalone--cached-unit
+              name
+              (if (and (string= name "arena.o")
+                       (eq src 'nelisp-standalone--arena-source))
+                  (nelisp-standalone--target-arena-source)
+                (symbol-value src))
+              nelisp-standalone--this-file))
       (_ ;; feature unit
        (require kind)
        (nelisp-standalone--cached-unit name (symbol-value src)
@@ -2350,15 +2451,19 @@ is faster.  Parallelism pays off only once per-unit compilation dominates startu
 (defun nelisp-standalone-build ()
   "Incrementally build the standalone NeLisp eval ELF; return its path."
   (setq nelisp-standalone--recompiled nil)
-  (let ((units (mapcar #'nelisp-standalone--unit-for nelisp-standalone--manifest)))
-    (nelisp-link-units nelisp-standalone--out units)
-    (set-file-modes nelisp-standalone--out #o755)
-    (message "[standalone] linked %d units -> %s" (length units) nelisp-standalone--out)
+  (let* ((units (mapcar #'nelisp-standalone--unit-for nelisp-standalone--manifest))
+         (out (nelisp-standalone--output-path nil)))
+    (if (eq nelisp-standalone--target 'windows-x86_64)
+        (nelisp-link-units-pe32 out units "_start"
+                                '("ExitProcess" "VirtualAlloc"))
+      (nelisp-link-units out units)
+      (set-file-modes out #o755))
+    (message "[standalone] linked %d units -> %s" (length units) out)
     (message "[standalone] recompiled this build: %s"
              (if nelisp-standalone--recompiled
                  (string-join (reverse nelisp-standalone--recompiled) " ")
                "none (all served from cache)"))
-    nelisp-standalone--out))
+    out))
 
 ;;;###autoload
 (defun nelisp-standalone-rebuild-one (name)
@@ -2377,16 +2482,16 @@ is faster.  Parallelism pays off only once per-unit compilation dominates startu
 ;;;###autoload
 (defun nelisp-standalone-test ()
   "Build then run the standalone binary; assert exit == expected.  Exits 0/1."
-  (nelisp-standalone-build)
+  (let ((out (nelisp-standalone-build)))
   (pcase-let ((`(,_op ,_a ,_b ,expected) (nelisp-standalone--form-params)))
-    (let ((code (call-process nelisp-standalone--out nil nil nil)))
+    (let ((code (call-process out nil nil nil)))
       (if (= code expected)
           (progn (message "[standalone] PASS: %s -> exit %d (expected %d)"
-                          nelisp-standalone--out code expected)
+                          out code expected)
                  (kill-emacs 0))
         (message "[standalone] FAIL: %s -> exit %d (expected %d)"
-                 nelisp-standalone--out code expected)
-        (kill-emacs 1)))))
+                 out code expected)
+        (kill-emacs 1))))))
 
 ;; ===================================================================
 ;; READER PATH (Doc 137 M1) — text -> AOT reader -> eval, ZERO Rust.

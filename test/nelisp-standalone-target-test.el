@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 (let* ((this (or load-file-name buffer-file-name))
        (test-dir (and this (file-name-directory this)))
@@ -56,6 +57,43 @@
   "Unsupported targets fail before producing a mixed-ABI object cache."
   (should-error (nelisp-standalone--target-abi 'plan9-x86_64)
                 :type 'error))
+
+(ert-deftest nelisp-standalone-target-windows-output-uses-exe ()
+  "Windows-native standalone outputs use a PE-friendly .exe path."
+  (let ((nelisp-standalone--target 'windows-x86_64))
+    (should (string-suffix-p ".exe" (nelisp-standalone--output-path nil)))
+    (should (string-suffix-p ".exe" (nelisp-standalone--output-path t)))))
+
+(ert-deftest nelisp-standalone-target-windows-start-imports-exitprocess ()
+  "The Windows start unit calls driver, then KERNEL32!ExitProcess."
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (unit (nelisp-standalone--target-start-unit))
+         (text (cdr (assq 'text (plist-get unit :sections))))
+         (relocs (plist-get unit :relocs)))
+    (should (equal (substring text 0 6)
+                   (unibyte-string #x48 #x83 #xec #x28 #x31 #xc9)))
+    (should (= (aref text 6) #xe8))
+    (should (= (aref text 13) #xe8))
+    (should (cl-find "driver" relocs
+                     :key (lambda (r) (plist-get r :symbol))
+                     :test #'equal))
+    (should (cl-find "ExitProcess" relocs
+                     :key (lambda (r) (plist-get r :symbol))
+                     :test #'equal))))
+
+(ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
+  "Windows arena source replaces Linux mmap with VirtualAlloc."
+  (let ((nelisp-standalone--target 'windows-x86_64))
+    (should (equal (cadr (cl-find-if
+                          (lambda (form)
+                            (and (consp form)
+                                 (eq (car form) 'defun)
+                                 (eq (cadr form) 'nl_arena_init)))
+                          (cdr (nelisp-standalone--target-arena-source))))
+                   'nl_arena_init))
+    (should (member 'VirtualAlloc
+                    (flatten-tree
+                     (nelisp-standalone--target-arena-source))))))
 
 (provide 'nelisp-standalone-target-test)
 

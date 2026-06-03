@@ -10,6 +10,7 @@
 #   .\tools\build-standalone-parallel.ps1 -Jobs 4
 #   .\tools\build-standalone-parallel.ps1 -Clean
 #   .\tools\build-standalone-parallel.ps1 -CompileOnly
+#   .\tools\build-standalone-parallel.ps1 -Target windows-x86_64
 #
 # The build uses Emacs + pure elisp only.  It does not invoke Rust.
 
@@ -17,6 +18,7 @@
 param(
     [int]$Jobs = 0,
     [string]$Emacs = $env:EMACS,
+    [string]$Target = "windows-x86_64",
     [switch]$Clean,
     [switch]$CompileOnly
 )
@@ -47,11 +49,13 @@ if ($Clean -and (Test-Path $CacheDir)) {
 }
 
 Write-Host ("[parallel] compiling units with " + $Jobs + " worker(s)...")
+Write-Host ("[parallel] target " + $Target)
 
 $WorkerScript = {
     param(
         [string]$WorkerRepoRoot,
         [string]$WorkerEmacs,
+        [string]$WorkerTarget,
         [int]$WorkerIndex,
         [int]$WorkerCount,
         [string]$WorkerLogPath
@@ -61,6 +65,7 @@ $WorkerScript = {
     Set-Location $WorkerRepoRoot
     $env:NELISP_CHUNK_IDX = [string]$WorkerIndex
     $env:NELISP_CHUNK_N = [string]$WorkerCount
+    $env:NELISP_STANDALONE_TARGET = $WorkerTarget
 
     try {
         & $WorkerEmacs --batch -Q -L lisp -L src -L scripts `
@@ -90,7 +95,7 @@ for ($Index = 0; $Index -lt $Jobs; $Index++) {
     $WorkerJobs += Start-Job `
         -Name ("nelisp-standalone-chunk-" + $Index) `
         -ScriptBlock $WorkerScript `
-        -ArgumentList $RepoRoot, $Emacs, $Index, $Jobs, $LogPath
+        -ArgumentList $RepoRoot, $Emacs, $Target, $Index, $Jobs, $LogPath
 }
 
 $Results = @()
@@ -139,6 +144,7 @@ if ($CompileOnly) {
 
 Write-Host "[parallel] linking (serial)..."
 $LinkLogPath = Join-Path $LogDir "link.log"
+$env:NELISP_STANDALONE_TARGET = $Target
 & $Emacs --batch -Q -L lisp -L src -L scripts `
     --eval "(setq load-prefer-newer t)" `
     -l nelisp-standalone-build `

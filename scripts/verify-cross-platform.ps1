@@ -68,5 +68,10 @@ Invoke-Checked "standalone parallel build (zero-Rust)" {
         -Emacs $Emacs
 }
 
+Invoke-Checked "Windows standalone eval native smoke" {
+    & (Join-Path $RepoRoot "tools\windows-standalone-eval-test.ps1") `
+        -Emacs $Emacs
+}
+
 Write-Host ""
 Write-Host "=== Cross-platform verify PASS ==="

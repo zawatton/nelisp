@@ -45,6 +45,35 @@
   "Return a unibyte-string of N zero bytes (= reloc placeholder)."
   (make-string n 0))
 
+(defun nelisp-link-test--read-file-bytes (path)
+  "Return raw unibyte bytes of PATH."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (let ((coding-system-for-read 'no-conversion))
+      (insert-file-contents-literally path))
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun nelisp-link-test--read-le32 (bytes offset)
+  "Read unsigned 32-bit little-endian integer from BYTES at OFFSET."
+  (logior (aref bytes offset)
+          (ash (aref bytes (+ offset 1)) 8)
+          (ash (aref bytes (+ offset 2)) 16)
+          (ash (aref bytes (+ offset 3)) 24)))
+
+(defun nelisp-link-test--read-le16 (bytes offset)
+  "Read unsigned 16-bit little-endian integer from BYTES at OFFSET."
+  (logior (aref bytes offset)
+          (ash (aref bytes (+ offset 1)) 8)))
+
+(defun nelisp-link-test--read-le64 (bytes offset)
+  "Read unsigned 64-bit little-endian integer from BYTES at OFFSET."
+  (let ((acc 0)
+        (i 0))
+    (while (< i 8)
+      (setq acc (logior acc (ash (aref bytes (+ offset i)) (* i 8))))
+      (setq i (1+ i)))
+    acc))
+
 ;; ---- §93.a (1) symbol table ----
 
 (ert-deftest nelisp-link-symtab-empty ()
@@ -1103,6 +1132,60 @@ the lea)."
               (should (equal (substring bytes ro-pos
                                         (+ ro-pos 6))
                              (unibyte-string ?h ?e ?l ?l ?o ?\n))))))
+      (when (file-exists-p path) (delete-file path)))))
+
+;; ---- PE32+ link path ----
+
+(ert-deftest nelisp-link-units-pe32-import-thunk ()
+  "PE linking resolves a direct extern call through an import thunk."
+  (let* ((text (unibyte-string
+                #x48 #x83 #xec #x28       ; sub rsp, 40
+                #xb9 #x2a #x00 #x00 #x00 ; mov ecx, 42
+                #xe8 #x00 #x00 #x00 #x00 ; call ExitProcess thunk
+                #xcc))
+         (unit (nelisp-link-unit-make
+                "start.o"
+                (list (cons 'text text))
+                (list (nelisp-link-symbol "_start" 0
+                                          :section 'text
+                                          :bind 'global
+                                          :type 'func))
+                (list (list :offset 10
+                            :type 'plt32
+                            :symbol "ExitProcess"
+                            :addend 0
+                            :section 'text))))
+         (path (make-temp-file "nelisp-link-pe32-" nil ".exe")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units-pe32 path (list unit) "_start"
+                                  '("ExitProcess"))
+          (let* ((bytes (nelisp-link-test--read-file-bytes path))
+                 (pe-off (nelisp-link-test--read-le32 bytes #x3c))
+                 (file-off (+ pe-off 4))
+                 (opt-off (+ file-off 20))
+                 (text-raw #x200)
+                 (idata-raw #x400)
+                 (idata-rva #x2000)
+                 (iat-dir-off (+ opt-off 112 (* 12 8)))
+                 (iat-rva (nelisp-link-test--read-le32 bytes iat-dir-off))
+                 (hint-rva (nelisp-link-test--read-le64
+                            bytes (+ idata-raw (- iat-rva idata-rva))))
+                 (hint-off (+ idata-raw (- hint-rva idata-rva))))
+            (should (equal (substring bytes 0 2) (unibyte-string #x4d #x5a)))
+            (should (= (nelisp-link-test--read-le16 bytes file-off) #x8664))
+            (should (= (nelisp-link-test--read-le32 bytes (+ opt-off 16)) #x1000))
+            ;; The original call targets the synthesized thunk appended at
+            ;; text offset 15, so rel32 from next-instruction offset 14 is 1.
+            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 10)) 1))
+            (should (equal (substring bytes (+ text-raw 15) (+ text-raw 17))
+                           (unibyte-string #xff #x25)))
+            ;; Thunk: jmp qword ptr [rip + IAT], IAT is at RVA 0x2038.
+            (should (= (nelisp-link-test--read-le32 bytes (+ text-raw 17))
+                       #x1023))
+            (should (string-prefix-p "ExitProcess"
+                                     (substring bytes (+ hint-off 2)
+                                                (+ hint-off 14))))))
       (when (file-exists-p path) (delete-file path)))))
 
 (provide 'nelisp-static-linker-test)

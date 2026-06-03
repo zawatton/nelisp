@@ -637,6 +637,157 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
     (nelisp-elf-write-binary file-path plist)
     file-path))
 
+(defconst nelisp-link--pe-image-base #x140000000
+  "Default PE32+ image base (= matches `nelisp-pe-write').")
+
+(defun nelisp-link--pe-section-rvas (combined imports)
+  "Return PE section RVA metadata for COMBINED and IMPORTS."
+  (require 'nelisp-pe-write)
+  (let* ((text-size (nelisp-link--section-len combined 'text))
+         (rodata-size (nelisp-link--section-len combined 'rodata))
+         (data-size (+ (nelisp-link--section-len combined 'data)
+                       (nelisp-link--section-len combined 'bss)))
+         (text-rva nelisp-pe--section-alignment)
+         (rodata-rva (and (> rodata-size 0)
+                          (nelisp-pe--align-up (+ text-rva text-size)
+                                               nelisp-pe--section-alignment)))
+         (data-rva (and (> data-size 0)
+                        (nelisp-pe--align-up
+                         (+ (or rodata-rva text-rva)
+                            (if (> rodata-size 0) rodata-size text-size))
+                         nelisp-pe--section-alignment)))
+         (idata-rva (and imports
+                         (nelisp-pe--align-up
+                          (+ (cond
+                              ((> data-size 0) data-rva)
+                              ((> rodata-size 0) rodata-rva)
+                              (t text-rva))
+                             (cond
+                              ((> data-size 0) data-size)
+                              ((> rodata-size 0) rodata-size)
+                              (t text-size)))
+                          nelisp-pe--section-alignment))))
+    (list :text-rva text-rva
+          :rodata-rva (or rodata-rva
+                          (nelisp-pe--align-up (+ text-rva text-size)
+                                               nelisp-pe--section-alignment))
+          :data-rva (or data-rva
+                        (nelisp-pe--align-up
+                         (+ (or rodata-rva text-rva)
+                            (if (> rodata-size 0) rodata-size text-size))
+                         nelisp-pe--section-alignment))
+          :idata-rva idata-rva)))
+
+(defun nelisp-link--pe-layout (combined imports &optional image-base)
+  "Return an absolute-VA section layout for PE linking."
+  (let* ((base (or image-base nelisp-link--pe-image-base))
+         (rvas (nelisp-link--pe-section-rvas combined imports))
+         (data-va (+ base (plist-get rvas :data-rva))))
+    (list (cons 'text (+ base (plist-get rvas :text-rva)))
+          (cons 'rodata (+ base (plist-get rvas :rodata-rva)))
+          (cons 'data data-va)
+          (cons 'bss (+ data-va (nelisp-link--section-len combined 'data))))))
+
+(defun nelisp-link--pe-import-names (imports)
+  "Return IMPORTS' function names in import-table order."
+  (let (names)
+    (dolist (entry imports)
+      (dolist (name (cdr entry))
+        (push name names)))
+    (nreverse names)))
+
+(defun nelisp-link--pe-import-thunk-unit (imports text-va text-offset
+                                                  idata-info)
+  "Return a link-unit exporting import thunks for IMPORTS.
+Each thunk is `jmp qword ptr [rip+disp32]' and is named after the imported
+function so direct `call rel32 Function' relocations can target it."
+  (require 'nelisp-pe-write)
+  (let ((cbuf (nelisp-pe--make-buffer))
+        (symbols nil)
+        (iat-map (plist-get idata-info :iat-rva-alist))
+        (cursor 0))
+    (dolist (name (nelisp-link--pe-import-names imports))
+      (let* ((iat-rva (or (cdr (assoc name iat-map))
+                          (error "nelisp-link: missing IAT slot for %S" name)))
+             (thunk-va (+ text-va text-offset cursor))
+             (iat-va (+ nelisp-link--pe-image-base iat-rva))
+             (disp (- iat-va (+ thunk-va 6))))
+        (push (nelisp-link-symbol name cursor
+                                  :section 'text :bind 'global :type 'func)
+              symbols)
+        (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x25))
+        (nelisp-pe--write-le32 cbuf disp)
+        (setq cursor (+ cursor 6))))
+    (nelisp-link-unit-make "pe-import-thunks.o"
+                           (list (cons 'text (nelisp-pe--buffer-bytes cbuf)))
+                           (nreverse symbols)
+                           nil)))
+
+(defun nelisp-link--pe-empty-import-thunk-unit (imports)
+  "Return a size-only import thunk unit for PE layout prediction."
+  (nelisp-link-unit-make
+   "pe-import-thunks.o"
+   (list (cons 'text (make-string (* 6 (length (nelisp-link--pe-import-names
+                                                imports)))
+                                  0)))
+   nil nil))
+
+(defun nelisp-link-units-pe32 (file-path units
+                                         &optional entry-sym imports)
+  "Link UNITS and emit a PE32+ executable to FILE-PATH.
+IMPORTS has the same shape as `nelisp-pe-write-exe-binary' generic :imports.
+Imported function names are resolved by synthesized in-image thunks, so normal
+Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
+  (require 'nelisp-pe-write)
+  (let* ((entry (or entry-sym "_start"))
+         (normalized-imports (nelisp-pe--normalize-imports imports))
+         (predict-units (if normalized-imports
+                            (append units
+                                    (list (nelisp-link--pe-empty-import-thunk-unit
+                                           normalized-imports)))
+                          units))
+         (predict-combined (nelisp-link-combine-sections predict-units))
+         (predict-rvas (nelisp-link--pe-section-rvas predict-combined
+                                                     normalized-imports))
+         (idata-info (and normalized-imports
+                          (nelisp-pe--build-idata
+                           (plist-get predict-rvas :idata-rva)
+                           normalized-imports)))
+         (orig-combined (nelisp-link-combine-sections units))
+         (orig-text-size (nelisp-link--section-len orig-combined 'text))
+         (predict-layout (nelisp-link--pe-layout predict-combined
+                                                 normalized-imports))
+         (text-va (cdr (assq 'text predict-layout)))
+         (all-units (if normalized-imports
+                        (append units
+                                (list (nelisp-link--pe-import-thunk-unit
+                                       normalized-imports text-va
+                                       orig-text-size idata-info)))
+                      units))
+         (combined (nelisp-link-combine-sections all-units))
+         (layout (nelisp-link--pe-layout combined normalized-imports))
+         (link-result (nelisp-link-units-2pass all-units layout))
+         (bytes (plist-get link-result :bytes))
+         (symtab (plist-get link-result :symtab))
+         (text (nelisp-link--bytes-or-empty bytes 'text))
+         (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
+         (data (concat (nelisp-link--bytes-or-empty bytes 'data)
+                       (make-string (or (cdr (assq 'bss bytes)) 0) 0)))
+         (entry-symtab (nelisp-link-symtab-lookup symtab entry))
+         (entry-rva (and entry-symtab
+                         (- (plist-get entry-symtab :value)
+                            nelisp-link--pe-image-base))))
+    (unless entry-symtab
+      (signal 'nelisp-link--unresolved-symbol (list entry :entry)))
+    (nelisp-pe-write-exe-binary
+     file-path
+     (list :text text
+           :rodata rodata
+           :data data
+           :entry-rva entry-rva
+           :imports normalized-imports))
+    file-path))
+
 (provide 'nelisp-static-linker)
 
 ;;; nelisp-static-linker.el ends here

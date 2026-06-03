@@ -281,6 +281,65 @@
     (should (= disp #x1029))
     (should (= (aref bytes (+ text-off 15)) #xcc))))
 
+(ert-deftest nelisp-pe-write-exe-binary-generic-section-table ()
+  "A generic EXE plist can emit text, rdata, data, and idata sections."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe
+                 (list :text nelisp-pe-write-test--sample-text
+                       :rodata (unibyte-string #x41 #x42 #x43)
+                       :data (make-string 4 0)
+                       :imports '("ExitProcess"))))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (file-off (+ pe-off 4))
+         (opt-off (+ file-off 20))
+         (sect0 (+ pe-off 4 20 240))
+         (sect1 (+ sect0 40))
+         (sect2 (+ sect1 40))
+         (sect3 (+ sect2 40)))
+    (should (= (nelisp-pe-write-test--read-le16 bytes (+ file-off 2)) 4))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 16)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ opt-off 56)) #x5000))
+    (should (string-prefix-p ".text" (substring bytes sect0 (+ sect0 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 12)) #x1000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect0 20)) #x400))
+    (should (string-prefix-p ".rdata" (substring bytes sect1 (+ sect1 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 12)) #x2000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect1 20)) #x600))
+    (should (string-prefix-p ".data" (substring bytes sect2 (+ sect2 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 12)) #x3000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect2 20)) #x800))
+    (should (string-prefix-p ".idata" (substring bytes sect3 (+ sect3 8))))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect3 12)) #x4000))
+    (should (= (nelisp-pe-write-test--read-le32 bytes (+ sect3 20)) #xa00))))
+
+(ert-deftest nelisp-pe-write-exe-binary-generic-import-directory ()
+  "A generic EXE plist wires imports through the PE import directory."
+  (let* ((bytes (nelisp-pe-write-test--emit-exe
+                 (list :text nelisp-pe-write-test--sample-text
+                       :imports '("ExitProcess"))))
+         (pe-off (nelisp-pe-write-test--read-le32 bytes #x3c))
+         (opt-off (+ pe-off 4 20))
+         (import-dir-off (+ opt-off 112 8))
+         (iat-dir-off (+ opt-off 112 (* 12 8)))
+         (idata-raw #x400)
+         (idata-rva #x2000)
+         (import-rva (nelisp-pe-write-test--read-le32 bytes import-dir-off))
+         (import-size (nelisp-pe-write-test--read-le32 bytes (+ import-dir-off 4)))
+         (iat-rva (nelisp-pe-write-test--read-le32 bytes iat-dir-off))
+         (iat-size (nelisp-pe-write-test--read-le32 bytes (+ iat-dir-off 4)))
+         (name-rva (nelisp-pe-write-test--read-le32 bytes (+ idata-raw 12)))
+         (hint-name-rva (nelisp-pe-write-test--read-le64
+                         bytes (+ idata-raw (- iat-rva idata-rva))))
+         (name-off (+ idata-raw (- name-rva idata-rva)))
+         (hint-name-off (+ idata-raw (- hint-name-rva idata-rva))))
+    (should (= import-rva #x2000))
+    (should (= import-size 40))
+    (should (= iat-rva #x2038))
+    (should (= iat-size 16))
+    (should (string-prefix-p "KERNEL32.dll" (substring bytes name-off (+ name-off 13))))
+    (should (string-prefix-p "ExitProcess"
+                             (substring bytes (+ hint-name-off 2)
+                                        (+ hint-name-off 14))))))
+
 (ert-deftest nelisp-pe-write-exe-binary-virtualalloc-import-directory ()
   "The VirtualAlloc smoke EXE imports ExitProcess and VirtualAlloc."
   (let* ((bytes (nelisp-pe-write-test--emit-exe 'virtualalloc-exit-42))

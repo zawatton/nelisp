@@ -44,9 +44,11 @@
          (script (nelisp-standalone-parallel-windows-test--read-file-text
                   script-path)))
     (should (string-match-p "\\[int\\]\\$Jobs" script))
+    (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" script))
     (should (string-match-p "Start-Job" script))
     (should (string-match-p "\\$env:NELISP_CHUNK_IDX" script))
     (should (string-match-p "\\$env:NELISP_CHUNK_N" script))
+    (should (string-match-p "\\$env:NELISP_STANDALONE_TARGET" script))
     (should (string-match-p "nelisp-standalone-compile-chunk" script))
     (should (string-match-p "target\\\\standalone-parallel" script))))
 
@@ -60,6 +62,7 @@
     (should (string-match-p "\\[switch\\]\\$CompileOnly" script))
     (should (string-match-p "\\[parallel\\] linking (serial)" script))
     (should (string-match-p "-f nelisp-standalone-build" script))
+    (should (string-match-p "\\[parallel\\] target" script))
     (should (string-match-p "\\[parallel\\] PASS: standalone parallel build completed"
                             script))))
 
@@ -103,7 +106,25 @@
     (should (string-match-p "windows-selfhost-test.ps1" script))
     (should (string-match-p "standalone parallel build (zero-Rust)" script))
     (should (string-match-p "tools\\\\build-standalone-parallel.ps1" script))
-    (should (string-match-p "-Jobs \\$ParallelJobs" script))))
+    (should (string-match-p "-Jobs \\$ParallelJobs" script))
+    (should (string-match-p "Windows standalone eval native smoke" script))
+    (should (string-match-p "windows-standalone-eval-test.ps1" script))))
+
+(ert-deftest nelisp-standalone-parallel-windows-eval-smoke-script ()
+  "The Windows native standalone eval smoke builds and executes the PE EXE."
+  (let* ((script-path
+          (expand-file-name "tools/windows-standalone-eval-test.ps1"
+                            nelisp-standalone-parallel-windows-test--repo-root))
+         (script (nelisp-standalone-parallel-windows-test--read-file-text
+                  script-path)))
+    (should (file-exists-p script-path))
+    (should (string-match-p "\\$env:NELISP_STANDALONE_TARGET = \"windows-x86_64\""
+                            script))
+    (should (string-match-p "nelisp-standalone-build" script))
+    (should (string-match-p "target\\\\nelisp-standalone-eval.exe" script))
+    (should (string-match-p "\\[windows-standalone-eval\\] PASS" script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
 
 (provide 'nelisp-standalone-parallel-windows-test)
 

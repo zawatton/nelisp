@@ -67,6 +67,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
 ;; ---- COFF format constants (= Microsoft PE/COFF spec §3) ----
 
 (defconst nelisp-pe--machine-amd64 #x8664
@@ -2722,6 +2724,191 @@ when the thread reported exit code 42."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--normalize-imports (imports)
+  "Return IMPORTS in canonical PE import-table shape.
+Accepted inputs:
+  nil
+  (\"ExitProcess\" \"VirtualAlloc\")              ; KERNEL32.dll shorthand
+  ((\"KERNEL32.dll\" . (\"ExitProcess\")) ...)"
+  (cond
+   ((null imports) nil)
+   ((and (listp imports) (stringp (car imports)))
+    (list (cons "KERNEL32.dll" imports)))
+   ((and (listp imports)
+         (cl-every (lambda (entry)
+                     (and (consp entry)
+                          (stringp (car entry))
+                          (listp (cdr entry))))
+                   imports))
+    imports)
+   (t (error "nelisp-pe: invalid imports %S" imports))))
+
+(defun nelisp-pe--build-generic-exe (spec)
+  "Build a PE32+ console EXE from arbitrary section payload SPEC.
+SPEC keys:
+  :text       required unibyte .text bytes
+  :rodata     optional .rdata bytes
+  :data       optional .data bytes
+  :entry-rva  optional entry RVA, defaults to .text RVA (#x1000)
+  :imports    optional import list accepted by `nelisp-pe--normalize-imports'."
+  (let* ((text (or (plist-get spec :text)
+                   (error "nelisp-pe: generic EXE :text is required")))
+         (rodata (plist-get spec :rodata))
+         (data (plist-get spec :data))
+         (imports (nelisp-pe--normalize-imports (plist-get spec :imports)))
+         (have-rodata (and rodata (> (length rodata) 0)))
+         (have-data (and data (> (length data) 0)))
+         (have-idata imports)
+         (num-sections (+ 1
+                          (if have-rodata 1 0)
+                          (if have-data 1 0)
+                          (if have-idata 1 0)))
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (rdata-rva (and have-rodata
+                         (nelisp-pe--align-up (+ text-rva (length text))
+                                              nelisp-pe--section-alignment)))
+         (data-rva (and have-data
+                        (nelisp-pe--align-up
+                         (+ (or rdata-rva text-rva)
+                            (if have-rodata (length rodata) (length text)))
+                         nelisp-pe--section-alignment)))
+         (idata-rva (and have-idata
+                         (nelisp-pe--align-up
+                          (+ (cond
+                              (have-data data-rva)
+                              (have-rodata rdata-rva)
+                              (t text-rva))
+                             (cond
+                              (have-data (length data))
+                              (have-rodata (length rodata))
+                              (t (length text))))
+                          nelisp-pe--section-alignment)))
+         (idata-info (and have-idata
+                          (nelisp-pe--build-idata idata-rva imports)))
+         (idata-bytes (and idata-info (plist-get idata-info :bytes)))
+         (text-raw-size (nelisp-pe--align-up (length text)
+                                             nelisp-pe--file-alignment))
+         (rdata-raw-size (if have-rodata
+                             (nelisp-pe--align-up (length rodata)
+                                                  nelisp-pe--file-alignment)
+                           0))
+         (data-raw-size (if have-data
+                            (nelisp-pe--align-up (length data)
+                                                 nelisp-pe--file-alignment)
+                          0))
+         (idata-raw-size (if have-idata
+                             (nelisp-pe--align-up (length idata-bytes)
+                                                  nelisp-pe--file-alignment)
+                           0))
+         (text-raw-ptr size-of-headers)
+         (rdata-raw-ptr (and have-rodata (+ text-raw-ptr text-raw-size)))
+         (data-raw-ptr (and have-data
+                            (+ text-raw-ptr text-raw-size rdata-raw-size)))
+         (idata-raw-ptr (and have-idata
+                             (+ text-raw-ptr text-raw-size
+                                rdata-raw-size data-raw-size)))
+         (last-rva (cond (have-idata idata-rva)
+                         (have-data data-rva)
+                         (have-rodata rdata-rva)
+                         (t text-rva)))
+         (last-size (cond (have-idata (length idata-bytes))
+                          (have-data (length data))
+                          (have-rodata (length rodata))
+                          (t (length text))))
+         (size-of-image
+          (nelisp-pe--align-up (+ last-rva last-size)
+                               nelisp-pe--section-alignment))
+         (entry-rva (or (plist-get spec :entry-rva) text-rva))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva entry-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ rdata-raw-size data-raw-size
+                                        idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (if idata-info (plist-get idata-info :import-rva) 0)
+           :import-size (if idata-info (plist-get idata-info :import-size) 0)
+           :iat-rva (if idata-info (plist-get idata-info :iat-rva) 0)
+           :iat-size (if idata-info (plist-get idata-info :iat-size) 0)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (when have-rodata
+      (nelisp-pe--write-pe-section-header
+       cbuf
+       (list :name ".rdata"
+             :virtual-size (length rodata)
+             :virtual-address rdata-rva
+             :raw-data-size rdata-raw-size
+             :raw-data-ptr rdata-raw-ptr
+             :characteristics nelisp-pe--scn-rdata-flags)))
+    (when have-data
+      (nelisp-pe--write-pe-section-header
+       cbuf
+       (list :name ".data"
+             :virtual-size (length data)
+             :virtual-address data-rva
+             :raw-data-size data-raw-size
+             :raw-data-ptr data-raw-ptr
+             :characteristics nelisp-pe--scn-data-flags)))
+    (when have-idata
+      (nelisp-pe--write-pe-section-header
+       cbuf
+       (list :name ".idata"
+             :virtual-size (length idata-bytes)
+             :virtual-address idata-rva
+             :raw-data-size idata-raw-size
+             :raw-data-ptr idata-raw-ptr
+             :characteristics nelisp-pe--scn-idata-flags)))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (unless (= (nelisp-pe--buffer-length cbuf) text-raw-ptr)
+      (error "nelisp-pe: .text raw pointer drift"))
+    (nelisp-pe--write-bytes cbuf text)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text)))
+    (when have-rodata
+      (unless (= (nelisp-pe--buffer-length cbuf) rdata-raw-ptr)
+        (error "nelisp-pe: .rdata raw pointer drift"))
+      (nelisp-pe--write-bytes cbuf rodata)
+      (nelisp-pe--write-pad cbuf (- rdata-raw-size (length rodata))))
+    (when have-data
+      (unless (= (nelisp-pe--buffer-length cbuf) data-raw-ptr)
+        (error "nelisp-pe: .data raw pointer drift"))
+      (nelisp-pe--write-bytes cbuf data)
+      (nelisp-pe--write-pad cbuf (- data-raw-size (length data))))
+    (when have-idata
+      (unless (= (nelisp-pe--buffer-length cbuf) idata-raw-ptr)
+        (error "nelisp-pe: .idata raw pointer drift"))
+      (nelisp-pe--write-bytes cbuf idata-bytes)
+      (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes))))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--build-virtualalloc-exitprocess-exe ()
   "Build a minimal PE32+ console EXE that proves VirtualAlloc import wiring."
   (let* ((num-sections 2)
@@ -4925,9 +5112,10 @@ SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `getcommandline-exit-42', `wsastartup-exit-42',
 `winsock-socket-exit-42',
 `commandlinetoargv-exit-42', `createprocess-wait-exit-42',
-`createthread-wait-exit-42', or a plist with :exit-code.  The output imports
-DLL functions through a real PE import directory and writes raw bytes with
-`no-conversion'.  Returns FILE-PATH."
+`createthread-wait-exit-42', a plist with :exit-code, or a generic plist with
+:text/:rodata/:data/:entry-rva/:imports.  The output imports DLL functions
+through a real PE import directory and writes raw bytes with `no-conversion'.
+Returns FILE-PATH."
   (let* ((exit-code
           (cond
            ((eq spec 'minimal-exit-42) 42)
@@ -4952,9 +5140,12 @@ DLL functions through a real PE import directory and writes raw bytes with
            ((eq spec 'commandlinetoargv-exit-42) nil)
            ((eq spec 'createprocess-wait-exit-42) nil)
            ((eq spec 'createthread-wait-exit-42) nil)
+           ((and (listp spec) (plist-member spec :text)) nil)
            ((listp spec) (or (plist-get spec :exit-code) 42))
            (t (error "nelisp-pe-write-exe-binary: invalid SPEC %S" spec))))
          (bytes (cond
+                 ((and (listp spec) (plist-member spec :text))
+                  (nelisp-pe--build-generic-exe spec))
                  ((eq spec 'virtualalloc-exit-42)
                   (nelisp-pe--build-virtualalloc-exitprocess-exe))
                  ((eq spec 'virtualprotect-free-exit-42)
