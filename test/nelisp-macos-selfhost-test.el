@@ -54,21 +54,85 @@
                        (nelisp-macos-selfhost-test--repo-root)))
     (buffer-string)))
 
+(defun nelisp-macos-selfhost-test--count-substring (needle haystack)
+  "Return the number of non-overlapping NEEDLE occurrences in HAYSTACK."
+  (let ((pos 0)
+        (count 0))
+    (while (string-match (regexp-quote needle) haystack pos)
+      (setq count (1+ count))
+      (setq pos (match-end 0)))
+    count))
+
 (ert-deftest nelisp-macos-selfhost/darwin-pipe-smokes-use-fd-buffer ()
   "Darwin pipe smokes pass an fd[2] buffer instead of reading x1."
   (let ((script (nelisp-macos-selfhost-test--script-text)))
-    (should (string-match-p
-             (regexp-quote "(syscall-direct 42 8589934848 0 0 0 0 0)")
-             script))
-    (should (string-match-p
-             (regexp-quote "(ptr-read-u32 8589934592 256)")
-             script))
-    (should (string-match-p
-             (regexp-quote "(ptr-read-u32 8589934592 260)")
-             script))
+    (should (= (nelisp-macos-selfhost-test--count-substring
+                "(syscall-direct 42 8589934848 0 0 0 0 0)"
+                script)
+               2))
+    (should (>= (nelisp-macos-selfhost-test--count-substring
+                 "(ptr-read-u32 8589934592 256)"
+                 script)
+                2))
+    (should (= (nelisp-macos-selfhost-test--count-substring
+                "(ptr-read-u32 8589934592 260)"
+                script)
+               2))
     (should-not (string-match-p
                  (regexp-quote "syscall-direct-store-x1 42")
                  script))))
+
+(ert-deftest nelisp-macos-selfhost/darwin-fork-smokes-store-child-flag ()
+  "Darwin fork smokes preserve the x1 child/parent discriminator."
+  (let ((script (nelisp-macos-selfhost-test--script-text)))
+    (should (= (nelisp-macos-selfhost-test--count-substring
+                "(syscall-direct-store-x1 2 0 0 0 0 0 0 8589934592 240)"
+                script)
+               2))
+    (should (= (nelisp-macos-selfhost-test--count-substring
+                "(ptr-read-u64 8589934592 240)"
+                script)
+               2))
+    (should (string-match-p
+             (regexp-quote "(or (= childp 1) (= pid 0))")
+             script))))
+
+(ert-deftest nelisp-macos-selfhost/darwin-fd-regression-smokes-emit-only ()
+  "The M1 fd/process regression smokes compile to Mach-O images."
+  (let* ((root (nelisp-macos-selfhost-test--repo-root))
+         (script (expand-file-name "tools/macos-selfhost-test.sh" root))
+         (out-dir (nelisp-macos-selfhost-test--out-dir root "fd-regressions"))
+         (buf (generate-new-buffer " *nelisp-macos-selfhost-fd-regressions*"))
+         (process-environment
+          (cons (format "EMACS=%s"
+                        (nelisp-macos-selfhost-test--current-emacs))
+                process-environment)))
+    (unwind-protect
+        (let ((status (call-process "bash" nil buf nil
+                                    script "--emacs"
+                                    (nelisp-macos-selfhost-test--current-emacs)
+                                    "--emit-only" "--out-dir" out-dir
+                                    "--smoke" "pipe"
+                                    "--smoke" "fork-wait"
+                                    "--smoke" "fork-execve"
+                                    "--smoke" "dup-fcntl")))
+          (with-current-buffer buf
+            (let ((out (buffer-string)))
+              (should (= status 0))
+              (dolist (name '("pipe" "fork-wait" "fork-execve" "dup-fcntl"))
+                (should (string-match-p
+                         (regexp-quote
+                          (format "[macos] PASS: %s -> built" name))
+                         out))
+                (should (file-exists-p
+                         (expand-file-name
+                          (format "nelisp-macos-%s" name)
+                          out-dir))))
+              (should (string-match-p
+                       (regexp-quote
+                        "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
+                       out)))))
+      (kill-buffer buf))))
 
 (ert-deftest nelisp-macos-selfhost/emit-only-script-builds-all-smokes ()
   "The macOS self-host smoke harness builds every case in emit-only mode."
