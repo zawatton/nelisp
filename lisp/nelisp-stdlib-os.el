@@ -177,6 +177,15 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
   (and (boundp 'system-type)
        (eq system-type 'windows-nt)))
 
+(defun nelisp-os--darwin-p ()
+  "Return non-nil when running on a native Darwin/macOS host."
+  (and (boundp 'system-type)
+       (eq system-type 'darwin)))
+
+(defun nelisp-os--linux-only-unsupported ()
+  "Signal ENOSYS for Linux-only APIs on unsupported POSIX hosts."
+  (signal 'nelisp-os-error (list 38)))
+
 ;; ---------------------------------------------------------------------------
 ;; POSIX flag constants (Linux x86_64/arm64 values).  Phase 3+ refactor
 ;; should look these up from a per-OS table; for Phase 1 the Linux
@@ -4441,7 +4450,9 @@ signal `nelisp-os-error'.  FLAGS is currently 0 or
 `nelisp-os-PIDFD-NONBLOCK'."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-pidfd-open pid flags)
-    (nelisp-os--check-errno (nelisp--syscall 'pidfd_open pid flags))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (nelisp-os--check-errno (nelisp--syscall 'pidfd_open pid flags)))))
 
 (defun nelisp-os--windows-pidfd-send-signal (pidfd sig flags)
   "Windows compatibility implementation of `nelisp-os-pidfd-send-signal'."
@@ -4465,8 +4476,10 @@ PIDFD.  Phase 4.3 only supports `info = NULL', so siginfo_t is left
 zero; pass FLAGS = 0 unless you know better."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-pidfd-send-signal pidfd sig flags)
-    (nelisp-os--check-errno
-     (nelisp--syscall 'pidfd_send_signal pidfd sig 0 flags))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (nelisp-os--check-errno
+       (nelisp--syscall 'pidfd_send_signal pidfd sig 0 flags)))))
 
 ;; ----- inotify wrappers -----
 ;;
@@ -4798,7 +4811,9 @@ zero; pass FLAGS = 0 unless you know better."
 `nelisp-os-IN-NONBLOCK' / `nelisp-os-IN-CLOEXEC' (or 0)."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-inotify-init flags)
-    (nelisp-os--check-errno (nelisp--syscall 'inotify_init1 flags))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (nelisp-os--check-errno (nelisp--syscall 'inotify_init1 flags)))))
 
 (defun nelisp-os-inotify-add-watch (fd path mask)
   "Linux inotify_add_watch(2) — return a watch descriptor (positive
@@ -4808,18 +4823,22 @@ integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
   ;; per-fd integer otherwise.
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-inotify-add-watch fd path mask)
-    (let ((r (nelisp-os--libc-call "libc" "inotify_add_watch"
-                          [:sint32 :sint32 :string :uint32]
-                          fd path mask)))
-      (if (= r -1)
-          (nelisp-os--ffi-errno-signal)
-        r))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (let ((r (nelisp-os--libc-call "libc" "inotify_add_watch"
+                            [:sint32 :sint32 :string :uint32]
+                            fd path mask)))
+        (if (= r -1)
+            (nelisp-os--ffi-errno-signal)
+          r)))))
 
 (defun nelisp-os-inotify-rm-watch (fd wd)
   "Linux inotify_rm_watch(2) — remove the watch identified by WD."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-inotify-rm-watch fd wd)
-    (nelisp-os--check-errno (nelisp--syscall 'inotify_rm_watch fd wd))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (nelisp-os--check-errno (nelisp--syscall 'inotify_rm_watch fd wd)))))
 
 (defun nelisp-os-inotify-read (fd max-events)
   "Read up to MAX-EVENTS events off inotify FD.  Returns a list of
@@ -4829,37 +4848,39 @@ are ready (only possible when FD was opened `IN-NONBLOCK')."
   ;; libc.read + nelisp-os-read-i32/u32/bytes-at parse loop.
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-inotify-read fd max-events)
-    (let* ((per-event-cap (+ 16 256))             ; sizeof(header) + NAME_MAX+1
-           (cap           (* max-events per-event-cap))
-           (buf           (nelisp-os--alloc cap)))
-      (unwind-protect
-          (let ((n (nelisp-os--libc-call "libc" "read"
-                                [:sint64 :sint32 :pointer :uint64]
-                                fd buf cap)))
-            (cond
-             ((= n -1) (nelisp-os--ffi-errno-signal))
-             ((= n 0)  nil)
-             (t (let ((events nil) (off 0))
-                  (catch 'done
-                    (while (<= (+ off 16) n)
-                      (let* ((wd     (nelisp-os-read-i32 buf off))
-                             (mask   (nelisp-os-read-u32 buf (+ off 4)))
-                             (cookie (nelisp-os-read-u32 buf (+ off 8)))
-                             (nlen   (nelisp-os-read-u32 buf (+ off 12)))
-                             (name-off (+ off 16)))
-                        ;; Truncated tail (kernel never writes a partial
-                        ;; record; this guards corruption / short read).
-                        (when (> (+ name-off nlen) n)
-                          (throw 'done nil))
-                        (let* ((raw  (if (= nlen 0)
-                                         ""
-                                       (nelisp-os--read-bytes-at buf name-off nlen)))
-                               (cut  (string-search "\0" raw))
-                               (name (if cut (substring raw 0 cut) raw)))
-                          (push (list wd mask cookie name) events))
-                        (setq off (+ name-off nlen)))))
-                  (nreverse events)))))
-        (nelisp-os--free buf)))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (let* ((per-event-cap (+ 16 256))             ; sizeof(header) + NAME_MAX+1
+             (cap           (* max-events per-event-cap))
+             (buf           (nelisp-os--alloc cap)))
+        (unwind-protect
+            (let ((n (nelisp-os--libc-call "libc" "read"
+                                  [:sint64 :sint32 :pointer :uint64]
+                                  fd buf cap)))
+              (cond
+               ((= n -1) (nelisp-os--ffi-errno-signal))
+               ((= n 0)  nil)
+               (t (let ((events nil) (off 0))
+                    (catch 'done
+                      (while (<= (+ off 16) n)
+                        (let* ((wd     (nelisp-os-read-i32 buf off))
+                               (mask   (nelisp-os-read-u32 buf (+ off 4)))
+                               (cookie (nelisp-os-read-u32 buf (+ off 8)))
+                               (nlen   (nelisp-os-read-u32 buf (+ off 12)))
+                               (name-off (+ off 16)))
+                          ;; Truncated tail (kernel never writes a partial
+                          ;; record; this guards corruption / short read).
+                          (when (> (+ name-off nlen) n)
+                            (throw 'done nil))
+                          (let* ((raw  (if (= nlen 0)
+                                           ""
+                                         (nelisp-os--read-bytes-at buf name-off nlen)))
+                                 (cut  (string-search "\0" raw))
+                                 (name (if cut (substring raw 0 cut) raw)))
+                            (push (list wd mask cookie name) events))
+                          (setq off (+ name-off nlen)))))
+                    (nreverse events)))))
+          (nelisp-os--free buf))))))
 
 ;; ----- eventfd wrapper -----
 
@@ -4886,7 +4907,9 @@ counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
             (nelisp-os--windows-eventfd-set-desc-flags
              fd nelisp-os-FD-CLOEXEC))
           fd))
-    (nelisp-os--check-errno (nelisp--syscall 'eventfd2 initval flags))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (nelisp-os--check-errno (nelisp--syscall 'eventfd2 initval flags)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 58 Phase 4.1.1 + 4.1.2 — AF_UNIX abstract namespace + getsockname /
@@ -5508,7 +5531,9 @@ list of signal numbers."
   "Linux timerfd_create(2) — return a new timer fd."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-timerfd-create clockid flags)
-    (nelisp-os--check-errno (nelisp--syscall 'timerfd_create clockid flags))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (nelisp-os--check-errno (nelisp--syscall 'timerfd_create clockid flags)))))
 
 (defun nelisp-os-timerfd-settime (fd flags it-int-s it-int-ns it-val-s it-val-ns)
   "Linux timerfd_settime(2) — arm or disarm timer FD.  Returns the
@@ -5517,34 +5542,38 @@ PREV-VAL-S PREV-VAL-NS)."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-timerfd-settime
        fd flags it-int-s it-int-ns it-val-s it-val-ns)
-    (let ((new-buf (nelisp-os--alloc nelisp-os--itimerspec-len))
-          (old-buf (nelisp-os--alloc nelisp-os--itimerspec-len)))
-      (unwind-protect
-          (progn
-            (nelisp-os--encode-itimerspec new-buf it-int-s it-int-ns it-val-s it-val-ns)
-            (let ((r (nelisp-os--libc-call "libc" "timerfd_settime"
-                                  [:sint32 :sint32 :sint32 :pointer :pointer]
-                                  fd flags new-buf old-buf)))
-              (if (= r -1)
-                  (nelisp-os--ffi-errno-signal)
-                (nelisp-os--decode-itimerspec old-buf))))
-        (nelisp-os--free new-buf)
-        (nelisp-os--free old-buf)))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (let ((new-buf (nelisp-os--alloc nelisp-os--itimerspec-len))
+            (old-buf (nelisp-os--alloc nelisp-os--itimerspec-len)))
+        (unwind-protect
+            (progn
+              (nelisp-os--encode-itimerspec new-buf it-int-s it-int-ns it-val-s it-val-ns)
+              (let ((r (nelisp-os--libc-call "libc" "timerfd_settime"
+                                    [:sint32 :sint32 :sint32 :pointer :pointer]
+                                    fd flags new-buf old-buf)))
+                (if (= r -1)
+                    (nelisp-os--ffi-errno-signal)
+                  (nelisp-os--decode-itimerspec old-buf))))
+          (nelisp-os--free new-buf)
+          (nelisp-os--free old-buf))))))
 
 (defun nelisp-os-timerfd-gettime (fd)
   "Linux timerfd_gettime(2) — return current itimerspec as 4-element
 list (INT-S INT-NS VAL-S VAL-NS)."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-timerfd-gettime fd)
-    (let ((cur-buf (nelisp-os--alloc nelisp-os--itimerspec-len)))
-      (unwind-protect
-          (let ((r (nelisp-os--libc-call "libc" "timerfd_gettime"
-                                [:sint32 :sint32 :pointer]
-                                fd cur-buf)))
-            (if (= r -1)
-                (nelisp-os--ffi-errno-signal)
-              (nelisp-os--decode-itimerspec cur-buf)))
-        (nelisp-os--free cur-buf)))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (let ((cur-buf (nelisp-os--alloc nelisp-os--itimerspec-len)))
+        (unwind-protect
+            (let ((r (nelisp-os--libc-call "libc" "timerfd_gettime"
+                                  [:sint32 :sint32 :pointer]
+                                  fd cur-buf)))
+              (if (= r -1)
+                  (nelisp-os--ffi-errno-signal)
+                (nelisp-os--decode-itimerspec cur-buf)))
+          (nelisp-os--free cur-buf))))))
 
 ;; ergonomics helper — relative one-shot timer in milliseconds.
 (defun nelisp-os-timerfd-set-relative-ms (fd ms)

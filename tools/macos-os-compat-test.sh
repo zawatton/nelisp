@@ -31,7 +31,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 case "$SUITE" in
-  all) DEFAULT_SELECTOR="darwin"; EXPECTED_COUNT=12 ;;
+  all) DEFAULT_SELECTOR="darwin"; EXPECTED_COUNT=13 ;;
   fds) DEFAULT_SELECTOR="open-darwin\\|close-darwin\\|read-darwin\\|write-darwin\\|pipe-darwin\\|poll-darwin"; EXPECTED_COUNT=6 ;;
   vm) DEFAULT_SELECTOR="vm-darwin"; EXPECTED_COUNT=1 ;;
   sockets) DEFAULT_SELECTOR="network-byte-order-darwin\\|sockopts-darwin\\|shutdown-darwin\\|basic-syscalls-darwin"; EXPECTED_COUNT=4 ;;

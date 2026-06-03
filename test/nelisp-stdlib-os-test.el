@@ -9093,6 +9093,38 @@
                           [:sint64 :sint32 :sint64 :sint32]
                           (list 7 99 nelisp-os-SEEK-SET)))))))
 
+(ert-deftest nelisp-stdlib-os-linux-only-apis-darwin-error-before-syscall ()
+  "Darwin rejects Linux-only fd APIs before syscall/libc allocation paths."
+  (let ((called nil)
+        (forms
+         (list
+          (lambda () (nelisp-os-pidfd-open 1234 0))
+          (lambda () (nelisp-os-pidfd-send-signal 7 nelisp-os-SIGTERM 0))
+          (lambda () (nelisp-os-inotify-init 0))
+          (lambda () (nelisp-os-inotify-add-watch 7 "/tmp" nelisp-os-IN-ALL-EVENTS))
+          (lambda () (nelisp-os-inotify-rm-watch 7 1))
+          (lambda () (nelisp-os-inotify-read 7 1))
+          (lambda () (nelisp-os-eventfd 0 0))
+          (lambda () (nelisp-os-timerfd-create nelisp-os-CLOCK-MONOTONIC 0))
+          (lambda () (nelisp-os-timerfd-settime 7 0 0 0 1 0))
+          (lambda () (nelisp-os-timerfd-gettime 7)))))
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'darwin)
+            (nelisp-os--use-direct-syscall nil))
+        (dolist (fn forms)
+          (condition-case err
+              (progn
+                (funcall fn)
+                (ert-fail "expected nelisp-os-error"))
+            (nelisp-os-error
+             (should (equal (cdr err) '(38))))))))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-sockopts-darwin-use-libc ()
   "Darwin int-valued socket options use libc setsockopt/getsockopt."
   (let ((calls nil)
