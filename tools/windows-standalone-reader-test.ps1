@@ -138,6 +138,49 @@ function Assert-Output {
     Write-Host ("[windows-standalone-reader] PASS: " + $Label)
 }
 
+function Convert-ReaderOutputText {
+    param([string]$Text)
+
+    $Normalized = $Text -replace "`r`n", "`n"
+    if ($Normalized.EndsWith("`n")) {
+        return $Normalized.Substring(0, $Normalized.Length - 1)
+    }
+    return $Normalized
+}
+
+function Invoke-ReaderWithInput {
+    param(
+        [string[]]$Arguments,
+        [string]$InputText
+    )
+
+    $Psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $Psi.FileName = $Exe
+    $Psi.UseShellExecute = $false
+    $Psi.RedirectStandardInput = $true
+    $Psi.RedirectStandardOutput = $true
+    $Psi.RedirectStandardError = $true
+    $Psi.StandardInputEncoding = [System.Text.Encoding]::ASCII
+    $Psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $Psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    foreach ($Arg in $Arguments) {
+        [void]$Psi.ArgumentList.Add($Arg)
+    }
+
+    $Proc = [System.Diagnostics.Process]::Start($Psi)
+    $Proc.StandardInput.Write($InputText)
+    $Proc.StandardInput.Close()
+    $Stdout = $Proc.StandardOutput.ReadToEnd()
+    $Stderr = $Proc.StandardError.ReadToEnd()
+    $Proc.WaitForExit()
+
+    [pscustomobject]@{
+        ExitCode = $Proc.ExitCode
+        Stdout = Convert-ReaderOutputText $Stdout
+        Stderr = Convert-ReaderOutputText $Stderr
+    }
+}
+
 $HelpOutput = & $Exe --help
 $HelpCode = $LASTEXITCODE
 if ($null -eq $HelpCode) {
@@ -209,40 +252,54 @@ if ($ExecRuntimeMissingCode -ne 1) {
 }
 Write-Host "[windows-standalone-reader] PASS: exec-runtime-image missing form -> exit 1"
 
-$ReplOutput = @(
-    "(+ 40 2)",
-    "nil",
-    "t",
-    "(quote (1 2 3))",
-    "(vector 1 `"a`" nil t)",
+$ReplInput = ((@(
+    "(+ 40 2)"
+    "nil"
+    "t"
+    "(quote (1 2 3))"
+    "(vector 1 `"a`" nil t)"
     "(exit)"
-) | & $Exe repl --no-prompt
-$ReplCode = $LASTEXITCODE
-if ($null -eq $ReplCode) {
-    $ReplCode = 0
-}
-if ($ReplCode -ne 0) {
-    Write-Host ("[windows-standalone-reader] FAIL: repl exited " + $ReplCode)
+) -join "`n") + "`n")
+$ReplRun = Invoke-ReaderWithInput -Arguments @("repl", "--no-prompt") `
+    -InputText $ReplInput
+if ($ReplRun.ExitCode -ne 0) {
+    Write-Host ("[windows-standalone-reader] FAIL: repl exited " + $ReplRun.ExitCode)
+    if ($ReplRun.Stdout -ne "") {
+        Write-Host ("stdout: " + $ReplRun.Stdout)
+    }
+    if ($ReplRun.Stderr -ne "") {
+        Write-Host ("stderr: " + $ReplRun.Stderr)
+    }
     exit 1
 }
-Assert-Output -Label "repl stdin/stdout" -Output $ReplOutput -Code $ReplCode `
+Assert-Output -Label "repl stdin/stdout" -Output @($ReplRun.Stdout) -Code 0 `
     -Expected "42`nnil`nt`n(1 2 3)`n[1 `"a`" nil t]"
 Write-Host "[windows-standalone-reader] PASS: repl stdin/stdout -> 42"
 
-$QuietReplOutput = @(
-    "(defun hot () 1)",
-    "(hot)",
-    "(condition-case e (signal 'quit nil) (quit 42))",
-    '(nelisp--write-stdout-bytes "explicit\n")',
-    "(hot)",
+$QuietReplInput = ((@(
+    "(defun hot () 1)"
+    "(hot)"
+    "(condition-case e (signal 'quit nil) (quit 42))"
+    '(nelisp--write-stdout-bytes "explicit\n")'
+    "(hot)"
     "(exit)"
-) | & $Exe repl --no-prompt --no-print
-$QuietReplCode = $LASTEXITCODE
-if ($null -eq $QuietReplCode) {
-    $QuietReplCode = 0
+) -join "`n") + "`n")
+$QuietReplRun = Invoke-ReaderWithInput `
+    -Arguments @("repl", "--no-prompt", "--no-print") `
+    -InputText $QuietReplInput
+if ($QuietReplRun.ExitCode -ne 0) {
+    Write-Host ("[windows-standalone-reader] FAIL: repl --no-print exited " +
+                $QuietReplRun.ExitCode)
+    if ($QuietReplRun.Stdout -ne "") {
+        Write-Host ("stdout: " + $QuietReplRun.Stdout)
+    }
+    if ($QuietReplRun.Stderr -ne "") {
+        Write-Host ("stderr: " + $QuietReplRun.Stderr)
+    }
+    exit 1
 }
-Assert-Output -Label "repl --no-print" -Output $QuietReplOutput `
-    -Code $QuietReplCode -Expected "explicit"
+Assert-Output -Label "repl --no-print" -Output @($QuietReplRun.Stdout) `
+    -Code 0 -Expected "explicit"
 
 & $Exe repl --bad
 $BadReplCode = $LASTEXITCODE
