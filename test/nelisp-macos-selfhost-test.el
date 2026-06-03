@@ -25,9 +25,10 @@
   '("exit42" "loop" "fact" "alloc" "mprotect-munmap" "cons" "sexp"
     "let" "str" "setq-local" "ptr" "cas" "dealloc" "cons-set" "cond"
     "logic" "write-stdout" "read-stdin" "pipe" "getpid"
-    "fork-wait" "createfile-write" "lseek-fstat" "socket-close"
-    "dup-fcntl" "cons-clone" "boxed" "names" "call4-outs" "str-helpers"
-    "lits" "extern" "aot-jump" "aot-roots" "f64-sexp" "callptr")
+    "fork-wait" "createfile-write" "lseek-fstat" "file-mmap"
+    "socket-close" "dup-fcntl" "cons-clone" "boxed" "names" "call4-outs"
+    "str-helpers" "lits" "extern" "aot-jump" "aot-roots" "f64-sexp"
+    "callptr")
   "Smoke case names expected from `tools/macos-selfhost-test.sh'.")
 
 (defun nelisp-macos-selfhost-test--repo-root ()

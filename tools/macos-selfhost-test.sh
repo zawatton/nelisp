@@ -34,9 +34,9 @@ usage() {
 SMOKE_NAMES=(
   exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
   cas dealloc cons-set cond logic write-stdout read-stdin pipe getpid
-  fork-wait createfile-write lseek-fstat socket-close dup-fcntl cons-clone
-  boxed names call4-outs str-helpers lits extern aot-jump aot-roots f64-sexp
-  callptr
+  fork-wait createfile-write lseek-fstat file-mmap socket-close dup-fcntl
+  cons-clone boxed names call4-outs str-helpers lits extern aot-jump
+  aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -499,6 +499,42 @@ build_run lseek-fstat '(seq
                                 (fail))
                             (fail))
                         (fail)))))))
+          (fail)))))
+  (exit (run)))' 42
+
+# raw Darwin file-backed mmap(2): create a file, map it read-only, verify the
+# mapped bytes, then munmap/close/unlink.  Mirrors Windows filemapping smoke.
+build_run file-mmap '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun good (w value mu)
+    (if (= w 4)
+        (if (= value 561013101)
+            (if (= mu 0) 1 0)
+          0)
+      0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 256 7810770278772732975)
+      (ptr-write-u64 8589934592 264 8026366082446029673)
+      (ptr-write-u64 8589934592 272 111516299177331)
+      (ptr-write-u32 8589934592 320 561013101)
+      (let ((fd (syscall-direct 5 8589934848 1538 420 0 0 0)))
+        (if (< 2 fd)
+            (let ((w (syscall-direct 4 fd 8589934912 4 0 0 0)))
+              (let ((mapped (syscall-direct 197 8592031744 4096 1 18 fd 0)))
+                (if (= mapped 8592031744)
+                    (let ((value (ptr-read-u32 8592031744 0)))
+                      (let ((mu (syscall-direct 73 8592031744 4096 0 0 0 0)))
+                        (seq
+                          (syscall-direct 6 fd 0 0 0 0 0)
+                          (syscall-direct 10 8589934848 0 0 0 0 0)
+                          (if (= (good w value mu) 1) (ok) (fail)))))
+                  (seq
+                    (syscall-direct 6 fd 0 0 0 0 0)
+                    (syscall-direct 10 8589934848 0 0 0 0 0)
+                    (fail)))))
           (fail)))))
   (exit (run)))' 42
 
