@@ -24,7 +24,7 @@
 (defconst nelisp-macos-selfhost-test--smoke-names
   '("exit42" "loop" "fact" "alloc" "cons" "sexp" "let" "str"
     "setq-local" "ptr" "cas" "dealloc" "cons-set" "cond" "logic"
-    "cons-clone" "boxed" "names" "str-helpers" "lits" "extern"
+    "cons-clone" "boxed" "names" "call4-outs" "str-helpers" "lits" "extern"
     "aot-jump" "aot-roots" "f64-sexp" "callptr")
   "Smoke case names expected from `tools/macos-selfhost-test.sh'.")
 
@@ -61,6 +61,45 @@
                 (regexp-quote
                  "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
                 out)))))
+      (kill-buffer buf))))
+
+(ert-deftest nelisp-macos-selfhost/list-and-single-smoke ()
+  "The macOS self-host harness can list and run one selected smoke."
+  (let* ((root (nelisp-macos-selfhost-test--repo-root))
+         (script (expand-file-name "tools/macos-selfhost-test.sh" root))
+         (buf (generate-new-buffer " *nelisp-macos-selfhost-select*"))
+         (process-environment
+          (cons (format "EMACS=%s"
+                        (nelisp-macos-selfhost-test--current-emacs))
+                process-environment)))
+    (unwind-protect
+        (progn
+          (let ((status (call-process "bash" nil buf nil script "--list")))
+            (with-current-buffer buf
+              (let ((out (buffer-string)))
+                (should (= status 0))
+                (should (string-match-p "available smokes:" out))
+                (dolist (name nelisp-macos-selfhost-test--smoke-names)
+                  (should (string-match-p
+                           (regexp-quote (format "  %s" name))
+                           out))))))
+          (with-current-buffer buf
+            (erase-buffer))
+          (let ((status (call-process "bash" nil buf nil
+                                      script "--emit-only" "--smoke" "exit42")))
+            (with-current-buffer buf
+              (let ((out (buffer-string)))
+                (should (= status 0))
+                (should (string-match-p
+                         (regexp-quote "[macos] PASS: exit42 -> built")
+                         out))
+                (should-not (string-match-p
+                             (regexp-quote "[macos] PASS: loop -> built")
+                             out))
+                (should (string-match-p
+                         (regexp-quote
+                          "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
+                         out))))))
       (kill-buffer buf))))
 
 (provide 'nelisp-macos-selfhost-test)

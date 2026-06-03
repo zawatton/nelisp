@@ -24,22 +24,81 @@ cd "$here"
 EMACS="${EMACS:-emacs}"
 EMIT_ONLY="${EMIT_ONLY:-0}"
 fail=0
+SELECTED_SMOKES=()
 
-case "${1:-}" in
-  --emit-only)
-    EMIT_ONLY=1
-    shift
-    ;;
-  "")
-    ;;
-  *)
-    echo "usage: $0 [--emit-only]" >&2
-    exit 2
-    ;;
-esac
+usage() {
+  echo "usage: $0 [--emit-only] [--smoke NAME] [--list]" >&2
+}
+
+SMOKE_NAMES=(
+  exit42 loop fact alloc cons sexp let setq-local str ptr cas dealloc
+  cons-set cond logic cons-clone boxed names call4-outs str-helpers lits
+  extern aot-jump aot-roots f64-sexp callptr
+)
+
+smoke_exists() {
+  local want="$1" item
+  for item in "${SMOKE_NAMES[@]}"; do
+    if [ "$item" = "$want" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --emit-only)
+      EMIT_ONLY=1
+      shift
+      ;;
+    --smoke)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      if ! smoke_exists "$2"; then
+        echo "[macos] FAIL: unknown smoke '$2'" >&2
+        echo "available smokes: all ${SMOKE_NAMES[*]}" >&2
+        exit 2
+      fi
+      SELECTED_SMOKES+=("$2")
+      shift 2
+      ;;
+    --list)
+      echo "available smokes:"
+      echo "  all"
+      for name in "${SMOKE_NAMES[@]}"; do
+        echo "  $name"
+      done
+      exit 0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+selected_smoke_p() {
+  local name="$1" item
+  if [ "${#SELECTED_SMOKES[@]}" -eq 0 ]; then
+    return 0
+  fi
+  for item in "${SELECTED_SMOKES[@]}"; do
+    if [ "$item" = "$name" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 build_run() {            # NAME  PROGRAM-SEXP  EXPECTED-EXIT
   local name="$1" prog="$2" want="$3" out="/tmp/nelisp-macos-$1"
+  if ! selected_smoke_p "$name"; then
+    return
+  fi
   rm -f "$out"
   if ! "$EMACS" --batch -Q -L lisp -L src -L scripts -l nelisp-macos-build \
         --eval "(nelisp-macos-build-program (quote $prog) \"$out\")" \
