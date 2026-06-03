@@ -28,6 +28,15 @@
     (insert-file-contents path)
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun nelisp-standalone-parallel-posix-test--count-darwin-os-tests (text)
+  "Return the number of ERT tests in TEXT whose names contain darwin."
+  (let ((pos 0)
+        (count 0))
+    (while (string-match "(ert-deftest[ \t\n]+[^ \t\n)]*darwin" text pos)
+      (setq count (1+ count))
+      (setq pos (match-end 0)))
+    count))
+
 (ert-deftest nelisp-standalone-parallel-posix-script-targets-macos ()
   "The POSIX parallel runner accepts an explicit macOS standalone target."
   (let* ((script-path
@@ -65,6 +74,31 @@
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 
+(ert-deftest nelisp-standalone-parallel-posix-macos-os-compat-script ()
+  "The macOS OS compatibility runner exposes the Darwin stdlib selector."
+  (let* ((script-path
+          (expand-file-name "tools/macos-os-compat-test.sh"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (test-path
+          (expand-file-name "test/nelisp-stdlib-os-test.el"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (script (nelisp-standalone-parallel-posix-test--read-file-text
+                  script-path))
+         (test-text (nelisp-standalone-parallel-posix-test--read-file-text
+                     test-path))
+         (count (nelisp-standalone-parallel-posix-test--count-darwin-os-tests
+                 test-text)))
+    (should (file-exists-p script-path))
+    (should (file-executable-p script-path))
+    (should (= count 12))
+    (should (string-match-p "NELISP_MACOS_OS_SELECTOR" script))
+    (should (string-match-p "test/nelisp-stdlib-os-test.el" script))
+    (should (string-match-p "EXPECTED_COUNT=12" script))
+    (should (string-match-p "ert-run-tests-batch-and-exit" script))
+    (should (string-match-p "\\[macos-os\\] all PASS" script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
+
 (ert-deftest nelisp-standalone-parallel-posix-macos-verify-runs-parity-gates ()
   "The POSIX cross-platform verifier includes macOS standalone parity gates."
   (let* ((script-path
@@ -76,6 +110,8 @@
                             script))
     (should (string-match-p "macOS arm64 Mach-O self-host smoke" script))
     (should (string-match-p "tools/macos-selfhost-test.sh" script))
+    (should (string-match-p "macOS OS compatibility ERT smoke" script))
+    (should (string-match-p "tools/macos-os-compat-test.sh" script))
     (should (string-match-p "macOS standalone parallel build" script))
     (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64"
                             script))

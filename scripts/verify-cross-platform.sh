@@ -21,6 +21,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
   tools/macos-selfhost-test.sh
 
   echo ""
+  echo "--- macOS OS compatibility ERT smoke ---"
+  tools/macos-os-compat-test.sh
+
+  echo ""
   echo "--- macOS standalone parallel build (zero-Rust) ---"
   tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64
 

@@ -8901,6 +8901,280 @@
         (should-not (assq dupfd nelisp-os--windows-signalfd-table))))
     (should-not called)))
 
+;; ---------------------------------------------------------------------------
+;; Darwin / macOS OS compatibility smoke selector.
+;; ---------------------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-os-exit-darwin-uses-libc-exit ()
+  "Darwin process exit routes through libc _exit, not Windows ExitProcess."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 :unreachable)))
+      (let ((system-type 'darwin)
+            (nelisp-os--use-direct-syscall nil))
+        (should (eq (nelisp-os-exit 42) :unreachable))))
+    (should (equal call
+                   (list "libc" "_exit" [:void :int] (list 42))))))
+
+(ert-deftest nelisp-stdlib-os-open-darwin-uses-libc-open ()
+  "Darwin regular file open uses libc open."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 7)))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-open "/tmp/nelisp" nelisp-os-O-RDONLY 0) 7))))
+    (should (equal call
+                   (list "libc" "open"
+                         [:sint32 :string :sint32 :uint32]
+                         (list "/tmp/nelisp" nelisp-os-O-RDONLY 0))))))
+
+(ert-deftest nelisp-stdlib-os-close-darwin-uses-libc-close ()
+  "Darwin close uses libc close when direct syscalls are unavailable."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'darwin)
+            (nelisp-os--use-direct-syscall nil))
+        (should-not (nelisp-os-close 7))))
+    (should (equal call
+                   (list "libc" "close" [:int :int] (list 7))))))
+
+(ert-deftest nelisp-stdlib-os-read-darwin-uses-libc-read ()
+  "Darwin read allocates a mutable buffer and routes through libc read."
+  (let ((call nil)
+        (freed nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr n)
+                 (should (= ptr 3000))
+                 (should (= n 3))
+                 "abc"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 3)))
+      (let ((system-type 'darwin))
+        (should (equal (nelisp-os-read 9 16) "abc"))))
+    (should (equal call
+                   (list "libc" "read"
+                         [:sint64 :sint32 :pointer :uint64]
+                         (list 9 3000 16))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-write-darwin-uses-libc-write ()
+  "Darwin write preserves binary-safe buffer routing through libc write."
+  (let ((call nil)
+        (freed nil)
+        (written nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written (list ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 3)))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-write nelisp-os-STDOUT "abc") 3))))
+    (should (equal written '(3000 "abc")))
+    (should (equal call
+                   (list "libc" "write"
+                         [:sint64 :sint32 :pointer :uint64]
+                         (list nelisp-os-STDOUT 3000 3))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-pipe-darwin-uses-libc-pipe ()
+  "Darwin pipe uses libc pipe and decodes the two int fds."
+  (let ((call nil)
+        (freed nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (pcase off
+                   (0 11)
+                   (4 12)
+                   (_ (error "unexpected pipe offset %S" off)))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'darwin))
+        (should (equal (nelisp-os-pipe) '(11 . 12)))))
+    (should (equal call
+                   (list "libc" "pipe" [:sint32 :pointer] (list 3000))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-network-byte-order-darwin-uses-libc ()
+  "Darwin sockaddr byte-order helpers route through libc."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig arg)
+                 (setq call (list dll fn sig arg))
+                 #x3412)))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os--htons #x1234) #x3412))))
+    (should (equal call
+                   (list "libc" "htons" [:uint16 :uint16] #x1234)))))
+
+(ert-deftest nelisp-stdlib-os-vm-darwin-uses-syscall-path ()
+  "Darwin VM wrappers use the POSIX syscall path, not Windows VirtualAlloc."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest args)
+                 (push args calls)
+                 (pcase (car args)
+                   ('mmap #x100000000)
+                   (_ 0))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args)
+                 (ert-fail "Darwin VM wrapper unexpectedly used libc-call"))))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-mmap 4096 nelisp-os-PROT-READ
+                                   nelisp-os-MAP-PRIVATE -1 0)
+                   #x100000000))
+        (should (= (nelisp-os-mprotect #x100000000 4096 nelisp-os-PROT-READ)
+                   0))
+        (should (= (nelisp-os-munmap #x100000000 4096) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list 'mmap 0 4096 nelisp-os-PROT-READ
+                          nelisp-os-MAP-PRIVATE -1 0)
+                    (list 'mprotect #x100000000 4096 nelisp-os-PROT-READ)
+                    (list 'munmap #x100000000 4096))))))
+
+(ert-deftest nelisp-stdlib-os-basic-syscalls-darwin-use-syscall-path ()
+  "Darwin getpid/socket/listen/lseek use the shared POSIX syscall wrappers."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest args)
+                 (push args calls)
+                 (pcase (car args)
+                   ('getpid 1234)
+                   ('socket 55)
+                   ('listen 0)
+                   ('lseek 99)
+                   (_ (error "unexpected syscall %S" args)))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args)
+                 (ert-fail "Darwin basic syscall wrapper unexpectedly used libc-call"))))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-getpid) 1234))
+        (should (= (nelisp-os-socket nelisp-os-AF-INET nelisp-os-SOCK-STREAM 0)
+                   55))
+        (should (= (nelisp-os-listen 55 16) 0))
+        (should (= (nelisp-os-lseek 7 99 nelisp-os-SEEK-SET) 99))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list 'getpid)
+                    (list 'socket nelisp-os-AF-INET nelisp-os-SOCK-STREAM 0)
+                    (list 'listen 55 16)
+                    (list 'lseek 7 99 nelisp-os-SEEK-SET))))))
+
+(ert-deftest nelisp-stdlib-os-sockopts-darwin-use-libc ()
+  "Darwin int-valued socket options use libc setsockopt/getsockopt."
+  (let ((calls nil)
+        (freed nil)
+        (writes nil)
+        (allocs (list 3000 4000 5000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= ptr 4000))
+                 (should (= off 0))
+                 1))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-setsockopt-int
+                    8 nelisp-os-SOL-SOCKET nelisp-os-SO-REUSEADDR 1)
+                   0))
+        (should (= (nelisp-os-getsockopt-int
+                    8 nelisp-os-SOL-SOCKET nelisp-os-SO-REUSEADDR)
+                   1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "setsockopt"
+                          [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
+                          (list 8 nelisp-os-SOL-SOCKET
+                                nelisp-os-SO-REUSEADDR 3000 4))
+                    (list "libc" "getsockopt"
+                          [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                          (list 8 nelisp-os-SOL-SOCKET
+                                nelisp-os-SO-REUSEADDR 4000 5000)))))
+    (should writes)
+    (should (equal (sort freed #'<) '(3000 4000 5000)))))
+
+(ert-deftest nelisp-stdlib-os-shutdown-darwin-uses-libc ()
+  "Darwin shutdown uses libc shutdown and validates HOW first."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-shutdown 8 nelisp-os-SHUT-RDWR) 0))))
+    (should (equal call
+                   (list "libc" "shutdown"
+                         [:sint32 :sint32 :sint32]
+                         (list 8 nelisp-os-SHUT-RDWR))))))
+
+(ert-deftest nelisp-stdlib-os-poll-darwin-uses-libc ()
+  "Darwin poll marshals pollfd entries and calls libc poll."
+  (let ((call nil)
+        (freed nil)
+        (writes nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list 'i32 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-write-i16)
+               (lambda (ptr off val) (push (list 'i16 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (_ptr off)
+                 (pcase off
+                   (0 7)
+                   (8 8)
+                   (_ (error "unexpected poll fd offset %S" off)))))
+              ((symbol-function 'nelisp-os-read-i16)
+               (lambda (_ptr off)
+                 (pcase off
+                   (6 nelisp-os-POLLIN)
+                   (14 0)
+                   (_ (error "unexpected poll revents offset %S" off)))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 1)))
+      (let ((system-type 'darwin))
+        (should (equal (nelisp-os-poll
+                        (list (cons 7 nelisp-os-POLLIN)
+                              (cons 8 nelisp-os-POLLOUT))
+                        0)
+                       (list (cons 7 nelisp-os-POLLIN)
+                             (cons 8 0))))))
+    (should (equal call
+                   (list "libc" "poll"
+                         [:sint32 :pointer :uint64 :sint32]
+                         (list 3000 2 0))))
+    (should (= (length writes) 4))
+    (should (equal freed '(3000)))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here
