@@ -54,6 +54,24 @@
              (directory-file-name
               (nelisp-standalone--target-cache-dir 'windows-x86_64))))))
 
+(ert-deftest nelisp-standalone-target-cache-preserves-section-bytes ()
+  "Standalone unit cache stores raw section bytes independent of host coding."
+  (let* ((text (unibyte-string #x00 #x7f #x80 #x90 #xe8 #xff))
+         (unit (nelisp-link-unit-make
+                "probe.o"
+                (list (cons 'text text))
+                (list (list :name "probe" :section 'text :value 0))
+                (list (list :offset 1 :type 'pc32 :symbol "ext"
+                            :addend 0 :section 'text))))
+         (encoded (nelisp-standalone--unit-cache-encode unit))
+         (decoded (nelisp-standalone--unit-cache-decode encoded))
+         (decoded-text (cdr (assq 'text (plist-get decoded :sections)))))
+    (should (not (multibyte-string-p decoded-text)))
+    (should (= (string-bytes decoded-text) (length text)))
+    (should (equal decoded-text text))
+    (should (equal (plist-get decoded :symbols) (plist-get unit :symbols)))
+    (should (equal (plist-get decoded :relocs) (plist-get unit :relocs)))))
+
 (ert-deftest nelisp-standalone-target-rejects-unknown-target ()
   "Unsupported targets fail before producing a mixed-ABI object cache."
   (should-error (nelisp-standalone--target-abi 'plan9-x86_64)

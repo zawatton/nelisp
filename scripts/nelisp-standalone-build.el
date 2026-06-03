@@ -130,9 +130,10 @@ below 2 GiB so Phase47's current signed imm32 materialization remains valid.")
 
 (defun nelisp-standalone--dep-files ()
   "Toolchain source files; any newer than a cache entry forces recompile."
-  (delq nil (mapcar #'locate-library
-                    '("nelisp-phase47-compiler" "nelisp-static-linker"
-                      "nelisp-elf-write" "nelisp-cc-runtime"))))
+  (delq nil (cons nelisp-standalone--this-file
+                  (mapcar #'locate-library
+                          '("nelisp-phase47-compiler" "nelisp-static-linker"
+                            "nelisp-elf-write" "nelisp-cc-runtime")))))
 
 (defconst nelisp-standalone--arena-rebase-span #x1000
   "Number of arena-base-relative low metadata bytes rebased for Windows.")
@@ -208,6 +209,57 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 ;; ===================================================================
 ;; Incremental cache.
 ;; ===================================================================
+
+(defun nelisp-standalone--bytes-to-hex (s)
+  "Return an ASCII hex representation of unibyte byte string S."
+  (let ((hex (make-string (* 2 (length s)) 0))
+        (digits "0123456789abcdef"))
+    (dotimes (i (length s))
+      (let ((b (aref s i)))
+        (aset hex (* i 2) (aref digits (ash b -4)))
+        (aset hex (1+ (* i 2)) (aref digits (logand b 15)))))
+    hex))
+
+(defun nelisp-standalone--hex-to-bytes (hex)
+  "Decode ASCII HEX into a unibyte byte string."
+  (let* ((n (/ (length hex) 2))
+         (s (make-string n 0)))
+    (dotimes (i n)
+      (aset s i (string-to-number (substring hex (* i 2) (+ (* i 2) 2)) 16)))
+    (string-make-unibyte s)))
+
+(defun nelisp-standalone--unit-cache-encode (unit)
+  "Encode UNIT for stable ASCII cache storage.
+Section payloads are raw bytes; keeping them as printed Lisp strings depends on
+the host's read/write coding-system behavior.  Store them as hex ASCII so cached
+Windows PE units round-trip exactly like freshly compiled in-memory units."
+  (let ((copy (copy-sequence unit)))
+    (plist-put
+     copy :sections
+     (mapcar (lambda (section)
+               (cons (car section)
+                     (list :nelisp-cache-bytes-hex
+                           (nelisp-standalone--bytes-to-hex (cdr section)))))
+             (plist-get unit :sections)))
+    copy))
+
+(defun nelisp-standalone--unit-cache-decode (unit)
+  "Decode UNIT read from the standalone cache.
+Old cache entries stored raw strings; accept them for compatibility, while new
+entries carry explicit hex-encoded byte sections."
+  (let ((copy (copy-sequence unit)))
+    (plist-put
+     copy :sections
+     (mapcar (lambda (section)
+               (let ((payload (cdr section)))
+                 (cons (car section)
+                       (if (and (consp payload)
+                                (eq (car payload) :nelisp-cache-bytes-hex))
+                           (nelisp-standalone--hex-to-bytes (cadr payload))
+                         payload))))
+             (plist-get unit :sections)))
+    copy))
+
 (defun nelisp-standalone--cached-unit (name source source-file)
   "Return the link-unit for NAME, compiling SOURCE only if SOURCE-FILE
 or the toolchain is newer than the cached object."
@@ -217,15 +269,18 @@ or the toolchain is newer than the cached object."
          (fresh (and (file-exists-p cache)
                      (cl-every (lambda (f) (or (null f) (file-newer-than-file-p cache f))) deps))))
     (if fresh
-        (with-temp-buffer
-          (insert-file-contents cache)
-          (goto-char (point-min))
-          (read (current-buffer)))
+        (let ((coding-system-for-read 'utf-8-unix))
+          (with-temp-buffer
+            (insert-file-contents cache)
+            (goto-char (point-min))
+            (nelisp-standalone--unit-cache-decode (read (current-buffer)))))
       (let ((unit (nelisp-standalone--compile-to-unit name source)))
         (make-directory cache-dir t)
-        (with-temp-file cache
-          (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
-            (prin1 unit (current-buffer))))
+        (let ((coding-system-for-write 'utf-8-unix))
+          (with-temp-file cache
+            (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
+              (prin1 (nelisp-standalone--unit-cache-encode unit)
+                     (current-buffer)))))
         (push name nelisp-standalone--recompiled)
         unit))))
 
