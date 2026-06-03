@@ -32,10 +32,10 @@ usage() {
 }
 
 SMOKE_NAMES=(
-  exit42 loop fact alloc cons sexp let setq-local str ptr cas dealloc
-  cons-set cond logic write-stdout read-stdin getpid createfile-write
-  cons-clone boxed names call4-outs str-helpers lits extern aot-jump
-  aot-roots f64-sexp callptr
+  exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
+  cas dealloc cons-set cond logic write-stdout read-stdin getpid
+  createfile-write cons-clone boxed names call4-outs str-helpers lits extern
+  aot-jump aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -189,6 +189,20 @@ build_run alloc '(seq
       (ptr-write-u64 (alloc-bytes 16 8) 0 99)
       (ptr-read-u64 8589934592 16)))
   (exit (run)))' 99
+
+# raw Darwin mmap(2) -> mprotect(2) -> munmap(2).  Windows has a
+# VirtualProtect/VirtualFree smoke; this locks the corresponding Mach-O path.
+build_run mprotect-munmap '(seq
+  (defun run ()
+    (let ((p (syscall-direct 197 8589934592 4096 3 4114 -1 0)))
+      (if (= p 8589934592)
+          (let ((mp (syscall-direct 74 8589934592 4096 1 0 0 0)))
+            (let ((mu (syscall-direct 73 8589934592 4096 0 0 0 0)))
+              (if (= mp 0)
+                  (if (= mu 0) 42 13)
+                13)))
+        13)))
+  (exit (run)))' 42
 
 # cons round-trip: build a cons cell whose car is Int(7), read the car
 # back -> 7.  Exercises sexp-int-make, cons-make (nl_alloc_consbox + box

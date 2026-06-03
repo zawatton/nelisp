@@ -22,11 +22,11 @@
   "Absolute path to this test file captured at load time.")
 
 (defconst nelisp-macos-selfhost-test--smoke-names
-  '("exit42" "loop" "fact" "alloc" "cons" "sexp" "let" "str"
-    "setq-local" "ptr" "cas" "dealloc" "cons-set" "cond" "logic"
-    "write-stdout" "read-stdin" "getpid" "createfile-write" "cons-clone"
-    "boxed" "names" "call4-outs" "str-helpers" "lits" "extern" "aot-jump"
-    "aot-roots" "f64-sexp" "callptr")
+  '("exit42" "loop" "fact" "alloc" "mprotect-munmap" "cons" "sexp"
+    "let" "str" "setq-local" "ptr" "cas" "dealloc" "cons-set" "cond"
+    "logic" "write-stdout" "read-stdin" "getpid" "createfile-write"
+    "cons-clone" "boxed" "names" "call4-outs" "str-helpers" "lits"
+    "extern" "aot-jump" "aot-roots" "f64-sexp" "callptr")
   "Smoke case names expected from `tools/macos-selfhost-test.sh'.")
 
 (defun nelisp-macos-selfhost-test--repo-root ()
