@@ -3304,21 +3304,7 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                 (ok (extern-call WriteFile h ptr len sent 0)))
            (if (= ok 0) -1 (ptr-read-u32 sent 0))))))
     ('macos-aarch64
-     '((defun nl_os_argv_init (sp)
-         (let* ((argc (logand (ptr-read-u64 sp 0) 4294967295))
-                (slot1 (ptr-read-u64 sp 16)))
-           (if (> argc 1)
-               (if (= slot1 0)
-                   ;; Some LC_MAIN dyld paths expose x1 as argv+1 at our
-                   ;; raw entry.  Normalize back to the Linux entry-stack shape
-                   ;; expected by the shared reader driver: [argc argv0 argv1 ...].
-                   (seq
-                    (ptr-write-u64 sp 32 (ptr-read-u64 sp 24))
-                    (ptr-write-u64 sp 24 (ptr-read-u64 sp 16))
-                    (ptr-write-u64 sp 16 (ptr-read-u64 sp 8))
-                    sp)
-                 sp)
-             sp)))
+     '((defun nl_os_argv_init (sp) sp)
        (defun nl_os_open_read (path)
          (syscall-direct 5 path 0 0 0 0 0))
        (defun nl_os_open_write_truncate (path)
@@ -3465,6 +3451,22 @@ correctly."
       (if (= (nl_cstr_eq_help ptr) 1)
           1
         (nl_cstr_eq_dash_h ptr)))
+    (defun nl_cli_command_p (ptr)
+      (if (= (nl_cli_help_command_p ptr) 1)
+          1
+        (if (= (nl_cli_eval_command_p ptr) 1)
+            1
+          (if (= (nl_cstr_eq_load ptr) 1)
+              1
+            (if (= (nl_cstr_eq_repl ptr) 1)
+                1
+              (nl_runtime_image_command_p ptr))))))
+    (defun nl_cli_argv_shifted_p (argc slot0 slot1)
+      (if (> argc 1)
+          (if (= slot1 0)
+              1
+            (nl_cli_command_p slot0))
+        0))
     (defun nl_cli_write_help (fbuf)
       (let* ((n (nl_cli_help_text fbuf 0)))
         (nl_os_write_stdout fbuf n)))
@@ -3668,14 +3670,21 @@ correctly."
             (argv_sym (alloc-bytes 32 8))
             (sp0 (nl_os_argv_init sp))
             (argc (if (= sp0 0) 1 (logand (ptr-read-u64 sp0 0) 4294967295)))
-            ;; argv[1] = C-string path pointer at [sp + 16] (0 if argc==1).
-            (path (if (= sp0 0) 0 (ptr-read-u64 sp0 16)))
-            (arg2 (if (> argc 2)
-                      (if (= sp0 0) 0 (ptr-read-u64 sp0 24))
-                    0))
-            (arg3 (if (> argc 3)
-                      (if (= sp0 0) 0 (ptr-read-u64 sp0 32))
-                    0))
+            (slot0 (if (= sp0 0) 0 (ptr-read-u64 sp0 8)))
+            (slot1 (if (= sp0 0) 0 (ptr-read-u64 sp0 16)))
+            (slot2 (if (= sp0 0) 0 (ptr-read-u64 sp0 24)))
+            (slot3 (if (= sp0 0) 0 (ptr-read-u64 sp0 32)))
+            (argv_shifted_p (nl_cli_argv_shifted_p argc slot0 slot1))
+            ;; Normal layout: [argc argv0 argv1 argv2 argv3].
+            ;; Some macOS LC_MAIN entries expose argv+1 in the start shim:
+            ;; [argc argv1 argv2 argv3 ...].  Select the shared logical view.
+            (path (if (= argv_shifted_p 1) slot0 slot1))
+            (arg2 (if (= argv_shifted_p 1)
+                      slot1
+                    (if (> argc 2) slot2 0)))
+            (arg3 (if (= argv_shifted_p 1)
+                      slot2
+                    (if (> argc 3) slot3 0)))
             (prompt_p (if (= (nl_cstr_eq_no_prompt arg2) 1)
                           0
                         (if (= (nl_cstr_eq_no_prompt arg3) 1) 0 1)))
@@ -3732,6 +3741,13 @@ correctly."
         ;; need to enumerate every boot-internal raw-pointer edge precisely.
         ;; Per-form eval garbage (allocated ABOVE the line) is fully collected.
         (ptr-write-u64 268435664 0 (+ 268435456 (ptr-read-u64 268435456 0)))
+        (if (= argv_shifted_p 1)
+            (seq
+             (ptr-write-u64 sp0 40 slot3)
+             (ptr-write-u64 sp0 32 slot2)
+             (ptr-write-u64 sp0 24 slot1)
+             (ptr-write-u64 sp0 16 slot0))
+          0)
         (cond
          ((= (nl_cli_help_command_p path) 1)
           (seq (nl_cli_write_help fbuf) 0))

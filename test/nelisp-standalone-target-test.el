@@ -226,8 +226,8 @@
         (should-not (tree-member-p '(syscall-direct 0 fd ptr len 0 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 1 fd ptr len 0 0 0) forms))))))
 
-(ert-deftest nelisp-standalone-target-macos-reader-normalizes-shifted-argv ()
-  "macOS reader normalizes LC_MAIN argv+1 into the shared argv shape."
+(ert-deftest nelisp-standalone-target-reader-detects-shifted-argv ()
+  "The reader driver can detect and normalize macOS LC_MAIN argv+1."
   (let ((nelisp-standalone--target 'macos-aarch64))
     (cl-labels ((tree-member-p
                  (needle tree)
@@ -236,15 +236,23 @@
                   ((consp tree)
                    (or (tree-member-p needle (car tree))
                        (tree-member-p needle (cdr tree)))))))
-      (let ((forms (nelisp-standalone--reader-os-source-forms)))
+      (let ((forms (nelisp-standalone--reader-driver-source)))
         (should (tree-member-p
-                 '(ptr-write-u64 sp 16 (ptr-read-u64 sp 8))
+                 '(defun nl_cli_argv_shifted_p (argc slot0 slot1)
+                    (if (> argc 1)
+                        (if (= slot1 0)
+                            1
+                          (nl_cli_command_p slot0))
+                      0))
                  forms))
         (should (tree-member-p
-                 '(ptr-write-u64 sp 24 (ptr-read-u64 sp 16))
+                 '(ptr-write-u64 sp0 16 slot0)
                  forms))
         (should (tree-member-p
-                 '(ptr-write-u64 sp 32 (ptr-read-u64 sp 24))
+                 '(ptr-write-u64 sp0 24 slot1)
+                 forms))
+        (should (tree-member-p
+                 '(ptr-write-u64 sp0 32 slot2)
                  forms))))))
 
 (ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
