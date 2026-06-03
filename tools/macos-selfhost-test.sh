@@ -34,8 +34,8 @@ usage() {
 SMOKE_NAMES=(
   exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
   cas dealloc cons-set cond logic write-stdout read-stdin pipe getpid
-  fork-wait createfile-write lseek-fstat cons-clone boxed names call4-outs
-  str-helpers lits extern aot-jump aot-roots f64-sexp callptr
+  fork-wait createfile-write lseek-fstat socket-close cons-clone boxed names
+  call4-outs str-helpers lits extern aot-jump aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -499,6 +499,17 @@ build_run lseek-fstat '(seq
                             (fail))
                         (fail)))))))
           (fail)))))
+  (exit (run)))' 42
+
+# raw Darwin socket(2): create an AF_INET/SOCK_STREAM fd and close it.
+# Mirrors the Windows winsock-socket smoke at the Mach-O syscall level.
+build_run socket-close '(seq
+  (defun run ()
+    (let ((fd (syscall-direct 97 2 1 0 0 0 0)))
+      (if (< 2 fd)
+          (let ((rc (syscall-direct 6 fd 0 0 0 0 0)))
+            (if (= rc 0) 42 13))
+        13)))
   (exit (run)))' 42
 
 # cons-make-with-clone: fused (alloc box + deep-clone car/cdr).  Clone
