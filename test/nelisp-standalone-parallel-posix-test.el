@@ -235,7 +235,7 @@
     (should (string-match-p "tools/macos-standalone-reader-test.sh --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "macOS standalone tarball smoke" script))
-    (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64"
+    (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64"
                             script))))
@@ -271,7 +271,7 @@
     (should (string-match-p "tools/linux-standalone-reader-test.sh --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "Linux standalone tarball smoke" script))
-    (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64"
+    (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64 --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 linux-x86_64"
                             script))))

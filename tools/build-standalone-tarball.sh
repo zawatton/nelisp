@@ -13,6 +13,9 @@
 #
 # The script always rebuilds the standalone reader for the requested platform
 # before staging the tarball.
+#
+# Usage:
+#   tools/build-standalone-tarball.sh [VERSION] [PLATFORM] [--emacs EMACS]
 
 set -euo pipefail
 
@@ -25,8 +28,53 @@ default_platform() {
   esac
 }
 
-VERSION="${1:-stage-d-v3.0}"
-PLATFORM="${2:-${NELISP_STANDALONE_TARGET:-$(default_platform)}}"
+VERSION="stage-d-v3.0"
+PLATFORM="${NELISP_STANDALONE_TARGET:-$(default_platform)}"
+EMACS_BIN="${EMACS:-emacs}"
+POSITIONAL=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --emacs)
+      if [ "$#" -lt 2 ]; then
+        echo "usage: $0 [VERSION] [PLATFORM] [--emacs EMACS]" >&2
+        exit 2
+      fi
+      EMACS_BIN="$2"
+      shift 2
+      ;;
+    -h|--help)
+      echo "usage: $0 [VERSION] [PLATFORM] [--emacs EMACS]"
+      exit 0
+      ;;
+    --)
+      shift
+      while [ "$#" -gt 0 ]; do
+        POSITIONAL+=("$1")
+        shift
+      done
+      ;;
+    -*)
+      echo "usage: $0 [VERSION] [PLATFORM] [--emacs EMACS]" >&2
+      exit 2
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ "${#POSITIONAL[@]}" -gt 2 ]; then
+  echo "usage: $0 [VERSION] [PLATFORM] [--emacs EMACS]" >&2
+  exit 2
+fi
+if [ "${#POSITIONAL[@]}" -ge 1 ]; then
+  VERSION="${POSITIONAL[0]}"
+fi
+if [ "${#POSITIONAL[@]}" -ge 2 ]; then
+  PLATFORM="${POSITIONAL[1]}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -42,6 +90,7 @@ TAR_FILE="dist/${ARTIFACT_NAME}.tar.gz"
 log "zero-Rust standalone tarball"
 log "  version : $VERSION"
 log "  platform: $PLATFORM"
+log "  emacs   : $EMACS_BIN"
 
 # 1. Ensure the standalone reader binary is built for the requested platform.
 case "$PLATFORM" in
@@ -60,7 +109,7 @@ case "$PLATFORM" in
 esac
 
 log "building standalone reader for $PLATFORM"
-NELISP_STANDALONE_TARGET="$PLATFORM" make standalone-reader
+EMACS="$EMACS_BIN" NELISP_STANDALONE_TARGET="$PLATFORM" make standalone-reader
 [[ -f "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
 
 # 2. Stage the tarball directory.

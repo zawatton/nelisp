@@ -125,7 +125,7 @@ standalone-reader-prelude-test:
 #   make standalone-tarball-verify PLATFORM=linux-x86_64
 STANDALONE_VERSION ?= stage-d-v3.0
 standalone-tarball:
-	@./tools/build-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM)
+	@./tools/build-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM) --emacs "$(EMACS)"
 
 standalone-tarball-verify:
 	@./tools/verify-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM)

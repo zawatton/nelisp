@@ -88,7 +88,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
   if [ "$INCLUDE_TARBALL" -eq 1 ]; then
     echo ""
     echo "--- macOS standalone tarball smoke ---"
-    tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64
+    tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --emacs "$EMACS"
     tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64
   fi
 
@@ -130,7 +130,7 @@ tools/linux-standalone-reader-test.sh --emacs "$EMACS"
 if [ "$INCLUDE_TARBALL" -eq 1 ]; then
   echo ""
   echo "--- Linux standalone tarball smoke ---"
-  tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64
+  tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64 --emacs "$EMACS"
   tools/verify-standalone-tarball.sh stage-d-v3.0 linux-x86_64
 fi
 
