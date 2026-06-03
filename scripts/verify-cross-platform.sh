@@ -50,8 +50,28 @@ echo "--- make compile (byte-compile elisp) ---"
 make compile 2>&1 | tail -5
 
 echo ""
-echo "--- make standalone-reader-test (zero-Rust standalone gate) ---"
-make standalone-reader-test
+echo "--- Linux OS compatibility ERT smoke ---"
+tools/linux-os-compat-test.sh
+
+echo ""
+echo "--- Linux x86_64 ELF self-host smoke ---"
+tools/selfhost-test.sh
+
+echo ""
+echo "--- Linux standalone parallel build (zero-Rust) ---"
+tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64
+
+echo ""
+echo "--- Linux standalone eval native smoke ---"
+tools/linux-standalone-eval-test.sh
+
+echo ""
+echo "--- Linux standalone cache identity smoke ---"
+tools/linux-standalone-cache-identity-test.sh
+
+echo ""
+echo "--- Linux standalone reader native smoke ---"
+tools/linux-standalone-reader-test.sh
 
 echo ""
 echo "=== Cross-platform verify PASS ==="

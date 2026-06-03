@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Host-side checks for the POSIX standalone parallel and macOS smoke runners.
+;; Host-side checks for the POSIX standalone parallel and Linux/macOS smoke runners.
 ;; These tests do not require macOS; they verify that the shell scripts drive the
 ;; pure-Elisp standalone builder with explicit target selection.
 
@@ -74,6 +74,57 @@
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 
+(ert-deftest nelisp-standalone-parallel-posix-linux-cache-identity-script ()
+  "The Linux cache identity smoke compares fresh and cached ELF output."
+  (let* ((script-path
+          (expand-file-name "tools/linux-standalone-cache-identity-test.sh"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (script (nelisp-standalone-parallel-posix-test--read-file-text
+                  script-path)))
+    (should (file-exists-p script-path))
+    (should (file-executable-p script-path))
+    (should (string-match-p "NELISP_STANDALONE_TARGET=linux-x86_64" script))
+    (should (string-match-p "target/standalone-units/linux-x86_64" script))
+    (should (string-match-p "sha256" script))
+    (should (string-match-p "\\$FRESH_HASH\" != \"\\$CACHED_HASH" script))
+    (should (string-match-p "\\[linux-standalone-cache\\] PASS" script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
+
+(ert-deftest nelisp-standalone-parallel-posix-linux-reader-script ()
+  "The Linux reader smoke uses the short target/nelisp CLI and REPL exit command."
+  (let* ((script-path
+          (expand-file-name "tools/linux-standalone-reader-test.sh"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (script (nelisp-standalone-parallel-posix-test--read-file-text
+                  script-path)))
+    (should (file-exists-p script-path))
+    (should (file-executable-p script-path))
+    (should (string-match-p "NELISP_STANDALONE_TARGET=linux-x86_64" script))
+    (should (string-match-p "target/nelisp" script))
+    (should (string-match-p "file arg with spaces" script))
+    (should (string-match-p "unicode file arg" script))
+    (should (string-match-p "(exit)" script))
+    (should (string-match-p "\\[linux-standalone-reader\\] all PASS" script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
+
+(ert-deftest nelisp-standalone-parallel-posix-linux-os-compat-script ()
+  "The Linux OS compatibility runner exposes the non-Windows stdlib selector."
+  (let* ((script-path
+          (expand-file-name "tools/linux-os-compat-test.sh"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (script (nelisp-standalone-parallel-posix-test--read-file-text
+                  script-path)))
+    (should (file-exists-p script-path))
+    (should (file-executable-p script-path))
+    (should (string-match-p "SELECTOR=\"non-windows\"" script))
+    (should (string-match-p "EXPECTED_COUNT=3" script))
+    (should (string-match-p "test/nelisp-stdlib-os-test.el" script))
+    (should (string-match-p "\\[linux-os\\] PASS" script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
+
 (ert-deftest nelisp-standalone-parallel-posix-macos-os-compat-script ()
   "The macOS OS compatibility runner exposes the Darwin stdlib selector."
   (let* ((script-path
@@ -121,6 +172,27 @@
     (should (string-match-p "tools/macos-standalone-cache-identity-test.sh" script))
     (should (string-match-p "macOS standalone reader native smoke" script))
     (should (string-match-p "tools/macos-standalone-reader-test.sh" script))))
+
+(ert-deftest nelisp-standalone-parallel-posix-linux-verify-runs-parity-gates ()
+  "The POSIX cross-platform verifier includes Linux standalone parity gates."
+  (let* ((script-path
+          (expand-file-name "scripts/verify-cross-platform.sh"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (script (nelisp-standalone-parallel-posix-test--read-file-text
+                  script-path)))
+    (should (string-match-p "Linux OS compatibility ERT smoke" script))
+    (should (string-match-p "tools/linux-os-compat-test.sh" script))
+    (should (string-match-p "Linux x86_64 ELF self-host smoke" script))
+    (should (string-match-p "tools/selfhost-test.sh" script))
+    (should (string-match-p "Linux standalone parallel build" script))
+    (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64"
+                            script))
+    (should (string-match-p "Linux standalone eval native smoke" script))
+    (should (string-match-p "tools/linux-standalone-eval-test.sh" script))
+    (should (string-match-p "Linux standalone cache identity smoke" script))
+    (should (string-match-p "tools/linux-standalone-cache-identity-test.sh" script))
+    (should (string-match-p "Linux standalone reader native smoke" script))
+    (should (string-match-p "tools/linux-standalone-reader-test.sh" script))))
 
 (provide 'nelisp-standalone-parallel-posix-test)
 
