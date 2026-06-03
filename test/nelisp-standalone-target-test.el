@@ -232,9 +232,9 @@
               '(seq (ptr-write-u64 268435472 0 1)
                     (atomic-fetch-add 268435544 1)
                     (ptr-write-u64 4096 0 268435456)))
-             '(seq (ptr-write-u64 #x200000010 0 1)
-                   (atomic-fetch-add #x200000058 1)
-                   (ptr-write-u64 4096 0 #x200000000))))))
+             '(seq (ptr-write-u64 #x800000010 0 1)
+                   (atomic-fetch-add #x800000058 1)
+                   (ptr-write-u64 4096 0 #x800000000))))))
 
 (ert-deftest nelisp-standalone-target-macos-arena-uses-bounded-mmap ()
   "macOS arena avoids an oversized fixed mmap reservation."
@@ -248,8 +248,11 @@
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(syscall-direct 197 #x200000000 #x40000000 3 4114 -1 0)
+                 '(syscall-direct 197 #x800000000 #x4000000 3 4114 -1 0)
                  arena))
+        (should-not (tree-member-p
+                     '(syscall-direct 197 #x800000000 8589934592 3 4114 -1 0)
+                     arena))
         (should-not (tree-member-p
                      '(syscall-direct 197 #x200000000 8589934592 3 4114 -1 0)
                      arena))))))

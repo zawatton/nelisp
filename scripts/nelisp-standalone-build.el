@@ -85,16 +85,17 @@ Accepts decimal strings and 0x-prefixed hexadecimal strings."
 Can be overridden with NELISP_STANDALONE_WINDOWS_ARENA_BASE.  Keep the default
 below 2 GiB so Phase47's current signed imm32 materialization remains valid.")
 
-(defconst nelisp-standalone--macos-arena-base #x200000000
+(defconst nelisp-standalone--macos-arena-base #x800000000
   "macOS standalone arena base.
 Must live above the 4 GiB __PAGEZERO segment used by the Mach-O executable
-writer.")
+writer, and away from the dyld shared cache region used by normal Mach-O
+executables.")
 
-(defconst nelisp-standalone--macos-arena-size #x40000000
+(defconst nelisp-standalone--macos-arena-size #x4000000
   "macOS standalone fixed arena size.
-Keep the mapping large enough for standalone reader/eval work, but avoid the
-historical 8 GiB fixed reservation: some Darwin environments reject that before
-the first page is touched.")
+Matches the Windows standalone arena size.  Keep the mapping large enough for
+reader/eval smoke coverage, while avoiding oversized fixed reservations that
+some Darwin environments reject before the first page is touched.")
 
 (defun nelisp-standalone--target-abi (&optional target)
   "Return the compiler ABI for standalone TARGET."
