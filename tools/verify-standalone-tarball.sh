@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# tools/verify-standalone-tarball.sh — stage-d-v3.0 e2e smoke
-
+# Verify a zero-Rust standalone NeLisp reader tarball.
 set -euo pipefail
 
+default_platform() {
+  case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
+    Darwin-arm64) echo "macos-aarch64" ;;
+    Linux-x86_64) echo "linux-x86_64" ;;
+    MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) echo "windows-x86_64" ;;
+    *) echo "linux-x86_64" ;;
+  esac
+}
+
 VERSION="${1:-stage-d-v3.0}"
-PLATFORM="${2:-linux-x86_64}"
+PLATFORM="${2:-${NELISP_STANDALONE_TARGET:-$(default_platform)}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -12,13 +20,19 @@ cd "$REPO_ROOT"
 
 log() { printf "  \033[1;34m==>\033[0m %s\n" "$*"; }
 err() { printf "  \033[1;31merror:\033[0m %s\n" "$*" >&2; }
-ok()  { printf "  \033[1;32m✓\033[0m %s\n" "$*"; }
+ok()  { printf "  \033[1;32mOK\033[0m %s\n" "$*"; }
 
 ARTIFACT_NAME="anvil-${VERSION}-${PLATFORM}"
 TAR_FILE="dist/${ARTIFACT_NAME}.tar.gz"
 SHA_FILE="dist/${ARTIFACT_NAME}.tar.gz.sha256"
 
-[[ -f "$TAR_FILE" ]] || { err "tarball missing — run 'make stage-d-v3-tarball' first."; exit 1; }
+case "$PLATFORM" in
+  windows-x86_64) NELISP_BIN_NAME="nelisp.exe" ;;
+  linux-x86_64|macos-aarch64) NELISP_BIN_NAME="nelisp" ;;
+  *) err "unsupported platform: $PLATFORM"; exit 2 ;;
+esac
+
+[[ -f "$TAR_FILE" ]] || { err "tarball missing - run tools/build-standalone-tarball.sh first"; exit 1; }
 [[ -f "$SHA_FILE" ]] || { err "checksum missing: $SHA_FILE"; exit 1; }
 
 log "verifying SHA-256"
@@ -34,63 +48,85 @@ fi
 [[ "$RECORDED" == "$RECOMPUTED" ]] || { err "SHA mismatch"; exit 2; }
 ok "SHA-256 matches ($RECORDED)"
 
-TEST_ROOT="$(mktemp -d -t anvil-v3-verify-XXXXXX)"
+TEST_ROOT="$(mktemp -d -t nelisp-standalone-verify-XXXXXX)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 tar -xzf "$TAR_FILE" -C "$TEST_ROOT"
 INSTALL_DIR="$TEST_ROOT/$ARTIFACT_NAME"
+NELISP_EXE="$INSTALL_DIR/bin/$NELISP_BIN_NAME"
 
-[[ -x "$INSTALL_DIR/bin/anvil" ]] || { err "bin/anvil missing"; exit 2; }
-[[ -x "$INSTALL_DIR/bin/anvil-runtime" ]] || { err "bin/anvil-runtime missing"; exit 2; }
-find "$INSTALL_DIR/lib" -maxdepth 1 -type f | grep -q . || { err "runtime cdylib missing"; exit 2; }
-ok "tarball layout OK"
-
-log "running bin/anvil version"
-VERSION_OUT=$(env -u EMACS ANVIL_HOME="$INSTALL_DIR" "$INSTALL_DIR/bin/anvil" version 2>&1)
-echo "$VERSION_OUT" | sed 's/^/      /'
-echo "$VERSION_OUT" | grep -q "v3.0 standalone (= no emacs)" || { err "version output missing standalone marker"; exit 2; }
-ok "version reports standalone mode"
-
-ERR=$(mktemp)
-IN_FIFO="$TEST_ROOT/in.fifo"
-OUT_FIFO="$TEST_ROOT/out.fifo"
-mkfifo "$IN_FIFO" "$OUT_FIFO"
-env -u EMACS ANVIL_HOME="$INSTALL_DIR" "$INSTALL_DIR/bin/anvil" mcp serve \
-  <"$IN_FIFO" >"$OUT_FIFO" 2>"$ERR" &
-SERVER_PID=$!
-cleanup_server() {
-  if kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-  fi
-}
-trap 'cleanup_server; rm -rf "$TEST_ROOT"; rm -f "$ERR"' EXIT
-exec {SERVER_IN}>"$IN_FIFO"
-exec {SERVER_OUT}<"$OUT_FIFO"
-
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' >&"$SERVER_IN"
-IFS= read -r -t 5 INIT_LINE <&"$SERVER_OUT" || { err "initialize reply not observed"; cat "$ERR" >&2 || true; exit 2; }
-echo "$INIT_LINE" | grep -q '"protocolVersion":"2024-11-05"' || { err "initialize protocol mismatch"; exit 2; }
-ok "initialize OK"
-
-SERVER_CMD=$(ps -p "$SERVER_PID" -o args= 2>/dev/null || true)
-echo "$SERVER_CMD" | grep -q "anvil-runtime" || {
-  err "server process is not anvil-runtime: $SERVER_CMD"
+[[ -d "$INSTALL_DIR/src" ]] || { err "src/ missing"; exit 2; }
+[[ -d "$INSTALL_DIR/scripts" ]] || { err "scripts/ missing"; exit 2; }
+[[ -d "$INSTALL_DIR/lisp" ]] || { err "lisp/ missing"; exit 2; }
+[[ -f "$INSTALL_DIR/VERSION" ]] || { err "VERSION missing"; exit 2; }
+[[ -f "$INSTALL_DIR/PLATFORM" ]] || { err "PLATFORM missing"; exit 2; }
+[[ -f "$INSTALL_DIR/MANIFEST.txt" ]] || { err "MANIFEST.txt missing"; exit 2; }
+[[ -f "$NELISP_EXE" ]] || { err "bin/$NELISP_BIN_NAME missing"; exit 2; }
+grep -qx "$VERSION" "$INSTALL_DIR/VERSION" || { err "VERSION mismatch"; exit 2; }
+grep -qx "$PLATFORM" "$INSTALL_DIR/PLATFORM" || { err "PLATFORM mismatch"; exit 2; }
+grep -q "standalone bin/$NELISP_BIN_NAME" "$INSTALL_DIR/MANIFEST.txt" || {
+  err "MANIFEST missing standalone bin entry"
   exit 2
 }
-ok "server process = anvil-runtime (no emacs)"
+ok "tarball layout OK"
 
-printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' >&"$SERVER_IN"
-IFS= read -r -t 5 TOOLS_LINE <&"$SERVER_OUT" || { err "tools/list reply not observed"; cat "$ERR" >&2 || true; exit 2; }
-echo "$TOOLS_LINE" | grep -q 'anvil-host-info' || { err "tools/list missing anvil-host-info"; exit 2; }
-echo "$TOOLS_LINE" | grep -q 'anvil-host-helpers-list' || { err "tools/list missing anvil-host-helpers-list"; exit 2; }
-ok "tools/list exposes anvil-host tools"
+host_can_run=0
+case "$PLATFORM" in
+  linux-x86_64)
+    [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ] && host_can_run=1
+    ;;
+  macos-aarch64)
+    [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] && host_can_run=1
+    ;;
+  windows-x86_64)
+    case "$(uname -s 2>/dev/null || echo)" in
+      MINGW*|MSYS*|CYGWIN*) host_can_run=1 ;;
+    esac
+    ;;
+esac
 
-printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"shutdown"}' >&"$SERVER_IN"
-IFS= read -r -t 5 SHUTDOWN_LINE <&"$SERVER_OUT" || { err "shutdown reply not observed"; exit 2; }
-echo "$SHUTDOWN_LINE" | grep -q '"id":3,"result":null' || { err "shutdown reply malformed"; exit 2; }
-exec {SERVER_IN}>&-
-wait "$SERVER_PID"
-ok "shutdown clean"
+if [ "$host_can_run" -ne 1 ]; then
+  ok "layout-only PASS for non-native platform $PLATFORM"
+  exit 0
+fi
+
+if [ "$PLATFORM" = "macos-aarch64" ] && command -v codesign >/dev/null 2>&1; then
+  codesign -f -s - "$NELISP_EXE" >/dev/null
+fi
+chmod +x "$NELISP_EXE" 2>/dev/null || true
+
+run_expect_output() {
+  local label="$1" expected="$2"; shift 2
+  local output code
+  set +e
+  output="$("$@")"
+  code=$?
+  set -e
+  if [ "$code" -ne 0 ]; then
+    err "$label exited $code"
+    printf '%s\n' "$output"
+    exit 2
+  fi
+  if [ "$output" != "$expected" ]; then
+    err "$label output mismatch"
+    printf 'expected: %s\nactual  : %s\n' "$expected" "$output"
+    exit 2
+  fi
+  ok "$label"
+}
+
+run_expect_output "bin/$NELISP_BIN_NAME eval" "42" "$NELISP_EXE" eval "(+ 40 2)"
+
+REPL_OUTPUT="$(printf '%s\n' \
+  "(+ 40 2)" \
+  '(vector 1 "a" nil t)' \
+  "(exit)" | "$NELISP_EXE" repl --no-prompt)"
+EXPECTED_REPL=$'42\n[1 "a" nil t]'
+if [ "$REPL_OUTPUT" != "$EXPECTED_REPL" ]; then
+  err "bin/$NELISP_BIN_NAME repl output mismatch"
+  printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED_REPL" "$REPL_OUTPUT"
+  exit 2
+fi
+ok "bin/$NELISP_BIN_NAME repl"
 
 echo ""
-ok "stage-d-v3.0 standalone tarball smoke PASS"
+ok "zero-Rust standalone tarball smoke PASS"

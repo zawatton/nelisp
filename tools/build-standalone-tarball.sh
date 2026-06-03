@@ -3,7 +3,8 @@
 #
 # Produces a no-Rust bundle containing the pure-elisp standalone binary:
 #   bin/anvil
-#   bin/nelisp   (built by `make standalone-reader`)
+#   bin/nelisp   (built by `make standalone-reader` on POSIX targets)
+#   bin/nelisp.exe on windows-x86_64
 #   src/nelisp*.el
 #   scripts/*.el
 #   lisp/*.el
@@ -16,8 +17,17 @@
 
 set -euo pipefail
 
+default_platform() {
+  case "$(uname -s 2>/dev/null || echo)-$(uname -m 2>/dev/null || echo)" in
+    Darwin-arm64) echo "macos-aarch64" ;;
+    Linux-x86_64) echo "linux-x86_64" ;;
+    MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) echo "windows-x86_64" ;;
+    *) echo "linux-x86_64" ;;
+  esac
+}
+
 VERSION="${1:-stage-d-v3.0}"
-PLATFORM="${2:-linux-x86_64}"
+PLATFORM="${2:-${NELISP_STANDALONE_TARGET:-$(default_platform)}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -34,13 +44,25 @@ log "zero-Rust standalone tarball"
 log "  version : $VERSION"
 log "  platform: $PLATFORM"
 
-# 1. Ensure the standalone binary is built.
-STANDALONE_BIN="target/nelisp"
-if [[ ! -x "$STANDALONE_BIN" ]]; then
-  log "standalone binary not found — running make standalone-reader"
-  make standalone-reader
-fi
-[[ -x "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
+# 1. Ensure the standalone reader binary is built for the requested platform.
+case "$PLATFORM" in
+  windows-x86_64)
+    STANDALONE_BIN="target/nelisp.exe"
+    STAGED_BIN_NAME="nelisp.exe"
+    ;;
+  linux-x86_64|macos-aarch64)
+    STANDALONE_BIN="target/nelisp"
+    STAGED_BIN_NAME="nelisp"
+    ;;
+  *)
+    err "unsupported platform: $PLATFORM"
+    exit 2
+    ;;
+esac
+
+log "building standalone reader for $PLATFORM"
+NELISP_STANDALONE_TARGET="$PLATFORM" make standalone-reader
+[[ -f "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
 
 # 2. Stage the tarball directory.
 rm -rf "$STAGE_DIR"
@@ -49,8 +71,11 @@ mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/scripts" "$STAGE_DIR/lisp
 # bin/ — anvil launcher + standalone binary.
 cp bin/anvil "$STAGE_DIR/bin/"
 [[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$STAGE_DIR/bin/" || true
-cp "$STANDALONE_BIN" "$STAGE_DIR/bin/nelisp"
-chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/nelisp"
+cp "$STANDALONE_BIN" "$STAGE_DIR/bin/$STAGED_BIN_NAME"
+chmod +x "$STAGE_DIR/bin/anvil"
+if [[ "$STAGED_BIN_NAME" = "nelisp" ]]; then
+  chmod +x "$STAGE_DIR/bin/nelisp"
+fi
 
 # Elisp sources.
 cp src/nelisp*.el "$STAGE_DIR/src/"
@@ -74,7 +99,7 @@ printf "%s\n" "$PLATFORM" > "$STAGE_DIR/PLATFORM"
   printf "zero-Rust standalone manifest\n"
   printf "version    %s\n" "$VERSION"
   printf "platform   %s\n" "$PLATFORM"
-  printf "standalone %s\n" "$(basename "$STANDALONE_BIN")"
+  printf "standalone bin/%s\n" "$STAGED_BIN_NAME"
   printf "built      %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$STAGE_DIR/MANIFEST.txt"
 

@@ -2,7 +2,7 @@
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
-        stage-d-tarball \
+        stage-d-tarball standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
         standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
@@ -117,6 +117,18 @@ standalone-reader-prelude-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-prelude-test
+
+# Zero-Rust standalone reader distribution.  Builds a short `bin/nelisp`
+# (`bin/nelisp.exe` for windows-x86_64) tarball for the requested platform.
+#   make standalone-tarball PLATFORM=linux-x86_64
+#   make standalone-tarball PLATFORM=macos-aarch64
+#   make standalone-tarball-verify PLATFORM=linux-x86_64
+STANDALONE_VERSION ?= stage-d-v3.0
+standalone-tarball:
+	@./tools/build-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM)
+
+standalone-tarball-verify:
+	@./tools/verify-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM)
 # Stage 3 SELF-HOST test: the standalone interpreter loads its OWN compiler
 # toolchain as source and compiles a recursive program (fact) to a native
 # x86_64 ELF with ZERO emacs, then we exec it and assert exit 120 (= 5!).
