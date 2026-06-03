@@ -25,6 +25,35 @@ if ($Target -ne "windows-x86_64") {
     throw ("unsupported -Target " + $Target + " (expected windows-x86_64)")
 }
 
+function Invoke-NelispTar {
+    param(
+        [string]$WorkingDirectory,
+        [string[]]$Arguments
+    )
+
+    $Psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $Psi.FileName = "tar"
+    $Psi.WorkingDirectory = $WorkingDirectory
+    $Psi.UseShellExecute = $false
+    $Psi.RedirectStandardOutput = $true
+    $Psi.RedirectStandardError = $true
+    foreach ($Argument in $Arguments) {
+        [void]$Psi.ArgumentList.Add($Argument)
+    }
+
+    $Process = [System.Diagnostics.Process]::Start($Psi)
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    $Process.WaitForExit()
+    if (-not [string]::IsNullOrEmpty($Stdout)) {
+        Write-Host $Stdout.TrimEnd()
+    }
+    if (-not [string]::IsNullOrEmpty($Stderr)) {
+        Write-Host $Stderr.TrimEnd()
+    }
+    return $Process.ExitCode
+}
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
@@ -102,18 +131,13 @@ Set-Content -Path (Join-Path $StageDir "PLATFORM") -Encoding ascii -Value $Targe
 ) | Set-Content -Path (Join-Path $StageDir "MANIFEST.txt") -Encoding ascii
 
 Remove-Item -Force -ErrorAction SilentlyContinue $TarFile, $ShaFile
-Push-Location $DistDir
-try {
-    & tar -czf ($ArtifactName + ".tar.gz") ($ArtifactName + "/")
-    $TarCode = $LASTEXITCODE
-    if ($null -eq $TarCode) {
-        $TarCode = 0
-    }
-    if ($TarCode -ne 0) {
-        throw ("tar failed with exit " + $TarCode)
-    }
-} finally {
-    Pop-Location
+$TarCode = Invoke-NelispTar -WorkingDirectory $DistDir -Arguments @(
+    "-czf",
+    ($ArtifactName + ".tar.gz"),
+    ($ArtifactName + "/")
+)
+if ($TarCode -ne 0) {
+    throw ("tar failed with exit " + $TarCode)
 }
 
 $Hash = (Get-FileHash -Algorithm SHA256 -Path $TarFile).Hash.ToLowerInvariant()

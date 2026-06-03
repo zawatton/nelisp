@@ -13,6 +13,35 @@ if ($Target -ne "windows-x86_64") {
     throw ("unsupported -Target " + $Target + " (expected windows-x86_64)")
 }
 
+function Invoke-NelispTar {
+    param(
+        [string]$WorkingDirectory,
+        [string[]]$Arguments
+    )
+
+    $Psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $Psi.FileName = "tar"
+    $Psi.WorkingDirectory = $WorkingDirectory
+    $Psi.UseShellExecute = $false
+    $Psi.RedirectStandardOutput = $true
+    $Psi.RedirectStandardError = $true
+    foreach ($Argument in $Arguments) {
+        [void]$Psi.ArgumentList.Add($Argument)
+    }
+
+    $Process = [System.Diagnostics.Process]::Start($Psi)
+    $Stdout = $Process.StandardOutput.ReadToEnd()
+    $Stderr = $Process.StandardError.ReadToEnd()
+    $Process.WaitForExit()
+    if (-not [string]::IsNullOrEmpty($Stdout)) {
+        Write-Host $Stdout.TrimEnd()
+    }
+    if (-not [string]::IsNullOrEmpty($Stderr)) {
+        Write-Host $Stderr.TrimEnd()
+    }
+    return $Process.ExitCode
+}
+
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
@@ -39,18 +68,12 @@ New-Item -ItemType Directory -Force -Path $TestRoot | Out-Null
 try {
     $TarLeaf = Split-Path -Leaf $TarFile
     Copy-Item -Path $TarFile -Destination (Join-Path $TestRoot $TarLeaf)
-    Push-Location $TestRoot
-    try {
-        & tar -xzf $TarLeaf
-        $TarCode = $LASTEXITCODE
-        if ($null -eq $TarCode) {
-            $TarCode = 0
-        }
-        if ($TarCode -ne 0) {
-            throw ("tar extract failed with exit " + $TarCode)
-        }
-    } finally {
-        Pop-Location
+    $TarCode = Invoke-NelispTar -WorkingDirectory $TestRoot -Arguments @(
+        "-xzf",
+        $TarLeaf
+    )
+    if ($TarCode -ne 0) {
+        throw ("tar extract failed with exit " + $TarCode)
     }
 
     $InstallDir = Join-Path $TestRoot $ArtifactName
