@@ -2761,6 +2761,70 @@ SysV would emit `push rdi' = 57 instead."
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-sexp-write-helpers-use-gp-args-and-shadow ()
+  "Win64 sexp-write string helpers use RCX/RDX/R8 and caller shadow space."
+  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+               '(seq
+                 (defun probe_symbol () (sexp-write-symbol 4096 1 12288))
+                 (defun probe_symbol_lit () (sexp-write-symbol-lit 12288 "x"))))))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; sexp-write-symbol: pop slot/len/bytes -> R8/RDX/RCX.
+             (unibyte-string #x41 #x58 #x5a #x59
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; sexp-write-symbol-lit: remap SysV staging regs to Win64.
+             (unibyte-string #x49 #x89 #xd0
+                             #x48 #x89 #xf2
+                             #x48 #x89 #xf9
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+                 text
+                 ;; Old SysV call pad after RDI/RSI/RDX setup.
+                 (unibyte-string #x5a #x5e #x5f #x50 #xe8)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-string-runtime-helpers-use-gp-args-and-shadow ()
+  "Win64 mutable string and UTF-8 helpers use Win64 GP args plus shadow space."
+  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+               '(seq
+                 (defun probe_make () (mut-str-make-empty 2 12288))
+                 (defun probe_push () (mut-str-push-byte 12288 65))
+                 (defun probe_len () (mut-str-len 12288))
+                 (defun probe_finalize () (mut-str-finalize 12288 16384))
+                 (defun probe_count () (str-char-count 4096))
+                 (defun probe_codepoint () (str-codepoint-at 4096 0 12288 16384))
+                 (defun probe_alnum () (str-is-alphanumeric-at 4096 0))))))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; 2-arg helpers: pop RDX/RCX, reserve shadow, call.
+             (unibyte-string #x5a #x59
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; 1-arg helpers: pop RCX, reserve shadow, call.
+             (unibyte-string #x59
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; str-codepoint-at: pop R9/R8/RDX/RCX, reserve shadow, call.
+             (unibyte-string #x41 #x59 #x41 #x58 #x5a #x59
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8 #x00 #x00 #x00 #x00
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+                 text
+                 ;; Old SysV 4-arg helper sequence.
+                 (unibyte-string #x59 #x5a #x5e #x5f #x50 #xe8)))))
+
 (ert-deftest nelisp-phase47-compiler/win64-extern-call-stack-gp-arg ()
   "Win64 extern-call places the fifth GP arg above the shadow space."
   (let ((path (make-temp-file "nelisp-win64-extern-call-stack-" nil ".obj")))

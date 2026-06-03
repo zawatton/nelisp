@@ -12733,13 +12733,16 @@ Strategy (= 1-arg extern call, mirrors §122.D `mut-str-len' /
   3. Call `nl_str_bytes_ptr' — rax = `*const u8' data pointer.
   4. Pop the alignment pad."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_str_bytes_ptr" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list ptr) buf "nl_str_bytes_ptr")
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_str_bytes_ptr" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 (defun nelisp-phase47-compiler--emit-str-byte-at (node buf)
   "Emit byte load from a `Sexp::Str' / `Sexp::Symbol' String buffer.
@@ -12981,30 +12984,33 @@ separately)."
   (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
         (bytes-ptr (nelisp-phase47-compiler--ir-get node :bytes-ptr))
         (len (nelisp-phase47-compiler--ir-get node :len)))
-    (nelisp-phase47-compiler--emit-value bytes-ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value len buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Pop in reverse push order: slot -> rdx (= arg 2), len -> rsi
-    ;; (= arg 1), bytes-ptr -> rdi (= arg 0).
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; One alignment pad to keep rsp 16-byte aligned at the call
-    ;; site.  Pre-prologue rsp is misaligned by 8 (= function entry
-    ;; has 8 mod 16 due to the return address pushed by the caller);
-    ;; our 3 push + 3 pop sequence is balanced, so we need exactly
-    ;; one extra push to bring rsp to (8 + 8) mod 16 = 0 before the
-    ;; new `call' instruction.
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf helper-name -4 'text)
-    ;; Helper returned the slot pointer in rax.  Discard the
-    ;; alignment pad; rax is already the desired return value.
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list bytes-ptr len slot) buf helper-name)
+      (nelisp-phase47-compiler--emit-value bytes-ptr buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value len buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value slot buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      ;; Pop in reverse push order: slot -> rdx (= arg 2), len -> rsi
+      ;; (= arg 1), bytes-ptr -> rdi (= arg 0).
+      (nelisp-asm-x86_64-pop buf 'rdx)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      ;; One alignment pad to keep rsp 16-byte aligned at the call
+      ;; site.  Pre-prologue rsp is misaligned by 8 (= function entry
+      ;; has 8 mod 16 due to the return address pushed by the caller);
+      ;; our 3 push + 3 pop sequence is balanced, so we need exactly
+      ;; one extra push to bring rsp to (8 + 8) mod 16 = 0 before the
+      ;; new `call' instruction.
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf helper-name -4 'text)
+      ;; Helper returned the slot pointer in rax.  Discard the
+      ;; alignment pad; rax is already the desired return value.
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 (defun nelisp-phase47-compiler--bytes->u64-chunks (bytes)
   "Pack BYTES into little-endian u64 chunks for stack materialization."
@@ -13042,9 +13048,24 @@ form remains valid in ET_REL object mode."
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rsp)
     (nelisp-asm-x86_64-mov-imm32 buf 'rsi (length bytes))
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r10)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'r8 'rdx)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
+      (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
+                       1)
+               1)
+        (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf helper-name -4 'text)
+    (when (eq nelisp-phase47-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32)
+      (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
+                       1)
+               1)
+        (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
     (when (> stack-slots 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-slots)))))
 
@@ -13133,16 +13154,32 @@ pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
       ;; value (first pushed) → rax → xmm0.
       (nelisp-asm-x86_64-pop buf 'rdi)
       (nelisp-asm-x86_64-pop buf 'rax)
-      (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)
-      ;; Step 5: alignment pad.
-      (nelisp-asm-x86_64-push buf 'rax)
+      (if (eq nelisp-phase47-compiler--abi 'win64)
+          (progn
+            (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
+            (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'rax)
+            (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
+                             1)
+                     1)
+              (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+            (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
+        (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm0 'rax)
+        ;; Step 5: alignment pad.
+        (nelisp-asm-x86_64-push buf 'rax))
       ;; Step 6: CALL rel32 = 0xE8 + 4-byte placeholder + PLT32 reloc.
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
       (nelisp-asm-x86_64-reloc-plt32-here
        buf "nl_sexp_write_float" -4 'text)
       ;; Step 7: discard the alignment pad.  rax = slot pointer is
       ;; the value-form result.
-      (nelisp-asm-x86_64-pop buf 'r11))))
+      (if (eq nelisp-phase47-compiler--abi 'win64)
+          (progn
+            (nelisp-asm-x86_64-add-imm32 buf 'rsp 32)
+            (when (= (logand (or nelisp-phase47-compiler--current-defun-arity 0)
+                             1)
+                     1)
+              (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
+        (nelisp-asm-x86_64-pop buf 'r11)))))
 
 
 ;; ---- Doc 122 §122.B — Mutable string builder grammar emit ----
@@ -13164,19 +13201,22 @@ Strategy (= 2-arg extern call, mirrors `sexp-write-alloc' shape):
   6. Pop the alignment pad."
   (let ((cap (nelisp-phase47-compiler--ir-get node :cap))
         (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value cap buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; Alignment pad: 2 push + 2 pop balanced, function entry has
-    ;; rsp mod 16 = 8; one extra push aligns the call site.
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_alloc_mut_str" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list cap slot) buf "nl_alloc_mut_str")
+      (nelisp-phase47-compiler--emit-value cap buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value slot buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      ;; Alignment pad: 2 push + 2 pop balanced, function entry has
+      ;; rsp mod 16 = 8; one extra push aligns the call site.
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_alloc_mut_str" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 (defun nelisp-phase47-compiler--emit-mut-str-push-2arg (node buf helper-name arg-key)
   "Emit a 2-arg in-place push op — `nl_mut_str_push_byte' / `_push_codepoint'.
@@ -13197,17 +13237,20 @@ Strategy (= 2-arg extern call, no return value):
   6. Pop pad, set rax = 1 sentinel."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
         (arg (nelisp-phase47-compiler--ir-get node arg-key)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value arg buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf helper-name -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list ptr arg) buf helper-name)
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value arg buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf helper-name -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))
     ;; rax = 1 sentinel (helper return is `void').
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
@@ -13223,13 +13266,16 @@ Strategy (= 1-arg extern call with i64 return):
   3. Call `nl_mut_str_len' — rax = i64 length.
   4. Pop the alignment pad."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_mut_str_len" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list ptr) buf "nl_mut_str_len")
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_mut_str_len" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 (defun nelisp-phase47-compiler--emit-mut-str-finalize (node buf)
   "Emit `mut-str-finalize' — call `nl_mut_str_finalize(ptr, slot)' extern.
@@ -13248,17 +13294,20 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
   6. Pop the alignment pad."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
         (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_mut_str_finalize" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list ptr slot) buf "nl_mut_str_finalize")
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value slot buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_mut_str_finalize" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 
 ;; ---- Doc 122 §122.D — UTF-8 helper grammar emit ----
@@ -13266,13 +13315,16 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 (defun nelisp-phase47-compiler--emit-str-char-count (node buf)
   "Emit `str-char-count' — call `nl_str_char_count(str_ptr) -> i64'."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_str_char_count" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list ptr) buf "nl_str_char_count")
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_str_char_count" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 (defun nelisp-phase47-compiler--emit-str-codepoint-at (node buf)
   "Emit `str-codepoint-at' — 4-arg call to `nl_str_codepoint_at'."
@@ -13280,39 +13332,45 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
         (idx (nelisp-phase47-compiler--ir-get node :idx))
         (cp-slot (nelisp-phase47-compiler--ir-get node :cp-slot))
         (width-slot (nelisp-phase47-compiler--ir-get node :width-slot)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value idx buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value cp-slot buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value width-slot buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rcx)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_str_codepoint_at" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list ptr idx cp-slot width-slot) buf "nl_str_codepoint_at")
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value idx buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value cp-slot buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value width-slot buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-pop buf 'rcx)
+      (nelisp-asm-x86_64-pop buf 'rdx)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_str_codepoint_at" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 (defun nelisp-phase47-compiler--emit-str-is-alphanumeric-at (node buf)
   "Emit `str-is-alphanumeric-at' — 2-arg call to `nl_str_is_alphanumeric_at'."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
         (idx (nelisp-phase47-compiler--ir-get node :idx)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value idx buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_str_is_alphanumeric_at" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (if (eq nelisp-phase47-compiler--abi 'win64)
+        (nelisp-phase47-compiler--emit-runtime-call-args
+         (list ptr idx) buf "nl_str_is_alphanumeric_at")
+      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-phase47-compiler--emit-value idx buf)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-pop buf 'rsi)
+      (nelisp-asm-x86_64-pop buf 'rdi)
+      (nelisp-asm-x86_64-push buf 'rax)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here
+       buf "nl_str_is_alphanumeric_at" -4 'text)
+      (nelisp-asm-x86_64-pop buf 'r11))))
 
 ;; ---- Doc 122 §122.E — Atomic + raw memory primitives emit ----
 
