@@ -73,6 +73,9 @@ For Windows x86_64 PowerShell:
 #+end_src
 
 Expected output ends with =Cross-platform verify PASS=.
+With =--include-tarball=, POSIX verification also installs from the freshly
+built =dist= tarball with =install-v3.sh --from dist= and runs the installed
+=bin/nelisp=.
 
 * Build Artifacts
 

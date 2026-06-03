@@ -241,6 +241,9 @@
     (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64"
+                            script))
+    (should (string-match-p "macOS standalone installer smoke" script))
+    (should (string-match-p "run_posix_standalone_install_smoke macos-aarch64"
                             script))))
 
 (ert-deftest nelisp-standalone-parallel-posix-linux-verify-runs-parity-gates ()
@@ -277,6 +280,9 @@
     (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64 --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 linux-x86_64"
+                            script))
+    (should (string-match-p "Linux standalone installer smoke" script))
+    (should (string-match-p "run_posix_standalone_install_smoke linux-x86_64"
                             script))))
 
 (provide 'nelisp-standalone-parallel-posix-test)

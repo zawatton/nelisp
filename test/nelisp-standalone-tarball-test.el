@@ -98,6 +98,10 @@
                        "README-stage-d-v3.0.org")))
     (should (string-match-p "scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball"
                             root-readme))
+    (should (string-match-p "POSIX verification also runs =install-v3.sh="
+                            root-readme))
+    (should (string-match-p "POSIX tarball gate includes a real =install-v3.sh --from dist= smoke"
+                            root-readme))
     (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
                             root-readme))
     (should (string-match-p "Standalone native CLI matrix" root-readme))
@@ -110,6 +114,7 @@
     (should (string-match-p "codesign -s -" stage-readme))
     (should (string-match-p "does not[ \n]+repair or re-sign" stage-readme))
     (should (string-match-p "install-v3.sh= also verifies" stage-readme))
+    (should (string-match-p "POSIX verification also installs" stage-readme))
     (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
                             stage-readme))
     (should (string-match-p "macOS arm64 native verification also checks the existing code signature"

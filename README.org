@@ -382,6 +382,8 @@ scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball
 #+end_src
 
 Expected output ends with =Cross-platform verify PASS=.
+With =--include-tarball=, POSIX verification also runs =install-v3.sh= from
+the freshly built =dist= tarball and executes the installed =bin/nelisp=.
 
 ** Launch
 
@@ -500,8 +502,8 @@ Standalone native CLI matrix (current HEAD):
 
 | Platform       | Status                                                                 |
 |----------------+------------------------------------------------------------------------|
-| linux-x86_64   | gated by native eval, reader, REPL, cache identity, parallel, tarball   |
-| macos-aarch64  | gated by Mach-O self-host, OS ERT, signed CLI tarball, eval/reader/REPL |
+| linux-x86_64   | gated by native eval, reader, REPL, cache identity, parallel, tarball/install |
+| macos-aarch64  | gated by Mach-O self-host, OS ERT, signed CLI tarball/install, eval/reader/REPL |
 | windows-x86_64 | gated by PE32+ self-host, OS ERT, CLI tarball, eval/reader/REPL         |
 | linux-arm64    | best-effort                                                             |
 
@@ -509,6 +511,7 @@ The older v1.0 arm64 time-box language is retained only in the v1.0 release
 templates and tests.  The current standalone path is verified by
 =scripts/verify-cross-platform.sh --include-tarball= on POSIX and
 =scripts/verify-cross-platform.ps1 -IncludeTarball= on Windows.
+The POSIX tarball gate includes a real =install-v3.sh --from dist= smoke.
 
 ** What is *not* in v1.0
 

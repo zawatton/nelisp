@@ -25,6 +25,31 @@ default_parallel_jobs() {
   fi
 }
 
+run_posix_standalone_install_smoke() {
+  local label="$1" root prefix output code
+  root="$(mktemp -d -t nelisp-install-smoke-XXXXXX)"
+  prefix="$root/install"
+  (
+    trap 'rm -rf "$root"' EXIT
+    release/stage-d-v3.0/install-v3.sh --from "$(pwd)/dist" --prefix "$prefix"
+    set +e
+    output="$("$prefix/bin/nelisp" eval "(+ 40 2)")"
+    code=$?
+    set -e
+    if [ "$code" -ne 0 ]; then
+      echo "verify-cross-platform: $label installed nelisp exited $code" >&2
+      printf '%s\n' "$output" >&2
+      exit 1
+    fi
+    if [ "$output" != "42" ]; then
+      echo "verify-cross-platform: $label installed nelisp output mismatch" >&2
+      printf 'expected: 42\nactual  : %s\n' "$output" >&2
+      exit 1
+    fi
+    echo "[installer] PASS: $label installed bin/nelisp eval -> 42"
+  )
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --emacs) EMACS="$2"; shift 2 ;;
@@ -90,6 +115,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
     echo "--- macOS standalone tarball smoke ---"
     tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --emacs "$EMACS"
     tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64
+
+    echo ""
+    echo "--- macOS standalone installer smoke ---"
+    run_posix_standalone_install_smoke macos-aarch64
   fi
 
   echo ""
@@ -132,6 +161,10 @@ if [ "$INCLUDE_TARBALL" -eq 1 ]; then
   echo "--- Linux standalone tarball smoke ---"
   tools/build-standalone-tarball.sh stage-d-v3.0 linux-x86_64 --emacs "$EMACS"
   tools/verify-standalone-tarball.sh stage-d-v3.0 linux-x86_64
+
+  echo ""
+  echo "--- Linux standalone installer smoke ---"
+  run_posix_standalone_install_smoke linux-x86_64
 fi
 
 echo ""
