@@ -3038,13 +3038,18 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 
 (defun nelisp-standalone--reader-repl-prelude-source ()
   "Return source evaluated once before the standalone reader REPL loop."
-  (if (eq nelisp-standalone--target 'windows-x86_64)
-      "0\n"
-    (with-temp-buffer
-      (insert-file-contents
-       (expand-file-name "scripts/nelisp-stdlib-prelude.el"
-                         nelisp-standalone--repo-root))
-      (buffer-string))))
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                       nelisp-standalone--repo-root))
+    (buffer-string)))
+
+(defun nelisp-standalone--reader-repl-prelude-forms (src cursor result pool out
+                                                         ctx builtin-sym)
+  "Return Phase47 forms that prepare the standalone reader REPL environment."
+  (unless (eq nelisp-standalone--target 'windows-x86_64)
+    `((sexp-write-str-lit ,src ,(nelisp-standalone--reader-repl-prelude-source))
+      (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym))))
 
 (defun nelisp-standalone--runtime-image-command-src ()
   "Return embedded source implementing standalone-reader runtime-image commands."
@@ -3619,8 +3624,8 @@ correctly."
           (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
               2
             (seq
-             (sexp-write-str-lit src ,(nelisp-standalone--reader-repl-prelude-source))
-             (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+             ,@(nelisp-standalone--reader-repl-prelude-forms
+                'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
              (if (= (ptr-read-u64 268435464 0) 0)
                  0
