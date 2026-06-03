@@ -96,6 +96,16 @@
              (regexp-quote "(or (= childp 1) (= pid 0))")
              script))))
 
+(ert-deftest nelisp-macos-selfhost/file-mmap-uses-high-fixed-address ()
+  "The file-backed mmap smoke stays away from lower dyld mappings."
+  (let ((script (nelisp-macos-selfhost-test--script-text)))
+    (should (string-match-p
+             (regexp-quote "(syscall-direct 197 34361835520 4096 1 18 fd 0)")
+             script))
+    (should-not (string-match-p
+                 (regexp-quote "(syscall-direct 197 8592031744 4096 1 18 fd 0)")
+                 script))))
+
 (ert-deftest nelisp-macos-selfhost/darwin-fd-regression-smokes-emit-only ()
   "The M1 fd/process regression smokes compile to Mach-O images."
   (let* ((root (nelisp-macos-selfhost-test--repo-root))

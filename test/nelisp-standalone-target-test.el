@@ -175,6 +175,26 @@
     (should (memq 'MultiByteToWideChar source-tree))
     (should-not (memq 'CreateFileA source-tree))))
 
+(ert-deftest nelisp-standalone-target-macos-reader-uses-darwin-syscalls ()
+  "macOS reader file/stdin/stdout helpers use Darwin syscall numbers."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (cl-labels ((tree-member-p
+                 (needle tree)
+                 (cond
+                  ((equal needle tree) t)
+                  ((consp tree)
+                   (or (tree-member-p needle (car tree))
+                       (tree-member-p needle (cdr tree)))))))
+      (let ((forms (nelisp-standalone--reader-os-source-forms)))
+        (should (tree-member-p '(syscall-direct 5 path 0 0 0 0 0) forms))
+        (should (tree-member-p '(syscall-direct 5 path 1537 420 0 0 0) forms))
+        (should (tree-member-p '(syscall-direct 6 fd 0 0 0 0 0) forms))
+        (should (tree-member-p '(syscall-direct 3 fd ptr len 0 0 0) forms))
+        (should (tree-member-p '(syscall-direct 4 fd ptr len 0 0 0) forms))
+        (should-not (tree-member-p '(syscall-direct 2 path 0 0 0 0 0) forms))
+        (should-not (tree-member-p '(syscall-direct 0 fd ptr len 0 0 0) forms))
+        (should-not (tree-member-p '(syscall-direct 1 fd ptr len 0 0 0) forms))))))
+
 (ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
   "Windows arena source replaces Linux mmap with VirtualAlloc."
   (let ((nelisp-standalone--target 'windows-x86_64))
