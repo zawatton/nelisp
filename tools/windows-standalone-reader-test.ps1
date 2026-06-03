@@ -171,6 +171,44 @@ if ($null -eq $LoadCode) {
 }
 Assert-Output -Label "load" -Output $LoadOutput -Code $LoadCode -Expected "42"
 
+$RuntimeImage = Join-Path $SmokeDir "runtime-smoke.nlri"
+
+$DumpRuntimeOutput = & $Exe dump-runtime-image $RuntimeImage "(setq base 40)"
+$DumpRuntimeCode = $LASTEXITCODE
+if ($null -eq $DumpRuntimeCode) {
+    $DumpRuntimeCode = 0
+}
+Assert-Output -Label "dump-runtime-image" -Output $DumpRuntimeOutput `
+    -Code $DumpRuntimeCode -Expected ""
+
+$EvalRuntimeOutput = & $Exe eval-runtime-image $RuntimeImage "(setq add 2)" "(+ base add)"
+$EvalRuntimeCode = $LASTEXITCODE
+if ($null -eq $EvalRuntimeCode) {
+    $EvalRuntimeCode = 0
+}
+Assert-Output -Label "eval-runtime-image" -Output $EvalRuntimeOutput `
+    -Code $EvalRuntimeCode -Expected "42"
+
+$ExecRuntimeOutput = & $Exe exec-runtime-image $RuntimeImage "(setq add 2)" "(+ base add)"
+$ExecRuntimeCode = $LASTEXITCODE
+if ($null -eq $ExecRuntimeCode) {
+    $ExecRuntimeCode = 0
+}
+Assert-Output -Label "exec-runtime-image" -Output $ExecRuntimeOutput `
+    -Code $ExecRuntimeCode -Expected ""
+
+& $Exe exec-runtime-image $RuntimeImage
+$ExecRuntimeMissingCode = $LASTEXITCODE
+if ($null -eq $ExecRuntimeMissingCode) {
+    $ExecRuntimeMissingCode = 0
+}
+if ($ExecRuntimeMissingCode -ne 1) {
+    Write-Host ("[windows-standalone-reader] FAIL: exec-runtime-image missing form" +
+                " -> exit " + $ExecRuntimeMissingCode + " (expected 1)")
+    exit 1
+}
+Write-Host "[windows-standalone-reader] PASS: exec-runtime-image missing form -> exit 1"
+
 $ReplOutput = @(
     "(+ 40 2)",
     "nil",
@@ -190,5 +228,33 @@ if ($ReplCode -ne 0) {
 Assert-Output -Label "repl stdin/stdout" -Output $ReplOutput -Code $ReplCode `
     -Expected "42`nnil`nt`n(1 2 3)`n[1 `"a`" nil t]"
 Write-Host "[windows-standalone-reader] PASS: repl stdin/stdout -> 42"
+
+$QuietReplOutput = @(
+    "(defun hot () 1)",
+    "(hot)",
+    "(condition-case e (signal 'quit nil) (quit 42))",
+    '(nelisp--write-stdout-bytes "explicit\n")',
+    "(hot)",
+    "(exit)"
+) | & $Exe repl --no-prompt --no-print
+$QuietReplCode = $LASTEXITCODE
+if ($null -eq $QuietReplCode) {
+    $QuietReplCode = 0
+}
+Assert-Output -Label "repl --no-print" -Output $QuietReplOutput `
+    -Code $QuietReplCode -Expected "explicit"
+
+& $Exe repl --bad
+$BadReplCode = $LASTEXITCODE
+if ($null -eq $BadReplCode) {
+    $BadReplCode = 0
+}
+if ($BadReplCode -ne 2) {
+    Write-Host ("[windows-standalone-reader] FAIL: repl bad option" +
+                " -> exit " + $BadReplCode + " (expected 2)")
+    exit 1
+}
+Write-Host "[windows-standalone-reader] PASS: repl bad option -> exit 2"
+
 Write-Host "[windows-standalone-reader] all PASS - Windows-native standalone reader OK"
 exit 0

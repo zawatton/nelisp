@@ -151,7 +151,12 @@
     (should (string-match-p "\\$Exe eval" script))
     (should (string-match-p "\\$Exe -e" script))
     (should (string-match-p "\\$Exe load" script))
+    (should (string-match-p "\\$Exe dump-runtime-image" script))
+    (should (string-match-p "\\$Exe eval-runtime-image" script))
+    (should (string-match-p "\\$Exe exec-runtime-image" script))
     (should (string-match-p "\\$Exe repl --no-prompt" script))
+    (should (string-match-p "\\$Exe repl --no-prompt --no-print" script))
+    (should (string-match-p "\\$Exe repl --bad" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 
