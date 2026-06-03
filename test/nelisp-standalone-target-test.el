@@ -345,7 +345,7 @@
 
 (ert-deftest nelisp-standalone-target-macos-uses-bounded-native-stack ()
   "macOS standalone uses an explicit stack that Darwin can mmap reliably."
-  (should (= nelisp-standalone--macos-native-stack-size #x08000000))
+  (should (= nelisp-standalone--macos-native-stack-size #x20000000))
   (should (< nelisp-standalone--macos-native-stack-size
              nelisp-standalone--native-stack-size)))
 

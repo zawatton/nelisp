@@ -2607,7 +2607,7 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
 1 GiB, virtual-only (anonymous); must stay < 2^31 so SIZE / SIZE-16 fit the
 32-bit immediate / displacement fields in the hand-assembled `_start'.")
 
-(defconst nelisp-standalone--macos-native-stack-size #x08000000
+(defconst nelisp-standalone--macos-native-stack-size #x20000000
   "Size (bytes) of the macOS mmap'd native stack.
 Darwin backs anonymous mappings more eagerly than Linux's demand-paged stack
 trampoline, so macOS uses a smaller explicit stack while still exceeding the
