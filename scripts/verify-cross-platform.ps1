@@ -73,6 +73,11 @@ Invoke-Checked "Windows standalone eval native smoke" {
         -Emacs $Emacs
 }
 
+Invoke-Checked "Windows standalone cache identity smoke" {
+    & (Join-Path $RepoRoot "tools\windows-standalone-cache-identity-test.ps1") `
+        -Emacs $Emacs
+}
+
 Invoke-Checked "Windows standalone reader native smoke" {
     & (Join-Path $RepoRoot "tools\windows-standalone-reader-test.ps1") `
         -Emacs $Emacs

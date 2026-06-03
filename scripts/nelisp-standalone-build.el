@@ -91,6 +91,15 @@ below 2 GiB so Phase47's current signed imm32 materialization remains valid.")
     ('windows-x86_64 'win64)
     (other (error "standalone: unsupported target %S" other))))
 
+(defun nelisp-standalone--target-object-name (name &optional target)
+  "Return target-appropriate object NAME.
+Linux keeps the historical `.o' unit names; Windows uses `.obj' in cache names,
+link-unit names, and build logs."
+  (if (and (eq (or target nelisp-standalone--target) 'windows-x86_64)
+           (string-suffix-p ".o" name))
+      (concat (substring name 0 -2) ".obj")
+    name))
+
 (defun nelisp-standalone--target-cache-dir (&optional target)
   "Return the per-target standalone unit cache directory."
   (let ((target (or target nelisp-standalone--target)))
@@ -175,7 +184,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 ;; ===================================================================
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
-  (let* ((source (nelisp-standalone--windows-rebase-arena-source source))
+  (let* ((name (nelisp-standalone--target-object-name name))
+         (source (nelisp-standalone--windows-rebase-arena-source source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (nelisp-phase47-compiler--label-counter 0)
          (nelisp-phase47-compiler--arch 'x86_64)
@@ -263,7 +273,8 @@ entries carry explicit hex-encoded byte sections."
 (defun nelisp-standalone--cached-unit (name source source-file)
   "Return the link-unit for NAME, compiling SOURCE only if SOURCE-FILE
 or the toolchain is newer than the cached object."
-  (let* ((cache-dir (nelisp-standalone--target-cache-dir))
+  (let* ((name (nelisp-standalone--target-object-name name))
+         (cache-dir (nelisp-standalone--target-cache-dir))
          (cache (expand-file-name (concat name ".unit") cache-dir))
          (deps (cons source-file (nelisp-standalone--dep-files)))
          (fresh (and (file-exists-p cache)
@@ -2373,7 +2384,7 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
                               (list #x89 #xc7)         ; mov edi, eax
                               (cons #xb8 (nelisp-standalone--le32 60)) ; mov eax, 60
                               (list #x0f #x05)))))      ; syscall
-    (nelisp-link-unit-make "start.o"
+    (nelisp-link-unit-make (nelisp-standalone--target-object-name "start.o")
      (list (cons 'text text))
      (list (nelisp-link-symbol "_start" 0 :section 'text :bind 'global :type 'func))
      (list (list :offset reloc-off :type 'pc32 :symbol "driver" :addend 0 :section 'text)))))
@@ -2398,7 +2409,7 @@ for the baked-form path, then exits through KERNEL32!ExitProcess."
                               (list 0 0 0 0)
                               (list #xcc)))))
     (nelisp-link-unit-make
-     "start.o"
+     (nelisp-standalone--target-object-name "start.o")
      (list (cons 'text text))
      (list (nelisp-link-symbol "_start" 0
                                :section 'text :bind 'global :type 'func))
@@ -2528,9 +2539,10 @@ for the baked-form path, then exits through KERNEL32!ExitProcess."
     (pcase kind
       (:start (nelisp-standalone--target-start-unit))
       ;; driver is form-dependent and tiny: always recompiled, never cached.
-      (:driver (let ((u (nelisp-standalone--compile-to-unit "driver.o"
+      (:driver (let* ((name (nelisp-standalone--target-object-name "driver.o"))
+                      (u (nelisp-standalone--compile-to-unit name
                                                             (nelisp-standalone--driver-source))))
-                 (push "driver.o" nelisp-standalone--recompiled) u))
+                 (push name nelisp-standalone--recompiled) u))
       (:glue (nelisp-standalone--cached-unit
               name
               (if (and (string= name "arena.o")
@@ -2594,7 +2606,9 @@ is faster.  Parallelism pays off only once per-unit compilation dominates startu
 ;;;###autoload
 (defun nelisp-standalone-rebuild-one (name)
   "Force-recompile just unit NAME (e.g. \"eq-symbol.o\") then relink."
-  (let ((cache (expand-file-name (concat name ".unit") nelisp-standalone--cache-dir)))
+  (let ((cache (expand-file-name
+                (concat (nelisp-standalone--target-object-name name) ".unit")
+                (nelisp-standalone--target-cache-dir))))
     (when (file-exists-p cache) (delete-file cache)))
   (nelisp-standalone-build))
 
@@ -2667,7 +2681,7 @@ baked-form path never references; these units resolve them.")
                        #x48 #x89 #xf8                     ; mov rax, rdi
                        #xc3))))                            ; ret
     (nelisp-link-unit-make
-     "reader-float.o"
+     (nelisp-standalone--target-object-name "reader-float.o")
      (list (cons 'text text))
      (list (nelisp-link-symbol "nl_sexp_write_float" 0
                                :section 'text :bind 'global :type 'func))
@@ -2721,8 +2735,9 @@ arm in `nelisp-standalone--applyfn-dispatch-table'.")
 (defconst nelisp-standalone--windows-reader-imports
   (list (cons "KERNEL32.dll"
               (list "ExitProcess" "VirtualAlloc" "GetCommandLineW"
-                    "GetStdHandle" "CreateFileA" "ReadFile" "WriteFile"
-                    "CloseHandle"))
+                    "GetStdHandle" "CreateFileW" "ReadFile" "WriteFile"
+                    "CloseHandle" "WideCharToMultiByte"
+                    "MultiByteToWideChar"))
         (cons "SHELL32.dll" (list "CommandLineToArgvW")))
   "PE imports needed by the Windows-native standalone reader.")
 
@@ -2827,27 +2842,29 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
 (defun nelisp-standalone--reader-os-source-forms ()
   "Return target-specific OS helper defuns used by the reader driver/file I/O."
   (if (eq nelisp-standalone--target 'windows-x86_64)
-      '((defun nl_win_wcs_len_loop (ptr n)
-          (if (= (ptr-read-u16 ptr (* n 2)) 0)
-              n
-            (nl_win_wcs_len_loop ptr (+ n 1))))
-        (defun nl_win_wcs_len (ptr)
-          (if (= ptr 0) 0 (nl_win_wcs_len_loop ptr 0)))
-        (defun nl_win_wcs_ascii_copy_loop (src dst i n)
-          (if (= i n)
-              (nl_seq2 (ptr-write-u8 dst n 0) dst)
-            (nl_seq2
-             (ptr-write-u8 dst i (logand (ptr-read-u16 src (* i 2)) 255))
-             (nl_win_wcs_ascii_copy_loop src dst (+ i 1) n))))
-        (defun nl_win_wcs_ascii_dup (src)
-          (let* ((n (nl_win_wcs_len src))
-                 (dst (alloc-bytes (+ n 1) 1)))
-            (nl_win_wcs_ascii_copy_loop src dst 0 n)))
+      '((defun nl_win_wcs_utf8_dup (src)
+          (let* ((n (extern-call WideCharToMultiByte 65001 0 src -1 0 0 0 0))
+                 (cap (if (< n 1) 1 n))
+                 (dst (alloc-bytes cap 1)))
+            (if (< n 1)
+                (nl_seq2 (ptr-write-u8 dst 0 0) dst)
+              (nl_seq2
+               (extern-call WideCharToMultiByte 65001 0 src -1 dst cap 0 0)
+               dst))))
+        (defun nl_win_utf8_wcs_dup (src)
+          (let* ((n (extern-call MultiByteToWideChar 65001 0 src -1 0 0))
+                 (cap (if (< n 1) 1 n))
+                 (dst (alloc-bytes (* cap 2) 2)))
+            (if (< n 1)
+                (nl_seq2 (ptr-write-u16 dst 0 0) dst)
+              (nl_seq2
+               (extern-call MultiByteToWideChar 65001 0 src -1 dst cap)
+               dst))))
         (defun nl_win_wargv_fill (wargv argc i sp)
           (if (= i argc)
               (nl_seq2 (ptr-write-u64 sp (* (+ i 1) 8) 0) sp)
             (let* ((warg (ptr-read-u64 wargv (* i 8)))
-                   (carg (nl_win_wcs_ascii_dup warg)))
+                   (carg (nl_win_wcs_utf8_dup warg)))
               (seq
                (ptr-write-u64 sp (* (+ i 1) 8) carg)
                (nl_win_wargv_fill wargv argc (+ i 1) sp)))))
@@ -2863,9 +2880,11 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                (ptr-write-u64 argv 0 argc)
                (nl_win_wargv_fill wargv argc 0 argv)))))
         (defun nl_os_open_read (path)
-          (extern-call CreateFileA path 2147483648 1 0 3 128 0))
+          (let* ((wpath (nl_win_utf8_wcs_dup path)))
+            (extern-call CreateFileW wpath 2147483648 1 0 3 128 0)))
         (defun nl_os_open_write_truncate (path)
-          (extern-call CreateFileA path 1073741824 0 0 2 128 0))
+          (let* ((wpath (nl_win_utf8_wcs_dup path)))
+            (extern-call CreateFileW wpath 1073741824 0 0 2 128 0)))
         (defun nl_os_close_handle (h)
           (if (< h 0) 0 (extern-call CloseHandle h)))
         (defun nl_os_read_file_handle (h ptr len)
@@ -3709,9 +3728,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 Links the REAL special-form + env machinery (no trap stubs) so the binary is a
 genuine general interpreter for the 11 special forms + installed builtins."
   (let* ((start (nelisp-standalone--target-start-unit))
-         (driver (let ((u (nelisp-standalone--compile-to-unit
-                           "driver.o" (nelisp-standalone--reader-driver-source))))
-                   (push "driver.o" nelisp-standalone--recompiled) u))
+         (driver (let* ((name (nelisp-standalone--target-object-name "driver.o"))
+                        (u (nelisp-standalone--compile-to-unit
+                            name (nelisp-standalone--reader-driver-source))))
+                   (push name nelisp-standalone--recompiled) u))
          ;; helpers: shipped manifest minus arena/trap and minus the units we
          ;; build from PATCHED sources below (eval-inner = M4 keyword self-eval,
          ;; combiner-cons = M6 catch/throw, combiner-apply = M3 do_fset fix).

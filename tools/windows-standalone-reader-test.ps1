@@ -83,19 +83,35 @@ if ($EmbeddedOnly) {
 $SmokeDir = Join-Path $RepoRoot "target\windows-standalone-reader"
 New-Item -ItemType Directory -Force -Path $SmokeDir | Out-Null
 
+function Invoke-ReaderFileSmoke {
+    param(
+        [string]$Path,
+        [string]$Source,
+        [string]$Label
+    )
+
+    Set-Content -Path $Path -Encoding ascii -NoNewline -Value $Source
+    & $Exe $Path
+    $FileCode = $LASTEXITCODE
+    if ($null -eq $FileCode) {
+        $FileCode = 0
+    }
+    if ($FileCode -ne 42) {
+        Write-Host ("[windows-standalone-reader] FAIL: " + $Label + " " + $Path +
+                    " -> exit " + $FileCode + " (expected 42)")
+        exit 1
+    }
+    Write-Host ("[windows-standalone-reader] PASS: " + $Label + " -> exit 42")
+}
+
 $FileSmoke = Join-Path $SmokeDir "file-smoke.el"
-Set-Content -Path $FileSmoke -Encoding ascii -NoNewline -Value "(+ 39 3)`n"
-& $Exe $FileSmoke
-$FileCode = $LASTEXITCODE
-if ($null -eq $FileCode) {
-    $FileCode = 0
-}
-if ($FileCode -ne 42) {
-    Write-Host ("[windows-standalone-reader] FAIL: file arg " + $FileSmoke +
-                " -> exit " + $FileCode + " (expected 42)")
-    exit 1
-}
-Write-Host ("[windows-standalone-reader] PASS: file arg -> exit 42")
+Invoke-ReaderFileSmoke -Path $FileSmoke -Source "(+ 39 3)`n" -Label "file arg"
+
+$SpacedFileSmoke = Join-Path $SmokeDir "file smoke spaced.el"
+Invoke-ReaderFileSmoke -Path $SpacedFileSmoke -Source "(* 6 7)`n" -Label "file arg with spaces"
+
+$UnicodeFileSmoke = Join-Path $SmokeDir "unicode-あ.el"
+Invoke-ReaderFileSmoke -Path $UnicodeFileSmoke -Source "(- 50 8)`n" -Label "unicode file arg"
 
 $ReplOutput = @("(+ 40 2)", ",quit") | & $Exe repl --no-prompt
 $ReplCode = $LASTEXITCODE

@@ -109,6 +109,8 @@
     (should (string-match-p "-Jobs \\$ParallelJobs" script))
     (should (string-match-p "Windows standalone eval native smoke" script))
     (should (string-match-p "windows-standalone-eval-test.ps1" script))
+    (should (string-match-p "Windows standalone cache identity smoke" script))
+    (should (string-match-p "windows-standalone-cache-identity-test.ps1" script))
     (should (string-match-p "Windows standalone reader native smoke" script))
     (should (string-match-p "windows-standalone-reader-test.ps1" script))))
 
@@ -142,8 +144,27 @@
     (should (string-match-p "nelisp-standalone-build-reader" script))
     (should (string-match-p "target\\\\nelisp-standalone-reader.exe" script))
     (should (string-match-p "\\[windows-standalone-reader\\] PASS" script))
-    (should (string-match-p "\\$Exe \\$FileSmoke" script))
+    (should (string-match-p "Invoke-ReaderFileSmoke" script))
+    (should (string-match-p "file arg with spaces" script))
+    (should (string-match-p "unicode file arg" script))
     (should (string-match-p "\\$Exe repl --no-prompt" script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
+
+(ert-deftest nelisp-standalone-parallel-windows-cache-identity-script ()
+  "The cache identity smoke compares fresh and cached PE output hashes."
+  (let* ((script-path
+          (expand-file-name "tools/windows-standalone-cache-identity-test.ps1"
+                            nelisp-standalone-parallel-windows-test--repo-root))
+         (script (nelisp-standalone-parallel-windows-test--read-file-text
+                  script-path)))
+    (should (file-exists-p script-path))
+    (should (string-match-p "\\$env:NELISP_STANDALONE_TARGET = \"windows-x86_64\""
+                            script))
+    (should (string-match-p "windows-x86_64-arena-\\*" script))
+    (should (string-match-p "Get-FileHash -Algorithm SHA256" script))
+    (should (string-match-p "\\$FreshHash -ne \\$CachedHash" script))
+    (should (string-match-p "\\[windows-standalone-cache\\] PASS" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 

@@ -38,6 +38,18 @@
   "The Windows-native target maps to the Microsoft x64 ABI."
   (should (eq (nelisp-standalone--target-abi 'windows-x86_64) 'win64)))
 
+(ert-deftest nelisp-standalone-target-object-name-is-platform-specific ()
+  "Windows build logs/cache use .obj names; Linux keeps the historical .o."
+  (should (equal (nelisp-standalone--target-object-name
+                  "driver.o" 'linux-x86_64)
+                 "driver.o"))
+  (should (equal (nelisp-standalone--target-object-name
+                  "driver.o" 'windows-x86_64)
+                 "driver.obj"))
+  (should (equal (nelisp-standalone--target-object-name
+                  "already.obj" 'windows-x86_64)
+                 "already.obj")))
+
 (ert-deftest nelisp-standalone-target-cache-is-target-qualified ()
   "Unit cache paths include the target name to avoid ABI mixing."
   (let ((base (file-name-as-directory nelisp-standalone--cache-dir))
@@ -89,6 +101,7 @@
          (unit (nelisp-standalone--target-start-unit))
          (text (cdr (assq 'text (plist-get unit :sections))))
          (relocs (plist-get unit :relocs)))
+    (should (equal (plist-get unit :name) "start.obj"))
     (should (equal (substring text 0 6)
                    (unibyte-string #x48 #x83 #xe4 #xf0 #x48 #x83)))
     (should (equal (substring text 6 10)
@@ -101,6 +114,22 @@
     (should (cl-find "ExitProcess" relocs
                      :key (lambda (r) (plist-get r :symbol))
                      :test #'equal))))
+
+(ert-deftest nelisp-standalone-target-windows-reader-uses-wide-file-api ()
+  "Windows reader opens files with CreateFileW and UTF-8/UTF-16 conversion."
+  (let* ((nelisp-standalone--target 'windows-x86_64)
+         (imports (cdr (assoc "KERNEL32.dll"
+                              nelisp-standalone--windows-reader-imports)))
+         (source-tree (flatten-tree
+                       (nelisp-standalone--reader-os-source-forms))))
+    (should (member "CreateFileW" imports))
+    (should (member "WideCharToMultiByte" imports))
+    (should (member "MultiByteToWideChar" imports))
+    (should-not (member "CreateFileA" imports))
+    (should (memq 'CreateFileW source-tree))
+    (should (memq 'WideCharToMultiByte source-tree))
+    (should (memq 'MultiByteToWideChar source-tree))
+    (should-not (memq 'CreateFileA source-tree))))
 
 (ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
   "Windows arena source replaces Linux mmap with VirtualAlloc."
