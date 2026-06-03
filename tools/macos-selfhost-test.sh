@@ -33,7 +33,7 @@ usage() {
 
 SMOKE_NAMES=(
   exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
-  cas dealloc cons-set cond logic write-stdout read-stdin getpid
+  cas dealloc cons-set cond logic write-stdout read-stdin pipe getpid
   createfile-write cons-clone boxed names call4-outs str-helpers lits extern
   aot-jump aot-roots f64-sexp callptr
 )
@@ -387,6 +387,35 @@ build_run read-stdin '(seq
               (fail))
           (fail)))))
   (exit (run)))' 42 "" "nelisp read smoke"
+
+# raw Darwin pipe(2): create an fd pair, write 4 bytes, read them back,
+# and close both ends.  Mirrors the Windows CreatePipe self-host smoke.
+build_run pipe '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (let ((rc (syscall-direct 42 8589934848 0 0 0 0 0)))
+        (if (= rc 0)
+            (let ((rfd (ptr-read-u32 8589934592 256)))
+              (let ((wfd (ptr-read-u32 8589934592 260)))
+                (seq
+                  (ptr-write-u32 8589934592 320 1701865840)
+                  (let ((w (syscall-direct 4 wfd 8589934912 4 0 0 0)))
+                    (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
+                      (seq
+                        (syscall-direct 6 rfd 0 0 0 0 0)
+                        (syscall-direct 6 wfd 0 0 0 0 0)
+                        (if (= w 4)
+                            (if (= n 4)
+                                (if (= (ptr-read-u32 8589934592 384) 1701865840)
+                                    (ok)
+                                  (fail))
+                              (fail))
+                          (fail))))))))
+          (fail)))))
+  (exit (run)))' 42
 
 # raw Darwin getpid(2): verifies basic process syscall wiring.
 build_run getpid '(seq
