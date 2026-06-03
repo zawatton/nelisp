@@ -21,8 +21,16 @@ if [ "$(uname -s)" = "Darwin" ]; then
   tools/macos-selfhost-test.sh
 
   echo ""
+  echo "--- macOS standalone parallel build (zero-Rust) ---"
+  tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64
+
+  echo ""
   echo "--- macOS standalone eval native smoke ---"
   tools/macos-standalone-eval-test.sh
+
+  echo ""
+  echo "--- macOS standalone cache identity smoke ---"
+  tools/macos-standalone-cache-identity-test.sh
 
   echo ""
   echo "--- macOS standalone reader native smoke ---"
