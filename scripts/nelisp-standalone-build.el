@@ -3305,7 +3305,44 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                 (ok (extern-call WriteFile h ptr len sent 0)))
            (if (= ok 0) -1 (ptr-read-u32 sent 0))))))
     ('macos-aarch64
-     '((defun nl_os_argv_init (sp) sp)
+     '((defun nl_darwin_skip_to_nul (ptr off)
+         (if (= (ptr-read-u8 ptr off) 0)
+             off
+           (nl_darwin_skip_to_nul ptr (+ off 1))))
+       (defun nl_darwin_skip_nuls (ptr off)
+         (if (= (ptr-read-u8 ptr off) 0)
+             (nl_darwin_skip_nuls ptr (+ off 1))
+           off))
+       (defun nl_darwin_procargs_next (ptr off)
+         (nl_darwin_skip_nuls ptr (+ (nl_darwin_skip_to_nul ptr off) 1)))
+       (defun nl_darwin_procargs_fill (argc buf off i argv)
+         (if (= i argc)
+             (nl_seq2 (ptr-write-u64 argv (* (+ i 1) 8) 0) argv)
+           (seq
+            (ptr-write-u64 argv (* (+ i 1) 8) (+ buf off))
+            (nl_darwin_procargs_fill argc buf
+                                      (nl_darwin_procargs_next buf off)
+                                      (+ i 1) argv))))
+       (defun nl_os_argv_init (sp)
+         (let* ((mib (alloc-bytes 16 4))
+                (lenp (alloc-bytes 8 8))
+                (buf (alloc-bytes 65536 8))
+                (pid (syscall-direct 20 0 0 0 0 0 0)))
+           (seq
+            (ptr-write-u32 mib 0 1)     ; CTL_KERN
+            (ptr-write-u32 mib 4 49)    ; KERN_PROCARGS2
+            (ptr-write-u32 mib 8 pid)
+            (ptr-write-u64 lenp 0 65536)
+            (let* ((rc (syscall-direct 202 mib 3 buf lenp 0 0)))
+              (if (< rc 0)
+                  sp
+                (let* ((argc (ptr-read-u32 buf 0))
+                       (off0 (nl_darwin_skip_nuls
+                              buf (+ (nl_darwin_skip_to_nul buf 4) 1)))
+                       (argv (alloc-bytes (* (+ argc 2) 8) 8)))
+                  (seq
+                   (ptr-write-u64 argv 0 argc)
+                   (nl_darwin_procargs_fill argc buf off0 0 argv))))))))
        (defun nl_os_open_read (path)
          (syscall-direct 5 path 0 0 0 0 0))
        (defun nl_os_open_write_truncate (path)

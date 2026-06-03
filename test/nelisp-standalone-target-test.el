@@ -222,6 +222,8 @@
         (should (tree-member-p '(syscall-direct 6 fd 0 0 0 0 0) forms))
         (should (tree-member-p '(syscall-direct 3 fd ptr len 0 0 0) forms))
         (should (tree-member-p '(syscall-direct 4 fd ptr len 0 0 0) forms))
+        (should (tree-member-p '(ptr-write-u32 mib 4 49) forms))
+        (should (tree-member-p '(syscall-direct 202 mib 3 buf lenp 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 2 path 0 0 0 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 0 fd ptr len 0 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 1 fd ptr len 0 0 0) forms))))))
