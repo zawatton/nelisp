@@ -162,8 +162,12 @@
     (should (string-match-p "\\$Exe dump-runtime-image" script))
     (should (string-match-p "\\$Exe eval-runtime-image" script))
     (should (string-match-p "\\$Exe exec-runtime-image" script))
-    (should (string-match-p "\\$Exe repl --no-prompt" script))
-    (should (string-match-p "\\$Exe repl --no-prompt --no-print" script))
+    (should (string-match-p "function Invoke-ReaderWithInput" script))
+    (should (string-match-p "StandardInputEncoding = \\[System.Text.Encoding\\]::ASCII"
+                            script))
+    (should (string-match-p "Arguments @(\"repl\", \"--no-prompt\")" script))
+    (should (string-match-p "Arguments @(\"repl\", \"--no-prompt\", \"--no-print\")"
+                            script))
     (should (string-match-p "\\$Exe repl --bad" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
