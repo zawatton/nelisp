@@ -11320,7 +11320,10 @@ count."
           (let* ((stack-count (- n reg-budget))
                  (arity (or nelisp-phase47-compiler--current-defun-arity 0))
                  (win64-p (eq nelisp-phase47-compiler--abi 'win64))
-                 (needs-align (= (logand (+ arity n stack-count) 1) 1))
+                 (needs-align
+                  (if win64-p
+                      (= (logand (+ n stack-count) 1) 1)
+                    (= (logand (+ arity n stack-count) 1) 1)))
                  (win64-outgoing
                   (if win64-p
                       (+ 32 (* 8 stack-count) (if needs-align 8 0))
@@ -11373,7 +11376,8 @@ count."
       (let* ((regs (cl-subseq cur-arg-regs 0 n))
          ;; Stack alignment correction (Doc 111 §111.E fix).
          (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (= (logand arity 1) 1))
+         (needs-align (and (not (eq nelisp-phase47-compiler--abi 'win64))
+                           (= (logand arity 1) 1)))
          ;; Win64 shadow space: 32 bytes reserved by caller before CALL.
          (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0))
          ;; W7.6a: split args into [complex-prefix | trivial-suffix].

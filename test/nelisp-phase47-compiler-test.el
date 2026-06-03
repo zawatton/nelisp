@@ -2926,6 +2926,30 @@ SysV would emit `push rdi' = 57 instead."
                      (unibyte-string #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-internal-call-odd-arity-no-pad ()
+  "Win64 internal calls do not use SysV arity-based alignment pads."
+  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+               '(seq
+                 (defun callee (a) a)
+                 (defun probe (p) (callee p))))))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; ref p -> rcx; sub rsp,32 shadow; call rel32.
+             (unibyte-string #x48 #x8b #x4d #xf8
+                             #x48 #x81 #xec #x20 #x00 #x00 #x00
+                             #xe8)))
+    (should (nelisp-phase47-compiler-test--bytes-contain-p
+             text
+             ;; add rsp,32 after the internal call returns.
+             (unibyte-string
+                             #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+    (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+                 text
+                 ;; Old SysV-style pad for odd arity before shadow space.
+                 (unibyte-string #x48 #x81 #xec #x08 #x00 #x00 #x00
+                                 #x48 #x81 #xec #x20 #x00 #x00 #x00
+                                 #xe8)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here
