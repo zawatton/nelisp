@@ -123,9 +123,33 @@
                              (nelisp-standalone--output-path t)))))
 
 (ert-deftest nelisp-standalone-target-macos-start-is-main ()
-  "The macOS start unit exports _main and calls driver through arm64 BL reloc."
+  "The macOS eval start unit exports _main and calls driver."
   (let* ((nelisp-standalone--target 'macos-aarch64)
          (unit (nelisp-standalone--target-start-unit))
+         (text (cdr (assq 'text (plist-get unit :sections))))
+         (relocs (plist-get unit :relocs))
+         (svc80 (unibyte-string #x01 #x10 #x00 #xd4))
+         (svc-count 0)
+         (pos 0))
+    (should (equal (plist-get unit :name) "start.o"))
+    (should (cl-find "_main" (plist-get unit :symbols)
+                     :key (lambda (s) (plist-get s :name))
+                     :test #'equal))
+    (while (string-match (regexp-quote svc80) text pos)
+      (setq svc-count (1+ svc-count)
+            pos (match-end 0)))
+    (should (> (length text) 16))
+    (should (= svc-count 1))
+    (should (cl-find "driver" relocs
+                     :key (lambda (r) (plist-get r :symbol))
+                     :test #'equal))
+    (should (cl-find 'b26-pc relocs
+                     :key (lambda (r) (plist-get r :type))))))
+
+(ert-deftest nelisp-standalone-target-macos-reader-start-uses-native-stack ()
+  "The macOS reader start unit switches onto an explicit native stack."
+  (let* ((nelisp-standalone--target 'macos-aarch64)
+         (unit (nelisp-standalone--target-start-unit t))
          (text (cdr (assq 'text (plist-get unit :sections))))
          (relocs (plist-get unit :relocs))
          (svc80 (unibyte-string #x01 #x10 #x00 #xd4))

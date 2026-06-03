@@ -2681,8 +2681,44 @@ for the baked-form path, then exits through KERNEL32!ExitProcess."
                  :addend 0
                  :section 'text)))))
 
-(defun nelisp-standalone--macos-aarch64-start-unit ()
-  "Return the macOS arm64 Mach-O `_main' start unit.
+(defun nelisp-standalone--macos-aarch64-basic-start-unit ()
+  "Return the small macOS arm64 Mach-O `_main' start unit.
+Dyld enters `_main(argc, argv, envp)'.  The driver expects the Linux entry-stack
+argv shape (`argc' at slot 0, argv pointers inline after it), so this trampoline
+copies argc and argv[0..3] into a small stack block and passes that block to
+`driver'.  It then exits through the Darwin raw syscall ABI with x16=1 and
+SVC #0x80."
+  (let* ((buf (nelisp-asm-arm64-make-buffer))
+         (reloc-off nil))
+    (nelisp-asm-arm64-sub-imm buf 'sp 'sp 48)
+    (nelisp-asm-arm64-str-imm buf 'x0 'sp 0)  ; argc
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 0)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 8)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 8)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 16)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 16)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 24)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 24)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 32)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'sp)
+    (setq reloc-off (nelisp-asm-arm64-buffer-pos buf))
+    (nelisp-asm-arm64-emit-reloc buf 'b26-pc "driver")
+    (nelisp-asm-arm64--emit-word buf #x94000000) ; bl driver
+    (nelisp-asm-arm64-mov-imm64 buf 'x16 1)
+    (nelisp-asm-arm64-svc buf #x80)
+    (nelisp-link-unit-make
+     "start.o"
+     (list (cons 'text (nelisp-asm-arm64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_main" 0
+                               :section 'text :bind 'global :type 'func))
+     (list (list :offset reloc-off
+                 :type 'b26-pc
+                 :symbol "driver"
+                 :addend 0
+                 :section 'text)))))
+
+(defun nelisp-standalone--macos-aarch64-reader-start-unit ()
+  "Return the macOS arm64 Mach-O `_main' start unit for standalone-reader.
 Dyld enters `_main(argc, argv, envp)'.  The reader driver expects the Linux
 entry-stack argv shape (`argc' at slot 0, argv pointers inline after it), so
 this trampoline first snapshots argc and argv[0..3] on the original stack,
@@ -2742,11 +2778,19 @@ through the Darwin raw syscall ABI with x16=1 and SVC #0x80."
                  :addend 0
                  :section 'text)))))
 
-(defun nelisp-standalone--target-start-unit ()
+(defun nelisp-standalone--macos-aarch64-start-unit (&optional reader-p)
+  "Return the macOS arm64 start unit.
+When READER-P is non-nil, switch onto a larger explicit native stack before
+calling the reader driver."
+  (if reader-p
+      (nelisp-standalone--macos-aarch64-reader-start-unit)
+    (nelisp-standalone--macos-aarch64-basic-start-unit)))
+
+(defun nelisp-standalone--target-start-unit (&optional reader-p)
   "Return the target-specific standalone start unit."
   (pcase nelisp-standalone--target
     ('windows-x86_64 (nelisp-standalone--windows-start-unit))
-    ('macos-aarch64 (nelisp-standalone--macos-aarch64-start-unit))
+    ('macos-aarch64 (nelisp-standalone--macos-aarch64-start-unit reader-p))
     (_ (nelisp-standalone--start-unit))))
 
 ;; ===================================================================
@@ -4194,7 +4238,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
   "Build the ORDERED reader-path unit list (start first, arena last).
 Links the REAL special-form + env machinery (no trap stubs) so the binary is a
 genuine general interpreter for the 11 special forms + installed builtins."
-  (let* ((start (nelisp-standalone--target-start-unit))
+  (let* ((start (nelisp-standalone--target-start-unit t))
          (driver (let* ((name (nelisp-standalone--target-object-name "driver.o"))
                         (u (nelisp-standalone--compile-to-unit
                             name (nelisp-standalone--reader-driver-source))))
