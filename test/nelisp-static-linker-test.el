@@ -986,8 +986,9 @@ fixture code."
         (progn
           (nelisp-link-units path (list u))
           (should (file-exists-p path))
-          (let ((modes (file-modes path)))
-            (should (/= 0 (logand modes #o100))))
+          (unless (memq system-type '(windows-nt ms-dos))
+            (let ((modes (file-modes path)))
+              (should (/= 0 (logand modes #o100)))))
           (with-temp-buffer
             (set-buffer-multibyte nil)
             (insert-file-contents-literally path nil 0 4)

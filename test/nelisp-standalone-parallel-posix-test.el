@@ -28,6 +28,11 @@
     (insert-file-contents path)
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun nelisp-standalone-parallel-posix-test--executable-or-windows-p (path)
+  "Return non-nil when PATH is executable, or when Windows lacks POSIX mode bits."
+  (or (memq system-type '(windows-nt ms-dos))
+      (file-executable-p path)))
+
 (defun nelisp-standalone-parallel-posix-test--count-darwin-os-tests (text)
   "Return the number of ERT tests in TEXT whose names contain darwin."
   (let ((pos 0)
@@ -45,7 +50,7 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (string-match-p "--target" script))
     (should (string-match-p "macos-aarch64" script))
     (should (string-match-p "NELISP_STANDALONE_TARGET=\"\\$TARGET\"" script))
@@ -65,7 +70,7 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (string-match-p "NELISP_STANDALONE_TARGET=macos-aarch64" script))
     (should (string-match-p "target/standalone-units/macos-aarch64" script))
     (should (string-match-p "sha256" script))
@@ -82,7 +87,7 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (string-match-p "NELISP_STANDALONE_TARGET=linux-x86_64" script))
     (should (string-match-p "target/standalone-units/linux-x86_64" script))
     (should (string-match-p "sha256" script))
@@ -99,7 +104,7 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (string-match-p "NELISP_STANDALONE_TARGET=linux-x86_64" script))
     (should (string-match-p "target/nelisp" script))
     (should (string-match-p "file arg with spaces" script))
@@ -122,7 +127,7 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (string-match-p "--emacs" script))
     (should (string-match-p "--smoke" script))
     (should (string-match-p "--list" script))
@@ -144,7 +149,7 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (string-match-p "NELISP_STANDALONE_TARGET=macos-aarch64" script))
     (should (string-match-p "target/nelisp" script))
     (should (string-match-p "file arg with spaces" script))
@@ -167,7 +172,7 @@
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (string-match-p "SELECTOR=\"non-windows\"" script))
     (should (string-match-p "EXPECTED_COUNT=12" script))
     (should (string-match-p "EXPECTED_COUNT=318" script))
@@ -191,7 +196,7 @@
          (count (nelisp-standalone-parallel-posix-test--count-darwin-os-tests
                  test-text)))
     (should (file-exists-p script-path))
-    (should (file-executable-p script-path))
+    (should (nelisp-standalone-parallel-posix-test--executable-or-windows-p script-path))
     (should (= count 36))
     (should (string-match-p "NELISP_MACOS_OS_SELECTOR" script))
     (should (string-match-p "test/nelisp-stdlib-os-test.el" script))

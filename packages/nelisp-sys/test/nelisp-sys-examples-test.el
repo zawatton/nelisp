@@ -39,6 +39,11 @@
         (end-of-file nil))
       (nreverse forms))))
 
+(defun nelisp-sys-examples-test--linux-x86_64-host-p ()
+  "Return non-nil when the host can link and run default Linux ELF examples."
+  (and (eq system-type 'gnu/linux)
+       (string-prefix-p "x86_64" system-configuration)))
+
 ;;; Analysis-only gate (no toolchain needed).
 
 (ert-deftest nelisp-sys-examples-all-analyze ()
@@ -54,7 +59,9 @@
 
 (ert-deftest nelisp-sys-example-factorial ()
   "nl_fact(5) returns 120 (5! = 120, fits in exit code 0-255)."
-  (skip-unless (and (nelisp-sys-adapter-available-p) (executable-find "cc")))
+  (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-examples-test--linux-x86_64-host-p)
+                    (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-fact" t))
          (obj (expand-file-name "factorial.o" tmp))
          (cfile (expand-file-name "harness.c" tmp))
@@ -75,7 +82,9 @@
 
 (ert-deftest nelisp-sys-example-max3 ()
   "nl_max3(3,9,7) returns 9."
-  (skip-unless (and (nelisp-sys-adapter-available-p) (executable-find "cc")))
+  (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-examples-test--linux-x86_64-host-p)
+                    (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-max3" t))
          (obj (expand-file-name "max3.o" tmp))
          (cfile (expand-file-name "harness.c" tmp))
@@ -96,7 +105,9 @@
 
 (ert-deftest nelisp-sys-example-gcd ()
   "nl_gcd(48,36) returns 12."
-  (skip-unless (and (nelisp-sys-adapter-available-p) (executable-find "cc")))
+  (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-examples-test--linux-x86_64-host-p)
+                    (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-gcd" t))
          (obj (expand-file-name "gcd.o" tmp))
          (cfile (expand-file-name "harness.c" tmp))
@@ -117,7 +128,9 @@
 
 (ert-deftest nelisp-sys-example-point ()
   "nl_point_sum({3,4}) returns 7."
-  (skip-unless (and (nelisp-sys-adapter-available-p) (executable-find "cc")))
+  (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-examples-test--linux-x86_64-host-p)
+                    (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-point" t))
          (obj (expand-file-name "point.o" tmp))
          (cfile (expand-file-name "harness.c" tmp))

@@ -125,6 +125,7 @@
 (declare-function nl-syscall-close          "ext:nelisp-runtime" (fd))
 (declare-function nl-syscall-write          "ext:nelisp-runtime" (fd buf))
 (declare-function nl-syscall-read           "ext:nelisp-runtime" (fd nbytes))
+(declare-function nelisp--apply            "nelisp-eval" (fn args))
 
 (defun nelisp-process--rust-ffi-available-p ()
   "Return non-nil iff the Phase 7.5 Rust FFI bridge is bound.
@@ -496,6 +497,20 @@ torn down so no probe ever sees a half-dead handle."
   "Drain pending output from WRAP's host process for up to SECONDS."
   (accept-process-output (nelisp-process-host-proc wrap) seconds))
 
+(defun nelisp-process--sync-exited-host (wrap)
+  "Mirror host exit state into WRAP when the sentinel has not run yet.
+Some hosts can report `process-live-p' nil before the process sentinel
+has dispatched in batch mode.  Keep wait/delete paths deterministic by
+performing the same cleanup the sentinel would do."
+  (when (nelisp-process-p wrap)
+    (let ((host (nelisp-process-host-proc wrap)))
+      (when (and (processp host)
+                 (not (process-live-p host)))
+        (setf (nelisp-process-status wrap) (process-status host)
+              (nelisp-process-exit-code wrap) (process-exit-status host))
+        (nelisp-process--unregister-eventloop wrap))))
+  wrap)
+
 (defun nelisp-process-wait-for-exit (wrap &optional timeout)
   "Block until WRAP exits or TIMEOUT (seconds, default 5) elapses.
 Returns the exit status or nil on timeout."
@@ -504,6 +519,7 @@ Returns the exit status or nil on timeout."
                 (< (float-time) deadline))
       (nelisp-process-accept-output wrap 0.05))
     (when (not (nelisp-process-live-p wrap))
+      (nelisp-process--sync-exited-host wrap)
       (nelisp-process-exit-code wrap))))
 
 ;; ---------------------------------------------------------------------

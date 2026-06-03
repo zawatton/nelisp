@@ -1018,7 +1018,8 @@ the multibyte → write-region byte-doubling regression."
                  (size (file-attribute-size attrs))
                  (modes (file-modes path)))
             (should (>= size (* 4 1024)))
-            (should (= (logand modes #o111) #o111))))
+            (unless (memq system-type '(windows-nt ms-dos))
+              (should (= (logand modes #o111) #o111)))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-elf-write-benchmark-100kb-under-2sec ()

@@ -69,6 +69,7 @@
 
 (ert-deftest nelisp-standalone-tarball-build-script-usage-is-checked-before-build ()
   "The POSIX tarball builder rejects usage errors before invoking make."
+  (skip-unless (not (memq system-type '(windows-nt ms-dos))))
   (pcase-let ((`(,help-status . ,help-out)
                (nelisp-standalone-tarball-test--call-script "--help"))
               (`(,missing-status . ,missing-out)

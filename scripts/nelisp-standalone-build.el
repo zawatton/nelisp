@@ -377,7 +377,7 @@ standalone units can call each other."
          (s (make-string n 0)))
     (dotimes (i n)
       (aset s i (string-to-number (substring hex (* i 2) (+ (* i 2) 2)) 16)))
-    (string-make-unibyte s)))
+    (encode-coding-string s 'no-conversion t)))
 
 (defun nelisp-standalone--unit-cache-encode (unit)
   "Encode UNIT for stable ASCII cache storage.
@@ -2839,17 +2839,19 @@ x16=1 and SVC #0x80."
 ;;;###autoload
 (defun nelisp-standalone-compile-chunk ()
   "Compile this worker's slice of the cacheable units to the cache (NO link).
-Reads NELISP_CHUNK_IDX / NELISP_CHUNK_N from the environment; a worker takes the
-cacheable manifest positions where (mod POS N) == IDX, skipping :start (synthesized)
-and :driver (always recompiled at link time).  Concurrency-safe: each unit writes
-its own NAME.unit file, so N processes never contend.  Used by the multi-process
-parallel build (`tools/build-standalone-parallel.sh' on POSIX and
+Reads NELISP_CHUNK_IDX / NELISP_CHUNK_N from the environment; a
+worker takes the cacheable manifest positions where (mod POS N) == IDX,
+skipping :start (synthesized) and :driver (always recompiled at link
+time).  Concurrency-safe: each unit writes its own NAME.unit file, so
+N processes never contend.  Used by the multi-process parallel build
+(`tools/build-standalone-parallel.sh' on POSIX and
 `tools/build-standalone-parallel.ps1' on Windows).
 
-NOTE: for the current 37-unit set the per-unit compile cost (~0.4s total) is far
-below the per-process emacs startup + module-load cost (~4s), so the serial build
-is faster.  Parallelism pays off only once per-unit compilation dominates startup
-(e.g. many more / much heavier units)."
+NOTE: for the current 37-unit set the per-unit compile cost (~0.4s
+total) is far below the per-process emacs startup + module-load cost
+(~4s), so the serial build is faster.  Parallelism pays off only once
+per-unit compilation dominates startup (e.g. many more / much heavier
+units)."
   (let* ((idx (string-to-number (or (getenv "NELISP_CHUNK_IDX") "0")))
          (n   (max 1 (string-to-number (or (getenv "NELISP_CHUNK_N") "1"))))
          (pos 0))
@@ -3011,11 +3013,12 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
     "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join" "fork-spawn")
-  "Builtin names installed into the reader binary's mirror; each is dispatched by
-the pure-elisp `nelisp_apply_function' (see `nelisp-standalone--applyfn-source').
-Names > 8 bytes (e.g. \"make-hash-table\") require the full-length name-buffer
-install in `nelisp-standalone--reader-driver-source' + the `sexp-name-eq' dispatch
-arm in `nelisp-standalone--applyfn-dispatch-table'.")
+  "Builtin names installed into the reader binary's mirror.
+Each is dispatched by the pure-elisp `nelisp_apply_function' (see
+`nelisp-standalone--applyfn-source').  Names > 8 bytes (for example
+\"make-hash-table\") require the full-length name-buffer install in
+`nelisp-standalone--reader-driver-source' plus the `sexp-name-eq'
+dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 
 (defconst nelisp-standalone--reader-read-cap 4194304
   "4 MiB read cap for the file-load path (plenty for any single .el).")
@@ -3231,14 +3234,14 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
 (defun nelisp-standalone--reader-driver-source ()
   "DUAL-MODE reader driver (M7 file-load + M8 multi-form loop).
 Takes the entry stack pointer SP; reads argv[1] = (ptr-read-u64 sp 16):
-  argv[1] == 0  (no file arg, e.g. `make standalone-reader-test') -> use the
-                EMBEDDED NELISP_SRC via `sexp-write-str-lit';
-  argv[1] != 0  -> open+read that file through target OS helpers and wrap the
-                bytes via `nl_alloc_str'.
-Then the SAME multi-form parse+eval loop runs `src'.  argc==1 => argv[1]==NULL==0
-(argv is NULL-terminated) so the check is reliable.  Each builtin name installs
-through a fresh, full-length arena buffer so `nl_install_one' never aliases a
-reused buffer and >8-byte names install correctly."
+  argv[1] == 0  use the embedded NELISP_SRC via `sexp-write-str-lit';
+  argv[1] != 0  open+read that file through target OS helpers and
+                wrap the bytes via `nl_alloc_str'.
+Then the same multi-form parse+eval loop runs `src'.  argc==1 means
+argv[1]==NULL==0 (argv is NULL-terminated), so the check is reliable.
+Each builtin name installs through a fresh, full-length arena buffer so
+`nl_install_one' never aliases a reused buffer and >8-byte names install
+correctly."
   `(seq
     ,@(nelisp-standalone--reader-os-source-forms)
     (defun nl_cstr_len_loop (ptr n)
@@ -3280,6 +3283,12 @@ reused buffer and >8-byte names install correctly."
     ,(nelisp-standalone--copy-lit-defun
       'nl_runtime_image_success_suffix
       "0\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_runtime_image_dump_prefix
+      ";;; nelisp-runtime-image source-v1\n(progn\n")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_runtime_image_dump_suffix
+      ")\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_eval_prefix
       "(let ((v (progn\n")
@@ -3341,6 +3350,20 @@ reused buffer and >8-byte names install correctly."
            (setq off (nl_cstr_copy_into form_ptr fbuf off))
            (ptr-write-u8 fbuf off 10)
            (nl_runtime_image_copy_argv_forms sp argc (+ i 1) fbuf (+ off 1))))))
+    (defun nl_runtime_image_dump_source (sp argc fbuf)
+      (let* ((off (nl_runtime_image_dump_prefix fbuf 0)))
+        (seq
+         (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
+         (nl_runtime_image_dump_suffix fbuf off))))
+    (defun nl_runtime_image_write_dump (sp argc fbuf)
+      (if (> argc 2)
+          (let* ((image_path (ptr-read-u64 sp 24))
+                 (len (nl_runtime_image_dump_source sp argc fbuf))
+                 (h (nl_os_open_write_truncate image_path))
+                 (n (nl_os_write_file_handle h fbuf len)))
+            (nl_seq2 (nl_os_close_handle h)
+                     (if (= n len) 0 1)))
+        (seq (nl_cli_write_help fbuf) 2)))
     (defun nl_runtime_image_read_image_into_source_buf (sp fbuf)
       (let* ((image_path (ptr-read-u64 sp 24))
              (n (nl_os_read_file_cpath
@@ -3596,6 +3619,8 @@ reused buffer and >8-byte names install correctly."
              (if (= (ptr-read-u64 268435464 0) 0)
                  0
                (- (ptr-read-u64 268435464 0) 1)))))
+         ((= (nl_cstr_eq_dump_runtime_image path) 1)
+          (nl_runtime_image_write_dump sp0 argc fbuf))
          (t
           (seq
            ;; --- source selection: embedded vs. file (M7 dual mode) ---
@@ -3970,12 +3995,13 @@ always return 0, so `signal' flows to the builtin applyfn (bf_signal) instead of
   "Rc-correct `apply' handler (non-symbol resolve arm forces rc 0).")
 
 (defun nelisp-standalone--patch-combiner-apply (src)
-  "Return combiner-apply SRC (a `(seq (defun ...) ...)') with nl_apply_do_fset
-swapped for `nelisp-standalone--reader-do-fset-fixed' (M3), the `apply' splice
-helpers (`nl_apply_list_init' / `nl_apply_list_append' / `nl_apply_do_apply')
-swapped for their rc-correct variants, AND `nl_apply_deferred_signal' neutralised
-(WAVE-2 PATCH 3), so condition-case can trap `signal'.  All patches operate on
-the same combiner-apply source.  Keeps lisp/ pristine."
+  "Return patched combiner-apply SRC.
+SRC is a `(seq (defun ...) ...)'.  This swaps nl_apply_do_fset for
+`nelisp-standalone--reader-do-fset-fixed' (M3), swaps the `apply'
+splice helpers for their rc-correct variants, and neutralises
+`nl_apply_deferred_signal' (WAVE-2 PATCH 3), so condition-case can trap
+`signal'.  All patches operate on the same combiner-apply source.  Keeps
+lisp/ pristine."
   (nelisp-standalone--patch-combiner-apply-deferred-signal
    (cons (car src)
          (mapcar (lambda (form)

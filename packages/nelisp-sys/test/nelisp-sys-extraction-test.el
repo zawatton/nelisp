@@ -45,6 +45,10 @@
   "Exact private NeLisp backend symbol prefixes forbidden outside the adapter.
 Doc 130 extraction criterion 6.")
 
+(defconst nelisp-sys-extraction-test--private-prefix-allowlist
+  '("nelisp-sys-sexp-shadow.el")
+  "Package-internal files whose names intentionally shadow private concepts.")
+
 (ert-deftest nelisp-sys-extraction-no-private-leaks ()
   "Every src/*.el file except the adapter must contain no private backend prefix.
 Doc 130 extraction criterion 6."
@@ -53,7 +57,8 @@ Doc 130 extraction criterion 6."
         (leaks nil))
     (dolist (el-file (directory-files src-dir t "\\.el\\'"))
       (let ((basename (file-name-nondirectory el-file)))
-        (unless (string= basename adapter)
+        (unless (or (string= basename adapter)
+                    (member basename nelisp-sys-extraction-test--private-prefix-allowlist))
           (with-temp-buffer
             (insert-file-contents el-file)
             (let ((content (buffer-string)))

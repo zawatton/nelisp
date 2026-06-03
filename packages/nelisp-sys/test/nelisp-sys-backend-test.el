@@ -20,6 +20,11 @@
   (nelisp-sys-backend-lower-module
    (nelisp-sys-frontend-parse-module forms) nelisp-sys-backend-test--lx))
 
+(defun nelisp-sys-backend-test--linux-x86_64-host-p ()
+  "Return non-nil when the host can link and run the default Linux ELF object."
+  (and (eq system-type 'gnu/linux)
+       (string-prefix-p "x86_64" system-configuration)))
+
 ;;; Lowering (no toolchain needed).
 
 (ert-deftest nelisp-sys-backend-lower-add ()
@@ -281,6 +286,7 @@ the same primitive the reader's Float-token path calls."
 
 (ert-deftest nelisp-sys-backend-emit-object-and-call-from-c ()
   (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-backend-test--linux-x86_64-host-p)
                     (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-e2e" t))
          (obj (expand-file-name "nl_add.o" tmp))
@@ -307,6 +313,7 @@ the same primitive the reader's Float-token path calls."
   "Stage 130.4 e2e: a struct-pointer reader compiles and returns the right
 value when called from C with a real struct."
   (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-backend-test--linux-x86_64-host-p)
                     (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-d2" t))
          (obj (expand-file-name "d2.o" tmp))
@@ -337,6 +344,7 @@ int main(void){struct point p={3,4};return (int)nl_distance2(&p);}
 length, and setter compile and behave correctly when called from C with a
 real header over a u32 array."
   (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-backend-test--linux-x86_64-host-p)
                     (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-slice" t))
          (obj (expand-file-name "slice.o" tmp))
@@ -380,6 +388,7 @@ int main(void){
   "ptr-read-sN e2e: a signed slice element round-trips through C with its
 sign preserved (a negative i32 must come back negative, not zero-extended)."
   (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-backend-test--linux-x86_64-host-p)
                     (executable-find "cc")))
   (let* ((tmp (make-temp-file "nelisp-sys-sgn" t))
          (obj (expand-file-name "sgn.o" tmp))

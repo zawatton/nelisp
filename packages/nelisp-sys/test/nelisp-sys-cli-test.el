@@ -31,10 +31,20 @@
   ;; unknown variable x — analyze must reject this
   "(sys:defun f () i32 () x)\n")
 
+(defun nelisp-sys-cli-test--posix-host-p ()
+  "Return non-nil when the POSIX shell CLI wrapper can be executed directly."
+  (not (memq system-type '(windows-nt ms-dos))))
+
+(defun nelisp-sys-cli-test--linux-x86_64-host-p ()
+  "Return non-nil on the host that can link the default Linux ELF object."
+  (and (eq system-type 'gnu/linux)
+       (string-prefix-p "x86_64" system-configuration)))
+
 ;;; Tests.
 
 (ert-deftest nelisp-sys-cli-analyze-ok ()
   "analyze on a valid .nl file exits 0."
+  (skip-unless (nelisp-sys-cli-test--posix-host-p))
   (let ((tmp (make-temp-file "nelisp-sys-cli-ok" nil ".nl")))
     (unwind-protect
         (progn
@@ -46,6 +56,7 @@
 
 (ert-deftest nelisp-sys-cli-analyze-rejects ()
   "analyze on an invalid .nl file exits nonzero."
+  (skip-unless (nelisp-sys-cli-test--posix-host-p))
   (let ((tmp (make-temp-file "nelisp-sys-cli-bad" nil ".nl")))
     (unwind-protect
         (progn
@@ -57,7 +68,8 @@
 
 (ert-deftest nelisp-sys-cli-compile-object ()
   "compile produces OUT.o and OUT.o.abi; the object links and runs returning 42."
-  (skip-unless (executable-find "cc"))
+  (skip-unless (and (nelisp-sys-cli-test--linux-x86_64-host-p)
+                    (executable-find "cc")))
   (let* ((tmpdir (make-temp-file "nelisp-sys-cli-compile" t))
          (src    (expand-file-name "add.nl" tmpdir))
          (obj    (expand-file-name "add.o"  tmpdir))

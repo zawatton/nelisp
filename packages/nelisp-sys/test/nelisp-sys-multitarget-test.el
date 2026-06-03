@@ -20,6 +20,11 @@
       (:abi c :export "nl_add" :alloc none) (+ a b)))
   "A minimal exported C-ABI integer function used across targets.")
 
+(defun nelisp-sys-mt-test--linux-x86_64-host-p ()
+  "Return non-nil when the host can link and run the Linux static library."
+  (and (eq system-type 'gnu/linux)
+       (string-prefix-p "x86_64" system-configuration)))
+
 ;;; 132.5 — per-target ABI metadata snapshot (no toolchain).
 
 (ert-deftest nelisp-sys-mt-abi-metadata-all-targets ()
@@ -75,6 +80,7 @@
 
 (ert-deftest nelisp-sys-mt-static-lib-link-from-c ()
   (skip-unless (and (nelisp-sys-adapter-available-p)
+                    (nelisp-sys-mt-test--linux-x86_64-host-p)
                     (executable-find "cc")
                     (executable-find "ar")))
   (let* ((dir (make-temp-file "nelisp-sys-lib" t))
