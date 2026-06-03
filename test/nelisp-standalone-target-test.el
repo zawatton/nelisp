@@ -95,6 +95,16 @@
                     (flatten-tree
                      (nelisp-standalone--target-arena-source))))))
 
+(ert-deftest nelisp-standalone-target-windows-arena-commits-256m ()
+  "Windows arena avoids a 1 GiB upfront commit in VirtualAlloc."
+  (let ((nelisp-standalone--target 'windows-x86_64))
+    (should (member #x10000000
+                    (flatten-tree
+                     (nelisp-standalone--target-arena-source))))
+    (should-not (member #x40000000
+                        (flatten-tree
+                         (nelisp-standalone--target-arena-source))))))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

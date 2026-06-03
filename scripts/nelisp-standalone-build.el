@@ -321,11 +321,13 @@ or the toolchain is newer than the cached object."
     (defun nl_dealloc_bytes (_p _s _a) 1)
     (defun nl_quit_flag_ptr () 268435464)))
 
-(defconst nelisp-standalone--windows-arena-size #x40000000
+(defconst nelisp-standalone--windows-arena-size #x10000000
   "Windows standalone fixed arena size.
 The arena still starts at 0x10000000 for the existing pointer constants, but it
-must stop below the PE image base 0x140000000.  1 GiB is enough for current
-reader/eval gates and avoids colliding with the loaded image.")
+must stop below the PE image base 0x140000000.  Keep the committed mapping at
+256 MiB: Windows `VirtualAlloc' with MEM_COMMIT charges the full range up front,
+unlike Linux's demand-paged mmap, and 1 GiB can fail on normal developer
+machines before the first metadata write.")
 
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc."
