@@ -288,6 +288,12 @@
   "Windows standalone reserves a Linux-trampoline-sized native stack."
   (should (= nelisp-standalone--windows-stack-reserve #x40000000)))
 
+(ert-deftest nelisp-standalone-target-macos-uses-bounded-native-stack ()
+  "macOS standalone uses an explicit stack that Darwin can mmap reliably."
+  (should (= nelisp-standalone--macos-native-stack-size #x08000000))
+  (should (< nelisp-standalone--macos-native-stack-size
+             nelisp-standalone--native-stack-size)))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here

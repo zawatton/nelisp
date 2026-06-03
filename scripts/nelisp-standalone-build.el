@@ -2607,6 +2607,12 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
 1 GiB, virtual-only (anonymous); must stay < 2^31 so SIZE / SIZE-16 fit the
 32-bit immediate / displacement fields in the hand-assembled `_start'.")
 
+(defconst nelisp-standalone--macos-native-stack-size #x08000000
+  "Size (bytes) of the macOS mmap'd native stack.
+Darwin backs anonymous mappings more eagerly than Linux's demand-paged stack
+trampoline, so macOS uses a smaller explicit stack while still exceeding the
+system default stack enough for standalone-reader initialization.")
+
 (defun nelisp-standalone--le32 (n)
   "N as a 4-byte little-endian list (for hand-assembled imm32/disp32 fields)."
   (list (logand n #xff) (logand (ash n -8) #xff)
@@ -2683,7 +2689,7 @@ this trampoline first snapshots argc and argv[0..3] on the original stack,
 switches onto a large anonymous mmap'd native stack, copies the snapshot into a
 fresh driver stack block, and passes that block to `driver'.  It then exits
 through the Darwin raw syscall ABI with x16=1 and SVC #0x80."
-  (let* ((size nelisp-standalone--native-stack-size)
+  (let* ((size nelisp-standalone--macos-native-stack-size)
          (buf (nelisp-asm-arm64-make-buffer))
          (reloc-off nil))
     (nelisp-asm-arm64-sub-imm buf 'sp 'sp 48)
