@@ -1049,9 +1049,11 @@ argument (reachability + in-arena bounds checks).")
     ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
     ((:u8 "slen") . (seq (nl_bi_slen args out) 0))
     ;; REPL/process termination.  Store code+1 so slot 0 remains "no exit".
-    ((:u8 "exit") . (let* ((code (if (= (ptr-read-u64 args 0) 7)
-                                     (ptr-read-u64 (nl_cons_car_ptr args) 8)
-                                   0)))
+    ((:u8 "exit") . (let* ((code (if (= args 0)
+                                     0
+                                   (if (= (ptr-read-u64 args 0) 7)
+                                       (ptr-read-u64 (nl_cons_car_ptr args) 8)
+                                     0))))
                        (seq (ptr-write-u64 268435464 0 (+ code 1))
                             (wf_write_int out code)))))
   "Unified (MATCH . IMPL) builtin dispatch table for `nelisp_apply_function'.
