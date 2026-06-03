@@ -257,6 +257,26 @@
                  '(ptr-write-u64 sp0 32 slot2)
                  forms))))))
 
+(ert-deftest nelisp-standalone-target-reader-repl-prelude-avoids-stack-literal ()
+  "REPL prelude is copied through the arena buffer, not a huge stack literal."
+  (let* ((forms (nelisp-standalone--reader-repl-prelude-forms
+                 'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+         (flat (flatten-tree forms))
+         (copy-def (nelisp-standalone--copy-lit-u64-defun 'probe "abcdefghi"))
+         (copy-flat (flatten-tree copy-def))
+         (chunk-defs (nelisp-standalone--copy-lit-u64-defuns
+                      'big-probe "abcdefghijklmnopqr" 8))
+         (chunk-flat (flatten-tree chunk-defs)))
+    (should (memq 'nl_repl_prelude_source flat))
+    (should (memq 'nl_alloc_str flat))
+    (should-not (memq 'sexp-write-str-lit flat))
+    (should (memq 'ptr-write-u64 copy-flat))
+    (should (memq 'ptr-write-u8 copy-flat))
+    (should (memq 'big-probe chunk-flat))
+    (should (memq 'big-probe_chunk_000 chunk-flat))
+    (should (memq 'big-probe_chunk_001 chunk-flat))
+    (should (memq 'big-probe_chunk_002 chunk-flat))))
+
 (ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
   "Windows arena source replaces Linux mmap with VirtualAlloc."
   (let ((nelisp-standalone--target 'windows-x86_64))

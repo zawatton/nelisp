@@ -2190,13 +2190,13 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
     (defun nl_bi_rf_withfd (fd buf out)
       (if (< fd 0)
           (wf_copy32_strnil out)
-        (let* ((n (nl_os_read_file_handle fd buf 4194304)))
+        (let* ((n (nl_os_read_file_handle fd buf 1048576)))
           (nl_seq2 (nl_os_close_handle fd)
                    (nl_seq2 (nl_alloc_str buf (if (< n 0) 0 n) out) 0)))))
     (defun nl_bi_read_file (args out)
       (let* ((path_sx (wf_arg_ptr args 0)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
-               (buf (alloc-bytes 4194304 1))
+               (buf (alloc-bytes 1048576 1))
                (fd (nl_os_open_read cpath)))
           (nl_bi_rf_withfd fd buf out))))
     (defun nl_bi_slen (args out)
@@ -3104,8 +3104,13 @@ Each is dispatched by the pure-elisp `nelisp_apply_function' (see
 `nelisp-standalone--reader-driver-source' plus the `sexp-name-eq'
 dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 
-(defconst nelisp-standalone--reader-read-cap 4194304
-  "4 MiB read cap for the file-load path (plenty for any single .el).")
+(defconst nelisp-standalone--reader-read-cap 1048576
+  "1 MiB read cap for the file-load path.
+
+The read buffer is arena allocated and the standalone reader currently
+keeps GC disabled during large vendor loads.  A 4 MiB buffer consumed
+the 8 GiB arena after ~253 persistent-REPL file loads even though the
+largest current nelisp-emacs vendor file is below 900 KiB.")
 
 (defconst nelisp-standalone--windows-reader-imports
   (list (cons "KERNEL32.dll"
@@ -3128,11 +3133,13 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                        nelisp-standalone--repo-root))
     (buffer-string)))
 
-(defun nelisp-standalone--reader-repl-prelude-forms (src cursor result pool out
-                                                         ctx builtin-sym)
+(defun nelisp-standalone--reader-repl-prelude-forms (fbuf src cursor result pool
+                                                          out ctx builtin-sym)
   "Return Phase47 forms that prepare the standalone reader REPL environment."
-  `((sexp-write-str-lit ,src ,(nelisp-standalone--reader-repl-prelude-source))
-    (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym)))
+  `((let* ((n (nl_repl_prelude_source ,fbuf 0)))
+      (seq
+       (nl_alloc_str ,fbuf n ,src)
+       (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym)))))
 
 (defun nelisp-standalone--runtime-image-command-src ()
   "Return embedded source implementing standalone-reader runtime-image commands."
@@ -3209,6 +3216,77 @@ from an 8-byte buffer."
        (seq
         ,@(nreverse forms)
         (+ off ,(length bytes))))))
+
+(defun nelisp-standalone--copy-lit-u64-defun (name string)
+  "Return a Phase47 defun copying literal STRING into DST at OFF.
+This chunked variant is for large literals copied into an arena buffer; it
+avoids the aarch64 `sexp-write-str-lit' path that stages the whole literal on
+the native stack."
+  (let* ((bytes (encode-coding-string string 'utf-8 t))
+         (len (length bytes))
+         (full-chunks (/ len 8))
+         (tail-start (* full-chunks 8))
+         (forms nil))
+    (dotimes (i full-chunks)
+      (let ((word 0))
+        (dotimes (j 8)
+          (setq word (logior word
+                             (ash (aref bytes (+ (* i 8) j)) (* j 8)))))
+        (push `(ptr-write-u64 dst (+ off ,(* i 8)) ,word) forms)))
+    (let ((i tail-start))
+      (while (< i len)
+        (push `(ptr-write-u8 dst (+ off ,i) ,(aref bytes i)) forms)
+        (setq i (1+ i))))
+    `(defun ,name (dst off)
+       (seq
+        ,@(nreverse forms)
+        (+ off ,len)))))
+
+(defun nelisp-standalone--copy-lit-u64-defuns (name string &optional chunk-bytes)
+  "Return Phase47 defuns copying large literal STRING into DST at OFF.
+The generated NAME defun delegates to bounded chunk defuns so host-side walkers
+never recurse through one enormous `seq' cdr chain."
+  (let* ((bytes (encode-coding-string string 'utf-8 t))
+         (len (length bytes))
+         (chunk-bytes (or chunk-bytes 2048))
+         (defs nil)
+         (calls nil)
+         (start 0)
+         (idx 0))
+    (while (< start len)
+      (let* ((chunk-name (intern (format "%s_chunk_%03d" name idx)))
+             (end (min len (+ start chunk-bytes)))
+             (forms nil)
+             (full-chunks (/ (- end start) 8))
+             (tail-start (+ start (* full-chunks 8))))
+        (dotimes (i full-chunks)
+          (let ((word 0)
+                (abs (+ start (* i 8))))
+            (dotimes (j 8)
+              (setq word (logior word
+                                 (ash (aref bytes (+ abs j)) (* j 8)))))
+            (push `(ptr-write-u64 dst (+ off ,(* i 8)) ,word) forms)))
+        (let ((pos tail-start))
+          (while (< pos end)
+            (push `(ptr-write-u8 dst (+ off ,(- pos start))
+                                  ,(aref bytes pos))
+                  forms)
+            (setq pos (1+ pos))))
+        (push `(defun ,chunk-name (dst off)
+                 (seq
+                  ,@(nreverse forms)
+                  (+ off ,(- end start))))
+              defs)
+        (push `(setq off (,chunk-name dst off)) calls)
+        (setq start end
+              idx (1+ idx))))
+    (append
+     (nreverse defs)
+     (list
+      `(defun ,name (dst off)
+         (seq
+          ,@(nreverse calls)
+          off))))))
 
 (defun nelisp-standalone--reader-install-builtins-forms ()
   "Phase47 forms that install every `nelisp-standalone--reader-builtins' name
@@ -3471,6 +3549,9 @@ correctly."
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_prompt
       "nelisp> ")
+    ,@(nelisp-standalone--copy-lit-u64-defuns
+      'nl_repl_prelude_source
+      (nelisp-standalone--reader-repl-prelude-source))
     (defun nl_runtime_image_command_p (ptr)
       (if (= (nl_cstr_eq_dump_runtime_image ptr) 1)
           1
@@ -3814,7 +3895,7 @@ correctly."
               2
             (seq
              ,@(nelisp-standalone--reader-repl-prelude-forms
-                'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+                'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
              (if (= (ptr-read-u64 268435464 0) 0)
                  0
@@ -4651,6 +4732,9 @@ guards the slot-pool floor directly without loading the full vendor file."
         (repl-out nil)
         (quiet-rc nil)
         (quiet-out nil)
+        (near-end-file (make-temp-file "nelisp-repl-near-end-" nil ".el"))
+        (near-end-rc nil)
+        (near-end-out nil)
         (bad-rc nil))
     (with-temp-buffer
       (insert stdin)
@@ -4679,6 +4763,26 @@ guards the slot-pool floor directly without loading the full vendor file."
     (unless (and (= quiet-rc 0)
                  (equal quiet-out "explicit\n"))
       (error "repl --no-print exit=%S stdout=%S" quiet-rc quiet-out))
+    (unwind-protect
+        (progn
+          (with-temp-file near-end-file
+            (insert "(setq near-end-ok 42)\n"))
+          (with-temp-buffer
+            (insert "(ptr-write-u64 268435456 0 8587837440)\n")
+            (insert (format "(if (= (length (rdf %S)) 22) (nelisp--write-stdout-bytes \"near-end-ok\\n\") (nelisp--write-stdout-bytes \"near-end-bad\\n\"))\n"
+                            near-end-file))
+            (insert "(exit)\n")
+            (setq near-end-rc
+                  (call-process-region (point-min) (point-max)
+                                       nelisp-standalone--reader-out
+                                       t t nil
+                                       "repl" "--no-prompt" "--no-print"))
+            (setq near-end-out (buffer-string)))
+          (unless (and (= near-end-rc 0)
+                       (equal near-end-out "near-end-ok\n"))
+            (error "repl near-end rdf exit=%S stdout=%S"
+                   near-end-rc near-end-out)))
+      (ignore-errors (delete-file near-end-file)))
     (with-temp-buffer
       (setq bad-rc
             (call-process nelisp-standalone--reader-out nil t nil
