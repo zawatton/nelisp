@@ -883,6 +883,292 @@
     (should (equal call
                    (list "libc" "htons" [:uint16 :uint16] #x1234)))))
 
+(ert-deftest nelisp-stdlib-os-open-linux-keeps-public-flags ()
+  "Linux open passes public Linux-shaped flags directly to libc open."
+  (let ((call nil)
+        (flags (logior nelisp-os-O-WRONLY
+                       nelisp-os-O-CREAT
+                       nelisp-os-O-TRUNC
+                       nelisp-os-O-APPEND
+                       nelisp-os-O-CLOEXEC)))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 7)))
+      (let ((system-type 'gnu/linux))
+        (should (= (nelisp-os-open "/tmp/nelisp-linux" flags #o644) 7))))
+    (should (equal call
+                   (list "libc" "open"
+                         [:sint32 :string :sint32 :uint32]
+                         (list "/tmp/nelisp-linux" flags #o644))))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-linux-keeps-public-status-flags ()
+  "Linux F_SETFL/F_GETFL keep Linux-shaped status flags."
+  (let ((calls nil)
+        (flags (logior nelisp-os-O-NONBLOCK nelisp-os-O-APPEND)))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (if (= (cadr args) nelisp-os-F-GETFL)
+                     flags
+                   0))))
+      (let ((system-type 'gnu/linux)
+            (nelisp-os--use-direct-syscall nil))
+        (should (= (nelisp-os-fcntl 7 nelisp-os-F-SETFL flags) 0))
+        (should (= (nelisp-os-fcntl 7 nelisp-os-F-GETFL 0) flags))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "fcntl"
+                          [:sint32 :sint32 :sint32 :sint64]
+                          (list 7 nelisp-os-F-SETFL flags))
+                    (list "libc" "fcntl"
+                          [:sint32 :sint32 :sint32 :sint64]
+                          (list 7 nelisp-os-F-GETFL 0)))))))
+
+(ert-deftest nelisp-stdlib-os-socket-linux-keeps-domain-and-type-flags ()
+  "Linux socket passes AF/type values, including SOCK_* flags, directly."
+  (let ((call nil)
+        (type (logior nelisp-os-SOCK-STREAM
+                      nelisp-os-SOCK-NONBLOCK
+                      nelisp-os-SOCK-CLOEXEC)))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 55)))
+      (let ((system-type 'gnu/linux)
+            (nelisp-os--use-direct-syscall nil))
+        (should (= (nelisp-os-socket
+                    nelisp-os-AF-INET6 type nelisp-os-IPPROTO-TCP)
+                   55))))
+    (should (equal call
+                   (list "libc" "socket"
+                         [:sint32 :sint32 :sint32 :sint32]
+                         (list nelisp-os-AF-INET6 type
+                               nelisp-os-IPPROTO-TCP))))))
+
+(ert-deftest nelisp-stdlib-os-sockopts-linux-use-public-constants ()
+  "Linux int-valued socket options keep public Linux constants."
+  (let ((calls nil)
+        (freed nil)
+        (writes nil)
+        (allocs (list 3000 4000 5000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= ptr 4000))
+                 (should (= off 0))
+                 1))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'gnu/linux))
+        (should (= (nelisp-os-setsockopt-int
+                    8 nelisp-os-SOL-SOCKET nelisp-os-SO-REUSEADDR 1)
+                   0))
+        (should (= (nelisp-os-getsockopt-int
+                    8 nelisp-os-SOL-SOCKET nelisp-os-SO-REUSEADDR)
+                   1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "setsockopt"
+                          [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
+                          (list 8 nelisp-os-SOL-SOCKET
+                                nelisp-os-SO-REUSEADDR 3000 4))
+                    (list "libc" "getsockopt"
+                          [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                          (list 8 nelisp-os-SOL-SOCKET
+                                nelisp-os-SO-REUSEADDR 4000 5000)))))
+    (should writes)
+    (should (equal (sort freed #'<) '(3000 4000 5000)))))
+
+(ert-deftest nelisp-stdlib-os-sockaddr-in6-linux-uses-public-family ()
+  "Linux sockaddr_in6 encoders write the public AF_INET6 family value."
+  (let ((writes nil))
+    (cl-letf (((symbol-function 'nelisp-os-write-i16)
+               (lambda (buf off val)
+                 (push (list 'i16 buf off val) writes)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (buf off val)
+                 (push (list 'i32 buf off val) writes)))
+              ((symbol-function 'nelisp-os--htons) (lambda (v) v))
+              ((symbol-function 'nelisp-os--htonl) (lambda (v) v)))
+      (let ((system-type 'gnu/linux))
+        (nelisp-os--encode-sockaddr-in6
+         3000 '(0 0 0 0 0 0 0 1) 1234)
+        (nelisp-os--encode-sockaddr-in6-scoped
+         4000 '(0 0 0 0 0 0 0 1) 1234 0 2)))
+    (should (member (list 'i16 3000 0 nelisp-os-AF-INET6) writes))
+    (should (member (list 'i16 4000 0 nelisp-os-AF-INET6) writes))))
+
+(ert-deftest nelisp-stdlib-os-socketpair-linux-keeps-domain-and-type-flags ()
+  "Linux socketpair passes AF/type values, including SOCK_* flags, directly."
+  (let ((call nil)
+        (freed nil)
+        (type (logior nelisp-os-SOCK-STREAM
+                      nelisp-os-SOCK-NONBLOCK
+                      nelisp-os-SOCK-CLOEXEC)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (pcase off
+                   (0 17)
+                   (4 18)
+                   (_ (error "unexpected socketpair offset %S" off)))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'gnu/linux))
+        (should (equal (nelisp-os-socketpair
+                        nelisp-os-AF-INET6 type nelisp-os-IPPROTO-TCP)
+                       '(17 . 18)))))
+    (should (equal call
+                   (list "libc" "socketpair"
+                         [:sint32 :sint32 :sint32 :sint32 :pointer]
+                         (list nelisp-os-AF-INET6 type
+                               nelisp-os-IPPROTO-TCP 3000))))
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-linux-only-apis-use-linux-syscalls ()
+  "Linux-only fd APIs dispatch through the Linux syscall resolver."
+  (let ((calls nil))
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest args)
+                 (push args calls)
+                 (pcase (car args)
+                   ('pidfd_open 30)
+                   ('pidfd_send_signal 0)
+                   ('inotify_init1 31)
+                   ('inotify_rm_watch 0)
+                   ('eventfd2 32)
+                   ('timerfd_create 33)
+                   (_ (error "unexpected syscall %S" args))))))
+      (let ((system-type 'gnu/linux)
+            (nelisp-os--use-direct-syscall t))
+        (should (= (nelisp-os-pidfd-open 1234 nelisp-os-PIDFD-NONBLOCK) 30))
+        (should (= (nelisp-os-pidfd-send-signal 30 nelisp-os-SIGTERM 0) 0))
+        (should (= (nelisp-os-inotify-init nelisp-os-IN-NONBLOCK) 31))
+        (should (= (nelisp-os-inotify-rm-watch 31 1) 0))
+        (should (= (nelisp-os-eventfd 7 nelisp-os-EFD-NONBLOCK) 32))
+        (should (= (nelisp-os-timerfd-create
+                    nelisp-os-CLOCK-MONOTONIC nelisp-os-TFD-CLOEXEC)
+                   33))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list 'pidfd_open 1234 nelisp-os-PIDFD-NONBLOCK)
+                    (list 'pidfd_send_signal 30 nelisp-os-SIGTERM 0 0)
+                    (list 'inotify_init1 nelisp-os-IN-NONBLOCK)
+                    (list 'inotify_rm_watch 31 1)
+                    (list 'eventfd2 7 nelisp-os-EFD-NONBLOCK)
+                    (list 'timerfd_create
+                          nelisp-os-CLOCK-MONOTONIC
+                          nelisp-os-TFD-CLOEXEC))))))
+
+(ert-deftest nelisp-stdlib-os-sendmsg-fds-linux-uses-linux-cmsg-layout ()
+  "Linux sendmsg-fds uses the Linux LP64 msghdr/cmsghdr layout."
+  (let ((call nil)
+        (writes nil)
+        (payload nil)
+        (freed nil)
+        (allocs '(3000 4000 5000 6000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq payload (list ptr str))))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val) (push (list 'i64 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list 'i32 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 4)))
+      (let ((system-type 'gnu/linux))
+        (should (= (nelisp-os-sendmsg-fds 7 '(8 9) "data") 4))))
+    (should (equal payload '(3000 "data")))
+    (should (equal call
+                   (list "libc" "sendmsg"
+                         [:sint64 :sint32 :pointer :sint32]
+                         (list 7 6000 0))))
+    (should (equal (nreverse writes)
+                   (list
+                    (list 'i64 4000 0 3000)
+                    (list 'i64 4000 8 4)
+                    (list 'i64 5000 0 24)
+                    (list 'i32 5000 8 nelisp-os-SOL-SOCKET)
+                    (list 'i32 5000 12 nelisp-os-SCM-RIGHTS)
+                    (list 'i32 5000 16 8)
+                    (list 'i32 5000 20 9)
+                    (list 'i64 6000 0 0)
+                    (list 'i32 6000 8 0)
+                    (list 'i64 6000 16 4000)
+                    (list 'i64 6000 24 1)
+                    (list 'i64 6000 32 5000)
+                    (list 'i64 6000 40 24)
+                    (list 'i32 6000 48 0))))
+    (should (equal (sort freed #'<) '(3000 4000 5000 6000)))))
+
+(ert-deftest nelisp-stdlib-os-recvmsg-fds-linux-uses-linux-cmsg-layout ()
+  "Linux recvmsg-fds reads SCM_RIGHTS through the Linux LP64 cmsg layout."
+  (let ((call nil)
+        (writes nil)
+        (read-payload nil)
+        (freed nil)
+        (allocs '(3000 4000 5000 6000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val) (push (list 'i64 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list 'i32 ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-read-i64)
+               (lambda (ptr off)
+                 (pcase (list ptr off)
+                   (`(6000 40) 24)
+                   (`(5000 0) 20)
+                   (_ (error "unexpected recvmsg i64 read %S %S" ptr off)))))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (pcase (list ptr off)
+                   (`(5000 8) nelisp-os-SOL-SOCKET)
+                   (`(5000 12) nelisp-os-SCM-RIGHTS)
+                   (`(5000 16) 11)
+                   (_ (error "unexpected recvmsg i32 read %S %S" ptr off)))))
+              ((symbol-function 'nelisp-os--read-bytes-at)
+               (lambda (ptr off len)
+                 (setq read-payload (list ptr off len))
+                 "data"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 4)))
+      (let ((system-type 'gnu/linux))
+        (should (equal (nelisp-os-recvmsg-fds 7 1 16)
+                       (cons "data" '(11))))))
+    (should (equal read-payload '(3000 0 4)))
+    (should (equal call
+                   (list "libc" "recvmsg"
+                         [:sint64 :sint32 :pointer :sint32]
+                         (list 7 6000 0))))
+    (should (equal (nreverse writes)
+                   (list
+                    (list 'i64 4000 0 3000)
+                    (list 'i64 4000 8 16)
+                    (list 'i64 6000 0 0)
+                    (list 'i32 6000 8 0)
+                    (list 'i64 6000 16 4000)
+                    (list 'i64 6000 24 1)
+                    (list 'i64 6000 32 5000)
+                    (list 'i64 6000 40 24)
+                    (list 'i32 6000 48 0))))
+    (should (equal (sort freed #'<) '(3000 4000 5000 6000)))))
+
 (ert-deftest nelisp-stdlib-os-windows-open-flag-translation ()
   "Windows open flag translation preserves key POSIX-like modes."
   (should (= (nelisp-os--windows-open-access nelisp-os-O-RDONLY)
