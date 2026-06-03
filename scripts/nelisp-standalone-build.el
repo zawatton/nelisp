@@ -873,11 +873,6 @@ argument (reachability + in-arena bounds checks).")
                                      (ptr-read-u64 (nl_cons_car_ptr args) 8)
                                    0)))
                        (seq (ptr-write-u64 268435464 0 (+ code 1))
-                            (wf_write_int out code))))
-    ((:u8 "quit") . (let* ((code (if (= (ptr-read-u64 args 0) 7)
-                                     (ptr-read-u64 (nl_cons_car_ptr args) 8)
-                                   0)))
-                       (seq (ptr-write-u64 268435464 0 (+ code 1))
                             (wf_write_int out code)))))
   "Unified (MATCH . IMPL) builtin dispatch table for `nelisp_apply_function'.
 MATCH = (:u8 NAME) for <=8-byte u64-packed names, (:lit NAME) for full-length
@@ -2724,7 +2719,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
-    "exit" "quit"
+    "exit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
@@ -4017,6 +4012,7 @@ guards the slot-pool floor directly without loading the full vendor file."
                 "(hot)\n"
                 "(nelisp--eval-source-string \"(defun hot () 99)\")\n"
                 "(hot)\n"
+                "(condition-case e (signal 'quit nil) (quit 42))\n"
                 "(exit)\n"))
         (repl-rc nil)
         (repl-out nil)
@@ -4032,14 +4028,15 @@ guards the slot-pool floor directly without loading the full vendor file."
                                  "repl" "--no-prompt"))
       (setq repl-out (buffer-string)))
     (unless (and (= repl-rc 0)
-                 (equal repl-out "hot\n1\nhot\n42\nhot\n99\n"))
+                 (equal repl-out "hot\n1\nhot\n42\nhot\n99\n42\n"))
       (error "repl exit=%S stdout=%S" repl-rc repl-out))
     (with-temp-buffer
       (insert "(defun hot () 1)\n")
       (insert "(hot)\n")
+      (insert "(condition-case e (signal 'quit nil) (quit 42))\n")
       (insert "(nelisp--write-stdout-bytes \"explicit\\n\")\n")
       (insert "(hot)\n")
-      (insert "(quit)\n")
+      (insert "(exit)\n")
       (setq quiet-rc
             (call-process-region (point-min) (point-max)
                                  nelisp-standalone--reader-out
