@@ -114,6 +114,28 @@
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 
+(ert-deftest nelisp-standalone-parallel-posix-linux-selfhost-script ()
+  "The Linux self-host runner exposes the same selectable smoke harness shape."
+  (let* ((script-path
+          (expand-file-name "tools/selfhost-test.sh"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (script (nelisp-standalone-parallel-posix-test--read-file-text
+                  script-path)))
+    (should (file-exists-p script-path))
+    (should (file-executable-p script-path))
+    (should (string-match-p "--emacs" script))
+    (should (string-match-p "--smoke" script))
+    (should (string-match-p "--list" script))
+    (should (string-match-p "SMOKE_NAMES=(fact)" script))
+    (should (string-match-p "target/linux-smoke" script))
+    (should (string-match-p "nelisp-linux-selfhost-\\$name" script))
+    (should (string-match-p "\\[selfhost\\] PASS: \\$name -> exit 120"
+                            script))
+    (should (string-match-p "\\[selfhost\\] all PASS - Linux x86_64 self-host smoke OK"
+                            script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
+
 (ert-deftest nelisp-standalone-parallel-posix-macos-reader-script ()
   "The macOS reader smoke exercises the same short CLI and REPL surface."
   (let* ((script-path
@@ -219,7 +241,7 @@
     (should (string-match-p "tools/linux-os-compat-test.sh --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "Linux x86_64 ELF self-host smoke" script))
-    (should (string-match-p "EMACS=\"\\$EMACS\" tools/selfhost-test.sh"
+    (should (string-match-p "tools/selfhost-test.sh --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "Linux standalone parallel build" script))
     (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64"

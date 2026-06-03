@@ -56,7 +56,7 @@ tools/linux-os-compat-test.sh --emacs "$EMACS"
 
 echo ""
 echo "--- Linux x86_64 ELF self-host smoke ---"
-EMACS="$EMACS" tools/selfhost-test.sh
+tools/selfhost-test.sh --emacs "$EMACS"
 
 echo ""
 echo "--- Linux standalone parallel build (zero-Rust) ---"

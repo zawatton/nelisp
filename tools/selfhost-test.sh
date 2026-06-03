@@ -20,30 +20,110 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
+EMACS="${EMACS:-emacs}"
+OUT_DIR="$here/target/linux-smoke"
+EMIT_ONLY=0
+SELECTED_SMOKES=()
+SMOKE_NAMES=(fact)
+
+usage() {
+  echo "usage: $0 [--emacs EMACS] [--smoke all|fact] [--emit-only] [--list]" >&2
+}
+
+smoke_exists() {
+  local want="$1" item
+  for item in "${SMOKE_NAMES[@]}"; do
+    if [ "$item" = "$want" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --emacs)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      EMACS="$2"
+      shift 2
+      ;;
+    --smoke)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      if [ "$2" = "all" ]; then
+        SELECTED_SMOKES=()
+        shift 2
+        continue
+      fi
+      if ! smoke_exists "$2"; then
+        echo "[selfhost] FAIL: unknown smoke '$2'" >&2
+        echo "available smokes: all ${SMOKE_NAMES[*]}" >&2
+        exit 2
+      fi
+      SELECTED_SMOKES+=("$2")
+      shift 2
+      ;;
+    --emit-only)
+      EMIT_ONLY=1
+      shift
+      ;;
+    --list)
+      echo "available smokes:"
+      echo "  all"
+      for name in "${SMOKE_NAMES[@]}"; do
+        echo "  $name"
+      done
+      exit 0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+mkdir -p "$OUT_DIR"
+
+echo "--- Linux x86_64 ELF self-host smoke ---"
+uname -a
+"$EMACS" --version | head -1
+echo "output: $OUT_DIR"
+
+selected_smoke_p() {
+  local name="$1" item
+  if [ "${#SELECTED_SMOKES[@]}" -eq 0 ]; then
+    return 0
+  fi
+  for item in "${SELECTED_SMOKES[@]}"; do
+    if [ "$item" = "$name" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 RB="target/nelisp"
 if [ ! -x "$RB" ]; then
   echo "[selfhost] building reader binary..."
-  emacs --batch -Q -L lisp -L src -L scripts \
+  "$EMACS" --batch -Q -L lisp -L src -L scripts \
         --eval '(setq load-prefer-newer t)' \
         -l nelisp-standalone-build -f nelisp-standalone-build-reader >/dev/null 2>&1
 fi
 
-driver="$(mktemp /tmp/nelisp-selfhost-XXXXXX.el)"
-outbin="$(mktemp /tmp/nelisp-selfhost-bin-XXXXXX)"
-trap 'rm -f "$driver" "$outbin"' EXIT
+write_driver_prelude() {
+  local driver="$1"
+  cat scripts/nelisp-stdlib-prelude.el \
+      lisp/nelisp-phase47-compiler.el \
+      lisp/nelisp-asm-x86_64.el \
+      lisp/nelisp-elf-write.el \
+      lisp/nelisp-static-linker.el > "$driver"
 
-# prelude + toolchain (dependency order) + a POSITIONAL compile entry.
-# The positional wrapper exists because `nelisp-phase47-compile-sexp' is a
-# `cl-defun' with `&key' defaults, and standalone NeLisp does not yet bind
-# &key defaults on a positional call (arch would be nil -> guard signals).
-cat scripts/nelisp-stdlib-prelude.el \
-    lisp/nelisp-phase47-compiler.el \
-    lisp/nelisp-asm-x86_64.el \
-    lisp/nelisp-elf-write.el \
-    lisp/nelisp-static-linker.el > "$driver"
-
-cat >> "$driver" <<'WRAP'
+  # Positional wrapper: standalone NeLisp does not yet bind cl-defun &key
+  # defaults on positional calls, so the self-host entry mirrors the body.
+  cat >> "$driver" <<'WRAP'
 (defun nelisp-selfhost-compile (sexp file-path)
   "Positional x86_64 / _start self-host entry (mirrors compile-sexp body)."
   (let* ((nelisp-phase47-compiler--label-counter 0)
@@ -80,27 +160,49 @@ cat >> "$driver" <<'WRAP'
     (nelisp-elf-write-binary file-path sections)
     file-path))
 WRAP
+}
 
-# compile the recursive `fact' demo, returning sentinel 88 from the driver
-printf "(progn (nelisp-selfhost-compile '(seq (defun fact (n) (if (< n 1) 1 (* n (fact (- n 1))))) (exit (fact 5))) \"%s\") 88)\n" "$outbin" >> "$driver"
+run_fact_smoke() {
+  local name="fact"
+  local driver="$OUT_DIR/nelisp-linux-selfhost-$name.driver.el"
+  local outbin="$OUT_DIR/nelisp-linux-selfhost-$name"
+  local log="$OUT_DIR/nelisp-linux-selfhost-$name.compile.log"
+  if ! selected_smoke_p "$name"; then
+    return
+  fi
 
-echo "[selfhost] compiling (fact 5) via standalone interpreter (zero emacs)..."
-set +e
-"$RB" "$driver"; compile_rc=$?
-set -e
-if [ "$compile_rc" != "88" ]; then
-  echo "[selfhost] FAIL: driver returned $compile_rc (expected 88 = compile completed)"; exit 1
-fi
-if [ ! -s "$outbin" ]; then
-  echo "[selfhost] FAIL: no ELF produced"; exit 1
-fi
-chmod +x "$outbin"
-set +e
-"$outbin"; run_rc=$?
-set -e
-if [ "$run_rc" = "120" ]; then
-  echo "[selfhost] PASS: standalone-compiled (fact 5) -> exit 120 (5! = 120)"
-  exit 0
-else
-  echo "[selfhost] FAIL: produced binary exit $run_rc (expected 120)"; exit 1
-fi
+  rm -f "$driver" "$outbin" "$log"
+  write_driver_prelude "$driver"
+  printf "(progn (nelisp-selfhost-compile '(seq (defun fact (n) (if (< n 1) 1 (* n (fact (- n 1))))) (exit (fact 5))) \"%s\") 88)\n" "$outbin" >> "$driver"
+
+  echo "[selfhost] compiling (fact 5) via standalone interpreter (zero emacs)..."
+  set +e
+  "$RB" "$driver" >"$log" 2>&1
+  compile_rc=$?
+  set -e
+  if [ "$compile_rc" != "88" ]; then
+    echo "[selfhost] FAIL: $name driver returned $compile_rc (expected 88 = compile completed)"
+    tail -8 "$log" | sed 's/^/    /'
+    exit 1
+  fi
+  if [ ! -s "$outbin" ]; then
+    echo "[selfhost] FAIL: $name produced no ELF"; exit 1
+  fi
+  if [ "$EMIT_ONLY" = 1 ]; then
+    echo "[selfhost] PASS: $name -> built"
+    return
+  fi
+  chmod +x "$outbin"
+  set +e
+  "$outbin"
+  run_rc=$?
+  set -e
+  if [ "$run_rc" = "120" ]; then
+    echo "[selfhost] PASS: $name -> exit 120 (5! = 120)"
+  else
+    echo "[selfhost] FAIL: $name produced binary exit $run_rc (expected 120)"; exit 1
+  fi
+}
+
+run_fact_smoke
+echo "[selfhost] all PASS - Linux x86_64 self-host smoke OK"
