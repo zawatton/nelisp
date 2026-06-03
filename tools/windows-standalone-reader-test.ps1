@@ -1,6 +1,6 @@
 # Windows-native standalone reader smoke.
 #
-# Builds target\nelisp-standalone-reader.exe through the pure-elisp standalone
+# Builds target\nelisp.exe through the pure-elisp standalone
 # builder and exercises embedded source, file-argument source, and REPL stdin /
 # stdout on Windows.  No Rust toolchain is used.
 #
@@ -48,7 +48,7 @@ if ($BuildCode -ne 0) {
     exit $BuildCode
 }
 
-$Exe = Join-Path $RepoRoot "target\nelisp-standalone-reader.exe"
+$Exe = Join-Path $RepoRoot "target\nelisp.exe"
 if (-not (Test-Path $Exe)) {
     Write-Host ("[windows-standalone-reader] FAIL: missing " + $Exe)
     exit 1
@@ -113,7 +113,7 @@ Invoke-ReaderFileSmoke -Path $SpacedFileSmoke -Source "(* 6 7)`n" -Label "file a
 $UnicodeFileSmoke = Join-Path $SmokeDir "unicode-あ.el"
 Invoke-ReaderFileSmoke -Path $UnicodeFileSmoke -Source "(- 50 8)`n" -Label "unicode file arg"
 
-$ReplOutput = @("(+ 40 2)", ",quit") | & $Exe repl --no-prompt
+$ReplOutput = @("(+ 40 2)", "(exit)") | & $Exe repl --no-prompt
 $ReplCode = $LASTEXITCODE
 if ($null -eq $ReplCode) {
     $ReplCode = 0

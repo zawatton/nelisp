@@ -119,7 +119,7 @@ accumulator clause unsupported; no error-subtype hierarchy.
   when/unless/cond-prelude all pass; both gates green.
 
 ** Stage 2 — essentially DONE
-The integrated binary IS =nelisp-cc=-shaped: =./nelisp-standalone-reader FILE.el=
+The integrated binary IS =nelisp-cc=-shaped: =./nelisp FILE.el=
 loads+evals a real file. The interpreter+reader+runtime is already AOT-compiled.
 Remaining: naming/packaging + the breadth to run the toolchain (= Stage 3).
 

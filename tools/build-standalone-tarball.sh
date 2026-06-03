@@ -3,7 +3,7 @@
 #
 # Produces a no-Rust bundle containing the pure-elisp standalone binary:
 #   bin/anvil
-#   bin/nelisp-standalone-reader   (built by `make standalone-reader`)
+#   bin/nelisp   (built by `make standalone-reader`)
 #   src/nelisp*.el
 #   scripts/*.el
 #   lisp/*.el
@@ -12,7 +12,7 @@
 #   VERSION / PLATFORM / MANIFEST.txt
 #
 # Caller must have already run `make standalone-reader` before invoking
-# this script so that target/nelisp-standalone-reader is present.
+# this script so that target/nelisp is present.
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ log "  version : $VERSION"
 log "  platform: $PLATFORM"
 
 # 1. Ensure the standalone binary is built.
-STANDALONE_BIN="target/nelisp-standalone-reader"
+STANDALONE_BIN="target/nelisp"
 if [[ ! -x "$STANDALONE_BIN" ]]; then
   log "standalone binary not found — running make standalone-reader"
   make standalone-reader
@@ -49,8 +49,8 @@ mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/scripts" "$STAGE_DIR/lisp
 # bin/ — anvil launcher + standalone binary.
 cp bin/anvil "$STAGE_DIR/bin/"
 [[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$STAGE_DIR/bin/" || true
-cp "$STANDALONE_BIN" "$STAGE_DIR/bin/nelisp-standalone-reader"
-chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/nelisp-standalone-reader"
+cp "$STANDALONE_BIN" "$STAGE_DIR/bin/nelisp"
+chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/nelisp"
 
 # Elisp sources.
 cp src/nelisp*.el "$STAGE_DIR/src/"

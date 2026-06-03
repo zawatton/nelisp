@@ -93,7 +93,7 @@ standalone-eval-clean:
 	  -l nelisp-standalone-build -f nelisp-standalone-clean
 
 # Reader path (Doc 137 M1): text -> AOT reader -> eval, ZERO Rust.
-#   make standalone-reader        # build -> target/nelisp-standalone-reader
+#   make standalone-reader        # build -> target/nelisp
 #   make standalone-reader-test   # build, run, assert exit == eval(NELISP_SRC)
 # Embedded source via NELISP_SRC (default "(+ 40 2)" -> 42; + - * only for now).
 standalone-reader:
@@ -112,7 +112,7 @@ standalone-reader-test:
 # Wave-1 (B) breadth primitives), asserting exit == 42.  The prelude is just a
 # loadable .el: the binary loads it then user code.  To use it by hand:
 #   cat scripts/nelisp-stdlib-prelude.el yourfile.el > /tmp/prog.el
-#   target/nelisp-standalone-reader /tmp/prog.el   # exit = last form's value
+#   target/nelisp /tmp/prog.el   # exit = last form's value
 standalone-reader-prelude-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \

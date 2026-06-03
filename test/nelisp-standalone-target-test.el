@@ -95,6 +95,15 @@
     (should (string-suffix-p ".exe" (nelisp-standalone--output-path nil)))
     (should (string-suffix-p ".exe" (nelisp-standalone--output-path t)))))
 
+(ert-deftest nelisp-standalone-target-reader-cli-name-is-short ()
+  "The user-facing standalone reader is target/nelisp(.exe)."
+  (let ((nelisp-standalone--target 'linux-x86_64))
+    (should (string-suffix-p "target/nelisp"
+                             (nelisp-standalone--output-path t))))
+  (let ((nelisp-standalone--target 'windows-x86_64))
+    (should (string-suffix-p "target/nelisp.exe"
+                             (nelisp-standalone--output-path t)))))
+
 (ert-deftest nelisp-standalone-target-windows-start-imports-exitprocess ()
   "The Windows start unit calls driver, then KERNEL32!ExitProcess."
   (let* ((nelisp-standalone--target 'windows-x86_64)

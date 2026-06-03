@@ -15,7 +15,7 @@
 #   VERSION defaults to stage-d-v2.0.
 #
 # Caller must have already run `make standalone-reader` before invoking this
-# script so that target/nelisp-standalone-reader is present.
+# script so that target/nelisp is present.
 #
 # Outputs (under dist/):
 #   <VERSION>-<PLATFORM>.tar.gz         — release tarball (Doc 32 v2 §2.3 採用 A)
@@ -48,7 +48,7 @@ echo "  platform: $PLATFORM"
 echo "  repo    : $REPO_ROOT"
 
 # 1. Build the pure-elisp standalone binary if not already present.
-STANDALONE_BIN="target/nelisp-standalone-reader"
+STANDALONE_BIN="target/nelisp"
 if [[ ! -x "$STANDALONE_BIN" ]]; then
   log "standalone binary not found — running make standalone-reader"
   make standalone-reader
@@ -67,8 +67,8 @@ cp bin/anvil "$ARTIFACT_DIR/bin/"
 [[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$ARTIFACT_DIR/bin/" || true
 
 # Pure-elisp standalone binary.
-cp "$STANDALONE_BIN" "$ARTIFACT_DIR/bin/nelisp-standalone-reader"
-chmod +x "$ARTIFACT_DIR/bin/nelisp-standalone-reader"
+cp "$STANDALONE_BIN" "$ARTIFACT_DIR/bin/nelisp"
+chmod +x "$ARTIFACT_DIR/bin/nelisp"
 
 # Elisp sources.
 cp src/nelisp*.el "$ARTIFACT_DIR/src/"

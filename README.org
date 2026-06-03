@@ -39,7 +39,7 @@ v2.0 (2026-05-22) ships:
 
 2026-06 adds a *standalone self-hosting binary*:
 - *Self-host + parallel build* — a pure-elisp Phase-47-AOT binary
-  (=target/nelisp-standalone-reader=, pure Elisp) loads its own
+  (=target/nelisp=, pure Elisp) loads its own
   compiler and compiles Elisp source → native ELF *with no Emacs in
   the loop*, including recursion (=(fact 5)= → exit 120),
   multi-threaded native programs (=clone(2)= + atomics), and *N units
@@ -114,7 +114,7 @@ targets are also pure Elisp.
 * Standalone self-host & parallel build (2026-06)
 
 The pure-Elisp Phase-47 AOT toolchain now produces a *standalone
-interpreter binary* — =target/nelisp-standalone-reader=, built by =make
+interpreter binary* — =target/nelisp=, built by =make
 standalone-reader= — that runs with *no Emacs in the loop
 at all*: it loads an =.el= file via =argv[1]=, evaluates it, and exits
 with the low byte of the last form's integer value.  It also exposes
@@ -161,7 +161,7 @@ That makes the core workflow Lisp-native:
 #+begin_src shell
 make standalone-reader
 
-target/nelisp-standalone-reader repl
+target/nelisp repl
 nelisp> (defun hot () 1)
 hot
 nelisp> (hot)
@@ -175,8 +175,8 @@ nelisp> (hot)
 For editor integration or scripted probes, use =--no-prompt=:
 
 #+begin_src shell
-printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n,quit\n' \
-  | target/nelisp-standalone-reader repl --no-prompt
+printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n(exit)\n' \
+  | target/nelisp repl --no-prompt
 # => hot
 # => 7
 # => hot
@@ -275,9 +275,9 @@ Deferred: aarch64 Windows (=arm64ec=) — currently x86_64 Windows only.
 NeLisp v2.0 centers the runtime in Elisp and adds cross-platform native
 emit across 5 OS×arch targets.
 
-1. *Standalone reader* — =target/nelisp-standalone-reader= loads and
+1. *Standalone reader* — =target/nelisp= loads and
    evaluates =.el= files with no host Emacs process.
-2. *Runtime development REPL* — =target/nelisp-standalone-reader repl=
+2. *Runtime development REPL* — =target/nelisp repl=
    keeps a live evaluator environment for immediate redefinition.
 3. *Standalone self-host + parallel build* (2026-06) — the pure-elisp
    Phase-47 AOT toolchain loads its own compiler and compiles Elisp
@@ -338,7 +338,7 @@ make standalone-reader-test
 #+end_src
 
 Build outputs land under =target/=, with
-=target/nelisp-standalone-reader= as the primary no-Emacs runtime.
+=target/nelisp= as the primary no-Emacs runtime.
 
 *** Pre-built standalone tarball — single-binary deployment
 
@@ -383,11 +383,11 @@ make standalone-reader
 
 # load + run a file; process exit is the low byte of the last integer value
 printf '(+ 40 2)\n' >/tmp/prog.el
-target/nelisp-standalone-reader /tmp/prog.el
+target/nelisp /tmp/prog.el
 echo $?                                # => 42
 
 # interactive runtime development
-target/nelisp-standalone-reader repl
+target/nelisp repl
 #+end_src
 
 The REPL keeps one live evaluator environment.  Redefinitions are
@@ -395,8 +395,8 @@ visible immediately, and generated source can be evaluated into that
 same environment:
 
 #+begin_src shell
-printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n,quit\n' \
-  | target/nelisp-standalone-reader repl --no-prompt
+printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n(exit)\n' \
+  | target/nelisp repl --no-prompt
                                        # => hot
                                        # => 7
                                        # => hot
@@ -453,7 +453,7 @@ self-contained.
   +-----------------+--------------------------------+
                     | source / stdio / files
   +-----------------v--------------------------------+
-  | target/nelisp-standalone-reader                  |
+  | target/nelisp                  |
   |   reader / evaluator / macro / compiler / loader |
   |   REPL / persistent eval / runtime-image replay  |
   +--------------------------------------------------+
@@ -520,7 +520,7 @@ Said plainly so expectations are calibrated:
   =Pure-Elisp Migration Progress= section above for the flake breakdown.
 - *Standalone self-host gates* (2026-06, all green, zero-Emacs):
   =standalone-{reader,eval,reader-prelude,selfhost,selfhost-mt,parallel-compile}-test=
-  — the standalone =target/nelisp-standalone-reader= binary self-hosts
+  — the standalone =target/nelisp= binary self-hosts
   the Phase-47 compiler (recursion → native ELF → 120) and compiles N
   units concurrently via =fork(2)= workers (4-/5-way verified 100%).
 - The previous 2026-04-29 baseline was 2452 / 2409 / 0 unexpected.  The

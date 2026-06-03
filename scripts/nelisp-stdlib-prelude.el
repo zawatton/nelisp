@@ -10,7 +10,7 @@
 ;;
 ;; USAGE (the binary loads the prelude then user code via file-load):
 ;;   cat scripts/nelisp-stdlib-prelude.el yourfile.el > /tmp/prog.el
-;;   target/nelisp-standalone-reader /tmp/prog.el       # exit = last form's value
+;;   target/nelisp /tmp/prog.el       # exit = last form's value
 ;; or use the `standalone-reader-prelude-test' Makefile target as a worked example.
 ;;
 ;; Assembled from the repo stdlib sources (lisp/nelisp-stdlib-{eval-special,list,

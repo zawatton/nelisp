@@ -142,7 +142,7 @@
                             script))
     (should (string-match-p "\\$env:NELISP_SRC = \\$Source" script))
     (should (string-match-p "nelisp-standalone-build-reader" script))
-    (should (string-match-p "target\\\\nelisp-standalone-reader.exe" script))
+    (should (string-match-p "target\\\\nelisp.exe" script))
     (should (string-match-p "\\[windows-standalone-reader\\] PASS" script))
     (should (string-match-p "Invoke-ReaderFileSmoke" script))
     (should (string-match-p "file arg with spaces" script))

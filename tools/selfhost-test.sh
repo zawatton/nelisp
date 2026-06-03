@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stage 3 self-host test: the standalone NeLisp interpreter (target/
-# nelisp-standalone-reader, a pure-elisp Phase-47-AOT binary, ZERO Rust)
+# Stage 3 self-host test: the standalone NeLisp interpreter (target/nelisp,
+# a pure-elisp Phase-47-AOT binary, ZERO Rust)
 # loads its OWN compiler toolchain as source and compiles a program
 # (incl. a recursive `fact') to a native x86_64 ELF — with NO emacs in the
 # loop — then we exec that ELF and assert its exit code.
@@ -21,7 +21,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 
-RB="target/nelisp-standalone-reader"
+RB="target/nelisp"
 if [ ! -x "$RB" ]; then
   echo "[selfhost] building reader binary..."
   emacs --batch -Q -L lisp -L src -L scripts \

@@ -5,7 +5,7 @@
 # tarball that includes:
 #
 #   bin/anvil                 (= bash launcher)
-#   bin/nelisp-standalone-reader  (= pure-elisp standalone binary)
+#   bin/nelisp  (= pure-elisp standalone binary)
 #   emacs/bin/emacs           (= stripped host Emacs binary)
 #   emacs/lib/...             (= NeLisp's runtime-required .elc subset)
 #   emacs/etc/charsets/...    (= coding-system data, needed for utf-8 codecs)
@@ -20,7 +20,7 @@
 # when the bundled `emacs/bin/emacs` is absent).
 #
 # Caller must have already run `make standalone-reader` before invoking
-# this script so that target/nelisp-standalone-reader is present.
+# this script so that target/nelisp is present.
 #
 # Usage:
 #   tools/build-bundled-tarball.sh [VERSION] [PLATFORM]
@@ -90,7 +90,7 @@ log "  lisp dir: $EMACS_LISP_DIR"
 log "  etc dir : $EMACS_ETC_DIR"
 
 # 2. Ensure the pure-elisp standalone binary is built.
-STANDALONE_BIN="target/nelisp-standalone-reader"
+STANDALONE_BIN="target/nelisp"
 if [[ ! -x "$STANDALONE_BIN" ]]; then
   log "standalone binary not found — running make standalone-reader"
   make standalone-reader
@@ -140,8 +140,8 @@ mkdir -p "$STAGE_DIR/bin" \
 # 4a. bin/anvil launcher + pure-elisp standalone binary.
 cp bin/anvil "$STAGE_DIR/bin/"
 [[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$STAGE_DIR/bin/" || true
-cp "$STANDALONE_BIN" "$STAGE_DIR/bin/nelisp-standalone-reader"
-chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/nelisp-standalone-reader"
+cp "$STANDALONE_BIN" "$STAGE_DIR/bin/nelisp"
+chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/nelisp"
 
 # 4b. nelisp src.
 cp src/nelisp*.el "$STAGE_DIR/src/"

@@ -119,12 +119,12 @@ link-unit names, and build logs."
   "Output standalone PE32+ path (baked-form eval).")
 
 (defconst nelisp-standalone--reader-out
-  (expand-file-name "target/nelisp-standalone-reader" nelisp-standalone--repo-root)
-  "Output standalone ELF path (reader path: text -> AOT reader -> eval).")
+  (expand-file-name "target/nelisp" nelisp-standalone--repo-root)
+  "Output standalone ELF path for the user-facing reader CLI.")
 
 (defconst nelisp-standalone--windows-reader-out
-  (expand-file-name "target/nelisp-standalone-reader.exe" nelisp-standalone--repo-root)
-  "Output standalone PE32+ path (reader path: text -> AOT reader -> eval).")
+  (expand-file-name "target/nelisp.exe" nelisp-standalone--repo-root)
+  "Output standalone PE32+ path for the user-facing reader CLI.")
 
 (defvar nelisp-standalone--recompiled nil
   "Names of units recompiled in the current build (vs. served from cache).")
@@ -867,7 +867,18 @@ argument (reachability + in-arena bounds checks).")
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
     ((:u8 "wrf")  . (seq (nl_bi_write_file args out) 0))
     ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
-    ((:u8 "slen") . (seq (nl_bi_slen args out) 0)))
+    ((:u8 "slen") . (seq (nl_bi_slen args out) 0))
+    ;; REPL/process termination.  Store code+1 so slot 0 remains "no exit".
+    ((:u8 "exit") . (let* ((code (if (= (ptr-read-u64 args 0) 7)
+                                     (ptr-read-u64 (nl_cons_car_ptr args) 8)
+                                   0)))
+                       (seq (ptr-write-u64 268435464 0 (+ code 1))
+                            (wf_write_int out code))))
+    ((:u8 "quit") . (let* ((code (if (= (ptr-read-u64 args 0) 7)
+                                     (ptr-read-u64 (nl_cons_car_ptr args) 8)
+                                   0)))
+                       (seq (ptr-write-u64 268435464 0 (+ code 1))
+                            (wf_write_int out code)))))
   "Unified (MATCH . IMPL) builtin dispatch table for `nelisp_apply_function'.
 MATCH = (:u8 NAME) for <=8-byte u64-packed names, (:lit NAME) for full-length
 `sexp-name-eq' compare (any length).")
@@ -2645,7 +2656,7 @@ is faster.  Parallelism pays off only once per-unit compilation dominates startu
 ;;
 ;; Source via NELISP_SRC (default "(+ 40 2)" -> 42).  Supported builtins
 ;; are still + - * (M2 grows these); the embedded form must use them.
-;;   make standalone-reader        # build target/nelisp-standalone-reader
+;;   make standalone-reader        # build target/nelisp
 ;;   make standalone-reader-test   # build, run, assert eval(NELISP_SRC)
 ;; ===================================================================
 
@@ -2713,6 +2724,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
+    "exit" "quit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
     "consp" "atom" "stringp" "symbolp" "integerp" "natnump" "numberp" "floatp"
@@ -2973,10 +2985,6 @@ reused buffer and >8-byte names install correctly."
                                        "--no-prompt")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_print
                                        "--no-print")
-    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_comma_quit
-                                       ",quit")
-    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_comma_exit
-                                       ",exit")
     ,(nelisp-standalone--copy-lit-defun
       'nl_runtime_image_eval_prefix
       "(let ((v (progn\n")
@@ -2991,7 +2999,7 @@ reused buffer and >8-byte names install correctly."
       "(let ((v (progn\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_suffix
-      "))) (nelisp--write-stdout-bytes (format \"%S\" v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n")
+      "))) (if (= (ptr-read-u64 268435464 0) 0) (progn (nelisp--write-stdout-bytes (format \"%S\" v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0) 0))\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_no_print_suffix
       "))) 0)\n")
@@ -3073,12 +3081,6 @@ reused buffer and >8-byte names install correctly."
         (seq
          (if (< n 0) 0 (ptr-write-u8 buf n 0))
          n)))
-    (defun nl_repl_quit_line_p (buf n)
-      (seq
-       (ptr-write-u8 buf n 0)
-       (if (= (nl_cstr_eq_comma_quit buf) 1)
-           1
-         (nl_cstr_eq_comma_exit buf))))
     (defun nl_repl_make_source (line n fbuf src print_p)
       (let* ((off (nl_repl_eval_prefix fbuf 0)))
         (seq
@@ -3104,13 +3106,16 @@ reused buffer and >8-byte names install correctly."
               (if (= prc 1)
                   (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
                        (nelisp_eval_call result ctx out)
-                       (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
+                      (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
+                          0
+                        (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
+                               (bump (ptr-read-u64 268435456 0))
+                               (lo (+ (* live 3) 1048576))
+                               (hi (+ bump 536870912)))
+                           (ptr-write-u64 268435560 0 (if (< lo hi) hi lo))))
+                       (if (= (ptr-read-u64 268435464 0) 0)
                            0
-                         (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
-                                (bump (ptr-read-u64 268435456 0))
-                                (lo (+ (* live 3) 1048576))
-                                (hi (+ bump 536870912)))
-                           (ptr-write-u64 268435560 0 (if (< lo hi) hi lo)))))
+                         (setq more 0)))
                 (setq more 0))))))
        0))
     (defun nl_repl_loop (prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
@@ -3123,13 +3128,13 @@ reused buffer and >8-byte names install correctly."
             (setq n (nl_repl_read_line linebuf))
             (if (< n 0)
                 (setq done 1)
-              (if (= (nl_repl_quit_line_p linebuf n) 1)
-                  (setq done 1)
-                (if (= n 0)
-                    0
-                  (seq
-                   (nl_repl_make_source linebuf n fbuf src print_p)
-                   (nl_eval_source_all src cursor result pool out ctx builtin_sym)))))))
+              (if (= n 0)
+                  0
+                (seq
+                 (nl_repl_make_source linebuf n fbuf src print_p)
+                 (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+                 (if (= (ptr-read-u64 268435464 0) 0) 0
+                   (setq done 1)))))))
          0)))
     (defun nl_repl_bad_option_p (arg)
       (if (= arg 0)
@@ -3242,7 +3247,9 @@ reused buffer and >8-byte names install correctly."
                                           (buffer-string)))
                (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
-               0))
+               (if (= (ptr-read-u64 268435464 0) 0)
+                   0
+                 (- (ptr-read-u64 268435464 0) 1))))
           (seq
            ;; --- source selection: embedded vs. file (M7 dual mode) ---
            (if (= (nl_cstr_eq_eval_runtime_image path) 1)
@@ -4010,7 +4017,7 @@ guards the slot-pool floor directly without loading the full vendor file."
                 "(hot)\n"
                 "(nelisp--eval-source-string \"(defun hot () 99)\")\n"
                 "(hot)\n"
-                ",quit\n"))
+                "(exit)\n"))
         (repl-rc nil)
         (repl-out nil)
         (quiet-rc nil)
@@ -4032,7 +4039,7 @@ guards the slot-pool floor directly without loading the full vendor file."
       (insert "(hot)\n")
       (insert "(nelisp--write-stdout-bytes \"explicit\\n\")\n")
       (insert "(hot)\n")
-      (insert ",quit\n")
+      (insert "(quit)\n")
       (setq quiet-rc
             (call-process-region (point-min) (point-max)
                                  nelisp-standalone--reader-out

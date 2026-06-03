@@ -105,7 +105,7 @@ and whether elisp stubs already cover them.
 ** (2) VERIFY / CI — effort S
 | consumer                              | uses Rust as     | decouple by                                                    |
 |---------------------------------------+------------------+----------------------------------------------------------------|
-| `scripts/verify-quick.sh`             | oracle+test-run  | swap `target/release/nelisp` → `target/nelisp-standalone-reader`; `cargo test` → ERT |
+| `scripts/verify-quick.sh`             | oracle+test-run  | swap `target/release/nelisp` → `target/nelisp`; `cargo test` → ERT |
 | `scripts/verify-full.sh`              | oracle+test-run  | same; `verify-full-correctness.el` is pure elisp, runs unchanged |
 | `scripts/verify-cross-platform.sh/.ps1` | oracle (soft)  | already `Test-Path`/skip guarded — delete the cargo clause      |
 | `.github/workflows/ci.yml` smoke job  | —                | already zero-Rust (runs `make standalone-*`)                    |
@@ -191,7 +191,7 @@ since that elisp work is already in flight.*
   - *Gate*: decision recorded → proceed.
 
 - *Stage 1 — Decouple VERIFY/CI* (S):
-  - verify-*.sh: `target/release/nelisp` → `target/nelisp-standalone-reader`;
+  - verify-*.sh: `target/release/nelisp` → `target/nelisp`;
     `cargo test` → ERT.  Delete/lint-ify the cargo CI job.
   - *Gate*: green CI with no cargo invocation in verify/smoke.
 

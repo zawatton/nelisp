@@ -16,7 +16,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 
-RB="target/nelisp-standalone-reader"
+RB="target/nelisp"
 if [ ! -x "$RB" ]; then
   echo "[parallel] building reader binary..."
   emacs --batch -Q -L lisp -L src -L scripts \
