@@ -57,6 +57,25 @@
   (expand-file-name "target/standalone-units" nelisp-standalone--repo-root)
   "Per-unit compiled-object cache directory.")
 
+(defconst nelisp-standalone--target
+  (intern (or (getenv "NELISP_STANDALONE_TARGET") "linux-x86_64"))
+  "Standalone output target.
+Defaults to `linux-x86_64' for backwards compatibility.  Windows-native builds
+must opt in with NELISP_STANDALONE_TARGET=windows-x86_64 so Windows-hosted ELF
+cache builds do not accidentally mix Win64 units into the SysV cache.")
+
+(defun nelisp-standalone--target-abi (&optional target)
+  "Return the compiler ABI for standalone TARGET."
+  (pcase (or target nelisp-standalone--target)
+    ('linux-x86_64 'sysv)
+    ('windows-x86_64 'win64)
+    (other (error "standalone: unsupported target %S" other))))
+
+(defun nelisp-standalone--target-cache-dir (&optional target)
+  "Return the per-target standalone unit cache directory."
+  (expand-file-name (symbol-name (or target nelisp-standalone--target))
+                    nelisp-standalone--cache-dir))
+
 (defconst nelisp-standalone--out
   (expand-file-name "target/nelisp-standalone-eval" nelisp-standalone--repo-root)
   "Output standalone ELF path (baked-form eval).")
@@ -79,15 +98,16 @@
 ;; reloc :addend normalized to 0 (the linker uses P = va+offset+4; the
 ;; assembler emits the standard RELA -4 -- normalizing avoids the off-by-4).
 ;; ===================================================================
-(defun nelisp-standalone--compile-to-unit (name source)
+(defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
-  (let* ((nelisp-phase47-compiler--label-counter 0)
+  (let* ((resolved-abi (or abi (nelisp-standalone--target-abi)))
+         (nelisp-phase47-compiler--label-counter 0)
          (nelisp-phase47-compiler--arch 'x86_64)
          (nelisp-phase47-compiler--allow-external-user-calls t)
-         (nelisp-phase47-compiler--abi 'sysv)
+         (nelisp-phase47-compiler--abi resolved-abi)
          (ir (nelisp-phase47-compiler--parse source nil))
          (defuns (nelisp-phase47-compiler--collect-defuns ir))
-         (buf (nelisp-asm-x86_64-make-buffer 'sysv)))
+         (buf (nelisp-asm-x86_64-make-buffer resolved-abi)))
     (dolist (d defuns) (nelisp-phase47-compiler--emit-defun d buf))
     (let* ((text (nelisp-asm-x86_64-resolve-fixups buf))
            (labels (nelisp-asm-x86_64-buffer-labels buf))
@@ -116,7 +136,8 @@
 (defun nelisp-standalone--cached-unit (name source source-file)
   "Return the link-unit for NAME, compiling SOURCE only if SOURCE-FILE
 or the toolchain is newer than the cached object."
-  (let* ((cache (expand-file-name (concat name ".unit") nelisp-standalone--cache-dir))
+  (let* ((cache-dir (nelisp-standalone--target-cache-dir))
+         (cache (expand-file-name (concat name ".unit") cache-dir))
          (deps (cons source-file (nelisp-standalone--dep-files)))
          (fresh (and (file-exists-p cache)
                      (cl-every (lambda (f) (or (null f) (file-newer-than-file-p cache f))) deps))))
@@ -126,7 +147,7 @@ or the toolchain is newer than the cached object."
           (goto-char (point-min))
           (read (current-buffer)))
       (let ((unit (nelisp-standalone--compile-to-unit name source)))
-        (make-directory nelisp-standalone--cache-dir t)
+        (make-directory cache-dir t)
         (with-temp-file cache
           (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
             (prin1 unit (current-buffer))))
