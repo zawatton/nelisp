@@ -34,9 +34,9 @@ usage() {
 SMOKE_NAMES=(
   exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
   cas dealloc cons-set cond logic write-stdout read-stdin pipe getpid
-  fork-wait createfile-write lseek-fstat file-mmap socket-close dup-fcntl
-  cons-clone boxed names call4-outs str-helpers lits extern aot-jump
-  aot-roots f64-sexp callptr
+  fork-wait fork-execve createfile-write lseek-fstat file-mmap socket-close
+  dup-fcntl cons-clone boxed names call4-outs str-helpers lits extern
+  aot-jump aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -440,6 +440,37 @@ build_run fork-wait '(seq
               (let ((waited (syscall-direct 7 pid 8589934848 0 0 0 0)))
                 (if (= waited pid)
                     (if (= (ptr-read-u32 8589934592 256) 10752)
+                        (ok)
+                      (fail))
+                  (fail)))
+            (fail))))))
+  (exit (run)))' 42
+
+# raw Darwin fork(2)+execve(2)+wait4(2): child execs `/bin/sh -c "exit 42"`,
+# parent waits and verifies the status.  This mirrors Windows CreateProcess.
+build_run fork-execve '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 256 29400045130965551)
+      (ptr-write-u64 8589934592 272 25389)
+      (ptr-write-u64 8589934592 288 14131062832199781)
+      (ptr-write-u64 8589934592 512 8589934848)
+      (ptr-write-u64 8589934592 520 8589934864)
+      (ptr-write-u64 8589934592 528 8589934880)
+      (ptr-write-u64 8589934592 536 0)
+      (ptr-write-u64 8589934592 576 0)
+      (let ((pid (syscall-direct 2 0 0 0 0 0 0)))
+        (if (= pid 0)
+            (seq
+              (syscall-direct 59 8589934848 8589935104 8589935168 0 0 0)
+              (syscall-direct 1 13 0 0 0 0 0))
+          (if (< 0 pid)
+              (let ((waited (syscall-direct 7 pid 8589934912 0 0 0 0)))
+                (if (= waited pid)
+                    (if (= (ptr-read-u32 8589934592 320) 10752)
                         (ok)
                       (fail))
                   (fail)))
