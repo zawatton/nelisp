@@ -63,23 +63,22 @@
       (setq pos (match-end 0)))
     count))
 
-(ert-deftest nelisp-macos-selfhost/darwin-pipe-smokes-use-fd-buffer ()
-  "Darwin pipe smokes pass an fd[2] buffer instead of reading x1."
+(ert-deftest nelisp-macos-selfhost/darwin-pipe-smokes-store-second-fd ()
+  "Darwin pipe smokes preserve the x1 write fd."
   (let ((script (nelisp-macos-selfhost-test--script-text)))
     (should (= (nelisp-macos-selfhost-test--count-substring
-                "(syscall-direct 42 8589934848 0 0 0 0 0)"
+                "(syscall-direct-store-x1 42 0 0 0 0 0 0 8589934592 256)"
                 script)
                2))
-    (should (>= (nelisp-macos-selfhost-test--count-substring
-                 "(ptr-read-u32 8589934592 256)"
-                 script)
-                2))
     (should (= (nelisp-macos-selfhost-test--count-substring
-                "(ptr-read-u32 8589934592 260)"
+                "(ptr-read-u64 8589934592 256)"
                 script)
                2))
     (should-not (string-match-p
-                 (regexp-quote "syscall-direct-store-x1 42")
+                 (regexp-quote "(syscall-direct 42 8589934848 0 0 0 0 0)")
+                 script))
+    (should-not (string-match-p
+                 (regexp-quote "(ptr-read-u32 8589934592 260)")
                  script))))
 
 (ert-deftest nelisp-macos-selfhost/darwin-fork-smokes-store-child-flag ()
