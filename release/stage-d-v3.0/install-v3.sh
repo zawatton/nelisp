@@ -37,8 +37,8 @@ err() { printf '  error: %s\n' "$*" >&2; }
 detect_platform() {
   case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) echo "linux-x86_64" ;;
-    Linux-aarch64|Linux-arm64) echo "linux-arm64" ;;
-    Darwin-arm64) echo "macos-arm64" ;;
+    Darwin-arm64) echo "macos-aarch64" ;;
+    MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) echo "windows-x86_64" ;;
     *) return 1 ;;
   esac
 }
@@ -78,4 +78,3 @@ tar -xzf "${WORK}/${ARTIFACT}" -C "${ANVIL_PREFIX}" --strip-components=1 || { er
 
 log "installed: ${ANVIL_PREFIX}"
 log "next: add ${ANVIL_PREFIX}/bin to your PATH"
-

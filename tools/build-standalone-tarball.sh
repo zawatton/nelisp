@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tools/build-standalone-tarball.sh — zero-Rust standalone tarball
 #
-# Produces a no-Rust bundle containing the pure-elisp standalone binary:
-#   bin/anvil
+# Produces a no-Rust bundle containing the pure-elisp standalone reader:
 #   bin/nelisp   (built by `make standalone-reader` on POSIX targets)
 #   bin/nelisp.exe on windows-x86_64
 #   src/nelisp*.el
@@ -12,8 +11,8 @@
 #   install.sh
 #   VERSION / PLATFORM / MANIFEST.txt
 #
-# Caller must have already run `make standalone-reader` before invoking
-# this script so that target/nelisp is present.
+# The script always rebuilds the standalone reader for the requested platform
+# before staging the tarball.
 
 set -euo pipefail
 
@@ -68,11 +67,8 @@ NELISP_STANDALONE_TARGET="$PLATFORM" make standalone-reader
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/scripts" "$STAGE_DIR/lisp"
 
-# bin/ — anvil launcher + standalone binary.
-cp bin/anvil "$STAGE_DIR/bin/"
-[[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$STAGE_DIR/bin/" || true
+# bin/ — standalone reader binary.
 cp "$STANDALONE_BIN" "$STAGE_DIR/bin/$STAGED_BIN_NAME"
-chmod +x "$STAGE_DIR/bin/anvil"
 if [[ "$STAGED_BIN_NAME" = "nelisp" ]]; then
   chmod +x "$STAGE_DIR/bin/nelisp"
 fi

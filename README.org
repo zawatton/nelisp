@@ -361,8 +361,8 @@ curl -fsSL https://github.com/zawatton/nelisp/releases/latest/download/install-v
 
 Default install root: =$HOME/.local/share/anvil-stage-d-v3.0/=.
 (The =anvil-= prefix is historical packaging — the tarball *is* the
-NeLisp runtime; the bundled =bin/anvil= launcher is one optional
-front end.)  Verification, manual extraction, and platform notes:
+NeLisp runtime; use =bin/nelisp= or =bin/nelisp.exe= directly.)
+Verification, manual extraction, and platform notes:
 [[file:README-stage-d-v3.0.org][README-stage-d-v3.0.org]].
 
 Older release lines, for reference only:
@@ -453,10 +453,9 @@ The forms go through NeLisp's own reader + evaluator.  Host Emacs is a
 launcher only — result and host-evaluator state stay separate.
 
 #+begin_quote
-One downstream MCP-server front end that exposes NeLisp's
-evaluator as a Claude Code tool ships under =bin/anvil= in the
-standalone tarball.  That layer is optional; the runtime above is
-self-contained.
+Downstream MCP-server front ends can wrap this CLI, but the standalone
+tarball ships the self-contained NeLisp runtime directly as =bin/nelisp=
+or =bin/nelisp.exe=.
 #+end_quote
 
 ** Architecture
@@ -502,7 +501,7 @@ Tier matrix (Doc 32 v2 §11):
 | Platform        | v1.0 status                       |
 |-----------------+-----------------------------------|
 | linux-x86_64    | blocker (CI gate, must pass)      |
-| macos-arm64     | best-effort 95%+ (v1.0 time-boxed) |
+| macos-aarch64   | best-effort 95%+ (v1.0 time-boxed) |
 | linux-arm64     | best-effort 95%+ (v1.0 time-boxed) |
 | windows-native  | post-v2.0 scope                   |
 
