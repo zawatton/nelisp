@@ -9460,6 +9460,67 @@
              (should (equal (cdr err) '(38))))))))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-signalfd-darwin-error-before-ffi ()
+  "Darwin rejects Linux signalfd APIs before allocation or libc calls."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'darwin))
+        (dolist (fn (list
+                     (lambda ()
+                       (nelisp-os-signalfd
+                        -1 (list nelisp-os-SIGTERM) 0))
+                     (lambda ()
+                       (nelisp-os-signalfd-read 7 1))))
+          (condition-case err
+              (progn
+                (funcall fn)
+                (ert-fail "expected nelisp-os-error"))
+            (nelisp-os-error
+             (should (equal (cdr err) '(38))))))))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-sigprocmask-darwin-uses-pthread-sigmask ()
+  "Darwin sigprocmask uses pthread_sigmask and decodes the old mask."
+  (let ((calls nil)
+        (freed nil)
+        (encoded nil)
+        (allocs '(3000 4000)))
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest _args)
+                 (ert-fail "Darwin sigprocmask unexpectedly used syscall")))
+              ((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (pop allocs)))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr)
+                 (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sigset)
+               (lambda (ptr mask)
+                 (setq encoded (list ptr mask))))
+              ((symbol-function 'nelisp-os--decode-sigset)
+               (lambda (ptr)
+                 (should (= ptr 4000))
+                 (list nelisp-os-SIGTERM)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'darwin))
+        (should (equal (nelisp-os-sigprocmask
+                        nelisp-os-SIG-BLOCK
+                        (list nelisp-os-SIGUSR1))
+                       (list nelisp-os-SIGTERM)))))
+    (should (equal encoded (list 3000 (list nelisp-os-SIGUSR1))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "pthread_sigmask"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list nelisp-os-SIG-BLOCK 3000 4000)))))
+    (should (equal freed '(4000 3000)))))
+
 (ert-deftest nelisp-stdlib-os-sockopts-darwin-use-libc ()
   "Darwin int-valued socket options use libc setsockopt/getsockopt."
   (let ((calls nil)

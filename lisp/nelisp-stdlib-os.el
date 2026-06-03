@@ -5399,15 +5399,17 @@ FD = -1 to create a new fd, or an existing signalfd to update its
 mask.  MASK is a list of signal numbers; FLAGS = OR of `SFD-*'."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-signalfd fd mask flags)
-    (let ((set-buf (nelisp-os--alloc nelisp-os--sigset-len)))
-      (unwind-protect
-          (progn
-            (nelisp-os--encode-sigset set-buf mask)
-            (let ((r (nelisp-os--libc-call "libc" "signalfd"
-                                  [:sint32 :sint32 :pointer :sint32]
-                                  fd set-buf flags)))
-              (if (= r -1) (nelisp-os--ffi-errno-signal) r)))
-        (nelisp-os--free set-buf)))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (let ((set-buf (nelisp-os--alloc nelisp-os--sigset-len)))
+        (unwind-protect
+            (progn
+              (nelisp-os--encode-sigset set-buf mask)
+              (let ((r (nelisp-os--libc-call "libc" "signalfd"
+                                    [:sint32 :sint32 :pointer :sint32]
+                                    fd set-buf flags)))
+                (if (= r -1) (nelisp-os--ffi-errno-signal) r)))
+          (nelisp-os--free set-buf))))))
 
 (defun nelisp-os-signalfd-read (fd max-events)
   "Read up to MAX-EVENTS events off signalfd FD.  Returns a list of
@@ -5415,21 +5417,23 @@ mask.  MASK is a list of signal numbers; FLAGS = OR of `SFD-*'."
 no events are ready (only on FD opened `SFD-NONBLOCK')."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-signalfd-read fd max-events)
-    (let* ((cap (* nelisp-os--signalfd-siginfo-len max-events))
-           (buf (nelisp-os--alloc cap)))
-      (unwind-protect
-          (let ((n (nelisp-os--libc-call "libc" "read"
-                                [:sint64 :sint32 :pointer :uint64]
-                                fd buf cap)))
-            (if (= n -1)
-                (nelisp-os--ffi-errno-signal)
-              (let ((events nil)
-                    (off 0))
-                (while (<= (+ off nelisp-os--signalfd-siginfo-len) n)
-                  (push (nelisp-os--decode-signalfd-event buf off) events)
-                  (setq off (+ off nelisp-os--signalfd-siginfo-len)))
-                (nreverse events))))
-        (nelisp-os--free buf)))))
+    (if (nelisp-os--darwin-p)
+        (nelisp-os--linux-only-unsupported)
+      (let* ((cap (* nelisp-os--signalfd-siginfo-len max-events))
+             (buf (nelisp-os--alloc cap)))
+        (unwind-protect
+            (let ((n (nelisp-os--libc-call "libc" "read"
+                                  [:sint64 :sint32 :pointer :uint64]
+                                  fd buf cap)))
+              (if (= n -1)
+                  (nelisp-os--ffi-errno-signal)
+                (let ((events nil)
+                      (off 0))
+                  (while (<= (+ off nelisp-os--signalfd-siginfo-len) n)
+                    (push (nelisp-os--decode-signalfd-event buf off) events)
+                    (setq off (+ off nelisp-os--signalfd-siginfo-len)))
+                  (nreverse events))))
+          (nelisp-os--free buf))))))
 
 (defun nelisp-os--windows-normalize-signal-mask (mask)
   "Return MASK as a duplicate-free ascending list of positive signal numbers."
