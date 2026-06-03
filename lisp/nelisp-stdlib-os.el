@@ -5630,6 +5630,9 @@ value=MS-as-(sec . nsec)."
 
 (defconst nelisp-os-SCM-RIGHTS     1)              ; SOL_SOCKET cmsg type — fd passing
 (defconst nelisp-os-SO-PEERCRED    17)             ; getsockopt option — struct ucred
+(defconst nelisp-os-SOL-LOCAL       0)             ; Darwin AF_UNIX local socket options
+(defconst nelisp-os-LOCAL-PEERCRED  1)             ; Darwin struct xucred
+(defconst nelisp-os-LOCAL-PEERPID   2)             ; Darwin peer pid
 
 ;; ----- 64-bit Linux ABI layout constants (Doc 76 Stage G) -----
 
@@ -5638,6 +5641,7 @@ value=MS-as-(sec . nsec)."
 (defconst nelisp-os--cmsghdr-len    16)            ; struct cmsghdr header
 (defconst nelisp-os--cmsg-align      8)            ; CMSG alignment on 64-bit Linux
 (defconst nelisp-os--ucred-len      12)            ; struct ucred
+(defconst nelisp-os--darwin-xucred-len 256)        ; large enough for Darwin struct xucred
 (defconst nelisp-os--sizeof-fd       4)            ; sizeof(int) on Linux LP64
 
 ;; ----- cmsg helpers (CMSG_LEN / CMSG_SPACE re-implementation) -----
@@ -5690,6 +5694,15 @@ Stops on a malformed cmsg (= len < cmsghdr_len) or buffer exhaustion."
   (list (nelisp-os-read-i32 buf 0)
         (nelisp-os-read-u32 buf 4)
         (nelisp-os-read-u32 buf 8)))
+
+(defun nelisp-os--decode-darwin-xucred (pid-buf cred-buf)
+  "Decode Darwin peer credentials into list (PID UID GID).
+Darwin exposes PID through LOCAL_PEERPID and UID/GID through
+LOCAL_PEERCRED's struct xucred.  In xucred, cr_uid is at offset 4 and
+cr_groups[0] is the effective gid at offset 12."
+  (list (nelisp-os-read-i32 pid-buf 0)
+        (nelisp-os-read-u32 cred-buf 4)
+        (nelisp-os-read-u32 cred-buf 12)))
 
 ;; ----- scoped sockaddr_in6 encode/decode -----
 
@@ -6026,20 +6039,48 @@ SO_PEERCRED.  Returns (PID UID GID) on success."
           (if cell
               (copy-sequence (cdr cell))
             (nelisp-os--windows-unsupported))))
-    (let ((cred-buf (nelisp-os--alloc nelisp-os--ucred-len))
-          (len-buf  (nelisp-os--alloc 4)))
-      (unwind-protect
-          (progn
-            (nelisp-os-write-i32 len-buf 0 nelisp-os--ucred-len)
-            (let ((r (nelisp-os--libc-call "libc" "getsockopt"
-                                  [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
-                                  fd nelisp-os-SOL-SOCKET nelisp-os-SO-PEERCRED
-                                  cred-buf len-buf)))
-              (if (/= r 0)
-                  (nelisp-os--ffi-errno-signal)
-                (nelisp-os--decode-ucred cred-buf))))
-        (nelisp-os--free len-buf)
-        (nelisp-os--free cred-buf)))))
+    (if (nelisp-os--darwin-p)
+        (let ((pid-buf (nelisp-os--alloc 4))
+              (pid-len-buf (nelisp-os--alloc 4))
+              (cred-buf (nelisp-os--alloc nelisp-os--darwin-xucred-len))
+              (cred-len-buf (nelisp-os--alloc 4)))
+          (unwind-protect
+              (progn
+                (nelisp-os-write-i32 pid-len-buf 0 4)
+                (let ((pid-r (nelisp-os--libc-call
+                              "libc" "getsockopt"
+                              [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                              fd nelisp-os-SOL-LOCAL nelisp-os-LOCAL-PEERPID
+                              pid-buf pid-len-buf)))
+                  (when (/= pid-r 0)
+                    (nelisp-os--ffi-errno-signal)))
+                (nelisp-os-write-i32 cred-len-buf 0 nelisp-os--darwin-xucred-len)
+                (let ((cred-r (nelisp-os--libc-call
+                               "libc" "getsockopt"
+                               [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                               fd nelisp-os-SOL-LOCAL nelisp-os-LOCAL-PEERCRED
+                               cred-buf cred-len-buf)))
+                  (if (/= cred-r 0)
+                      (nelisp-os--ffi-errno-signal)
+                    (nelisp-os--decode-darwin-xucred pid-buf cred-buf))))
+            (nelisp-os--free cred-len-buf)
+            (nelisp-os--free cred-buf)
+            (nelisp-os--free pid-len-buf)
+            (nelisp-os--free pid-buf)))
+      (let ((cred-buf (nelisp-os--alloc nelisp-os--ucred-len))
+            (len-buf  (nelisp-os--alloc 4)))
+        (unwind-protect
+            (progn
+              (nelisp-os-write-i32 len-buf 0 nelisp-os--ucred-len)
+              (let ((r (nelisp-os--libc-call "libc" "getsockopt"
+                                    [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                                    fd nelisp-os-SOL-SOCKET nelisp-os-SO-PEERCRED
+                                    cred-buf len-buf)))
+                (if (/= r 0)
+                    (nelisp-os--ffi-errno-signal)
+                  (nelisp-os--decode-ucred cred-buf))))
+          (nelisp-os--free len-buf)
+          (nelisp-os--free cred-buf))))))
 
 ;; ----- IPv6 scoped (full sockaddr_in6 surface) -----
 

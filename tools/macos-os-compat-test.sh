@@ -31,11 +31,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 case "$SUITE" in
-  all) DEFAULT_SELECTOR="darwin"; EXPECTED_COUNT=27 ;;
+  all) DEFAULT_SELECTOR="darwin"; EXPECTED_COUNT=30 ;;
   fds) DEFAULT_SELECTOR="open-darwin\\|close-darwin\\|read-darwin\\|write-darwin\\|pipe-darwin\\|poll-darwin\\|dup2-darwin\\|fcntl-darwin\\|fstat-darwin"; EXPECTED_COUNT=9 ;;
   vm) DEFAULT_SELECTOR="vm-darwin"; EXPECTED_COUNT=1 ;;
   process) DEFAULT_SELECTOR="exit-darwin\\|execve-darwin\\|wait-darwin\\|kill-darwin\\|getppid-darwin"; EXPECTED_COUNT=5 ;;
-  sockets) DEFAULT_SELECTOR="network-byte-order-darwin\\|sockopts-darwin\\|shutdown-darwin\\|basic-syscalls-darwin\\|socketpair-darwin\\|sendto-inet-darwin\\|recvfrom-inet-darwin\\|inet-darwin\\|unix-darwin\\|inet6-darwin\\|getname-darwin"; EXPECTED_COUNT=11 ;;
+  sockets) DEFAULT_SELECTOR="network-byte-order-darwin\\|sockopts-darwin\\|shutdown-darwin\\|basic-syscalls-darwin\\|socketpair-darwin\\|sendto-inet-darwin\\|recvfrom-inet-darwin\\|inet-darwin\\|unix-darwin\\|inet6-darwin\\|getname-darwin\\|sendmsg-fds-darwin\\|recvmsg-fds-darwin\\|getsockopt-peercred-darwin"; EXPECTED_COUNT=14 ;;
   *) echo "[macos-os] FAIL: unknown suite $SUITE" >&2; exit 2 ;;
 esac
 
