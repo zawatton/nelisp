@@ -3422,23 +3422,36 @@ correctly."
                  (- ,nelisp-standalone--reader-read-cap off))))
         (nl_cli_wrap_source_at fbuf (+ off (if (< n 0) 0 n)) src)))
     (defun nl_copy_bytes_into (src dst i n off)
-      (if (= i n)
-          off
-        (seq
-         (ptr-write-u8 dst off (ptr-read-u8 src i))
-         (nl_copy_bytes_into src dst (+ i 1) n (+ off 1)))))
+      (seq
+       (while (< i n)
+         (seq
+          (ptr-write-u8 dst off (ptr-read-u8 src i))
+          (setq i (+ i 1))
+          (setq off (+ off 1))))
+       off))
     (defun nl_repl_read_line_loop (buf off)
-      (if (> off ,(- nelisp-standalone--reader-read-cap 512))
-          off
-        (let* ((n (nl_os_read_stdin (+ buf off) 1)))
-          (if (< n 1)
-              (if (= off 0) -1 off)
-            (let* ((ch (ptr-read-u8 buf off)))
-              (if (= ch 10)
-                  off
-                (if (= ch 13)
-                    (nl_repl_read_line_loop buf off)
-                  (nl_repl_read_line_loop buf (+ off 1)))))))))
+      (let* ((done 0)
+             (n 0)
+             (ch 0)
+             (limit ,(- nelisp-standalone--reader-read-cap 512)))
+        (seq
+         (while (= done 0)
+           (if (> off limit)
+               (setq done 1)
+             (seq
+              (setq n (nl_os_read_stdin (+ buf off) 1))
+              (if (< n 1)
+                  (seq
+                   (if (= off 0) (setq off -1) 0)
+                   (setq done 1))
+                (seq
+                 (setq ch (ptr-read-u8 buf off))
+                 (if (= ch 10)
+                     (setq done 1)
+                   (if (= ch 13)
+                       0
+                     (setq off (+ off 1)))))))))
+         off)))
     (defun nl_repl_read_line (buf)
       (let* ((n (nl_repl_read_line_loop buf 0)))
         (seq
