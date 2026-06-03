@@ -38,7 +38,8 @@ $HOME/.local/share/anvil-stage-d-v3.0/bin/nelisp eval "(+ 40 2)"
 
 The macOS arm64 tarball is ad-hoc signed at build time with =codesign -s -=.
 The verifier checks that signature before running =bin/nelisp=; it does not
-repair or re-sign the extracted binary.
+repair or re-sign the extracted binary.  =install-v3.sh= also verifies the
+installed =bin/nelisp= signature on Apple Silicon before reporting success.
 
 On Windows x86_64 the tarball contains =bin/nelisp.exe=.
 

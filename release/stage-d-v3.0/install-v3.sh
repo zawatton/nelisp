@@ -50,6 +50,9 @@ command -v tar >/dev/null 2>&1 || { err "missing tool: tar"; exit 3; }
 if [ -z "$FROM_DIR" ]; then
   command -v curl >/dev/null 2>&1 || { err "missing tool: curl"; exit 3; }
 fi
+if [ "$PLATFORM" = "macos-aarch64" ]; then
+  command -v codesign >/dev/null 2>&1 || { err "missing tool: codesign"; exit 3; }
+fi
 if command -v sha256sum >/dev/null 2>&1; then
   SHA_CMD='sha256sum --check'
 elif command -v shasum >/dev/null 2>&1; then
@@ -75,6 +78,13 @@ fi
 ( cd "${WORK}" && ${SHA_CMD} "${CHECKSUM}" ) || { err "checksum verify FAILED"; exit 1; }
 mkdir -p "${ANVIL_PREFIX}" || { err "cannot create prefix: ${ANVIL_PREFIX}"; exit 2; }
 tar -xzf "${WORK}/${ARTIFACT}" -C "${ANVIL_PREFIX}" --strip-components=1 || { err "tar extract failed"; exit 2; }
+if [ "$PLATFORM" = "macos-aarch64" ]; then
+  codesign --verify "${ANVIL_PREFIX}/bin/nelisp" >/dev/null || {
+    err "installed bin/nelisp is not signed; rebuild the macOS tarball"
+    exit 2
+  }
+  log "code signature OK: ${ANVIL_PREFIX}/bin/nelisp"
+fi
 
 log "installed: ${ANVIL_PREFIX}"
 log "next: add ${ANVIL_PREFIX}/bin to your PATH"

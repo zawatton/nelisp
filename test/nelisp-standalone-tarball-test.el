@@ -54,7 +54,11 @@
     (should (string-match-p "repl --no-prompt" verify))
     (should (string-match-p "zero-Rust standalone tarball smoke PASS" verify))
     (should (string-match-p "Darwin-arm64) echo \"macos-aarch64\"" installer))
-    (should (string-match-p "windows-x86_64" installer))))
+    (should (string-match-p "windows-x86_64" installer))
+    (should (string-match-p "missing tool: codesign" installer))
+    (should (string-match-p "codesign --verify \"\\${ANVIL_PREFIX}/bin/nelisp\"" installer))
+    (should (string-match-p "installed bin/nelisp is not signed; rebuild the macOS tarball" installer))
+    (should-not (string-match-p "codesign -f -s - \"\\${ANVIL_PREFIX}/bin/nelisp\"" installer))))
 
 (ert-deftest nelisp-standalone-tarball-build-script-usage-is-checked-before-build ()
   "The POSIX tarball builder rejects usage errors before invoking make."
@@ -105,6 +109,7 @@
                                 root-readme))
     (should (string-match-p "codesign -s -" stage-readme))
     (should (string-match-p "does not[ \n]+repair or re-sign" stage-readme))
+    (should (string-match-p "install-v3.sh= also verifies" stage-readme))
     (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
                             stage-readme))
     (should (string-match-p "macOS arm64 native verification also checks the existing code signature"
