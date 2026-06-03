@@ -27,7 +27,7 @@
   imports both =KERNEL32.dll!ExitProcess= and
   =WS2_32.dll!WSAStartup= through a multi-DLL PE import directory, calls
   =WSAStartup(MAKEWORD(2,2), &WSADATA)=, and exits 42 on success / 1 on
-  failure.  The next Winsock EXE spec, =winsock-socket-exit-42=, imports
+  failure.  The Winsock socket EXE spec, =winsock-socket-exit-42=, imports
   =WS2_32.dll!socket= / =closesocket= / =WSACleanup= in addition to
   =WSAStartup=, opens an =AF_INET= / =SOCK_STREAM= / =IPPROTO_TCP= socket,
   closes it, cleans up Winsock, and exits 42 only when the lifecycle succeeds.
@@ -2168,26 +2168,25 @@ largest uncertainty (B1 + B2) first.
    *Win64 XMM callee-saves SHIPPED 2026-06-03*: Win64 defuns now preserve
    =XMM6..XMM15= in private 16-byte frame slots, and COFF tests lock the
    first/last save/restore byte shape.
-4. Execute the remaining Stage 2-4 plus command-line smokes on real Windows /
-   Wine, then continue B4/B6/B7 wiring.  *Real-machine script READY
-   2026-06-02*:
+4. Execute the pure-Elisp PE smokes and OS compatibility suites on real
+   Windows / Wine before treating the Windows port as closed.  *Real-machine
+   scripts READY 2026-06-03*:
    =tools/windows-selfhost-test.ps1= drives =scripts/nelisp-windows-build.el=
    to emit =minimal-exit-42=, =virtualalloc-exit-42=,
    =virtualprotect-free-exit-42=, =virtualalloc-arena-exit-42=,
-   =writefile-stdout-exit-42=, and
-   =getcommandline-exit-42=, =commandlinetoargv-exit-42=, and
-   =wsastartup-exit-42=, =createprocess-wait-exit-42=, and
-   =createthread-wait-exit-42=, then validates process exit status and stdout
-   on Windows.  Individual real-machine build
-   entries are also READY 2026-06-02:
-   =nelisp-windows-build-exit42=, =nelisp-windows-build-virtualalloc=,
-   =nelisp-windows-build-arena=, and
-   =nelisp-windows-build-writefile-stdout=.  =nelisp-windows-build-getcommandline=
-   =nelisp-windows-build-commandlinetoargv=,
-   =nelisp-windows-build-wsastartup=, and
-   =nelisp-windows-build-virtualprotect-free=, and
-   =nelisp-windows-build-createprocess=, and
-   =nelisp-windows-build-createthread= are READY 2026-06-03.
+   =writefile-stdout-exit-42=, =readfile-stdin-exit-42=,
+   =createpipe-exit-42=, =createfile-write-exit-42=,
+   =setfilepointer-exit-42=, =getfiletype-exit-42=,
+   =getfileinformation-exit-42=, =filemapping-exit-42=,
+   =getcurrentprocessid-exit-42=, =duplicatehandle-exit-42=,
+   =sethandleinformation-exit-42=, =getlasterror-exit-42=,
+   =getcommandline-exit-42=, =commandlinetoargv-exit-42=,
+   =wsastartup-exit-42=, =winsock-socket-exit-42=,
+   =createprocess-wait-exit-42=, and =createthread-wait-exit-42=, then
+   validates process exit status and expected stdout on Windows.  The
+   companion =tools/windows-os-compat-test.ps1 -Suite all= runs the Windows
+   OS ERT selector with an expected-count gate of 274 tests so stale scripts or
+   incomplete checkouts cannot silently pass a smaller compatibility surface.
 5. Replace parallel/MT with =CreateProcess= / =CreateThread= (B4) — last,
    since it is a feature extension, not a boot blocker.
    *Minimal process API SHIPPED 2026-06-02*: =nelisp-os-exit= and
