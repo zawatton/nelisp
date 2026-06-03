@@ -375,10 +375,10 @@ After clone + build, run the smoke script for your platform:
 
 #+begin_src shell
 # Linux / macOS:
-scripts/verify-cross-platform.sh
+scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball
 
 # Windows (PowerShell):
-.\scripts\verify-cross-platform.ps1
+.\scripts\verify-cross-platform.ps1 -IncludeTarball
 #+end_src
 
 Expected output ends with =Cross-platform verify PASS=.
@@ -496,18 +496,19 @@ Two boundaries are pinned:
 | blocker (CI)     | 1h       | < 5 MB             | PASS (linux-x86_64) |
 | post-ship audit  | 24h      | < 10 MB / 24h      | scheduled, weekly   |
 
-Tier matrix (Doc 32 v2 §11):
+Standalone native CLI matrix (current HEAD):
 
-| Platform        | v1.0 status                       |
-|-----------------+-----------------------------------|
-| linux-x86_64    | blocker (CI gate, must pass)      |
-| macos-aarch64   | best-effort 95%+ (v1.0 time-boxed) |
-| linux-arm64     | best-effort 95%+ (v1.0 time-boxed) |
-| windows-native  | post-v2.0 scope                   |
+| Platform       | Status                                                                 |
+|----------------+------------------------------------------------------------------------|
+| linux-x86_64   | gated by native eval, reader, REPL, cache identity, parallel, tarball   |
+| macos-aarch64  | gated by Mach-O self-host, OS ERT, signed CLI tarball, eval/reader/REPL |
+| windows-x86_64 | gated by PE32+ self-host, OS ERT, CLI tarball, eval/reader/REPL         |
+| linux-arm64    | best-effort                                                             |
 
-=v1.0 time-boxed= = explicit time-boxed exception ratified in Doc 32 v2 §11.
-v1.1+ promotes arm64 to *blocker*; the audit grep guard in
-=test/nelisp-release-test.el= retires at that point.
+The older v1.0 arm64 time-box language is retained only in the v1.0 release
+templates and tests.  The current standalone path is verified by
+=scripts/verify-cross-platform.sh --include-tarball= on POSIX and
+=scripts/verify-cross-platform.ps1 -IncludeTarball= on Windows.
 
 ** What is *not* in v1.0
 
@@ -523,8 +524,10 @@ Said plainly so expectations are calibrated:
   =save-excursion= are deferred to Phase 8.x follow-up patches.
 - Default =--no-emacs= still falls back to =emacs --batch= for cold-init
   failures (3-year safety window).
-- macOS arm64 / Linux arm64 = best-effort only (= time-boxed for v1.0).
-- Windows native =--no-emacs= is post-v2.0 scope.
+- Linux x86_64, macOS arm64, and Windows x86_64 native standalone CLI
+  paths are gated by platform-specific eval, reader, REPL, cache identity,
+  parallel build, and tarball smokes.
+- Linux arm64 remains best-effort.
 
 ** Test status (HEAD, 2026-05-14)
 
@@ -540,9 +543,11 @@ Said plainly so expectations are calibrated:
   ~1.5× growth in test count reflects the new sub-systems: Phase 47
   self-emission (600+ ERT), Doc 79 v7 GC, Doc 102 mirror, Doc 100/110
   ABI / arithmetic, Doc 81 cons cluster, Doc 86/87 Tier 1+2 builtins.
-- 3-platform 1-hour soak (Linux x86_64 / macOS M1 / Windows MSYS2)
-  passed end-to-end at v1.0; macOS aarch64 build re-validation is
-  pending a libffi-sys upstream fix (Doc 76 M1 verify pause).
+- Cross-platform standalone gates (Linux x86_64 / macOS M1 arm64 /
+  Windows x86_64) now cover native reader/eval execution, REPL command
+  handling, cache identity, parallel build, OS compatibility ERT, and
+  signed standalone tarball verification.  macOS arm64 uses ad-hoc
+  =codesign= for native Mach-O execution.
 
 ** Key design documents
 

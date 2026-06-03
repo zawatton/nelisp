@@ -87,6 +87,29 @@
     (should-not (string-match-p "anvil-runtime" verify))
     (should-not (string-match-p "libnelisp_runtime" verify))))
 
+(ert-deftest nelisp-standalone-tarball-readmes-document-native-parity ()
+  "README files document the short CLI, macOS signing, and full verify gates."
+  (let ((root-readme (nelisp-standalone-tarball-test--read "README.org"))
+        (stage-readme (nelisp-standalone-tarball-test--read
+                       "README-stage-d-v3.0.org")))
+    (should (string-match-p "scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball"
+                            root-readme))
+    (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
+                            root-readme))
+    (should (string-match-p "Standalone native CLI matrix" root-readme))
+    (should (string-match-p "macos-aarch64.*signed CLI tarball"
+                            root-readme))
+    (should (string-match-p "windows-x86_64.*PE32[+] self-host"
+                            root-readme))
+    (should-not (string-match-p "macOS aarch64 build re-validation is[ \n]+pending"
+                                root-readme))
+    (should (string-match-p "codesign -s -" stage-readme))
+    (should (string-match-p "does not[ \n]+repair or re-sign" stage-readme))
+    (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
+                            stage-readme))
+    (should (string-match-p "macOS arm64 native verification also checks the existing code signature"
+                            stage-readme))))
+
 (ert-deftest nelisp-standalone-tarball-built-fixture-has-expected-shape ()
   (skip-unless (equal "1" (getenv "NELISP_STANDALONE_TARBALL_BUILT")))
   (let* ((root nelisp-standalone-tarball-test--repo-root)

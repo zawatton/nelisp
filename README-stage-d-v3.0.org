@@ -36,6 +36,10 @@ make standalone-tarball-verify PLATFORM=macos-aarch64
 $HOME/.local/share/anvil-stage-d-v3.0/bin/nelisp eval "(+ 40 2)"
 #+end_src
 
+The macOS arm64 tarball is ad-hoc signed at build time with =codesign -s -=.
+The verifier checks that signature before running =bin/nelisp=; it does not
+repair or re-sign the extracted binary.
+
 On Windows x86_64 the tarball contains =bin/nelisp.exe=.
 
 * Verify the CLI
@@ -52,6 +56,22 @@ Expected output:
 42
 [1 "a" nil t]
 #+end_src
+
+* Full native verification
+
+For Linux and Apple Silicon source checkouts:
+
+#+begin_src shell
+./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball
+#+end_src
+
+For Windows x86_64 PowerShell:
+
+#+begin_src powershell
+.\scripts\verify-cross-platform.ps1 -IncludeTarball
+#+end_src
+
+Expected output ends with =Cross-platform verify PASS=.
 
 * Build Artifacts
 
@@ -71,4 +91,6 @@ The standalone bundle contains:
 - Tarball cap: < 15 MB compressed.
 - The verifier checks SHA-256, layout, and native =eval= / REPL execution
   when the platform matches the host.
+- macOS arm64 native verification also checks the existing code signature
+  before executing =bin/nelisp=.
 - Cross-built non-native tarballs are verified layout-only.
