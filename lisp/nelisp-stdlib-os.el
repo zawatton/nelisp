@@ -160,6 +160,13 @@
 
 (require 'nelisp-stdlib-os-int-helpers)
 
+(declare-function nelisp-os--alloc "ext:nelisp-runtime" (size))
+(declare-function nelisp-os--errno "ext:nelisp-runtime" ())
+(declare-function nelisp-os--free "ext:nelisp-runtime" (ptr))
+(declare-function nelisp-os--libc-call "ext:nelisp-runtime" (dll fn sig &rest args))
+(declare-function nelisp--syscall "ext:nelisp-runtime" (&rest args))
+(declare-function nelisp--syscall-supported-p "ext:nelisp-runtime" ())
+
 (define-error 'nelisp-os-error "NeLisp OS error")
 
 ;; ---------------------------------------------------------------------------
@@ -3201,7 +3208,7 @@ returns (0 . 0)."
 
 (defun nelisp-os-WEXITSTATUS (status)
   "Extract exit code from STATUS (only meaningful when WIFEXITED)."
-  (logand (lsh status -8) 255))
+  (logand (ash status -8) 255))
 
 (defun nelisp-os-WIFSIGNALED (status)
   "Non-nil if STATUS came from termination by signal."
