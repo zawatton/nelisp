@@ -13,6 +13,19 @@
     (insert-file-contents (nelisp-standalone-tarball-test--path rel))
     (buffer-string)))
 
+(defun nelisp-standalone-tarball-test--call-script (&rest args)
+  "Run the tarball build script with ARGS and return (STATUS . OUTPUT)."
+  (let ((buf (generate-new-buffer " *nelisp-standalone-tarball-script*")))
+    (unwind-protect
+        (let ((status (apply #'call-process
+                             (nelisp-standalone-tarball-test--path
+                              "tools/build-standalone-tarball.sh")
+                             nil (list buf t) nil args)))
+          (cons status
+                (with-current-buffer buf
+                  (buffer-substring-no-properties (point-min) (point-max)))))
+      (kill-buffer buf))))
+
 (ert-deftest nelisp-standalone-tarball-scripts-and-targets-exist ()
   (let ((makefile (nelisp-standalone-tarball-test--read "Makefile"))
         (build (nelisp-standalone-tarball-test--read "tools/build-standalone-tarball.sh"))
@@ -36,6 +49,24 @@
     (should (string-match-p "zero-Rust standalone tarball smoke PASS" verify))
     (should (string-match-p "Darwin-arm64) echo \"macos-aarch64\"" installer))
     (should (string-match-p "windows-x86_64" installer))))
+
+(ert-deftest nelisp-standalone-tarball-build-script-usage-is-checked-before-build ()
+  "The POSIX tarball builder rejects usage errors before invoking make."
+  (pcase-let ((`(,help-status . ,help-out)
+               (nelisp-standalone-tarball-test--call-script "--help"))
+              (`(,missing-status . ,missing-out)
+               (nelisp-standalone-tarball-test--call-script "--emacs"))
+              (`(,unknown-status . ,unknown-out)
+               (nelisp-standalone-tarball-test--call-script "--bogus")))
+    (should (= help-status 0))
+    (should (string-match-p "usage: .*\\[--emacs EMACS\\]" help-out))
+    (should-not (string-match-p "building standalone reader" help-out))
+    (should (= missing-status 2))
+    (should (string-match-p "usage: .*\\[--emacs EMACS\\]" missing-out))
+    (should-not (string-match-p "building standalone reader" missing-out))
+    (should (= unknown-status 2))
+    (should (string-match-p "usage: .*\\[--emacs EMACS\\]" unknown-out))
+    (should-not (string-match-p "building standalone reader" unknown-out))))
 
 (ert-deftest nelisp-standalone-tarball-scripts-stay-zero-rust ()
   (let ((build (nelisp-standalone-tarball-test--read "tools/build-standalone-tarball.sh"))
