@@ -731,6 +731,7 @@ at its kind-fixed offset since per-kind layout is constant."
     (symbol-eq . 76)
     (symbol-name-eq . 77)
     (syscall-direct . 78)
+    (syscall-direct-store-x1 . 98)
     (table-define . 79)
     (table-lookup . 80)
     (value-seq . 88)
@@ -9087,6 +9088,33 @@ functions `((NAME . ARITY) ...)'."
                  (nth 6 sexp) env fenv defuns)
           :a5   (nelisp-phase47-compiler--parse-value
                  (nth 7 sexp) env fenv defuns)))
+   ;; `(syscall-direct-store-x1 NR A0 A1 A2 A3 A4 A5 PTR OFFSET)' — like
+   ;; `syscall-direct', but stores the second arm64 kernel return register
+   ;; into *(u64*)(PTR+OFFSET) before returning x0.  Darwin fork(2) uses
+   ;; the second return register to distinguish parent from child.
+   ((and (consp sexp) (eq (car sexp) 'syscall-direct-store-x1))
+    (unless (= (length sexp) 10)
+      (signal 'nelisp-phase47-compiler-error
+              (list :syscall-direct-store-x1-arity sexp)))
+    (nelisp-phase47-compiler--make-ir 'syscall-direct-store-x1
+          :nr   (nelisp-phase47-compiler--parse-value
+                 (nth 1 sexp) env fenv defuns)
+          :a0   (nelisp-phase47-compiler--parse-value
+                 (nth 2 sexp) env fenv defuns)
+          :a1   (nelisp-phase47-compiler--parse-value
+                 (nth 3 sexp) env fenv defuns)
+          :a2   (nelisp-phase47-compiler--parse-value
+                 (nth 4 sexp) env fenv defuns)
+          :a3   (nelisp-phase47-compiler--parse-value
+                 (nth 5 sexp) env fenv defuns)
+          :a4   (nelisp-phase47-compiler--parse-value
+                 (nth 6 sexp) env fenv defuns)
+          :a5   (nelisp-phase47-compiler--parse-value
+                 (nth 7 sexp) env fenv defuns)
+          :ptr  (nelisp-phase47-compiler--parse-value
+                 (nth 8 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 9 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
    ;; payloads into a fresh `NlConsBox' and therefore assume the input
@@ -9239,6 +9267,31 @@ functions `((NAME . ARITY) ...)'."
                (nth 6 sexp) env fenv defuns)
           :a5 (nelisp-phase47-compiler--parse-value
                (nth 7 sexp) env fenv defuns)))
+   ;; Darwin arm64 helper: preserve x0 while storing the second return
+   ;; register.  This remains unavailable to x86_64 codegen.
+   ((and (consp sexp) (eq (car sexp) 'syscall-direct-store-x1))
+    (unless (= (length sexp) 10)
+      (signal 'nelisp-phase47-compiler-error
+              (list :syscall-direct-store-x1-arity sexp)))
+    (nelisp-phase47-compiler--make-ir 'syscall-direct-store-x1
+          :nr (nelisp-phase47-compiler--parse-value
+               (nth 1 sexp) env fenv defuns)
+          :a0 (nelisp-phase47-compiler--parse-value
+               (nth 2 sexp) env fenv defuns)
+          :a1 (nelisp-phase47-compiler--parse-value
+               (nth 3 sexp) env fenv defuns)
+          :a2 (nelisp-phase47-compiler--parse-value
+               (nth 4 sexp) env fenv defuns)
+          :a3 (nelisp-phase47-compiler--parse-value
+               (nth 5 sexp) env fenv defuns)
+          :a4 (nelisp-phase47-compiler--parse-value
+               (nth 6 sexp) env fenv defuns)
+          :a5 (nelisp-phase47-compiler--parse-value
+               (nth 7 sexp) env fenv defuns)
+          :ptr (nelisp-phase47-compiler--parse-value
+                (nth 8 sexp) env fenv defuns)
+          :offset (nelisp-phase47-compiler--parse-value
+                   (nth 9 sexp) env fenv defuns)))
    ;; Function call (= head is a defined function name).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
@@ -10731,6 +10784,8 @@ the node's class to consume the result correctly."
          (nelisp-asm-arm64-scvtf-d-from-x buf 'd0 'x0))
         ((= tag 78)             ; syscall-direct — aarch64 raw SVC (Linux/Darwin)
          (nelisp-phase47-compiler--emit-syscall-direct-arm64 node buf))
+        ((= tag 98)             ; syscall-direct-store-x1 — Darwin fork helper
+         (nelisp-phase47-compiler--emit-syscall-direct-store-x1-arm64 node buf))
         ((= tag 41)             ; ptr-read-u64 — aarch64 LDR x0,[x1,x2]
          (nelisp-phase47-compiler--emit-ptr-read-u64-arm64 node buf))
         ((= tag 45)             ; ptr-write-u64 — aarch64 STR x3,[x1,x2]
@@ -11116,6 +11171,9 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-dealloc-bytes node buf))
       ((= tag 78)               ; syscall-direct
        (nelisp-phase47-compiler--emit-syscall-direct node buf))
+      ((= tag 98)               ; syscall-direct-store-x1
+       (signal 'nelisp-phase47-compiler-error
+               (list :syscall-direct-store-x1-x86_64-unsupported)))
       ((= tag 15)               ; cons-make
        (nelisp-phase47-compiler--emit-cons-make node buf))
       ((= tag 16)               ; cons-make-with-clone
@@ -13662,6 +13720,24 @@ byte count is identical across pass-1 and pass-2."
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
     (nelisp-asm-arm64-ldr-post-sp-16 buf nr-reg)
     (nelisp-asm-arm64-svc buf svc-imm)))
+
+(defun nelisp-phase47-compiler--emit-syscall-direct-store-x1-arm64 (node buf)
+  "Emit `syscall-direct-store-x1' for aarch64.
+The syscall is emitted like `syscall-direct'.  After SVC, x1 is stored to
+*(u64*)(PTR+OFFSET), and x0 is restored as the expression result."
+  (nelisp-phase47-compiler--emit-syscall-direct-arm64 node buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; save syscall x0
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)           ; save syscall x1
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; save ptr
+  (nelisp-phase47-compiler--emit-value
+   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = offset
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x3)          ; x3 = saved x1
+  (nelisp-asm-arm64-str-reg-reg buf 'x3 'x1 'x2)     ; [ptr+offset] = x1
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))         ; restore syscall x0
 
 (defun nelisp-phase47-compiler--emit-ptr-read-u64-arm64 (node buf)
   "Emit `ptr-read-u64' for aarch64 — inline `LDR x0, [x1, x2]'.

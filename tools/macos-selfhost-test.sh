@@ -14,6 +14,10 @@
 #
 #     tools/macos-selfhost-test.sh --emit-only
 #
+# To isolate artifacts for parallel runs or repeated local experiments:
+#
+#     tools/macos-selfhost-test.sh --emit-only --out-dir target/macos-smoke-run1
+#
 # A no-dyld image is SIGKILLed by the kernel, so the writer emits the
 # proven dyld+libSystem container that does its work via raw `svc'
 # syscalls.  Zero Rust, zero external compiler/linker — only codesign.
@@ -25,10 +29,10 @@ EMACS="${EMACS:-emacs}"
 EMIT_ONLY="${EMIT_ONLY:-0}"
 fail=0
 SELECTED_SMOKES=()
-OUT_DIR="$here/target/macos-smoke"
+OUT_DIR="${NELISP_MACOS_SMOKE_OUT_DIR:-$here/target/macos-smoke}"
 
 usage() {
-  echo "usage: $0 [--emit-only] [--smoke all|NAME] [--emacs EMACS] [--list]" >&2
+  echo "usage: $0 [--emit-only] [--smoke all|NAME] [--emacs EMACS] [--out-dir DIR] [--list]" >&2
 }
 
 SMOKE_NAMES=(
@@ -59,6 +63,11 @@ while [ "$#" -gt 0 ]; do
     --emit-only)
       EMIT_ONLY=1
       shift
+      ;;
+    --out-dir)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      OUT_DIR="$2"
+      shift 2
       ;;
     --smoke)
       if [ "$#" -lt 2 ]; then usage; exit 2; fi
@@ -389,15 +398,17 @@ build_run read-stdin '(seq
           (fail)))))
   (exit (run)))' 42 "" "nelisp read smoke"
 
-# raw Darwin pipe(2): create an fd pair, write 4 bytes, read them back,
-# and close both ends.  Mirrors the Windows CreatePipe self-host smoke.
+# Darwin fd-pair lifecycle: socketpair(2) gives us both descriptors through
+# a user pointer, unlike raw Darwin pipe(2)'s two-register return ABI.
+# Write 4 bytes, read them back, and close both ends.  Mirrors the Windows
+# CreatePipe self-host smoke at the descriptor/data-path level.
 build_run pipe '(seq
   (defun fail () (syscall-direct 1 13 0 0 0 0 0))
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
   (defun run ()
     (seq
       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((rc (syscall-direct 42 8589934848 0 0 0 0 0)))
+      (let ((rc (syscall-direct 135 1 1 0 8589934848 0 0)))
         (if (= rc 0)
             (let ((rfd (ptr-read-u32 8589934592 256)))
               (let ((wfd (ptr-read-u32 8589934592 260)))
@@ -426,24 +437,27 @@ build_run getpid '(seq
   (exit (run)))' 42
 
 # raw Darwin fork(2)+wait4(2): child exits 42, parent waits for the exact
-# child pid and verifies the traditional wait status (42 << 8).
+# child pid and verifies the traditional wait status (42 << 8).  Darwin
+# arm64 returns the fork parent/child discriminator in x1, so this uses the
+# store-x1 syscall helper instead of assuming x0 alone is enough.
 build_run fork-wait '(seq
   (defun fail () (syscall-direct 1 13 0 0 0 0 0))
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
   (defun run ()
     (seq
       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((pid (syscall-direct 2 0 0 0 0 0 0)))
-        (if (= pid 0)
-            (syscall-direct 1 42 0 0 0 0 0)
-          (if (< 0 pid)
-              (let ((waited (syscall-direct 7 pid 8589934848 0 0 0 0)))
-                (if (= waited pid)
-                    (if (= (ptr-read-u32 8589934592 256) 10752)
-                        (ok)
-                      (fail))
-                  (fail)))
-            (fail))))))
+      (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 8589934592 240)))
+        (let ((childp (ptr-read-u64 8589934592 240)))
+          (if (= childp 1)
+              (syscall-direct 1 42 0 0 0 0 0)
+            (if (< 0 pid)
+                (let ((waited (syscall-direct 7 pid 8589934848 0 0 0 0)))
+                  (if (= waited pid)
+                      (if (= (ptr-read-u32 8589934592 256) 10752)
+                          (ok)
+                        (fail))
+                    (fail)))
+              (fail)))))))
   (exit (run)))' 42
 
 # raw Darwin fork(2)+execve(2)+wait4(2): child execs `/bin/sh -c "exit 42"`,
@@ -462,19 +476,20 @@ build_run fork-execve '(seq
       (ptr-write-u64 8589934592 528 8589934880)
       (ptr-write-u64 8589934592 536 0)
       (ptr-write-u64 8589934592 576 0)
-      (let ((pid (syscall-direct 2 0 0 0 0 0 0)))
-        (if (= pid 0)
-            (seq
-              (syscall-direct 59 8589934848 8589935104 8589935168 0 0 0)
-              (syscall-direct 1 13 0 0 0 0 0))
-          (if (< 0 pid)
-              (let ((waited (syscall-direct 7 pid 8589934912 0 0 0 0)))
-                (if (= waited pid)
-                    (if (= (ptr-read-u32 8589934592 320) 10752)
-                        (ok)
-                      (fail))
-                  (fail)))
-            (fail))))))
+      (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 8589934592 240)))
+        (let ((childp (ptr-read-u64 8589934592 240)))
+          (if (= childp 1)
+              (seq
+                (syscall-direct 59 8589934848 8589935104 8589935168 0 0 0)
+                (syscall-direct 1 13 0 0 0 0 0))
+            (if (< 0 pid)
+                (let ((waited (syscall-direct 7 pid 8589934912 0 0 0 0)))
+                  (if (= waited pid)
+                      (if (= (ptr-read-u32 8589934592 320) 10752)
+                          (ok)
+                        (fail))
+                    (fail)))
+              (fail)))))))
   (exit (run)))' 42
 
 # raw Darwin open/write/close/unlink path: verifies simple file creation.
@@ -580,8 +595,8 @@ build_run socket-close '(seq
         13)))
   (exit (run)))' 42
 
-# raw Darwin dup(2)+fcntl(2): duplicate a pipe write fd, set FD_CLOEXEC on
-# the duplicate, verify it with F_GETFD, then write through the duplicate.
+# raw Darwin dup(2)+fcntl(2): duplicate an fd-pair write fd, set FD_CLOEXEC
+# on the duplicate, verify it with F_GETFD, then write through the duplicate.
 build_run dup-fcntl '(seq
   (defun fail () (syscall-direct 1 13 0 0 0 0 0))
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
@@ -598,7 +613,7 @@ build_run dup-fcntl '(seq
   (defun run ()
     (seq
       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((rc (syscall-direct 42 8589934848 0 0 0 0 0)))
+      (let ((rc (syscall-direct 135 1 1 0 8589934848 0 0)))
         (if (= rc 0)
             (let ((rfd (ptr-read-u32 8589934592 256)))
               (let ((wfd (ptr-read-u32 8589934592 260)))

@@ -40,20 +40,32 @@
   "Return the current Emacs executable path for child smoke builds."
   (expand-file-name invocation-name invocation-directory))
 
+(defun nelisp-macos-selfhost-test--out-dir (root name)
+  "Return a test-specific output directory under ROOT for NAME."
+  (expand-file-name
+   (format "target/macos-smoke-test/%s" name)
+   root))
+
 (ert-deftest nelisp-macos-selfhost/emit-only-script-builds-all-smokes ()
   "The macOS self-host smoke harness builds every case in emit-only mode."
   (let* ((root (nelisp-macos-selfhost-test--repo-root))
          (script (expand-file-name "tools/macos-selfhost-test.sh" root))
+         (out-dir (nelisp-macos-selfhost-test--out-dir root "emit-only-all"))
          (buf (generate-new-buffer " *nelisp-macos-selfhost-emit-only*"))
          (process-environment
           (cons (format "EMACS=%s"
                         (nelisp-macos-selfhost-test--current-emacs))
                 process-environment)))
     (unwind-protect
-        (let ((status (call-process "bash" nil buf nil script "--emit-only")))
+        (let ((status (call-process "bash" nil buf nil
+                                    script "--emit-only" "--out-dir"
+                                    out-dir)))
           (with-current-buffer buf
             (let ((out (buffer-string)))
               (should (= status 0))
+              (should (string-match-p
+                       (regexp-quote (format "output: %s" out-dir))
+                       out))
               (dolist (name nelisp-macos-selfhost-test--smoke-names)
                 (should (string-match-p
                          (regexp-quote
@@ -70,6 +82,7 @@
   "The macOS self-host harness can list and run one selected smoke."
   (let* ((root (nelisp-macos-selfhost-test--repo-root))
          (script (expand-file-name "tools/macos-selfhost-test.sh" root))
+         (out-dir (nelisp-macos-selfhost-test--out-dir root "select"))
          (buf (generate-new-buffer " *nelisp-macos-selfhost-select*"))
          (process-environment
           (cons (format "EMACS=%s"
@@ -94,11 +107,14 @@
           (let ((status (call-process "bash" nil buf nil
                                       script "--emacs"
                                       (nelisp-macos-selfhost-test--current-emacs)
-                                      "--emit-only" "--smoke" "exit42")))
+                                      "--emit-only" "--out-dir" out-dir
+                                      "--smoke" "exit42")))
             (with-current-buffer buf
               (let ((out (buffer-string)))
                 (should (= status 0))
-                (should (string-match-p "output: .*/target/macos-smoke" out))
+                (should (string-match-p
+                         (regexp-quote (format "output: %s" out-dir))
+                         out))
                 (should (string-match-p
                          (regexp-quote "[macos] PASS: exit42 -> built")
                          out))
@@ -110,18 +126,18 @@
                           "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
                          out))))
             (should (file-exists-p
-                     (expand-file-name "target/macos-smoke/nelisp-macos-exit42"
-                                       root)))
+                     (expand-file-name "nelisp-macos-exit42" out-dir)))
             (should (file-exists-p
                      (expand-file-name
-                      "target/macos-smoke/nelisp-macos-exit42.build.log"
-                      root)))))
+                      "nelisp-macos-exit42.build.log"
+                      out-dir)))))
       (kill-buffer buf))))
 
 (ert-deftest nelisp-macos-selfhost/all-smoke-alias ()
   "The macOS self-host harness accepts `--smoke all' like Windows."
   (let* ((root (nelisp-macos-selfhost-test--repo-root))
          (script (expand-file-name "tools/macos-selfhost-test.sh" root))
+         (out-dir (nelisp-macos-selfhost-test--out-dir root "all-alias"))
          (buf (generate-new-buffer " *nelisp-macos-selfhost-all*"))
          (process-environment
           (cons (format "EMACS=%s"
@@ -129,10 +145,14 @@
                 process-environment)))
     (unwind-protect
         (let ((status (call-process "bash" nil buf nil
-                                    script "--emit-only" "--smoke" "all")))
+                                    script "--emit-only" "--out-dir"
+                                    out-dir "--smoke" "all")))
           (with-current-buffer buf
             (let ((out (buffer-string)))
               (should (= status 0))
+              (should (string-match-p
+                       (regexp-quote (format "output: %s" out-dir))
+                       out))
               (should (string-match-p
                        (regexp-quote "[macos] PASS: exit42 -> built")
                        out))
