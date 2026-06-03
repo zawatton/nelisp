@@ -34,8 +34,8 @@ usage() {
 SMOKE_NAMES=(
   exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
   cas dealloc cons-set cond logic write-stdout read-stdin pipe getpid
-  fork-wait createfile-write cons-clone boxed names call4-outs str-helpers
-  lits extern aot-jump aot-roots f64-sexp callptr
+  fork-wait createfile-write lseek-fstat cons-clone boxed names call4-outs
+  str-helpers lits extern aot-jump aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -463,6 +463,41 @@ build_run createfile-write '(seq
                 (syscall-direct 6 fd 0 0 0 0 0)
                 (syscall-direct 10 8589934848 0 0 0 0 0)
                 (if (= w 4) (ok) (fail))))
+          (fail)))))
+  (exit (run)))' 42
+
+# raw Darwin lseek(2)+fstat64(2): write/read through an O_RDWR file after
+# seeking back to offset 0, then verify the descriptor accepts fstat.
+build_run lseek-fstat '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 256 7810770278772732975)
+      (ptr-write-u64 8589934592 264 8026366082446029673)
+      (ptr-write-u64 8589934592 272 111516299177331)
+      (ptr-write-u32 8589934592 320 1801807219)
+      (let ((fd (syscall-direct 5 8589934848 1538 420 0 0 0)))
+        (if (< 2 fd)
+            (let ((w (syscall-direct 4 fd 8589934912 4 0 0 0)))
+              (let ((pos (syscall-direct 199 fd 0 0 0 0 0)))
+                (let ((n (syscall-direct 3 fd 8589934976 4 0 0 0)))
+                  (let ((st (syscall-direct 189 fd 8589935040 0 0 0 0)))
+                    (seq
+                      (syscall-direct 6 fd 0 0 0 0 0)
+                      (syscall-direct 10 8589934848 0 0 0 0 0)
+                      (if (= w 4)
+                          (if (= pos 0)
+                              (if (= n 4)
+                                  (if (= st 0)
+                                      (if (= (ptr-read-u32 8589934592 384) 1801807219)
+                                          (ok)
+                                        (fail))
+                                    (fail))
+                                (fail))
+                            (fail))
+                        (fail)))))))
           (fail)))))
   (exit (run)))' 42
 
