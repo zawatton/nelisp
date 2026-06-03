@@ -65,17 +65,9 @@ jobs:
         with:
           version: '30.2'
 
-      - name: Verify macOS Mach-O self-host emit
-        shell: bash
-        run: tools/macos-selfhost-test.sh --emit-only --emacs emacs
-
-      - name: Verify macOS OS compatibility
-        shell: bash
-        run: tools/macos-os-compat-test.sh --emacs emacs
-
       - name: Verify macOS standalone parity
         shell: bash
-        run: ./scripts/verify-cross-platform.sh --parallel-jobs 2 --skip-native-smokes --build-only-standalone-smokes --include-tarball
+        run: ./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball
 
       - name: Upload macOS standalone tarball
         uses: actions/upload-artifact@v4

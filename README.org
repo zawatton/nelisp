@@ -394,9 +394,8 @@ With =--include-tarball=, verification also installs from the freshly built
 =dist= tarball and executes the installed =bin/nelisp= or =bin/nelisp.exe=.
 The same standalone/tarball/install gate is wired into
 =.github/workflows/stage-d-v3.0-standalone.yml= for Linux x86_64, macOS
-arm64, and Windows x86_64.  GitHub's macOS arm64 VM gates Mach-O self-host
-generation with =--emit-only=; run the full self-host execution gate on real
-Apple Silicon with the command above.
+arm64, and Windows x86_64.  macOS runs the full native Mach-O self-host,
+OS-compat, eval, reader, REPL, tarball, install, and installed-binary gate.
 
 ** Launch
 
