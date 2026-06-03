@@ -34,8 +34,9 @@ usage() {
 SMOKE_NAMES=(
   exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
   cas dealloc cons-set cond logic write-stdout read-stdin pipe getpid
-  fork-wait createfile-write lseek-fstat socket-close cons-clone boxed names
-  call4-outs str-helpers lits extern aot-jump aot-roots f64-sexp callptr
+  fork-wait createfile-write lseek-fstat socket-close dup-fcntl cons-clone
+  boxed names call4-outs str-helpers lits extern aot-jump aot-roots f64-sexp
+  callptr
 )
 
 smoke_exists() {
@@ -510,6 +511,47 @@ build_run socket-close '(seq
           (let ((rc (syscall-direct 6 fd 0 0 0 0 0)))
             (if (= rc 0) 42 13))
         13)))
+  (exit (run)))' 42
+
+# raw Darwin dup(2)+fcntl(2): duplicate a pipe write fd, set FD_CLOEXEC on
+# the duplicate, verify it with F_GETFD, then write through the duplicate.
+build_run dup-fcntl '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun good (setfd getfd w n)
+    (if (= setfd 0)
+        (if (= getfd 1)
+            (if (= w 4)
+                (if (= n 4)
+                    (if (= (ptr-read-u32 8589934592 384) 1718646116) 1 0)
+                  0)
+              0)
+          0)
+      0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (let ((rc (syscall-direct 42 8589934848 0 0 0 0 0)))
+        (if (= rc 0)
+            (let ((rfd (ptr-read-u32 8589934592 256)))
+              (let ((wfd (ptr-read-u32 8589934592 260)))
+                (let ((dupfd (syscall-direct 41 wfd 0 0 0 0 0)))
+                  (if (< 2 dupfd)
+                      (let ((setfd (syscall-direct 92 dupfd 2 1 0 0 0)))
+                        (let ((getfd (syscall-direct 92 dupfd 1 0 0 0 0)))
+                          (seq
+                            (ptr-write-u32 8589934592 320 1718646116)
+                            (let ((w (syscall-direct 4 dupfd 8589934912 4 0 0 0)))
+                              (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
+                                (seq
+                                  (syscall-direct 6 rfd 0 0 0 0 0)
+                                  (syscall-direct 6 wfd 0 0 0 0 0)
+                                  (syscall-direct 6 dupfd 0 0 0 0 0)
+                                  (if (= (good setfd getfd w n) 1)
+                                      (ok)
+                                    (fail))))))))
+                    (fail)))))
+          (fail)))))
   (exit (run)))' 42
 
 # cons-make-with-clone: fused (alloc box + deep-clone car/cdr).  Clone
