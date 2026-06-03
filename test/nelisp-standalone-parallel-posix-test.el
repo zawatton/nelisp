@@ -104,8 +104,36 @@
     (should (string-match-p "target/nelisp" script))
     (should (string-match-p "file arg with spaces" script))
     (should (string-match-p "unicode file arg" script))
+    (should (string-match-p "dump-runtime-image" script))
+    (should (string-match-p "eval-runtime-image" script))
+    (should (string-match-p "exec-runtime-image missing form" script))
     (should (string-match-p "(exit)" script))
+    (should (string-match-p "repl --no-print" script))
+    (should (string-match-p "repl bad option" script))
     (should (string-match-p "\\[linux-standalone-reader\\] all PASS" script))
+    (should-not (string-match-p "\\_<cargo\\_>" script))
+    (should-not (string-match-p "\\_<rustc\\_>" script))))
+
+(ert-deftest nelisp-standalone-parallel-posix-macos-reader-script ()
+  "The macOS reader smoke exercises the same short CLI and REPL surface."
+  (let* ((script-path
+          (expand-file-name "tools/macos-standalone-reader-test.sh"
+                            nelisp-standalone-parallel-posix-test--repo-root))
+         (script (nelisp-standalone-parallel-posix-test--read-file-text
+                  script-path)))
+    (should (file-exists-p script-path))
+    (should (file-executable-p script-path))
+    (should (string-match-p "NELISP_STANDALONE_TARGET=macos-aarch64" script))
+    (should (string-match-p "target/nelisp" script))
+    (should (string-match-p "file arg with spaces" script))
+    (should (string-match-p "unicode file arg" script))
+    (should (string-match-p "dump-runtime-image" script))
+    (should (string-match-p "eval-runtime-image" script))
+    (should (string-match-p "exec-runtime-image missing form" script))
+    (should (string-match-p "(exit)" script))
+    (should (string-match-p "repl --no-print" script))
+    (should (string-match-p "repl bad option" script))
+    (should (string-match-p "\\[macos-standalone-reader\\] all PASS" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 

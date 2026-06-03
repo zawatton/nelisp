@@ -117,6 +117,16 @@ run_expect_output "eval" "42" "$EXE" eval "(+ 40 2)"
 run_expect_output "-e" '[1 "a" nil t]' "$EXE" -e '(vector 1 "a" nil t)'
 run_expect_output "load" "42" "$EXE" load "$FILE_SMOKE"
 
+RUNTIME_IMAGE="$SMOKE_DIR/runtime-smoke.nlri"
+run_expect_output "dump-runtime-image" "" \
+  "$EXE" dump-runtime-image "$RUNTIME_IMAGE" "(setq base 40)"
+run_expect_output "eval-runtime-image" "42" \
+  "$EXE" eval-runtime-image "$RUNTIME_IMAGE" "(setq add 2)" "(+ base add)"
+run_expect_output "exec-runtime-image" "" \
+  "$EXE" exec-runtime-image "$RUNTIME_IMAGE" "(setq add 2)" "(+ base add)"
+run_expect_code "exec-runtime-image missing form" 1 \
+  "$EXE" exec-runtime-image "$RUNTIME_IMAGE"
+
 REPL_OUTPUT="$(printf '%s\n' \
   "(+ 40 2)" \
   "nil" \
@@ -131,4 +141,20 @@ if [ "$REPL_OUTPUT" != "$EXPECTED_REPL" ]; then
   exit 1
 fi
 echo "[macos-standalone-reader] PASS: repl stdin/stdout -> 42"
+
+QUIET_REPL_OUTPUT="$(printf '%s\n' \
+  "(defun hot () 1)" \
+  "(hot)" \
+  "(condition-case e (signal 'quit nil) (quit 42))" \
+  '(nelisp--write-stdout-bytes "explicit\n")' \
+  "(hot)" \
+  "(exit)" | "$EXE" repl --no-prompt --no-print)"
+if [ "$QUIET_REPL_OUTPUT" != "explicit" ]; then
+  echo "[macos-standalone-reader] FAIL: repl --no-print output mismatch"
+  printf 'expected:\n%s\nactual:\n%s\n' "explicit" "$QUIET_REPL_OUTPUT"
+  exit 1
+fi
+echo "[macos-standalone-reader] PASS: repl --no-print"
+
+run_expect_code "repl bad option" 2 "$EXE" repl --bad
 echo "[macos-standalone-reader] all PASS - macOS-native standalone reader OK"
