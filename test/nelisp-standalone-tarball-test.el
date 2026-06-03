@@ -111,6 +111,8 @@
                             root-readme))
     (should (string-match-p "The tarball gate includes a real install smoke"
                             root-readme))
+    (should (string-match-p "\\.github/workflows/stage-d-v3.0-standalone.yml"
+                            root-readme))
     (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
                             root-readme))
     (should (string-match-p "\\.\\\\install-v3\\.ps1" root-readme))
@@ -129,11 +131,42 @@
                             stage-readme))
     (should (string-match-p "runs the installed =bin/nelisp= or =bin/nelisp.exe="
                             stage-readme))
+    (should (string-match-p "\\.github/workflows/stage-d-v3.0-standalone.yml"
+                            stage-readme))
     (should (string-match-p "\\.\\\\release\\\\stage-d-v3.0\\\\install-v3\\.ps1" stage-readme))
     (should (string-match-p "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -IncludeTarball"
                             stage-readme))
     (should (string-match-p "macOS arm64 native verification also checks the existing code signature"
                             stage-readme))))
+
+(ert-deftest nelisp-standalone-tarball-v3-workflow-runs-native-parity ()
+  "The stage-d-v3.0 workflow gates Linux, macOS, and Windows standalone parity."
+  (let ((workflow (nelisp-standalone-tarball-test--read
+                   ".github/workflows/stage-d-v3.0-standalone.yml")))
+    (should (string-match-p "name: stage-d-v3.0 standalone parity" workflow))
+    (should (string-match-p "workflow_dispatch:" workflow))
+    (should (string-match-p "pull_request:" workflow))
+    (should (string-match-p "linux-x86_64:" workflow))
+    (should (string-match-p "runs-on: ubuntu-latest" workflow))
+    (should (string-match-p "macos-aarch64:" workflow))
+    (should (string-match-p "runs-on: macos-14" workflow))
+    (should (string-match-p "windows-x86_64:" workflow))
+    (should (string-match-p "runs-on: windows-latest" workflow))
+    (should (string-match-p "version: '30.2'" workflow))
+    (should (string-match-p "jcs090218/setup-emacs-windows" workflow))
+    (should (string-match-p "purcell/setup-emacs" workflow))
+    (should (string-match-p
+             "./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball"
+             workflow))
+    (should (string-match-p
+             "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -ParallelJobs 2 -IncludeTarball"
+             workflow))
+    (should (string-match-p "stage-d-v3.0-linux-x86_64" workflow))
+    (should (string-match-p "stage-d-v3.0-macos-aarch64" workflow))
+    (should (string-match-p "stage-d-v3.0-windows-x86_64" workflow))
+    (should-not (string-match-p "\\_<cargo\\_>" workflow))
+    (should-not (string-match-p "\\_<rustc\\_>" workflow))
+    (should-not (string-match-p "dtolnay/rust-toolchain" workflow))))
 
 (ert-deftest nelisp-standalone-tarball-built-fixture-has-expected-shape ()
   (skip-unless (equal "1" (getenv "NELISP_STANDALONE_TARBALL_BUILT")))

@@ -84,6 +84,9 @@ For Windows x86_64 PowerShell:
 Expected output ends with =Cross-platform verify PASS=.
 With =--include-tarball=, verification also installs from the freshly built
 =dist= tarball and runs the installed =bin/nelisp= or =bin/nelisp.exe=.
+The same full gate is wired into
+=.github/workflows/stage-d-v3.0-standalone.yml= for Linux x86_64, Apple
+Silicon, and Windows x86_64.
 
 * Build Artifacts
 
