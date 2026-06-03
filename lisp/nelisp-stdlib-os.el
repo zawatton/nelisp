@@ -507,6 +507,13 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
   "Signal `nelisp-os-error' with the current errno."
   (signal 'nelisp-os-error (list (nelisp-os--errno))))
 
+(defun nelisp-os--libc-check-errno (fn sig &rest args)
+  "Call libc FN with SIG and ARGS; signal `nelisp-os-error' on -1."
+  (let ((r (apply #'nelisp-os--libc-call "libc" fn sig args)))
+    (if (= r -1)
+        (nelisp-os--ffi-errno-signal)
+      r)))
+
 (defun nelisp-os--windows-ffi-error-signal ()
   "Signal `nelisp-os-error' for a Windows FFI failure.
 The payload is the raw `GetLastError' DWORD, not a POSIX errno."
@@ -2148,7 +2155,10 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
 WHENCE = `nelisp-os-SEEK-SET' / `-CUR' / `-END'."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-lseek fd offset whence)
-    (nelisp-os--check-errno (nelisp--syscall 'lseek fd offset whence))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'lseek fd offset whence))
+      (nelisp-os--libc-check-errno
+       "lseek" [:sint64 :sint32 :sint64 :sint32] fd offset whence))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 76 Stage A.3 — Linux x86_64 / aarch64 struct stat field offsets.
@@ -2669,26 +2679,43 @@ integer (opaque pointer for elisp), or signals `nelisp-os-error' on
 mapping failure (raw kernel returns -errno for failed mmap)."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-mmap length prot flags fd offset)
-    (nelisp-os--check-errno
-     (nelisp--syscall 'mmap 0 length prot flags fd offset))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno
+         (nelisp--syscall 'mmap 0 length prot flags fd offset))
+      (let ((r (nelisp-os--libc-call
+                "libc" "mmap"
+                [:pointer :pointer :uint64 :sint32 :sint32 :sint32 :sint64]
+                0 length prot flags fd offset)))
+        (if (= r nelisp-os-MAP-FAILED)
+            (nelisp-os--ffi-errno-signal)
+          r)))))
 
 (defun nelisp-os-mprotect (addr length prot)
   "POSIX mprotect(2) — change protection on existing mapping."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-mprotect addr length prot)
-    (nelisp-os--check-errno (nelisp--syscall 'mprotect addr length prot))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'mprotect addr length prot))
+      (nelisp-os--libc-check-errno
+       "mprotect" [:sint32 :pointer :uint64 :sint32] addr length prot))))
 
 (defun nelisp-os-munmap (addr length)
   "POSIX munmap(2) — release a previously mmap'd region."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-munmap addr length)
-    (nelisp-os--check-errno (nelisp--syscall 'munmap addr length))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'munmap addr length))
+      (nelisp-os--libc-check-errno
+       "munmap" [:sint32 :pointer :uint64] addr length))))
 
 (defun nelisp-os-dup2 (oldfd newfd)
   "POSIX dup2(2) — duplicate OLDFD onto NEWFD; returns NEWFD."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-dup2 oldfd newfd)
-    (nelisp-os--check-errno (nelisp--syscall 'dup2 oldfd newfd))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'dup2 oldfd newfd))
+      (nelisp-os--libc-check-errno
+       "dup2" [:sint32 :sint32 :sint32] oldfd newfd))))
 
 (defun nelisp-os-pipe ()
   "POSIX pipe(2) — return cons (READ-FD . WRITE-FD), or signal
@@ -2715,7 +2742,10 @@ Other variadic forms (struct flock for F_SETLK etc.) need their own
 primitive; not supported in Phase 3."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-fcntl fd cmd arg)
-    (nelisp-os--check-errno (nelisp--syscall 'fcntl fd cmd arg))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'fcntl fd cmd arg))
+      (nelisp-os--libc-check-errno
+       "fcntl" [:sint32 :sint32 :sint32 :sint64] fd cmd arg))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 55 Phase 4 — Posix-30 (subprocess + AF_INET network + poll).
@@ -2826,7 +2856,9 @@ primitive; not supported in Phase 3."
 signals `nelisp-os-error' on failure."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-unsupported)
-    (nelisp-os--check-errno (nelisp--syscall 'fork))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'fork))
+      (nelisp-os--libc-check-errno "fork" [:sint32]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 76 Stage B (2026-05-08) — execve argv/envp marshaling helper.
@@ -2987,13 +3019,18 @@ returns (0 . 0)."
   "POSIX kill(2) — send SIG to PID; returns 0 on success."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-kill pid sig)
-    (nelisp-os--check-errno (nelisp--syscall 'kill pid sig))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'kill pid sig))
+      (nelisp-os--libc-check-errno
+       "kill" [:sint32 :sint32 :sint32] pid sig))))
 
 (defun nelisp-os-getpid ()
   "POSIX getpid(2) — return current process id."
   (if (nelisp-os--windows-p)
       (nelisp-os--libc-call "kernel32" "GetCurrentProcessId" [:uint32])
-    (nelisp-os--check-errno (nelisp--syscall 'getpid))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'getpid))
+      (nelisp-os--libc-check-errno "getpid" [:sint32]))))
 
 (defun nelisp-os--windows-getppid ()
   "Windows implementation of `nelisp-os-getppid' using Tool Help snapshots."
@@ -3057,7 +3094,9 @@ returns (0 . 0)."
   "POSIX getppid(2) — return parent process id."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-getppid)
-    (nelisp-os--check-errno (nelisp--syscall 'getppid))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'getppid))
+      (nelisp-os--libc-check-errno "getppid" [:sint32]))))
 
 ;; wait status decoders.  Linux puts the exit status in bits 8-15, the
 ;; termination signal in bits 0-6, and 0x7F as the marker for "stopped"
@@ -3183,7 +3222,10 @@ Winsock socket mode while keeping `F_GETFL' coherent for the new fd."
   "POSIX socket(2) — return new fd or signal `nelisp-os-error'."
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-socket domain type proto)
-    (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto))
+      (nelisp-os--libc-check-errno
+       "socket" [:sint32 :sint32 :sint32 :sint32] domain type proto))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 76 Stage C (2026-05-08) — sockaddr_in encode/decode + pollfd[]
@@ -3827,7 +3869,10 @@ host byte order (e.g. `nelisp-os-INADDR-LOOPBACK').  PORT is a
         (if (= r -1)
             (nelisp-os--windows-winsock-error-signal)
           r))
-    (nelisp-os--check-errno (nelisp--syscall 'listen fd backlog))))
+    (if nelisp-os--use-direct-syscall
+        (nelisp-os--check-errno (nelisp--syscall 'listen fd backlog))
+      (nelisp-os--libc-check-errno
+       "listen" [:sint32 :sint32 :sint32] fd backlog))))
 
 (defun nelisp-os-accept-inet (sockfd)
   "POSIX accept(2) for AF_INET.  Returns list (NEWFD CLIENT-IP CLIENT-PORT)

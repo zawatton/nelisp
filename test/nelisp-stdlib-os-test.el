@@ -9025,19 +9025,20 @@
     (should (equal call
                    (list "libc" "htons" [:uint16 :uint16] #x1234)))))
 
-(ert-deftest nelisp-stdlib-os-vm-darwin-uses-syscall-path ()
-  "Darwin VM wrappers use the POSIX syscall path, not Windows VirtualAlloc."
+(ert-deftest nelisp-stdlib-os-vm-darwin-falls-back-to-libc ()
+  "Darwin VM wrappers use libc when direct syscall primitives are unavailable."
   (let ((calls nil))
     (cl-letf (((symbol-function 'nelisp--syscall)
-               (lambda (&rest args)
-                 (push args calls)
-                 (pcase (car args)
-                   ('mmap #x100000000)
-                   (_ 0))))
-              ((symbol-function 'nelisp-os--libc-call)
                (lambda (&rest _args)
-                 (ert-fail "Darwin VM wrapper unexpectedly used libc-call"))))
-      (let ((system-type 'darwin))
+                 (ert-fail "Darwin VM wrapper unexpectedly used nelisp--syscall")))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (pcase fn
+                   ("mmap" #x100000000)
+                   (_ 0)))))
+      (let ((system-type 'darwin)
+            (nelisp-os--use-direct-syscall nil))
         (should (= (nelisp-os-mmap 4096 nelisp-os-PROT-READ
                                    nelisp-os-MAP-PRIVATE -1 0)
                    #x100000000))
@@ -9046,27 +9047,34 @@
         (should (= (nelisp-os-munmap #x100000000 4096) 0))))
     (should (equal (nreverse calls)
                    (list
-                    (list 'mmap 0 4096 nelisp-os-PROT-READ
-                          nelisp-os-MAP-PRIVATE -1 0)
-                    (list 'mprotect #x100000000 4096 nelisp-os-PROT-READ)
-                    (list 'munmap #x100000000 4096))))))
+                    (list "libc" "mmap"
+                          [:pointer :pointer :uint64 :sint32 :sint32 :sint32 :sint64]
+                          (list 0 4096 nelisp-os-PROT-READ
+                                nelisp-os-MAP-PRIVATE -1 0))
+                    (list "libc" "mprotect"
+                          [:sint32 :pointer :uint64 :sint32]
+                          (list #x100000000 4096 nelisp-os-PROT-READ))
+                    (list "libc" "munmap"
+                          [:sint32 :pointer :uint64]
+                          (list #x100000000 4096)))))))
 
-(ert-deftest nelisp-stdlib-os-basic-syscalls-darwin-use-syscall-path ()
-  "Darwin getpid/socket/listen/lseek use the shared POSIX syscall wrappers."
+(ert-deftest nelisp-stdlib-os-basic-syscalls-darwin-fall-back-to-libc ()
+  "Darwin getpid/socket/listen/lseek use libc without direct syscall primitives."
   (let ((calls nil))
     (cl-letf (((symbol-function 'nelisp--syscall)
-               (lambda (&rest args)
-                 (push args calls)
-                 (pcase (car args)
-                   ('getpid 1234)
-                   ('socket 55)
-                   ('listen 0)
-                   ('lseek 99)
-                   (_ (error "unexpected syscall %S" args)))))
-              ((symbol-function 'nelisp-os--libc-call)
                (lambda (&rest _args)
-                 (ert-fail "Darwin basic syscall wrapper unexpectedly used libc-call"))))
-      (let ((system-type 'darwin))
+                 (ert-fail "Darwin basic wrapper unexpectedly used nelisp--syscall")))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (pcase fn
+                   ("getpid" 1234)
+                   ("socket" 55)
+                   ("listen" 0)
+                   ("lseek" 99)
+                   (_ (error "unexpected libc call %S" fn))))))
+      (let ((system-type 'darwin)
+            (nelisp-os--use-direct-syscall nil))
         (should (= (nelisp-os-getpid) 1234))
         (should (= (nelisp-os-socket nelisp-os-AF-INET nelisp-os-SOCK-STREAM 0)
                    55))
@@ -9074,10 +9082,16 @@
         (should (= (nelisp-os-lseek 7 99 nelisp-os-SEEK-SET) 99))))
     (should (equal (nreverse calls)
                    (list
-                    (list 'getpid)
-                    (list 'socket nelisp-os-AF-INET nelisp-os-SOCK-STREAM 0)
-                    (list 'listen 55 16)
-                    (list 'lseek 7 99 nelisp-os-SEEK-SET))))))
+                    (list "libc" "getpid" [:sint32] nil)
+                    (list "libc" "socket"
+                          [:sint32 :sint32 :sint32 :sint32]
+                          (list nelisp-os-AF-INET nelisp-os-SOCK-STREAM 0))
+                    (list "libc" "listen"
+                          [:sint32 :sint32 :sint32]
+                          (list 55 16))
+                    (list "libc" "lseek"
+                          [:sint64 :sint32 :sint64 :sint32]
+                          (list 7 99 nelisp-os-SEEK-SET)))))))
 
 (ert-deftest nelisp-stdlib-os-sockopts-darwin-use-libc ()
   "Darwin int-valued socket options use libc setsockopt/getsockopt."
