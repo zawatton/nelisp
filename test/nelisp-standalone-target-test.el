@@ -226,6 +226,27 @@
         (should-not (tree-member-p '(syscall-direct 0 fd ptr len 0 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 1 fd ptr len 0 0 0) forms))))))
 
+(ert-deftest nelisp-standalone-target-macos-reader-normalizes-shifted-argv ()
+  "macOS reader normalizes LC_MAIN argv+1 into the shared argv shape."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (cl-labels ((tree-member-p
+                 (needle tree)
+                 (cond
+                  ((equal needle tree) t)
+                  ((consp tree)
+                   (or (tree-member-p needle (car tree))
+                       (tree-member-p needle (cdr tree)))))))
+      (let ((forms (nelisp-standalone--reader-os-source-forms)))
+        (should (tree-member-p
+                 '(ptr-write-u64 sp 16 (ptr-read-u64 sp 8))
+                 forms))
+        (should (tree-member-p
+                 '(ptr-write-u64 sp 24 (ptr-read-u64 sp 16))
+                 forms))
+        (should (tree-member-p
+                 '(ptr-write-u64 sp 32 (ptr-read-u64 sp 24))
+                 forms))))))
+
 (ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
   "Windows arena source replaces Linux mmap with VirtualAlloc."
   (let ((nelisp-standalone--target 'windows-x86_64))

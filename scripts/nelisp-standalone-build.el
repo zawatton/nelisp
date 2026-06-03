@@ -3304,7 +3304,21 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                 (ok (extern-call WriteFile h ptr len sent 0)))
            (if (= ok 0) -1 (ptr-read-u32 sent 0))))))
     ('macos-aarch64
-     '((defun nl_os_argv_init (sp) sp)
+     '((defun nl_os_argv_init (sp)
+         (let* ((argc (logand (ptr-read-u64 sp 0) 4294967295))
+                (slot1 (ptr-read-u64 sp 16)))
+           (if (> argc 1)
+               (if (= slot1 0)
+                   ;; Some LC_MAIN dyld paths expose x1 as argv+1 at our
+                   ;; raw entry.  Normalize back to the Linux entry-stack shape
+                   ;; expected by the shared reader driver: [argc argv0 argv1 ...].
+                   (seq
+                    (ptr-write-u64 sp 32 (ptr-read-u64 sp 24))
+                    (ptr-write-u64 sp 24 (ptr-read-u64 sp 16))
+                    (ptr-write-u64 sp 16 (ptr-read-u64 sp 8))
+                    sp)
+                 sp)
+             sp)))
        (defun nl_os_open_read (path)
          (syscall-direct 5 path 0 0 0 0 0))
        (defun nl_os_open_write_truncate (path)
