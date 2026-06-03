@@ -398,34 +398,33 @@ build_run read-stdin '(seq
           (fail)))))
   (exit (run)))' 42 "" "nelisp read smoke"
 
-# Darwin fd-pair lifecycle: socketpair(2) gives us both descriptors through
-# a user pointer, unlike raw Darwin pipe(2)'s two-register return ABI.
-# Write 4 bytes, read them back, and close both ends.  Mirrors the Windows
-# CreatePipe self-host smoke at the descriptor/data-path level.
+# Darwin fd-pair lifecycle: raw pipe(2) returns read fd in x0 and write fd in
+# x1 on arm64.  Use syscall-direct-store-x1 to capture x1, then write 4 bytes,
+# read them back, and close both ends.  Mirrors the Windows CreatePipe
+# self-host smoke at the descriptor/data-path level.
 build_run pipe '(seq
   (defun fail () (syscall-direct 1 13 0 0 0 0 0))
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
   (defun run ()
     (seq
       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((rc (syscall-direct 135 1 1 0 8589934848 0 0)))
-        (if (= rc 0)
-            (let ((rfd (ptr-read-u32 8589934592 256)))
-              (let ((wfd (ptr-read-u32 8589934592 260)))
-                (seq
-                  (ptr-write-u32 8589934592 320 1701865840)
-                  (let ((w (syscall-direct 4 wfd 8589934912 4 0 0 0)))
-                    (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
-                      (seq
-                        (syscall-direct 6 rfd 0 0 0 0 0)
-                        (syscall-direct 6 wfd 0 0 0 0 0)
-                        (if (= w 4)
-                            (if (= n 4)
-                                (if (= (ptr-read-u32 8589934592 384) 1701865840)
-                                    (ok)
-                                  (fail))
-                              (fail))
-                          (fail))))))))
+      (let ((rfd (syscall-direct-store-x1 42 0 0 0 0 0 0 8589934592 260)))
+        (if (< -1 rfd)
+            (let ((wfd (ptr-read-u64 8589934592 260)))
+              (seq
+                (ptr-write-u32 8589934592 320 1701865840)
+                (let ((w (syscall-direct 4 wfd 8589934912 4 0 0 0)))
+                  (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
+                    (seq
+                      (syscall-direct 6 rfd 0 0 0 0 0)
+                      (syscall-direct 6 wfd 0 0 0 0 0)
+                      (if (= w 4)
+                          (if (= n 4)
+                              (if (= (ptr-read-u32 8589934592 384) 1701865840)
+                                  (ok)
+                                (fail))
+                            (fail))
+                        (fail)))))))
           (fail)))))
   (exit (run)))' 42
 
@@ -448,7 +447,7 @@ build_run fork-wait '(seq
       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
       (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 8589934592 240)))
         (let ((childp (ptr-read-u64 8589934592 240)))
-          (if (= childp 1)
+          (if (or (= childp 1) (= pid 0))
               (syscall-direct 1 42 0 0 0 0 0)
             (if (< 0 pid)
                 (let ((waited (syscall-direct 7 pid 8589934848 0 0 0 0)))
@@ -478,7 +477,7 @@ build_run fork-execve '(seq
       (ptr-write-u64 8589934592 576 0)
       (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 8589934592 240)))
         (let ((childp (ptr-read-u64 8589934592 240)))
-          (if (= childp 1)
+          (if (or (= childp 1) (= pid 0))
               (seq
                 (syscall-direct 59 8589934848 8589935104 8589935168 0 0 0)
                 (syscall-direct 1 13 0 0 0 0 0))
@@ -595,8 +594,8 @@ build_run socket-close '(seq
         13)))
   (exit (run)))' 42
 
-# raw Darwin dup(2)+fcntl(2): duplicate an fd-pair write fd, set FD_CLOEXEC
-# on the duplicate, verify it with F_GETFD, then write through the duplicate.
+# raw Darwin dup(2)+fcntl(2): duplicate a pipe write fd, set FD_CLOEXEC on the
+# duplicate, verify it with F_GETFD, then write through the duplicate.
 build_run dup-fcntl '(seq
   (defun fail () (syscall-direct 1 13 0 0 0 0 0))
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
@@ -613,26 +612,25 @@ build_run dup-fcntl '(seq
   (defun run ()
     (seq
       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((rc (syscall-direct 135 1 1 0 8589934848 0 0)))
-        (if (= rc 0)
-            (let ((rfd (ptr-read-u32 8589934592 256)))
-              (let ((wfd (ptr-read-u32 8589934592 260)))
-                (let ((dupfd (syscall-direct 41 wfd 0 0 0 0 0)))
-                  (if (< 2 dupfd)
-                      (let ((setfd (syscall-direct 92 dupfd 2 1 0 0 0)))
-                        (let ((getfd (syscall-direct 92 dupfd 1 0 0 0 0)))
-                          (seq
-                            (ptr-write-u32 8589934592 320 1718646116)
-                            (let ((w (syscall-direct 4 dupfd 8589934912 4 0 0 0)))
-                              (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
-                                (seq
-                                  (syscall-direct 6 rfd 0 0 0 0 0)
-                                  (syscall-direct 6 wfd 0 0 0 0 0)
-                                  (syscall-direct 6 dupfd 0 0 0 0 0)
-                                  (if (= (good setfd getfd w n) 1)
-                                      (ok)
-                                    (fail))))))))
-                    (fail)))))
+      (let ((rfd (syscall-direct-store-x1 42 0 0 0 0 0 0 8589934592 260)))
+        (if (< -1 rfd)
+            (let ((wfd (ptr-read-u64 8589934592 260)))
+              (let ((dupfd (syscall-direct 41 wfd 0 0 0 0 0)))
+                (if (< 2 dupfd)
+                    (let ((setfd (syscall-direct 92 dupfd 2 1 0 0 0)))
+                      (let ((getfd (syscall-direct 92 dupfd 1 0 0 0 0)))
+                        (seq
+                          (ptr-write-u32 8589934592 320 1718646116)
+                          (let ((w (syscall-direct 4 dupfd 8589934912 4 0 0 0)))
+                            (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
+                              (seq
+                                (syscall-direct 6 rfd 0 0 0 0 0)
+                                (syscall-direct 6 wfd 0 0 0 0 0)
+                                (syscall-direct 6 dupfd 0 0 0 0 0)
+                                (if (= (good setfd getfd w n) 1)
+                                    (ok)
+                                  (fail))))))))
+                  (fail))))
           (fail)))))
   (exit (run)))' 42
 

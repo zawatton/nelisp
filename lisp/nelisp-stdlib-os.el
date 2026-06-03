@@ -201,7 +201,34 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-O-EXCL   128)          ; 0o200
 (defconst nelisp-os-O-TRUNC  512)          ; 0o1000
 (defconst nelisp-os-O-APPEND 1024)         ; 0o2000
+(defconst nelisp-os-O-NONBLOCK 2048)       ; 0o4000
 (defconst nelisp-os-O-CLOEXEC 524288)      ; 0o2000000
+
+;; Darwin/macOS native constants for libc calls.  Public `nelisp-os-*'
+;; constants stay Linux-shaped; these helpers translate at the FFI boundary.
+(defconst nelisp-os-DARWIN-O-NONBLOCK #x00000004)
+(defconst nelisp-os-DARWIN-O-APPEND   #x00000008)
+(defconst nelisp-os-DARWIN-O-CREAT    #x00000200)
+(defconst nelisp-os-DARWIN-O-TRUNC    #x00000400)
+(defconst nelisp-os-DARWIN-O-EXCL     #x00000800)
+(defconst nelisp-os-DARWIN-O-CLOEXEC  #x01000000)
+(defconst nelisp-os-DARWIN-AF-INET6   30)
+(defconst nelisp-os-DARWIN-SOL-SOCKET #xffff)
+(defconst nelisp-os-DARWIN-IP-RECVTTL 24)
+(defconst nelisp-os-DARWIN-IP-BOUND-IF 25)
+(defconst nelisp-os-DARWIN-IP-PKTINFO 26)
+(defconst nelisp-os-DARWIN-IP-RECVTOS 27)
+(defconst nelisp-os-DARWIN-IP-DONTFRAG 28)
+(defconst nelisp-os-DARWIN-IPV6-RECVTCLASS 35)
+(defconst nelisp-os-DARWIN-IPV6-TCLASS 36)
+(defconst nelisp-os-DARWIN-IPV6-RECVHOPLIMIT 37)
+(defconst nelisp-os-DARWIN-IPV6-RECVPKTINFO 61)
+(defconst nelisp-os-DARWIN-IPV6-DONTFRAG 62)
+(defconst nelisp-os-DARWIN-TCP-MAXSEG    #x02)
+(defconst nelisp-os-DARWIN-TCP-KEEPALIVE #x10)
+(defconst nelisp-os-DARWIN-TCP-KEEPINTVL #x101)
+(defconst nelisp-os-DARWIN-TCP-KEEPCNT   #x102)
+(defconst nelisp-os-DARWIN-TCP-FASTOPEN  #x105)
 
 ;; Standard fds.
 (defconst nelisp-os-STDIN  0)
@@ -1753,6 +1780,41 @@ same-process socketpairs created by `nelisp-os-socketpair'."
     (setcar state (+ counter value))
     8))
 
+(defun nelisp-os--darwin-open-flags (flags)
+  "Translate public Linux-shaped open FLAGS to Darwin libc flags."
+  (let ((native (logand flags 3)))
+    (when (/= 0 (logand flags nelisp-os-O-CREAT))
+      (setq native (logior native nelisp-os-DARWIN-O-CREAT)))
+    (when (/= 0 (logand flags nelisp-os-O-EXCL))
+      (setq native (logior native nelisp-os-DARWIN-O-EXCL)))
+    (when (/= 0 (logand flags nelisp-os-O-TRUNC))
+      (setq native (logior native nelisp-os-DARWIN-O-TRUNC)))
+    (when (/= 0 (logand flags nelisp-os-O-APPEND))
+      (setq native (logior native nelisp-os-DARWIN-O-APPEND)))
+    (when (/= 0 (logand flags nelisp-os-O-NONBLOCK))
+      (setq native (logior native nelisp-os-DARWIN-O-NONBLOCK)))
+    (when (/= 0 (logand flags nelisp-os-O-CLOEXEC))
+      (setq native (logior native nelisp-os-DARWIN-O-CLOEXEC)))
+    native))
+
+(defun nelisp-os--darwin-status-flags (flags)
+  "Translate public Linux-shaped F_SETFL status FLAGS to Darwin flags."
+  (let ((native (logand flags 3)))
+    (when (/= 0 (logand flags nelisp-os-O-APPEND))
+      (setq native (logior native nelisp-os-DARWIN-O-APPEND)))
+    (when (/= 0 (logand flags nelisp-os-O-NONBLOCK))
+      (setq native (logior native nelisp-os-DARWIN-O-NONBLOCK)))
+    native))
+
+(defun nelisp-os--darwin-public-status-flags (native)
+  "Translate Darwin F_GETFL status flags back to public Linux-shaped flags."
+  (let ((flags (logand native 3)))
+    (when (/= 0 (logand native nelisp-os-DARWIN-O-APPEND))
+      (setq flags (logior flags nelisp-os-O-APPEND)))
+    (when (/= 0 (logand native nelisp-os-DARWIN-O-NONBLOCK))
+      (setq flags (logior flags nelisp-os-O-NONBLOCK)))
+    flags))
+
 (defun nelisp-os-open (path flags mode)
   "POSIX open(2) — return integer fd, or signal `nelisp-os-error'.
 PATH is a string, FLAGS / MODE are integers."
@@ -1760,8 +1822,13 @@ PATH is a string, FLAGS / MODE are integers."
   ;; Linux glibc: int=:sint32, mode_t=:uint32.
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-open path flags mode)
-    (let ((r (nelisp-os--libc-call "libc" "open" [:sint32 :string :sint32 :uint32]
-                          path flags mode)))
+    (let ((r (nelisp-os--libc-call
+              "libc" "open" [:sint32 :string :sint32 :uint32]
+              path
+              (if (nelisp-os--darwin-p)
+                  (nelisp-os--darwin-open-flags flags)
+                flags)
+              mode)))
       (if (= r -1)
           (nelisp-os--ffi-errno-signal)
         r))))
@@ -1905,9 +1972,6 @@ Path A's `as_bytes()' semantics rather than the broken Path B that
 (defconst nelisp-os-SEEK-SET 0)
 (defconst nelisp-os-SEEK-CUR 1)
 (defconst nelisp-os-SEEK-END 2)
-
-;; open(2) / fcntl(2) extra flag
-(defconst nelisp-os-O-NONBLOCK 2048)        ; 0o4000
 
 ;; mmap(2) prot
 (defconst nelisp-os-PROT-NONE  0)
@@ -2753,8 +2817,17 @@ primitive; not supported in Phase 3."
       (nelisp-os--windows-fcntl fd cmd arg)
     (if nelisp-os--use-direct-syscall
         (nelisp-os--check-errno (nelisp--syscall 'fcntl fd cmd arg))
-      (nelisp-os--libc-check-errno
-       "fcntl" [:sint32 :sint32 :sint32 :sint64] fd cmd arg))))
+      (let* ((native-arg (if (and (nelisp-os--darwin-p)
+                                  (= cmd nelisp-os-F-SETFL))
+                             (nelisp-os--darwin-status-flags arg)
+                           arg))
+             (r (nelisp-os--libc-check-errno
+                 "fcntl" [:sint32 :sint32 :sint32 :sint64]
+                 fd cmd native-arg)))
+        (if (and (nelisp-os--darwin-p)
+                 (= cmd nelisp-os-F-GETFL))
+            (nelisp-os--darwin-public-status-flags r)
+          r)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 55 Phase 4 — Posix-30 (subprocess + AF_INET network + poll).
@@ -2778,6 +2851,18 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-AF-INET 2)
 (defconst nelisp-os-AF-UNIX  1)
 (defconst nelisp-os-AF-INET6 10)
+
+(defun nelisp-os--darwin-domain (domain)
+  "Translate public address family DOMAIN to Darwin libc value."
+  (if (= domain nelisp-os-AF-INET6)
+      nelisp-os-DARWIN-AF-INET6
+    domain))
+
+(defun nelisp-os--native-af-inet6 ()
+  "Return the native AF_INET6 value for the current host."
+  (if (nelisp-os--darwin-p)
+      nelisp-os-DARWIN-AF-INET6
+    nelisp-os-AF-INET6))
 
 (defconst nelisp-os-SOCK-STREAM   1)
 (defconst nelisp-os-SOCK-DGRAM    2)
@@ -3229,12 +3314,33 @@ Winsock socket mode while keeping `F_GETFL' coherent for the new fd."
 
 (defun nelisp-os-socket (domain type proto)
   "POSIX socket(2) — return new fd or signal `nelisp-os-error'."
-  (if (nelisp-os--windows-p)
-      (nelisp-os--windows-socket domain type proto)
-    (if nelisp-os--use-direct-syscall
-        (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto))
-      (nelisp-os--libc-check-errno
-       "socket" [:sint32 :sint32 :sint32 :sint32] domain type proto))))
+  (cond
+   ((nelisp-os--windows-p)
+    (nelisp-os--windows-socket domain type proto))
+   ((nelisp-os--darwin-p)
+    (let* ((cloexec-p (/= 0 (logand type nelisp-os-SOCK-CLOEXEC)))
+           (nonblock-p (/= 0 (logand type nelisp-os-SOCK-NONBLOCK)))
+           (base-type (logand type (lognot (logior nelisp-os-SOCK-NONBLOCK
+                                                   nelisp-os-SOCK-CLOEXEC))))
+           (fd (nelisp-os--libc-check-errno
+                "socket" [:sint32 :sint32 :sint32 :sint32]
+                (nelisp-os--darwin-domain domain) base-type proto))
+           (installed nil))
+      (unwind-protect
+          (progn
+            (when nonblock-p
+              (nelisp-os-fcntl fd nelisp-os-F-SETFL nelisp-os-O-NONBLOCK))
+            (when cloexec-p
+              (nelisp-os-fcntl fd nelisp-os-F-SETFD nelisp-os-FD-CLOEXEC))
+            (setq installed t)
+            fd)
+        (unless installed
+          (ignore-errors (nelisp-os-close fd))))))
+   (nelisp-os--use-direct-syscall
+    (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto)))
+   (t
+    (nelisp-os--libc-check-errno
+     "socket" [:sint32 :sint32 :sint32 :sint32] domain type proto))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 76 Stage C (2026-05-08) — sockaddr_in encode/decode + pollfd[]
@@ -3301,6 +3407,71 @@ host byte order."
    ((= level nelisp-os-IPPROTO-UDP) nelisp-os-IPPROTO-UDP)
    ((= level nelisp-os-IPPROTO-IPV6) nelisp-os-WIN-IPPROTO-IPV6)
    (t (nelisp-os--windows-unsupported))))
+
+(defun nelisp-os--darwin-sockopt-level (level)
+  "Translate public socket option LEVEL to Darwin libc."
+  (cond
+   ((= level nelisp-os-SOL-SOCKET) nelisp-os-DARWIN-SOL-SOCKET)
+   ((= level nelisp-os-IPPROTO-IP) nelisp-os-IPPROTO-IP)
+   ((= level nelisp-os-IPPROTO-TCP) nelisp-os-IPPROTO-TCP)
+   ((= level nelisp-os-IPPROTO-UDP) nelisp-os-IPPROTO-UDP)
+   ((= level nelisp-os-IPPROTO-IPV6) nelisp-os-IPPROTO-IPV6)
+   (t level)))
+
+(defun nelisp-os--darwin-sockopt-option (level optname)
+  "Translate public socket OPTNAME at LEVEL to Darwin libc."
+  (cond
+   ((= level nelisp-os-SOL-SOCKET)
+    (cond
+     ((= optname nelisp-os-SO-DEBUG) nelisp-os-WIN-SO-DEBUG)
+     ((= optname nelisp-os-SO-REUSEADDR) nelisp-os-WIN-SO-REUSEADDR)
+     ((= optname nelisp-os-SO-KEEPALIVE) nelisp-os-WIN-SO-KEEPALIVE)
+     ((= optname nelisp-os-SO-DONTROUTE) nelisp-os-WIN-SO-DONTROUTE)
+     ((= optname nelisp-os-SO-BROADCAST) nelisp-os-WIN-SO-BROADCAST)
+     ((= optname nelisp-os-SO-OOBINLINE) nelisp-os-WIN-SO-OOBINLINE)
+     ((= optname nelisp-os-SO-SNDBUF) nelisp-os-WIN-SO-SNDBUF)
+     ((= optname nelisp-os-SO-RCVBUF) nelisp-os-WIN-SO-RCVBUF)
+     ((= optname nelisp-os-SO-ERROR) nelisp-os-WIN-SO-ERROR)
+     ((= optname nelisp-os-SO-TYPE) nelisp-os-WIN-SO-TYPE)
+     ((= optname nelisp-os-SO-ACCEPTCONN) nelisp-os-WIN-SO-ACCEPTCONN)
+     (t optname)))
+   ((= level nelisp-os-IPPROTO-TCP)
+    (cond
+     ((= optname nelisp-os-TCP-NODELAY) nelisp-os-TCP-NODELAY)
+     ((= optname nelisp-os-TCP-MAXSEG) nelisp-os-DARWIN-TCP-MAXSEG)
+     ((= optname nelisp-os-TCP-KEEPIDLE) nelisp-os-DARWIN-TCP-KEEPALIVE)
+     ((= optname nelisp-os-TCP-KEEPINTVL) nelisp-os-DARWIN-TCP-KEEPINTVL)
+     ((= optname nelisp-os-TCP-KEEPCNT) nelisp-os-DARWIN-TCP-KEEPCNT)
+     ((= optname nelisp-os-TCP-FASTOPEN) nelisp-os-DARWIN-TCP-FASTOPEN)
+     (t optname)))
+   ((= level nelisp-os-IPPROTO-IP)
+    (cond
+     ((= optname nelisp-os-IP-HDRINCL) nelisp-os-WIN-IP-HDRINCL)
+     ((= optname nelisp-os-IP-TOS) nelisp-os-WIN-IP-TOS)
+     ((= optname nelisp-os-IP-TTL) nelisp-os-WIN-IP-TTL)
+     ((= optname nelisp-os-IP-RECVTTL) nelisp-os-DARWIN-IP-RECVTTL)
+     ((= optname nelisp-os-IP-RECVTOS) nelisp-os-DARWIN-IP-RECVTOS)
+     ((= optname nelisp-os-IP-PKTINFO) nelisp-os-DARWIN-IP-PKTINFO)
+     ((= optname nelisp-os-IP-MTU-DISCOVER) nelisp-os-DARWIN-IP-DONTFRAG)
+     ((= optname nelisp-os-IP-UNICAST-IF) nelisp-os-DARWIN-IP-BOUND-IF)
+     ((= optname nelisp-os-IP-MULTICAST-IF) nelisp-os-WIN-IP-MULTICAST-IF)
+     ((= optname nelisp-os-IP-MULTICAST-TTL) nelisp-os-WIN-IP-MULTICAST-TTL)
+     ((= optname nelisp-os-IP-MULTICAST-LOOP) nelisp-os-WIN-IP-MULTICAST-LOOP)
+     (t optname)))
+   ((= level nelisp-os-IPPROTO-IPV6)
+    (cond
+     ((= optname nelisp-os-IPV6-UNICAST-HOPS) nelisp-os-IPV6-UNICAST-HOPS)
+     ((= optname nelisp-os-IPV6-MULTICAST-IF) nelisp-os-WIN-IPV6-MULTICAST-IF)
+     ((= optname nelisp-os-IPV6-MULTICAST-HOPS) nelisp-os-WIN-IPV6-MULTICAST-HOPS)
+     ((= optname nelisp-os-IPV6-MULTICAST-LOOP) nelisp-os-WIN-IPV6-MULTICAST-LOOP)
+     ((= optname nelisp-os-IPV6-DONTFRAG) nelisp-os-DARWIN-IPV6-DONTFRAG)
+     ((= optname nelisp-os-IPV6-RECVPKTINFO) nelisp-os-DARWIN-IPV6-RECVPKTINFO)
+     ((= optname nelisp-os-IPV6-RECVHOPLIMIT) nelisp-os-DARWIN-IPV6-RECVHOPLIMIT)
+     ((= optname nelisp-os-IPV6-V6ONLY) nelisp-os-WIN-IPV6-V6ONLY)
+     ((= optname nelisp-os-IPV6-TCLASS) nelisp-os-DARWIN-IPV6-TCLASS)
+     ((= optname nelisp-os-IPV6-RECVTCLASS) nelisp-os-DARWIN-IPV6-RECVTCLASS)
+     (t optname)))
+   (t optname)))
 
 (defun nelisp-os--windows-sockopt-option (level optname &optional getter-p)
   "Translate supported POSIX-like OPTNAME at LEVEL to Winsock.
@@ -3506,9 +3677,16 @@ Returns 0 on success."
       (unwind-protect
           (progn
             (nelisp-os-write-i32 buf 0 value)
-            (let ((r (nelisp-os--libc-call "libc" "setsockopt"
-                                  [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
-                                  fd level optname buf 4)))
+            (let* ((native-level (if (nelisp-os--darwin-p)
+                                     (nelisp-os--darwin-sockopt-level level)
+                                   level))
+                   (native-optname (if (nelisp-os--darwin-p)
+                                       (nelisp-os--darwin-sockopt-option level optname)
+                                     optname))
+                   (r (nelisp-os--libc-call
+                       "libc" "setsockopt"
+                       [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
+                       fd native-level native-optname buf 4)))
               (if (= r -1)
                   (nelisp-os--ffi-errno-signal)
                 r)))
@@ -3526,9 +3704,16 @@ Returns the option value as a signed 32-bit integer."
       (unwind-protect
           (progn
             (nelisp-os-write-i32 len-buf 0 4)
-            (let ((r (nelisp-os--libc-call "libc" "getsockopt"
-                                  [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
-                                  fd level optname val-buf len-buf)))
+            (let* ((native-level (if (nelisp-os--darwin-p)
+                                     (nelisp-os--darwin-sockopt-level level)
+                                   level))
+                   (native-optname (if (nelisp-os--darwin-p)
+                                       (nelisp-os--darwin-sockopt-option level optname)
+                                     optname))
+                   (r (nelisp-os--libc-call
+                       "libc" "getsockopt"
+                       [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
+                       fd native-level native-optname val-buf len-buf)))
               (if (= r -1)
                   (nelisp-os--ffi-errno-signal)
                 (nelisp-os-read-i32 val-buf 0))))
@@ -4206,7 +4391,7 @@ accept(2) / getsockname(2).  Return:
 (defun nelisp-os--encode-sockaddr-in6 (buf groups port)
   "Populate BUF (= 28-byte zeroed) with sockaddr_in6: family + port BE +
 flowinfo=0 + 8 BE u16 groups + scope_id=0."
-  (nelisp-os-write-i16 buf 0 nelisp-os-AF-INET6)
+  (nelisp-os-write-i16 buf 0 (nelisp-os--native-af-inet6))
   (let ((port-be (nelisp-os--htons port)))
     (nelisp-os-write-i16 buf 2 port-be))
   ;; flowinfo at 4 stays 0
@@ -5646,26 +5831,49 @@ value=MS-as-(sec . nsec)."
 
 ;; ----- cmsg helpers (CMSG_LEN / CMSG_SPACE re-implementation) -----
 
+(defun nelisp-os--native-msghdr-len ()
+  "Return native `struct msghdr' size for the current host ABI."
+  (if (nelisp-os--darwin-p) 48 nelisp-os--msghdr-len))
+
+(defun nelisp-os--native-cmsghdr-len ()
+  "Return native `struct cmsghdr' header size for the current host ABI."
+  (if (nelisp-os--darwin-p) 12 nelisp-os--cmsghdr-len))
+
+(defun nelisp-os--native-cmsg-align ()
+  "Return native CMSG alignment for the current host ABI."
+  (if (nelisp-os--darwin-p) 4 nelisp-os--cmsg-align))
+
+(defun nelisp-os--native-sol-socket ()
+  "Return native SOL_SOCKET value for the current host."
+  (if (nelisp-os--darwin-p)
+      nelisp-os-DARWIN-SOL-SOCKET
+    nelisp-os-SOL-SOCKET))
+
 (defun nelisp-os--cmsg-align-up (n)
-  "Round N up to the next multiple of `nelisp-os--cmsg-align'."
-  (let ((a nelisp-os--cmsg-align))
+  "Round N up to the next native CMSG alignment."
+  (let ((a (nelisp-os--native-cmsg-align)))
     (* a (/ (+ n (1- a)) a))))
 
 (defun nelisp-os--cmsg-len (datalen)
-  "POSIX CMSG_LEN(DATALEN) on 64-bit Linux: cmsghdr + DATALEN, no padding."
-  (+ nelisp-os--cmsghdr-len datalen))
+  "POSIX CMSG_LEN(DATALEN): cmsghdr + DATALEN, no payload padding."
+  (+ (nelisp-os--native-cmsghdr-len) datalen))
 
 (defun nelisp-os--cmsg-space (datalen)
-  "POSIX CMSG_SPACE(DATALEN) on 64-bit Linux: align CMSG_LEN to alignment."
-  (nelisp-os--cmsg-align-up (nelisp-os--cmsg-len datalen)))
+  "POSIX CMSG_SPACE(DATALEN): aligned header plus aligned payload."
+  (+ (nelisp-os--cmsg-align-up (nelisp-os--native-cmsghdr-len))
+     (nelisp-os--cmsg-align-up datalen)))
 
 (defun nelisp-os--cmsg-decode-header (buf off)
   "Decode a single cmsghdr at BUF + OFF.  Return list (LEN LEVEL TYPE).
 LEN is the full cmsghdr length (= header + data), LEVEL/TYPE are the
 SOL_*/SCM_* identifiers."
-  (list (nelisp-os-read-i64 buf (+ off 0))
-        (nelisp-os-read-i32 buf (+ off 8))
-        (nelisp-os-read-i32 buf (+ off 12))))
+  (if (nelisp-os--darwin-p)
+      (list (nelisp-os-read-i32 buf (+ off 0))
+            (nelisp-os-read-i32 buf (+ off 4))
+            (nelisp-os-read-i32 buf (+ off 8)))
+    (list (nelisp-os-read-i64 buf (+ off 0))
+          (nelisp-os-read-i32 buf (+ off 8))
+          (nelisp-os-read-i32 buf (+ off 12)))))
 
 (defun nelisp-os--cmsg-iterate (buf controllen fn)
   "Walk every cmsghdr in BUF (= MSG_CONTROL[0..CONTROLLEN]).
@@ -5675,17 +5883,53 @@ payload (= cmsghdr_off + cmsghdr_len header size).
 Stops on a malformed cmsg (= len < cmsghdr_len) or buffer exhaustion."
   (let ((off 0))
     (catch 'done
-      (while (<= (+ off nelisp-os--cmsghdr-len) controllen)
+      (while (<= (+ off (nelisp-os--native-cmsghdr-len)) controllen)
         (let* ((hdr   (nelisp-os--cmsg-decode-header buf off))
                (len   (nth 0 hdr))
                (level (nth 1 hdr))
                (type  (nth 2 hdr))
                (next  (+ off (nelisp-os--cmsg-align-up len))))
-          (when (or (< len nelisp-os--cmsghdr-len)
+          (when (or (< len (nelisp-os--native-cmsghdr-len))
                     (> next controllen))
             (throw 'done nil))
-          (funcall fn len level type (+ off nelisp-os--cmsghdr-len))
+          (funcall fn len level type (+ off (nelisp-os--native-cmsghdr-len)))
           (setq off next))))))
+
+(defun nelisp-os--write-cmsghdr (buf len level type)
+  "Write a native cmsghdr into BUF."
+  (if (nelisp-os--darwin-p)
+      (progn
+        (nelisp-os-write-i32 buf 0 len)
+        (nelisp-os-write-i32 buf 4 level)
+        (nelisp-os-write-i32 buf 8 type))
+    (nelisp-os-write-i64 buf 0 len)
+    (nelisp-os-write-i32 buf 8 level)
+    (nelisp-os-write-i32 buf 12 type)))
+
+(defun nelisp-os--write-msghdr (msg-buf iov-buf cmsg-buf cmsg-space)
+  "Write a native msghdr with one iovec and optional control buffer."
+  (if (nelisp-os--darwin-p)
+      (progn
+        (nelisp-os-write-i64 msg-buf 0  0)          ; msg_name
+        (nelisp-os-write-i32 msg-buf 8  0)          ; msg_namelen
+        (nelisp-os-write-i64 msg-buf 16 iov-buf)    ; msg_iov
+        (nelisp-os-write-i32 msg-buf 24 1)          ; msg_iovlen
+        (nelisp-os-write-i64 msg-buf 32 cmsg-buf)   ; msg_control
+        (nelisp-os-write-i32 msg-buf 40 cmsg-space) ; msg_controllen
+        (nelisp-os-write-i32 msg-buf 44 0))         ; msg_flags
+    (nelisp-os-write-i64 msg-buf 0  0)              ; msg_name
+    (nelisp-os-write-i32 msg-buf 8  0)              ; msg_namelen
+    (nelisp-os-write-i64 msg-buf 16 iov-buf)        ; msg_iov
+    (nelisp-os-write-i64 msg-buf 24 1)              ; msg_iovlen
+    (nelisp-os-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
+    (nelisp-os-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
+    (nelisp-os-write-i32 msg-buf 48 0)))            ; msg_flags
+
+(defun nelisp-os--msghdr-controllen (msg-buf)
+  "Read native msg_controllen from MSG-BUF."
+  (if (nelisp-os--darwin-p)
+      (nelisp-os-read-i32 msg-buf 40)
+    (nelisp-os-read-i64 msg-buf 40)))
 
 ;; ----- ucred decoder -----
 
@@ -5709,7 +5953,7 @@ cr_groups[0] is the effective gid at offset 12."
 (defun nelisp-os--encode-sockaddr-in6-scoped (buf groups port flowinfo scope-id)
   "Populate BUF (= 28-byte zeroed) with sockaddr_in6 carrying
 flowinfo (BE) and scope_id (host order) in addition to host/port."
-  (nelisp-os-write-i16 buf 0 nelisp-os-AF-INET6)
+  (nelisp-os-write-i16 buf 0 (nelisp-os--native-af-inet6))
   (let ((port-be (nelisp-os--htons port)))
     (nelisp-os-write-i16 buf 2 port-be))
   ;; flowinfo @ 4: htonl, written as i32 LE bit pattern.
@@ -5900,15 +6144,45 @@ Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
   ;; libc::socketpair(int domain, int type, int protocol, int sv[2]) → int.
   (if (nelisp-os--windows-p)
       (nelisp-os--windows-socketpair domain type protocol)
-    (let ((sv-buf (nelisp-os--alloc 8)))         ; 2 × sizeof(int)
+    (let ((sv-buf (nelisp-os--alloc 8)))         ; 2 x sizeof(int)
       (unwind-protect
-          (let ((r (nelisp-os--libc-call "libc" "socketpair"
-                                [:sint32 :sint32 :sint32 :sint32 :pointer]
-                                domain type protocol sv-buf)))
+          (let* ((darwin-p (nelisp-os--darwin-p))
+                 (cloexec-p (and darwin-p
+                                  (/= 0 (logand type nelisp-os-SOCK-CLOEXEC))))
+                 (nonblock-p (and darwin-p
+                                   (/= 0 (logand type nelisp-os-SOCK-NONBLOCK))))
+                 (base-type (if darwin-p
+                                (logand type
+                                        (lognot (logior nelisp-os-SOCK-NONBLOCK
+                                                        nelisp-os-SOCK-CLOEXEC)))
+                              type))
+                 (r (nelisp-os--libc-call
+                     "libc" "socketpair"
+                     [:sint32 :sint32 :sint32 :sint32 :pointer]
+                     (if darwin-p (nelisp-os--darwin-domain domain) domain)
+                     base-type protocol sv-buf)))
             (if (/= r 0)
                 (nelisp-os--ffi-errno-signal)
-              (cons (nelisp-os-read-i32 sv-buf 0)
-                    (nelisp-os-read-i32 sv-buf 4))))
+              (let ((pair (cons (nelisp-os-read-i32 sv-buf 0)
+                                (nelisp-os-read-i32 sv-buf 4)))
+                    (installed nil))
+                (unwind-protect
+                    (progn
+                      (when nonblock-p
+                        (nelisp-os-fcntl (car pair) nelisp-os-F-SETFL
+                                         nelisp-os-O-NONBLOCK)
+                        (nelisp-os-fcntl (cdr pair) nelisp-os-F-SETFL
+                                         nelisp-os-O-NONBLOCK))
+                      (when cloexec-p
+                        (nelisp-os-fcntl (car pair) nelisp-os-F-SETFD
+                                         nelisp-os-FD-CLOEXEC)
+                        (nelisp-os-fcntl (cdr pair) nelisp-os-F-SETFD
+                                         nelisp-os-FD-CLOEXEC))
+                      (setq installed t)
+                      pair)
+                  (unless installed
+                    (ignore-errors (nelisp-os-close (car pair)))
+                    (ignore-errors (nelisp-os-close (cdr pair))))))))
         (nelisp-os--free sv-buf)))))
 
 ;; ----- SCM_RIGHTS fd passing -----
@@ -5929,7 +6203,7 @@ via sendmsg(2) + SCM_RIGHTS cmsg.  PAYLOAD must be a string ≥ 1 byte
            (payload-buf   (nelisp-os--alloc payload-bytes))
            (iov-buf       (nelisp-os--alloc nelisp-os--iovec-len))
            (cmsg-buf      (nelisp-os--alloc cmsg-space))
-           (msg-buf       (nelisp-os--alloc nelisp-os--msghdr-len)))
+           (msg-buf       (nelisp-os--alloc (nelisp-os--native-msghdr-len))))
       (unwind-protect
           (progn
             (nelisp-os--write-bytes payload-buf payload)
@@ -5937,25 +6211,19 @@ via sendmsg(2) + SCM_RIGHTS cmsg.  PAYLOAD must be a string ≥ 1 byte
             (nelisp-os-write-i64 iov-buf 0 payload-buf)
             (nelisp-os-write-i64 iov-buf 8 payload-bytes)
             ;; cmsg header = {cmsg_len, SOL_SOCKET, SCM_RIGHTS}
-            (nelisp-os-write-i64 cmsg-buf 0 cmsg-len)
-            (nelisp-os-write-i32 cmsg-buf 8  nelisp-os-SOL-SOCKET)
-            (nelisp-os-write-i32 cmsg-buf 12 nelisp-os-SCM-RIGHTS)
-            ;; cmsg payload = fds[] starting at offset cmsghdr_len (= 16).
+            (nelisp-os--write-cmsghdr
+             cmsg-buf cmsg-len (nelisp-os--native-sol-socket)
+             nelisp-os-SCM-RIGHTS)
+            ;; cmsg payload = fds[] starting after the native cmsghdr.
             (let ((idx 0))
               (dolist (one-fd fds)
                 (nelisp-os-write-i32 cmsg-buf
-                                  (+ nelisp-os--cmsghdr-len
+                                  (+ (nelisp-os--native-cmsghdr-len)
                                      (* idx nelisp-os--sizeof-fd))
                                   one-fd)
                 (setq idx (1+ idx))))
             ;; msghdr — name=NULL, iov=&iov, controllen=cmsg-space.
-            (nelisp-os-write-i64 msg-buf 0  0)              ; msg_name
-            (nelisp-os-write-i32 msg-buf 8  0)              ; msg_namelen
-            (nelisp-os-write-i64 msg-buf 16 iov-buf)        ; msg_iov
-            (nelisp-os-write-i64 msg-buf 24 1)              ; msg_iovlen
-            (nelisp-os-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
-            (nelisp-os-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
-            (nelisp-os-write-i32 msg-buf 48 0)              ; msg_flags
+            (nelisp-os--write-msghdr msg-buf iov-buf cmsg-buf cmsg-space)
             (let ((r (nelisp-os--libc-call "libc" "sendmsg"
                                   [:sint64 :sint32 :pointer :sint32]
                                   fd msg-buf 0)))
@@ -5985,18 +6253,12 @@ MAX-FDS, never more)."
            (iov-buf     (nelisp-os--alloc nelisp-os--iovec-len))
            ;; Always allocate at least 1 byte (nelisp-os--alloc 0 is undefined).
            (cmsg-buf    (nelisp-os--alloc (max cmsg-space 1)))
-           (msg-buf     (nelisp-os--alloc nelisp-os--msghdr-len)))
+           (msg-buf     (nelisp-os--alloc (nelisp-os--native-msghdr-len))))
       (unwind-protect
           (progn
             (nelisp-os-write-i64 iov-buf 0 payload-buf)
             (nelisp-os-write-i64 iov-buf 8 max-bytes)
-            (nelisp-os-write-i64 msg-buf 0  0)              ; msg_name
-            (nelisp-os-write-i32 msg-buf 8  0)              ; msg_namelen
-            (nelisp-os-write-i64 msg-buf 16 iov-buf)        ; msg_iov
-            (nelisp-os-write-i64 msg-buf 24 1)              ; msg_iovlen
-            (nelisp-os-write-i64 msg-buf 32 cmsg-buf)       ; msg_control
-            (nelisp-os-write-i64 msg-buf 40 cmsg-space)     ; msg_controllen
-            (nelisp-os-write-i32 msg-buf 48 0)              ; msg_flags
+            (nelisp-os--write-msghdr msg-buf iov-buf cmsg-buf cmsg-space)
             (let ((r (nelisp-os--libc-call "libc" "recvmsg"
                                   [:sint64 :sint32 :pointer :sint32]
                                   fd msg-buf 0)))
@@ -6007,14 +6269,14 @@ MAX-FDS, never more)."
                                     ""
                                   (nelisp-os--read-bytes-at payload-buf 0 bytes-received)))
                        ;; Kernel may shrink controllen below cmsg-space.
-                       (actual-controllen (nelisp-os-read-i64 msg-buf 40))
+                       (actual-controllen (nelisp-os--msghdr-controllen msg-buf))
                        (fds-out nil))
                   (nelisp-os--cmsg-iterate
                    cmsg-buf actual-controllen
                    (lambda (len level type data-off)
-                     (when (and (= level nelisp-os-SOL-SOCKET)
+                     (when (and (= level (nelisp-os--native-sol-socket))
                                 (= type  nelisp-os-SCM-RIGHTS))
-                       (let* ((payload-len (- len nelisp-os--cmsghdr-len))
+                       (let* ((payload-len (- len (nelisp-os--native-cmsghdr-len)))
                               (n-fds (/ payload-len nelisp-os--sizeof-fd)))
                          (dotimes (i n-fds)
                            (push (nelisp-os-read-i32

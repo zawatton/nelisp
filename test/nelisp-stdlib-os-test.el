@@ -8919,18 +8919,32 @@
                    (list "libc" "_exit" [:void :int] (list 42))))))
 
 (ert-deftest nelisp-stdlib-os-open-darwin-uses-libc-open ()
-  "Darwin regular file open uses libc open."
+  "Darwin regular file open translates public flags before libc open."
   (let ((call nil))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (setq call (list dll fn sig args))
                  7)))
       (let ((system-type 'darwin))
-        (should (= (nelisp-os-open "/tmp/nelisp" nelisp-os-O-RDONLY 0) 7))))
+        (should (= (nelisp-os-open
+                    "/tmp/nelisp"
+                    (logior nelisp-os-O-WRONLY
+                            nelisp-os-O-CREAT
+                            nelisp-os-O-TRUNC
+                            nelisp-os-O-APPEND
+                            nelisp-os-O-CLOEXEC)
+                    #o644)
+                   7))))
     (should (equal call
                    (list "libc" "open"
                          [:sint32 :string :sint32 :uint32]
-                         (list "/tmp/nelisp" nelisp-os-O-RDONLY 0))))))
+                         (list "/tmp/nelisp"
+                               (logior nelisp-os-O-WRONLY
+                                       nelisp-os-DARWIN-O-CREAT
+                                       nelisp-os-DARWIN-O-TRUNC
+                                       nelisp-os-DARWIN-O-APPEND
+                                       nelisp-os-DARWIN-O-CLOEXEC)
+                               #o644))))))
 
 (ert-deftest nelisp-stdlib-os-close-darwin-uses-libc-close ()
   "Darwin close uses libc close when direct syscalls are unavailable."
@@ -9093,6 +9107,41 @@
                           [:sint64 :sint32 :sint64 :sint32]
                           (list 7 99 nelisp-os-SEEK-SET)))))))
 
+(ert-deftest nelisp-stdlib-os-socket-darwin-translates-domain-and-type-flags ()
+  "Darwin socket strips Linux type flags and applies them through fcntl."
+  (let ((call nil)
+        (fcntl-calls nil)
+        (closed nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 55))
+              ((symbol-function 'nelisp-os-fcntl)
+               (lambda (fd cmd arg)
+                 (push (list fd cmd arg) fcntl-calls)
+                 0))
+              ((symbol-function 'nelisp-os-close)
+               (lambda (fd) (push fd closed) nil)))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-socket
+                    nelisp-os-AF-INET6
+                    (logior nelisp-os-SOCK-STREAM
+                            nelisp-os-SOCK-NONBLOCK
+                            nelisp-os-SOCK-CLOEXEC)
+                    nelisp-os-IPPROTO-TCP)
+                   55))))
+    (should (equal call
+                   (list "libc" "socket"
+                         [:sint32 :sint32 :sint32 :sint32]
+                         (list nelisp-os-DARWIN-AF-INET6
+                               nelisp-os-SOCK-STREAM
+                               nelisp-os-IPPROTO-TCP))))
+    (should (equal (nreverse fcntl-calls)
+                   (list
+                    (list 55 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
+                    (list 55 nelisp-os-F-SETFD nelisp-os-FD-CLOEXEC))))
+    (should-not closed)))
+
 (ert-deftest nelisp-stdlib-os-linux-only-apis-darwin-error-before-syscall ()
   "Darwin rejects Linux-only fd APIs before syscall/libc allocation paths."
   (let ((called nil)
@@ -9157,12 +9206,12 @@
                    (list
                     (list "libc" "setsockopt"
                           [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
-                          (list 8 nelisp-os-SOL-SOCKET
-                                nelisp-os-SO-REUSEADDR 3000 4))
+                          (list 8 nelisp-os-DARWIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-REUSEADDR 3000 4))
                     (list "libc" "getsockopt"
                           [:sint32 :sint32 :sint32 :sint32 :pointer :pointer]
-                          (list 8 nelisp-os-SOL-SOCKET
-                                nelisp-os-SO-REUSEADDR 4000 5000)))))
+                          (list 8 nelisp-os-DARWIN-SOL-SOCKET
+                                nelisp-os-WIN-SO-REUSEADDR 4000 5000)))))
     (should writes)
     (should (equal (sort freed #'<) '(3000 4000 5000)))))
 
@@ -9237,12 +9286,12 @@
                          (list 7 9))))))
 
 (ert-deftest nelisp-stdlib-os-fcntl-darwin-uses-libc-fcntl ()
-  "Darwin fcntl uses libc fcntl for integer-valued commands."
+  "Darwin F_GETFL translates native status flags back to public flags."
   (let ((call nil))
     (cl-letf (((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (setq call (list dll fn sig args))
-                 nelisp-os-O-NONBLOCK)))
+                 nelisp-os-DARWIN-O-NONBLOCK)))
       (let ((system-type 'darwin)
             (nelisp-os--use-direct-syscall nil))
         (should (= (nelisp-os-fcntl 7 nelisp-os-F-GETFL 0)
@@ -9251,6 +9300,26 @@
                    (list "libc" "fcntl"
                          [:sint32 :sint32 :sint32 :sint64]
                          (list 7 nelisp-os-F-GETFL 0))))))
+
+(ert-deftest nelisp-stdlib-os-fcntl-darwin-setfl-translates-flags ()
+  "Darwin F_SETFL translates public status flags before libc fcntl."
+  (let ((call nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'darwin)
+            (nelisp-os--use-direct-syscall nil))
+        (should (= (nelisp-os-fcntl
+                    7 nelisp-os-F-SETFL
+                    (logior nelisp-os-O-NONBLOCK nelisp-os-O-APPEND))
+                   0))))
+    (should (equal call
+                   (list "libc" "fcntl"
+                         [:sint32 :sint32 :sint32 :sint64]
+                         (list 7 nelisp-os-F-SETFL
+                               (logior nelisp-os-DARWIN-O-NONBLOCK
+                                       nelisp-os-DARWIN-O-APPEND)))))))
 
 (ert-deftest nelisp-stdlib-os-fstat-darwin-uses-libc-fstat ()
   "Darwin fstat allocates a stat buffer, calls libc fstat, and decodes fields."
@@ -9413,6 +9482,76 @@
                                0
                                3000))))
     (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-socketpair-darwin-translates-domain-and-type-flags ()
+  "Darwin socketpair strips Linux type flags and applies them through fcntl."
+  (let ((call nil)
+        (fcntl-calls nil)
+        (freed nil)
+        (closed nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= ptr 3000))
+                 (pcase off
+                   (0 17)
+                   (4 18)
+                   (_ (error "unexpected socketpair offset %S" off)))))
+              ((symbol-function 'nelisp-os-fcntl)
+               (lambda (fd cmd arg)
+                 (push (list fd cmd arg) fcntl-calls)
+                 0))
+              ((symbol-function 'nelisp-os-close)
+               (lambda (fd) (push fd closed) nil))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 0)))
+      (let ((system-type 'darwin))
+        (should (equal (nelisp-os-socketpair
+                        nelisp-os-AF-INET6
+                        (logior nelisp-os-SOCK-STREAM
+                                nelisp-os-SOCK-NONBLOCK
+                                nelisp-os-SOCK-CLOEXEC)
+                        nelisp-os-IPPROTO-TCP)
+                       '(17 . 18)))))
+    (should (equal call
+                   (list "libc" "socketpair"
+                         [:sint32 :sint32 :sint32 :sint32 :pointer]
+                         (list nelisp-os-DARWIN-AF-INET6
+                               nelisp-os-SOCK-STREAM
+                               nelisp-os-IPPROTO-TCP
+                               3000))))
+    (should (equal (nreverse fcntl-calls)
+                   (list
+                    (list 17 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
+                    (list 18 nelisp-os-F-SETFL nelisp-os-O-NONBLOCK)
+                    (list 17 nelisp-os-F-SETFD nelisp-os-FD-CLOEXEC)
+                    (list 18 nelisp-os-F-SETFD nelisp-os-FD-CLOEXEC))))
+    (should-not closed)
+    (should (equal freed '(3000)))))
+
+(ert-deftest nelisp-stdlib-os-sockaddr-in6-darwin-uses-native-family ()
+  "Darwin sockaddr_in6 encoders write the native AF_INET6 family value."
+  (let ((writes nil))
+    (cl-letf (((symbol-function 'nelisp-os-write-i16)
+               (lambda (buf off val)
+                 (push (list 'i16 buf off val) writes)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (buf off val)
+                 (push (list 'i32 buf off val) writes)))
+              ((symbol-function 'nelisp-os--htons)
+               (lambda (v) v))
+              ((symbol-function 'nelisp-os--htonl)
+               (lambda (v) v)))
+      (let ((system-type 'darwin))
+        (nelisp-os--encode-sockaddr-in6
+         3000 '(0 0 0 0 0 0 0 1) 1234)
+        (nelisp-os--encode-sockaddr-in6-scoped
+         4000 '(0 0 0 0 0 0 0 1) 1234 0 2)))
+    (should (member (list 'i16 3000 0 nelisp-os-DARWIN-AF-INET6) writes))
+    (should (member (list 'i16 4000 0 nelisp-os-DARWIN-AF-INET6) writes))))
 
 (ert-deftest nelisp-stdlib-os-sendto-inet-darwin-uses-libc-sendto ()
   "Darwin AF_INET sendto encodes sockaddr_in and dispatches to libc."
@@ -9715,21 +9854,21 @@
                          [:sint64 :sint32 :pointer :sint32]
                          (list 7 6000 0))))
     (should (equal (nreverse writes)
-                   (list
+                    (list
                     (list 'i64 4000 0 3000)
                     (list 'i64 4000 8 4)
-                    (list 'i64 5000 0 24)
-                    (list 'i32 5000 8 nelisp-os-SOL-SOCKET)
-                    (list 'i32 5000 12 nelisp-os-SCM-RIGHTS)
-                    (list 'i32 5000 16 8)
-                    (list 'i32 5000 20 9)
+                    (list 'i32 5000 0 20)
+                    (list 'i32 5000 4 nelisp-os-DARWIN-SOL-SOCKET)
+                    (list 'i32 5000 8 nelisp-os-SCM-RIGHTS)
+                    (list 'i32 5000 12 8)
+                    (list 'i32 5000 16 9)
                     (list 'i64 6000 0 0)
                     (list 'i32 6000 8 0)
                     (list 'i64 6000 16 4000)
-                    (list 'i64 6000 24 1)
+                    (list 'i32 6000 24 1)
                     (list 'i64 6000 32 5000)
-                    (list 'i64 6000 40 24)
-                    (list 'i32 6000 48 0))))
+                    (list 'i32 6000 40 20)
+                    (list 'i32 6000 44 0))))
     (should (equal (sort freed #'<) '(3000 4000 5000 6000)))))
 
 (ert-deftest nelisp-stdlib-os-recvmsg-fds-darwin-uses-libc-recvmsg ()
@@ -9748,15 +9887,15 @@
               ((symbol-function 'nelisp-os-read-i64)
                (lambda (ptr off)
                  (pcase (list ptr off)
-                   (`(6000 40) 24)
-                   (`(5000 0) 20)
                    (_ (error "unexpected recvmsg i64 read %S %S" ptr off)))))
               ((symbol-function 'nelisp-os-read-i32)
                (lambda (ptr off)
                  (pcase (list ptr off)
-                   (`(5000 8) nelisp-os-SOL-SOCKET)
-                   (`(5000 12) nelisp-os-SCM-RIGHTS)
-                   (`(5000 16) 11)
+                   (`(6000 40) 16)
+                   (`(5000 0) 16)
+                   (`(5000 4) nelisp-os-DARWIN-SOL-SOCKET)
+                   (`(5000 8) nelisp-os-SCM-RIGHTS)
+                   (`(5000 12) 11)
                    (_ (error "unexpected recvmsg i32 read %S %S" ptr off)))))
               ((symbol-function 'nelisp-os--read-bytes-at)
                (lambda (ptr off len)
@@ -9781,10 +9920,10 @@
                     (list 'i64 6000 0 0)
                     (list 'i32 6000 8 0)
                     (list 'i64 6000 16 4000)
-                    (list 'i64 6000 24 1)
+                    (list 'i32 6000 24 1)
                     (list 'i64 6000 32 5000)
-                    (list 'i64 6000 40 24)
-                    (list 'i32 6000 48 0))))
+                    (list 'i32 6000 40 16)
+                    (list 'i32 6000 44 0))))
     (should (equal (sort freed #'<) '(3000 4000 5000 6000)))))
 
 (ert-deftest nelisp-stdlib-os-getsockopt-peercred-darwin-uses-local-options ()
