@@ -33,8 +33,9 @@ usage() {
 
 SMOKE_NAMES=(
   exit42 loop fact alloc cons sexp let setq-local str ptr cas dealloc
-  cons-set cond logic write-stdout read-stdin cons-clone boxed names
-  call4-outs str-helpers lits extern aot-jump aot-roots f64-sexp callptr
+  cons-set cond logic write-stdout read-stdin getpid createfile-write
+  cons-clone boxed names call4-outs str-helpers lits extern aot-jump
+  aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -372,6 +373,34 @@ build_run read-stdin '(seq
               (fail))
           (fail)))))
   (exit (run)))' 42 "" "nelisp read smoke"
+
+# raw Darwin getpid(2): verifies basic process syscall wiring.
+build_run getpid '(seq
+  (defun run ()
+    (let ((pid (syscall-direct 20 0 0 0 0 0 0)))
+      (if (< 0 pid) 42 13)))
+  (exit (run)))' 42
+
+# raw Darwin open/write/close/unlink path: verifies simple file creation.
+build_run createfile-write '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (ptr-write-u64 8589934592 256 7810770278772732975)
+      (ptr-write-u64 8589934592 264 8026366082446029673)
+      (ptr-write-u64 8589934592 272 111516299177331)
+      (ptr-write-u64 8589934592 320 1819043144)
+      (let ((fd (syscall-direct 5 8589934848 1537 420 0 0 0)))
+        (if (< 2 fd)
+            (let ((w (syscall-direct 4 fd 8589934912 4 0 0 0)))
+              (seq
+                (syscall-direct 6 fd 0 0 0 0 0)
+                (syscall-direct 10 8589934848 0 0 0 0 0)
+                (if (= w 4) (ok) (fail))))
+          (fail)))))
+  (exit (run)))' 42
 
 # cons-make-with-clone: fused (alloc box + deep-clone car/cdr).  Clone
 # Int(20) into car and Int(3) into cdr, read both back -> 20 + 3 = 23.
