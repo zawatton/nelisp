@@ -9241,7 +9241,7 @@ functions `((NAME . ARITY) ...)'."
            (args (cdr sexp)))
 	      (when (> arity
 	               (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
-	                        (eq nelisp-phase47-compiler--abi 'sysv))
+	                        (memq nelisp-phase47-compiler--abi '(sysv win64)))
 	                   14
 	                 (length (nelisp-phase47-compiler--current-arg-regs))))
 	        (signal 'nelisp-phase47-compiler-error
@@ -11314,12 +11314,17 @@ count."
     (if (> n reg-budget)
         (progn
           (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                       (eq nelisp-phase47-compiler--abi 'sysv))
+                       (memq nelisp-phase47-compiler--abi '(sysv win64)))
             (signal 'nelisp-phase47-compiler-error
                     (list :call-stack-args-unsupported name n)))
           (let* ((stack-count (- n reg-budget))
                  (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-                 (needs-align (= (logand (+ arity n stack-count) 1) 1)))
+                 (win64-p (eq nelisp-phase47-compiler--abi 'win64))
+                 (needs-align (= (logand (+ arity n stack-count) 1) 1))
+                 (win64-outgoing
+                  (if win64-p
+                      (+ 32 (* 8 stack-count) (if needs-align 8 0))
+                    0)))
             ;; Save every arg left-to-right so complex args cannot clobber
             ;; earlier register-bound values while later args are evaluated.
             (dolist (a args)
@@ -11330,24 +11335,40 @@ count."
                      for target in cur-arg-regs
                      do (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
                          buf target (* 8 (- (1- n) idx))))
-            (when needs-align
-              (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
-            ;; Push outgoing stack args right-to-left.  The first stack
-            ;; arg ends up closest to the return address in the callee.
-            (let ((pushed-stack 0))
-              (cl-loop for idx downfrom (1- n) to reg-budget
-                       do (let ((disp (+ (* 8 (- (1- n) idx))
-                                         (if needs-align 8 0)
-                                         (* 8 pushed-stack))))
-                            (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
-                             buf 'r10 disp)
-                            (nelisp-asm-x86_64-push buf 'r10)
-                            (setq pushed-stack (1+ pushed-stack)))))
+            (if win64-p
+                (progn
+                  ;; Win64 outgoing area: 32-byte shadow space followed by
+                  ;; arg4..argN at [rsp+32].  Saved args remain above it.
+                  (nelisp-asm-x86_64-sub-imm32 buf 'rsp win64-outgoing)
+                  (cl-loop for idx from reg-budget below n
+                           for stack-slot from 0
+                           do (let ((source-disp (+ win64-outgoing
+                                                    (* 8 (- (1- n) idx))))
+                                    (dest-disp (+ 32 (* 8 stack-slot))))
+                                (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                                 buf 'r10 source-disp)
+                                (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
+                                 buf dest-disp 'r10))))
+              (when needs-align
+                (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+              ;; SysV outgoing stack args are pushed right-to-left.  The first
+              ;; stack arg ends up closest to the return address in the callee.
+              (let ((pushed-stack 0))
+                (cl-loop for idx downfrom (1- n) to reg-budget
+                         do (let ((disp (+ (* 8 (- (1- n) idx))
+                                           (if needs-align 8 0)
+                                           (* 8 pushed-stack))))
+                              (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                               buf 'r10 disp)
+                              (nelisp-asm-x86_64-push buf 'r10)
+                              (setq pushed-stack (1+ pushed-stack))))))
             (nelisp-asm-x86_64-call-rel32 buf name)
-            (when (> stack-count 0)
-              (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-count)))
-            (when needs-align
-              (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))
+            (if win64-p
+                (nelisp-asm-x86_64-add-imm32 buf 'rsp win64-outgoing)
+              (when (> stack-count 0)
+                (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-count)))
+              (when needs-align
+                (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
             (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 n))))
       (let* ((regs (cl-subseq cur-arg-regs 0 n))
          ;; Stack alignment correction (Doc 111 §111.E fix).

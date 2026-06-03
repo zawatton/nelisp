@@ -2648,6 +2648,37 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-internal-call-stack-gp-arg ()
+  "Win64 internal calls place arg5 above shadow space instead of rejecting it."
+  (let ((path (make-temp-file "nelisp-win64-call-stack-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(seq
+             (defun callee (a b c d e) e)
+             (defun probe () (callee 1 2 3 4 5)))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; sub rsp,40; mov r10,[rsp+40]; mov [rsp+32],r10.
+                     (unibyte-string #x48 #x81 #xec #x28 #x00 #x00 #x00
+                                     #x4c #x8b #x54 #x24 #x28
+                                     #x4c #x89 #x54 #x24 #x20)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; mov r10,[rsp+40]; mov [rsp+32],r10; call rel32.
+                     (unibyte-string #x4c #x8b #x54 #x24 #x28
+                                     #x4c #x89 #x54 #x24 #x20
+                                     #xe8)))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; add rsp,40 after the internal call returns.
+                     (unibyte-string #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-phase47-compiler-test)
 
 ;;; nelisp-phase47-compiler-test.el ends here
