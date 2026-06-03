@@ -137,6 +137,12 @@ following are all CI-gated (=.github/workflows/ci.yml=):
 | =make standalone-selfhost-mt-test=       | compiles a *multi-threaded* program (=clone(2)= + SeqCst atomics, 3 OS threads) → native ELF → *42* |
 | =make standalone-parallel-compile-test=  | compiles *4 units concurrently* — 4 =fork(2)= workers each running the full compiler → 11,22,33,44  |
 
+The incremental standalone eval build also has a multi-process worker entry.
+On POSIX use =tools/build-standalone-parallel.sh [NJOBS]=; on native Windows
+PowerShell use =.\tools\build-standalone-parallel.ps1 -Jobs 4=.  Both routes
+drive =nelisp-standalone-compile-chunk= and then link once serially, using
+Emacs and pure elisp only.
+
 ** REPL-driven runtime development
 
 The standalone reader is also the development REPL for NeLisp itself.
@@ -241,6 +247,8 @@ through Elisp-generated native code.
   =standalone-selfhost-mt-test= (=clone(2)= + atomics multi-thread → 42),
   =standalone-parallel-compile-test= (4 units compiled concurrently via
   =fork(2)= → 11,22,33,44).
+- *Standalone parallel eval build*: =tools/build-standalone-parallel.sh [NJOBS]=
+  on POSIX, =.\tools\build-standalone-parallel.ps1 -Jobs 4= on Windows.
 
 * Cross-Platform Support (v2.0, 2026-05-22)
 

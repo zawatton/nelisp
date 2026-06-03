@@ -6,6 +6,7 @@
 # write contention), then runs the serial link step (all units cached).
 #
 # Usage: tools/build-standalone-parallel.sh [NJOBS]   (default: nproc)
+# Windows PowerShell counterpart: tools/build-standalone-parallel.ps1
 #
 # NOTE (measured): for the current 37-unit set this is SLOWER than the serial
 # `make standalone-eval' -- per-unit compilation is ~0.4s total while each

@@ -2304,7 +2304,8 @@ Reads NELISP_CHUNK_IDX / NELISP_CHUNK_N from the environment; a worker takes the
 cacheable manifest positions where (mod POS N) == IDX, skipping :start (synthesized)
 and :driver (always recompiled at link time).  Concurrency-safe: each unit writes
 its own NAME.unit file, so N processes never contend.  Used by the multi-process
-parallel build (tools/build-standalone-parallel.sh).
+parallel build (`tools/build-standalone-parallel.sh' on POSIX and
+`tools/build-standalone-parallel.ps1' on Windows).
 
 NOTE: for the current 37-unit set the per-unit compile cost (~0.4s total) is far
 below the per-process emacs startup + module-load cost (~4s), so the serial build
