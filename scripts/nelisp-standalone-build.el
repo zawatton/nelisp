@@ -2721,7 +2721,7 @@ SVC #0x80."
   "Return the macOS arm64 Mach-O `_main' start unit for standalone-reader.
 Dyld enters `_main(argc, argv, envp)'.  The reader driver expects the Linux
 entry-stack argv shape (`argc' at slot 0, argv pointers inline after it), so
-this trampoline first snapshots argc and argv[0..3] on the original stack,
+this trampoline first snapshots argc and argv[0..3] from the original stack,
 switches onto a large anonymous mmap'd native stack, copies the snapshot into a
 fresh driver stack block, and passes that block to `driver'.  It then exits
 through the Darwin raw syscall ABI with x16=1 and SVC #0x80."
@@ -2729,14 +2729,15 @@ through the Darwin raw syscall ABI with x16=1 and SVC #0x80."
          (buf (nelisp-asm-arm64-make-buffer))
          (reloc-off nil))
     (nelisp-asm-arm64-sub-imm buf 'sp 'sp 48)
-    (nelisp-asm-arm64-str-imm buf 'x0 'sp 0)  ; argc
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 0)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'sp 48) ; original sp: argc
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 0)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'sp 56)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 8)
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 8)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'sp 64)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 16)
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 16)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'sp 72)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 24)
-    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 24)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'sp 80)
     (nelisp-asm-arm64-str-imm buf 'x2 'sp 32)
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-mov-imm64 buf 'x1 size)
