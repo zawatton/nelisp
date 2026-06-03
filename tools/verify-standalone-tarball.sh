@@ -89,8 +89,16 @@ if [ "$host_can_run" -ne 1 ]; then
   exit 0
 fi
 
-if [ "$PLATFORM" = "macos-aarch64" ] && command -v codesign >/dev/null 2>&1; then
-  codesign -f -s - "$NELISP_EXE" >/dev/null
+if [ "$PLATFORM" = "macos-aarch64" ]; then
+  if ! command -v codesign >/dev/null 2>&1; then
+    err "codesign is required to verify macOS arm64 tarballs"
+    exit 2
+  fi
+  codesign --verify "$NELISP_EXE" >/dev/null || {
+    err "bin/$NELISP_BIN_NAME is not signed; rebuild the tarball on macOS arm64"
+    exit 2
+  }
+  ok "bin/$NELISP_BIN_NAME code signature OK"
 fi
 chmod +x "$NELISP_EXE" 2>/dev/null || true
 

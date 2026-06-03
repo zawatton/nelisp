@@ -121,6 +121,14 @@ cp "$STANDALONE_BIN" "$STAGE_DIR/bin/$STAGED_BIN_NAME"
 if [[ "$STAGED_BIN_NAME" = "nelisp" ]]; then
   chmod +x "$STAGE_DIR/bin/nelisp"
 fi
+if [[ "$PLATFORM" = "macos-aarch64" && "$(uname -s)" = "Darwin" && "$(uname -m)" = "arm64" ]]; then
+  if ! command -v codesign >/dev/null 2>&1; then
+    err "codesign is required to build a runnable macOS arm64 tarball"
+    exit 1
+  fi
+  log "ad-hoc signing bin/nelisp for macOS arm64"
+  codesign -f -s - "$STAGE_DIR/bin/nelisp" >/dev/null
+fi
 
 # Elisp sources.
 cp src/nelisp*.el "$STAGE_DIR/src/"
