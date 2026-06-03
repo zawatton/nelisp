@@ -9414,6 +9414,280 @@
                                3000))))
     (should (equal freed '(3000)))))
 
+(ert-deftest nelisp-stdlib-os-sendto-inet-darwin-uses-libc-sendto ()
+  "Darwin AF_INET sendto encodes sockaddr_in and dispatches to libc."
+  (let ((call nil)
+        (encoded nil)
+        (written nil)
+        (freed nil)
+        (allocs '(3000 4000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in)
+               (lambda (buf host port) (setq encoded (list buf host port))))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written (list ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 4)))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-sendto-inet
+                    7 "ping" nelisp-os-INADDR-LOOPBACK 9999)
+                   4))))
+    (should (equal encoded
+                   (list 3000 nelisp-os-INADDR-LOOPBACK 9999)))
+    (should (equal written '(4000 "ping")))
+    (should (equal call
+                   (list "libc" "sendto"
+                         [:sint32 :sint32 :pointer :uint32 :sint32
+                          :pointer :uint32]
+                         (list 7 4000 4 0
+                               3000 nelisp-os--sockaddr-in-len))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet-darwin-uses-libc-recvfrom ()
+  "Darwin AF_INET recvfrom decodes payload and peer sockaddr through libc."
+  (let ((call nil)
+        (writes nil)
+        (freed nil)
+        (allocs '(3000 4000 5000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in)
+               (lambda (buf)
+                 (should (= buf 4000))
+                 (cons nelisp-os-INADDR-LOOPBACK 9999)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr len)
+                 (should (= ptr 3000))
+                 (should (= len 4))
+                 "pong"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (setq call (list dll fn sig args))
+                 4)))
+      (let ((system-type 'darwin))
+        (should (equal (nelisp-os-recvfrom-inet 7 16)
+                       (list "pong" nelisp-os-INADDR-LOOPBACK 9999)))))
+    (should (equal writes (list (list 5000 0 nelisp-os--sockaddr-in-len))))
+    (should (equal call
+                   (list "libc" "recvfrom"
+                         [:sint32 :sint32 :pointer :uint32 :sint32
+                          :pointer :pointer]
+                         (list 7 3000 16 0 4000 5000))))
+    (should (equal (sort freed #'<) '(3000 4000 5000)))))
+
+(ert-deftest nelisp-stdlib-os-inet-darwin-bind-connect-accept-use-libc ()
+  "Darwin AF_INET bind/connect/accept use libc and decode accepted peers."
+  (let ((calls nil)
+        (encoded nil)
+        (writes nil)
+        (freed nil)
+        (allocs '(3000 4000 5000 6000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in)
+               (lambda (buf host port) (push (list buf host port) encoded)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in)
+               (lambda (buf)
+                 (should (= buf 5000))
+                 (cons nelisp-os-INADDR-LOOPBACK 54321)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (pcase fn
+                   ((or "bind" "connect") 0)
+                   ("accept" 77)
+                   (_ (error "unexpected libc call %S" fn))))))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-bind-inet
+                    7 nelisp-os-INADDR-LOOPBACK 1111)
+                   0))
+        (should (= (nelisp-os-connect-inet
+                    8 nelisp-os-INADDR-LOOPBACK 2222)
+                   0))
+        (should (equal (nelisp-os-accept-inet 9)
+                       (list 77 nelisp-os-INADDR-LOOPBACK 54321)))))
+    (should (equal (nreverse encoded)
+                   (list
+                    (list 3000 nelisp-os-INADDR-LOOPBACK 1111)
+                    (list 4000 nelisp-os-INADDR-LOOPBACK 2222))))
+    (should (equal writes (list (list 6000 0 nelisp-os--sockaddr-in-len))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "bind"
+                          [:sint32 :sint32 :pointer :uint32]
+                          (list 7 3000 nelisp-os--sockaddr-in-len))
+                    (list "libc" "connect"
+                          [:sint32 :sint32 :pointer :uint32]
+                          (list 8 4000 nelisp-os--sockaddr-in-len))
+                    (list "libc" "accept"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list 9 5000 6000)))))
+    (should (equal (sort freed #'<) '(3000 4000 5000 6000)))))
+
+(ert-deftest nelisp-stdlib-os-unix-darwin-bind-connect-accept-use-libc ()
+  "Darwin AF_UNIX bind/connect/accept use libc sockaddr_un paths."
+  (let ((calls nil)
+        (encoded nil)
+        (writes nil)
+        (freed nil)
+        (allocs '(3000 4000 5000 6000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-un)
+               (lambda (buf path)
+                 (push (list buf path) encoded)
+                 11))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= ptr 6000))
+                 (should (= off 0))
+                 2))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (pcase fn
+                   ((or "bind" "connect") 0)
+                   ("accept" 77)
+                   (_ (error "unexpected libc call %S" fn))))))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-bind-unix 7 "/tmp/a.sock") 0))
+        (should (= (nelisp-os-connect-unix 8 "/tmp/a.sock") 0))
+        (should (equal (nelisp-os-accept-unix 9) '(77 . "")))))
+    (should (equal (nreverse encoded)
+                   (list (list 3000 "/tmp/a.sock")
+                         (list 4000 "/tmp/a.sock"))))
+    (should (equal writes (list (list 6000 0 nelisp-os--sockaddr-un-len))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "bind"
+                          [:sint32 :sint32 :pointer :uint32]
+                          (list 7 3000 11))
+                    (list "libc" "connect"
+                          [:sint32 :sint32 :pointer :uint32]
+                          (list 8 4000 11))
+                    (list "libc" "accept"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list 9 5000 6000)))))
+    (should (equal (sort freed #'<) '(3000 4000 5000 6000)))))
+
+(ert-deftest nelisp-stdlib-os-inet6-darwin-bind-connect-accept-use-libc ()
+  "Darwin AF_INET6 bind/connect/accept use libc and decode accepted peers."
+  (let ((calls nil)
+        (encoded nil)
+        (writes nil)
+        (freed nil)
+        (allocs '(3000 4000 5000 6000))
+        (groups nelisp-os-IN6ADDR-LOOPBACK))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in6)
+               (lambda (buf host port) (push (list buf host port) encoded)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6)
+               (lambda (buf)
+                 (should (= buf 5000))
+                 (cons groups 54321)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (pcase fn
+                   ((or "bind" "connect") 0)
+                   ("accept" 77)
+                   (_ (error "unexpected libc call %S" fn))))))
+      (let ((system-type 'darwin))
+        (should (= (nelisp-os-bind-inet6 7 groups 1111) 0))
+        (should (= (nelisp-os-connect-inet6 8 groups 2222) 0))
+        (should (equal (nelisp-os-accept-inet6 9)
+                       (list 77 groups 54321)))))
+    (should (equal (nreverse encoded)
+                   (list (list 3000 groups 1111)
+                         (list 4000 groups 2222))))
+    (should (equal writes (list (list 6000 0 nelisp-os--sockaddr-in6-len))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "bind"
+                          [:sint32 :sint32 :pointer :uint32]
+                          (list 7 3000 nelisp-os--sockaddr-in6-len))
+                    (list "libc" "connect"
+                          [:sint32 :sint32 :pointer :uint32]
+                          (list 8 4000 nelisp-os--sockaddr-in6-len))
+                    (list "libc" "accept"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list 9 5000 6000)))))
+    (should (equal (sort freed #'<) '(3000 4000 5000 6000)))))
+
+(ert-deftest nelisp-stdlib-os-getname-darwin-uses-libc ()
+  "Darwin getsockname/getpeername wrappers use libc for inet and unix sockets."
+  (let ((calls nil)
+        (writes nil)
+        (freed nil)
+        (allocs '(3000 4000 5000 6000 7000 8000 9000 10000)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) (pop allocs)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (push (list ptr off val) writes) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off)
+                 (should (= off 0))
+                 (pcase ptr
+                   ((or 6000 10000) 12)
+                   (_ (error "unexpected getname len ptr %S" ptr)))))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in)
+               (lambda (buf)
+                 (pcase buf
+                   (3000 (cons nelisp-os-INADDR-LOOPBACK 1111))
+                   (7000 (cons nelisp-os-INADDR-LOOPBACK 2222))
+                   (_ (error "unexpected inet getname buffer %S" buf)))))
+              ((symbol-function 'nelisp-os--decode-sockaddr-un)
+               (lambda (buf len)
+                 (pcase (list buf len)
+                   (`(5000 12) "/tmp/a.sock")
+                   (`(9000 12) "/tmp/b.sock")
+                   (_ (error "unexpected unix getname decode %S %S" buf len)))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'darwin))
+        (should (equal (nelisp-os-getsockname-inet 7)
+                       (list nelisp-os-INADDR-LOOPBACK 1111)))
+        (should (equal (nelisp-os-getsockname-unix 8) "/tmp/a.sock"))
+        (should (equal (nelisp-os-getpeername-inet 9)
+                       (list nelisp-os-INADDR-LOOPBACK 2222)))
+        (should (equal (nelisp-os-getpeername-unix 10) "/tmp/b.sock"))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "libc" "getsockname"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list 7 3000 4000))
+                    (list "libc" "getsockname"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list 8 5000 6000))
+                    (list "libc" "getpeername"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list 9 7000 8000))
+                    (list "libc" "getpeername"
+                          [:sint32 :sint32 :pointer :pointer]
+                          (list 10 9000 10000)))))
+    (should (equal (nreverse writes)
+                   (list
+                    (list 4000 0 nelisp-os--sockaddr-in-len)
+                    (list 6000 0 nelisp-os--sockaddr-un-len)
+                    (list 8000 0 nelisp-os--sockaddr-in-len)
+                    (list 10000 0 nelisp-os--sockaddr-un-len))))
+    (should (equal (sort freed #'<)
+                   '(3000 4000 5000 6000 7000 8000 9000 10000)))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here
