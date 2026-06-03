@@ -1,12 +1,52 @@
 #!/usr/bin/env bash
 # Cross-PC verification script for NeLisp — Linux / macOS
-# Usage: bash scripts/verify-cross-platform.sh
+# Usage: bash scripts/verify-cross-platform.sh [--parallel-jobs N] [--skip-native-smokes]
 # Expected: last line = "=== Cross-platform verify PASS ==="
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 EMACS="${EMACS:-emacs}"
+PARALLEL_JOBS=0
+SKIP_NATIVE_SMOKES=0
+
+default_parallel_jobs() {
+  local cpus=2
+  if command -v nproc >/dev/null 2>&1; then
+    cpus="$(nproc)"
+  elif [ "$(uname -s)" = "Darwin" ]; then
+    cpus="$(sysctl -n hw.ncpu 2>/dev/null || echo 2)"
+  fi
+  if [ "$cpus" -lt 2 ]; then
+    echo 1
+  else
+    echo 2
+  fi
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --emacs) EMACS="$2"; shift 2 ;;
+    --parallel-jobs|--jobs|-j) PARALLEL_JOBS="$2"; shift 2 ;;
+    --skip-native-smokes) SKIP_NATIVE_SMOKES=1; shift ;;
+    -h|--help)
+      echo "usage: $0 [--emacs EMACS] [--parallel-jobs N] [--skip-native-smokes]"
+      exit 0
+      ;;
+    *) echo "usage: $0 [--emacs EMACS] [--parallel-jobs N] [--skip-native-smokes]" >&2; exit 2 ;;
+  esac
+done
+
+case "$PARALLEL_JOBS" in
+  ''|*[!0-9]*)
+    echo "verify-cross-platform: --parallel-jobs must be a non-negative integer: $PARALLEL_JOBS" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$PARALLEL_JOBS" -le 0 ]; then
+  PARALLEL_JOBS="$(default_parallel_jobs)"
+fi
 
 echo "--- Platform info ---"
 uname -a
@@ -17,17 +57,19 @@ if [ "$(uname -s)" = "Darwin" ]; then
   echo "--- make compile (byte-compile elisp) ---"
   make EMACS="$EMACS" compile 2>&1 | tail -5
 
-  echo ""
-  echo "--- macOS arm64 Mach-O self-host smoke ---"
-  tools/macos-selfhost-test.sh --emacs "$EMACS"
+  if [ "$SKIP_NATIVE_SMOKES" -eq 0 ]; then
+    echo ""
+    echo "--- macOS arm64 Mach-O self-host smoke ---"
+    tools/macos-selfhost-test.sh --emacs "$EMACS"
 
-  echo ""
-  echo "--- macOS OS compatibility ERT smoke ---"
-  tools/macos-os-compat-test.sh --emacs "$EMACS"
+    echo ""
+    echo "--- macOS OS compatibility ERT smoke ---"
+    tools/macos-os-compat-test.sh --emacs "$EMACS"
+  fi
 
   echo ""
   echo "--- macOS standalone parallel build (zero-Rust) ---"
-  tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64 --emacs "$EMACS"
+  tools/build-standalone-parallel.sh --jobs "$PARALLEL_JOBS" --target macos-aarch64 --emacs "$EMACS"
 
   echo ""
   echo "--- macOS standalone eval native smoke ---"
@@ -50,17 +92,19 @@ echo ""
 echo "--- make compile (byte-compile elisp) ---"
 make EMACS="$EMACS" compile 2>&1 | tail -5
 
-echo ""
-echo "--- Linux OS compatibility ERT smoke ---"
-tools/linux-os-compat-test.sh --emacs "$EMACS"
+if [ "$SKIP_NATIVE_SMOKES" -eq 0 ]; then
+  echo ""
+  echo "--- Linux OS compatibility ERT smoke ---"
+  tools/linux-os-compat-test.sh --emacs "$EMACS"
 
-echo ""
-echo "--- Linux x86_64 ELF self-host smoke ---"
-tools/selfhost-test.sh --emacs "$EMACS"
+  echo ""
+  echo "--- Linux x86_64 ELF self-host smoke ---"
+  tools/selfhost-test.sh --emacs "$EMACS"
+fi
 
 echo ""
 echo "--- Linux standalone parallel build (zero-Rust) ---"
-tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64 --emacs "$EMACS"
+tools/build-standalone-parallel.sh --jobs "$PARALLEL_JOBS" --target linux-x86_64 --emacs "$EMACS"
 
 echo ""
 echo "--- Linux standalone eval native smoke ---"

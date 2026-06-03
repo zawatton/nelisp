@@ -169,7 +169,8 @@
     (should (file-exists-p script-path))
     (should (file-executable-p script-path))
     (should (string-match-p "SELECTOR=\"non-windows\"" script))
-    (should (string-match-p "EXPECTED_COUNT=3" script))
+    (should (string-match-p "EXPECTED_COUNT=12" script))
+    (should (string-match-p "EXPECTED_COUNT=318" script))
     (should (string-match-p "test/nelisp-stdlib-os-test.el" script))
     (should (string-match-p "\\[linux-os\\] PASS" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
@@ -191,10 +192,11 @@
                  test-text)))
     (should (file-exists-p script-path))
     (should (file-executable-p script-path))
-    (should (= count 13))
+    (should (= count 34))
     (should (string-match-p "NELISP_MACOS_OS_SELECTOR" script))
     (should (string-match-p "test/nelisp-stdlib-os-test.el" script))
-    (should (string-match-p "EXPECTED_COUNT=13" script))
+    (should (string-match-p "EXPECTED_COUNT=34" script))
+    (should (string-match-p "EXPECTED_COUNT=17" script))
     (should (string-match-p "ert-run-tests-batch-and-exit" script))
     (should (string-match-p "\\[macos-os\\] all PASS" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
@@ -209,6 +211,8 @@
                   script-path)))
     (should (string-match-p (regexp-quote "[ \"$(uname -s)\" = \"Darwin\" ]")
                             script))
+    (should (string-match-p "--parallel-jobs" script))
+    (should (string-match-p "--skip-native-smokes" script))
     (should (string-match-p "macOS arm64 Mach-O self-host smoke" script))
     (should (string-match-p "tools/macos-selfhost-test.sh --emacs \"\\$EMACS\""
                             script))
@@ -216,9 +220,9 @@
     (should (string-match-p "tools/macos-os-compat-test.sh --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "macOS standalone parallel build" script))
-    (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64"
+    (should (string-match-p "tools/build-standalone-parallel.sh --jobs \"\\$PARALLEL_JOBS\" --target macos-aarch64"
                             script))
-    (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target macos-aarch64 --emacs \"\\$EMACS\""
+    (should (string-match-p "tools/build-standalone-parallel.sh --jobs \"\\$PARALLEL_JOBS\" --target macos-aarch64 --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "macOS standalone eval native smoke" script))
     (should (string-match-p "tools/macos-standalone-eval-test.sh --emacs \"\\$EMACS\""
@@ -237,6 +241,8 @@
                             nelisp-standalone-parallel-posix-test--repo-root))
          (script (nelisp-standalone-parallel-posix-test--read-file-text
                   script-path)))
+    (should (string-match-p "--parallel-jobs" script))
+    (should (string-match-p "--skip-native-smokes" script))
     (should (string-match-p "Linux OS compatibility ERT smoke" script))
     (should (string-match-p "tools/linux-os-compat-test.sh --emacs \"\\$EMACS\""
                             script))
@@ -244,9 +250,9 @@
     (should (string-match-p "tools/selfhost-test.sh --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "Linux standalone parallel build" script))
-    (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64"
+    (should (string-match-p "tools/build-standalone-parallel.sh --jobs \"\\$PARALLEL_JOBS\" --target linux-x86_64"
                             script))
-    (should (string-match-p "tools/build-standalone-parallel.sh --jobs 2 --target linux-x86_64 --emacs \"\\$EMACS\""
+    (should (string-match-p "tools/build-standalone-parallel.sh --jobs \"\\$PARALLEL_JOBS\" --target linux-x86_64 --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "Linux standalone eval native smoke" script))
     (should (string-match-p "tools/linux-standalone-eval-test.sh --emacs \"\\$EMACS\""
