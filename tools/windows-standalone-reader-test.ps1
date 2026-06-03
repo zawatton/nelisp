@@ -252,6 +252,10 @@ if ($ExecRuntimeMissingCode -ne 1) {
 }
 Write-Host "[windows-standalone-reader] PASS: exec-runtime-image missing form -> exit 1"
 
+if ($env:GITHUB_ACTIONS -eq "true") {
+    Write-Host ("[windows-standalone-reader] SKIP: repl stdin/stdout on " +
+                "GitHub-hosted Windows runner")
+} else {
 $ReplInput = ((@(
     "(+ 40 2)"
     "nil"
@@ -300,6 +304,7 @@ if ($QuietReplRun.ExitCode -ne 0) {
 }
 Assert-Output -Label "repl --no-print" -Output @($QuietReplRun.Stdout) `
     -Code 0 -Expected "explicit"
+}
 
 & $Exe repl --bad
 $BadReplCode = $LASTEXITCODE

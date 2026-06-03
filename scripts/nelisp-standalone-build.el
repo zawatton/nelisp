@@ -3047,9 +3047,8 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 (defun nelisp-standalone--reader-repl-prelude-forms (src cursor result pool out
                                                          ctx builtin-sym)
   "Return Phase47 forms that prepare the standalone reader REPL environment."
-  (unless (eq nelisp-standalone--target 'windows-x86_64)
-    `((sexp-write-str-lit ,src ,(nelisp-standalone--reader-repl-prelude-source))
-      (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym))))
+  `((sexp-write-str-lit ,src ,(nelisp-standalone--reader-repl-prelude-source))
+    (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym)))
 
 (defun nelisp-standalone--runtime-image-command-src ()
   "Return embedded source implementing standalone-reader runtime-image commands."
