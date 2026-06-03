@@ -172,14 +172,14 @@ build_run exit42 '(syscall-direct 1 42 0 0 0 0 0)' 42
 
 # while-loop summing 0..9 in mmap'd memory (control flow + ptr + arith).
 build_run loop '(seq
-  (syscall-direct 197 8589934592 16384 3 4114 -1 0)
-  (ptr-write-u64 8589934592 0 0)
-  (ptr-write-u64 8589934592 8 0)
-  (while (< (ptr-read-u64 8589934592 0) 10)
+  (syscall-direct 197 34359738368 16384 3 4114 -1 0)
+  (ptr-write-u64 34359738368 0 0)
+  (ptr-write-u64 34359738368 8 0)
+  (while (< (ptr-read-u64 34359738368 0) 10)
     (seq
-      (ptr-write-u64 8589934592 8 (+ (ptr-read-u64 8589934592 8) (ptr-read-u64 8589934592 0)))
-      (ptr-write-u64 8589934592 0 (+ (ptr-read-u64 8589934592 0) 1))))
-  (syscall-direct 1 (ptr-read-u64 8589934592 8) 0 0 0 0 0))' 45
+      (ptr-write-u64 34359738368 8 (+ (ptr-read-u64 34359738368 8) (ptr-read-u64 34359738368 0)))
+      (ptr-write-u64 34359738368 0 (+ (ptr-read-u64 34359738368 0) 1))))
+  (syscall-direct 1 (ptr-read-u64 34359738368 8) 0 0 0 0 0))' 45
 
 # recursive factorial: fact(5) = 120 (function calls + recursion + frame).
 build_run fact '(seq
@@ -187,27 +187,27 @@ build_run fact '(seq
   (exit (fact 5)))' 120
 
 # arena allocator: nl_alloc_bytes (atomic-bump) + the `alloc-bytes` op.
-# mmap a 1 MiB arena at 8 GiB (above __PAGEZERO); reserve arena[0] as the
+# mmap a 1 MiB arena at 32 GiB (above __PAGEZERO/dyld ranges); reserve arena[0] as the
 # bump pointer (init = arena+16); alloc 16 bytes (-> arena+16), store 99,
 # read it back.  Exercises alloc-bytes -> BL nl_alloc_bytes end to end.
 build_run alloc '(seq
-  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 0 (+ 8589934592 16))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 0 (+ 34359738368 16))
       (ptr-write-u64 (alloc-bytes 16 8) 0 99)
-      (ptr-read-u64 8589934592 16)))
+      (ptr-read-u64 34359738368 16)))
   (exit (run)))' 99
 
 # raw Darwin mmap(2) -> mprotect(2) -> munmap(2).  Windows has a
 # VirtualProtect/VirtualFree smoke; this locks the corresponding Mach-O path.
 build_run mprotect-munmap '(seq
   (defun run ()
-    (let ((p (syscall-direct 197 8589934592 4096 3 4114 -1 0)))
-      (if (= p 8589934592)
-          (let ((mp (syscall-direct 74 8589934592 4096 1 0 0 0)))
-            (let ((mu (syscall-direct 73 8589934592 4096 0 0 0 0)))
+    (let ((p (syscall-direct 197 34359738368 4096 3 4114 -1 0)))
+      (if (= p 34359738368)
+          (let ((mp (syscall-direct 74 34359738368 4096 1 0 0 0)))
+            (let ((mu (syscall-direct 73 34359738368 4096 0 0 0 0)))
               (if (= mp 0)
                   (if (= mu 0) 42 13)
                 13)))
@@ -220,17 +220,17 @@ build_run mprotect-munmap '(seq
 # Manual 32-byte slots live in [arena+64 .. arena+512); the bump
 # allocator hands out boxes from arena+512 on.
 build_run cons '(seq
-  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
   (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 0 8589935104)
-      (sexp-int-make 8589934656 7)
-      (sexp-int-make 8589934720 0)
-      (cons-make 8589934656 8589934720 8589934784)
-      (cons-car 8589934784 8589934848)
-      (ptr-read-u64 8589934848 8)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 0 34359738880)
+      (sexp-int-make 34359738432 7)
+      (sexp-int-make 34359738496 0)
+      (cons-make 34359738432 34359738496 34359738560)
+      (cons-car 34359738560 34359738624)
+      (ptr-read-u64 34359738624 8)))
   (exit (run)))' 7
 
 # sexp readers: make Int(42), then read its tag (= 2 = SEXP_TAG_INT) and
@@ -239,9 +239,9 @@ build_run cons '(seq
 build_run sexp '(seq
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (sexp-int-make 8589934656 42)
-      (+ (* (sexp-tag 8589934656) 100) (sexp-int-unwrap 8589934656))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (sexp-int-make 34359738432 42)
+      (+ (* (sexp-tag 34359738432) 100) (sexp-int-unwrap 34359738432))))
   (exit (run)))' 242
 
 # local variables: f(x) = let y = x+1 in y+y -> f(5) = 12.  Exercises
@@ -267,12 +267,12 @@ build_run setq-local '(seq
 build_run str '(seq
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 256 26952)
-      (ptr-write-u64 8589934656 0 5)
-      (ptr-write-u64 8589934656 16 8589934848)
-      (ptr-write-u64 8589934656 24 2)
-      (+ (str-len 8589934656) (str-byte-at 8589934656 1))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 256 26952)
+      (ptr-write-u64 34359738432 0 5)
+      (ptr-write-u64 34359738432 16 34359738624)
+      (ptr-write-u64 34359738432 24 2)
+      (+ (str-len 34359738432) (str-byte-at 34359738432 1))))
   (exit (run)))' 107
 
 # width-specific pointer load/store: write a u32 (= 0x030201, LE bytes
@@ -282,17 +282,17 @@ build_run str '(seq
 build_run ptr '(seq
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u32 8589934592 256 197121)
-      (ptr-write-u16 8589934592 260 40)
-      (ptr-write-u8 8589934592 262 5)
-      (ptr-write-u32 8589934592 264 10)
-      (+ (ptr-read-u8 8589934592 256)
-         (+ (* 2 (ptr-read-u8 8589934592 257))
-            (+ (* 4 (ptr-read-u8 8589934592 258))
-               (+ (ptr-read-u16 8589934592 260)
-                  (+ (ptr-read-u8 8589934592 262)
-                     (ptr-read-u32 8589934592 264))))))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u32 34359738368 256 197121)
+      (ptr-write-u16 34359738368 260 40)
+      (ptr-write-u8 34359738368 262 5)
+      (ptr-write-u32 34359738368 264 10)
+      (+ (ptr-read-u8 34359738368 256)
+         (+ (* 2 (ptr-read-u8 34359738368 257))
+            (+ (* 4 (ptr-read-u8 34359738368 258))
+               (+ (ptr-read-u16 34359738368 260)
+                  (+ (ptr-read-u8 34359738368 262)
+                     (ptr-read-u32 34359738368 264))))))))
   (exit (run)))' 72
 
 # compare-exchange: first CAS fails (7 != expected 8, no write), second
@@ -300,24 +300,24 @@ build_run ptr '(seq
 build_run cas '(seq
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 0 7)
-      (ptr-write-u64 8589935104 0 (atomic-compare-exchange 8589934592 8 99))
-      (ptr-write-u64 8589935104 8 (atomic-compare-exchange 8589934592 7 42))
-      (+ (* 10 (ptr-read-u64 8589935104 0))
-         (+ (* 20 (ptr-read-u64 8589935104 8))
-            (ptr-read-u64 8589934592 0)))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 0 7)
+      (ptr-write-u64 34359738880 0 (atomic-compare-exchange 34359738368 8 99))
+      (ptr-write-u64 34359738880 8 (atomic-compare-exchange 34359738368 7 42))
+      (+ (* 10 (ptr-read-u64 34359738880 0))
+         (+ (* 20 (ptr-read-u64 34359738880 8))
+            (ptr-read-u64 34359738368 0)))))
   (exit (run)))' 62
 
 # dealloc-bytes: alloc 16 bytes then free them; dealloc returns the 1
 # sentinel (the bump arena makes free a no-op) -> 1 + 41 = 42.
 build_run dealloc '(seq
-  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
   (defun nl_dealloc_bytes (ptr size align) 0)
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 0 (+ 8589934592 16))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 0 (+ 34359738368 16))
       (+ (dealloc-bytes (alloc-bytes 16 8) 16 8) 41)))
   (exit (run)))' 42
 
@@ -326,7 +326,7 @@ build_run dealloc '(seq
 # 30 + 4 = 34.  Manual 32-byte Sexp slots live at arena+64..+448; the
 # bump allocator (cons-make's box) starts at arena+512.
 build_run cons-set '(seq
-  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
   (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
   (defun nl_consbox_set_car (box valptr)
     (seq
@@ -342,18 +342,18 @@ build_run cons-set '(seq
       (ptr-write-u64 box 56 (ptr-read-u64 valptr 24))))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 0 8589935104)
-      (sexp-int-make 8589934656 1)
-      (sexp-int-make 8589934720 2)
-      (cons-make 8589934656 8589934720 8589934784)
-      (sexp-int-make 8589934848 30)
-      (sexp-int-make 8589934912 4)
-      (cons-set-car 8589934784 8589934848)
-      (cons-set-cdr 8589934784 8589934912)
-      (cons-car 8589934784 8589934976)
-      (cons-cdr 8589934784 8589935040)
-      (+ (ptr-read-u64 8589934976 8) (ptr-read-u64 8589935040 8))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 0 34359738880)
+      (sexp-int-make 34359738432 1)
+      (sexp-int-make 34359738496 2)
+      (cons-make 34359738432 34359738496 34359738560)
+      (sexp-int-make 34359738624 30)
+      (sexp-int-make 34359738688 4)
+      (cons-set-car 34359738560 34359738624)
+      (cons-set-cdr 34359738560 34359738688)
+      (cons-car 34359738560 34359738752)
+      (cons-cdr 34359738560 34359738816)
+      (+ (ptr-read-u64 34359738752 8) (ptr-read-u64 34359738816 8))))
   (exit (run)))' 34
 
 # cond first-match dispatch: classify(2) hits the 2nd clause -> 50.
@@ -371,11 +371,11 @@ build_run logic '(seq
 build_run write-stdout '(seq
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 256 8243311830880773480)
-      (ptr-write-u64 8589934592 264 8316297369811447151)
-      (ptr-write-u64 8589934592 272 32492094948712560)
-      (syscall-direct 4 1 8589934848 23 0 0 0)
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 256 8243311830880773480)
+      (ptr-write-u64 34359738368 264 8316297369811447151)
+      (ptr-write-u64 34359738368 272 32492094948712560)
+      (syscall-direct 4 1 34359738624 23 0 0 0)
       (syscall-direct 1 42 0 0 0 0 0)))
   (exit (run)))' 42 "hello from nelisp macos"
 
@@ -385,12 +385,12 @@ build_run read-stdin '(seq
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((n (syscall-direct 3 0 8589934848 17 0 0 0)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (let ((n (syscall-direct 3 0 34359738624 17 0 0 0)))
         (if (= n 17)
-            (if (= (ptr-read-u8 8589934592 256) 110)
-                (if (= (ptr-read-u8 8589934592 263) 114)
-                    (if (= (ptr-read-u8 8589934592 272) 101)
+            (if (= (ptr-read-u8 34359738368 256) 110)
+                (if (= (ptr-read-u8 34359738368 263) 114)
+                    (if (= (ptr-read-u8 34359738368 272) 101)
                         (ok)
                       (fail))
                   (fail))
@@ -411,20 +411,20 @@ build_run pipe '(seq
       0))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((rfd (syscall-direct-store-x1 42 0 0 0 0 0 0 8589934592 256)))
-        (let ((wfd (ptr-read-u64 8589934592 256)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (let ((rfd (syscall-direct-store-x1 42 0 0 0 0 0 0 34359738368 256)))
+        (let ((wfd (ptr-read-u64 34359738368 256)))
           (if (= (good-fds rfd wfd) 1)
               (seq
-                (ptr-write-u32 8589934592 320 1701865840)
-                (let ((w (syscall-direct 4 wfd 8589934912 4 0 0 0)))
-                  (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
+                (ptr-write-u32 34359738368 320 1701865840)
+                (let ((w (syscall-direct 4 wfd 34359738688 4 0 0 0)))
+                  (let ((n (syscall-direct 3 rfd 34359738752 4 0 0 0)))
                     (seq
                       (syscall-direct 6 rfd 0 0 0 0 0)
                       (syscall-direct 6 wfd 0 0 0 0 0)
                       (if (= w 4)
                           (if (= n 4)
-                              (if (= (ptr-read-u32 8589934592 384) 1701865840)
+                              (if (= (ptr-read-u32 34359738368 384) 1701865840)
                                   (ok)
                                 (fail))
                             (fail))
@@ -452,15 +452,15 @@ build_run fork-wait '(seq
       (if (= status 42) 1 0)))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 8589934592 240)))
-        (let ((childp (ptr-read-u64 8589934592 240)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 34359738368 240)))
+        (let ((childp (ptr-read-u64 34359738368 240)))
           (if (or (= childp 1) (= pid 0))
               (syscall-direct 1 42 0 0 0 0 0)
             (if (< 0 pid)
-                (let ((waited (syscall-direct 7 pid 8589934848 0 0 0 0)))
+                (let ((waited (syscall-direct 7 pid 34359738624 0 0 0 0)))
                   (if (= waited pid)
-                      (if (= (wait-status-ok (ptr-read-u32 8589934592 256)) 1)
+                      (if (= (wait-status-ok (ptr-read-u32 34359738368 256)) 1)
                           (ok)
                         (fail 33))
                     (fail 32)))
@@ -474,25 +474,25 @@ build_run fork-execve '(seq
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 256 29400045130965551)
-      (ptr-write-u64 8589934592 272 25389)
-      (ptr-write-u64 8589934592 288 14131062832199781)
-      (ptr-write-u64 8589934592 512 8589934848)
-      (ptr-write-u64 8589934592 520 8589934864)
-      (ptr-write-u64 8589934592 528 8589934880)
-      (ptr-write-u64 8589934592 536 0)
-      (ptr-write-u64 8589934592 576 0)
-      (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 8589934592 240)))
-        (let ((childp (ptr-read-u64 8589934592 240)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 256 29400045130965551)
+      (ptr-write-u64 34359738368 272 25389)
+      (ptr-write-u64 34359738368 288 14131062832199781)
+      (ptr-write-u64 34359738368 512 34359738624)
+      (ptr-write-u64 34359738368 520 34359738640)
+      (ptr-write-u64 34359738368 528 34359738656)
+      (ptr-write-u64 34359738368 536 0)
+      (ptr-write-u64 34359738368 576 0)
+      (let ((pid (syscall-direct-store-x1 2 0 0 0 0 0 0 34359738368 240)))
+        (let ((childp (ptr-read-u64 34359738368 240)))
           (if (or (= childp 1) (= pid 0))
               (seq
-                (syscall-direct 59 8589934848 8589935104 8589935168 0 0 0)
+                (syscall-direct 59 34359738624 34359738880 34359738944 0 0 0)
                 (syscall-direct 1 13 0 0 0 0 0))
             (if (< 0 pid)
-                (let ((waited (syscall-direct 7 pid 8589934912 0 0 0 0)))
+                (let ((waited (syscall-direct 7 pid 34359738688 0 0 0 0)))
                   (if (= waited pid)
-                      (if (= (ptr-read-u32 8589934592 320) 10752)
+                      (if (= (ptr-read-u32 34359738368 320) 10752)
                           (ok)
                         (fail))
                     (fail)))
@@ -505,17 +505,17 @@ build_run createfile-write '(seq
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 256 7810770278772732975)
-      (ptr-write-u64 8589934592 264 8026366082446029673)
-      (ptr-write-u64 8589934592 272 111516299177331)
-      (ptr-write-u64 8589934592 320 1819043144)
-      (let ((fd (syscall-direct 5 8589934848 1537 420 0 0 0)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 256 7810770278772732975)
+      (ptr-write-u64 34359738368 264 8026366082446029673)
+      (ptr-write-u64 34359738368 272 111516299177331)
+      (ptr-write-u64 34359738368 320 1819043144)
+      (let ((fd (syscall-direct 5 34359738624 1537 420 0 0 0)))
         (if (< 2 fd)
-            (let ((w (syscall-direct 4 fd 8589934912 4 0 0 0)))
+            (let ((w (syscall-direct 4 fd 34359738688 4 0 0 0)))
               (seq
                 (syscall-direct 6 fd 0 0 0 0 0)
-                (syscall-direct 10 8589934848 0 0 0 0 0)
+                (syscall-direct 10 34359738624 0 0 0 0 0)
                 (if (= w 4) (ok) (fail))))
           (fail)))))
   (exit (run)))' 42
@@ -527,25 +527,25 @@ build_run lseek-fstat '(seq
   (defun ok () (syscall-direct 1 42 0 0 0 0 0))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 256 7810770278772732975)
-      (ptr-write-u64 8589934592 264 8026366082446029673)
-      (ptr-write-u64 8589934592 272 111516299177331)
-      (ptr-write-u32 8589934592 320 1801807219)
-      (let ((fd (syscall-direct 5 8589934848 1538 420 0 0 0)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 256 7810770278772732975)
+      (ptr-write-u64 34359738368 264 8026366082446029673)
+      (ptr-write-u64 34359738368 272 111516299177331)
+      (ptr-write-u32 34359738368 320 1801807219)
+      (let ((fd (syscall-direct 5 34359738624 1538 420 0 0 0)))
         (if (< 2 fd)
-            (let ((w (syscall-direct 4 fd 8589934912 4 0 0 0)))
+            (let ((w (syscall-direct 4 fd 34359738688 4 0 0 0)))
               (let ((pos (syscall-direct 199 fd 0 0 0 0 0)))
-                (let ((n (syscall-direct 3 fd 8589934976 4 0 0 0)))
-                  (let ((st (syscall-direct 189 fd 8589935040 0 0 0 0)))
+                (let ((n (syscall-direct 3 fd 34359738752 4 0 0 0)))
+                  (let ((st (syscall-direct 189 fd 34359738816 0 0 0 0)))
                     (seq
                       (syscall-direct 6 fd 0 0 0 0 0)
-                      (syscall-direct 10 8589934848 0 0 0 0 0)
+                      (syscall-direct 10 34359738624 0 0 0 0 0)
                       (if (= w 4)
                           (if (= pos 0)
                               (if (= n 4)
                                   (if (= st 0)
-                                      (if (= (ptr-read-u32 8589934592 384) 1801807219)
+                                      (if (= (ptr-read-u32 34359738368 384) 1801807219)
                                           (ok)
                                         (fail))
                                     (fail))
@@ -568,25 +568,25 @@ build_run file-mmap '(seq
       0))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 256 7810770278772732975)
-      (ptr-write-u64 8589934592 264 8026366082446029673)
-      (ptr-write-u64 8589934592 272 111516299177331)
-      (ptr-write-u32 8589934592 320 561013101)
-      (let ((fd (syscall-direct 5 8589934848 1538 420 0 0 0)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 256 7810770278772732975)
+      (ptr-write-u64 34359738368 264 8026366082446029673)
+      (ptr-write-u64 34359738368 272 111516299177331)
+      (ptr-write-u32 34359738368 320 561013101)
+      (let ((fd (syscall-direct 5 34359738624 1538 420 0 0 0)))
         (if (< 2 fd)
-            (let ((w (syscall-direct 4 fd 8589934912 4 0 0 0)))
+            (let ((w (syscall-direct 4 fd 34359738688 4 0 0 0)))
               (let ((mapped (syscall-direct 197 8592031744 4096 1 18 fd 0)))
                 (if (= mapped 8592031744)
                     (let ((value (ptr-read-u32 8592031744 0)))
                       (let ((mu (syscall-direct 73 8592031744 4096 0 0 0 0)))
                         (seq
                           (syscall-direct 6 fd 0 0 0 0 0)
-                          (syscall-direct 10 8589934848 0 0 0 0 0)
+                          (syscall-direct 10 34359738624 0 0 0 0 0)
                           (if (= (good w value mu) 1) (ok) (fail)))))
                   (seq
                     (syscall-direct 6 fd 0 0 0 0 0)
-                    (syscall-direct 10 8589934848 0 0 0 0 0)
+                    (syscall-direct 10 34359738624 0 0 0 0 0)
                     (fail)))))
           (fail)))))
   (exit (run)))' 42
@@ -617,25 +617,25 @@ build_run dup-fcntl '(seq
         (if (= getfd 1)
             (if (= w 4)
                 (if (= n 4)
-                    (if (= (ptr-read-u32 8589934592 384) 1718646116) 1 0)
+                    (if (= (ptr-read-u32 34359738368 384) 1718646116) 1 0)
                   0)
               0)
           0)
       0))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (let ((rfd (syscall-direct-store-x1 42 0 0 0 0 0 0 8589934592 256)))
-        (let ((wfd (ptr-read-u64 8589934592 256)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (let ((rfd (syscall-direct-store-x1 42 0 0 0 0 0 0 34359738368 256)))
+        (let ((wfd (ptr-read-u64 34359738368 256)))
           (if (= (good-fds rfd wfd) 1)
               (let ((dupfd (syscall-direct 41 wfd 0 0 0 0 0)))
                 (if (< 2 dupfd)
                     (let ((setfd (syscall-direct 92 dupfd 2 1 0 0 0)))
                       (let ((getfd (syscall-direct 92 dupfd 1 0 0 0 0)))
                         (seq
-                          (ptr-write-u32 8589934592 320 1718646116)
-                          (let ((w (syscall-direct 4 dupfd 8589934912 4 0 0 0)))
-                            (let ((n (syscall-direct 3 rfd 8589934976 4 0 0 0)))
+                          (ptr-write-u32 34359738368 320 1718646116)
+                          (let ((w (syscall-direct 4 dupfd 34359738688 4 0 0 0)))
+                            (let ((n (syscall-direct 3 rfd 34359738752 4 0 0 0)))
                               (seq
                                 (syscall-direct 6 rfd 0 0 0 0 0)
                                 (syscall-direct 6 wfd 0 0 0 0 0)
@@ -652,7 +652,7 @@ build_run dup-fcntl '(seq
 # nl_sexp_clone_into is stubbed here as a 32-byte copy (the real one is
 # refcount/String aware); box->car @0, box->cdr @offset-cdr(32).
 build_run cons-clone '(seq
-  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
   (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
   (defun nl_sexp_clone_into (src dst)
     (seq
@@ -662,14 +662,14 @@ build_run cons-clone '(seq
       (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 0 8589935104)
-      (sexp-int-make 8589934656 20)
-      (sexp-int-make 8589934720 3)
-      (cons-make-with-clone 8589934656 8589934720 8589934784)
-      (cons-car 8589934784 8589934976)
-      (cons-cdr 8589934784 8589935040)
-      (+ (ptr-read-u64 8589934976 8) (ptr-read-u64 8589935040 8))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 0 34359738880)
+      (sexp-int-make 34359738432 20)
+      (sexp-int-make 34359738496 3)
+      (cons-make-with-clone 34359738432 34359738496 34359738560)
+      (cons-car 34359738560 34359738752)
+      (cons-cdr 34359738560 34359738816)
+      (+ (ptr-read-u64 34359738752 8) (ptr-read-u64 34359738816 8))))
   (exit (run)))' 23
 
 # boxed data ops: cell-make/value/set/null, vector make/ref/ref-ptr/set,
@@ -677,7 +677,7 @@ build_run cons-clone '(seq
 # The local helpers implement the minimal Vec/NlCell/NlRecord layouts the
 # aarch64 emitters read: NlVector data@+8 len@+16; NlRecord data@+40 len@+48.
 build_run boxed '(seq
-  (defun nl_alloc_bytes (size align) (atomic-fetch-add 8589934592 size))
+  (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
   (defun nl_sexp_clone_into (src dst)
     (seq
       (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
@@ -709,36 +709,36 @@ build_run boxed '(seq
     (nl_sexp_clone_into valptr (+ (ptr-read-u64 rec 40) (* idx 32))))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934592 0 8589938688)
-      (sexp-int-make 8589934656 5)
-      (sexp-int-make 8589934720 17)
-      (sexp-int-make 8589934784 19)
-      (cell-make 8589934720 8589934848)
-      (cell-value 8589934848 8589934912)
-      (cell-set-value 8589934848 8589934784)
-      (cell-value 8589934848 8589934976)
-      (vector-make 2 8589935040)
-      (vector-slot-set 8589935040 0 8589934720)
-      (vector-slot-set 8589935040 1 8589934784)
-      (vector-ref 8589935040 1 8589935104)
-      (record-make 8589934656 2 8589935168)
-      (record-slot-set 8589935168 0 8589934720)
-      (record-slot-set 8589935168 1 8589934784)
-      (record-slot-ref 8589935168 0 8589935232)
-      (record-type-tag 8589935168 8589935296)
-      (cons-make 8589934720 8589934784 8589935360)
-      (+ (+ (ptr-read-u64 8589934912 8)
-            (ptr-read-u64 8589934976 8))
-         (+ (vector-len 8589935040)
-            (+ (sexp-int-unwrap (vector-ref-ptr 8589935040 0))
-               (+ (ptr-read-u64 8589935104 8)
-                  (+ (record-slot-count 8589935168)
-                     (+ (sexp-int-unwrap (record-slot-ref-ptr 8589935168 1))
-                        (+ (ptr-read-u64 8589935232 8)
-                           (+ (ptr-read-u64 8589935296 8)
-                              (+ (if (< 0 (sexp-payload-ptr-record 8589935168)) 1 0)
-                                 (if (= (cons-cdr-raw 8589935360) 0) 3 0))))))))))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738368 0 34359742464)
+      (sexp-int-make 34359738432 5)
+      (sexp-int-make 34359738496 17)
+      (sexp-int-make 34359738560 19)
+      (cell-make 34359738496 34359738624)
+      (cell-value 34359738624 34359738688)
+      (cell-set-value 34359738624 34359738560)
+      (cell-value 34359738624 34359738752)
+      (vector-make 2 34359738816)
+      (vector-slot-set 34359738816 0 34359738496)
+      (vector-slot-set 34359738816 1 34359738560)
+      (vector-ref 34359738816 1 34359738880)
+      (record-make 34359738432 2 34359738944)
+      (record-slot-set 34359738944 0 34359738496)
+      (record-slot-set 34359738944 1 34359738560)
+      (record-slot-ref 34359738944 0 34359739008)
+      (record-type-tag 34359738944 34359739072)
+      (cons-make 34359738496 34359738560 34359739136)
+      (+ (+ (ptr-read-u64 34359738688 8)
+            (ptr-read-u64 34359738752 8))
+         (+ (vector-len 34359738816)
+            (+ (sexp-int-unwrap (vector-ref-ptr 34359738816 0))
+               (+ (ptr-read-u64 34359738880 8)
+                  (+ (record-slot-count 34359738944)
+                     (+ (sexp-int-unwrap (record-slot-ref-ptr 34359738944 1))
+                        (+ (ptr-read-u64 34359739008 8)
+                           (+ (ptr-read-u64 34359739072 8)
+                              (+ (if (< 0 (sexp-payload-ptr-record 34359738944)) 1 0)
+                                 (if (= (cons-cdr-raw 34359739136) 0) 3 0))))))))))))
       (exit (run)))' 121
 
 # string/symbol name ops: hand-build Symbol("ab") and Str("ab"), check
@@ -749,28 +749,28 @@ build_run names '(seq
   (defun nl_str_bytes_ptr (ptr) (str-bytes ptr))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934848 0 25185)
-      (ptr-write-u64 8589934656 0 4)
-      (ptr-write-u64 8589934656 16 8589934848)
-      (ptr-write-u64 8589934656 24 2)
-      (ptr-write-u64 8589934720 0 4)
-      (ptr-write-u64 8589934720 16 8589934848)
-      (ptr-write-u64 8589934720 24 2)
-      (ptr-write-u64 8589934784 0 5)
-      (ptr-write-u64 8589934784 16 8589934848)
-      (ptr-write-u64 8589934784 24 2)
-      (sexp-write-nil 8589934912)
-      (sexp-write-t 8589934976)
-      (+ (ptr-read-u8 (str-bytes 8589934784) 0)
-         (+ (* 3 (str-eq 8589934784 8589934784))
-            (+ (* 5 (symbol-eq 8589934656 8589934720))
-               (+ (* 7 (symbol-name-eq 8589934656 "ab"))
-                  (+ (* 11 (sexp-name-eq 8589934784 "ab"))
-                     (+ (* 13 (sexp-tag 8589934912))
-                        (+ (* 17 (sexp-tag 8589934976))
-                           (* 19 (if (= (str-bytes-ptr 8589934784)
-                                        (str-bytes 8589934784)) 1 0)))))))))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738624 0 25185)
+      (ptr-write-u64 34359738432 0 4)
+      (ptr-write-u64 34359738432 16 34359738624)
+      (ptr-write-u64 34359738432 24 2)
+      (ptr-write-u64 34359738496 0 4)
+      (ptr-write-u64 34359738496 16 34359738624)
+      (ptr-write-u64 34359738496 24 2)
+      (ptr-write-u64 34359738560 0 5)
+      (ptr-write-u64 34359738560 16 34359738624)
+      (ptr-write-u64 34359738560 24 2)
+      (sexp-write-nil 34359738688)
+      (sexp-write-t 34359738752)
+      (+ (ptr-read-u8 (str-bytes 34359738560) 0)
+         (+ (* 3 (str-eq 34359738560 34359738560))
+            (+ (* 5 (symbol-eq 34359738432 34359738496))
+               (+ (* 7 (symbol-name-eq 34359738432 "ab"))
+                  (+ (* 11 (sexp-name-eq 34359738560 "ab"))
+                     (+ (* 13 (sexp-tag 34359738688))
+                        (+ (* 17 (sexp-tag 34359738752))
+                           (* 19 (if (= (str-bytes-ptr 34359738560)
+                                        (str-bytes 34359738560)) 1 0)))))))))))
   (exit (run)))' 159
 
 # Four-arg local call writing through the 3rd/4th arguments.  This
@@ -784,11 +784,11 @@ build_run call4-outs '(seq
       1))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (write_outs 11 22 8589934976 8589935040)
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (write_outs 11 22 34359738752 34359738816)
       (+ 1
-         (+ (ptr-read-u64 8589934976 0)
-            (ptr-read-u64 8589935040 0)))))
+         (+ (ptr-read-u64 34359738752 0)
+            (ptr-read-u64 34359738816 0)))))
   (exit (run)))' 99
 
 # string writers + mut-str + UTF-8 helper call shuffles.  Helpers are
@@ -824,24 +824,24 @@ build_run str-helpers '(seq
   (defun nl_str_is_alphanumeric_at (ptr idx) 1)
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (ptr-write-u64 8589934848 0 25185)
-      (sexp-write-str 8589934656 8589934848 2)
-      (sexp-write-symbol 8589934720 8589934848 2)
-      (mut-str-make-empty 8589934784 3)
-      (str-codepoint-at 8589934656 0 8589934976 8589935040)
-      (+ (sexp-tag 8589934656)
-         (+ (sexp-tag 8589934720)
-            (+ (sexp-tag 8589934784)
-               (+ (mut-str-push-byte 8589934784 97)
-                  (+ (mut-str-push-codepoint 8589934784 98)
-                     (+ (mut-str-len 8589934784)
-                        (+ (sexp-tag (mut-str-finalize 8589934784 8589934912))
-                           (+ (str-char-count 8589934656)
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (ptr-write-u64 34359738624 0 25185)
+      (sexp-write-str 34359738432 34359738624 2)
+      (sexp-write-symbol 34359738496 34359738624 2)
+      (mut-str-make-empty 34359738560 3)
+      (str-codepoint-at 34359738432 0 34359738752 34359738816)
+      (+ (sexp-tag 34359738432)
+         (+ (sexp-tag 34359738496)
+            (+ (sexp-tag 34359738560)
+               (+ (mut-str-push-byte 34359738560 97)
+                  (+ (mut-str-push-codepoint 34359738560 98)
+                     (+ (mut-str-len 34359738560)
+                        (+ (sexp-tag (mut-str-finalize 34359738560 34359738688))
+                           (+ (str-char-count 34359738432)
                               (+ 1
-                                 (+ (ptr-read-u64 8589934976 0)
-                                    (+ (ptr-read-u64 8589935040 0)
-                                       (str-is-alphanumeric-at 8589934656 0))))))))))))))
+                                 (+ (ptr-read-u64 34359738752 0)
+                                    (+ (ptr-read-u64 34359738816 0)
+                                       (str-is-alphanumeric-at 34359738432 0))))))))))))))
   (exit (run)))' 126
 
 # literal writers: aarch64 builds a temporary stack byte buffer and calls
@@ -862,13 +862,13 @@ build_run lits '(seq
       slot))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (sexp-write-symbol-lit 8589934656 "ab")
-      (sexp-write-str-lit 8589934720 "ab")
-      (+ (sexp-tag 8589934656)
-         (+ (ptr-read-u64 8589934656 8)
-            (+ (sexp-tag 8589934720)
-               (ptr-read-u64 8589934720 8))))))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (sexp-write-symbol-lit 34359738432 "ab")
+      (sexp-write-str-lit 34359738496 "ab")
+      (+ (sexp-tag 34359738432)
+         (+ (ptr-read-u64 34359738432 8)
+            (+ (sexp-tag 34359738496)
+               (ptr-read-u64 34359738496 8))))))
   (exit (run)))' 203
 
 # extern-call: direct GP-only aarch64 BL path with six register args.
@@ -908,9 +908,9 @@ build_run aot-roots '(seq
     (sexp-write-str out bytes 2))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (make-str 8589934656 1 2 3 4 8589934848)
-      (sexp-tag 8589934656)))
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (make-str 34359738432 1 2 3 4 34359738624)
+      (sexp-tag 34359738432)))
   (exit (run)))' 5
 
 # f64 Sexp ops: write 42.0 through the helper, unwrap raw bits, bitcast
@@ -923,12 +923,12 @@ build_run f64-sexp '(seq
       slot))
   (defun run ()
     (seq
-      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-      (sexp-write-float 8589934656 (i64-to-f64 42))
-      (+ (sexp-tag 8589934656)
+      (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
+      (sexp-write-float 34359738432 (i64-to-f64 42))
+      (+ (sexp-tag 34359738432)
          (f64-to-i64-trunc
            (bits-to-f64
-             (sexp-float-unwrap 8589934656))))))
+             (sexp-float-unwrap 34359738432))))))
   (exit (run)))' 45
 
 # function pointers (Doc 133 P0): take add2's address (ADR), call it
