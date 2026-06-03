@@ -2604,6 +2604,64 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
+(ert-deftest nelisp-phase47-compiler/win64-alloc-bytes-uses-gp-args-and-shadow ()
+  "Win64 alloc-bytes calls nl_alloc_bytes via RCX/RDX and shadow space."
+  (let ((path (make-temp-file "nelisp-win64-alloc-bytes-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () (alloc-bytes 32 8))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; mov rax,32; push rax; mov rax,8; push rax;
+                     ;; pop rdx; pop rcx; sub rsp,32; call; add rsp,32.
+                     (unibyte-string #x48 #xc7 #xc0 #x20 #x00 #x00 #x00
+                                     #x50
+                                     #x48 #xc7 #xc0 #x08 #x00 #x00 #x00
+                                     #x50
+                                     #x5a #x59
+                                     #x48 #x81 #xec #x20 #x00 #x00 #x00
+                                     #xe8 #x00 #x00 #x00 #x00
+                                     #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
+            (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+                         text
+                         ;; Old SysV-only sequence: pop rsi; pop rdi;
+                         ;; push rax; call.
+                         (unibyte-string #x5e #x5f #x50 #xe8)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/win64-dealloc-bytes-uses-gp-args-and-shadow ()
+  "Win64 dealloc-bytes calls nl_dealloc_bytes via RCX/RDX/R8 and shadow space."
+  (let ((path (make-temp-file "nelisp-win64-dealloc-bytes-" nil ".obj")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe (p) (dealloc-bytes p 32 8))
+           path :arch 'x86_64 :format 'coff)
+          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+                        bytes ".text")))
+            (should (nelisp-phase47-compiler-test--bytes-contain-p
+                     text
+                     ;; pop r8; pop rdx; pop rcx; sub rsp,8 alignment
+                     ;; pad; sub rsp,32 shadow; call; add both back.
+                     (unibyte-string #x41 #x58 #x5a #x59
+                                     #x48 #x81 #xec #x08 #x00 #x00 #x00
+                                     #x48 #x81 #xec #x20 #x00 #x00 #x00
+                                     #xe8 #x00 #x00 #x00 #x00
+                                     #x48 #x81 #xc4 #x20 #x00 #x00 #x00
+                                     #x48 #x81 #xc4 #x08 #x00 #x00 #x00)))
+            (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+                         text
+                         ;; Old SysV-only sequence: pop rdx; pop rsi;
+                         ;; pop rdi; push rax; call.
+                         (unibyte-string #x5a #x5e #x5f #x50 #xe8)))))
+      (ignore-errors (delete-file path)))))
+
 (ert-deftest nelisp-phase47-compiler/win64-extern-call-stack-gp-arg ()
   "Win64 extern-call places the fifth GP arg above the shadow space."
   (let ((path (make-temp-file "nelisp-win64-extern-call-stack-" nil ".obj")))

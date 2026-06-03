@@ -13347,23 +13347,39 @@ Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-exte
 
 ;; ---- Doc 125 §125.A — alloc / dealloc primitives emit ----
 
+(defun nelisp-phase47-compiler--emit-runtime-call-args (args buf name)
+  "Emit a runtime helper call to NAME with evaluated ARGS.
+The helper is linked as a normal Phase47 defun, so argument registers,
+shadow space, and call-site alignment must follow the current x86_64 ABI."
+  (let* ((n (length args))
+         (regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs) 0 n))
+         (arity (or nelisp-phase47-compiler--current-defun-arity 0))
+         (needs-align (= (logand arity 1) 1))
+         (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
+    (dolist (arg args)
+      (nelisp-phase47-compiler--emit-value arg buf)
+      (nelisp-asm-x86_64-push buf 'rax))
+    (dolist (reg (reverse regs))
+      (nelisp-asm-x86_64-pop buf reg))
+    (when needs-align
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
+    (when (> shadow 0)
+      (nelisp-asm-x86_64-sub-imm32 buf 'rsp shadow))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here buf name -4 'text)
+    (when (> shadow 0)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow))
+    (when needs-align
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
+
 (defun nelisp-phase47-compiler--emit-alloc-bytes (node buf)
   "Emit `alloc-bytes' — 2-arg call to `nl_alloc_bytes(size, align) -> *mut u8'.
 Returns the freshly-allocated pointer re-cast to `i64' in rax (= 0
 on layout error or OOM)."
   (let ((size (nelisp-phase47-compiler--ir-get node :size))
         (align (nelisp-phase47-compiler--ir-get node :align)))
-    (nelisp-phase47-compiler--emit-value size buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value align buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_alloc_bytes" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)))
+    (nelisp-phase47-compiler--emit-runtime-call-args
+     (list size align) buf "nl_alloc_bytes")))
 
 (defun nelisp-phase47-compiler--emit-dealloc-bytes (node buf)
   "Emit `dealloc-bytes' — 3-arg call to `nl_dealloc_bytes(ptr, size, align)'.
@@ -13372,20 +13388,8 @@ extern is `void')."
   (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
         (size (nelisp-phase47-compiler--ir-get node :size))
         (align (nelisp-phase47-compiler--ir-get node :align)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value size buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value align buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_dealloc_bytes" -4 'text)
-    (nelisp-asm-x86_64-pop buf 'r11)
+    (nelisp-phase47-compiler--emit-runtime-call-args
+     (list ptr size align) buf "nl_dealloc_bytes")
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 ;; ---- Doc 125 §125.B inline syscall op ----

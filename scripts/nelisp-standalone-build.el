@@ -2262,7 +2262,8 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
 Windows enters this CRT-free entry directly.  It passes NULL as driver arg0
 for the baked-form path, then exits through KERNEL32!ExitProcess."
   (let* ((head (append
-                (list #x48 #x83 #xec #x28) ; sub rsp, 40 (shadow + align)
+                (list #x48 #x83 #xe4 #xf0) ; and rsp, -16
+                (list #x48 #x83 #xec #x20) ; sub rsp, 32 (shadow space)
                 (list #x31 #xc9)           ; xor ecx, ecx
                 (list #xe8)))              ; call driver
          (driver-reloc-off (length head))
