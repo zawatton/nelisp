@@ -27,7 +27,7 @@ fail=0
 SELECTED_SMOKES=()
 
 usage() {
-  echo "usage: $0 [--emit-only] [--smoke NAME] [--list]" >&2
+  echo "usage: $0 [--emit-only] [--smoke all|NAME] [--emacs EMACS] [--list]" >&2
 }
 
 SMOKE_NAMES=(
@@ -48,12 +48,22 @@ smoke_exists() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --emacs)
+      if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      EMACS="$2"
+      shift 2
+      ;;
     --emit-only)
       EMIT_ONLY=1
       shift
       ;;
     --smoke)
       if [ "$#" -lt 2 ]; then usage; exit 2; fi
+      if [ "$2" = "all" ]; then
+        SELECTED_SMOKES=()
+        shift 2
+        continue
+      fi
       if ! smoke_exists "$2"; then
         echo "[macos] FAIL: unknown smoke '$2'" >&2
         echo "available smokes: all ${SMOKE_NAMES[*]}" >&2

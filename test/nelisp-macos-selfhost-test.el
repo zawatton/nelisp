@@ -74,7 +74,10 @@
                 process-environment)))
     (unwind-protect
         (progn
-          (let ((status (call-process "bash" nil buf nil script "--list")))
+          (let ((status (call-process "bash" nil buf nil
+                                      script "--emacs"
+                                      (nelisp-macos-selfhost-test--current-emacs)
+                                      "--list")))
             (with-current-buffer buf
               (let ((out (buffer-string)))
                 (should (= status 0))
@@ -86,7 +89,9 @@
           (with-current-buffer buf
             (erase-buffer))
           (let ((status (call-process "bash" nil buf nil
-                                      script "--emit-only" "--smoke" "exit42")))
+                                      script "--emacs"
+                                      (nelisp-macos-selfhost-test--current-emacs)
+                                      "--emit-only" "--smoke" "exit42")))
             (with-current-buffer buf
               (let ((out (buffer-string)))
                 (should (= status 0))
@@ -100,6 +105,33 @@
                          (regexp-quote
                           "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
                          out))))))
+      (kill-buffer buf))))
+
+(ert-deftest nelisp-macos-selfhost/all-smoke-alias ()
+  "The macOS self-host harness accepts `--smoke all' like Windows."
+  (let* ((root (nelisp-macos-selfhost-test--repo-root))
+         (script (expand-file-name "tools/macos-selfhost-test.sh" root))
+         (buf (generate-new-buffer " *nelisp-macos-selfhost-all*"))
+         (process-environment
+          (cons (format "EMACS=%s"
+                        (nelisp-macos-selfhost-test--current-emacs))
+                process-environment)))
+    (unwind-protect
+        (let ((status (call-process "bash" nil buf nil
+                                    script "--emit-only" "--smoke" "all")))
+          (with-current-buffer buf
+            (let ((out (buffer-string)))
+              (should (= status 0))
+              (should (string-match-p
+                       (regexp-quote "[macos] PASS: exit42 -> built")
+                       out))
+              (should (string-match-p
+                       (regexp-quote "[macos] PASS: callptr -> built")
+                       out))
+              (should (string-match-p
+                       (regexp-quote
+                        "[macos] all PASS — pure-elisp aarch64 -> Mach-O emit-only smoke OK")
+                       out)))))
       (kill-buffer buf))))
 
 (provide 'nelisp-macos-selfhost-test)
