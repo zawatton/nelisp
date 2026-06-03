@@ -1764,9 +1764,9 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
 ;; ===================================================================
 ;; M7 file-I/O glue unit — the impls for the wrf/rdf/slen builtins
 ;; dispatched in `nelisp-standalone--applyfn-source'.  Freestanding (no
-;; libc): raw syscalls only (open=2, read=0, write=1, close=3).  Paths
-;; from the reader are NOT NUL-terminated, so nl_bi_make_cpath copies the
-;; bytes into a fresh arena buffer + a trailing NUL before open(2).
+;; libc): target OS helpers only.  Paths from the reader are NOT
+;; NUL-terminated, so nl_bi_make_cpath copies the bytes into a fresh arena
+;; buffer + a trailing NUL before calling the OS open path.
 ;; A Sexp::Str (tag 5) has ptr@16/len@24; a Sexp::MutStr (tag 6) wraps an
 ;; NlStr* @8 whose ptr@8/len@16.  Both are handled for robustness.
 ;; ===================================================================
@@ -1790,12 +1790,12 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
                         0 (nl_bi_strlen sx)))
     (defun nl_bi_wf_withfd (fd ptr len)
       (if (< fd 0) fd
-        (let* ((wr (syscall-direct 1 fd ptr len 0 0 0)))
-          (nl_seq2 (syscall-direct 3 fd 0 0 0 0 0) wr))))
+        (let* ((wr (nl_os_write_file_handle fd ptr len)))
+          (nl_seq2 (nl_os_close_handle fd) wr))))
     (defun nl_bi_write_file (args out)
       (let* ((path_sx (wf_arg_ptr args 0)) (cont_sx (wf_arg_ptr args 1)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
-               (fd (syscall-direct 2 cpath 577 420 0 0 0)))
+               (fd (nl_os_open_write_truncate cpath)))
           (wf_write_int out
             (nl_bi_wf_withfd fd (nl_bi_strptr cont_sx) (nl_bi_strlen cont_sx))))))
     (defun wf_copy32_strnil (out)
@@ -1803,43 +1803,43 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
     (defun nl_bi_rf_withfd (fd buf out)
       (if (< fd 0)
           (wf_copy32_strnil out)
-        (let* ((n (syscall-direct 0 fd buf 4194304 0 0 0)))
-          (nl_seq2 (syscall-direct 3 fd 0 0 0 0 0)
+        (let* ((n (nl_os_read_file_handle fd buf 4194304)))
+          (nl_seq2 (nl_os_close_handle fd)
                    (nl_seq2 (nl_alloc_str buf (if (< n 0) 0 n) out) 0)))))
     (defun nl_bi_read_file (args out)
       (let* ((path_sx (wf_arg_ptr args 0)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
                (buf (alloc-bytes 4194304 1))
-               (fd (syscall-direct 2 cpath 0 0 0 0 0)))
+               (fd (nl_os_open_read cpath)))
           (nl_bi_rf_withfd fd buf out))))
     (defun nl_bi_slen (args out)
       (wf_write_int out (nl_bi_strlen (wf_arg_ptr args 0))))
     (defun nl_bi_write_stdout_bytes (args out)
       (let* ((sx (wf_arg_ptr args 0)))
         (seq
-         (syscall-direct 1 1 (nl_bi_strptr sx) (nl_bi_strlen sx) 0 0 0)
+         (nl_os_write_stdout (nl_bi_strptr sx) (nl_bi_strlen sx))
          (wf_write_nil out)
          0)))
     (defun nl_bi_write_stderr_line (args out)
       (let* ((sx (wf_arg_ptr args 0))
              (nl (alloc-bytes 1 1)))
         (seq
-         (syscall-direct 1 2 (nl_bi_strptr sx) (nl_bi_strlen sx) 0 0 0)
+         (nl_os_write_stderr (nl_bi_strptr sx) (nl_bi_strlen sx))
          (ptr-write-u8 nl 0 10)
-         (syscall-direct 1 2 nl 1 0 0 0)
+         (nl_os_write_stderr nl 1)
          (wf_write_nil out)
          0)))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
              (cpath (nl_bi_make_cpath path_sx))
-             (fd (syscall-direct 2 cpath 577 420 0 0 0)))
+             (fd (nl_os_open_write_truncate cpath)))
         (if (< fd 0)
             (wf_write_nil out)
-          (let* ((wr (syscall-direct 1 fd (nl_bi_strptr cont_sx)
-                                     (nl_bi_strlen cont_sx) 0 0 0)))
+          (let* ((wr (nl_os_write_file_handle fd (nl_bi_strptr cont_sx)
+                                             (nl_bi_strlen cont_sx))))
             (seq
-             (syscall-direct 3 fd 0 0 0 0 0)
+             (nl_os_close_handle fd)
              (if (< wr 0) (wf_write_nil out) (wf_write_t out))))))))
   "M7 file-I/O builtin impls (wrf/rdf/slen).  Uses `nl_seq2' (arena unit),
 `wf_arg_ptr'/`wf_write_int' (applyfn unit) and `nl_alloc_str' (alloc-str.o).")
@@ -2592,6 +2592,18 @@ arm in `nelisp-standalone--applyfn-dispatch-table'.")
 (defconst nelisp-standalone--reader-read-cap 4194304
   "4 MiB read cap for the file-load path (plenty for any single .el).")
 
+(defconst nelisp-standalone--windows-reader-imports
+  (list (cons "KERNEL32.dll"
+              (list "ExitProcess" "VirtualAlloc" "GetCommandLineW"
+                    "GetStdHandle" "CreateFileA" "ReadFile" "WriteFile"
+                    "CloseHandle"))
+        (cons "SHELL32.dll" (list "CommandLineToArgvW")))
+  "PE imports needed by the Windows-native standalone reader.")
+
+(defun nelisp-standalone--reader-pe-imports ()
+  "Return PE imports for the current Windows-native standalone reader."
+  nelisp-standalone--windows-reader-imports)
+
 (defun nelisp-standalone--runtime-image-command-src ()
   "Return embedded source implementing standalone-reader runtime-image commands."
   (concat
@@ -2686,19 +2698,116 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
            (nl_install_one globals unbound b ,len builtin_sym)))))
    nelisp-standalone--reader-builtins))
 
+(defun nelisp-standalone--reader-os-source-forms ()
+  "Return target-specific OS helper defuns used by the reader driver/file I/O."
+  (if (eq nelisp-standalone--target 'windows-x86_64)
+      '((defun nl_win_wcs_len_loop (ptr n)
+          (if (= (ptr-read-u16 ptr (* n 2)) 0)
+              n
+            (nl_win_wcs_len_loop ptr (+ n 1))))
+        (defun nl_win_wcs_len (ptr)
+          (if (= ptr 0) 0 (nl_win_wcs_len_loop ptr 0)))
+        (defun nl_win_wcs_ascii_copy_loop (src dst i n)
+          (if (= i n)
+              (nl_seq2 (ptr-write-u8 dst n 0) dst)
+            (nl_seq2
+             (ptr-write-u8 dst i (logand (ptr-read-u16 src (* i 2)) 255))
+             (nl_win_wcs_ascii_copy_loop src dst (+ i 1) n))))
+        (defun nl_win_wcs_ascii_dup (src)
+          (let* ((n (nl_win_wcs_len src))
+                 (dst (alloc-bytes (+ n 1) 1)))
+            (nl_win_wcs_ascii_copy_loop src dst 0 n)))
+        (defun nl_win_wargv_fill (wargv argc i sp)
+          (if (= i argc)
+              (nl_seq2 (ptr-write-u64 sp (* (+ i 1) 8) 0) sp)
+            (let* ((warg (ptr-read-u64 wargv (* i 8)))
+                   (carg (nl_win_wcs_ascii_dup warg)))
+              (seq
+               (ptr-write-u64 sp (* (+ i 1) 8) carg)
+               (nl_win_wargv_fill wargv argc (+ i 1) sp)))))
+        (defun nl_os_argv_init (sp)
+          (let* ((argc_slot (alloc-bytes 8 8))
+                 (cmd (extern-call GetCommandLineW))
+                 (wargv (extern-call CommandLineToArgvW cmd argc_slot))
+                 (argc (if (= wargv 0) 1 (ptr-read-u32 argc_slot 0)))
+                 (argv (alloc-bytes (* (+ argc 2) 8) 8)))
+            (if (= wargv 0)
+                sp
+              (seq
+               (ptr-write-u64 argv 0 argc)
+               (nl_win_wargv_fill wargv argc 0 argv)))))
+        (defun nl_os_open_read (path)
+          (extern-call CreateFileA path 2147483648 1 0 3 128 0))
+        (defun nl_os_open_write_truncate (path)
+          (extern-call CreateFileA path 1073741824 0 0 2 128 0))
+        (defun nl_os_close_handle (h)
+          (if (< h 0) 0 (extern-call CloseHandle h)))
+        (defun nl_os_read_file_handle (h ptr len)
+          (if (< h 0)
+              -1
+            (let* ((got (alloc-bytes 4 4))
+                   (ok (extern-call ReadFile h ptr len got 0)))
+              (if (= ok 0) -1 (ptr-read-u32 got 0)))))
+        (defun nl_os_write_file_handle (h ptr len)
+          (if (< h 0)
+              -1
+            (let* ((sent (alloc-bytes 4 4))
+                   (ok (extern-call WriteFile h ptr len sent 0)))
+              (if (= ok 0) -1 (ptr-read-u32 sent 0)))))
+        (defun nl_os_read_file_cpath (path buf len)
+          (let* ((h (nl_os_open_read path))
+                 (n (nl_os_read_file_handle h buf len)))
+            (nl_seq2 (nl_os_close_handle h) n)))
+        (defun nl_os_read_stdin (ptr len)
+          (let* ((h (extern-call GetStdHandle 4294967286)))
+            (nl_os_read_file_handle h ptr len)))
+        (defun nl_os_write_stdout (ptr len)
+          (let* ((h (extern-call GetStdHandle 4294967285))
+                 (sent (alloc-bytes 4 4))
+                 (ok (extern-call WriteFile h ptr len sent 0)))
+            (if (= ok 0) -1 (ptr-read-u32 sent 0))))
+        (defun nl_os_write_stderr (ptr len)
+          (let* ((h (extern-call GetStdHandle 4294967284))
+                 (sent (alloc-bytes 4 4))
+                 (ok (extern-call WriteFile h ptr len sent 0)))
+            (if (= ok 0) -1 (ptr-read-u32 sent 0)))))
+    '((defun nl_os_argv_init (sp) sp)
+      (defun nl_os_open_read (path)
+        (syscall-direct 2 path 0 0 0 0 0))
+      (defun nl_os_open_write_truncate (path)
+        (syscall-direct 2 path 577 420 0 0 0))
+      (defun nl_os_close_handle (fd)
+        (syscall-direct 3 fd 0 0 0 0 0))
+      (defun nl_os_read_file_handle (fd ptr len)
+        (if (< fd 0) -1 (syscall-direct 0 fd ptr len 0 0 0)))
+      (defun nl_os_write_file_handle (fd ptr len)
+        (if (< fd 0)
+            -1
+          (syscall-direct 1 fd ptr len 0 0 0)))
+      (defun nl_os_read_file_cpath (path buf len)
+        (let* ((fd (nl_os_open_read path))
+               (n (nl_os_read_file_handle fd buf len)))
+          (nl_seq2 (nl_os_close_handle fd) n)))
+      (defun nl_os_read_stdin (ptr len)
+        (syscall-direct 0 0 ptr len 0 0 0))
+      (defun nl_os_write_stdout (ptr len)
+        (syscall-direct 1 1 ptr len 0 0 0))
+      (defun nl_os_write_stderr (ptr len)
+        (syscall-direct 1 2 ptr len 0 0 0)))))
+
 (defun nelisp-standalone--reader-driver-source ()
   "DUAL-MODE reader driver (M7 file-load + M8 multi-form loop).
 Takes the entry stack pointer SP; reads argv[1] = (ptr-read-u64 sp 16):
   argv[1] == 0  (no file arg, e.g. `make standalone-reader-test') -> use the
                 EMBEDDED NELISP_SRC via `sexp-write-str-lit';
-  argv[1] != 0  -> open+read that file (freestanding raw syscalls open=2/read=0/
-                close=3, NOT extern-call -- no libc/PLT) and wrap the bytes via
-                `nl_alloc_str'.
+  argv[1] != 0  -> open+read that file through target OS helpers and wrap the
+                bytes via `nl_alloc_str'.
 Then the SAME multi-form parse+eval loop runs `src'.  argc==1 => argv[1]==NULL==0
 (argv is NULL-terminated) so the check is reliable.  Each builtin name installs
 through a fresh, full-length arena buffer so `nl_install_one' never aliases a
 reused buffer and >8-byte names install correctly."
   `(seq
+    ,@(nelisp-standalone--reader-os-source-forms)
     (defun nl_cstr_len_loop (ptr n)
       (if (= (ptr-read-u8 ptr n) 0)
           n
@@ -2775,11 +2884,10 @@ reused buffer and >8-byte names install correctly."
            (nl_runtime_image_copy_argv_forms sp argc (+ i 1) fbuf (+ off 1))))))
     (defun nl_runtime_image_read_image_into_source_buf (sp fbuf)
       (let* ((image_path (ptr-read-u64 sp 24))
-             (fd (syscall-direct 2 image_path 0 0 0 0 0)))
-        (let* ((n (syscall-direct 0 fd fbuf ,nelisp-standalone--reader-read-cap 0 0 0)))
-          (seq
-           (syscall-direct 3 fd 0 0 0 0 0)
-           (if (< n 0) 0 n)))))
+             (n (nl_os_read_file_cpath
+                 image_path fbuf
+                 ,nelisp-standalone--reader-read-cap)))
+        (if (< n 0) 0 n)))
     (defun nl_runtime_image_exec_source (sp argc fbuf src)
       (let* ((off (nl_runtime_image_read_image_into_source_buf sp fbuf)))
         (seq
@@ -2806,7 +2914,7 @@ reused buffer and >8-byte names install correctly."
     (defun nl_repl_read_line_loop (buf off)
       (if (> off ,(- nelisp-standalone--reader-read-cap 512))
           off
-        (let* ((n (syscall-direct 0 0 (+ buf off) 1 0 0 0)))
+        (let* ((n (nl_os_read_stdin (+ buf off) 1)))
           (if (< n 1)
               (if (= off 0) -1 off)
             (let* ((ch (ptr-read-u8 buf off)))
@@ -2838,7 +2946,7 @@ reused buffer and >8-byte names install correctly."
          (nl_alloc_str fbuf off src))))
     (defun nl_repl_write_prompt (fbuf)
       (let* ((n (nl_repl_prompt fbuf 0)))
-        (syscall-direct 1 1 fbuf n 0 0 0)))
+        (nl_os_write_stdout fbuf n)))
     (defun nl_eval_source_all (src cursor result pool out ctx builtin_sym)
       (seq
        (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
@@ -2912,14 +3020,15 @@ reused buffer and >8-byte names install correctly."
             (argv_list (alloc-bytes 32 8))
             (argv_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "nelisp-standalone-argv"))) 1))
             (argv_sym (alloc-bytes 32 8))
-            (argc (if (= sp 0) 1 (ptr-read-u64 sp 0)))
+            (sp0 (nl_os_argv_init sp))
+            (argc (if (= sp0 0) 1 (ptr-read-u64 sp0 0)))
             ;; argv[1] = C-string path pointer at [sp + 16] (0 if argc==1).
-            (path (if (= sp 0) 0 (ptr-read-u64 sp 16)))
+            (path (if (= sp0 0) 0 (ptr-read-u64 sp0 16)))
             (arg2 (if (> argc 2)
-                      (if (= sp 0) 0 (ptr-read-u64 sp 24))
+                      (if (= sp0 0) 0 (ptr-read-u64 sp0 24))
                     0))
             (arg3 (if (> argc 3)
-                      (if (= sp 0) 0 (ptr-read-u64 sp 32))
+                      (if (= sp0 0) 0 (ptr-read-u64 sp0 32))
                     0))
             (prompt_p (if (= (nl_cstr_eq_no_prompt arg2) 1)
                           0
@@ -2993,31 +3102,30 @@ reused buffer and >8-byte names install correctly."
            ;; --- source selection: embedded vs. file (M7 dual mode) ---
            (if (= (nl_cstr_eq_eval_runtime_image path) 1)
                (if (> argc 3)
-                   (nl_runtime_image_eval_source sp argc fbuf src)
+                   (nl_runtime_image_eval_source sp0 argc fbuf src)
                  (sexp-write-str-lit src "1"))
              (if (= (nl_cstr_eq_exec_runtime_image path) 1)
                  (if (> argc 3)
-                     (nl_runtime_image_exec_source sp argc fbuf src)
+                     (nl_runtime_image_exec_source sp0 argc fbuf src)
                    (sexp-write-str-lit src "1"))
                (if (= (nl_runtime_image_command_p path) 1)
                    (seq
-                    (nl_argv_list_from argc sp 1 argv_list)
+                    (nl_argv_list_from argc sp0 1 argv_list)
                     (nl_env_set_value ctx argv_sym argv_list)
                     (sexp-write-str-lit src ,(nelisp-standalone--runtime-image-command-src)))
                  (if (= path 0)
                      ;; embedded NELISP_SRC (gate path)
                      (sexp-write-str-lit src ,(nelisp-standalone--reader-src))
                    ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
-                   (let* ((fd (syscall-direct 2 path 0 0 0 0 0)))
-                     (let* ((n (syscall-direct 0 fd fbuf ,nelisp-standalone--reader-read-cap 0 0 0)))
-                       (seq
-                        (syscall-direct 3 fd 0 0 0 0 0)
-                        (nl_alloc_str fbuf (if (< n 0) 0 n) src))))))))
+                   (let* ((n (nl_os_read_file_cpath
+                              path fbuf
+                              ,nelisp-standalone--reader-read-cap)))
+                     (nl_alloc_str fbuf (if (< n 0) 0 n) src)))))))
            ;; --- reader path (M8): read+eval EVERY top-level form, keep the last
            ;; value.  parse_one advances the shared cursor; it returns 1 per form
            ;; and != 1 (e.g. -1 at EOF) when no more forms remain.
            (nl_eval_source_all src cursor result pool out ctx builtin_sym)
-           (ptr-read-u64 out 8))))))))
+           (ptr-read-u64 out 8)))))))
 
 ;; REAL special-form + env machinery (Doc 137 M2/M3 un-trap).  Replaces the
 ;; baked path's trap.o stubs so the binary is a GENUINE general interpreter for
@@ -3591,7 +3699,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (out (nelisp-standalone--output-path t)))
     (if (eq nelisp-standalone--target 'windows-x86_64)
         (nelisp-link-units-pe32 out units "_start"
-                                '("ExitProcess" "VirtualAlloc"))
+                                (nelisp-standalone--reader-pe-imports))
       (nelisp-link-units out units)
       (set-file-modes out #o755))
     (message "[standalone-reader] linked %d units -> %s (src=%S)"

@@ -142,6 +142,8 @@
     (should (string-match-p "nelisp-standalone-build-reader" script))
     (should (string-match-p "target\\\\nelisp-standalone-reader.exe" script))
     (should (string-match-p "\\[windows-standalone-reader\\] PASS" script))
+    (should (string-match-p "\\$Exe \\$FileSmoke" script))
+    (should (string-match-p "\\$Exe repl --no-prompt" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 
