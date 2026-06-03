@@ -98,11 +98,14 @@ foreach ($Job in $WorkerJobs) {
     Wait-Job $Job | Out-Null
     $Output = Receive-Job $Job
     Remove-Job $Job
-    $Output | ForEach-Object { Write-Host $_ }
     $ResultCandidates = @($Output | Where-Object {
         $_ -is [pscustomobject] -and
         $_.PSObject.Properties.Name -contains "ExitCode"
     })
+    $Output | Where-Object {
+        -not ($_ -is [pscustomobject] -and
+               $_.PSObject.Properties.Name -contains "ExitCode")
+    } | ForEach-Object { Write-Host $_ }
     if ($ResultCandidates.Count -gt 0) {
         $Result = $ResultCandidates[$ResultCandidates.Count - 1]
     } else {

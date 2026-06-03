@@ -1,9 +1,17 @@
-# Cross-PC verification script for NeLisp — Windows PowerShell
+# Cross-PC verification script for NeLisp - Windows PowerShell
 # Usage: .\scripts\verify-cross-platform.ps1
 # Expected: last line = "=== Cross-platform verify PASS ==="
+
+[CmdletBinding()]
+param(
+    [string]$Emacs = $env:EMACS,
+    [int]$ParallelJobs = 0,
+    [switch]$SkipNativeSmokes
+)
+
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Emacs = $env:EMACS
 if ([string]::IsNullOrWhiteSpace($Emacs)) {
     $Emacs = "emacs"
 }
@@ -11,47 +19,53 @@ if ([string]::IsNullOrWhiteSpace($Emacs)) {
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
+function Invoke-Checked {
+    param(
+        [string]$Label,
+        [scriptblock]$Command
+    )
+
+    Write-Host ""
+    Write-Host ("--- " + $Label + " ---")
+    & $Command
+    $Code = $LASTEXITCODE
+    if ($null -eq $Code) {
+        $Code = 0
+    }
+    if ($Code -ne 0) {
+        throw ($Label + " failed with exit " + $Code)
+    }
+}
+
+if ($ParallelJobs -le 0) {
+    $ParallelJobs = [Math]::Min(2, [System.Environment]::ProcessorCount)
+}
+if ($ParallelJobs -le 0) {
+    $ParallelJobs = 1
+}
+
 Write-Host "--- Platform info ---"
 [System.Environment]::OSVersion | Format-List
 & $Emacs --version | Select-Object -First 1
 
-Write-Host ""
-Write-Host "--- make compile (byte-compile elisp) ---"
-# On Windows, 'make' may not be available; try nmake or skip gracefully
-if (Get-Command make -ErrorAction SilentlyContinue) {
-    make compile 2>&1 | Select-Object -Last 5
-} elseif (Get-Command $Emacs -ErrorAction SilentlyContinue) {
-    Write-Host "make not found; running byte-compile via emacs --batch directly"
-    & $Emacs --batch -Q `
-        --eval "(setq load-prefer-newer t)" `
-        --eval "(byte-recompile-directory `"src`" 0 t)" `
-        --eval "(byte-recompile-directory `"packages`" 0 t)" 2>&1 | Select-Object -Last 5
-} else {
-    Write-Host "Skipping byte-compile (make and emacs not found)"
-}
-
-Write-Host ""
-Write-Host "--- standalone gate (zero-Rust) ---"
-# NOTE: The standalone gate is 'make standalone-reader-test'.
-# PowerShell 'make' availability is environment-dependent; if make is
-# present it will run the gate, otherwise invoke emacs --batch directly.
-if (Get-Command make -ErrorAction SilentlyContinue) {
-    make standalone-reader-test
-} else {
-    Write-Host "make not available — standalone-reader-test gate skipped on this host."
-    Write-Host "Run 'make standalone-reader-test' in a POSIX shell to verify."
-}
-
-Write-Host ""
-Write-Host "--- standalone parallel build (zero-Rust) ---"
-if (Get-Command $Emacs -ErrorAction SilentlyContinue) {
-    $ParallelJobs = [Math]::Min(2, [System.Environment]::ProcessorCount)
-    if ($ParallelJobs -le 0) {
-        $ParallelJobs = 1
+if (-not $SkipNativeSmokes) {
+    Invoke-Checked "Windows OS compatibility ERT smoke" {
+        & (Join-Path $RepoRoot "tools\windows-os-compat-test.ps1") `
+            -Suite all `
+            -Emacs $Emacs
     }
-    & (Join-Path $RepoRoot "tools\build-standalone-parallel.ps1") -Jobs $ParallelJobs
-} else {
-    Write-Host "Skipping standalone parallel build (emacs not found)"
+
+    Invoke-Checked "Windows x86_64 PE32+ self-host smoke" {
+        & (Join-Path $RepoRoot "tools\windows-selfhost-test.ps1") `
+            -Smoke all `
+            -Emacs $Emacs
+    }
+}
+
+Invoke-Checked "standalone parallel build (zero-Rust)" {
+    & (Join-Path $RepoRoot "tools\build-standalone-parallel.ps1") `
+        -Jobs $ParallelJobs `
+        -Emacs $Emacs
 }
 
 Write-Host ""

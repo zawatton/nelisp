@@ -74,6 +74,20 @@
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 
+(ert-deftest nelisp-standalone-parallel-windows-script-hides-result-objects ()
+  "Worker result objects are used for status but not printed as user output."
+  (let* ((script-path
+          (expand-file-name "tools/build-standalone-parallel.ps1"
+                            nelisp-standalone-parallel-windows-test--repo-root))
+         (script (nelisp-standalone-parallel-windows-test--read-file-text
+                  script-path)))
+    (should (string-match-p "\\$ResultCandidates = @(\\$Output | Where-Object"
+                            script))
+    (should (string-match-p "-not (\\$_ -is \\[pscustomobject\\]" script))
+    (should-not (string-match-p
+                 (regexp-quote "$Output | ForEach-Object { Write-Host $_ }")
+                 script))))
+
 (ert-deftest nelisp-standalone-parallel-windows-verify-runs-script ()
   "The Windows cross-platform verifier includes the parallel build runner."
   (let* ((script-path
@@ -81,7 +95,12 @@
                             nelisp-standalone-parallel-windows-test--repo-root))
          (script (nelisp-standalone-parallel-windows-test--read-file-text
                   script-path)))
-    (should (string-match-p "\\$Emacs = \\$env:EMACS" script))
+    (should (string-match-p "\\[string\\]\\$Emacs = \\$env:EMACS" script))
+    (should (string-match-p "function Invoke-Checked" script))
+    (should (string-match-p "Windows OS compatibility ERT smoke" script))
+    (should (string-match-p "windows-os-compat-test.ps1" script))
+    (should (string-match-p "Windows x86_64 PE32\\+ self-host smoke" script))
+    (should (string-match-p "windows-selfhost-test.ps1" script))
     (should (string-match-p "standalone parallel build (zero-Rust)" script))
     (should (string-match-p "tools\\\\build-standalone-parallel.ps1" script))
     (should (string-match-p "-Jobs \\$ParallelJobs" script))))
