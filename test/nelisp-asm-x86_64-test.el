@@ -687,8 +687,20 @@
 
 ;; ---- objdump cross-check ----
 
+(defun nelisp-asm-x86_64-test--objdump-binary-x86-64-supported-p ()
+  "Return non-nil when `objdump' accepts GNU binary x86-64 disassembly args."
+  (and (executable-find "objdump")
+       (let ((tmp (make-temp-file "nelisp-asm-x86_64-probe-" nil ".bin")))
+         (unwind-protect
+             (progn
+               (let ((coding-system-for-write 'no-conversion))
+                 (write-region (unibyte-string #x90) nil tmp nil 'silent))
+               (= 0 (call-process "objdump" nil nil nil
+                                  "-D" "-b" "binary" "-m" "i386:x86-64" tmp)))
+           (when (file-exists-p tmp) (delete-file tmp))))))
+
 (ert-deftest nelisp-asm-x86_64-objdump-roundtrip-exit0 ()
-  (skip-unless (executable-find "objdump"))
+  (skip-unless (nelisp-asm-x86_64-test--objdump-binary-x86-64-supported-p))
   (let* ((b (nelisp-asm-x86_64-make-buffer))
          (tmp (make-temp-file "nelisp-asm-x86_64-" nil ".bin")))
     (unwind-protect

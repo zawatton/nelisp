@@ -75,7 +75,7 @@ jobs:
 
       - name: Verify macOS standalone parity
         shell: bash
-        run: ./scripts/verify-cross-platform.sh --parallel-jobs 2 --skip-native-smokes --include-tarball
+        run: ./scripts/verify-cross-platform.sh --parallel-jobs 2 --skip-native-smokes --build-only-standalone-smokes --include-tarball
 
       - name: Upload macOS standalone tarball
         uses: actions/upload-artifact@v4

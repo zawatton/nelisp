@@ -2,7 +2,8 @@
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
-        stage-d-tarball standalone-tarball standalone-tarball-verify \
+        stage-d-tarball stage-d-v2-tarball stage-d-v2-tarball-verify \
+        standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
         standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
@@ -129,6 +130,12 @@ standalone-tarball:
 
 standalone-tarball-verify:
 	@./tools/verify-standalone-tarball.sh $(STANDALONE_VERSION) $(PLATFORM)
+
+stage-d-v2-tarball:
+	@./tools/build-bundled-tarball.sh $(RELEASE_VERSION) $(PLATFORM)
+
+stage-d-v2-tarball-verify:
+	@./tools/verify-bundled-tarball.sh $(RELEASE_VERSION) $(PLATFORM)
 # Stage 3 SELF-HOST test: the standalone interpreter loads its OWN compiler
 # toolchain as source and compiles a recursive program (fact) to a native
 # x86_64 ELF with ZERO emacs, then we exec it and assert exit 120 (= 5!).

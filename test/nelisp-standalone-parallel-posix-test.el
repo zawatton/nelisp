@@ -216,6 +216,7 @@
                             script))
     (should (string-match-p "--parallel-jobs" script))
     (should (string-match-p "--skip-native-smokes" script))
+    (should (string-match-p "--build-only-standalone-smokes" script))
     (should (string-match-p "--include-tarball" script))
     (should (string-match-p "macOS arm64 Mach-O self-host smoke" script))
     (should (string-match-p "tools/macos-selfhost-test.sh --emacs \"\\$EMACS\""
@@ -231,16 +232,22 @@
     (should (string-match-p "macOS standalone eval native smoke" script))
     (should (string-match-p "tools/macos-standalone-eval-test.sh --emacs \"\\$EMACS\""
                             script))
+    (should (string-match-p "tools/macos-standalone-eval-test.sh --emacs \"\\$EMACS\" --build-only"
+                            script))
     (should (string-match-p "macOS standalone cache identity smoke" script))
     (should (string-match-p "tools/macos-standalone-cache-identity-test.sh --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "macOS standalone reader native smoke" script))
     (should (string-match-p "tools/macos-standalone-reader-test.sh --emacs \"\\$EMACS\""
                             script))
+    (should (string-match-p "tools/macos-standalone-reader-test.sh --emacs \"\\$EMACS\" --build-only"
+                            script))
     (should (string-match-p "macOS standalone tarball smoke" script))
     (should (string-match-p "tools/build-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --emacs \"\\$EMACS\""
                             script))
     (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64"
+                            script))
+    (should (string-match-p "tools/verify-standalone-tarball.sh stage-d-v3.0 macos-aarch64 --layout-only"
                             script))
     (should (string-match-p "macOS standalone installer smoke" script))
     (should (string-match-p "run_posix_standalone_install_smoke macos-aarch64"

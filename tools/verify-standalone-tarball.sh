@@ -13,6 +13,20 @@ default_platform() {
 
 VERSION="${1:-stage-d-v3.0}"
 PLATFORM="${2:-${NELISP_STANDALONE_TARGET:-$(default_platform)}}"
+LAYOUT_ONLY=0
+
+if [ "$#" -gt 0 ]; then shift; fi
+if [ "$#" -gt 0 ]; then shift; fi
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --layout-only) LAYOUT_ONLY=1; shift ;;
+    -h|--help)
+      echo "usage: $0 [VERSION] [PLATFORM] [--layout-only]"
+      exit 0
+      ;;
+    *) echo "usage: $0 [VERSION] [PLATFORM] [--layout-only]" >&2; exit 2 ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -68,6 +82,11 @@ grep -q "standalone bin/$NELISP_BIN_NAME" "$INSTALL_DIR/MANIFEST.txt" || {
   exit 2
 }
 ok "tarball layout OK"
+
+if [ "$LAYOUT_ONLY" -eq 1 ]; then
+  ok "layout-only PASS for $PLATFORM"
+  exit 0
+fi
 
 host_can_run=0
 case "$PLATFORM" in

@@ -109,6 +109,11 @@
 (defconst nelisp-elf--shn-undef 0 "SHN_UNDEF (= unresolved symbol).")
 (defconst nelisp-elf--shn-abs   #xFFF1 "SHN_ABS (= absolute value, no relocation).")
 
+(defvar nelisp-elf--build-rich-write-target nil
+  "When non-nil, `nelisp-elf--build-rich' writes its bytes directly here.
+This bypasses a standalone return-path bug that can corrupt the large
+ET_EXEC byte string after the helper returns to its caller.")
+
 ;; ---- §91.d chunk-build buffer abstraction (= §7.1 perf mitigation) ----
 
 ;; A `cbuf' (= chunk-buffer) is a plist holding a reverse-order list of
@@ -152,7 +157,8 @@ Joins the reverse-order chunk list with one `apply' + `concat' after
 incremental `concat'.  The writer builds byte strings directly via
 `unibyte-string'/`encode-coding-string', so the joined result is
 already in the exact byte form `write-region' needs."
-  (apply #'concat (nreverse (plist-get cbuf :chunks))))
+  (nelisp-elf--coerce-unibyte
+   (apply #'concat (nreverse (plist-get cbuf :chunks)))))
 
 (defsubst nelisp-elf-buffer-length (cbuf)
   "Return current cumulative byte length of CBUF (= O(1))."
@@ -163,7 +169,8 @@ already in the exact byte form `write-region' needs."
 Uses `setcar' against the plist value cells so the original `cbuf'
 cons survives — callers that hold a reference (= every writer
 helper) see the new length without needing to rebind."
-  (let ((len (length bytes))
+  (let* ((bytes (nelisp-elf--coerce-unibyte bytes))
+         (len (length bytes))
         ;; cbuf = (:chunks CHUNKS :length LEN)
         ;;        car=:chunks cdr=(CHUNKS :length LEN)
         ;;                        car=CHUNKS cdr=(:length LEN)
@@ -263,14 +270,15 @@ Bignum-safe: shifts one byte at a time so values above 2^29 work on
 The ELF writer constructs its section payloads as raw byte strings
 upstream, so emit them directly here instead of re-coercing through
 host-only unibyte helpers."
-  (if (bufferp buf)
-      (insert bytes)
-    (let ((len (length bytes))
+  (let ((bytes (nelisp-elf--coerce-unibyte bytes)))
+    (if (bufferp buf)
+        (insert bytes)
+      (let ((len (length bytes))
           (chunks-cell (cdr buf))
           (length-cell (cdr (cdr (cdr buf)))))
-      (setcar chunks-cell (cons bytes (car chunks-cell)))
-      (setcar length-cell (+ (car length-cell) len))
-      buf)))
+        (setcar chunks-cell (cons bytes (car chunks-cell)))
+        (setcar length-cell (+ (car length-cell) len))
+        buf))))
 
 (defun nelisp-elf--write-strz (buf s)
   "Append S to BUF followed by a NUL byte (= for .strtab entries).
@@ -1588,17 +1596,12 @@ Doc 91 §91.c."
        cbuf sh-name-rela
        nelisp-elf--sht-rela
        0 0 rela-off rela-size symtab-shndx text-shndx 8 nelisp-elf--rela-size))
-    (let ((bytes (apply #'concat (nreverse (plist-get cbuf :chunks)))))
+    (let ((bytes (nelisp-elf-buffer-bytes cbuf)))
       (when nelisp-elf--build-rich-write-target
         (let ((coding-system-for-write 'no-conversion))
           (write-region bytes nil nelisp-elf--build-rich-write-target nil 'silent))
         (set-file-modes nelisp-elf--build-rich-write-target #o755))
       bytes)))
-
-(defvar nelisp-elf--build-rich-write-target nil
-  "When non-nil, `nelisp-elf--build-rich' writes its bytes directly here.
-This bypasses a standalone return-path bug that can corrupt the large
-ET_EXEC byte string after the helper returns to its caller.")
 
 ;; ---- Doc 99 §99.A ET_REL builder (= relocatable object output) ----
 ;;
@@ -2194,11 +2197,7 @@ treated as section-relative offsets (= no vaddr-base addition)."
        cbuf sh-name-rela nelisp-elf--sht-rela
        0 0 rela-off rela-size
        symtab-shndx text-shndx 8 nelisp-elf--rela-size))
-    ;; Wave 21: all pushed chunks are guaranteed unibyte by construction
-    ;; above, so concat the chunk-list directly without the final
-    ;; `coerce-unibyte' walk (= saves 1 `multibyte-string-p' +
-    ;; `with-temp-buffer' roundtrip on the ~504-byte spike-noop output).
-    (apply #'concat (nreverse (plist-get cbuf :chunks)))))
+    (nelisp-elf-buffer-bytes cbuf)))
 
 ;;;###autoload
 (defun nelisp-elf-write-binary (file-path sections)

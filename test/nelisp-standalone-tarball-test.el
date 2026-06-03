@@ -163,7 +163,7 @@
              "./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball"
              workflow))
     (should (string-match-p
-             "./scripts/verify-cross-platform.sh --parallel-jobs 2 --skip-native-smokes --include-tarball"
+             "./scripts/verify-cross-platform.sh --parallel-jobs 2 --skip-native-smokes --build-only-standalone-smokes --include-tarball"
              workflow))
     (should (string-match-p
              "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -ParallelJobs 2 -IncludeTarball"

@@ -148,7 +148,7 @@ checkouts (= no `emacs/bin/emacs' under $ANVIL_HOME) keep working."
 (ert-deftest nelisp-bundled-tarball-build-script-exists ()
   "`tools/build-bundled-tarball.sh' must be present + executable +
 encode the documented entry layout (bin/anvil + emacs/bin/emacs +
-nelisp-runtime + sha256 emit)."
+bin/nelisp + sha256 emit)."
   (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (let* ((script (nelisp-bundled-tarball-test--path
                   "tools/build-bundled-tarball.sh"))
@@ -159,12 +159,15 @@ nelisp-runtime + sha256 emit)."
     ;; Documented layout markers — anchor regex on the explicit dir
     ;; the build script asserts.
     (should (string-match-p "emacs/bin/emacs" body))
-    (should (string-match-p "nelisp-runtime/target/release" body))
+    (should (string-match-p "bin/nelisp" body))
+    (should (string-match-p "STANDALONE_BIN=\"target/nelisp\"" body))
     (should (string-match-p "VERSION=\"\\${1:-stage-d-v2.0}\"" body))
     (should (string-match-p "PLATFORM=\"\\${2:-linux-x86_64}\"" body))
     ;; Tarball + checksum emit.
     (should (string-match-p "tar -czf" body))
-    (should (string-match-p "sha256sum\\|shasum" body))))
+    (should (string-match-p "sha256sum\\|shasum" body))
+    (should-not (string-match-p "\\_<cargo\\_>" body))
+    (should-not (string-match-p "\\_<rustc\\_>" body))))
 
 ;;;; (4) verify-bundled-tarball.sh exists ----------------------------
 
