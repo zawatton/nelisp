@@ -392,9 +392,11 @@ scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball
 Expected output ends with =Cross-platform verify PASS=.
 With =--include-tarball=, verification also installs from the freshly built
 =dist= tarball and executes the installed =bin/nelisp= or =bin/nelisp.exe=.
-The same gate is wired into
+The same standalone/tarball/install gate is wired into
 =.github/workflows/stage-d-v3.0-standalone.yml= for Linux x86_64, macOS
-arm64, and Windows x86_64.
+arm64, and Windows x86_64.  GitHub's macOS arm64 VM gates Mach-O self-host
+generation with =--emit-only=; run the full self-host execution gate on real
+Apple Silicon with the command above.
 
 ** Launch
 

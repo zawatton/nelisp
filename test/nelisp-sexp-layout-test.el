@@ -26,6 +26,18 @@
 (require 'ert)
 (require 'nelisp-sexp-layout)
 
+(ert-deftest nelisp-sexp-layout--make-test-loads-lisp-dir ()
+  "`make test' must include lisp/ so ABI tests can require this module."
+  (let* ((root (locate-dominating-file
+                (or load-file-name buffer-file-name default-directory)
+                "Makefile"))
+         (makefile (and root (expand-file-name "Makefile" root))))
+    (should makefile)
+    (with-temp-buffer
+      (insert-file-contents makefile)
+      (should (string-match-p "^test: clean\n\t\\$(EMACS) --batch -Q -L lisp "
+                              (buffer-string))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Variant tag bytes
 ;; Each test mirrors one `assert!(SEXP_TAG_XXX == N)' from the deleted file.

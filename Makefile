@@ -44,7 +44,7 @@ PACKAGE_TEST_LOADS := $(addprefix -L ,$(PACKAGE_TEST_DIRS))
 all: test
 
 test: clean
-	$(EMACS) --batch -Q -L src -L test -L bench \
+	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
 	  $(PACKAGE_SRC_LOADS) \
 	  $(PACKAGE_TEST_LOADS) \
 	  --eval '(setq load-prefer-newer t)' \

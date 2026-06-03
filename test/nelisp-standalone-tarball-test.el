@@ -150,6 +150,10 @@
     (should (string-match-p "runs-on: ubuntu-latest" workflow))
     (should (string-match-p "macos-aarch64:" workflow))
     (should (string-match-p "runs-on: macos-14" workflow))
+    (should (string-match-p "tools/macos-selfhost-test.sh --emit-only --emacs emacs"
+                            workflow))
+    (should (string-match-p "tools/macos-os-compat-test.sh --emacs emacs"
+                            workflow))
     (should (string-match-p "windows-x86_64:" workflow))
     (should (string-match-p "runs-on: windows-latest" workflow))
     (should (string-match-p "version: '30.2'" workflow))
@@ -157,6 +161,9 @@
     (should (string-match-p "purcell/setup-emacs" workflow))
     (should (string-match-p
              "./scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball"
+             workflow))
+    (should (string-match-p
+             "./scripts/verify-cross-platform.sh --parallel-jobs 2 --skip-native-smokes --include-tarball"
              workflow))
     (should (string-match-p
              "\\.\\\\scripts\\\\verify-cross-platform\\.ps1 -ParallelJobs 2 -IncludeTarball"
