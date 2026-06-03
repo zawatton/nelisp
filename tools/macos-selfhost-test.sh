@@ -34,8 +34,8 @@ usage() {
 SMOKE_NAMES=(
   exit42 loop fact alloc mprotect-munmap cons sexp let setq-local str ptr
   cas dealloc cons-set cond logic write-stdout read-stdin pipe getpid
-  createfile-write cons-clone boxed names call4-outs str-helpers lits extern
-  aot-jump aot-roots f64-sexp callptr
+  fork-wait createfile-write cons-clone boxed names call4-outs str-helpers
+  lits extern aot-jump aot-roots f64-sexp callptr
 )
 
 smoke_exists() {
@@ -422,6 +422,27 @@ build_run getpid '(seq
   (defun run ()
     (let ((pid (syscall-direct 20 0 0 0 0 0 0)))
       (if (< 0 pid) 42 13)))
+  (exit (run)))' 42
+
+# raw Darwin fork(2)+wait4(2): child exits 42, parent waits for the exact
+# child pid and verifies the traditional wait status (42 << 8).
+build_run fork-wait '(seq
+  (defun fail () (syscall-direct 1 13 0 0 0 0 0))
+  (defun ok () (syscall-direct 1 42 0 0 0 0 0))
+  (defun run ()
+    (seq
+      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
+      (let ((pid (syscall-direct 2 0 0 0 0 0 0)))
+        (if (= pid 0)
+            (syscall-direct 1 42 0 0 0 0 0)
+          (if (< 0 pid)
+              (let ((waited (syscall-direct 7 pid 8589934848 0 0 0 0)))
+                (if (= waited pid)
+                    (if (= (ptr-read-u32 8589934592 256) 10752)
+                        (ok)
+                      (fail))
+                  (fail)))
+            (fail))))))
   (exit (run)))' 42
 
 # raw Darwin open/write/close/unlink path: verifies simple file creation.
