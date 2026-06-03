@@ -11,6 +11,28 @@ echo "--- Platform info ---"
 uname -a
 emacs --version | head -1
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo ""
+  echo "--- make compile (byte-compile elisp) ---"
+  make compile 2>&1 | tail -5
+
+  echo ""
+  echo "--- macOS arm64 Mach-O self-host smoke ---"
+  tools/macos-selfhost-test.sh
+
+  echo ""
+  echo "--- macOS standalone eval native smoke ---"
+  tools/macos-standalone-eval-test.sh
+
+  echo ""
+  echo "--- macOS standalone reader native smoke ---"
+  tools/macos-standalone-reader-test.sh
+
+  echo ""
+  echo "=== Cross-platform verify PASS ==="
+  exit 0
+fi
+
 echo ""
 echo "--- make compile (byte-compile elisp) ---"
 make compile 2>&1 | tail -5

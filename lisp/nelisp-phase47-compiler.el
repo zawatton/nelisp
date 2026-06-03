@@ -127,6 +127,10 @@ Doc 97.b started with up to 6 args; Doc 129.7E opens the first
 SysV stack-argument path for GP extern calls and boxed-boundary
 defuns that receive 7+ GP params.")
 
+(defconst nelisp-phase47-compiler--aarch64-arg-regs
+  '(x0 x1 x2 x3 x4 x5 x6 x7)
+  "AAPCS64 integer argument registers (= positional, 1..8).")
+
 (defconst nelisp-phase47-compiler--xmm-arg-regs
   '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)
   "SysV AMD64 / aarch64 floating-point argument registers (positional 1..8).
@@ -405,9 +409,13 @@ band-aid.  This dynvar generalises the pattern.")
 (defsubst nelisp-phase47-compiler--current-arg-regs ()
   "Return the GP argument register list for the current ABI.
 Doc 101 §101.B Wave 5: dispatches on `nelisp-phase47-compiler--abi'."
-  (if (eq nelisp-phase47-compiler--abi 'win64)
-      nelisp-asm-x86_64--abi-win64-arg-regs
-    nelisp-phase47-compiler--arg-regs))
+  (cond
+   ((eq nelisp-phase47-compiler--arch 'aarch64)
+    nelisp-phase47-compiler--aarch64-arg-regs)
+   ((eq nelisp-phase47-compiler--abi 'win64)
+    nelisp-asm-x86_64--abi-win64-arg-regs)
+   (t
+    nelisp-phase47-compiler--arg-regs)))
 
 (defsubst nelisp-phase47-compiler--current-xmm-arg-regs ()
   "Return the f64 argument register list for the current ABI.
@@ -9239,13 +9247,14 @@ functions `((NAME . ARITY) ...)'."
            (arity (nelisp-phase47-compiler--defun-signature-arity
                    signature))
            (args (cdr sexp)))
-	      (when (> arity
-	               (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
-	                        (memq nelisp-phase47-compiler--abi '(sysv win64)))
-	                   14
-	                 (length (nelisp-phase47-compiler--current-arg-regs))))
-	        (signal 'nelisp-phase47-compiler-error
-	                (list :too-many-args name arity)))
+      (when (> arity
+               (if (or (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                            (memq nelisp-phase47-compiler--abi '(sysv win64)))
+                       (eq nelisp-phase47-compiler--arch 'aarch64))
+                   14
+                 (length (nelisp-phase47-compiler--current-arg-regs))))
+        (signal 'nelisp-phase47-compiler-error
+                (list :too-many-args name arity)))
       (if (nelisp-phase47-compiler--defun-signature-rest-p signature)
           (let* ((fixed-count
                   (nelisp-phase47-compiler--defun-signature-fixed-count
@@ -9598,6 +9607,12 @@ Returns one of:
                 ;; GP ref loads use an rbp+disp8 local slot.  Slot 13
                 ;; is the current compiler-wide upper bound.
                 14)
+               ((and (eq uniform-class 'gp)
+                     (eq nelisp-phase47-compiler--arch 'aarch64))
+                ;; AAPCS64 gives x0..x7; standalone reader defuns use a
+                ;; small stack-argument tail beyond that.  Keep the same
+                ;; compiler-wide cap as the x86_64 extended GP surface.
+                14)
                (t
                 (length (nelisp-phase47-compiler--current-arg-regs))))))
         (when (> arity max-arity)
@@ -9632,6 +9647,13 @@ Returns one of:
                ((and (eq uniform-class 'gp)
                      (eq nelisp-phase47-compiler--arch 'x86_64)
                      (eq nelisp-phase47-compiler--abi 'sysv)
+                     (> arity reg-budget))
+                (cl-loop for i below arity
+                         collect (if (< i reg-budget)
+                                     (nth i reg-pool)
+                                   (list :stack (- i reg-budget)))))
+               ((and (eq uniform-class 'gp)
+                     (eq nelisp-phase47-compiler--arch 'aarch64)
                      (> arity reg-budget))
                 (cl-loop for i below arity
                          collect (if (< i reg-budget)
@@ -10039,6 +10061,80 @@ IMM9 is a signed unscaled byte offset in the range -256..255."
                  (ash n-reg 5)
                  t-reg))))
 
+(defun nelisp-phase47-compiler--arm64-emit-slot-address (buf slot)
+  "Emit address of 16-byte frame SLOT into x9 for large arm64 frames."
+  (let ((off (* 16 (1+ slot))))
+    (if (<= off 4095)
+        (nelisp-asm-arm64-sub-imm buf 'x9 'x29 off)
+      (progn
+        (nelisp-asm-arm64-mov-imm64 buf 'x9 off)
+        (nelisp-asm-arm64-sub-reg-reg buf 'x9 'x29 'x9)))))
+
+(defun nelisp-phase47-compiler--arm64-emit-frame-load (buf dst slot)
+  "Load GP frame SLOT into DST on arm64, supporting large standalone frames."
+  (let ((disp (- (* 16 (1+ slot)))))
+    (if (<= -256 disp 255)
+        (nelisp-phase47-compiler--arm64-emit-ldur buf dst 'x29 disp)
+      (progn
+        (nelisp-phase47-compiler--arm64-emit-slot-address buf slot)
+        (nelisp-asm-arm64-ldr-imm buf dst 'x9 0)))))
+
+(defun nelisp-phase47-compiler--arm64-emit-frame-store (buf src slot)
+  "Store SRC into GP frame SLOT on arm64, supporting large standalone frames."
+  (let ((disp (- (* 16 (1+ slot)))))
+    (if (<= -256 disp 255)
+        (nelisp-phase47-compiler--arm64-emit-stur buf src 'x29 disp)
+      (progn
+        (nelisp-phase47-compiler--arm64-emit-slot-address buf slot)
+        (nelisp-asm-arm64-str-imm buf src 'x9 0)))))
+
+(defun nelisp-phase47-compiler--arm64-emit-sp-adjust (buf op bytes)
+  "Emit `sp = sp OP BYTES' on arm64, splitting large immediates.
+OP is `add' or `sub'.  BYTES must preserve AAPCS64's 16-byte stack
+alignment."
+  (unless (and (integerp bytes) (<= 0 bytes) (zerop (logand bytes 15)))
+    (signal 'nelisp-phase47-compiler-error
+            (list :arm64-sp-adjust-bytes bytes)))
+  (let ((remaining bytes))
+    (while (> remaining 0)
+      (let ((chunk (min remaining 4080)))
+        (pcase op
+          ('add (nelisp-asm-arm64-add-imm buf 'sp 'sp chunk))
+          ('sub (nelisp-asm-arm64-sub-imm buf 'sp 'sp chunk))
+          (_ (signal 'nelisp-phase47-compiler-error
+                     (list :arm64-sp-adjust-op op))))
+        (setq remaining (- remaining chunk))))))
+
+(defun nelisp-phase47-compiler--arm64-emit-sp-offset-address
+    (buf dst offset)
+  "Emit DST = SP + OFFSET on arm64, supporting large positive offsets."
+  (unless (and (integerp offset) (<= 0 offset))
+    (signal 'nelisp-phase47-compiler-error
+            (list :arm64-sp-offset offset)))
+  (if (<= offset 4095)
+      (nelisp-asm-arm64-add-imm buf dst 'sp offset)
+    (progn
+      (nelisp-asm-arm64-mov-imm64 buf dst offset)
+      (nelisp-asm-arm64-add-reg-reg buf dst 'sp dst))))
+
+(defun nelisp-phase47-compiler--arm64-emit-str-sp (buf src offset)
+  "Store SRC at `[sp + OFFSET]' on arm64, supporting large offsets."
+  (if (and (<= 0 offset 32760) (zerop (logand offset 7)))
+      (nelisp-asm-arm64-str-imm buf src 'sp offset)
+    (progn
+      (nelisp-phase47-compiler--arm64-emit-sp-offset-address
+       buf 'x11 offset)
+      (nelisp-asm-arm64-str-imm buf src 'x11 0))))
+
+(defun nelisp-phase47-compiler--arm64-emit-ldr-sp (buf dst offset)
+  "Load DST from `[sp + OFFSET]' on arm64, supporting large offsets."
+  (if (and (<= 0 offset 32760) (zerop (logand offset 7)))
+      (nelisp-asm-arm64-ldr-imm buf dst 'sp offset)
+    (progn
+      (nelisp-phase47-compiler--arm64-emit-sp-offset-address
+       buf 'x11 offset)
+      (nelisp-asm-arm64-ldr-imm buf dst 'x11 0))))
+
 (defun nelisp-phase47-compiler--emit-ref-load (buf slot)
   "Emit `mov rax, [rbp - 8*(SLOT+1)]'.
 Used by `:kind ref' (GP class) to load a spilled parameter off
@@ -10048,11 +10144,7 @@ larger Doc 129 object-mode scratch/let frames."
     (signal 'nelisp-phase47-compiler-error
             (list :ref-slot-out-of-range slot)))
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (let ((disp (- (* 16 (1+ slot)))))
-        (unless (<= -256 disp 255)
-          (signal 'nelisp-phase47-compiler-error
-                  (list :ref-slot-out-of-range slot)))
-        (nelisp-phase47-compiler--arm64-emit-ldur buf 'x0 'x29 disp))
+      (nelisp-phase47-compiler--arm64-emit-frame-load buf 'x0 slot)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'rbp (- (* 8 (1+ slot))))))
 
@@ -10371,11 +10463,7 @@ aarch64 spills to `[x29 - 16*(slot+1)]' (STUR); x86_64 to
 (defun nelisp-phase47-compiler--emit-frame-slot-into-reg (buf slot reg)
   "Emit a GP load from frame SLOT into REG."
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (let ((disp (- (* 16 (1+ slot)))))
-        (unless (<= -256 disp 255)
-          (signal 'nelisp-phase47-compiler-error
-                  (list :frame-slot-out-of-range slot)))
-        (nelisp-phase47-compiler--arm64-emit-ldur buf reg 'x29 disp))
+      (nelisp-phase47-compiler--arm64-emit-frame-load buf reg slot)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf reg 'rbp (- (* 8 (1+ slot))))))
 
@@ -10384,11 +10472,7 @@ aarch64 spills to `[x29 - 16*(slot+1)]' (STUR); x86_64 to
 On aarch64 the value is in x0 and slots use 16-byte frame stride; on
 x86_64 the value is in rax and slots use the existing 8-byte stride."
   (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (let ((disp (- (* 16 (1+ slot)))))
-        (unless (<= -256 disp 255)
-          (signal 'nelisp-phase47-compiler-error
-                  (list :frame-slot-out-of-range slot)))
-        (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
+      (nelisp-phase47-compiler--arm64-emit-frame-store buf 'x0 slot)
     (nelisp-asm-x86_64-mov-mem-reg-disp8
      buf 'rbp (- (* 8 (1+ slot))) 'rax)))
 
@@ -10692,12 +10776,8 @@ the node's class to consume the result correctly."
         ((= tag 32)             ; let-rt — single runtime binding then body
          (nelisp-phase47-compiler--emit-value
           (nelisp-phase47-compiler--ir-get node :value-ir) buf)
-         (let ((disp (- (* 16 (1+ (nelisp-phase47-compiler--ir-get node :slot))))))
-           (unless (<= -256 disp 255)
-             (signal 'nelisp-phase47-compiler-error
-                     (list :let-rt-slot-out-of-range
-                           (nelisp-phase47-compiler--ir-get node :slot))))
-           (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
+         (nelisp-phase47-compiler--arm64-emit-frame-store
+          buf 'x0 (nelisp-phase47-compiler--ir-get node :slot))
          (nelisp-phase47-compiler--emit-value
           (nelisp-phase47-compiler--ir-get node :body) buf))
         ((= tag 42)             ; ptr-read-u8 — aarch64 LDRB w0,[x1,x2]
@@ -14353,17 +14433,17 @@ result (zero-extended byte) in x0."
     (nelisp-phase47-compiler--emit-value slot buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)      ; x10 = slot
     (when (> stack-bytes 0)
-      (nelisp-asm-arm64-sub-imm buf 'sp 'sp stack-bytes))
+      (nelisp-phase47-compiler--arm64-emit-sp-adjust buf 'sub stack-bytes))
     (dolist (chunk chunks)
       (nelisp-asm-arm64-mov-imm64 buf 'x9 chunk)
-      (nelisp-asm-arm64-str-imm buf 'x9 'sp off)
+      (nelisp-phase47-compiler--arm64-emit-str-sp buf 'x9 off)
       (setq off (+ off 8)))
     (nelisp-asm-arm64-add-imm buf 'x0 'sp 0)         ; bytes-ptr
     (nelisp-asm-arm64-mov-imm64 buf 'x1 (length bytes))
     (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x10)      ; slot
     (nelisp-asm-arm64-bl buf helper-sym)
     (when (> stack-bytes 0)
-      (nelisp-asm-arm64-add-imm buf 'sp 'sp stack-bytes))))
+      (nelisp-phase47-compiler--arm64-emit-sp-adjust buf 'add stack-bytes))))
 
 (defun nelisp-phase47-compiler--emit-mut-str-make-empty-arm64 (node buf)
   "Emit `mut-str-make-empty' for aarch64 via `nl_alloc_mut_str'."
@@ -14445,12 +14525,12 @@ result (zero-extended byte) in x0."
 (defun nelisp-phase47-compiler--emit-extern-call-arm64 (node buf)
   "Emit a GP-only `extern-call' for aarch64.
 This matches the existing fixed-arity AAPCS64 call path: evaluate args
-left-to-right, spill them in 16-byte stack slots, pop into x0..x5, then
+left-to-right, spill them in 16-byte stack slots, pop into x0..x7, then
 BL the target.  f64 and stack arguments remain explicitly unsupported
 on this arm64 path."
   (let* ((name (nelisp-phase47-compiler--ir-get node :name))
          (args (nelisp-phase47-compiler--ir-get node :args))
-         (gp-regs '(x0 x1 x2 x3 x4 x5))
+         (gp-regs nelisp-phase47-compiler--aarch64-arg-regs)
          (n (length args)))
     (when (> n (length gp-regs))
       (signal 'nelisp-phase47-compiler-error
@@ -14479,8 +14559,9 @@ on this arm64 path."
 Each arg is evaluated left-to-right into x0 and spilled (STR
 [SP,#-16]!); the n spills are then popped into x0..x(n-1) so later
 args cannot clobber earlier arg registers; then `BL <name>'.  The
-result is already in x0.  Only <= 6 register args are supported
-(nelisp-sys caps params at 6).
+result is already in x0.  The current standalone reader uses the
+AAPCS64 x0..x7 register budget only; stack arguments remain
+unsupported on this arm64 path.
 
 Indirect (`:fn-value') calls (Doc 133 P0 `call-ptr'): the function
 pointer is evaluated first and spilled BELOW the args, so the arg-reg
@@ -14490,10 +14571,12 @@ into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
          (fn-value (nelisp-phase47-compiler--ir-get node :fn-value))
          (args (nelisp-phase47-compiler--ir-get node :args))
          (n (length args))
-         (gp-arg-regs '(x0 x1 x2 x3 x4 x5)))
+         (gp-arg-regs nelisp-phase47-compiler--aarch64-arg-regs)
+         (reg-budget (length gp-arg-regs)))
     (when (> n (length gp-arg-regs))
-      (signal 'nelisp-phase47-compiler-error
-              (list :call-too-many-args-aarch64 name n)))
+      (when fn-value
+        (signal 'nelisp-phase47-compiler-error
+                (list :call-ptr-stack-args-unsupported-aarch64 n))))
     ;; Indirect: stash the fn-ptr below the args (popped into x9 last).
     (when fn-value
       (nelisp-phase47-compiler--emit-value fn-value buf)
@@ -14501,14 +14584,42 @@ into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
     (dolist (a args)
       (nelisp-phase47-compiler--emit-value a buf)
       (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
-    ;; Pop in reverse: top of stack (last arg) -> highest reg.
-    (cl-loop for i from (1- n) downto 0
-             do (nelisp-asm-arm64-ldr-post-sp-16 buf (nth i gp-arg-regs)))
-    (if fn-value
+    (if (<= n reg-budget)
         (progn
-          (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)  ; x9 = fn-ptr
-          (nelisp-asm-arm64-blr buf 'x9))
-      (nelisp-asm-arm64-bl buf name))))
+          ;; Pop in reverse: top of stack (last arg) -> highest reg.
+          (cl-loop for i from (1- n) downto 0
+                   do (nelisp-asm-arm64-ldr-post-sp-16
+                       buf (nth i gp-arg-regs)))
+          (if fn-value
+              (progn
+                (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9) ; x9 = fn-ptr
+                (nelisp-asm-arm64-blr buf 'x9))
+            (nelisp-asm-arm64-bl buf name)))
+      ;; Direct AAPCS64 stack-argument path.  The temporary arg saves are
+      ;; 16-byte slots above the outgoing stack area; ABI-visible stack args
+      ;; are 8-byte slots at SP when BL executes.
+      (let* ((stack-count (- n reg-budget))
+             (stack-bytes (* 8 stack-count))
+             (stack-rounded (if (zerop (logand stack-bytes 15))
+                                stack-bytes
+                              (+ stack-bytes (- 16 (logand stack-bytes 15))))))
+        (nelisp-phase47-compiler--arm64-emit-sp-adjust
+         buf 'sub stack-rounded)
+        (cl-loop for idx from reg-budget below n
+                 for stack-slot from 0
+                 do
+                 (nelisp-phase47-compiler--arm64-emit-ldr-sp
+                  buf 'x9 (+ stack-rounded (* 16 (- (1- n) idx))))
+                 (nelisp-phase47-compiler--arm64-emit-str-sp
+                  buf 'x9 (* 8 stack-slot)))
+        (cl-loop for idx below reg-budget
+                 for reg in gp-arg-regs
+                 do
+                 (nelisp-phase47-compiler--arm64-emit-ldr-sp
+                  buf reg (+ stack-rounded (* 16 (- (1- n) idx)))))
+        (nelisp-asm-arm64-bl buf name)
+        (nelisp-phase47-compiler--arm64-emit-sp-adjust
+         buf 'add (+ stack-rounded (* 16 n)))))))
 
 ;; ---- Doc 101 §101.D Cons construction ops ----
 
@@ -15212,7 +15323,7 @@ return reg, untouched by epilogue)."
          ;; still reflects the param count for the extern-call pad calc.
          (nelisp-phase47-compiler--current-defun-arity (length param-regs)))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
-        (let ((gp-arg-regs '(x0 x1 x2 x3 x4 x5))
+        (let ((gp-arg-regs nelisp-phase47-compiler--aarch64-arg-regs)
               (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))
           (nelisp-asm-arm64-define-label buf name)
           ;; Save LR for forward compatibility, then establish x29.
@@ -15224,13 +15335,23 @@ return reg, untouched by epilogue)."
           (nelisp-asm-arm64-add-imm buf 'x29 'sp 0)
           (cond
            ((eq param-class 'gp)
-            (dotimes (i (length param-regs))
-              (nelisp-asm-arm64-str-pre-sp-16 buf (nth i gp-arg-regs)))
+            (dolist (preg param-regs)
+              (if (and (consp preg) (eq (car preg) :stack))
+                  (progn
+                    ;; AAPCS64 stack args are 8-byte slots at the entry SP.
+                    ;; After saving LR+FP and setting x29, entry SP is
+                    ;; `[x29 + 32]'.  Copy into our normal 16-byte local slot
+                    ;; shape so ref loads keep using `[x29 - 16*(slot+1)]'.
+                    (nelisp-asm-arm64-ldr-imm
+                     buf 'x9 'x29 (+ 32 (* 8 (cadr preg))))
+                    (nelisp-asm-arm64-str-pre-sp-16 buf 'x9))
+                (nelisp-asm-arm64-str-pre-sp-16 buf preg)))
             ;; Reserve the runtime let-rt-n slot frame below the params
             ;; (let slots are numbered from param-count).  Each slot is
             ;; 16 bytes, so SP stays 16-byte aligned without rounding.
             (when (> rt-slot-count 0)
-              (nelisp-asm-arm64-sub-imm buf 'sp 'sp (* 16 rt-slot-count))))
+              (nelisp-phase47-compiler--arm64-emit-sp-adjust
+               buf 'sub (* 16 rt-slot-count))))
            ((eq param-class 'f64)
             ;; Allocate `arity*16' bytes (= 16-byte slot per f64
             ;; param matching the GP path's `str-pre-sp-16'
@@ -15240,7 +15361,8 @@ return reg, untouched by epilogue)."
             (let* ((arity (length param-regs))
                    (frame-bytes (* 16 arity)))
               (when (> arity 0)
-                (nelisp-asm-arm64-sub-imm buf 'sp 'sp frame-bytes))
+                (nelisp-phase47-compiler--arm64-emit-sp-adjust
+                 buf 'sub frame-bytes))
               (dotimes (i arity)
                 (let ((slot-idx i)
                       (dreg (nth i fp-arg-regs)))

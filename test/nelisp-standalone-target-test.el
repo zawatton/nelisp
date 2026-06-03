@@ -38,6 +38,12 @@
   "The Windows-native target maps to the Microsoft x64 ABI."
   (should (eq (nelisp-standalone--target-abi 'windows-x86_64) 'win64)))
 
+(ert-deftest nelisp-standalone-target-macos-uses-aarch64-darwin ()
+  "The macOS standalone target maps to arm64/Darwin code generation."
+  (should (eq (nelisp-standalone--target-abi 'macos-aarch64) 'aapcs64))
+  (should (eq (nelisp-standalone--target-arch 'macos-aarch64) 'aarch64))
+  (should (eq (nelisp-standalone--target-os 'macos-aarch64) 'darwin)))
+
 (ert-deftest nelisp-standalone-target-object-name-is-platform-specific ()
   "Windows build logs/cache use .obj names; Linux keeps the historical .o."
   (should (equal (nelisp-standalone--target-object-name
@@ -64,7 +70,11 @@
     (should (string-suffix-p
              "windows-x86_64-arena-70000000"
              (directory-file-name
-              (nelisp-standalone--target-cache-dir 'windows-x86_64))))))
+              (nelisp-standalone--target-cache-dir 'windows-x86_64))))
+    (should (string-suffix-p
+             "macos-aarch64"
+             (directory-file-name
+              (nelisp-standalone--target-cache-dir 'macos-aarch64))))))
 
 (ert-deftest nelisp-standalone-target-cache-preserves-section-bytes ()
   "Standalone unit cache stores raw section bytes independent of host coding."
@@ -103,6 +113,29 @@
   (let ((nelisp-standalone--target 'windows-x86_64))
     (should (string-suffix-p "target/nelisp.exe"
                              (nelisp-standalone--output-path t)))))
+
+(ert-deftest nelisp-standalone-target-macos-reader-cli-name-is-short ()
+  "The macOS user-facing standalone reader is target/nelisp."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (should (string-suffix-p "target/nelisp"
+                             (nelisp-standalone--output-path t)))))
+
+(ert-deftest nelisp-standalone-target-macos-start-is-main ()
+  "The macOS start unit exports _main and calls driver through arm64 BL reloc."
+  (let* ((nelisp-standalone--target 'macos-aarch64)
+         (unit (nelisp-standalone--target-start-unit))
+         (text (cdr (assq 'text (plist-get unit :sections))))
+         (relocs (plist-get unit :relocs)))
+    (should (equal (plist-get unit :name) "start.o"))
+    (should (cl-find "_main" (plist-get unit :symbols)
+                     :key (lambda (s) (plist-get s :name))
+                     :test #'equal))
+    (should (> (length text) 16))
+    (should (cl-find "driver" relocs
+                     :key (lambda (r) (plist-get r :symbol))
+                     :test #'equal))
+    (should (cl-find 'b26-pc relocs
+                     :key (lambda (r) (plist-get r :type))))))
 
 (ert-deftest nelisp-standalone-target-windows-start-imports-exitprocess ()
   "The Windows start unit calls driver, then KERNEL32!ExitProcess."
@@ -188,6 +221,18 @@
              '(seq (ptr-write-u64 #x70000010 0 1)
                    (atomic-fetch-add #x70000058 1)
                    (ptr-write-u64 4096 0 #x70000000))))))
+
+(ert-deftest nelisp-standalone-target-macos-rebases-arena-slots ()
+  "macOS source rebase moves fixed metadata above Mach-O __PAGEZERO."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (should (equal
+             (nelisp-standalone--rebase-arena-source
+              '(seq (ptr-write-u64 268435472 0 1)
+                    (atomic-fetch-add 268435544 1)
+                    (ptr-write-u64 4096 0 268435456)))
+             '(seq (ptr-write-u64 #x200000010 0 1)
+                   (atomic-fetch-add #x200000058 1)
+                   (ptr-write-u64 4096 0 #x200000000))))))
 
 (ert-deftest nelisp-standalone-target-windows-reserves-1g-stack ()
   "Windows standalone reserves a Linux-trampoline-sized native stack."

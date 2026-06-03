@@ -43,6 +43,7 @@
 (require 'nelisp-phase47-compiler)
 (require 'nelisp-static-linker)
 (require 'nelisp-elf-write)
+(require 'nelisp-mach-o-write)
 
 (defconst nelisp-standalone--this-file
   (or load-file-name buffer-file-name)
@@ -84,11 +85,32 @@ Accepts decimal strings and 0x-prefixed hexadecimal strings."
 Can be overridden with NELISP_STANDALONE_WINDOWS_ARENA_BASE.  Keep the default
 below 2 GiB so Phase47's current signed imm32 materialization remains valid.")
 
+(defconst nelisp-standalone--macos-arena-base #x200000000
+  "macOS standalone arena base.
+Must live above the 4 GiB __PAGEZERO segment used by the Mach-O executable
+writer; 8 GiB matches the existing macOS self-host smoke programs.")
+
 (defun nelisp-standalone--target-abi (&optional target)
   "Return the compiler ABI for standalone TARGET."
   (pcase (or target nelisp-standalone--target)
     ('linux-x86_64 'sysv)
+    ('macos-aarch64 'aapcs64)
     ('windows-x86_64 'win64)
+    (other (error "standalone: unsupported target %S" other))))
+
+(defun nelisp-standalone--target-arch (&optional target)
+  "Return the Phase47 architecture for standalone TARGET."
+  (pcase (or target nelisp-standalone--target)
+    ('macos-aarch64 'aarch64)
+    ((or 'linux-x86_64 'windows-x86_64) 'x86_64)
+    (other (error "standalone: unsupported target %S" other))))
+
+(defun nelisp-standalone--target-os (&optional target)
+  "Return the Phase47 OS tag for standalone TARGET."
+  (pcase (or target nelisp-standalone--target)
+    ('macos-aarch64 'darwin)
+    ('windows-x86_64 'windows)
+    ('linux-x86_64 'linux)
     (other (error "standalone: unsupported target %S" other))))
 
 (defun nelisp-standalone--target-object-name (name &optional target)
@@ -177,27 +199,140 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
       (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
         (walk source)))))
 
+(defun nelisp-standalone--rebase-arena-source (source)
+  "Rebase fixed arena metadata constants in SOURCE for the current target."
+  (let ((target-base (pcase nelisp-standalone--target
+                       ('windows-x86_64 nelisp-standalone--windows-arena-base)
+                       ('macos-aarch64 nelisp-standalone--macos-arena-base)
+                       (_ nelisp-standalone--arena-base))))
+    (if (= target-base nelisp-standalone--arena-base)
+        source
+      (cl-labels
+          ((rebased-int
+            (n)
+            (if (and (integerp n)
+                     (<= nelisp-standalone--arena-base n)
+                     (< n (+ nelisp-standalone--arena-base
+                             nelisp-standalone--arena-rebase-span)))
+                (+ target-base (- n nelisp-standalone--arena-base))
+              n))
+           (walk
+            (form)
+            (cond
+             ((integerp form) (rebased-int form))
+             ((consp form) (cons (walk (car form)) (walk (cdr form))))
+             (t form))))
+        (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
+          (walk source))))))
+
 ;; ===================================================================
 ;; my-compile-to-unit — Phase47 source -> in-memory link-unit.
 ;; reloc :addend normalized to 0 (the linker uses P = va+offset+4; the
 ;; assembler emits the standard RELA -4 -- normalizing avoids the off-by-4).
 ;; ===================================================================
+(defun nelisp-standalone--arm64-link-unit-text+relocs (buf)
+  "Return `(TEXT . RELOCS)' for an arm64 standalone link unit.
+Local control-flow fixups are patched in TEXT.  Unresolved branch
+fixups are kept as `b26-pc' relocations so separately compiled
+standalone units can call each other."
+  (let* ((bytes (nelisp-asm-arm64-buffer-bytes buf))
+         (labels (nelisp-asm-arm64-buffer-labels buf))
+         (fixups (nelisp-asm-arm64-buffer-fixups buf))
+         (n (length bytes))
+         (vec (make-vector n 0))
+         (generated-relocs nil)
+         (i 0))
+    (while (< i n)
+      (aset vec i (aref bytes i))
+      (setq i (1+ i)))
+    (dolist (fix fixups)
+      (let* ((slot (nth 0 fix))
+             (label (nth 1 fix))
+             (type (or (nth 2 fix) 'b26))
+             (cell (assq label labels)))
+        (if cell
+            (let ((disp (- (cdr cell) slot)))
+              (unless (zerop (logand disp #x3))
+                (signal 'nelisp-asm-arm64-error
+                        (list :branch-misaligned disp :at-slot slot)))
+              (pcase type
+                ((or 'b26 'bl26)
+                 (let ((imm26 (ash disp -2)))
+                   (unless (and (>= imm26 (- (ash 1 25)))
+                                (< imm26 (ash 1 25)))
+                     (signal 'nelisp-asm-arm64-error
+                             (list :branch-out-of-range disp :at-slot slot)))
+                   (let* ((cur (nelisp-asm-arm64--read-word-le vec slot))
+                          (new (logior cur (logand imm26 #x3FFFFFF))))
+                     (nelisp-asm-arm64--write-word-le vec slot new))))
+                ('b19
+                 (let ((imm19 (ash disp -2)))
+                   (unless (and (>= imm19 (- (ash 1 18)))
+                                (< imm19 (ash 1 18)))
+                     (signal 'nelisp-asm-arm64-error
+                             (list :bcond-out-of-range disp :at-slot slot)))
+                   (let* ((cur (nelisp-asm-arm64--read-word-le vec slot))
+                          (field (ash (logand imm19 #x7FFFF) 5))
+                          (new (logior cur field)))
+                     (nelisp-asm-arm64--write-word-le vec slot new))))
+                ('adr21
+                 (unless (and (>= disp (- (ash 1 20)))
+                              (< disp (ash 1 20)))
+                   (signal 'nelisp-asm-arm64-error
+                           (list :adr-out-of-range disp :at-slot slot)))
+                 (let* ((immlo (logand disp #x3))
+                        (immhi (logand (ash disp -2) #x7FFFF))
+                        (cur (nelisp-asm-arm64--read-word-le vec slot))
+                        (new (logior cur (ash immlo 29) (ash immhi 5))))
+                   (nelisp-asm-arm64--write-word-le vec slot new)))
+                (other
+                 (signal 'nelisp-asm-arm64-error
+                         (list :unknown-fixup-type other :at-slot slot)))))
+          (pcase type
+            ((or 'b26 'bl26)
+             (push (list :offset slot
+                         :type 'b26-pc
+                         :symbol (if (stringp label) label (symbol-name label))
+                         :addend 0
+                         :section 'text)
+                   generated-relocs))
+            (other
+             (signal 'nelisp-asm-arm64-error
+                     (list :unresolved-label label
+                           :type other
+                           :at-slot slot)))))))
+    (cons (apply #'unibyte-string (append vec nil))
+          (append (nelisp-asm-arm64-buffer-relocs buf)
+                  (nreverse generated-relocs)))))
+
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
   (let* ((name (nelisp-standalone--target-object-name name))
-         (source (nelisp-standalone--windows-rebase-arena-source source))
+         (source (nelisp-standalone--rebase-arena-source source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
+         (arch (nelisp-standalone--target-arch))
          (nelisp-phase47-compiler--label-counter 0)
-         (nelisp-phase47-compiler--arch 'x86_64)
+         (nelisp-phase47-compiler--arch arch)
+         (nelisp-phase47-compiler--os (nelisp-standalone--target-os))
          (nelisp-phase47-compiler--allow-external-user-calls t)
          (nelisp-phase47-compiler--abi resolved-abi)
          (ir (nelisp-phase47-compiler--parse source nil))
          (defuns (nelisp-phase47-compiler--collect-defuns ir))
-         (buf (nelisp-asm-x86_64-make-buffer resolved-abi)))
+         (buf (if (eq arch 'aarch64)
+                  (nelisp-asm-arm64-make-buffer)
+                (nelisp-asm-x86_64-make-buffer resolved-abi))))
     (dolist (d defuns) (nelisp-phase47-compiler--emit-defun d buf))
-    (let* ((text (nelisp-asm-x86_64-resolve-fixups buf))
-           (labels (nelisp-asm-x86_64-buffer-labels buf))
-           (relocs0 (nelisp-asm-x86_64-extract-relocs buf))
+    (let* ((arm64-linked (when (eq arch 'aarch64)
+                           (nelisp-standalone--arm64-link-unit-text+relocs buf)))
+           (text (if (eq arch 'aarch64)
+                     (car arm64-linked)
+                   (nelisp-asm-x86_64-resolve-fixups buf)))
+           (labels (if (eq arch 'aarch64)
+                       (nelisp-asm-arm64-buffer-labels buf)
+                     (nelisp-asm-x86_64-buffer-labels buf)))
+           (relocs0 (if (eq arch 'aarch64)
+                        (cdr arm64-linked)
+                      (nelisp-asm-x86_64-extract-relocs buf)))
            (exported (mapcar (lambda (d)
                                (let ((nm (nelisp-phase47-compiler--ir-get d :name)))
                                  (if (stringp nm) nm (symbol-name nm))))
@@ -211,8 +346,14 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
                                                             :section 'text :bind 'global :type 'func))))
                                   labels)))
            (relocs (mapcar (lambda (r)
-                             (list :offset (plist-get r :offset) :type (plist-get r :type)
-                                   :symbol (plist-get r :symbol) :addend 0 :section 'text))
+                             (list :offset (plist-get r :offset)
+                                   :type (plist-get r :type)
+                                   :symbol (or (plist-get r :symbol)
+                                               (plist-get r :sym))
+                                   :addend (if (eq arch 'aarch64)
+                                               (or (plist-get r :addend) 0)
+                                             0)
+                                   :section 'text))
                            relocs0)))
       (nelisp-link-unit-make name (list (cons 'text text)) symbols relocs))))
 
@@ -482,18 +623,46 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
                      (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 200) 0 0)
                               p)))))))))))))))))
 
+(defun nelisp-standalone--macos-arena-init-form ()
+  "Return the macOS `nl_arena_init' form using Darwin mmap."
+  `(defun nl_arena_init ()
+     (let ((p (syscall-direct 197 ,nelisp-standalone--macos-arena-base
+                              8589934592 3 4114 -1 0)))
+       (if (= p ,nelisp-standalone--macos-arena-base)
+           (seq
+            (ptr-write-u64 ,nelisp-standalone--macos-arena-base 0 256)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 8) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 16) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 96) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 104) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 112)
+                           0 (+ ,nelisp-standalone--macos-arena-base 256))
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 120) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 128) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 136) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 160) 0 1)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 168) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 192) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 200) 0 0)
+            p)
+         (syscall-direct 1 88 0 0 0 0 0)))))
+
 (defun nelisp-standalone--target-arena-source ()
   "Return the arena source adjusted for the current standalone target."
-  (if (eq nelisp-standalone--target 'windows-x86_64)
-      (cons 'seq
-            (mapcar (lambda (form)
-                      (if (and (consp form)
-                               (eq (car form) 'defun)
-                               (eq (cadr form) 'nl_arena_init))
+  (pcase nelisp-standalone--target
+    ((or 'windows-x86_64 'macos-aarch64)
+     (let ((init-form (if (eq nelisp-standalone--target 'windows-x86_64)
                           (nelisp-standalone--windows-arena-init-form)
-                        form))
-                    (cdr nelisp-standalone--arena-source)))
-    nelisp-standalone--arena-source))
+                        (nelisp-standalone--macos-arena-init-form))))
+       (cons 'seq
+             (mapcar (lambda (form)
+                       (if (and (consp form)
+                                (eq (car form) 'defun)
+                                (eq (cadr form) 'nl_arena_init))
+                           init-form
+                         form))
+                     (cdr nelisp-standalone--arena-source)))))
+    (_ nelisp-standalone--arena-source)))
 
 ;; ===================================================================
 ;; TRACING MARK-SWEEP GC (the correct reclaimer — reachability, not
@@ -2499,11 +2668,48 @@ for the baked-form path, then exits through KERNEL32!ExitProcess."
                  :addend 0
                  :section 'text)))))
 
+(defun nelisp-standalone--macos-aarch64-start-unit ()
+  "Return the macOS arm64 Mach-O `_main' start unit.
+Dyld enters `_main(argc, argv, envp)'.  The reader driver expects the Linux
+entry-stack argv shape (`argc' at slot 0, argv pointers inline after it), so
+this trampoline copies argc and argv[0..3] into a small stack block and passes
+that block to `driver'.  It then exits through the Darwin raw syscall ABI with
+x16=1 and SVC #0x80."
+  (let* ((buf (nelisp-asm-arm64-make-buffer))
+         (reloc-off nil))
+    (nelisp-asm-arm64-sub-imm buf 'sp 'sp 48)
+    (nelisp-asm-arm64-str-imm buf 'x0 'sp 0)  ; argc
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 0)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 8)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 8)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 16)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 16)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 24)
+    (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 24)
+    (nelisp-asm-arm64-str-imm buf 'x2 'sp 32)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'sp)
+    (setq reloc-off (nelisp-asm-arm64-buffer-pos buf))
+    (nelisp-asm-arm64-emit-reloc buf 'b26-pc "driver")
+    (nelisp-asm-arm64--emit-word buf #x94000000) ; bl driver
+    (nelisp-asm-arm64-mov-imm64 buf 'x16 1)
+    (nelisp-asm-arm64-svc buf #x80)
+    (nelisp-link-unit-make
+     "start.o"
+     (list (cons 'text (nelisp-asm-arm64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_main" 0
+                               :section 'text :bind 'global :type 'func))
+     (list (list :offset reloc-off
+                 :type 'b26-pc
+                 :symbol "driver"
+                 :addend 0
+                 :section 'text)))))
+
 (defun nelisp-standalone--target-start-unit ()
   "Return the target-specific standalone start unit."
-  (if (eq nelisp-standalone--target 'windows-x86_64)
-      (nelisp-standalone--windows-start-unit)
-    (nelisp-standalone--start-unit)))
+  (pcase nelisp-standalone--target
+    ('windows-x86_64 (nelisp-standalone--windows-start-unit))
+    ('macos-aarch64 (nelisp-standalone--macos-aarch64-start-unit))
+    (_ (nelisp-standalone--start-unit))))
 
 ;; ===================================================================
 ;; Parametrized driver (FULL real path).  Bootstrap mirror + 60 system builtins,
@@ -2664,13 +2870,18 @@ is faster.  Parallelism pays off only once per-unit compilation dominates startu
   (setq nelisp-standalone--recompiled nil)
   (let* ((units (mapcar #'nelisp-standalone--unit-for nelisp-standalone--manifest))
          (out (nelisp-standalone--output-path nil)))
-    (if (eq nelisp-standalone--target 'windows-x86_64)
-        (nelisp-link-units-pe32 out units "_start"
-                                '("ExitProcess" "VirtualAlloc")
-                                (list :stack-reserve
-                                      nelisp-standalone--windows-stack-reserve))
-      (nelisp-link-units out units)
-      (set-file-modes out #o755))
+    (pcase nelisp-standalone--target
+      ('windows-x86_64
+       (nelisp-link-units-pe32 out units "_start"
+                               '("ExitProcess" "VirtualAlloc")
+                               (list :stack-reserve
+                                     nelisp-standalone--windows-stack-reserve)))
+      ('macos-aarch64
+       (nelisp-link-units-macho-exec out units "_main" 'aarch64)
+       (set-file-modes out #o755))
+      (_
+       (nelisp-link-units out units)
+       (set-file-modes out #o755)))
     (message "[standalone] linked %d units -> %s" (length units) out)
     (message "[standalone] recompiled this build: %s"
              (if nelisp-standalone--recompiled
@@ -3986,13 +4197,18 @@ genuine general interpreter for the 11 special forms + installed builtins."
   (setq nelisp-standalone--recompiled nil)
   (let* ((units (nelisp-standalone--reader-units))
          (out (nelisp-standalone--output-path t)))
-    (if (eq nelisp-standalone--target 'windows-x86_64)
-        (nelisp-link-units-pe32 out units "_start"
-                                (nelisp-standalone--reader-pe-imports)
-                                (list :stack-reserve
-                                      nelisp-standalone--windows-stack-reserve))
-      (nelisp-link-units out units)
-      (set-file-modes out #o755))
+    (pcase nelisp-standalone--target
+      ('windows-x86_64
+       (nelisp-link-units-pe32 out units "_start"
+                               (nelisp-standalone--reader-pe-imports)
+                               (list :stack-reserve
+                                     nelisp-standalone--windows-stack-reserve)))
+      ('macos-aarch64
+       (nelisp-link-units-macho-exec out units "_main" 'aarch64)
+       (set-file-modes out #o755))
+      (_
+       (nelisp-link-units out units)
+       (set-file-modes out #o755)))
     (message "[standalone-reader] linked %d units -> %s (src=%S)"
              (length units) out
              (nelisp-standalone--reader-src))

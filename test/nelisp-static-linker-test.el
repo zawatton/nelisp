@@ -34,6 +34,7 @@
 
 (require 'nelisp-static-linker)
 (require 'nelisp-elf-write)
+(require 'nelisp-mach-o-write)
 
 ;; ---- helpers ----
 
@@ -226,6 +227,30 @@
              bytes-b (nelisp-link-reloc 4 'plt32 "foo")
              tab #x400000)))
     (should (equal a b))))
+
+(ert-deftest nelisp-link-b26-pc-patches-arm64-bl ()
+  "AArch64 CALL26-style relocs patch the BL imm26 field."
+  (let* ((tab (nelisp-link-symtab-make))
+         (_ (nelisp-link-symtab-add
+             tab (nelisp-link-symbol "callee" 8)))
+         (bytes (nelisp-link-test--ub #x00 #x00 #x00 #x94
+                                      #xc0 #x03 #x5f #xd6))
+         (reloc (nelisp-link-reloc 0 'b26-pc "callee"))
+         (out (nelisp-link-apply-reloc bytes reloc tab 0)))
+    (should (equal out
+                   (nelisp-link-test--ub #x02 #x00 #x00 #x94
+                                         #xc0 #x03 #x5f #xd6)))))
+
+(ert-deftest nelisp-link-b26-pc-rejects-out-of-range ()
+  "AArch64 branch relocs retain the architectural ±128 MiB range check."
+  (let* ((tab (nelisp-link-symtab-make))
+         (_ (nelisp-link-symtab-add
+             tab (nelisp-link-symbol "far" (ash 1 28))))
+         (bytes (nelisp-link-test--ub #x00 #x00 #x00 #x94))
+         (reloc (nelisp-link-reloc 0 'b26-pc "far")))
+    (should-error
+     (nelisp-link-apply-reloc bytes reloc tab 0)
+     :type 'nelisp-link--branch26-overflow)))
 
 ;; ---- §93.a (4) multi-reloc ----
 
@@ -1132,6 +1157,46 @@ the lea)."
               (should (equal (substring bytes ro-pos
                                         (+ ro-pos 6))
                              (unibyte-string ?h ?e ?l ?l ?o ?\n))))))
+      (when (file-exists-p path) (delete-file path)))))
+
+;; ---- Mach-O executable link path ----
+
+(ert-deftest nelisp-link-units-macho-exec-arm64-branch-unit ()
+  "Mach-O executable linking resolves arm64 branch relocs across units."
+  (let* ((main (nelisp-link-unit-make
+                "main.o"
+                (list (cons 'text
+                            (nelisp-link-test--ub
+                             #x00 #x00 #x00 #x94       ; bl helper
+                             #xc0 #x03 #x5f #xd6)))    ; ret
+                (list (nelisp-link-symbol "_main" 0
+                                          :section 'text
+                                          :bind 'global
+                                          :type 'func))
+                (list (nelisp-link-reloc 0 'b26-pc "helper"))))
+         (helper (nelisp-link-unit-make
+                  "helper.o"
+                  (list (cons 'text
+                              (nelisp-link-test--ub
+                               #xc0 #x03 #x5f #xd6))) ; ret
+                  (list (nelisp-link-symbol "helper" 0
+                                            :section 'text
+                                            :bind 'global
+                                            :type 'func))
+                  nil))
+         (path (make-temp-file "nelisp-link-macho-" nil "")))
+    (unwind-protect
+        (progn
+          (nelisp-link-units-macho-exec path (list main helper) "_main")
+          (let* ((bytes (nelisp-link-test--read-file-bytes path))
+                 (code-off nelisp-mach-o--exe-code-off))
+            (should (equal (substring bytes 0 4)
+                           (unibyte-string #xcf #xfa #xed #xfe)))
+            (should (= (nelisp-link-test--read-le32 bytes 12) 2))
+            (should (= (nelisp-link-test--read-le32 bytes 16) 15))
+            ;; helper starts 8 bytes after _main, so BL imm26 is 2.
+            (should (equal (substring bytes code-off (+ code-off 4))
+                           (nelisp-link-test--ub #x02 #x00 #x00 #x94)))))
       (when (file-exists-p path) (delete-file path)))))
 
 ;; ---- PE32+ link path ----

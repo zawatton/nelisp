@@ -109,9 +109,9 @@ land in §93.b; here LOCAL is permitted to shadow LOCAL silently
 (defun nelisp-link-reloc (offset type symbol &optional addend)
   "Build a relocation entry plist.
 OFFSET is the patch site (= byte position within the target
-section).  TYPE is one of `pc32' / `abs64' / `plt32'.  SYMBOL is
+section).  TYPE is one of `pc32' / `abs64' / `plt32' / `b26-pc'.  SYMBOL is
 the referenced symbol name (string).  ADDEND defaults to 0."
-  (unless (memq type '(pc32 abs64 plt32))
+  (unless (memq type '(pc32 abs64 plt32 b26-pc))
     (signal 'nelisp-link-error (list :unknown-reloc-type type)))
   (list :offset offset :type type :symbol symbol
         :addend (or addend 0)))
@@ -161,6 +161,17 @@ reporting)."
   (unless (and (>= d (- (ash 1 31))) (< d (ash 1 31)))
     (signal 'nelisp-link--rel32-overflow (list sym d))))
 
+(define-error 'nelisp-link--branch26-overflow
+  "nelisp static linker: arm64 branch displacement out of range"
+  'nelisp-link-error)
+
+(defun nelisp-link--check-branch26-range (d sym)
+  "Signal if byte displacement D cannot fit an AArch64 imm26 branch."
+  (unless (and (zerop (logand d #x3))
+               (>= (ash d -2) (- (ash 1 25)))
+               (<  (ash d -2) (ash 1 25)))
+    (signal 'nelisp-link--branch26-overflow (list sym d))))
+
 (defun nelisp-link--vec->ubstring (vec)
   "Convert byte VEC into a unibyte-string (= ELF writer input).
 Uses small `unibyte-string' chunks because standalone NeLisp still
@@ -202,6 +213,17 @@ string out, vector in → vector out)."
               (d (- (+ S addend) P)))
          (nelisp-link--check-rel32-range d sym-name)
          (nelisp-link--patch-le32 vec offset d)))
+      ('b26-pc
+       (let* ((P (+ section-va offset))
+              (d (- (+ S addend) P))
+              (imm26 (logand (ash d -2) #x3ffffff))
+              (cur (logior (aref vec offset)
+                           (ash (aref vec (+ offset 1)) 8)
+                           (ash (aref vec (+ offset 2)) 16)
+                           (ash (aref vec (+ offset 3)) 24)))
+              (patched (logior (logand cur #xfc000000) imm26)))
+         (nelisp-link--check-branch26-range d sym-name)
+         (nelisp-link--patch-le32 vec offset patched)))
       ('abs64
        (nelisp-link--patch-le64 vec offset (+ S addend)))
       (_ (signal 'nelisp-link-error
@@ -791,6 +813,64 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
            :stack-commit (plist-get options :stack-commit)
            :heap-reserve (plist-get options :heap-reserve)
            :heap-commit (plist-get options :heap-commit)))
+    file-path))
+
+(defun nelisp-link--macho-exec-layout (combined)
+  "Return absolute section layout for the current arm64 Mach-O executable writer.
+The writer places code at `nelisp-mach-o--exe-text-vmaddr' plus
+`nelisp-mach-o--exe-code-off'.  Its executable path currently has one
+__TEXT payload, so .rodata is linked immediately after .text and appended to
+the emitted :text bytes."
+  (require 'nelisp-mach-o-write)
+  (let* ((text-va (+ nelisp-mach-o--exe-text-vmaddr
+                    nelisp-mach-o--exe-code-off))
+         (text-size (nelisp-link--section-len combined 'text))
+         (rodata-va (+ text-va text-size))
+         (rodata-size (nelisp-link--section-len combined 'rodata)))
+    (list (cons 'text text-va)
+          (cons 'rodata rodata-va)
+          (cons 'data (+ rodata-va rodata-size))
+          (cons 'bss (+ rodata-va rodata-size)))))
+
+(defun nelisp-link-units-macho-exec (file-path units
+                                               &optional entry-sym machine)
+  "Link UNITS and emit an unsigned native macOS arm64 Mach-O executable.
+This is the Mach-O sibling of `nelisp-link-units' / `nelisp-link-units-pe32'
+for the standalone pure-Elisp pipeline.  The current executable writer supports
+one __TEXT payload; therefore .text and .rodata are concatenated after all
+relocations are resolved.  .data/.bss are rejected until the Mach-O writer grows
+a writable segment."
+  (require 'nelisp-mach-o-write)
+  (let* ((entry (or entry-sym "_main"))
+         (mach (or machine 'aarch64))
+         (combined (nelisp-link-combine-sections units))
+         (data-size (nelisp-link--section-len combined 'data))
+         (bss-size (nelisp-link--section-len combined 'bss))
+         (layout (nelisp-link--macho-exec-layout combined))
+         (link-result (nelisp-link-units-2pass units layout))
+         (bytes (plist-get link-result :bytes))
+         (symtab (plist-get link-result :symtab))
+         (text (nelisp-link--bytes-or-empty bytes 'text))
+         (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
+         (entry-symtab (nelisp-link-symtab-lookup symtab entry)))
+    (unless (eq mach 'aarch64)
+      (signal 'nelisp-link-error (list :mach-o-exec-only-aarch64 mach)))
+    (when (or (> data-size 0) (> bss-size 0))
+      (signal 'nelisp-link-error
+              (list :mach-o-exec-rw-sections-unsupported
+                    :data data-size :bss bss-size)))
+    (unless entry-symtab
+      (signal 'nelisp-link--unresolved-symbol (list entry :entry)))
+    (unless (zerop (- (plist-get entry-symtab :value)
+                      (cdr (assq 'text layout))))
+      (signal 'nelisp-link-error
+              (list :mach-o-entry-must-start-text entry
+                    (plist-get entry-symtab :value))))
+    (nelisp-mach-o-write-executable
+     file-path
+     (list :text (concat text rodata)
+           :machine mach
+           :entry-sym entry))
     file-path))
 
 (provide 'nelisp-static-linker)
