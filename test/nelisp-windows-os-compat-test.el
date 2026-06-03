@@ -28,6 +28,15 @@
     (insert-file-contents path)
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun nelisp-windows-os-compat-test--count-windows-tests (text)
+  "Return the number of ERT tests in TEXT whose names contain windows."
+  (let ((pos 0)
+        (count 0))
+    (while (string-match "(ert-deftest[ \t\n]+[^ \t\n)]*windows" text pos)
+      (setq count (1+ count))
+      (setq pos (match-end 0)))
+    count))
+
 (ert-deftest nelisp-windows-os-compat-script-exposes-suites ()
   "The Windows OS compatibility script exposes stable focused suites."
   (let* ((script-path
@@ -47,6 +56,12 @@
              script))
     (should (string-match-p
              (regexp-quote "Selector = \"sigprocmask-windows\\|signalfd-windows\"")
+             script))
+    (should (string-match-p
+             (regexp-quote "shutdown-windows")
+             script))
+    (should (string-match-p
+             (regexp-quote "sendto-inet.*windows\\|recvfrom-inet.*windows")
              script))))
 
 (ert-deftest nelisp-windows-os-compat-script-runs-ert-file ()
@@ -66,6 +81,31 @@
              script))
     (should (string-match-p
              (regexp-quote "[windows-os] all PASS")
+             script))))
+
+(ert-deftest nelisp-windows-os-compat-script-checks-all-test-count ()
+  "The all-suite runner fails when the windows selector silently skips tests."
+  (let* ((script-path
+          (expand-file-name "tools/windows-os-compat-test.ps1"
+                            nelisp-windows-os-compat-test--repo-root))
+         (test-path
+          (expand-file-name "test/nelisp-stdlib-os-test.el"
+                            nelisp-windows-os-compat-test--repo-root))
+         (script (nelisp-windows-os-compat-test--read-file-text script-path))
+         (test-text (nelisp-windows-os-compat-test--read-file-text test-path))
+         (count (nelisp-windows-os-compat-test--count-windows-tests test-text)))
+    (should (= count 274))
+    (should (string-match-p
+             (regexp-quote "ExpectedCount = 274")
+             script))
+    (should (string-match-p
+             (regexp-quote "Ran ([0-9]+) tests")
+             script))
+    (should (string-match-p
+             (regexp-quote "expected at least")
+             script))
+    (should (string-match-p
+             (regexp-quote "$SuiteItem.ContainsKey(\"ExpectedCount\")")
              script))))
 
 (provide 'nelisp-windows-os-compat-test)

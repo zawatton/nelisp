@@ -47,6 +47,7 @@ $Suites = @(
         Name = "all"
         Selector = "windows"
         Description = "all Windows OS compatibility ERT tests"
+        ExpectedCount = 274
     },
     @{
         Name = "timerfd"
@@ -66,7 +67,7 @@ $Suites = @(
     @{
         Name = "inotify"
         Selector = "inotify-windows"
-        Description = "synthetic inotify fd compatibility"
+        Description = "inotify fd compatibility with native directory change pump"
     },
     @{
         Name = "signals"
@@ -90,7 +91,7 @@ $Suites = @(
     },
     @{
         Name = "sockets"
-        Selector = "socket-windows\|bind-.*windows\|connect-.*windows\|accept-.*windows\|listen-windows\|getsockname.*windows\|getpeername.*windows\|setsockopt.*windows\|getsockopt-int.*windows\|sendmsg-fds-windows\|recvmsg-fds-windows"
+        Selector = "socket-windows\|bind-.*windows\|connect-.*windows\|accept-.*windows\|listen-windows\|shutdown-windows\|sendto-inet.*windows\|recvfrom-inet.*windows\|getsockname.*windows\|getpeername.*windows\|setsockopt.*windows\|getsockopt-int.*windows\|sendmsg-fds-windows\|recvmsg-fds-windows"
         Description = "Winsock socket, sockaddr, sockopt, and payload messaging paths"
     }
 )
@@ -147,7 +148,8 @@ function Show-LogTail {
 function Run-ErtSuite {
     param(
         [string]$Name,
-        [string]$Selector
+        [string]$Selector,
+        [int]$ExpectedCount
     )
 
     $LogPath = Join-Path $OutDir ("nelisp-windows-os-" + $Name + ".log")
@@ -167,6 +169,22 @@ function Run-ErtSuite {
         }
 
         $Summary = Get-Content -Path $LogPath -Tail 3
+        if ($ExpectedCount -gt 0) {
+            $RanLine = @($Summary | Where-Object { $_ -match "Ran ([0-9]+) tests" }) |
+                Select-Object -First 1
+            if ($null -eq $RanLine) {
+                Write-Host ("[windows-os] FAIL: " + $Name + " missing ERT test count")
+                Show-LogTail $LogPath
+                return $false
+            }
+            $ActualCount = [int]([regex]::Match([string]$RanLine, "Ran ([0-9]+) tests").Groups[1].Value)
+            if ($ActualCount -lt $ExpectedCount) {
+                Write-Host ("[windows-os] FAIL: " + $Name + " ran " + $ActualCount +
+                    " tests (expected at least " + $ExpectedCount + ")")
+                Show-LogTail $LogPath
+                return $false
+            }
+        }
         Write-Host ("[windows-os] PASS: " + $Name + " selector '" + $Selector + "'")
         $Summary | ForEach-Object {
             if ($_.Length -gt 0) {
@@ -187,8 +205,13 @@ Write-Host ("suites: " + (($SuitesToRun | ForEach-Object { [string]$_.Name }) -j
 Write-Host ""
 
 foreach ($SuiteItem in $SuitesToRun) {
+    $ExpectedCount = 0
+    if ($SuiteItem.ContainsKey("ExpectedCount")) {
+        $ExpectedCount = [int]$SuiteItem.ExpectedCount
+    }
     if (-not (Run-ErtSuite -Name ([string]$SuiteItem.Name) `
-                -Selector ([string]$SuiteItem.Selector))) {
+                -Selector ([string]$SuiteItem.Selector) `
+                -ExpectedCount $ExpectedCount)) {
         $Failed = $true
     }
 }

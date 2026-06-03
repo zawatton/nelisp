@@ -52,6 +52,77 @@
     (insert-file-contents path)
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun nelisp-windows-build-test--ps-string-field (block field)
+  "Return quoted PowerShell FIELD value from smoke BLOCK."
+  (when (string-match (format "\\_<%s = \"\\([^\"]+\\)\"" field) block)
+    (match-string 1 block)))
+
+(defun nelisp-windows-build-test--ps-exit-field (block)
+  "Return ExpectedExit integer from PowerShell smoke BLOCK."
+  (when (string-match "\\_<ExpectedExit = \\([0-9]+\\)" block)
+    (string-to-number (match-string 1 block))))
+
+(defun nelisp-windows-build-test--ps-stdout-field (block)
+  "Return ExpectedStdout value from PowerShell smoke BLOCK.
+The symbol `:null' represents PowerShell $null."
+  (cond
+   ((string-match "\\_<ExpectedStdout = \\$null" block)
+    :null)
+   ((string-match "\\_<ExpectedStdout = \"\\([^\"]*\\)\"" block)
+    (match-string 1 block))
+   (t :missing)))
+
+(defun nelisp-windows-build-test--powershell-smoke-manifest (script)
+  "Parse the literal $Smokes manifest from PowerShell SCRIPT."
+  (with-temp-buffer
+    (insert script)
+    (goto-char (point-min))
+    (unless (search-forward "$Smokes = @(" nil t)
+      (error "PowerShell smoke manifest not found"))
+    (let ((out nil)
+          (block nil)
+          (in-block nil))
+      (while (and (not (eobp))
+                  (not (looking-at-p "\\$SmokeNames")))
+        (let ((line (buffer-substring-no-properties
+                     (line-beginning-position)
+                     (line-end-position))))
+          (cond
+           ((string-match-p "\\`[[:space:]]*@{" line)
+            (setq block nil
+                  in-block t))
+           ((and in-block (string-match-p "\\`[[:space:]]*}" line))
+            (let* ((text (mapconcat #'identity (nreverse block) "\n"))
+                   (name (nelisp-windows-build-test--ps-string-field
+                          text "Name"))
+                   (spec (nelisp-windows-build-test--ps-string-field
+                          text "Spec")))
+              (when (and name spec)
+                (push (list name
+                            spec
+                            (nelisp-windows-build-test--ps-exit-field text)
+                            (nelisp-windows-build-test--ps-stdout-field text)
+                            (nelisp-windows-build-test--ps-string-field
+                             text "StdinText"))
+                      out)))
+            (setq block nil
+                  in-block nil))
+           (in-block
+            (push line block))))
+        (forward-line 1))
+      (nreverse out))))
+
+(defun nelisp-windows-build-test--powershell-smoke-examples (script)
+  "Return smoke names documented in PowerShell SCRIPT examples."
+  (let ((pos 0)
+        (out nil))
+    (while (string-match "-Smoke \\([A-Za-z0-9-]+\\)" script pos)
+      (let ((name (match-string 1 script)))
+        (unless (member name out)
+          (push name out)))
+      (setq pos (match-end 0)))
+    (nreverse out)))
+
 (ert-deftest nelisp-windows-build-smoke-specs-are-stable ()
   "The Windows real-machine smoke manifest covers the expected PE specs."
   (should (equal nelisp-windows-build-smoke-specs
@@ -74,6 +145,7 @@
                    (getcommandline . getcommandline-exit-42)
                    (commandlinetoargv . commandlinetoargv-exit-42)
                    (wsastartup . wsastartup-exit-42)
+                   (winsock-socket . winsock-socket-exit-42)
                    (createprocess . createprocess-wait-exit-42)
                    (createthread . createthread-wait-exit-42))))
   (dolist (entry nelisp-windows-build-smoke-specs)
@@ -110,6 +182,55 @@
       (should (string-match-p
                (regexp-quote (format "Spec = \"%s\"" (cdr entry)))
                script)))))
+
+(ert-deftest nelisp-windows-build-powershell-smoke-examples-cover-manifest ()
+  "The PowerShell one-smoke examples list every manifest smoke."
+  (let* ((script-path (expand-file-name "tools/windows-selfhost-test.ps1"
+                                        nelisp-windows-build-test--repo-root))
+         (script (nelisp-windows-build-test--read-file-text script-path))
+         (examples (nelisp-windows-build-test--powershell-smoke-examples
+                    script)))
+    (should (equal examples
+                   (mapcar (lambda (entry) (symbol-name (car entry)))
+                           nelisp-windows-build-smoke-specs)))))
+
+(ert-deftest nelisp-windows-build-powershell-manifest-details-match-elisp ()
+  "The PowerShell runner keeps exit/stdout/stdin metadata aligned."
+  (let* ((script-path (expand-file-name "tools/windows-selfhost-test.ps1"
+                                        nelisp-windows-build-test--repo-root))
+         (script (nelisp-windows-build-test--read-file-text script-path))
+         (manifest (nelisp-windows-build-test--powershell-smoke-manifest script))
+         (expected
+          '(("exit42" "minimal-exit-42" 42 :null nil)
+            ("virtualalloc" "virtualalloc-exit-42" 42 :null nil)
+            ("virtualprotect-free" "virtualprotect-free-exit-42" 42 :null nil)
+            ("arena" "virtualalloc-arena-exit-42" 42 :null nil)
+            ("writefile-stdout" "writefile-stdout-exit-42" 42
+             "hello from nelisp windows" nil)
+            ("readfile-stdin" "readfile-stdin-exit-42" 42 :null
+             "nelisp readfile smoke")
+            ("createpipe" "createpipe-exit-42" 42 :null nil)
+            ("createfile-write" "createfile-write-exit-42" 42 :null nil)
+            ("setfilepointer" "setfilepointer-exit-42" 42 :null nil)
+            ("getfiletype" "getfiletype-exit-42" 42 :null nil)
+            ("getfileinformation" "getfileinformation-exit-42" 42 :null nil)
+            ("filemapping" "filemapping-exit-42" 42 :null nil)
+            ("getcurrentprocessid" "getcurrentprocessid-exit-42" 42 :null nil)
+            ("duplicatehandle" "duplicatehandle-exit-42" 42 :null nil)
+            ("sethandleinformation" "sethandleinformation-exit-42" 42 :null nil)
+            ("getlasterror" "getlasterror-exit-42" 42 :null nil)
+            ("getcommandline" "getcommandline-exit-42" 42 :null nil)
+            ("commandlinetoargv" "commandlinetoargv-exit-42" 42 :null nil)
+            ("wsastartup" "wsastartup-exit-42" 42 :null nil)
+            ("winsock-socket" "winsock-socket-exit-42" 42 :null nil)
+            ("createprocess" "createprocess-wait-exit-42" 42 :null nil)
+            ("createthread" "createthread-wait-exit-42" 42 :null nil))))
+    (should (equal manifest expected))
+    (should (equal (mapcar (lambda (entry)
+                             (cons (intern (car entry))
+                                   (intern (cadr entry))))
+                           manifest)
+                   nelisp-windows-build-smoke-specs))))
 
 (ert-deftest nelisp-windows-build-powershell-pipes-readfile-stdin ()
   "The real-machine runner feeds stdin for the ReadFile stdin smoke."
@@ -151,6 +272,7 @@
                            "nelisp-windows-getcommandline.exe"
                            "nelisp-windows-commandlinetoargv.exe"
                            "nelisp-windows-wsastartup.exe"
+                           "nelisp-windows-winsock-socket.exe"
                            "nelisp-windows-createprocess.exe"
                            "nelisp-windows-createthread.exe")))
           (dolist (path paths)

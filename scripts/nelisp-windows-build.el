@@ -18,9 +18,9 @@
 ;; lifecycle wiring, GetCurrentProcessId process id discovery, DuplicateHandle
 ;; HANDLE duplication, SetHandleInformation close-on-exec flag wiring,
 ;; GetLastError error propagation, CRT-free command-line discovery via
-;; GetCommandLineW / CommandLineToArgvW, and Winsock startup via WS2_32.dll!
-;; WSAStartup, plus CreateProcessW child launch / wait and CreateThread launch
-;; / join.
+;; GetCommandLineW / CommandLineToArgvW, Winsock startup and socket lifecycle
+;; via WS2_32.dll, plus CreateProcessW child launch / wait and CreateThread
+;; launch / join.
 ;;
 ;; Run on a Windows machine with Emacs installed via:
 ;;
@@ -47,6 +47,7 @@
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-getcommandline
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-commandlinetoargv
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-wsastartup
+;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-winsock-socket
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-createprocess
 ;;   emacs --batch -Q -L lisp -L src -L scripts -l nelisp-windows-build -f nelisp-windows-build-createthread
 ;;
@@ -159,6 +160,11 @@
                     nelisp-windows-build--repo-root)
   "Default path for the single WSAStartup smoke EXE.")
 
+(defconst nelisp-windows-build--winsock-socket-out
+  (expand-file-name "target/nelisp-windows-winsock-socket.exe"
+                    nelisp-windows-build--repo-root)
+  "Default path for the single Winsock socket lifecycle smoke EXE.")
+
 (defconst nelisp-windows-build--commandlinetoargv-out
   (expand-file-name "target/nelisp-windows-commandlinetoargv.exe"
                     nelisp-windows-build--repo-root)
@@ -194,6 +200,7 @@
     (getcommandline . getcommandline-exit-42)
     (commandlinetoargv . commandlinetoargv-exit-42)
     (wsastartup . wsastartup-exit-42)
+    (winsock-socket . winsock-socket-exit-42)
     (createprocess . createprocess-wait-exit-42)
     (createthread . createthread-wait-exit-42))
   "Named Windows PE32+ smoke specs used by the real-machine script.")
@@ -375,6 +382,13 @@ Reads NELISP_WINDOWS_SPEC and NELISP_WINDOWS_OUT, then writes one EXE."
    'wsastartup-exit-42
    (or out-path nelisp-windows-build--wsastartup-out)
    "WSAStartup + ExitProcess 42"))
+
+(defun nelisp-windows-build-winsock-socket (&optional out-path)
+  "Batch entry: build the Windows Winsock socket lifecycle smoke EXE."
+  (nelisp-windows-build--batch-smoke
+   'winsock-socket-exit-42
+   (or out-path nelisp-windows-build--winsock-socket-out)
+   "WSAStartup + socket + closesocket + WSACleanup + ExitProcess 42"))
 
 (defun nelisp-windows-build-commandlinetoargv (&optional out-path)
   "Batch entry: build the Windows CommandLineToArgvW smoke EXE."

@@ -2292,6 +2292,73 @@ and exits 1 otherwise."
     (nelisp-pe--write-u8 cbuf #xcc)
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--minimal-winsock-socket-text
+    (text-rva exit-iat-rva wsastartup-iat-rva socket-iat-rva
+              closesocket-iat-rva wsacleanup-iat-rva data-rva)
+  "Return x86_64 entry bytes that open and close a Winsock TCP socket.
+The generated code calls WSAStartup, socket(AF_INET, SOCK_STREAM,
+IPPROTO_TCP), closesocket, WSACleanup, then exits 42 when every step succeeds.
+It exits 1 on the first failure."
+  (let* ((lea-data-off 9)
+         (wsa-call-off 16)
+         (socket-call-off 42)
+         (closesocket-call-off 57)
+         (wsacleanup-call-off 67)
+         (success-exit-call-off 82)
+         (fail-exit-call-off 93)
+         (call-len 6)
+         (lea-len 7)
+         (data-disp (- data-rva (+ text-rva lea-data-off lea-len)))
+         (wsa-disp (- wsastartup-iat-rva
+                      (+ text-rva wsa-call-off call-len)))
+         (socket-disp (- socket-iat-rva
+                         (+ text-rva socket-call-off call-len)))
+         (closesocket-disp (- closesocket-iat-rva
+                              (+ text-rva closesocket-call-off call-len)))
+         (wsacleanup-disp (- wsacleanup-iat-rva
+                             (+ text-rva wsacleanup-call-off call-len)))
+         (success-exit-disp (- exit-iat-rva
+                               (+ text-rva success-exit-call-off call-len)))
+         (fail-exit-disp (- exit-iat-rva
+                            (+ text-rva fail-exit-call-off call-len)))
+         (cbuf (nelisp-pe--make-buffer)))
+    ;; Win64 ABI: 32-byte shadow space plus 8 bytes for stack alignment.
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xec #x28))
+    (nelisp-pe--write-u8 cbuf #xb9) ; mov ecx, MAKEWORD(2,2)
+    (nelisp-pe--write-le32 cbuf #x0202)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x8d #x15)) ; rdx = WSADATA*
+    (nelisp-pe--write-le32-signed cbuf data-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf wsa-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x3e))
+    (nelisp-pe--write-u8 cbuf #xb9) ; mov ecx, AF_INET
+    (nelisp-pe--write-le32 cbuf 2)
+    (nelisp-pe--write-u8 cbuf #xba) ; mov edx, SOCK_STREAM
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x41 #xb8)) ; mov r8d, IPPROTO_TCP
+    (nelisp-pe--write-le32 cbuf 6)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf socket-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x83 #xf8 #xff))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x74 #x22))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x48 #x89 #xc1))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf closesocket-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x15))
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf wsacleanup-disp)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x85 #xc0 #x75 #x0b))
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 42)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf success-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xb9)
+    (nelisp-pe--write-le32 cbuf 1)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x15))
+    (nelisp-pe--write-le32-signed cbuf fail-exit-disp)
+    (nelisp-pe--write-u8 cbuf #xcc)
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--minimal-commandlinetoargv-text
     (text-rva exit-iat-rva get-command-line-iat-rva local-free-iat-rva
               command-line-to-argv-iat-rva data-rva)
@@ -4403,6 +4470,108 @@ when the thread reported exit code 42."
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
 
+(defun nelisp-pe--build-winsock-socket-exitprocess-exe ()
+  "Build a PE32+ EXE that proves Winsock socket lifecycle import wiring."
+  (let* ((num-sections 3)
+         (wsadata-bytes (make-string 512 0))
+         (pe-offset nelisp-pe--dos-header-size)
+         (nt-headers-size (+ 4
+                             nelisp-pe--header-size
+                             nelisp-pe--optional-header-pe32-plus-size
+                             (* num-sections nelisp-pe--section-header-size)))
+         (size-of-headers
+          (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                               nelisp-pe--file-alignment))
+         (text-rva nelisp-pe--section-alignment)
+         (data-rva (* 2 nelisp-pe--section-alignment))
+         (idata-rva (* 3 nelisp-pe--section-alignment))
+         (idata-info
+          (nelisp-pe--build-idata
+           idata-rva
+           (list (cons "KERNEL32.dll" (list "ExitProcess"))
+                 (cons "WS2_32.dll"
+                       (list "WSAStartup" "socket" "closesocket"
+                             "WSACleanup")))))
+         (iat-map (plist-get idata-info :iat-rva-alist))
+         (idata-bytes (plist-get idata-info :bytes))
+         (text-bytes
+          (nelisp-pe--minimal-winsock-socket-text
+           text-rva
+           (cdr (assoc "ExitProcess" iat-map))
+           (cdr (assoc "WSAStartup" iat-map))
+           (cdr (assoc "socket" iat-map))
+           (cdr (assoc "closesocket" iat-map))
+           (cdr (assoc "WSACleanup" iat-map))
+           data-rva))
+         (text-raw-size
+          (nelisp-pe--align-up (length text-bytes) nelisp-pe--file-alignment))
+         (data-raw-size
+          (nelisp-pe--align-up (length wsadata-bytes) nelisp-pe--file-alignment))
+         (idata-raw-size
+          (nelisp-pe--align-up (length idata-bytes) nelisp-pe--file-alignment))
+         (text-raw-ptr size-of-headers)
+         (data-raw-ptr (+ text-raw-ptr text-raw-size))
+         (idata-raw-ptr (+ data-raw-ptr data-raw-size))
+         (size-of-image
+          (nelisp-pe--align-up (+ idata-rva (length idata-bytes))
+                               nelisp-pe--section-alignment))
+         (cbuf (nelisp-pe--make-buffer)))
+    (nelisp-pe--write-dos-stub cbuf pe-offset)
+    (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+    (nelisp-pe--write-pe-file-header
+     cbuf
+     (list :num-sections num-sections
+           :characteristics
+           (logior nelisp-pe--characteristic-executable
+                   nelisp-pe--characteristic-large-address-aware)))
+    (nelisp-pe--write-optional-header64
+     cbuf
+     (list :entry-rva text-rva
+           :text-rva text-rva
+           :size-of-code text-raw-size
+           :size-of-initialized-data (+ data-raw-size idata-raw-size)
+           :size-of-image size-of-image
+           :size-of-headers size-of-headers
+           :import-rva (plist-get idata-info :import-rva)
+           :import-size (plist-get idata-info :import-size)
+           :iat-rva (plist-get idata-info :iat-rva)
+           :iat-size (plist-get idata-info :iat-size)))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".text"
+           :virtual-size (length text-bytes)
+           :virtual-address text-rva
+           :raw-data-size text-raw-size
+           :raw-data-ptr text-raw-ptr
+           :characteristics nelisp-pe--scn-exe-text-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".data"
+           :virtual-size (length wsadata-bytes)
+           :virtual-address data-rva
+           :raw-data-size data-raw-size
+           :raw-data-ptr data-raw-ptr
+           :characteristics nelisp-pe--scn-data-flags))
+    (nelisp-pe--write-pe-section-header
+     cbuf
+     (list :name ".idata"
+           :virtual-size (length idata-bytes)
+           :virtual-address idata-rva
+           :raw-data-size idata-raw-size
+           :raw-data-ptr idata-raw-ptr
+           :characteristics nelisp-pe--scn-idata-flags))
+    (let ((header-pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+      (when (< header-pad 0)
+        (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+      (nelisp-pe--write-pad cbuf header-pad))
+    (nelisp-pe--write-bytes cbuf text-bytes)
+    (nelisp-pe--write-pad cbuf (- text-raw-size (length text-bytes)))
+    (nelisp-pe--write-bytes cbuf wsadata-bytes)
+    (nelisp-pe--write-pad cbuf (- data-raw-size (length wsadata-bytes)))
+    (nelisp-pe--write-bytes cbuf idata-bytes)
+    (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
+    (nelisp-pe--buffer-bytes cbuf)))
+
 (defun nelisp-pe--build-commandlinetoargv-exitprocess-exe ()
   "Build a PE32+ EXE that proves CRT-free argv materialization imports."
   (let* ((num-sections 3)
@@ -4754,6 +4923,7 @@ SPEC is currently `minimal-exit-42', `virtualalloc-exit-42',
 `duplicatehandle-exit-42', `sethandleinformation-exit-42',
 `getlasterror-exit-42',
 `getcommandline-exit-42', `wsastartup-exit-42',
+`winsock-socket-exit-42',
 `commandlinetoargv-exit-42', `createprocess-wait-exit-42',
 `createthread-wait-exit-42', or a plist with :exit-code.  The output imports
 DLL functions through a real PE import directory and writes raw bytes with
@@ -4778,6 +4948,7 @@ DLL functions through a real PE import directory and writes raw bytes with
            ((eq spec 'getlasterror-exit-42) nil)
            ((eq spec 'getcommandline-exit-42) nil)
            ((eq spec 'wsastartup-exit-42) nil)
+           ((eq spec 'winsock-socket-exit-42) nil)
            ((eq spec 'commandlinetoargv-exit-42) nil)
            ((eq spec 'createprocess-wait-exit-42) nil)
            ((eq spec 'createthread-wait-exit-42) nil)
@@ -4815,9 +4986,11 @@ DLL functions through a real PE import directory and writes raw bytes with
                  ((eq spec 'getlasterror-exit-42)
                   (nelisp-pe--build-getlasterror-exitprocess-exe))
                  ((eq spec 'getcommandline-exit-42)
-                  (nelisp-pe--build-getcommandline-exitprocess-exe))
+                 (nelisp-pe--build-getcommandline-exitprocess-exe))
                  ((eq spec 'wsastartup-exit-42)
                   (nelisp-pe--build-wsastartup-exitprocess-exe))
+                 ((eq spec 'winsock-socket-exit-42)
+                  (nelisp-pe--build-winsock-socket-exitprocess-exe))
                  ((eq spec 'commandlinetoargv-exit-42)
                   (nelisp-pe--build-commandlinetoargv-exitprocess-exe))
                  ((eq spec 'createprocess-wait-exit-42)

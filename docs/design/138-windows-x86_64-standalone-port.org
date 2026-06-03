@@ -1,10 +1,10 @@
 #+TITLE: Doc 138 — Windows x86_64 standalone port — bottleneck analysis & staged plan
 #+DATE: 2026-06-02
-#+STATUS: STAGE-149-WINDOWS-SETHANDLEINFORMATION-SMOKE
+#+STATUS: STAGE-151-WINDOWS-INOTIFY-NATIVE-PUMP
 
 * Status
 
-- *State*: STAGE 149 Windows SetHandleInformation PE smoke
+- *State*: STAGE 151 Windows inotify native pump
   2026-06-03.  The first de-risk slices now exist in
   =lisp/nelisp-pe-write.el=:
   =nelisp-pe-write-exe-binary= emits a minimal PE32+ console EXE with a real
@@ -27,7 +27,12 @@
   imports both =KERNEL32.dll!ExitProcess= and
   =WS2_32.dll!WSAStartup= through a multi-DLL PE import directory, calls
   =WSAStartup(MAKEWORD(2,2), &WSADATA)=, and exits 42 on success / 1 on
-  failure.  The eighth EXE spec, =virtualprotect-free-exit-42=, imports
+  failure.  The next Winsock EXE spec, =winsock-socket-exit-42=, imports
+  =WS2_32.dll!socket= / =closesocket= / =WSACleanup= in addition to
+  =WSAStartup=, opens an =AF_INET= / =SOCK_STREAM= / =IPPROTO_TCP= socket,
+  closes it, cleans up Winsock, and exits 42 only when the lifecycle succeeds.
+  The eighth EXE spec,
+  =virtualprotect-free-exit-42=, imports
   =VirtualAlloc= / =VirtualProtect= / =VirtualFree=, allocates one page,
   changes it to read-only through a =.data= old-protection slot, releases it
   with =VirtualFree(MEM_RELEASE)=, and exits 42 only when the full lifecycle
@@ -473,14 +478,14 @@
   compatibility now uses waitable timers for relative one-shot / interval
   timers and converts =TFD_TIMER_ABSTIME= absolute expirations into Windows
   relative waits.
-  Windows inotify now has synthetic fd-kind/watch/queue compatibility so
-  callers can create watchers, register/remove watch descriptors, drain queued
-  normalized events, and poll readiness; native =ReadDirectoryChangesW= event
-  production remains the follow-up.
+  Windows inotify now has fd-kind/watch/queue compatibility backed by
+  overlapped =ReadDirectoryChangesW= watchers, so callers can create watchers,
+  register/remove watch descriptors, pump native directory changes into
+  normalized =inotify_read= events, and observe =poll= readiness.
   =test/nelisp-windows-build-test.el= now verifies the real-machine Windows
-  smoke manifest and emits all twenty-one PE32+ smoke EXEs on the host side before
+  smoke manifest and emits all twenty-two PE32+ smoke EXEs on the host side before
   they are handed to native Windows.  =tools/windows-selfhost-test.ps1= now
-  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|readfile-stdin|createpipe|createfile-write|setfilepointer|getfiletype|getfileinformation|filemapping|getcurrentprocessid|duplicatehandle|sethandleinformation|getlasterror|getcommandline|commandlinetoargv|wsastartup|createprocess|createthread|all= so the
+  accepts =-Smoke exit42|virtualalloc|virtualprotect-free|arena|writefile-stdout|readfile-stdin|createpipe|createfile-write|setfilepointer|getfiletype|getfileinformation|filemapping|getcurrentprocessid|duplicatehandle|sethandleinformation|getlasterror|getcommandline|commandlinetoargv|wsastartup|winsock-socket|createprocess|createthread|all= so the
   remaining native Windows checks can be re-run individually after a partial
   pass.  =nelisp-os-getsockopt-int= now routes socket-kind Windows fds through
   =ws2_32!getsockopt= for the same supported =SOL_SOCKET= int options as
@@ -504,7 +509,12 @@
   =wsastartup-exit-42= as a PE32+ x86-64 EXE with separate =KERNEL32.dll= and
   =WS2_32.dll= import descriptors, a zeroed =.data= =WSADATA= buffer, and
   entry bytes that call =WSAStartup= with Win64 argument registers before
-  exiting 42 or 1 based on the Winsock return code.  Stage 44 host coverage
+  exiting 42 or 1 based on the Winsock return code.  Stage 150 host coverage
+  parses =winsock-socket-exit-42= as a PE32+ x86-64 EXE that imports
+  =WS2_32.dll!socket= / =closesocket= / =WSACleanup=, checks
+  =INVALID_SOCKET=, preserves the returned SOCKET in =rcx= for =closesocket=,
+  calls =WSACleanup= after closing the socket, and exits 42 only when all
+  Winsock calls succeed.  Stage 44 host coverage
   parses =commandlinetoargv-exit-42= as a PE32+ x86-64 EXE with separate
   =KERNEL32.dll= and =SHELL32.dll= import descriptors, a zeroed =.data= argc
   slot, and entry bytes that call =GetCommandLineW=, =CommandLineToArgvW=,
@@ -588,8 +598,8 @@
   =setfilepointer= / =getfiletype= / =getfileinformation= /
   =filemapping= / =getcurrentprocessid= / =duplicatehandle= /
   =sethandleinformation= / =getlasterror= / =getcommandline= /
-  =commandlinetoargv= / =wsastartup= / =createprocess= / =createthread=
-  manifest stable and can emit all twenty-one
+  =commandlinetoargv= / =wsastartup= / =winsock-socket= / =createprocess= /
+  =createthread= manifest stable and can emit all twenty-two
   PE32+ smoke EXEs from that manifest.
   Stage 37 coverage
   checks that the PowerShell real-machine script exposes a =-Smoke= selector
@@ -809,6 +819,12 @@
   descriptors, exposes fstat/lseek/read/write behavior without HANDLE fallback,
   drains queued events through =inotify_read=, reports queued readiness through
   =poll=, and cleans up state on close.
+  Stage 151 coverage extends this with native =ReadDirectoryChangesW=
+  watchers: directories are opened with =CreateFileW(FILE_LIST_DIRECTORY,
+  FILE_FLAG_OVERLAPPED)=, =OVERLAPPED.hEvent= points at the inotify event
+  HANDLE, completed =FILE_NOTIFY_INFORMATION= records are pumped through
+  =GetOverlappedResult=, =FILE_ACTION_*= values are translated into normalized
+  inotify masks, and the native watch is restarted after each completion.
   Stage 131 coverage verifies Windows inotify duplicates preserve inotify
   kind/status flags and share watch/queue state across =dup2=, stdout =dup2=,
   and =F_DUPFD=, including draining queued events from duplicated descriptors
@@ -948,18 +964,21 @@
   =setfilepointer=, =getfiletype=, =getfileinformation=, =filemapping=,
   =getcurrentprocessid=, =getlasterror=, =getcommandline=,
   =commandlinetoargv=, =wsastartup=, =createprocess=, and =createthread= all
-  reported =PASS=.  Stages 147-149 expand the real-machine smoke entry to
-  twenty-one PE32+ EXEs by adding =createpipe= / =createpipe-exit-42=,
+  reported =PASS=.  Stages 147-150 expand the real-machine smoke entry to
+  twenty-two PE32+ EXEs by adding =createpipe= / =createpipe-exit-42=,
   =duplicatehandle= / =duplicatehandle-exit-42=, and
-  =sethandleinformation= / =sethandleinformation-exit-42=; those new smokes can
+  =sethandleinformation= / =sethandleinformation-exit-42=, and
+  =winsock-socket= / =winsock-socket-exit-42=; those new smokes can
   now be built with =nelisp-windows-build-createpipe= /
   =nelisp-windows-build-duplicatehandle= /
-  =nelisp-windows-build-sethandleinformation= to the matching
+  =nelisp-windows-build-sethandleinformation= /
+  =nelisp-windows-build-winsock-socket= to the matching
   =target/nelisp-windows-*.exe= paths and should be run on native Windows with
   =tools/windows-selfhost-test.ps1 -Smoke createpipe=,
   =tools/windows-selfhost-test.ps1 -Smoke duplicatehandle=, and
-  =tools/windows-selfhost-test.ps1 -Smoke sethandleinformation=, or as part of
-  the full twenty-one-smoke runner.  Use =-EmitOnly= to validate EXE generation
+  =tools/windows-selfhost-test.ps1 -Smoke sethandleinformation=, and
+  =tools/windows-selfhost-test.ps1 -Smoke winsock-socket=, or as part of the
+  full twenty-two-smoke runner.  Use =-EmitOnly= to validate EXE generation
   without executing them.
 - *Context*: Authored while the macOS M1 (arm64 / Mach-O) native port proceeds
   in a *separate* session — Windows is the next target after macOS lands.
@@ -1371,7 +1390,8 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   =bind-unix-abstract= / =connect-unix-abstract= now map NUL-free abstract names
   to stable hashed temporary filesystem socket paths under
   =temporary-file-directory= and reuse the existing Winsock filesystem AF_UNIX
-  bind/connect path.
+  bind/connect path.  The hash filename is capped so normal Windows temp
+  directories fit inside the =sockaddr_un.sun_path= limit.
   *Windows smoke build manifest progress 2026-06-03*:
   =test/nelisp-windows-build-test.el= now checks that
   =scripts/nelisp-windows-build.el= exposes the real-machine smoke specs
@@ -1486,6 +1506,10 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
   *Windows WSAStartup smoke progress 2026-06-03*: =wsastartup-exit-42= imports
   =KERNEL32.dll!ExitProcess= and =WS2_32.dll!WSAStartup= from separate PE
   import descriptors and exits 42 when Winsock startup succeeds.
+  *Windows Winsock socket smoke progress 2026-06-03*:
+  =winsock-socket-exit-42= imports =WS2_32.dll!socket= / =closesocket= /
+  =WSACleanup=, opens a TCP socket after =WSAStartup=, closes it, cleans up
+  Winsock, and exits 42 only when the lifecycle succeeds.
   *Windows CommandLineToArgvW smoke progress 2026-06-03*:
   =commandlinetoargv-exit-42= imports =Shell32.dll!CommandLineToArgvW=,
   validates =argc >= 1=, and frees the argv vector with =LocalFree=.
@@ -1741,7 +1765,9 @@ largest uncertainty (B1 + B2) first.
    timer-backed timerfd compatibility.
    *Windows smoke build manifest test SHIPPED 2026-06-03*:
    =test/nelisp-windows-build-test.el= verifies the Windows real-machine smoke
-   manifest and host-side emission of all twenty-one PE32+ smoke EXEs.
+   manifest, expected exit/stdout/stdin metadata, and host-side emission of all
+   twenty-two PE32+ smoke EXEs; it also keeps the documented one-smoke
+   PowerShell examples aligned with the manifest.
    *Windows smoke selector SHIPPED 2026-06-03*: =tools/windows-selfhost-test.ps1=
    accepts =-Smoke NAME= so the already-passing =exit42= smoke does not have to
    be re-run when checking =virtualalloc=, =virtualprotect-free=, =arena=,
@@ -1967,11 +1993,46 @@ largest uncertainty (B1 + B2) first.
    AF_UNIX =SOCK_SEQPACKET= sockets now map to =SOCK_STREAM= Winsock creation
    and retain nonblocking / close-on-exec setup; non-AF_UNIX seqpacket sockets
    reject before Winsock FFI.
+   *Windows socket shutdown compatibility SHIPPED 2026-06-03*:
+   =nelisp-os-shutdown= now validates =SHUT_RD= / =SHUT_WR= / =SHUT_RDWR=,
+   routes socket-kind Windows fds through =ws2_32!shutdown=, rejects
+   non-socket HANDLE fds before Winsock FFI, and is included in the Windows
+   OS compatibility sockets suite.
+   *Windows AF_INET datagram send/receive compatibility SHIPPED 2026-06-03*:
+   =nelisp-os-sendto-inet= / =nelisp-os-recvfrom-inet= now share the existing
+   =sockaddr_in= encode/decode helpers, route Windows socket-kind fds through
+   =ws2_32!sendto= / =recvfrom=, reject non-socket HANDLE fds before buffer
+   allocation or Winsock FFI, and are included in the Windows OS compatibility
+   sockets suite.
+   *Windows AF_INET6 datagram send/receive compatibility SHIPPED 2026-06-03*:
+   =nelisp-os-sendto-inet6= / =nelisp-os-recvfrom-inet6= now share the existing
+   =sockaddr_in6= encode/decode helpers, route Windows socket-kind fds through
+   =ws2_32!sendto= / =recvfrom=, reject non-socket HANDLE fds before buffer
+   allocation or Winsock FFI, and are included in the Windows OS compatibility
+   sockets suite.
+   *Windows scoped AF_INET6 datagram send/receive compatibility SHIPPED 2026-06-03*:
+   =nelisp-os-sendto-inet6-scoped= / =nelisp-os-recvfrom-inet6-scoped= now
+   preserve =flowinfo= and =scope_id= through the scoped =sockaddr_in6=
+   helpers, route Windows socket-kind fds through =ws2_32!sendto= /
+   =recvfrom=, reject non-socket HANDLE fds before buffer allocation or
+   Winsock FFI, and are included in the Windows OS compatibility sockets
+   suite.
+   *Windows scoped AF_INET6 getname compatibility SHIPPED 2026-06-03*:
+   =nelisp-os-getsockname-inet6-scoped= /
+   =nelisp-os-getpeername-inet6-scoped= now use the scoped =sockaddr_in6=
+   decoder, route Windows socket-kind fds through =ws2_32!getsockname= /
+   =getpeername=, and are included in the Windows OS compatibility sockets
+   suite.
    *Windows inotify synthetic fd compatibility SHIPPED 2026-06-03*:
    =inotify_init= creates event HANDLE-backed fd-kind state,
-   =inotify_add_watch= / =inotify_rm_watch= manage synthetic watch
-   descriptors, =inotify_read= drains queued normalized events, =poll= reports
-   queued readiness, and close removes inotify state.
+   =inotify_add_watch= / =inotify_rm_watch= manage watch descriptors,
+   =inotify_read= drains queued normalized events, =poll= reports queued
+   readiness, and close removes inotify state.
+   *Windows inotify native pump SHIPPED 2026-06-03*:
+   Windows inotify watches now open native directory handles, issue overlapped
+   =ReadDirectoryChangesW=, pump completed =FILE_NOTIFY_INFORMATION= records
+   into normalized =inotify_read= events, and restart the native watch after
+   each completion.
    *Windows inotify dup compatibility SHIPPED 2026-06-03*: inotify =dup2=,
    stdout-target =dup2=, and =F_DUPFD= preserve inotify kind/status flags and
    share watch/queue state with the source descriptor.
@@ -1990,7 +2051,8 @@ largest uncertainty (B1 + B2) first.
    *Windows AF_UNIX abstract compatibility SHIPPED 2026-06-03*:
    =bind-unix-abstract= / =connect-unix-abstract= now map Windows abstract
    names to stable hashed temporary filesystem socket paths and reuse the
-   Winsock filesystem AF_UNIX path.
+   Winsock filesystem AF_UNIX path.  The hash filename is capped so generated
+   paths fit normal Windows temp directories under =sun_path=.
    *Windows socket nonblocking SHIPPED 2026-06-03*: socket-kind fds now route
    =F_SETFL O_NONBLOCK= through =ws2_32!ioctlsocket(FIONBIO)=, track
    =F_GETFL= status flags, and =nelisp-os-socket= maps =SOCK_NONBLOCK= onto the
@@ -2019,6 +2081,9 @@ largest uncertainty (B1 + B2) first.
    *Windows WSAStartup smoke SHIPPED 2026-06-03*: =wsastartup-exit-42= proves
    a multi-DLL PE import directory with =WS2_32.dll!WSAStartup= and exits 42
    when Winsock initialization succeeds.
+   *Windows Winsock socket smoke SHIPPED 2026-06-03*:
+   =winsock-socket-exit-42= proves PE-level Winsock socket lifecycle wiring
+   through =WSAStartup= / =socket= / =closesocket= / =WSACleanup=.
    *Windows CommandLineToArgvW smoke SHIPPED 2026-06-03*:
    =commandlinetoargv-exit-42= proves CRT-free argv materialization through
    =GetCommandLineW= / =CommandLineToArgvW= / =LocalFree=.

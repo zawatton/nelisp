@@ -8,8 +8,11 @@
 #
 # To run only one smoke:
 #
+#   .\tools\windows-selfhost-test.ps1 -Smoke exit42
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualalloc
 #   .\tools\windows-selfhost-test.ps1 -Smoke virtualprotect-free
+#   .\tools\windows-selfhost-test.ps1 -Smoke arena
+#   .\tools\windows-selfhost-test.ps1 -Smoke writefile-stdout
 #   .\tools\windows-selfhost-test.ps1 -Smoke readfile-stdin
 #   .\tools\windows-selfhost-test.ps1 -Smoke createpipe
 #   .\tools\windows-selfhost-test.ps1 -Smoke createfile-write
@@ -21,6 +24,10 @@
 #   .\tools\windows-selfhost-test.ps1 -Smoke duplicatehandle
 #   .\tools\windows-selfhost-test.ps1 -Smoke sethandleinformation
 #   .\tools\windows-selfhost-test.ps1 -Smoke getlasterror
+#   .\tools\windows-selfhost-test.ps1 -Smoke getcommandline
+#   .\tools\windows-selfhost-test.ps1 -Smoke commandlinetoargv
+#   .\tools\windows-selfhost-test.ps1 -Smoke wsastartup
+#   .\tools\windows-selfhost-test.ps1 -Smoke winsock-socket
 #   .\tools\windows-selfhost-test.ps1 -Smoke createprocess
 #   .\tools\windows-selfhost-test.ps1 -Smoke createthread
 #
@@ -168,6 +175,12 @@ $Smokes = @(
     @{
         Name = "wsastartup"
         Spec = "wsastartup-exit-42"
+        ExpectedExit = 42
+        ExpectedStdout = $null
+    },
+    @{
+        Name = "winsock-socket"
+        Spec = "winsock-socket-exit-42"
         ExpectedExit = 42
         ExpectedStdout = $null
     },

@@ -2415,18 +2415,43 @@
                           (list #xaaaa)))))))
 
 (ert-deftest nelisp-stdlib-os-inotify-windows-creates-watches-and-cleans-up ()
-  "Windows inotify creates synthetic fd-kind state and manages watches."
+  "Windows inotify creates fd-kind state and starts a native directory watch."
   (let ((calls nil)
+        (alloc-next 1000)
+        (freed nil)
+        (wide-writes nil)
+        (i64-writes nil)
         (nelisp-os--windows-next-fd 3)
         (nelisp-os--windows-fd-table nil)
         (nelisp-os--windows-fd-kind-table nil)
         (nelisp-os--windows-fd-flags-table nil)
         (nelisp-os--windows-inotify-table nil))
-    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u16)
+               (lambda (ptr off val)
+                 (push (list ptr off val) wide-writes)
+                 val))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) i64-writes)
+                 val))
+              ((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (push (list dll fn sig args) calls)
                  (cond
                   ((equal fn "CreateEventW") #xaaaa)
+                  ((equal fn "CreateFileW") #xbbbb)
+                  ((equal fn "ReadDirectoryChangesW") 1)
+                  ((equal fn "GetOverlappedResult") 0)
+                  ((equal fn "GetLastError")
+                   nelisp-os-WIN-ERROR-IO-INCOMPLETE)
+                  ((equal fn "ResetEvent") 1)
+                  ((equal fn "CancelIo") 1)
                   ((equal fn "SetHandleInformation") 1)
                   ((equal fn "CloseHandle") 1)
                   (t (error "unexpected ffi call %S" fn))))))
@@ -2452,19 +2477,114 @@
     (should-not nelisp-os--windows-fd-kind-table)
     (should-not nelisp-os--windows-fd-flags-table)
     (should-not nelisp-os--windows-inotify-table)
-    (should (equal (nreverse calls)
-                   (list
-                    (list "kernel32" "CreateEventW"
-                          [:pointer :pointer :sint32 :sint32 :pointer]
-                          (list 0 1 0 0))
-                    (list "kernel32" "SetHandleInformation"
-                          [:sint32 :pointer :uint32 :uint32]
-                          (list #xaaaa
-                                nelisp-os-WIN-HANDLE-FLAG-INHERIT
+    (should i64-writes)
+    (should wide-writes)
+    (should (member (list "kernel32" "CreateFileW"
+                          [:pointer :pointer :uint32 :uint32 :pointer
+                           :uint32 :uint32 :pointer]
+                          (list 1000
+                                nelisp-os-WIN-FILE-LIST-DIRECTORY
+                                (logior nelisp-os-WIN-FILE-SHARE-READ
+                                        nelisp-os-WIN-FILE-SHARE-WRITE
+                                        nelisp-os-WIN-FILE-SHARE-DELETE)
+                                0
+                                nelisp-os-WIN-OPEN-EXISTING
+                                (logior
+                                 nelisp-os-WIN-FILE-FLAG-BACKUP-SEMANTICS
+                                 nelisp-os-WIN-FILE-FLAG-OVERLAPPED)
                                 0))
-                    (list "kernel32" "CloseHandle"
+                    calls))
+    (should (member (list "kernel32" "ReadDirectoryChangesW"
+                          [:sint32 :pointer :pointer :uint32 :sint32 :uint32
+                           :pointer :pointer :pointer]
+                          (list #xbbbb 2000
+                                nelisp-os-WIN-INOTIFY-BUFFER-SIZE
+                                0
+                                (nelisp-os--windows-inotify-notify-mask
+                                 nelisp-os-IN-ALL-EVENTS)
+                                0 3000 0))
+                    calls))
+    (should (member (list "kernel32" "CancelIo"
                           [:sint32 :pointer]
-                          (list #xaaaa)))))))
+                          (list #xbbbb))
+                    calls))
+    (should (member (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xbbbb))
+                    calls))
+    (should (member (list "kernel32" "CloseHandle"
+                          [:sint32 :pointer]
+                          (list #xaaaa))
+                    calls))
+    (should (equal (sort (copy-sequence freed) #'<)
+                   '(1000 2000 3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-inotify-windows-pumps-native-events ()
+  "Windows inotify converts completed ReadDirectoryChangesW records to events."
+  (let ((calls nil)
+        (freed nil)
+        (complete-count 0)
+        (state (vector 2
+                       (list (list 1 "C:/tmp" nelisp-os-IN-ALL-EVENTS
+                                   #xbbbb #x2000 #x3000 t))
+                       nil))
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table '((3 . inotify)))
+        (nelisp-os--windows-inotify-table nil))
+    (setq nelisp-os--windows-inotify-table (list (cons 3 state)))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n) #x4000))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-read-u32)
+               (lambda (ptr off)
+                 (cond
+                  ((= ptr #x4000) 22)
+                  ((and (= ptr #x2000) (= off 0)) 0)
+                  ((and (= ptr #x2000) (= off 4))
+                   nelisp-os-WIN-FILE-ACTION-ADDED)
+                  ((and (= ptr #x2000) (= off 8)) 10)
+                  (t (error "unexpected read-u32 %S %S" ptr off)))))
+              ((symbol-function 'nelisp-os-read-u16)
+               (lambda (ptr off)
+                 (unless (= ptr #x2000)
+                   (error "unexpected read-u16 ptr %S" ptr))
+                 (pcase off
+                   (12 97)
+                   (14 46)
+                   (16 116)
+                   (18 120)
+                   (20 116)
+                   (_ 0))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 (cond
+                  ((equal fn "GetOverlappedResult")
+                   (if (= complete-count 0)
+                       (progn
+                         (setq complete-count (1+ complete-count))
+                         1)
+                     0))
+                  ((equal fn "GetLastError")
+                   nelisp-os-WIN-ERROR-IO-INCOMPLETE)
+                  ((equal fn "SetEvent") 1)
+                  ((equal fn "ResetEvent") 1)
+                  ((equal fn "ReadDirectoryChangesW") 1)
+                  (t (error "unexpected ffi call %S" fn))))))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-poll (list (cons 3 nelisp-os-POLLIN)) 0)
+                       (list (cons 3 nelisp-os-POLLIN))))
+        (should (equal (nelisp-os-inotify-read 3 4)
+                       (list (list 1 nelisp-os-IN-CREATE 0 "a.txt"))))))
+    (should (equal freed '(#x4000 #x4000 #x4000)))
+    (should (equal (aref (cdr (assq 3 nelisp-os--windows-inotify-table)) 2)
+                   nil))
+    (should (equal (nth 6 (car (aref state 1))) t))
+    (should (member (list "kernel32" "SetEvent"
+                          [:sint32 :pointer]
+                          (list #xaaaa))
+                    calls))))
 
 (ert-deftest nelisp-stdlib-os-inotify-windows-reads-queued-events ()
   "Windows inotify read/poll consume queued compatibility events."
@@ -2558,6 +2678,9 @@
   "Windows F_DUPFD preserves inotify kind and shared watch state."
   (let ((calls nil)
         (freed nil)
+        (alloc-next 3000)
+        (wide-writes nil)
+        (i64-writes nil)
         (state (vector 2
                        (list (list 1 "C:/tmp" nelisp-os-IN-ALL-EVENTS))
                        nil))
@@ -2567,16 +2690,32 @@
         (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
         (nelisp-os--windows-inotify-table nil))
     (setq nelisp-os--windows-inotify-table (list (cons 3 state)))
-    (cl-letf (((symbol-function 'nelisp-os--alloc) (lambda (_n) 3000))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
               ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-u16)
+               (lambda (ptr off val)
+                 (push (list ptr off val) wide-writes)
+                 val))
+              ((symbol-function 'nelisp-os-write-i64)
+               (lambda (ptr off val)
+                 (push (list ptr off val) i64-writes)
+                 val))
               ((symbol-function 'nelisp-os-read-i64)
-               (lambda (_ptr _off) #xbbbb))
+               (lambda (ptr _off)
+                 (should (= ptr 3000))
+                 #xbbbb))
               ((symbol-function 'nelisp-os--libc-call)
                (lambda (dll fn sig &rest args)
                  (push (list dll fn sig args) calls)
                  (cond
                   ((equal fn "GetCurrentProcess") #x9999)
                   ((equal fn "DuplicateHandle") 1)
+                  ((equal fn "CreateFileW") #xcccc)
+                  ((equal fn "ResetEvent") 1)
+                  ((equal fn "ReadDirectoryChangesW") 1)
                   (t (error "unexpected ffi call %S" fn))))))
       (let ((system-type 'windows-nt))
         (should (= (nelisp-os-fcntl 3 nelisp-os-F-DUPFD 10) 10))
@@ -2597,15 +2736,37 @@
                 (cdr (assq 10 nelisp-os--windows-inotify-table))))
     (should (equal (aref (cdr (assq 3 nelisp-os--windows-inotify-table)) 0)
                    3))
-    (should (equal (nreverse calls)
-                   (list
-                    (list "kernel32" "GetCurrentProcess" [:pointer] nil)
-                    (list "kernel32" "DuplicateHandle"
-                          [:sint32 :pointer :pointer :pointer :pointer
-                           :uint32 :sint32 :uint32]
-                          (list #x9999 #xaaaa #x9999 3000 0 1
-                                nelisp-os-WIN-DUPLICATE-SAME-ACCESS)))))
-    (should (equal freed '(3000)))))
+    (should wide-writes)
+    (should (equal i64-writes
+                   (list (list 6000
+                               nelisp-os-WIN-OVERLAPPED-HEVENT-OFFSET
+                               #xbbbb))))
+    (should (member (list "kernel32" "CreateFileW"
+                          [:pointer :pointer :uint32 :uint32 :pointer
+                           :uint32 :uint32 :pointer]
+                          (list 4000
+                                nelisp-os-WIN-FILE-LIST-DIRECTORY
+                                (logior nelisp-os-WIN-FILE-SHARE-READ
+                                        nelisp-os-WIN-FILE-SHARE-WRITE
+                                        nelisp-os-WIN-FILE-SHARE-DELETE)
+                                0
+                                nelisp-os-WIN-OPEN-EXISTING
+                                (logior
+                                 nelisp-os-WIN-FILE-FLAG-BACKUP-SEMANTICS
+                                 nelisp-os-WIN-FILE-FLAG-OVERLAPPED)
+                                0))
+                    calls))
+    (should (member (list "kernel32" "ReadDirectoryChangesW"
+                          [:sint32 :pointer :pointer :uint32 :sint32 :uint32
+                           :pointer :pointer :pointer]
+                          (list #xcccc 5000
+                                nelisp-os-WIN-INOTIFY-BUFFER-SIZE
+                                0
+                                (nelisp-os--windows-inotify-notify-mask
+                                 nelisp-os-IN-CREATE)
+                                0 6000 0))
+                    calls))
+    (should (equal freed '(4000 3000)))))
 
 (ert-deftest nelisp-stdlib-os-dup2-windows-inotify-can-target-stdout ()
   "Windows inotify dup2 to stdout preserves inotify standard fd behavior."
@@ -2614,7 +2775,7 @@
         (state (vector 2
                        (list (list 1 "C:/tmp" nelisp-os-IN-ALL-EVENTS))
                        (list (list 1 nelisp-os-IN-DELETE 0 "old.txt"))))
-        (std-handles '(#xdddd #xbbbb))
+        (std-handles '(#xdddd #xbbbb #xbbbb))
         (nelisp-os--windows-fd-table '((3 . #xaaaa)))
         (nelisp-os--windows-fd-kind-table '((3 . inotify)))
         (nelisp-os--windows-fd-flags-table `((3 . ,nelisp-os-O-NONBLOCK)))
@@ -2669,6 +2830,9 @@
                     (list "kernel32" "CloseHandle"
                           [:sint32 :pointer]
                           (list #xdddd))
+                    (list "kernel32" "GetStdHandle"
+                          [:pointer :sint32]
+                          (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
                     (list "kernel32" "GetStdHandle"
                           [:pointer :sint32]
                           (list nelisp-os-WIN-STD-OUTPUT-HANDLE))
@@ -5334,6 +5498,433 @@
          :type 'nelisp-os-error)))
     (should-not called)))
 
+(ert-deftest nelisp-stdlib-os-shutdown-windows-uses-winsock ()
+  "Windows shutdown dispatches to Winsock for socket-kind fds."
+  (let ((calls nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-shutdown 3 nelisp-os-SHUT-WR) 0))))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "shutdown"
+                          [:sint32 :pointer :sint32]
+                          (list #xabcdef nelisp-os-SHUT-WR)))))))
+
+(ert-deftest nelisp-stdlib-os-shutdown-windows-rejects-bad-how-before-ffi ()
+  "Windows shutdown rejects unsupported HOW values before Winsock FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-shutdown 3 99) :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-shutdown-windows-rejects-non-socket-fd-before-ffi ()
+  "Windows shutdown rejects regular HANDLE fds before Winsock FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-shutdown 3 nelisp-os-SHUT-RDWR)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-sendto-inet-windows-uses-winsock ()
+  "Windows AF_INET sendto encodes sockaddr_in and dispatches to Winsock."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (encoded nil)
+        (written nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in)
+               (lambda (buf host port) (setq encoded (list buf host port))))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written (list ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-sendto-inet
+                    3 "ping" nelisp-os-INADDR-LOOPBACK 9999 0)
+                   4))))
+    (should (equal encoded
+                   (list 3000 nelisp-os-INADDR-LOOPBACK 9999)))
+    (should (equal written '(4000 "ping")))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "sendto"
+                          [:sint32 :pointer :pointer :sint32 :sint32
+                           :pointer :sint32]
+                          (list #xabcdef 4000 4 0 3000
+                                nelisp-os--sockaddr-in-len)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-sendto-inet-windows-rejects-non-socket-before-alloc ()
+  "Windows AF_INET sendto rejects regular HANDLE fds before allocation or FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-sendto-inet 3 "ping" nelisp-os-INADDR-LOOPBACK 9999)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet-windows-uses-winsock ()
+  "Windows AF_INET recvfrom decodes payload and peer sockaddr_in."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (writes nil)
+        (decoded nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val)
+                 (push (list ptr off val) writes)
+                 val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in)
+               (lambda (buf)
+                 (setq decoded buf)
+                 (cons nelisp-os-INADDR-LOOPBACK 9999)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr len)
+                 (should (= ptr 3000))
+                 (should (= len 4))
+                 "pong"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-recvfrom-inet 3 16 0)
+                       (list "pong" nelisp-os-INADDR-LOOPBACK 9999)))))
+    (should (equal (nreverse writes)
+                   `((5000 0 ,nelisp-os--sockaddr-in-len))))
+    (should (= decoded 4000))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "recvfrom"
+                          [:sint32 :pointer :pointer :sint32 :sint32
+                           :pointer :pointer]
+                          (list #xabcdef 3000 16 0 4000 5000)))))
+    (should (equal (sort freed #'<) '(3000 4000 5000)))))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet-windows-rejects-non-socket-before-alloc ()
+  "Windows AF_INET recvfrom rejects regular HANDLE fds before allocation or FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-recvfrom-inet 3 16)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet-windows-rejects-negative-size-before-alloc ()
+  "Windows AF_INET recvfrom rejects negative MAX-BYTES before allocation."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-recvfrom-inet 3 -1)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-sendto-inet6-windows-uses-winsock ()
+  "Windows AF_INET6 sendto encodes sockaddr_in6 and dispatches to Winsock."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (encoded nil)
+        (written nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in6)
+               (lambda (buf host port) (setq encoded (list buf host port))))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written (list ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-sendto-inet6
+                    3 "ping" nelisp-os-IN6ADDR-LOOPBACK 9999 0)
+                   4))))
+    (should (equal encoded
+                   (list 3000 nelisp-os-IN6ADDR-LOOPBACK 9999)))
+    (should (equal written '(4000 "ping")))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "sendto"
+                          [:sint32 :pointer :pointer :sint32 :sint32
+                           :pointer :sint32]
+                          (list #xabcdef 4000 4 0 3000
+                                nelisp-os--sockaddr-in6-len)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-sendto-inet6-windows-rejects-non-socket-before-alloc ()
+  "Windows AF_INET6 sendto rejects regular HANDLE fds before allocation or FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-sendto-inet6 3 "ping" nelisp-os-IN6ADDR-LOOPBACK 9999)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet6-windows-uses-winsock ()
+  "Windows AF_INET6 recvfrom decodes payload and peer sockaddr_in6."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (writes nil)
+        (decoded nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val)
+                 (push (list ptr off val) writes)
+                 val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6)
+               (lambda (buf)
+                 (setq decoded buf)
+                 (cons nelisp-os-IN6ADDR-LOOPBACK 9999)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr len)
+                 (should (= ptr 3000))
+                 (should (= len 4))
+                 "pong"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-recvfrom-inet6 3 16 0)
+                       (list "pong" nelisp-os-IN6ADDR-LOOPBACK 9999)))))
+    (should (equal (nreverse writes)
+                   `((5000 0 ,nelisp-os--sockaddr-in6-len))))
+    (should (= decoded 4000))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "recvfrom"
+                          [:sint32 :pointer :pointer :sint32 :sint32
+                           :pointer :pointer]
+                          (list #xabcdef 3000 16 0 4000 5000)))))
+    (should (equal (sort freed #'<) '(3000 4000 5000)))))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet6-windows-rejects-non-socket-before-alloc ()
+  "Windows AF_INET6 recvfrom rejects regular HANDLE fds before allocation or FFI."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-recvfrom-inet6 3 16)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet6-windows-rejects-negative-size-before-alloc ()
+  "Windows AF_INET6 recvfrom rejects negative MAX-BYTES before allocation."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-recvfrom-inet6 3 -1)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-sendto-inet6-scoped-windows-uses-winsock ()
+  "Windows scoped AF_INET6 sendto encodes sockaddr_in6 and dispatches to Winsock."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (encoded nil)
+        (written nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os--encode-sockaddr-in6-scoped)
+               (lambda (buf host port flowinfo scope-id)
+                 (setq encoded (list buf host port flowinfo scope-id))))
+              ((symbol-function 'nelisp-os--write-bytes)
+               (lambda (ptr str) (setq written (list ptr str))))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (= (nelisp-os-sendto-inet6-scoped
+                    3 "ping" nelisp-os-IN6ADDR-LOOPBACK 9999 1234 7 0)
+                   4))))
+    (should (equal encoded
+                   (list 3000 nelisp-os-IN6ADDR-LOOPBACK 9999 1234 7)))
+    (should (equal written '(4000 "ping")))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "sendto"
+                          [:sint32 :pointer :pointer :sint32 :sint32
+                           :pointer :sint32]
+                          (list #xabcdef 4000 4 0 3000
+                                nelisp-os--sockaddr-in6-scoped-len)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-sendto-inet6-scoped-windows-rejects-non-socket-before-alloc ()
+  "Windows scoped AF_INET6 sendto rejects regular HANDLE fds before allocation."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error
+         (nelisp-os-sendto-inet6-scoped
+          3 "ping" nelisp-os-IN6ADDR-LOOPBACK 9999 1234 7)
+         :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet6-scoped-windows-uses-winsock ()
+  "Windows scoped AF_INET6 recvfrom decodes payload and scoped peer sockaddr."
+  (let ((alloc-next 3000)
+        (calls nil)
+        (writes nil)
+        (decoded nil)
+        (freed nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (_n)
+                 (prog1 alloc-next
+                   (setq alloc-next (+ alloc-next 1000)))))
+              ((symbol-function 'nelisp-os--free)
+               (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val)
+                 (push (list ptr off val) writes)
+                 val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6-scoped)
+               (lambda (buf)
+                 (setq decoded buf)
+                 (list nelisp-os-IN6ADDR-LOOPBACK 9999 1234 7)))
+              ((symbol-function 'nelisp-os--read-bytes)
+               (lambda (ptr len)
+                 (should (= ptr 3000))
+                 (should (= len 4))
+                 "pong"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 4)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-recvfrom-inet6-scoped 3 16 0)
+                       (list "pong" nelisp-os-IN6ADDR-LOOPBACK
+                             9999 1234 7)))))
+    (should (equal (nreverse writes)
+                   `((5000 0 ,nelisp-os--sockaddr-in6-scoped-len))))
+    (should (= decoded 4000))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "recvfrom"
+                          [:sint32 :pointer :pointer :sint32 :sint32
+                           :pointer :pointer]
+                          (list #xabcdef 3000 16 0 4000 5000)))))
+    (should (equal (sort freed #'<) '(3000 4000 5000)))))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet6-scoped-windows-rejects-non-socket-before-alloc ()
+  "Windows scoped AF_INET6 recvfrom rejects regular HANDLE fds before allocation."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xaaaa)))
+        (nelisp-os--windows-fd-kind-table nil))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-recvfrom-inet6-scoped 3 16)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
+(ert-deftest nelisp-stdlib-os-recvfrom-inet6-scoped-windows-rejects-negative-size-before-alloc ()
+  "Windows scoped AF_INET6 recvfrom rejects negative MAX-BYTES before allocation."
+  (let ((called nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (&rest _args) (setq called t)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (&rest _args) (setq called t))))
+      (let ((system-type 'windows-nt))
+        (should-error (nelisp-os-recvfrom-inet6-scoped 3 -1)
+                      :type 'nelisp-os-error)))
+    (should-not called)))
+
 (ert-deftest nelisp-stdlib-os-getsockopt-int-windows-supports-tcp-nodelay ()
   "Windows TCP_NODELAY translates through Winsock getsockopt."
   (let ((alloc-next 3000)
@@ -6687,6 +7278,19 @@
           (should-not called))
       (delete-directory tmpdir t))))
 
+(ert-deftest nelisp-stdlib-os-unix-abstract-windows-path-fits-temp-dir ()
+  "Windows abstract AF_UNIX paths stay within the sockaddr_un sun_path limit."
+  (let* ((tmpdir (make-temp-file "nelisp-afunix-abstract-" t))
+         (nelisp-os--windows-abstract-unix-dir tmpdir)
+         (path (nelisp-os--windows-abstract-unix-path "svc")))
+    (unwind-protect
+        (progn
+          (should (string-prefix-p
+                   (file-name-as-directory tmpdir)
+                   path))
+          (should (< (string-bytes path) nelisp-os-SUN-PATH-MAX)))
+      (delete-directory tmpdir t))))
+
 (ert-deftest nelisp-stdlib-os-connect-unix-abstract-windows-maps-to-temp-path ()
   "Windows abstract AF_UNIX connect uses the same temporary filesystem path."
   (let ((called nil)
@@ -6812,6 +7416,74 @@
                           (list #xabcdef 3000 4000)))))
     (should (equal (sort freed #'<) '(3000 4000)))))
 
+(ert-deftest nelisp-stdlib-os-getpeername-inet-windows-uses-winsock ()
+  "Windows IPv4 getpeername uses Winsock and decodes sockaddr_in."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (decoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n) (if (= n nelisp-os--sockaddr-in-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in)
+               (lambda (ptr)
+                 (should (= ptr 3000))
+                 (setq decoded t)
+                 (cons nelisp-os-INADDR-LOOPBACK 4444)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-getpeername-inet 3)
+                       (list nelisp-os-INADDR-LOOPBACK 4444)))))
+    (should decoded)
+    (should (equal len-write (list 4000 0 nelisp-os--sockaddr-in-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getpeername"
+                          [:sint32 :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-getsockname-inet6-windows-uses-winsock ()
+  "Windows IPv6 getsockname uses Winsock and decodes sockaddr_in6."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (decoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n) (if (= n nelisp-os--sockaddr-in6-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6)
+               (lambda (ptr)
+                 (should (= ptr 3000))
+                 (setq decoded t)
+                 (cons nelisp-os-IN6ADDR-LOOPBACK 4444)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-getsockname-inet6 3)
+                       (list nelisp-os-IN6ADDR-LOOPBACK 4444)))))
+    (should decoded)
+    (should (equal len-write (list 4000 0 nelisp-os--sockaddr-in6-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getsockname"
+                          [:sint32 :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
 (ert-deftest nelisp-stdlib-os-getpeername-inet6-windows-uses-winsock ()
   "Windows IPv6 getpeername uses Winsock and decodes sockaddr_in6."
   (let ((calls nil)
@@ -6839,6 +7511,116 @@
                        (list nelisp-os-IN6ADDR-LOOPBACK 4444)))))
     (should decoded)
     (should (equal len-write (list 4000 0 nelisp-os--sockaddr-in6-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getpeername"
+                          [:sint32 :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-getsockname-inet6-scoped-windows-uses-winsock ()
+  "Windows scoped IPv6 getsockname uses Winsock and decodes sockaddr_in6."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (decoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n)
+                 (if (= n nelisp-os--sockaddr-in6-scoped-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6-scoped)
+               (lambda (ptr)
+                 (should (= ptr 3000))
+                 (setq decoded t)
+                 (list nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-getsockname-inet6-scoped 3)
+                       (list nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)))))
+    (should decoded)
+    (should (equal len-write
+                   (list 4000 0 nelisp-os--sockaddr-in6-scoped-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getsockname"
+                          [:sint32 :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-getpeername-inet6-scoped-windows-uses-winsock ()
+  "Windows scoped IPv6 getpeername uses Winsock and decodes sockaddr_in6."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (decoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n)
+                 (if (= n nelisp-os--sockaddr-in6-scoped-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os--decode-sockaddr-in6-scoped)
+               (lambda (ptr)
+                 (should (= ptr 3000))
+                 (setq decoded t)
+                 (list nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-getpeername-inet6-scoped 3)
+                       (list nelisp-os-IN6ADDR-LOOPBACK 4444 9 2)))))
+    (should decoded)
+    (should (equal len-write
+                   (list 4000 0 nelisp-os--sockaddr-in6-scoped-len)))
+    (should (equal (nreverse calls)
+                   (list
+                    (list "ws2_32" "getpeername"
+                          [:sint32 :pointer :pointer :pointer]
+                          (list #xabcdef 3000 4000)))))
+    (should (equal (sort freed #'<) '(3000 4000)))))
+
+(ert-deftest nelisp-stdlib-os-getpeername-unix-windows-uses-winsock ()
+  "Windows AF_UNIX getpeername uses Winsock and decodes sockaddr_un."
+  (let ((calls nil)
+        (freed nil)
+        (len-write nil)
+        (len-read nil)
+        (decoded nil)
+        (nelisp-os--windows-fd-table '((3 . #xabcdef)))
+        (nelisp-os--windows-fd-kind-table '((3 . socket))))
+    (cl-letf (((symbol-function 'nelisp-os--alloc)
+               (lambda (n) (if (= n nelisp-os--sockaddr-un-len) 3000 4000)))
+              ((symbol-function 'nelisp-os--free) (lambda (ptr) (push ptr freed)))
+              ((symbol-function 'nelisp-os-write-i32)
+               (lambda (ptr off val) (setq len-write (list ptr off val)) val))
+              ((symbol-function 'nelisp-os-read-i32)
+               (lambda (ptr off) (setq len-read (list ptr off)) 9))
+              ((symbol-function 'nelisp-os--decode-sockaddr-un)
+               (lambda (ptr len)
+                 (should (= ptr 3000))
+                 (should (= len 9))
+                 (setq decoded t)
+                 "sockpath"))
+              ((symbol-function 'nelisp-os--libc-call)
+               (lambda (dll fn sig &rest args)
+                 (push (list dll fn sig args) calls)
+                 0)))
+      (let ((system-type 'windows-nt))
+        (should (equal (nelisp-os-getpeername-unix 3) "sockpath"))))
+    (should decoded)
+    (should (equal len-write (list 4000 0 nelisp-os--sockaddr-un-len)))
+    (should (equal len-read (list 4000 0)))
     (should (equal (nreverse calls)
                    (list
                     (list "ws2_32" "getpeername"

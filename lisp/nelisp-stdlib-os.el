@@ -120,6 +120,11 @@
 ;; Stage 135 adds same-process Windows socketpair fd-passing compatibility.
 ;; Stage 136 maps Windows AF_UNIX SOCK_SEQPACKET socketpair to stream pairs.
 ;; Stage 137 maps Windows AF_UNIX SOCK_SEQPACKET sockets to stream sockets.
+;; Stage 138 maps socket shutdown through Winsock for socket-kind Windows fds.
+;; Stage 139 maps AF_INET datagram sendto/recvfrom through Winsock.
+;; Stage 140 maps AF_INET6 datagram sendto/recvfrom through Winsock.
+;; Stage 141 maps scoped AF_INET6 datagram sendto/recvfrom through Winsock.
+;; Stage 142 maps scoped AF_INET6 getname operations through Winsock.
 ;; Stage 19 maps `getppid' to the Tool Help process snapshot APIs.  Stage 20
 ;; adds a minimal Windows `fcntl' compatibility branch for `F_DUPFD' /
 ;; `F_GETFD' / `F_SETFD' / `F_GETFL' / `F_SETFL'.  Stage 21 rejects
@@ -214,6 +219,7 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-FILE-SHARE-READ   #x1)
 (defconst nelisp-os-WIN-FILE-SHARE-WRITE  #x2)
 (defconst nelisp-os-WIN-FILE-SHARE-DELETE #x4)
+(defconst nelisp-os-WIN-FILE-LIST-DIRECTORY #x1)
 (defconst nelisp-os-WIN-CREATE-NEW        1)
 (defconst nelisp-os-WIN-CREATE-ALWAYS     2)
 (defconst nelisp-os-WIN-OPEN-EXISTING     3)
@@ -221,6 +227,27 @@ Linux/BSD).  When nil, fall back to `nelisp-os--libc-call' libc bindings
 (defconst nelisp-os-WIN-TRUNCATE-EXISTING 5)
 (defconst nelisp-os-WIN-FILE-ATTRIBUTE-NORMAL #x80)
 (defconst nelisp-os-WIN-FILE-ATTRIBUTE-DIRECTORY #x10)
+(defconst nelisp-os-WIN-FILE-FLAG-BACKUP-SEMANTICS #x02000000)
+(defconst nelisp-os-WIN-FILE-FLAG-OVERLAPPED #x40000000)
+(defconst nelisp-os-WIN-ERROR-IO-INCOMPLETE 996)
+(defconst nelisp-os-WIN-ERROR-IO-PENDING 997)
+
+;; Windows ReadDirectoryChangesW constants.
+(defconst nelisp-os-WIN-FILE-NOTIFY-CHANGE-FILE-NAME #x1)
+(defconst nelisp-os-WIN-FILE-NOTIFY-CHANGE-DIR-NAME #x2)
+(defconst nelisp-os-WIN-FILE-NOTIFY-CHANGE-ATTRIBUTES #x4)
+(defconst nelisp-os-WIN-FILE-NOTIFY-CHANGE-SIZE #x8)
+(defconst nelisp-os-WIN-FILE-NOTIFY-CHANGE-LAST-WRITE #x10)
+(defconst nelisp-os-WIN-FILE-NOTIFY-CHANGE-CREATION #x40)
+(defconst nelisp-os-WIN-FILE-NOTIFY-CHANGE-SECURITY #x100)
+(defconst nelisp-os-WIN-FILE-ACTION-ADDED 1)
+(defconst nelisp-os-WIN-FILE-ACTION-REMOVED 2)
+(defconst nelisp-os-WIN-FILE-ACTION-MODIFIED 3)
+(defconst nelisp-os-WIN-FILE-ACTION-RENAMED-OLD-NAME 4)
+(defconst nelisp-os-WIN-FILE-ACTION-RENAMED-NEW-NAME 5)
+(defconst nelisp-os-WIN-INOTIFY-BUFFER-SIZE 4096)
+(defconst nelisp-os-WIN-OVERLAPPED-SIZE 32)
+(defconst nelisp-os-WIN-OVERLAPPED-HEVENT-OFFSET 24)
 
 ;; Windows virtual memory constants.
 (defconst nelisp-os-WIN-MEM-COMMIT  #x1000)
@@ -669,6 +696,8 @@ FLAGS are POSIX-style status flags tracked for fcntl compatibility."
   "Remove Windows inotify-specific state tracked for FD."
   (let ((cell (assq fd nelisp-os--windows-inotify-table)))
     (when cell
+      (dolist (watch (aref (cdr cell) 1))
+        (nelisp-os--windows-inotify-close-watch watch))
       (setq nelisp-os--windows-inotify-table
             (delq cell nelisp-os--windows-inotify-table)))))
 
@@ -2717,6 +2746,10 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-SOCK-NONBLOCK 2048)        ; 0o4000 — OR-able into SOCK_*
 (defconst nelisp-os-SOCK-CLOEXEC  524288)      ; 0o2000000 — OR-able into SOCK_*
 
+(defconst nelisp-os-SHUT-RD   0)
+(defconst nelisp-os-SHUT-WR   1)
+(defconst nelisp-os-SHUT-RDWR 2)
+
 (defconst nelisp-os-IPPROTO-IP   0)
 (defconst nelisp-os-IPPROTO-TCP  6)
 (defconst nelisp-os-IPPROTO-UDP 17)
@@ -3160,6 +3193,8 @@ Winsock socket mode while keeping `F_GETFL' coherent for the new fd."
 
 (defconst nelisp-os--AF-INET 2)
 (defconst nelisp-os--sockaddr-in-len 16)
+(defconst nelisp-os--sockaddr-in6-len 28)
+(defconst nelisp-os--sockaddr-in6-scoped-len 28)   ; sockaddr_in6 with scope_id
 (defconst nelisp-os--pollfd-len 8)
 (defconst nelisp-os--windows-wsapollfd-len 16)
 
@@ -3449,6 +3484,312 @@ Returns the option value as a signed 32-bit integer."
         (nelisp-os--free val-buf)
         (nelisp-os--free len-buf)))))
 
+(defun nelisp-os--check-shutdown-how (how)
+  "Signal EINVAL unless HOW is a supported shutdown direction."
+  (unless (memq how (list nelisp-os-SHUT-RD
+                          nelisp-os-SHUT-WR
+                          nelisp-os-SHUT-RDWR))
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  how)
+
+(defun nelisp-os--windows-shutdown (fd how)
+  "Windows implementation of `nelisp-os-shutdown' through Winsock."
+  (let ((r (nelisp-os--libc-call
+            "ws2_32" "shutdown"
+            [:sint32 :pointer :sint32]
+            (nelisp-os--windows-socket-for-fd fd)
+            (nelisp-os--check-shutdown-how how))))
+    (if (= r -1)
+        (nelisp-os--windows-winsock-error-signal)
+      r)))
+
+(defun nelisp-os-shutdown (fd how)
+  "POSIX shutdown(2) for socket FD.
+HOW is one of `nelisp-os-SHUT-RD', `nelisp-os-SHUT-WR', or
+`nelisp-os-SHUT-RDWR'.  Returns 0 on success."
+  (if (nelisp-os--windows-p)
+      (nelisp-os--windows-shutdown fd how)
+    (let ((r (nelisp-os--libc-call
+              "libc" "shutdown"
+              [:sint32 :sint32 :sint32]
+              fd
+              (nelisp-os--check-shutdown-how how))))
+      (if (= r -1)
+          (nelisp-os--ffi-errno-signal)
+        r))))
+
+(defun nelisp-os--sendto-inet-with-socket (socket payload host-int port flags)
+  "Send PAYLOAD to IPv4 HOST-INT:PORT using SOCKET."
+  (let ((addr-buf (nelisp-os--alloc nelisp-os--sockaddr-in-len))
+        (payload-buf (nelisp-os--alloc (max 1 (length payload)))))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in addr-buf host-int port)
+          (nelisp-os--write-bytes payload-buf payload)
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "sendto"
+                        [:sint32 :pointer :pointer :sint32 :sint32
+                         :pointer :sint32]
+                        socket payload-buf (length payload) flags
+                        addr-buf nelisp-os--sockaddr-in-len)
+                     (nelisp-os--libc-call
+                      "libc" "sendto"
+                      [:sint32 :sint32 :pointer :uint32 :sint32
+                       :pointer :uint32]
+                      socket payload-buf (length payload) flags
+                      addr-buf nelisp-os--sockaddr-in-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
+      (nelisp-os--free addr-buf)
+      (nelisp-os--free payload-buf))))
+
+(defun nelisp-os-sendto-inet (fd payload host-int port &optional flags)
+  "POSIX sendto(2) for AF_INET datagrams.
+Send string PAYLOAD to HOST-INT:PORT.  FLAGS defaults to 0.  Returns the
+number of bytes sent."
+  (let ((flags (or flags 0)))
+    (if (nelisp-os--windows-p)
+        (nelisp-os--sendto-inet-with-socket
+         (nelisp-os--windows-socket-for-fd fd)
+         payload host-int port flags)
+      (nelisp-os--sendto-inet-with-socket fd payload host-int port flags))))
+
+(defun nelisp-os--recvfrom-inet-with-socket (socket max-bytes flags)
+  "Receive up to MAX-BYTES from SOCKET and decode an IPv4 peer address."
+  (when (< max-bytes 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((payload-buf (nelisp-os--alloc max-bytes))
+        (addr-buf (nelisp-os--alloc nelisp-os--sockaddr-in-len))
+        (len-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in-len)
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "recvfrom"
+                        [:sint32 :pointer :pointer :sint32 :sint32
+                         :pointer :pointer]
+                        socket payload-buf max-bytes flags
+                        addr-buf len-buf)
+                     (nelisp-os--libc-call
+                      "libc" "recvfrom"
+                      [:sint32 :sint32 :pointer :uint32 :sint32
+                       :pointer :pointer]
+                      socket payload-buf max-bytes flags
+                      addr-buf len-buf))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t
+              (let ((peer (nelisp-os--decode-sockaddr-in addr-buf)))
+                (list (nelisp-os--read-bytes payload-buf r)
+                      (car peer)
+                      (cdr peer)))))))
+      (nelisp-os--free payload-buf)
+      (nelisp-os--free addr-buf)
+      (nelisp-os--free len-buf))))
+
+(defun nelisp-os-recvfrom-inet (fd max-bytes &optional flags)
+  "POSIX recvfrom(2) for AF_INET datagrams.
+Receive up to MAX-BYTES and return (PAYLOAD HOST-INT PORT).  FLAGS
+defaults to 0."
+  (let ((flags (or flags 0)))
+    (if (nelisp-os--windows-p)
+        (nelisp-os--recvfrom-inet-with-socket
+         (nelisp-os--windows-socket-for-fd fd)
+         max-bytes flags)
+      (nelisp-os--recvfrom-inet-with-socket fd max-bytes flags))))
+
+(defun nelisp-os--sendto-inet6-with-socket (socket payload groups port flags)
+  "Send PAYLOAD to IPv6 GROUPS:PORT using SOCKET."
+  (let ((addr-buf (nelisp-os--alloc nelisp-os--sockaddr-in6-len))
+        (payload-buf (nelisp-os--alloc (max 1 (length payload)))))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in6 addr-buf groups port)
+          (nelisp-os--write-bytes payload-buf payload)
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "sendto"
+                        [:sint32 :pointer :pointer :sint32 :sint32
+                         :pointer :sint32]
+                        socket payload-buf (length payload) flags
+                        addr-buf nelisp-os--sockaddr-in6-len)
+                     (nelisp-os--libc-call
+                      "libc" "sendto"
+                      [:sint32 :sint32 :pointer :uint32 :sint32
+                       :pointer :uint32]
+                      socket payload-buf (length payload) flags
+                      addr-buf nelisp-os--sockaddr-in6-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
+      (nelisp-os--free addr-buf)
+      (nelisp-os--free payload-buf))))
+
+(defun nelisp-os-sendto-inet6 (fd payload groups port &optional flags)
+  "POSIX sendto(2) for AF_INET6 datagrams.
+Send string PAYLOAD to GROUPS:PORT.  GROUPS is the 8-element IPv6 group
+list used by `nelisp-os-bind-inet6'.  FLAGS defaults to 0.  Returns the
+number of bytes sent."
+  (let ((flags (or flags 0)))
+    (if (nelisp-os--windows-p)
+        (nelisp-os--sendto-inet6-with-socket
+         (nelisp-os--windows-socket-for-fd fd)
+         payload groups port flags)
+      (nelisp-os--sendto-inet6-with-socket fd payload groups port flags))))
+
+(defun nelisp-os--recvfrom-inet6-with-socket (socket max-bytes flags)
+  "Receive up to MAX-BYTES from SOCKET and decode an IPv6 peer address."
+  (when (< max-bytes 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((payload-buf (nelisp-os--alloc max-bytes))
+        (addr-buf (nelisp-os--alloc nelisp-os--sockaddr-in6-len))
+        (len-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-len)
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "recvfrom"
+                        [:sint32 :pointer :pointer :sint32 :sint32
+                         :pointer :pointer]
+                        socket payload-buf max-bytes flags
+                        addr-buf len-buf)
+                     (nelisp-os--libc-call
+                      "libc" "recvfrom"
+                      [:sint32 :sint32 :pointer :uint32 :sint32
+                       :pointer :pointer]
+                      socket payload-buf max-bytes flags
+                      addr-buf len-buf))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t
+              (let ((peer (nelisp-os--decode-sockaddr-in6 addr-buf)))
+                (list (nelisp-os--read-bytes payload-buf r)
+                      (car peer)
+                      (cdr peer)))))))
+      (nelisp-os--free payload-buf)
+      (nelisp-os--free addr-buf)
+      (nelisp-os--free len-buf))))
+
+(defun nelisp-os-recvfrom-inet6 (fd max-bytes &optional flags)
+  "POSIX recvfrom(2) for AF_INET6 datagrams.
+Receive up to MAX-BYTES and return (PAYLOAD GROUPS PORT).  FLAGS
+defaults to 0."
+  (let ((flags (or flags 0)))
+    (if (nelisp-os--windows-p)
+        (nelisp-os--recvfrom-inet6-with-socket
+         (nelisp-os--windows-socket-for-fd fd)
+         max-bytes flags)
+      (nelisp-os--recvfrom-inet6-with-socket fd max-bytes flags))))
+
+(defun nelisp-os--sendto-inet6-scoped-with-socket
+    (socket payload groups port flowinfo scope-id flags)
+  "Send PAYLOAD to scoped IPv6 GROUPS:PORT using SOCKET."
+  (let ((addr-buf (nelisp-os--alloc nelisp-os--sockaddr-in6-scoped-len))
+        (payload-buf (nelisp-os--alloc (max 1 (length payload)))))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in6-scoped
+           addr-buf groups port flowinfo scope-id)
+          (nelisp-os--write-bytes payload-buf payload)
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "sendto"
+                        [:sint32 :pointer :pointer :sint32 :sint32
+                         :pointer :sint32]
+                        socket payload-buf (length payload) flags
+                        addr-buf nelisp-os--sockaddr-in6-scoped-len)
+                     (nelisp-os--libc-call
+                      "libc" "sendto"
+                      [:sint32 :sint32 :pointer :uint32 :sint32
+                       :pointer :uint32]
+                      socket payload-buf (length payload) flags
+                      addr-buf nelisp-os--sockaddr-in6-scoped-len))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t r))))
+      (nelisp-os--free addr-buf)
+      (nelisp-os--free payload-buf))))
+
+(defun nelisp-os-sendto-inet6-scoped
+    (fd payload groups port flowinfo scope-id &optional flags)
+  "POSIX sendto(2) for scoped AF_INET6 datagrams.
+Send string PAYLOAD to GROUPS:PORT/FLOWINFO/SCOPE-ID.  GROUPS is the
+8-element IPv6 group list used by `nelisp-os-bind-inet6'.  FLAGS defaults
+to 0.  Returns the number of bytes sent."
+  (let ((flags (or flags 0)))
+    (if (nelisp-os--windows-p)
+        (nelisp-os--sendto-inet6-scoped-with-socket
+         (nelisp-os--windows-socket-for-fd fd)
+         payload groups port flowinfo scope-id flags)
+      (nelisp-os--sendto-inet6-scoped-with-socket
+       fd payload groups port flowinfo scope-id flags))))
+
+(defun nelisp-os--recvfrom-inet6-scoped-with-socket
+    (socket max-bytes flags)
+  "Receive up to MAX-BYTES from SOCKET and decode a scoped IPv6 peer."
+  (when (< max-bytes 0)
+    (signal 'nelisp-os-error (list 22))) ; EINVAL
+  (let ((payload-buf (nelisp-os--alloc max-bytes))
+        (addr-buf (nelisp-os--alloc nelisp-os--sockaddr-in6-scoped-len))
+        (len-buf (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-scoped-len)
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" "recvfrom"
+                        [:sint32 :pointer :pointer :sint32 :sint32
+                         :pointer :pointer]
+                        socket payload-buf max-bytes flags
+                        addr-buf len-buf)
+                     (nelisp-os--libc-call
+                      "libc" "recvfrom"
+                      [:sint32 :sint32 :pointer :uint32 :sint32
+                       :pointer :pointer]
+                      socket payload-buf max-bytes flags
+                      addr-buf len-buf))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t
+              (let ((peer (nelisp-os--decode-sockaddr-in6-scoped addr-buf)))
+                (cons (nelisp-os--read-bytes payload-buf r) peer))))))
+      (nelisp-os--free payload-buf)
+      (nelisp-os--free addr-buf)
+      (nelisp-os--free len-buf))))
+
+(defun nelisp-os-recvfrom-inet6-scoped (fd max-bytes &optional flags)
+  "POSIX recvfrom(2) for scoped AF_INET6 datagrams.
+Receive up to MAX-BYTES and return
+(PAYLOAD GROUPS PORT FLOWINFO SCOPE-ID).  FLAGS defaults to 0."
+  (let ((flags (or flags 0)))
+    (if (nelisp-os--windows-p)
+        (nelisp-os--recvfrom-inet6-scoped-with-socket
+         (nelisp-os--windows-socket-for-fd fd)
+         max-bytes flags)
+      (nelisp-os--recvfrom-inet6-scoped-with-socket fd max-bytes flags))))
+
 (defun nelisp-os-bind-inet (fd host-int port)
   "POSIX bind(2) for AF_INET.  HOST-INT is a 32-bit IPv4 address in
 host byte order (e.g. `nelisp-os-INADDR-LOOPBACK').  PORT is a
@@ -3603,6 +3944,7 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
 
 (defun nelisp-os--windows-inotify-revents (fd events)
   "Return synthetic poll revents for Windows inotify-compatible FD."
+  (nelisp-os--windows-inotify-pump fd)
   (let* ((state (cdr (nelisp-os--windows-inotify-cell fd)))
          (queue (aref state 2)))
     (if (and queue (/= (logand events nelisp-os-POLLIN) 0))
@@ -3725,7 +4067,6 @@ blocks indefinitely; 0 polls without blocking."
 ;; ---------------------------------------------------------------------------
 
 (defconst nelisp-os--sockaddr-un-len 110)
-(defconst nelisp-os--sockaddr-in6-len 28)
 
 (defun nelisp-os--encode-sockaddr-un (buf path)
   "Populate BUF (= 110-byte zeroed `nelisp-os--alloc') with sockaddr_un for
@@ -3762,9 +4103,13 @@ Return the addrlen (= 2 + 1 + bytes)."
 (defun nelisp-os--windows-abstract-unix-path (name)
   "Return a filesystem AF_UNIX path for Windows abstract socket NAME."
   (nelisp-os--check-unix-abstract-name name)
-  (let ((path (expand-file-name
-               (concat "nl-" (secure-hash 'sha1 name) ".sock")
-               (nelisp-os--windows-abstract-unix-base-dir))))
+  (let* ((hash (secure-hash 'sha1 name))
+         ;; Windows AF_UNIX still has a small sun_path budget.  Keep enough
+         ;; hash bits for practical uniqueness while leaving room for Temp dirs.
+         (short-hash (substring hash 0 20))
+         (path (expand-file-name
+                (concat "nl-" short-hash ".sock")
+                (nelisp-os--windows-abstract-unix-base-dir))))
     (when (> (string-bytes path) (1- nelisp-os-SUN-PATH-MAX))
       (signal 'nelisp-os-error (list 36))) ; ENAMETOOLONG
     path))
@@ -4115,6 +4460,210 @@ zero; pass FLAGS = 0 unless you know better."
       nelisp-os-O-NONBLOCK
     0))
 
+(defun nelisp-os--windows-inotify-notify-mask (mask)
+  "Return a ReadDirectoryChangesW filter for inotify MASK."
+  (let ((out 0))
+    (when (/= (logand mask (logior nelisp-os-IN-CREATE
+                                   nelisp-os-IN-DELETE
+                                   nelisp-os-IN-MOVED-FROM
+                                   nelisp-os-IN-MOVED-TO))
+              0)
+      (setq out (logior out
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-FILE-NAME
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-DIR-NAME)))
+    (when (/= (logand mask nelisp-os-IN-ATTRIB) 0)
+      (setq out (logior out
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-ATTRIBUTES
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-SECURITY)))
+    (when (/= (logand mask nelisp-os-IN-MODIFY) 0)
+      (setq out (logior out
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-SIZE
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-LAST-WRITE)))
+    (when (= out 0)
+      (setq out (logior nelisp-os-WIN-FILE-NOTIFY-CHANGE-FILE-NAME
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-DIR-NAME
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-ATTRIBUTES
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-SIZE
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-LAST-WRITE
+                        nelisp-os-WIN-FILE-NOTIFY-CHANGE-CREATION)))
+    out))
+
+(defun nelisp-os--windows-inotify-action-mask (action)
+  "Translate a Windows FILE_ACTION ACTION to an inotify event mask."
+  (cond
+   ((= action nelisp-os-WIN-FILE-ACTION-ADDED) nelisp-os-IN-CREATE)
+   ((= action nelisp-os-WIN-FILE-ACTION-REMOVED) nelisp-os-IN-DELETE)
+   ((= action nelisp-os-WIN-FILE-ACTION-MODIFIED) nelisp-os-IN-MODIFY)
+   ((= action nelisp-os-WIN-FILE-ACTION-RENAMED-OLD-NAME)
+    nelisp-os-IN-MOVED-FROM)
+   ((= action nelisp-os-WIN-FILE-ACTION-RENAMED-NEW-NAME)
+    nelisp-os-IN-MOVED-TO)
+   (t nelisp-os-IN-ATTRIB)))
+
+(defun nelisp-os--windows-inotify-read-utf16le-name (buf off nbytes)
+  "Read a FILE_NOTIFY_INFORMATION UTF-16LE name from BUF at OFF."
+  (let ((idx 0)
+        (chars nil))
+    (while (< idx nbytes)
+      (let ((unit (nelisp-os-read-u16 buf (+ off idx))))
+        (unless (= unit 0)
+          (push (unibyte-string (if (and (>= unit 0) (< unit 128))
+                                    unit
+                                  ??))
+                chars)))
+      (setq idx (+ idx 2)))
+    (apply #'concat (nreverse chars))))
+
+(defun nelisp-os--windows-inotify-open-watch (path)
+  "Open PATH as an overlapped directory watch HANDLE."
+  (let ((path-buf nil))
+    (unwind-protect
+        (progn
+          (setq path-buf (nelisp-os--windows-alloc-utf16le-z path))
+          (let ((handle (nelisp-os--libc-call
+                         "kernel32" "CreateFileW"
+                         [:pointer :pointer :uint32 :uint32 :pointer
+                          :uint32 :uint32 :pointer]
+                         path-buf
+                         nelisp-os-WIN-FILE-LIST-DIRECTORY
+                         (logior nelisp-os-WIN-FILE-SHARE-READ
+                                 nelisp-os-WIN-FILE-SHARE-WRITE
+                                 nelisp-os-WIN-FILE-SHARE-DELETE)
+                         0
+                         nelisp-os-WIN-OPEN-EXISTING
+                         (logior nelisp-os-WIN-FILE-FLAG-BACKUP-SEMANTICS
+                                 nelisp-os-WIN-FILE-FLAG-OVERLAPPED)
+                         0)))
+            (if (or (= handle 0) (= handle -1))
+                (nelisp-os--windows-ffi-error-signal)
+              handle)))
+      (when path-buf
+        (nelisp-os--free path-buf)))))
+
+(defun nelisp-os--windows-inotify-watch-handle (watch)
+  "Return native directory HANDLE tracked in WATCH, or nil."
+  (nth 3 watch))
+
+(defun nelisp-os--windows-inotify-watch-buffer (watch)
+  "Return native event buffer tracked in WATCH, or nil."
+  (nth 4 watch))
+
+(defun nelisp-os--windows-inotify-watch-overlapped (watch)
+  "Return OVERLAPPED buffer tracked in WATCH, or nil."
+  (nth 5 watch))
+
+(defun nelisp-os--windows-inotify-watch-pending-p (watch)
+  "Return non-nil when WATCH has an outstanding native read."
+  (nth 6 watch))
+
+(defun nelisp-os--windows-inotify-set-pending (watch value)
+  "Record WATCH native read pending state as VALUE."
+  (setcar (nthcdr 6 watch) value))
+
+(defun nelisp-os--windows-inotify-start-watch (event-handle watch)
+  "Start an overlapped ReadDirectoryChangesW operation for WATCH."
+  (let ((handle (nelisp-os--windows-inotify-watch-handle watch))
+        (buf (nelisp-os--windows-inotify-watch-buffer watch))
+        (overlapped (nelisp-os--windows-inotify-watch-overlapped watch)))
+    (when (and handle buf overlapped)
+      (nelisp-os--libc-call "kernel32" "ResetEvent" [:sint32 :pointer]
+                            event-handle)
+      (let ((ok (nelisp-os--libc-call
+                 "kernel32" "ReadDirectoryChangesW"
+                 [:sint32 :pointer :pointer :uint32 :sint32 :uint32
+                  :pointer :pointer :pointer]
+                 handle
+                 buf
+                 nelisp-os-WIN-INOTIFY-BUFFER-SIZE
+                 0
+                 (nelisp-os--windows-inotify-notify-mask (nth 2 watch))
+                 0
+                 overlapped
+                 0)))
+        (if (/= ok 0)
+            (nelisp-os--windows-inotify-set-pending watch t)
+          (let ((err (nelisp-os--libc-call
+                      "kernel32" "GetLastError" [:uint32])))
+            (if (= err nelisp-os-WIN-ERROR-IO-PENDING)
+                (nelisp-os--windows-inotify-set-pending watch t)
+              (signal 'nelisp-os-error (list err)))))))))
+
+(defun nelisp-os--windows-inotify-parse-native-events (watch nbytes)
+  "Return normalized inotify events parsed from native WATCH buffer."
+  (let ((wd (car watch))
+        (mask (nth 2 watch))
+        (buf (nelisp-os--windows-inotify-watch-buffer watch))
+        (off 0)
+        (events nil)
+        (done nil))
+    (while (and (not done) (< off nbytes))
+      (let* ((next (nelisp-os-read-u32 buf off))
+             (action (nelisp-os-read-u32 buf (+ off 4)))
+             (name-len (nelisp-os-read-u32 buf (+ off 8)))
+             (ev-mask (logand (nelisp-os--windows-inotify-action-mask action)
+                              mask))
+             (name (nelisp-os--windows-inotify-read-utf16le-name
+                    buf (+ off 12) name-len)))
+        (when (/= ev-mask 0)
+          (push (list wd ev-mask 0 name) events))
+        (if (= next 0)
+            (setq done t)
+          (setq off (+ off next)))))
+    (nreverse events)))
+
+(defun nelisp-os--windows-inotify-pump (fd)
+  "Drain completed native directory changes for Windows inotify FD into queue."
+  (let* ((cell (nelisp-os--windows-inotify-cell fd))
+         (state (cdr cell))
+         (event-handle (nelisp-os--windows-handle-for-fd fd))
+         (watches (aref state 1)))
+    (dolist (watch watches)
+      (when (and (nelisp-os--windows-inotify-watch-pending-p watch)
+                 (nelisp-os--windows-inotify-watch-handle watch))
+        (let ((bytes-buf (nelisp-os--alloc 4)))
+          (unwind-protect
+              (let ((ok (nelisp-os--libc-call
+                         "kernel32" "GetOverlappedResult"
+                         [:sint32 :pointer :pointer :pointer :sint32]
+                         (nelisp-os--windows-inotify-watch-handle watch)
+                         (nelisp-os--windows-inotify-watch-overlapped watch)
+                         bytes-buf
+                         0)))
+                (if (= ok 0)
+                    (let ((err (nelisp-os--libc-call
+                                "kernel32" "GetLastError" [:uint32])))
+                      (unless (= err nelisp-os-WIN-ERROR-IO-INCOMPLETE)
+                        (signal 'nelisp-os-error (list err))))
+                  (nelisp-os--windows-inotify-set-pending watch nil)
+                  (let* ((nbytes (nelisp-os-read-u32 bytes-buf 0))
+                         (events
+                          (and (> nbytes 0)
+                               (nelisp-os--windows-inotify-parse-native-events
+                                watch nbytes))))
+                    (when events
+                      (aset state 2 (append (aref state 2) events))
+                      (nelisp-os--libc-call "kernel32" "SetEvent"
+                                            [:sint32 :pointer]
+                                            event-handle))
+                    (nelisp-os--windows-inotify-start-watch
+                     event-handle watch))))
+            (nelisp-os--free bytes-buf)))))))
+
+(defun nelisp-os--windows-inotify-close-watch (watch)
+  "Release native resources tracked by WATCH."
+  (let ((overlapped (nelisp-os--windows-inotify-watch-overlapped watch))
+        (buf (nelisp-os--windows-inotify-watch-buffer watch))
+        (handle (nelisp-os--windows-inotify-watch-handle watch)))
+    (when handle
+      (ignore-errors
+        (nelisp-os--libc-call "kernel32" "CancelIo" [:sint32 :pointer]
+                              handle))
+      (nelisp-os--windows-close-resource handle 'handle))
+    (when overlapped
+      (nelisp-os--free overlapped))
+    (when buf
+      (nelisp-os--free buf))))
+
 (defun nelisp-os--windows-inotify-init (flags)
   "Windows synthetic implementation of `nelisp-os-inotify-init'."
   (let* ((status-flags (nelisp-os--windows-inotify-status-flags flags))
@@ -4142,10 +4691,30 @@ zero; pass FLAGS = 0 unless you know better."
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (let* ((cell (nelisp-os--windows-inotify-cell fd))
          (state (cdr cell))
-         (wd (aref state 0)))
+         (wd (aref state 0))
+         (event-handle (nelisp-os--windows-handle-for-fd fd))
+         (handle nil)
+         (buf nil)
+         (overlapped nil)
+         (watch nil))
     (aset state 0 (1+ wd))
-    (aset state 1 (cons (list wd path mask) (aref state 1)))
-    wd))
+    (condition-case err
+        (progn
+          (setq handle (nelisp-os--windows-inotify-open-watch path))
+          (setq buf (nelisp-os--alloc nelisp-os-WIN-INOTIFY-BUFFER-SIZE))
+          (setq overlapped (nelisp-os--alloc nelisp-os-WIN-OVERLAPPED-SIZE))
+          (nelisp-os-write-i64 overlapped
+                               nelisp-os-WIN-OVERLAPPED-HEVENT-OFFSET
+                               event-handle)
+          (setq watch (list wd path mask handle buf overlapped nil))
+          (nelisp-os--windows-inotify-start-watch event-handle watch)
+          (aset state 1 (cons watch (aref state 1)))
+          wd)
+      (nelisp-os-error
+       (when overlapped (nelisp-os--free overlapped))
+       (when buf (nelisp-os--free buf))
+       (when handle (nelisp-os--windows-close-resource handle 'handle))
+       (signal (car err) (cdr err))))))
 
 (defun nelisp-os--windows-inotify-rm-watch (fd wd)
   "Windows synthetic implementation of `nelisp-os-inotify-rm-watch'."
@@ -4155,6 +4724,7 @@ zero; pass FLAGS = 0 unless you know better."
          (match (assq wd watches)))
     (unless match
       (signal 'nelisp-os-error (list 22))) ; EINVAL
+    (nelisp-os--windows-inotify-close-watch match)
     (aset state 1 (delq match watches))
     0))
 
@@ -4164,6 +4734,7 @@ zero; pass FLAGS = 0 unless you know better."
     (signal 'nelisp-os-error (list 22))) ; EINVAL
   (let* ((cell (nelisp-os--windows-inotify-cell fd))
          (state (cdr cell))
+         (_ (nelisp-os--windows-inotify-pump fd))
          (queue (aref state 2))
          (events nil)
          (n 0))
@@ -4314,6 +4885,7 @@ temporary filesystem AF_UNIX path.  Returns 0 or signals `nelisp-os-error'."
 ;; getsockname / getpeername — three families × two ops = six wrappers.
 ;; `_inet'  → list (HOST-INT PORT)             both host byte order
 ;; `_inet6' → list (HOST6-LIST PORT)            HOST6-LIST = 8 16-bit groups
+;; `_inet6-scoped' → list (HOST6-LIST PORT FLOWINFO SCOPE-ID)
 ;; `_unix'  → string PATH (filesystem) | (abstract . NAME) | "" (anonymous)
 
 (defun nelisp-os--getname-inet (fd is-peer)
@@ -4364,6 +4936,30 @@ temporary filesystem AF_UNIX path.  Returns 0 or signals `nelisp-os-error'."
       (nelisp-os--free addr-buf)
       (nelisp-os--free len-buf))))
 
+(defun nelisp-os--getname-inet6-scoped (fd is-peer)
+  (let ((addr-buf (nelisp-os--alloc nelisp-os--sockaddr-in6-scoped-len))
+        (len-buf  (nelisp-os--alloc 4)))
+    (unwind-protect
+        (progn
+          (nelisp-os-write-i32 len-buf 0 nelisp-os--sockaddr-in6-scoped-len)
+          (let ((r (if (nelisp-os--windows-p)
+                       (nelisp-os--libc-call
+                        "ws2_32" (if is-peer "getpeername" "getsockname")
+                        [:sint32 :pointer :pointer :pointer]
+                        (nelisp-os--windows-socket-for-fd fd) addr-buf len-buf)
+                     (nelisp-os--libc-call
+                      "libc" (if is-peer "getpeername" "getsockname")
+                      [:sint32 :sint32 :pointer :pointer]
+                      fd addr-buf len-buf))))
+            (cond
+             ((and (nelisp-os--windows-p) (= r -1))
+              (nelisp-os--windows-winsock-error-signal))
+             ((= r -1)
+              (nelisp-os--ffi-errno-signal))
+             (t (nelisp-os--decode-sockaddr-in6-scoped addr-buf)))))
+      (nelisp-os--free addr-buf)
+      (nelisp-os--free len-buf))))
+
 (defun nelisp-os--getname-unix (fd is-peer)
   (let ((addr-buf (nelisp-os--alloc nelisp-os--sockaddr-un-len))
         (len-buf  (nelisp-os--alloc 4)))
@@ -4390,9 +4986,13 @@ temporary filesystem AF_UNIX path.  Returns 0 or signals `nelisp-os-error'."
 
 (defun nelisp-os-getsockname-inet  (fd) (nelisp-os--getname-inet  fd nil))
 (defun nelisp-os-getsockname-inet6 (fd) (nelisp-os--getname-inet6 fd nil))
+(defun nelisp-os-getsockname-inet6-scoped (fd)
+  (nelisp-os--getname-inet6-scoped fd nil))
 (defun nelisp-os-getsockname-unix  (fd) (nelisp-os--getname-unix  fd nil))
 (defun nelisp-os-getpeername-inet  (fd) (nelisp-os--getname-inet  fd t))
 (defun nelisp-os-getpeername-inet6 (fd) (nelisp-os--getname-inet6 fd t))
+(defun nelisp-os-getpeername-inet6-scoped (fd)
+  (nelisp-os--getname-inet6-scoped fd t))
 (defun nelisp-os-getpeername-unix  (fd) (nelisp-os--getname-unix  fd t))
 
 ;; ---------------------------------------------------------------------------
@@ -4964,7 +5564,6 @@ value=MS-as-(sec . nsec)."
 (defconst nelisp-os--cmsghdr-len    16)            ; struct cmsghdr header
 (defconst nelisp-os--cmsg-align      8)            ; CMSG alignment on 64-bit Linux
 (defconst nelisp-os--ucred-len      12)            ; struct ucred
-(defconst nelisp-os--sockaddr-in6-scoped-len 28)   ; sockaddr_in6 with scope_id
 (defconst nelisp-os--sizeof-fd       4)            ; sizeof(int) on Linux LP64
 
 ;; ----- cmsg helpers (CMSG_LEN / CMSG_SPACE re-implementation) -----
