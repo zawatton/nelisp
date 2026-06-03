@@ -40,7 +40,8 @@
 
 (ert-deftest nelisp-standalone-target-cache-is-target-qualified ()
   "Unit cache paths include the target name to avoid ABI mixing."
-  (let ((base (file-name-as-directory nelisp-standalone--cache-dir)))
+  (let ((base (file-name-as-directory nelisp-standalone--cache-dir))
+        (nelisp-standalone--windows-arena-base #x70000000))
     (should (string-prefix-p
              base
              (nelisp-standalone--target-cache-dir 'linux-x86_64)))
@@ -49,7 +50,7 @@
              (directory-file-name
               (nelisp-standalone--target-cache-dir 'linux-x86_64))))
     (should (string-suffix-p
-             "windows-x86_64"
+             "windows-x86_64-arena-70000000"
              (directory-file-name
               (nelisp-standalone--target-cache-dir 'windows-x86_64))))))
 
@@ -99,7 +100,8 @@
 
 (ert-deftest nelisp-standalone-target-windows-arena-commits-64m ()
   "Windows arena avoids a large upfront commit in VirtualAlloc."
-  (let ((nelisp-standalone--target 'windows-x86_64))
+  (let ((nelisp-standalone--target 'windows-x86_64)
+        (nelisp-standalone--windows-arena-base #x70000000))
     (cl-labels ((tree-member-p
                  (needle tree)
                  (cond
@@ -109,7 +111,7 @@
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(extern-call VirtualAlloc 268435456 #x4000000 12288 4)
+                 '(extern-call VirtualAlloc #x70000000 #x4000000 12288 4)
                  arena))
         (should-not (tree-member-p
                      '(extern-call VirtualAlloc 268435456 #x10000000 12288 4)
@@ -117,6 +119,19 @@
         (should-not (tree-member-p
                      '(extern-call VirtualAlloc 268435456 #x40000000 12288 4)
                      arena))))))
+
+(ert-deftest nelisp-standalone-target-windows-rebases-arena-slots ()
+  "Windows source rebase moves all fixed arena metadata slots together."
+  (let ((nelisp-standalone--target 'windows-x86_64)
+        (nelisp-standalone--windows-arena-base #x70000000))
+    (should (equal
+             (nelisp-standalone--windows-rebase-arena-source
+              '(seq (ptr-write-u64 268435472 0 1)
+                    (atomic-fetch-add 268435544 1)
+                    (ptr-write-u64 4096 0 268435456)))
+             '(seq (ptr-write-u64 #x70000010 0 1)
+                   (atomic-fetch-add #x70000058 1)
+                   (ptr-write-u64 4096 0 #x70000000))))))
 
 (ert-deftest nelisp-standalone-target-windows-reserves-1g-stack ()
   "Windows standalone reserves a Linux-trampoline-sized native stack."

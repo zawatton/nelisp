@@ -64,6 +64,26 @@ Defaults to `linux-x86_64' for backwards compatibility.  Windows-native builds
 must opt in with NELISP_STANDALONE_TARGET=windows-x86_64 so Windows-hosted ELF
 cache builds do not accidentally mix Win64 units into the SysV cache.")
 
+(defun nelisp-standalone--parse-int-env (name default)
+  "Parse integer environment variable NAME, returning DEFAULT when unset.
+Accepts decimal strings and 0x-prefixed hexadecimal strings."
+  (let ((s (getenv name)))
+    (if (and s (> (length s) 0))
+        (if (string-match-p "\\`0[xX][0-9a-fA-F]+\\'" s)
+            (string-to-number (substring s 2) 16)
+          (string-to-number s))
+      default)))
+
+(defconst nelisp-standalone--arena-base #x10000000
+  "Default standalone arena base used by the Linux/SysV path.")
+
+(defconst nelisp-standalone--windows-arena-base
+  (nelisp-standalone--parse-int-env
+   "NELISP_STANDALONE_WINDOWS_ARENA_BASE" #x70000000)
+  "Windows standalone arena base.
+Can be overridden with NELISP_STANDALONE_WINDOWS_ARENA_BASE.  Keep the default
+below 2 GiB so Phase47's current signed imm32 materialization remains valid.")
+
 (defun nelisp-standalone--target-abi (&optional target)
   "Return the compiler ABI for standalone TARGET."
   (pcase (or target nelisp-standalone--target)
@@ -73,8 +93,13 @@ cache builds do not accidentally mix Win64 units into the SysV cache.")
 
 (defun nelisp-standalone--target-cache-dir (&optional target)
   "Return the per-target standalone unit cache directory."
-  (expand-file-name (symbol-name (or target nelisp-standalone--target))
-                    nelisp-standalone--cache-dir))
+  (let ((target (or target nelisp-standalone--target)))
+    (expand-file-name
+     (if (eq target 'windows-x86_64)
+         (format "windows-x86_64-arena-%x"
+                 nelisp-standalone--windows-arena-base)
+       (symbol-name target))
+     nelisp-standalone--cache-dir)))
 
 (defconst nelisp-standalone--out
   (expand-file-name "target/nelisp-standalone-eval" nelisp-standalone--repo-root)
@@ -109,6 +134,39 @@ cache builds do not accidentally mix Win64 units into the SysV cache.")
                     '("nelisp-phase47-compiler" "nelisp-static-linker"
                       "nelisp-elf-write" "nelisp-cc-runtime"))))
 
+(defconst nelisp-standalone--arena-rebase-span #x1000
+  "Number of arena-base-relative low metadata bytes rebased for Windows.")
+
+(defun nelisp-standalone--windows-rebase-arena-source (source)
+  "Rebase fixed arena metadata constants in SOURCE for Windows.
+Standalone glue still uses a compact fixed metadata block for bump, signal,
+GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
+0x10000000 range, so the Windows target moves numeric atoms in
+[`nelisp-standalone--arena-base', + span) to
+`nelisp-standalone--windows-arena-base' before Phase47 parses the source."
+  (if (or (not (eq nelisp-standalone--target 'windows-x86_64))
+          (= nelisp-standalone--windows-arena-base
+             nelisp-standalone--arena-base))
+      source
+    (cl-labels
+        ((rebased-int
+          (n)
+          (if (and (integerp n)
+                   (<= nelisp-standalone--arena-base n)
+                   (< n (+ nelisp-standalone--arena-base
+                           nelisp-standalone--arena-rebase-span)))
+              (+ nelisp-standalone--windows-arena-base
+                 (- n nelisp-standalone--arena-base))
+            n))
+         (walk
+          (form)
+          (cond
+           ((integerp form) (rebased-int form))
+           ((consp form) (cons (walk (car form)) (walk (cdr form))))
+           (t form))))
+      (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
+        (walk source)))))
+
 ;; ===================================================================
 ;; my-compile-to-unit — Phase47 source -> in-memory link-unit.
 ;; reloc :addend normalized to 0 (the linker uses P = va+offset+4; the
@@ -116,7 +174,8 @@ cache builds do not accidentally mix Win64 units into the SysV cache.")
 ;; ===================================================================
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
-  (let* ((resolved-abi (or abi (nelisp-standalone--target-abi)))
+  (let* ((source (nelisp-standalone--windows-rebase-arena-source source))
+         (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (nelisp-phase47-compiler--label-counter 0)
          (nelisp-phase47-compiler--arch 'x86_64)
          (nelisp-phase47-compiler--allow-external-user-calls t)
@@ -323,11 +382,10 @@ or the toolchain is newer than the cached object."
 
 (defconst nelisp-standalone--windows-arena-size #x4000000
   "Windows standalone fixed arena size.
-The arena still starts at 0x10000000 for the existing pointer constants, but it
-must stop below the PE image base 0x140000000.  Keep the committed mapping at
-64 MiB: Windows `VirtualAlloc' with MEM_COMMIT charges the full range up front,
-unlike Linux's demand-paged mmap, and 1 GiB can fail on normal developer
-machines before the first metadata write.")
+The arena base is `nelisp-standalone--windows-arena-base' after source rebase.
+Keep the committed mapping at 64 MiB: Windows `VirtualAlloc' with MEM_COMMIT
+charges the full range up front, unlike Linux's demand-paged mmap, and 1 GiB can
+fail on normal developer machines before the first metadata write.")
 
 (defconst nelisp-standalone--windows-stack-reserve #x40000000
   "Windows standalone PE stack reserve size.
@@ -337,24 +395,25 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc."
   `(defun nl_arena_init ()
-     (let ((p (extern-call VirtualAlloc 268435456
+     (let ((p (extern-call VirtualAlloc ,nelisp-standalone--windows-arena-base
                            ,nelisp-standalone--windows-arena-size
                            12288 4)))
        (if (= p 0)
            (extern-call ExitProcess 88)
-         (nl_seq2 (ptr-write-u64 268435456 0 256)        ; bump starts at 256
-          (nl_seq2 (ptr-write-u64 268435464 0 0)         ; quit flag
-           (nl_seq2 (ptr-write-u64 268435472 0 0)        ; throw flag
-            (nl_seq2 (ptr-write-u64 268435552 0 0)       ; free-list head
-             (nl_seq2 (ptr-write-u64 268435560 0 0)      ; gc trigger
-              (nl_seq2 (ptr-write-u64 268435568 0 (+ 268435456 256))
-               (nl_seq2 (ptr-write-u64 268435576 0 0)    ; live bytes
-                (nl_seq2 (ptr-write-u64 268435584 0 0)   ; sweep mode
-                 (nl_seq2 (ptr-write-u64 268435592 0 0)  ; mark enabled
-                  (nl_seq2 (ptr-write-u64 268435616 0 1) ; collect disabled
-                   (nl_seq2 (ptr-write-u64 268435624 0 0) ; free-list reuse
-                    (nl_seq2 (ptr-write-u64 268435648 0 0) ; probe off
-                     (nl_seq2 (ptr-write-u64 268435656 0 0)
+         (nl_seq2 (ptr-write-u64 ,nelisp-standalone--windows-arena-base 0 256)
+          (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 8) 0 0)
+           (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 16) 0 0)
+            (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 96) 0 0)
+             (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 104) 0 0)
+              (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 112)
+                                      0 (+ ,nelisp-standalone--windows-arena-base 256))
+               (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 120) 0 0)
+                (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 128) 0 0)
+                 (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 136) 0 0)
+                  (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 160) 0 1)
+                   (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 168) 0 0)
+                    (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 192) 0 0)
+                     (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 200) 0 0)
                               p)))))))))))))))))
 
 (defun nelisp-standalone--target-arena-source ()
