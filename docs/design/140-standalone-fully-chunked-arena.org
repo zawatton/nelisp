@@ -1,6 +1,6 @@
 #+TITLE: Doc 140 - Standalone fully chunked arena
 #+DATE: 2026-06-04
-#+STATUS: DESIGN
+#+STATUS: SHIPPED (linux x86_64); cross-platform fixed-base removal residual
 
 * Goal
 
@@ -18,15 +18,32 @@ The final state is a fully chunked arena:
 
 * Current State
 
-The current standalone arena has been hardened but is not the final design.
+Stage 2-8 are SHIPPED for linux x86_64 (the 1st-class target); macOS/Windows
+keep a fixed base pending their =data-addr= toolchain support (the only
+remaining gap against the Goal).
 
-- Linux currently reserves an 8 GiB arena at =0x10000000=.
-- Linux uses =MAP_FIXED_NOREPLACE=, so address collisions fail with =exit 88=
-  instead of replacing an existing mapping.
-- macOS and Windows use target-specific fixed bases.
+- *Stage 2-3* (chunk descriptors, chunk-aware membership/sweep): SHIPPED.
+  =nl_gc_in_arena= / =nl_gc_sweep= walk the chunk list.
+- *Stage 4-5* (chunk-aware allocation, conservative boundary reclamation):
+  SHIPPED. Allocation grows by adding =nl_os_alloc_chunk= chunks; top-level
+  form boundaries reclaim temporary chunk pressure.
+- *Stage 6* (persistent/temporary generation split): SHIPPED. Chunk 0 carries
+  a persistent =desc.flags= bit; =nl_boundary_reset_tail_chunks= skips
+  persistent chunks so only temporary per-form scratch is reset.
+- *Stage 7* (shrink fixed first chunk): SHIPPED. First chunk = 256 MiB;
+  =NELISP_LINUX_ARENA_SIZE= forces growth; pressure handled by chunk growth.
+- *Stage 8* (fully chunked arena): SHIPPED for linux. Chunk 0 is reserved by
+  =nl_os_alloc_chunk(NULL)= (=mmap= with addr=NULL); the kernel-chosen base
+  lives in the driver-owned =nl_arena_base= bss slot; =chunk-arena-rewrite=
+  turns every former fixed-base metadata immediate into a runtime base load.
+  *Verified at runtime*: the built reader's arena base is an mmap address, not
+  =0x10000000= (chunk-growth smoke + arena-stats).
+- *Residual*: macOS and Windows still use target-specific fixed bases. Windows
+  shares the x86_64 =pc32= reloc and can adopt the same =VirtualAlloc(NULL)= +
+  =chunk-arena-rewrite= path (needs a Windows runtime to execution-verify);
+  macOS-aarch64 first needs an arm64 =data-addr= (ADRP+ADD) primitive (today
+  it signals unsupported in the Phase-47 backend).
 - Arena pressure is observable through =(nelisp--arena-stats)=.
-- GC collection is still disabled in the normal standalone path while the
-  root/mark gap is fixed.
 
 The current pressure tuple is:
 
