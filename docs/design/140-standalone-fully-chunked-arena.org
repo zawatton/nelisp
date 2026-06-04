@@ -1,0 +1,449 @@
+#+TITLE: Doc 140 - Standalone fully chunked arena
+#+DATE: 2026-06-04
+#+STATUS: DESIGN
+
+* Goal
+
+Remove the standalone runtime's dependency on one large fixed virtual arena.
+
+The final state is a fully chunked arena:
+
+- no normal runtime path depends on a platform-specific fixed base address
+- allocation grows by adding chunks
+- GC membership and sweep operate over a chunk list
+- load, =--eval=, and REPL top-level form boundaries can reclaim temporary
+  chunks without dangling values that escaped into the persistent environment
+- Linux, macOS, and Windows share the same allocator and GC model; only the
+  OS chunk reservation primitive is target-specific
+
+* Current State
+
+The current standalone arena has been hardened but is not the final design.
+
+- Linux currently reserves an 8 GiB arena at =0x10000000=.
+- Linux uses =MAP_FIXED_NOREPLACE=, so address collisions fail with =exit 88=
+  instead of replacing an existing mapping.
+- macOS and Windows use target-specific fixed bases.
+- Arena pressure is observable through =(nelisp--arena-stats)=.
+- GC collection is still disabled in the normal standalone path while the
+  root/mark gap is fixed.
+
+The current pressure tuple is:
+
+#+begin_src elisp
+(base size bump-offset used-bytes live-after-last-gc next-trigger
+      free-list-head collect-disabled reuse-disabled)
+#+end_src
+
+This is sufficient to measure pressure while the arena architecture is changed.
+
+* Problem
+
+The single fixed arena combines four concerns that should be separate:
+
+1. metadata storage
+2. address-space reservation
+3. allocation cursor state
+4. GC walking boundaries
+
+Because those concerns are coupled, increasing the reservation size can hide
+pressure but does not fix correctness. A 16 GiB arena is therefore only a last
+resort workaround, not a completion path.
+
+The final design must make pressure visible and bounded by reclamation or chunk
+growth, not by ever larger fixed reservations.
+
+* Non-goals
+
+- Do not implement compacting GC in this phase.
+- Do not move allocated objects between chunks.
+- Do not rely on contiguous virtual address growth.
+- Do not require Windows-only reserve/commit semantics for the common design.
+- Do not re-enable the existing mark/sweep path globally until root handling is
+  proven safe.
+
+* Architecture
+
+** Chunk model
+
+Each chunk is an independently reserved and writable memory region.
+
+Conceptual fields:
+
+| Field | Meaning |
+|-------+---------|
+| =base= | first byte of the chunk mapping |
+| =size= | reserved size in bytes |
+| =cursor= | bump offset within this chunk |
+| =data-start= | first object header in this chunk |
+| =limit= | =base + size= |
+| =flags= | generation and lifecycle bits |
+| =next= | next chunk metadata entry |
+
+The allocator returns object pointers inside a chunk. Object headers remain the
+same 16-byte header used today:
+
+| Offset | Meaning |
+|--------+---------|
+| =-16= | block total size |
+| =-8= | mark word, including free sentinel |
+
+** Metadata ownership
+
+The final metadata must not live at a fixed arena base. Until that is possible,
+the migration keeps the current metadata block as a bootstrap control block and
+adds a chunk table/list to it.
+
+Migration metadata slots should be treated as temporary ABI:
+
+| Slot | Purpose |
+|------+---------|
+| =chunk-head= | first chunk descriptor |
+| =chunk-current= | preferred allocation chunk |
+| =chunk-count= | number of chunks |
+| =chunk-bytes-reserved= | total reserved bytes |
+| =chunk-bytes-used= | total bump-used bytes |
+| =chunk-bytes-reclaimed= | bytes returned or reset at boundaries |
+| =chunk-alloc-failures= | failed OS chunk reservations |
+
+Once all direct fixed metadata references are removed, this control block should
+move into driver-owned global storage and the old fixed base can be deleted.
+
+** Generations
+
+Chunks have a lifecycle class:
+
+| Class | Purpose |
+|-------+---------|
+| =persistent= | boot image, global mirror, definitions, escaped values |
+| =temporary= | per top-level form evaluation scratch |
+| =large= | allocations too large for normal chunks |
+
+The first implementation can use only =persistent= and =temporary=. =large= can
+be added when allocation pressure data shows it is useful.
+
+* Allocation Algorithm
+
+** Initial fixed-first-chunk phase
+
+Start with the current arena as chunk 0:
+
+1. initialize old arena metadata as today
+2. create one chunk descriptor for the existing fixed mapping
+3. set =chunk-head= and =chunk-current= to chunk 0
+4. keep =nl_alloc_bytes= behavior unchanged
+
+This phase is intentionally low risk. It introduces metadata without changing
+allocation behavior.
+
+** Chunk-aware allocation phase
+
+=nl_alloc_bytes(size, align)= becomes:
+
+1. compute =want = nl_block_total(size)=
+2. try exact-fit free-list reuse
+3. try bump allocation in =chunk-current=
+4. if it does not fit, allocate a new chunk
+5. link the new chunk into the chunk list
+6. set =chunk-current= to the new chunk
+7. bump allocate from the new chunk
+8. if the OS allocation fails, return 0 or exit through a controlled failure path
+
+Chunk size policy:
+
+- default normal chunk: 64 MiB initially
+- minimum chunk size: enough for metadata plus one requested block
+- if =want > default chunk size / 2=, allocate a dedicated chunk sized for =want=
+  plus guard slack
+
+The exact numbers should be tuned using =(nelisp--arena-stats)= and smoke data.
+
+* GC Changes
+
+** Membership
+
+Today =nl_gc_in_arena= checks one contiguous range. It must become:
+
+#+begin_src elisp
+(defun nl_gc_in_arena (addr)
+  (nl_chunk_contains_any chunk-head addr))
+#+end_src
+
+A pointer is in-arena when:
+
+- =chunk.base <= addr=
+- =addr < chunk.base + chunk.size=
+
+The function must never read an object header until membership succeeds.
+
+** Sweep
+
+Today =nl_gc_sweep= walks from one =data-start= to one =bump=.
+
+Chunk-aware sweep walks each chunk:
+
+1. for each chunk in =chunk-head= list
+2. set =hdr = chunk.data-start=
+3. set =end = chunk.base + chunk.cursor=
+4. walk object headers until =hdr >= end=
+5. apply existing =nl_gc_sweep_one= logic
+6. move to =chunk.next=
+
+Chunk metadata itself must be marked or classified as persistent so sweep never
+frees it.
+
+** Root enumeration
+
+The root set must include:
+
+- global mirror and function mirror
+- frame stack
+- unbound marker
+- current parsed form
+- current output/result slot
+- reader source string and cursor
+- slot pool
+- builtin symbol scratch
+- runtime image and REPL persistent state
+- any chunk descriptors stored in arena memory
+
+No chunk should be reclaimed until this list is validated by tests.
+
+* Top-level Boundary Reclamation
+
+The runtime needs a boundary model for =--eval=, =--load=, and REPL:
+
+1. before evaluating a top-level form, record the temporary generation state
+2. evaluate the form
+3. detect whether the result or any mutation escaped into persistent state
+4. if no escape occurred, reset or release temporary chunks allocated after the
+   boundary
+5. if escape occurred, promote those chunks to persistent or mark the affected
+   chunks as retained
+
+The existing mutation epoch is useful but not sufficient by itself. It tells us
+that persistent state was modified, not which objects escaped. The first safe
+version should be conservative:
+
+- no mutation and immediate result: reclaim temporary chunks
+- mutation or boxed result: retain or promote temporary chunks
+
+Later versions can deep-copy escaped values into persistent chunks, allowing
+more temporary reclamation.
+
+* Platform Abstraction
+
+Add one target-specific primitive:
+
+#+begin_src elisp
+(nl_os_alloc_chunk size flags)
+#+end_src
+
+Expected result:
+
+- returns base pointer on success
+- returns 0 on failure
+- does not require a fixed address
+- returns page-aligned writable memory
+
+Target mapping:
+
+| Target | Primitive |
+|--------+-----------|
+| Linux x86_64 | =mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)= |
+| macOS arm64 | Darwin =mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)= |
+| Windows x86_64 | =VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)= |
+
+Release can be added later:
+
+#+begin_src elisp
+(nl_os_free_chunk base size)
+#+end_src
+
+During the first safe-reset phase, it is acceptable to reset chunk cursors
+without returning memory to the OS. Actual OS release can follow after chunk
+lifetime is proven.
+
+* Migration Plan
+
+** Stage 1: pressure baseline
+
+- Keep current fixed arena.
+- Add and use =(nelisp--arena-stats)= in smoke tests and manual experiments.
+- Record pressure for:
+  - =--eval=
+  - =--load=
+  - REPL no-args
+  - runtime image commands
+  - larger real load surfaces
+
+Exit criteria:
+
+- pressure output is stable on Linux, macOS, Windows
+- smoke tests assert the stats shape
+
+** Stage 2: chunk descriptors with fixed first chunk
+
+- Add chunk descriptor format.
+- Register current fixed arena as chunk 0.
+- Add stats fields for chunk count and total reserved/used bytes.
+- Do not change allocation behavior yet.
+
+Exit criteria:
+
+- existing standalone tests pass
+- stats report =chunk-count = 1=
+
+** Stage 3: chunk-aware membership and sweep
+
+- Change =nl_gc_in_arena= to check chunk membership.
+- Change =nl_gc_sweep= to walk chunk descriptors.
+- Keep only one chunk active.
+
+Exit criteria:
+
+- GC tests still pass with one chunk
+- no behavior change in reader/eval smoke
+
+** Stage 4: chunk-aware allocation
+
+- Add =nl_os_alloc_chunk= per target.
+- Change =nl_alloc_bytes= to allocate a new chunk when current chunk is full.
+- Keep fixed first chunk as chunk 0.
+
+Exit criteria:
+
+- pressure stress can exceed first chunk without crashing
+- chunk count increases under stress
+- Linux/macOS/Windows parity smoke passes
+
+** Stage 5: conservative boundary reclamation
+
+- Add top-level boundary state.
+- Reclaim temporary chunks only when:
+  - result is immediate
+  - mutation epoch is unchanged
+  - no signal/throw stash is active
+- Retain chunks conservatively otherwise.
+
+Exit criteria:
+
+- repeated pure forms show bounded used bytes
+- definitions and escaped closures remain valid
+- REPL and =--load= preserve persistent values
+
+** Stage 6: persistent/temporary generation split
+
+- Allocate boot image and globals in persistent chunks.
+- Allocate top-level form scratch in temporary chunks.
+- Promote or retain temporary chunks when conservative escape detection says so.
+
+Exit criteria:
+
+- repeated temporary work does not grow persistent pressure
+- escaping values survive across forms
+
+** Stage 7: shrink fixed first chunk
+
+- Reduce first chunk size from 8 GiB to a small bootstrap size.
+- Candidate sizes:
+  - 256 MiB first
+  - 64 MiB after stress coverage improves
+- Ensure overflow allocates a new chunk instead of failing.
+
+Exit criteria:
+
+- Linux/macOS/Windows standalone parity passes with smaller first chunk
+- pressure tests show chunk growth instead of fixed-size dependency
+
+** Stage 8: fully chunked arena
+
+- Allocate chunk 0 through =nl_os_alloc_chunk(NULL)=.
+- Move metadata out of fixed arena slots into driver-owned storage.
+- Remove normal-path fixed bases:
+  - Linux =0x10000000=
+  - Windows arena base
+  - macOS arena base
+
+Exit criteria:
+
+- no normal standalone path contains fixed arena base constants
+- all native smoke and tarball parity tests pass
+- fixed-address path, if retained, is debug-only
+
+* Test Plan
+
+** Unit and generation tests
+
+- target source tests for =nl_os_alloc_chunk= per platform
+- chunk descriptor initialization tests
+- membership tests with two chunks
+- sweep tests with dead/live blocks in separate chunks
+- boundary reset tests:
+  - immediate result reclaims
+  - boxed result retains
+  - mutation retains
+  - definition retains
+
+** Native smoke tests
+
+- =--eval "(nelisp--arena-stats)"=
+- repeated pure =--eval= pressure smoke
+- =--load= multi-form pressure smoke
+- REPL stdin pressure smoke
+- large allocation smoke that forces a second chunk
+- cross-platform tarball verification
+
+** Regression tests
+
+- Linux fixed-base collision must not clobber an existing mapping while the
+  fixed-first-chunk stage still exists.
+- Windows object names remain =.obj=.
+- macOS output remains ad-hoc signed after build.
+- cache identity still passes after chunk metadata changes.
+
+* Risks
+
+** Chunk metadata roots
+
+If chunk descriptors live in arena memory and are not rooted, GC can free the
+metadata it needs to sweep. Early stages should mark metadata persistent or keep
+it in driver-owned storage.
+
+** Conservative retention leaks
+
+The first boundary reclamation pass will retain too much when mutation happens.
+This is acceptable. It is safer than freeing escaped values. Later work can add
+copy-on-escape or precise escape tracking.
+
+** Free-list across chunks
+
+A global free-list can work if every reused pointer is checked by membership.
+However, a per-chunk free-list is easier to reason about and makes chunk release
+safer. The migration may keep the global list temporarily, but final design
+should move toward per-chunk lists.
+
+** Pointer immediates
+
+Current generated code embeds fixed metadata addresses. Fully chunked arena
+requires removing those immediates or routing them through a control block.
+This is the main reason for staged migration.
+
+* Acceptance Criteria
+
+The fixed-address problem is considered solved when:
+
+- =nl_alloc_bytes= can allocate beyond the first chunk by adding chunks
+- =nl_gc_in_arena= and =nl_gc_sweep= are chunk-aware
+- top-level boundary reclamation is safe for immediate non-mutating forms
+- Linux, macOS, and Windows standalone reader/eval smokes pass
+- =stage-d-v3.0 standalone parity= passes
+- no normal runtime path requires the Linux, macOS, or Windows fixed arena base
+
+* Immediate Next Step
+
+Implement Stage 2: chunk descriptors with the current fixed arena registered as
+chunk 0.
+
+This gives later allocator and GC work a concrete data model while preserving
+current runtime behavior.
