@@ -9,6 +9,29 @@
   (§6.2) all IMPLEMENTED 2026-06-04 in =lisp/nelisp-artifact.el=.  Acceptance
   gates 1-4, 7, 8, 9 pass; the remaining gap is general native EXEC for
   builtin/boundary defuns (an in-process standalone mmap loader).
+- *Update 2026-06-05* (branch =feat/doc-140-142-complete=): native EXEC
+  advanced on three fronts.
+  - *calln host-proof SHIPPED*: =nelisp-artifact-native-exec-general= now
+    covers the =nelisp_aot_builtin_calln= vararg lane (test
+    =native-exec-general-builtin-calln-eq=).
+  - *in-process reloc-free SHIPPED*: =e2e-native-exec-neln-artifact-in-process=
+    loads a real reloc-free =.neln= into an mmap'd RX page and runs it via
+    =call-ptr=.
+  - *in-process builtin MECHANISM SHIPPED*:
+    =e2e-native-exec-neln-artifact-call1-in-process= copies =.text=, builds
+    absolute-jump stubs (a plt32 rel32 from mmap(NULL) is out of signed-32
+    range), patches the plt32 relocs to the stubs, emits a raw x86_64
+    trampoline mirroring the host-proof spill-frame ABI, =call-ptr='s the
+    entry and decodes the boxed result -> 42.
+  - *Confirmed*: =nelisp-standalone--reader-units= drops the call1 trap stub
+    and links the REAL =nelisp_aot_builtin_call1= (=reader-real-sf-manifest=),
+    so =addr-of= resolves the real helper in the reader.
+  - *Remaining (gate 6 real-runtime integration)*: the mechanism test uses
+    test-local subset shims (=nelisp-phase47-compile-sexp= builds a minimal
+    binary with no runtime env).  The last step is a baked-in loader in
+    =reader-units= executing a =.neln= against the real =nelisp_aot_builtin_call1=
+    / =nl_alloc_symbol= (live mirror/frames for env-touching builtins); plus
+    the =calln= in-process lane and nelisp-emacs gate 5/6 wiring.
 - *§6.2 =.elc= SHIPPED*: =--kind elc= byte-compiles the source in a CLEAN
   =emacs -Q --batch= subprocess (so NeLisp's own shadowing byte-compiler does
   not intercept it) and emits a GENUINE GNU Emacs-readable =.elc= (the =;ELC=
