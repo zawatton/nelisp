@@ -3034,7 +3034,8 @@ units)."
                                      nelisp-standalone--windows-stack-reserve)))
       ('macos-aarch64
        (nelisp-link-units-macho-exec out units "_main" 'aarch64)
-       (set-file-modes out #o755))
+       (set-file-modes out #o755)
+       (nelisp-standalone--codesign-macos-adhoc out))
       (_
        (nelisp-link-units out units)
        (set-file-modes out #o755)))
@@ -4575,6 +4576,24 @@ genuine general interpreter for the 11 special forms + installed builtins."
             extras (list float-stub) real-sf
             (list sf-cc capture errstub fileio catch-throw gc arena))))
 
+(defun nelisp-standalone--codesign-macos-adhoc (out)
+  "Apply an ad-hoc code signature to OUT for the macos-aarch64 target.
+The native Mach-O writer emits an UNSIGNED MH_EXECUTE; Apple Silicon's
+kernel SIGKILLs any unsigned arm64 binary at exec time, so a fresh build
+is unrunnable until signed.  When the system `codesign' is available we
+sign in place (`codesign -f -s -'); otherwise (e.g. a Linux host
+cross-building the macOS artifact) we warn so the builder can sign on a
+Mac before running.  Re-signing an already-signed binary is harmless."
+  (cond
+   ((not (executable-find "codesign"))
+    (message "[standalone] WARNING: codesign not found; %s is UNSIGNED and \
+will be killed on Apple Silicon.  Run `codesign -f -s - %s' on macOS \
+before executing." out out))
+   ((zerop (call-process "codesign" nil nil nil "-f" "-s" "-" out))
+    (message "[standalone] ad-hoc signed %s" out))
+   (t
+    (error "[standalone] codesign failed for %s" out))))
+
 ;;;###autoload
 (defun nelisp-standalone-build-reader ()
   "Incrementally build the reader-path standalone binary; return its path."
@@ -4589,7 +4608,8 @@ genuine general interpreter for the 11 special forms + installed builtins."
                                      nelisp-standalone--windows-stack-reserve)))
       ('macos-aarch64
        (nelisp-link-units-macho-exec out units "_main" 'aarch64)
-       (set-file-modes out #o755))
+       (set-file-modes out #o755)
+       (nelisp-standalone--codesign-macos-adhoc out))
       (_
        (nelisp-link-units out units)
        (set-file-modes out #o755)))
