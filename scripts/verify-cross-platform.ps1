@@ -55,7 +55,7 @@ function Invoke-WindowsStandaloneInstallSmoke {
         }
 
         $Exe = Join-Path $Prefix "bin\nelisp.exe"
-        $Output = & $Exe eval "(+ 40 2)"
+        $Output = & $Exe --eval "(+ 40 2)"
         $Code = $LASTEXITCODE
         if ($null -eq $Code) {
             $Code = 0
@@ -64,7 +64,7 @@ function Invoke-WindowsStandaloneInstallSmoke {
         if ($Code -ne 0 -or $Text -ne "42") {
             throw ("installed nelisp.exe failed: exit " + $Code + " output " + $Text)
         }
-        Write-Host "[installer] PASS: windows-x86_64 installed bin\nelisp.exe eval -> 42"
+        Write-Host "[installer] PASS: windows-x86_64 installed bin\nelisp.exe --eval -> 42"
     } finally {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $Root
     }

@@ -116,6 +116,32 @@
     (should (string-suffix-p "target/nelisp.exe"
                              (nelisp-standalone--output-path t)))))
 
+(ert-deftest nelisp-standalone-target-reader-cli-uses-long-options ()
+  "The standalone reader exposes Lisp-like no-args REPL plus long options."
+  (let* ((forms (nelisp-standalone--reader-driver-source))
+         (flat (flatten-tree forms)))
+    (cl-labels ((defun-source
+                  (name)
+                  (prin1-to-string
+                   (cl-find-if
+                    (lambda (form)
+                      (and (consp form)
+                           (eq (car form) 'defun)
+                           (eq (cadr form) name)))
+                    forms)))
+                (starts-with-dash-dash-p
+                  (name)
+                  (let ((source (defun-source name)))
+                    (and (string-match-p "(ptr-read-u8 ptr 0) 45" source)
+                         (string-match-p "(ptr-read-u8 ptr 1) 45" source)))))
+      (should (starts-with-dash-dash-p 'nl_cstr_eq_eval))
+      (should (starts-with-dash-dash-p 'nl_cstr_eq_load))
+      (should (starts-with-dash-dash-p 'nl_cstr_eq_repl))
+      (should (starts-with-dash-dash-p 'nl_cstr_eq_embedded))
+      (should (memq 'nl_cstr_eq_help flat))
+      (should-not (memq 'nl_cstr_eq_dash_e flat))
+      (should-not (memq 'nl_cstr_eq_dash_h flat)))))
+
 (ert-deftest nelisp-standalone-target-macos-reader-cli-name-is-short ()
   "The macOS user-facing standalone reader is target/nelisp."
   (let ((nelisp-standalone--target 'macos-aarch64))

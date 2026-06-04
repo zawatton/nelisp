@@ -34,7 +34,7 @@ run_posix_standalone_install_smoke() {
     trap 'rm -rf "$root"' EXIT
     release/stage-d-v3.0/install-v3.sh --from "$(pwd)/dist" --prefix "$prefix"
     set +e
-    output="$("$prefix/bin/nelisp" eval "(+ 40 2)")"
+    output="$("$prefix/bin/nelisp" --eval "(+ 40 2)")"
     code=$?
     set -e
     if [ "$code" -ne 0 ]; then
@@ -47,7 +47,7 @@ run_posix_standalone_install_smoke() {
       printf 'expected: 42\nactual  : %s\n' "$output" >&2
       exit 1
     fi
-    echo "[installer] PASS: $label installed bin/nelisp eval -> 42"
+    echo "[installer] PASS: $label installed bin/nelisp --eval -> 42"
   )
 }
 

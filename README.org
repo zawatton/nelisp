@@ -46,7 +46,8 @@ v2.0 (2026-05-22) ships:
   compiled concurrently* (=fork(2)= workers).  All CI-gated.  See
   =Standalone self-host & parallel build=.
 - *REPL-driven runtime development* — the same pure-Elisp standalone
-  reader exposes =repl [--no-prompt]=.  It keeps one live evaluator
+  reader starts a REPL with no arguments; scripts can use
+  =--repl [--no-prompt]=.  It keeps one live evaluator
   environment, so redefining a function and calling it again takes
   effect immediately, including through persistent
   =nelisp--eval-source-string=.
@@ -116,16 +117,17 @@ targets are also pure Elisp.
 The pure-Elisp Phase-47 AOT toolchain now produces a *standalone
 interpreter binary* — =target/nelisp=, built by =make
 standalone-reader= — that runs with *no Emacs in the loop
-at all*: it loads an =.el= file via =argv[1]=, evaluates it, and exits
-with the low byte of the last form's integer value.  It also exposes
-=repl [--no-prompt]= for line-oriented interactive development against
-one live evaluator environment, plus short CLI commands:
+at all*: it starts a REPL when launched with no arguments, loads an
+=.el= file via =argv[1]=, evaluates it, and exits with the low byte of
+the last form's integer value.  It also exposes =--repl [--no-prompt]=
+for line-oriented interactive development against one live evaluator
+environment, plus short CLI options:
 
 #+begin_src shell
 target/nelisp --help
-target/nelisp eval '(+ 40 2)'        # prints 42, exits 0
-target/nelisp -e '(vector 1 "a")'    # prints [1 "a"], exits 0
-target/nelisp load /tmp/prog.el      # prints the last value, exits 0
+target/nelisp                         # starts the REPL
+target/nelisp --eval '(+ 40 2)'       # prints 42, exits 0
+target/nelisp --load /tmp/prog.el     # prints the last value, exits 0
 target/nelisp /tmp/prog.el           # exits with the last integer value
 #+end_src
 
@@ -171,7 +173,7 @@ That makes the core workflow Lisp-native:
 #+begin_src shell
 make standalone-reader
 
-target/nelisp repl
+target/nelisp
 nelisp> (defun hot () 1)
 hot
 nelisp> (hot)
@@ -186,7 +188,7 @@ For editor integration or scripted probes, use =--no-prompt=:
 
 #+begin_src shell
 printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n(exit)\n' \
-  | target/nelisp repl --no-prompt
+  | target/nelisp --repl --no-prompt
 # => hot
 # => 7
 # => hot
@@ -287,7 +289,7 @@ emit across 5 OS×arch targets.
 
 1. *Standalone reader* — =target/nelisp= loads and
    evaluates =.el= files with no host Emacs process.
-2. *Runtime development REPL* — =target/nelisp repl=
+2. *Runtime development REPL* — =target/nelisp=
    keeps a live evaluator environment for immediate redefinition.
 3. *Standalone self-host + parallel build* (2026-06) — the pure-elisp
    Phase-47 AOT toolchain loads its own compiler and compiles Elisp
@@ -413,11 +415,11 @@ target/nelisp /tmp/prog.el
 echo $?                                # => 42
 
 # evaluate or load and print the result
-target/nelisp eval '(concat "hello" " " "world")'
-target/nelisp load /tmp/prog.el
+target/nelisp --eval '(concat "hello" " " "world")'
+target/nelisp --load /tmp/prog.el
 
 # interactive runtime development
-target/nelisp repl
+target/nelisp
 #+end_src
 
 The REPL keeps one live evaluator environment.  Redefinitions are
@@ -426,7 +428,7 @@ same environment:
 
 #+begin_src shell
 printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")\n(hot)\n(exit)\n' \
-  | target/nelisp repl --no-prompt
+  | target/nelisp --repl --no-prompt
                                        # => hot
                                        # => 7
                                        # => hot
@@ -439,8 +441,8 @@ development and file execution.
 
 #+begin_src shell
 nelisp --version                       # nelisp 0.5.0
-nelisp eval "(+ 1 2 3)"                # => 6
-nelisp -l ~/nelisp/examples/hello/hello.el
+nelisp --eval "(+ 1 2 3)"              # => 6
+nelisp --load ~/nelisp/examples/hello/hello.el
 #+end_src
 
 ** Quick start

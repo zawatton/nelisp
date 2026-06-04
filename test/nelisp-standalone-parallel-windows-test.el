@@ -120,7 +120,7 @@
     (should (string-match-p "function Invoke-WindowsStandaloneInstallSmoke" script))
     (should (string-match-p "Windows standalone installer smoke" script))
     (should (string-match-p "release\\\\stage-d-v3.0\\\\install-v3.ps1" script))
-    (should (string-match-p "installed bin\\\\nelisp.exe eval -> 42" script))))
+    (should (string-match-p "installed bin\\\\nelisp.exe --eval -> 42" script))))
 
 (ert-deftest nelisp-standalone-parallel-windows-eval-smoke-script ()
   "The Windows native standalone eval smoke builds and executes the PE EXE."
@@ -156,19 +156,19 @@
     (should (string-match-p "file arg with spaces" script))
     (should (string-match-p "unicode file arg" script))
     (should (string-match-p "\\$Exe --help" script))
-    (should (string-match-p "\\$Exe eval" script))
-    (should (string-match-p "\\$Exe -e" script))
-    (should (string-match-p "\\$Exe load" script))
+    (should (string-match-p "\\$Exe --embedded" script))
+    (should (string-match-p "\\$Exe --eval" script))
+    (should (string-match-p "\\$Exe --load" script))
     (should (string-match-p "\\$Exe dump-runtime-image" script))
     (should (string-match-p "\\$Exe eval-runtime-image" script))
     (should (string-match-p "\\$Exe exec-runtime-image" script))
     (should (string-match-p "function Invoke-ReaderWithInput" script))
     (should (string-match-p "StandardInputEncoding = \\[System.Text.Encoding\\]::ASCII"
                             script))
-    (should (string-match-p "Arguments @(\"repl\", \"--no-prompt\")" script))
-    (should (string-match-p "Arguments @(\"repl\", \"--no-prompt\", \"--no-print\")"
+    (should (string-match-p "Arguments @(\"--repl\", \"--no-prompt\")" script))
+    (should (string-match-p "Arguments @(\"--repl\", \"--no-prompt\", \"--no-print\")"
                             script))
-    (should (string-match-p "\\$Exe repl --bad" script))
+    (should (string-match-p "\\$Exe --repl --bad" script))
     (should-not (string-match-p "\\_<cargo\\_>" script))
     (should-not (string-match-p "\\_<rustc\\_>" script))))
 
@@ -220,8 +220,8 @@
     (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" verify))
     (should (string-match-p "ProcessStartInfo" verify))
     (should (string-match-p "\"-xzf\"" verify))
-    (should (string-match-p "bin\\\\nelisp.exe eval" verify))
-    (should (string-match-p "repl --no-prompt" verify))
+    (should (string-match-p "bin\\\\nelisp.exe --eval" verify))
+    (should (string-match-p "--repl --no-prompt" verify))
     (should (string-match-p "Windows standalone tarball OK" verify))
     (should (string-match-p "\\[string\\]\\$Target = \"windows-x86_64\"" install))
     (should (string-match-p "Get-FileHash -Algorithm SHA256" install))

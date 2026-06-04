@@ -3488,9 +3488,10 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
 (defun nelisp-standalone--reader-driver-source ()
   "DUAL-MODE reader driver (M7 file-load + M8 multi-form loop).
 Takes the entry stack pointer SP; reads argv[1] = (ptr-read-u64 sp 16):
-  argv[1] == 0  use the embedded NELISP_SRC via `sexp-write-str-lit';
-  argv[1] != 0  open+read that file through target OS helpers and
-                wrap the bytes via `nl_alloc_str'.
+  argv[1] == 0          start the REPL;
+  argv[1] == --embedded use the embedded NELISP_SRC via `sexp-write-str-lit';
+  otherwise             open+read argv[1] through target OS helpers and
+                        wrap the bytes via `nl_alloc_str'.
 Then the same multi-form parse+eval loop runs `src'.  argc==1 means
 argv[1]==NULL==0 (argv is NULL-terminated), so the check is reliable.
 Each builtin name installs through a fresh, full-length arena buffer so
@@ -3513,17 +3514,15 @@ correctly."
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_exec_runtime_image
                                        "exec-runtime-image")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_repl
-                                       "repl")
+                                       "--repl")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_eval
-                                       "eval")
-    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_e
-                                       "-e")
+                                       "--eval")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_load
-                                       "load")
+                                       "--load")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
+                                       "--embedded")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
                                        "--help")
-    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dash_h
-                                       "-h")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_prompt
                                        "--no-prompt")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_print
@@ -3551,7 +3550,7 @@ correctly."
       "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-      "Usage: nelisp [--help] [repl [--no-prompt] [--no-print]] [eval|-e EXPR] [load FILE] [FILE]\n")
+      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [FILE]\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -3580,13 +3579,9 @@ correctly."
           1
         (nl_cstr_eq_exec_runtime_image ptr)))
     (defun nl_cli_eval_command_p (ptr)
-      (if (= (nl_cstr_eq_eval ptr) 1)
-          1
-        (nl_cstr_eq_dash_e ptr)))
+      (nl_cstr_eq_eval ptr))
     (defun nl_cli_help_command_p (ptr)
-      (if (= (nl_cstr_eq_help ptr) 1)
-          1
-        (nl_cstr_eq_dash_h ptr)))
+      (nl_cstr_eq_help ptr))
     (defun nl_cli_command_p (ptr)
       (if (= (nl_cli_help_command_p ptr) 1)
           1
@@ -3596,7 +3591,9 @@ correctly."
               1
             (if (= (nl_cstr_eq_repl ptr) 1)
                 1
-              (nl_runtime_image_command_p ptr))))))
+              (if (= (nl_cstr_eq_embedded ptr) 1)
+                  1
+                (nl_runtime_image_command_p ptr)))))))
     (defun nl_cli_argv_shifted_p (argc slot0 slot1)
       (if (> argc 1)
           (if (= slot1 0)
@@ -3885,6 +3882,16 @@ correctly."
              (ptr-write-u64 sp0 16 slot0))
           0)
         (cond
+         ((= path 0)
+          (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
+              2
+            (seq
+             ,@(nelisp-standalone--reader-repl-prelude-forms
+                'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+             (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
+             (if (= (ptr-read-u64 268435464 0) 0)
+                 0
+               (- (ptr-read-u64 268435464 0) 1)))))
          ((= (nl_cli_help_command_p path) 1)
           (seq (nl_cli_write_help fbuf) 0))
          ((= (nl_cli_eval_command_p path) 1)
@@ -3933,7 +3940,7 @@ correctly."
                     (nl_argv_list_from argc sp0 1 argv_list)
                     (nl_env_set_value ctx argv_sym argv_list)
                     (sexp-write-str-lit src ,(nelisp-standalone--runtime-image-command-src)))
-                 (if (= path 0)
+                 (if (= (nl_cstr_eq_embedded path) 1)
                      ;; embedded NELISP_SRC (gate path)
                      (sexp-write-str-lit src ,(nelisp-standalone--reader-src))
                    ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
@@ -4540,7 +4547,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
 (defun nelisp-standalone-reader-test ()
   "Build the reader binary, run it, assert exit == eval(NELISP_SRC).  Exits 0/1."
   (let* ((out (nelisp-standalone-build-reader))
-         (code (call-process out nil nil nil))
+         (code (call-process out nil nil nil "--embedded"))
         (expected (nelisp-standalone--reader-expected)))
     (if (= code expected)
         (condition-case err
@@ -4567,7 +4574,6 @@ genuine general interpreter for the 11 special forms + installed builtins."
   (let ((tmp (make-temp-file "nelisp-reader-cli-" nil ".el"))
         (help-out nil)
         (eval-out nil)
-        (dash-e-out nil)
         (escape-out nil)
         (load-out nil)
         (rc nil))
@@ -4580,30 +4586,24 @@ genuine general interpreter for the 11 special forms + installed builtins."
             (error "--help exit=%S stdout=%S" rc help-out))
           (with-temp-buffer
             (setq rc (call-process nelisp-standalone--reader-out nil t nil
-                                   "eval" "(vector 1 \"a\" nil t)"))
+                                   "--eval" "(vector 1 \"a\" nil t)"))
             (setq eval-out (buffer-string)))
           (unless (and (= rc 0) (equal eval-out "[1 \"a\" nil t]\n"))
-            (error "eval exit=%S stdout=%S" rc eval-out))
+            (error "--eval exit=%S stdout=%S" rc eval-out))
           (with-temp-buffer
             (setq rc (call-process nelisp-standalone--reader-out nil t nil
-                                   "-e" "(quote (1 2 3))"))
-            (setq dash-e-out (buffer-string)))
-          (unless (and (= rc 0) (equal dash-e-out "(1 2 3)\n"))
-            (error "-e exit=%S stdout=%S" rc dash-e-out))
-          (with-temp-buffer
-            (setq rc (call-process nelisp-standalone--reader-out nil t nil
-                                   "eval" "(concat \"\\\"\" \"\\\\\")"))
+                                   "--eval" "(concat \"\\\"\" \"\\\\\")"))
             (setq escape-out (buffer-string)))
           (unless (and (= rc 0) (equal escape-out "\"\\\"\\\\\"\n"))
-            (error "eval escape exit=%S stdout=%S" rc escape-out))
+            (error "--eval escape exit=%S stdout=%S" rc escape-out))
           (with-temp-file tmp
             (insert "(list 1 2 3)\n"))
           (with-temp-buffer
             (setq rc (call-process nelisp-standalone--reader-out nil t nil
-                                   "load" tmp))
+                                   "--load" tmp))
             (setq load-out (buffer-string)))
           (unless (and (= rc 0) (equal load-out "(1 2 3)\n"))
-            (error "load exit=%S stdout=%S" rc load-out))
+            (error "--load exit=%S stdout=%S" rc load-out))
           (message "[standalone-reader] cli smoke PASS"))
       (ignore-errors (delete-file tmp)))))
 
@@ -4747,6 +4747,8 @@ guards the slot-pool floor directly without loading the full vendor file."
         (repl-out nil)
         (quiet-rc nil)
         (quiet-out nil)
+        (no-args-rc nil)
+        (no-args-out nil)
         (near-end-file (make-temp-file "nelisp-repl-near-end-" nil ".el"))
         (near-end-rc nil)
         (near-end-out nil)
@@ -4761,7 +4763,7 @@ guards the slot-pool floor directly without loading the full vendor file."
             (call-process-region (point-min) (point-max)
                                  nelisp-standalone--reader-out
                                  t t nil
-                                 "repl" "--no-prompt"))
+                                 "--repl" "--no-prompt"))
       (setq repl-out (buffer-string)))
     (unless (and (= repl-rc 0)
                  (equal repl-out "hot\n1\nhot\n42\nhot\n99\n42\nnil\nt\n(1 2 3)\n[1 \"a\" nil t]\n"))
@@ -4777,11 +4779,21 @@ guards the slot-pool floor directly without loading the full vendor file."
             (call-process-region (point-min) (point-max)
                                  nelisp-standalone--reader-out
                                  t t nil
-                                 "repl" "--no-prompt" "--no-print"))
+                                 "--repl" "--no-prompt" "--no-print"))
       (setq quiet-out (buffer-string)))
     (unless (and (= quiet-rc 0)
                  (equal quiet-out "explicit\n"))
       (error "repl --no-print exit=%S stdout=%S" quiet-rc quiet-out))
+    (with-temp-buffer
+      (insert "(exit)\n")
+      (setq no-args-rc
+            (call-process-region (point-min) (point-max)
+                                 nelisp-standalone--reader-out
+                                 t t nil))
+      (setq no-args-out (buffer-string)))
+    (unless (and (= no-args-rc 0)
+                 (equal no-args-out "nelisp> "))
+      (error "no-args repl exit=%S stdout=%S" no-args-rc no-args-out))
     (unwind-protect
         (progn
           (with-temp-file near-end-file
@@ -4797,7 +4809,7 @@ guards the slot-pool floor directly without loading the full vendor file."
                   (call-process-region (point-min) (point-max)
                                        nelisp-standalone--reader-out
                                        t t nil
-                                       "repl" "--no-prompt" "--no-print"))
+                                       "--repl" "--no-prompt" "--no-print"))
             (setq near-end-out (buffer-string)))
           (unless (and (= near-end-rc 0)
                        (equal near-end-out "near-end-ok\n"))
@@ -4807,7 +4819,7 @@ guards the slot-pool floor directly without loading the full vendor file."
     (with-temp-buffer
       (setq bad-rc
             (call-process nelisp-standalone--reader-out nil t nil
-                          "repl" "--bad")))
+                          "--repl" "--bad")))
     (unless (= bad-rc 2)
       (error "repl --bad exit=%S" bad-rc))
     (message "[standalone-reader] repl smoke PASS")))

@@ -97,35 +97,35 @@ try {
     }
     Write-Host "[standalone-tarball] PASS: layout"
 
-    $EvalOutput = & $Exe eval "(+ 40 2)"
+    $EvalOutput = & $Exe --eval "(+ 40 2)"
     $EvalCode = $LASTEXITCODE
     if ($null -eq $EvalCode) {
         $EvalCode = 0
     }
     $EvalText = $EvalOutput -join "`n"
     if ($EvalCode -ne 0 -or $EvalText -ne "42") {
-        throw ("eval failed: exit " + $EvalCode + " output " + $EvalText)
+        throw ("--eval failed: exit " + $EvalCode + " output " + $EvalText)
     }
-    Write-Host "[standalone-tarball] PASS: bin\nelisp.exe eval"
+    Write-Host "[standalone-tarball] PASS: bin\nelisp.exe --eval"
 
     if ($env:GITHUB_ACTIONS -eq "true") {
-        Write-Host ("[standalone-tarball] SKIP: bin\nelisp.exe repl on " +
+        Write-Host ("[standalone-tarball] SKIP: bin\nelisp.exe --repl on " +
                     "GitHub-hosted Windows runner")
     } else {
         $ReplOutput = @(
             "(+ 40 2)",
             "(vector 1 `"a`" nil t)",
             "(exit)"
-        ) | & $Exe repl --no-prompt
+        ) | & $Exe --repl --no-prompt
         $ReplCode = $LASTEXITCODE
         if ($null -eq $ReplCode) {
             $ReplCode = 0
         }
         $ReplText = $ReplOutput -join "`n"
         if ($ReplCode -ne 0 -or $ReplText -ne "42`n[1 `"a`" nil t]") {
-            throw ("repl failed: exit " + $ReplCode + " output " + $ReplText)
+            throw ("--repl failed: exit " + $ReplCode + " output " + $ReplText)
         }
-        Write-Host "[standalone-tarball] PASS: bin\nelisp.exe repl"
+        Write-Host "[standalone-tarball] PASS: bin\nelisp.exe --repl"
     }
     Write-Host "[standalone-tarball] all PASS - Windows standalone tarball OK"
 } finally {

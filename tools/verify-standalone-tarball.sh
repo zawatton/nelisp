@@ -141,19 +141,19 @@ run_expect_output() {
   ok "$label"
 }
 
-run_expect_output "bin/$NELISP_BIN_NAME eval" "42" "$NELISP_EXE" eval "(+ 40 2)"
+run_expect_output "bin/$NELISP_BIN_NAME --eval" "42" "$NELISP_EXE" --eval "(+ 40 2)"
 
 REPL_OUTPUT="$(printf '%s\n' \
   "(+ 40 2)" \
   '(vector 1 "a" nil t)' \
-  "(exit)" | "$NELISP_EXE" repl --no-prompt)"
+  "(exit)" | "$NELISP_EXE" --repl --no-prompt)"
 EXPECTED_REPL=$'42\n[1 "a" nil t]'
 if [ "$REPL_OUTPUT" != "$EXPECTED_REPL" ]; then
   err "bin/$NELISP_BIN_NAME repl output mismatch"
   printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED_REPL" "$REPL_OUTPUT"
   exit 2
 fi
-ok "bin/$NELISP_BIN_NAME repl"
+ok "bin/$NELISP_BIN_NAME --repl"
 
 echo ""
 ok "zero-Rust standalone tarball smoke PASS"

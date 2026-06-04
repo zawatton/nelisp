@@ -59,7 +59,7 @@ if ($BuildOnly) {
     exit 0
 }
 
-& $Exe
+& $Exe --embedded
 $Code = $LASTEXITCODE
 if ($null -eq $Code) {
     $Code = 0
@@ -198,26 +198,19 @@ if ($HelpCode -ne 0 -or -not (($HelpOutput -join "`n") -match "Usage: nelisp")) 
 }
 Write-Host "[windows-standalone-reader] PASS: --help"
 
-$EvalOutput = & $Exe eval "(+ 40 2)"
+$EvalOutput = & $Exe --eval "(+ 40 2)"
 $EvalCode = $LASTEXITCODE
 if ($null -eq $EvalCode) {
     $EvalCode = 0
 }
-Assert-Output -Label "eval" -Output $EvalOutput -Code $EvalCode -Expected "42"
+Assert-Output -Label "--eval" -Output $EvalOutput -Code $EvalCode -Expected "42"
 
-$DashEvalOutput = & $Exe -e "(vector 1 `"a`" nil t)"
-$DashEvalCode = $LASTEXITCODE
-if ($null -eq $DashEvalCode) {
-    $DashEvalCode = 0
-}
-Assert-Output -Label "-e" -Output $DashEvalOutput -Code $DashEvalCode -Expected "[1 `"a`" nil t]"
-
-$LoadOutput = & $Exe load $FileSmoke
+$LoadOutput = & $Exe --load $FileSmoke
 $LoadCode = $LASTEXITCODE
 if ($null -eq $LoadCode) {
     $LoadCode = 0
 }
-Assert-Output -Label "load" -Output $LoadOutput -Code $LoadCode -Expected "43"
+Assert-Output -Label "--load" -Output $LoadOutput -Code $LoadCode -Expected "43"
 
 $RuntimeImage = Join-Path $SmokeDir "runtime-smoke.nlri"
 
@@ -269,7 +262,7 @@ $ReplInput = ((@(
     "(vector 1 `"a`" nil t)"
     "(exit)"
 ) -join "`n") + "`n")
-$ReplRun = Invoke-ReaderWithInput -Arguments @("repl", "--no-prompt") `
+$ReplRun = Invoke-ReaderWithInput -Arguments @("--repl", "--no-prompt") `
     -InputText $ReplInput
 if ($ReplRun.ExitCode -ne 0) {
     Write-Host ("[windows-standalone-reader] FAIL: repl exited " + $ReplRun.ExitCode)
@@ -285,6 +278,16 @@ Assert-Output -Label "repl stdin/stdout" -Output @($ReplRun.Stdout) -Code 0 `
     -Expected "42`nnil`nt`n(1 2 3)`n[1 `"a`" nil t]"
 Write-Host "[windows-standalone-reader] PASS: repl stdin/stdout -> 42"
 
+$NoArgsReplRun = Invoke-ReaderWithInput -Arguments @() `
+    -InputText "(exit)`n"
+if ($NoArgsReplRun.ExitCode -ne 0) {
+    Write-Host ("[windows-standalone-reader] FAIL: no-args repl exited " +
+                $NoArgsReplRun.ExitCode)
+    exit 1
+}
+Assert-Output -Label "no-args repl" -Output @($NoArgsReplRun.Stdout) `
+    -Code 0 -Expected "nelisp> "
+
 $QuietReplInput = ((@(
     "(defun hot () 1)"
     "(hot)"
@@ -294,7 +297,7 @@ $QuietReplInput = ((@(
     "(exit)"
 ) -join "`n") + "`n")
 $QuietReplRun = Invoke-ReaderWithInput `
-    -Arguments @("repl", "--no-prompt", "--no-print") `
+    -Arguments @("--repl", "--no-prompt", "--no-print") `
     -InputText $QuietReplInput
 if ($QuietReplRun.ExitCode -ne 0) {
     Write-Host ("[windows-standalone-reader] FAIL: repl --no-print exited " +
@@ -311,7 +314,7 @@ Assert-Output -Label "repl --no-print" -Output @($QuietReplRun.Stdout) `
     -Code 0 -Expected "explicit"
 }
 
-& $Exe repl --bad
+& $Exe --repl --bad
 $BadReplCode = $LASTEXITCODE
 if ($null -eq $BadReplCode) {
     $BadReplCode = 0

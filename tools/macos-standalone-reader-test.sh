@@ -2,7 +2,7 @@
 # macOS arm64 standalone reader smoke.
 #
 # Builds target/nelisp as a pure-elisp Mach-O executable.  On macOS arm64 it
-# exercises embedded source, file-argument source, eval/load commands, and REPL
+# exercises embedded source, file-argument source, --eval/--load commands, and REPL
 # stdin/stdout.  No Rust toolchain is used.
 set -euo pipefail
 
@@ -125,7 +125,7 @@ run_expect_pipe_output() {
   echo "[macos-standalone-reader] PASS: $label"
 }
 
-run_expect_code "embedded src=$SOURCE" "$EXPECTED" "$EXE"
+run_expect_code "embedded src=$SOURCE" "$EXPECTED" "$EXE" --embedded
 
 if [ "$EMBEDDED_ONLY" -eq 1 ]; then
   exit 0
@@ -156,9 +156,8 @@ if [ "$HELP_CODE" -ne 0 ] || ! printf '%s\n' "$HELP_OUTPUT" | grep -q "Usage: ne
 fi
 echo "[macos-standalone-reader] PASS: --help"
 
-run_expect_output "eval" "42" "$EXE" eval "(+ 40 2)"
-run_expect_output "-e" '[1 "a" nil t]' "$EXE" -e '(vector 1 "a" nil t)'
-run_expect_output "load" "43" "$EXE" load "$FILE_SMOKE"
+run_expect_output "--eval" "42" "$EXE" --eval "(+ 40 2)"
+run_expect_output "--load" "43" "$EXE" --load "$FILE_SMOKE"
 
 RUNTIME_IMAGE="$SMOKE_DIR/runtime-smoke.nlri"
 run_expect_output "dump-runtime-image" "" \
@@ -181,7 +180,7 @@ t
 EOF
 EXPECTED_REPL=$'42\nnil\nt\n(1 2 3)\n[1 "a" nil t]'
 run_expect_pipe_output "repl stdin/stdout" "$EXPECTED_REPL" "$REPL_INPUT" \
-  "$EXE" repl --no-prompt
+  "$EXE" --repl --no-prompt
 
 QUIET_REPL_INPUT="$SMOKE_DIR/repl-quiet-input.el"
 cat >"$QUIET_REPL_INPUT" <<'EOF'
@@ -193,7 +192,13 @@ cat >"$QUIET_REPL_INPUT" <<'EOF'
 (exit)
 EOF
 run_expect_pipe_output "repl --no-print" "explicit" "$QUIET_REPL_INPUT" \
-  "$EXE" repl --no-prompt --no-print
+  "$EXE" --repl --no-prompt --no-print
 
-run_expect_code "repl bad option" 2 "$EXE" repl --bad
+NO_ARGS_REPL_INPUT="$SMOKE_DIR/repl-no-args-input.el"
+cat >"$NO_ARGS_REPL_INPUT" <<'EOF'
+(exit)
+EOF
+run_expect_pipe_output "no-args repl" "nelisp> " "$NO_ARGS_REPL_INPUT" "$EXE"
+
+run_expect_code "--repl bad option" 2 "$EXE" --repl --bad
 echo "[macos-standalone-reader] all PASS - macOS-native standalone reader OK"

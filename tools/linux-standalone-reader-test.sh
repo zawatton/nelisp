@@ -2,7 +2,7 @@
 # Linux x86_64 standalone reader smoke.
 #
 # Builds target/nelisp as a pure-elisp ELF executable and exercises embedded
-# source, file-argument source, eval/load commands, and REPL stdin/stdout.
+# source, file-argument source, --eval/--load commands, and REPL stdin/stdout.
 # No Rust toolchain is used.
 set -euo pipefail
 
@@ -85,7 +85,7 @@ run_expect_output() {
   echo "[linux-standalone-reader] PASS: $label"
 }
 
-run_expect_code "embedded src=$SOURCE" "$EXPECTED" "$EXE"
+run_expect_code "embedded src=$SOURCE" "$EXPECTED" "$EXE" --embedded
 
 if [ "$EMBEDDED_ONLY" -eq 1 ]; then
   exit 0
@@ -116,9 +116,8 @@ if [ "$HELP_CODE" -ne 0 ] || ! printf '%s\n' "$HELP_OUTPUT" | grep -q "Usage: ne
 fi
 echo "[linux-standalone-reader] PASS: --help"
 
-run_expect_output "eval" "42" "$EXE" eval "(+ 40 2)"
-run_expect_output "-e" '[1 "a" nil t]' "$EXE" -e '(vector 1 "a" nil t)'
-run_expect_output "load" "43" "$EXE" load "$FILE_SMOKE"
+run_expect_output "--eval" "42" "$EXE" --eval "(+ 40 2)"
+run_expect_output "--load" "43" "$EXE" --load "$FILE_SMOKE"
 
 RUNTIME_IMAGE="$SMOKE_DIR/runtime-smoke.nlri"
 run_expect_output "dump-runtime-image" "" \
@@ -136,7 +135,7 @@ REPL_OUTPUT="$(printf '%s\n' \
   "t" \
   "(quote (1 2 3))" \
   '(vector 1 "a" nil t)' \
-  "(exit)" | "$EXE" repl --no-prompt)"
+  "(exit)" | "$EXE" --repl --no-prompt)"
 EXPECTED_REPL=$'42\nnil\nt\n(1 2 3)\n[1 "a" nil t]'
 if [ "$REPL_OUTPUT" != "$EXPECTED_REPL" ]; then
   echo "[linux-standalone-reader] FAIL: repl stdin/stdout output mismatch"
@@ -151,7 +150,7 @@ QUIET_REPL_OUTPUT="$(printf '%s\n' \
   "(condition-case e (signal 'quit nil) (quit 42))" \
   '(nelisp--write-stdout-bytes "explicit\n")' \
   "(hot)" \
-  "(exit)" | "$EXE" repl --no-prompt --no-print)"
+  "(exit)" | "$EXE" --repl --no-prompt --no-print)"
 if [ "$QUIET_REPL_OUTPUT" != "explicit" ]; then
   echo "[linux-standalone-reader] FAIL: repl --no-print output mismatch"
   printf 'expected:\n%s\nactual:\n%s\n' "explicit" "$QUIET_REPL_OUTPUT"
@@ -159,5 +158,13 @@ if [ "$QUIET_REPL_OUTPUT" != "explicit" ]; then
 fi
 echo "[linux-standalone-reader] PASS: repl --no-print"
 
-run_expect_code "repl bad option" 2 "$EXE" repl --bad
+NO_ARGS_REPL_OUTPUT="$(printf '%s\n' "(exit)" | "$EXE")"
+if [ "$NO_ARGS_REPL_OUTPUT" != "nelisp> " ]; then
+  echo "[linux-standalone-reader] FAIL: no-args repl output mismatch"
+  printf 'expected:\n%s\nactual:\n%s\n' "nelisp> " "$NO_ARGS_REPL_OUTPUT"
+  exit 1
+fi
+echo "[linux-standalone-reader] PASS: no-args repl"
+
+run_expect_code "--repl bad option" 2 "$EXE" --repl --bad
 echo "[linux-standalone-reader] all PASS - Linux-native standalone reader OK"
