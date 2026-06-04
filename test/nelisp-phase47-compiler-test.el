@@ -545,6 +545,55 @@ executable page and run.  target(9) = 9*9 = 81 -> exit 81."
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 81)))))
 
+(ert-deftest nelisp-phase47-compiler/e2e-native-exec-neln-artifact-in-process ()
+  "Doc 142 §6.4 gate 6 — load a REAL reloc-free `.neln' artifact's native
+code into an mmap'd RWX page and run it IN-PROCESS via `call-ptr', with no
+static link and no host harness.  Generalizes `e2e-native-exec-mmap-call-ptr'
+from in-binary `addr-of' code to bytes sourced from a compiled artifact file:
+compile (defun sq (x) (* x x)) to a .neln, extract its reloc-free `.text',
+copy it byte-for-byte into a fresh executable page, and `call-ptr' the entry.
+sq(9) = 81 -> exit 81."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (require 'nelisp-artifact)
+  (let* ((dir (make-temp-file "neln-inproc-" t))
+         (src (expand-file-name "sq.el" dir))
+         (out (expand-file-name "sq.neln" dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file src (insert "(defun sq (x) (* x x))\n(provide 'sq)\n"))
+          (load src nil t)
+          (nelisp-artifact-compile-file src out nil nil nil nil nil 'neln)
+          (let* ((native (plist-get (nelisp-artifact--read-payload out) :native))
+                 (defun0 (car (plist-get native :defuns)))
+                 (offset (plist-get defun0 :offset))
+                 (bytes (string-to-list
+                         (base64-decode-string (plist-get native :text-base64)))))
+            ;; reloc-free, extern-free precondition: pure in-process exec needs
+            ;; no symbol resolution and no boundary trampoline.
+            (should (null (plist-get native :relocs)))
+            (should (null (plist-get native :extern-symbols)))
+            (nelisp-phase47-compiler-test--with-tmp-binary path "neln-inproc"
+              (let* ((i -1)
+                     (writes (mapcar (lambda (b)
+                                       (setq i (1+ i))
+                                       `(ptr-write-u8 page ,i ,b))
+                                     bytes))
+                     (sexp `(seq
+                             (defun native-exec (x)
+                               ;; mmap(NULL,4096,PROT_RWX,MAP_PRIVATE|ANON,-1,0)
+                               (let ((page (syscall-direct 9 0 4096 7 34 -1 0)))
+                                 (if (< page 4096)
+                                     99
+                                   (seq ,@writes
+                                        (call-ptr (+ page ,offset) x)))))
+                             (exit (native-exec 9)))))
+                (nelisp-phase47-compile-sexp sexp path)
+                (should (file-executable-p path))
+                (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+                  (should (= (plist-get r :exit) 81)))))))
+      (delete-directory dir t))))
+
 (ert-deftest nelisp-phase47-compiler/e2e-call-ptr-zero-arg ()
   "Doc 133 Phase 0: indirect call with no args.
 `via' calls a zero-arg `answer' through its address. answer() = 42."
