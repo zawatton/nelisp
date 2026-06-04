@@ -448,6 +448,35 @@
         (should (tree-member-p '(ptr-write-u64 #x8000002d8 0 #x20000000) arena))
         (should (tree-member-p '(ptr-write-u64 #x800000318 0 #x800000400) arena))))))
 
+(ert-deftest nelisp-standalone-target-gc-walks-chunk-descriptors ()
+  "Doc 140 Stage 3 makes GC membership and sweep chunk-aware."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((flat (flatten-tree nelisp-standalone--gc-source)))
+      (should (memq 'nl_gc_chunk_contains_any flat))
+      (should (memq 'nl_gc_sweep_chunks flat))
+      (should (member 268436160 flat))
+      (should (tree-member-p
+               '(defun nl_gc_in_arena
+                    (addr)
+                  (nl_gc_chunk_contains_any (ptr-read-u64 268436160 0) addr))
+               nelisp-standalone--gc-source))
+      (should-not
+       (tree-member-p
+        '(defun nl_gc_sweep
+             nil
+           (let ((hdr (ptr-read-u64 268435568 0))
+                 (end (+ 268435456 (ptr-read-u64 268435456 0))))
+             (while (and (> hdr 0) (< hdr end))
+               (setq hdr (nl_gc_sweep_step hdr end)))
+             0))
+        nelisp-standalone--gc-source)))))
+
 (ert-deftest nelisp-standalone-target-macos-rebases-arena-slots ()
   "macOS source rebase moves fixed metadata above Mach-O __PAGEZERO."
   (let ((nelisp-standalone--target 'macos-aarch64))

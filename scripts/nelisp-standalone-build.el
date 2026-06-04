@@ -784,10 +784,30 @@ are a last-resort workaround, not the correctness path."
 ;; children are not walked — documented limitation, gated by the test suite.
 (defconst nelisp-standalone--gc-source
   '(seq
-    ;; addr in [data_start, bump_abs) ?  (bump_abs = base + bump_offset)
+    ;; Chunk-aware membership.  During Doc 140 Stage 3 only chunk 0 is active,
+    ;; but the walk already follows the descriptor list introduced in Stage 2.
+    ;; Membership is restricted to [data-start, base+cursor) so fixed control
+    ;; metadata below data-start is never treated as an object header.
+    (defun nl_gc_chunk_cursor (chunk)
+      (if (= chunk (ptr-read-u64 268436160 0))
+          (ptr-read-u64 268435456 0)
+        (ptr-read-u64 (+ chunk 16) 0)))
+    (defun nl_gc_chunk_end (chunk)
+      (+ (ptr-read-u64 chunk 0) (nl_gc_chunk_cursor chunk)))
+    (defun nl_gc_chunk_contains (chunk addr)
+      (if (= chunk 0)
+          0
+        (if (< addr (ptr-read-u64 (+ chunk 24) 0))
+            0
+          (if (< addr (nl_gc_chunk_end chunk)) 1 0))))
+    (defun nl_gc_chunk_contains_any (chunk addr)
+      (if (= chunk 0)
+          0
+        (if (= (nl_gc_chunk_contains chunk addr) 1)
+            1
+          (nl_gc_chunk_contains_any (ptr-read-u64 (+ chunk 48) 0) addr))))
     (defun nl_gc_in_arena (addr)
-      (if (< addr (ptr-read-u64 268435568 0)) 0
-        (if (< addr (+ 268435456 (ptr-read-u64 268435456 0))) 1 0)))
+      (nl_gc_chunk_contains_any (ptr-read-u64 268436160 0) addr))
     ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     (defun nl_gc_mark_block (obj)
@@ -892,7 +912,7 @@ are a last-resort workaround, not the correctness path."
                 (nl_seq2 (ptr-write-u64 268435632 0 (+ (ptr-read-u64 268435632 0) 1))
                          (nl_seq2 (nl_gc_free_block hdr) 0))) ; dead -> free
             0)))))                                         ; m==2 already free
-    ;; Sweep: ITERATIVE header walk (arena can hold millions of blocks, so
+    ;; Sweep: ITERATIVE header walk (chunks can hold millions of blocks, so
     ;; recursion would overflow the stack).  `hdr'/`live' are mutated only
     ;; at the loop's own scope; all per-block work is in `nl_gc_sweep_one'.
     ;; A block_total BT at header HDR is well-formed iff >=16, 8-aligned,
@@ -912,12 +932,19 @@ are a last-resort workaround, not the correctness path."
       (if (= (nl_gc_bt_ok hdr (ptr-read-u64 hdr 0) end) 0)
           0
         (nl_seq2 (nl_gc_sweep_one hdr) (+ hdr (ptr-read-u64 hdr 0)))))
-    (defun nl_gc_sweep ()
-      (let ((hdr (ptr-read-u64 268435568 0))
-            (end (+ 268435456 (ptr-read-u64 268435456 0))))
+    (defun nl_gc_sweep_chunk (chunk)
+      (let ((hdr (ptr-read-u64 (+ chunk 24) 0))
+            (end (nl_gc_chunk_end chunk)))
         (while (and (> hdr 0) (< hdr end))
           (setq hdr (nl_gc_sweep_step hdr end)))
         0))
+    (defun nl_gc_sweep_chunks (chunk)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (nl_gc_sweep_chunk chunk)
+                 (nl_gc_sweep_chunks (ptr-read-u64 (+ chunk 48) 0)))))
+    (defun nl_gc_sweep ()
+      (nl_gc_sweep_chunks (ptr-read-u64 268436160 0)))
     ;; Full collection at the form boundary.  CTX = the env (mirror@+0,
     ;; frames@+32, unbound@+64).  The remaining args are the live driver
     ;; Sexp slots that must survive.  Mark all roots, then sweep.
