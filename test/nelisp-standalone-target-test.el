@@ -341,6 +341,51 @@
                    '(nl_cli_wrap_source_at fbuf (+ off n) src)
                    forms)))))
 
+(ert-deftest nelisp-standalone-target-reader-boundary-reclaim-is-conservative ()
+  "Doc 140 Stage 5 reclaims only safe immediate non-mutating boundaries."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((forms (nelisp-standalone--reader-driver-source))
+          (boundary nelisp-standalone--reader-boundary-source)
+          (eval-source nelisp-standalone--reader-eval-source-source))
+      (should (tree-member-p
+               '(defun nl_boundary_immediate_result_p (out)
+                  (if (<= (ptr-read-u64 out 0) 3) 1 0))
+               boundary))
+      (should (tree-member-p
+               '(if (= (ptr-read-u64 268436216 0) 1)
+                    (if (= (nl_boundary_immediate_result_p out) 1)
+                        (if (= (ptr-read-u64 268435544 0) epoch0)
+                            (if (= (ptr-read-u64 268435472 0) 0)
+                                (if (= (ptr-read-u64 268435464 0) 0)
+                                    (nl_boundary_reclaim mark_chunk mark_cursor)
+                                  0)
+                              0)
+                          0)
+                      0)
+                  0)
+               boundary))
+      (should (tree-member-p
+               '(ptr-write-u64 268436216 0 0)
+               forms))
+      (should (tree-member-p
+               '(ptr-write-u64 268436216 0 1)
+               forms))
+      (should (tree-member-p
+               '(ptr-write-u64 268435552 0 0)
+               boundary))
+      (should (tree-member-p
+               '(ptr-write-u64 268436168 0 mark_chunk)
+               boundary))
+      (should (tree-member-p
+               '(nl_boundary_maybe_reclaim mark_chunk mark_cursor epoch0 out)
+               eval-source)))))
+
 (ert-deftest nelisp-standalone-target-reader-repl-suffix-is-target-aware ()
   "REPL runtime wrapper must not embed the Linux arena quit slot on macOS."
   (let ((nelisp-standalone--target 'macos-aarch64))

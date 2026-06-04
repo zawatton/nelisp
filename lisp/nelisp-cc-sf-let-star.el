@@ -42,7 +42,10 @@
 ;;   nl_env_pop_frame: (*mut c_void) → i64
 ;;     Pops the topmost lexical frame.  Returns 0.
 ;;
-;; Structure (9 defuns):
+;; Structure (12 defuns):
+;;   nl_sf_let_star_restore_ret (restore-rc pop-rc saved out) — arity 4
+;;   nl_sf_let_star_restore     (pop-rc saved out _pad) — arity 4
+;;   nl_sf_let_star_pop_saved   (save-rc env saved out) — arity 4
 ;;   nl_sf_let_star_ret        (pop-rc body-rc _p2 _p3) — arity 4
 ;;   nl_sf_let_star_finish     (body-rc env out _pad) — arity 4
 ;;   nl_sf_let_star_body_step  (eval-rc cdr-body env out) — arity 4
@@ -62,18 +65,45 @@
 (defconst nelisp-cc-sf-let-star--source
   '(seq
 
+    ;; After restoring the saved body result: discard restore-rc, return 0.
+    ;; Arity 4 (even).
+    (defun nl_sf_let_star_restore_ret (_restore-rc _pop-rc _saved _out)
+      0)
+
+    ;; After nl_env_pop_frame: restore the result saved before popping the frame.
+    ;; Arity 4 (even).
+    (defun nl_sf_let_star_restore (pop-rc saved out _pad)
+      (if (= pop-rc 0)
+          (nl_sf_let_star_restore_ret
+           (extern-call nl_sexp_clone_into saved out)
+           pop-rc saved out)
+        1))
+
+    ;; After saving the body result: pop frame, then restore the saved result.
+    ;; Arity 4 (even).
+    (defun nl_sf_let_star_pop_saved (_save-rc env saved out)
+      (nl_sf_let_star_restore
+       (extern-call nl_env_pop_frame env)
+       saved out 0))
+
     ;; After nl_env_pop_frame: discard pop-rc, return body-rc.
     ;; Arity 4 (even).
     (defun nl_sf_let_star_ret (pop-rc body-rc _p2 _p3)
       body-rc)
 
     ;; body-rc = result of body eval (0=Ok or 1=Err).
-    ;; Pop frame unconditionally (extern-call FIRST ✓), then return body-rc.
+    ;; On success, save *out before popping the lexical frame; the result may
+    ;; be a pointer to a frame slot.  On error, just pop and propagate body-rc.
     ;; Arity 4 (even).
     (defun nl_sf_let_star_finish (body-rc env out _pad)
-      (nl_sf_let_star_ret
-       (extern-call nl_env_pop_frame env)
-       body-rc 0 0))
+      (if (= body-rc 0)
+          (let* ((saved (alloc-bytes 32 8)))
+            (nl_sf_let_star_pop_saved
+             (extern-call nl_sexp_clone_into out saved)
+             env saved out))
+        (nl_sf_let_star_ret
+         (extern-call nl_env_pop_frame env)
+         body-rc 0 0)))
 
     ;; After nelisp_eval_call on one body form: check rc, advance list.
     ;; eval-rc=0 → recurse on remaining body forms.
@@ -148,7 +178,7 @@
 
   "Phase 47 source for `nl_sf_let_star' (eval/special_forms.rs sf_let_star → elisp).
 
-Nine defuns (seq form).  Identical structure to `nelisp-cc-sf-let.el'
+Twelve defuns (seq form).  Identical structure to `nelisp-cc-sf-let.el'
 except nl_let_setup is called with sequential=1 and all function names
 use the `_star' suffix.
 

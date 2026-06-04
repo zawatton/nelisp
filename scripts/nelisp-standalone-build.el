@@ -124,6 +124,7 @@ still uses the historical fixed first arena.")
 (defconst nelisp-standalone--arena-chunk-bytes-used-offset #x2e0)
 (defconst nelisp-standalone--arena-chunk-bytes-reclaimed-offset #x2e8)
 (defconst nelisp-standalone--arena-chunk-alloc-failures-offset #x2f0)
+(defconst nelisp-standalone--arena-boundary-reclaim-enabled-offset #x2f8)
 
 (defconst nelisp-standalone--arena-chunk0-desc-offset #x300)
 (defconst nelisp-standalone--arena-chunk-desc-base-offset #x00)
@@ -730,6 +731,8 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
                      0 0)
       (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-alloc-failures-offset)
                      0 0)
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-boundary-reclaim-enabled-offset)
+                     0 1)
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-base-offset)
                      0 ,base)
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-size-offset)
@@ -1978,6 +1981,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (nl_alloc_symbol (ptr-read-u64 sym 16) (ptr-read-u64 sym 24) 268435480)
          (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args))
          (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
          1)))
     (defun bf_error (args out)
       (let* ((ebuf (alloc-bytes 8 1)))
@@ -1986,6 +1990,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (nl_alloc_symbol ebuf 5 268435480)               ; TAG slot <- Symbol "error"
          (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args)) ; VAL slot <- (MSG ...)
          (ptr-write-u64 268435472 0 1)                    ; raise flag
+         (atomic-fetch-add 268435544 1)
          1)))
     (defun bf_wrong_type_consp (offender)
       (let* ((wbuf (alloc-bytes 24 1))
@@ -2004,6 +2009,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (nelisp_cons_construct offender nil-slot data-tail)
          (nelisp_cons_construct expected data-tail 268435512)
          (ptr-write-u64 268435472 0 1)
+         (atomic-fetch-add 268435544 1)
          1)))
     ;; fboundp/boundp: look up in the env mirror.  env+0 = mirror, env+64 = unbound.
     ;; nelisp_env_lookup_function(mirror, unbound, sym, out_slot) returns 0 if found.
@@ -2532,6 +2538,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
            (nl_ct_copy32 268435480 tag_slot 0 0)
            (nl_ct_copy32 268435512 val_slot 0 0)
            (ptr-write-u64 268435472 0 1)
+           (atomic-fetch-add 268435544 1)
            1)
         1))
     (defun nl_ct_throw_after_tag (rc val_form env out tag_slot val_slot)
@@ -3404,13 +3411,95 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
   "Return Phase47 forms that prepare the standalone reader REPL environment."
   `((let* ((n (nl_repl_prelude_source ,fbuf 0)))
       (seq
+       (ptr-write-u64 268436216 0 0)
        (nl_alloc_str ,fbuf n ,src)
-       (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym)))))
+       (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym)
+       (ptr-write-u64 268436216 0 1)))))
 
 (defun nelisp-standalone--reader-repl-eval-suffix ()
   "Return target-aware source appended to one standalone REPL input form."
-  (format "))) (if (= (ptr-read-u64 %d 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0) 0))\n"
+  (format "))) (if (= (ptr-read-u64 %d 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
           (nelisp-standalone--target-arena-metadata-address 8)))
+
+(defconst nelisp-standalone--reader-boundary-source
+  '(seq
+    (defun nl_boundary_chunk_cursor (chunk)
+      (ptr-read-u64 (nl_chunk_cursor_addr chunk) 0))
+    (defun nl_boundary_chunk_used (cursor)
+      (if (< cursor 1024) 0 (- cursor 1024)))
+    (defun nl_boundary_reset_tail_chunks (chunk reclaimed)
+      (if (= chunk 0)
+          reclaimed
+        (let* ((cursor-addr (nl_chunk_cursor_addr chunk))
+               (cursor (ptr-read-u64 cursor-addr 0))
+               (used (nl_boundary_chunk_used cursor)))
+          (seq
+           (ptr-write-u64 cursor-addr 0 1024)
+           (nl_boundary_reset_tail_chunks
+            (ptr-read-u64 (+ chunk 48) 0)
+            (+ reclaimed used))))))
+    (defun nl_boundary_immediate_result_p (out)
+      (if (<= (ptr-read-u64 out 0) 3) 1 0))
+    (defun nl_boundary_reclaim (mark_chunk mark_cursor)
+      (let* ((cursor-addr (nl_chunk_cursor_addr mark_chunk))
+             (cursor (ptr-read-u64 cursor-addr 0))
+             (head-reclaimed (if (< mark_cursor cursor)
+                                 (- cursor mark_cursor)
+                               0))
+             (tail-reclaimed
+              (nl_boundary_reset_tail_chunks (ptr-read-u64 (+ mark_chunk 48) 0) 0)))
+        (seq
+         (ptr-write-u64 cursor-addr 0 mark_cursor)
+         (ptr-write-u64 268436168 0 mark_chunk)
+         (ptr-write-u64 268435552 0 0)
+         (ptr-write-u64 268436200 0
+                        (+ (ptr-read-u64 268436200 0)
+                           (+ head-reclaimed tail-reclaimed)))
+         0)))
+    (defun nl_boundary_maybe_reclaim (mark_chunk mark_cursor epoch0 out)
+      (if (= (ptr-read-u64 268436216 0) 1)
+          (if (= (nl_boundary_immediate_result_p out) 1)
+              (if (= (ptr-read-u64 268435544 0) epoch0)
+                  (if (= (ptr-read-u64 268435472 0) 0)
+                      (if (= (ptr-read-u64 268435464 0) 0)
+                          (nl_boundary_reclaim mark_chunk mark_cursor)
+                        0)
+                    0)
+                0)
+            0)
+        0)))
+  "Reader top-level boundary reclamation helpers for Doc 140 Stage 5.")
+
+(defconst nelisp-standalone--reader-eval-source-source
+  '(defun nl_eval_source_all (src cursor result pool out ctx builtin_sym)
+     (seq
+      (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+      (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+      (let* ((more 1))
+        (while (= more 1)
+          (seq
+           (ptr-write-u64 result 0 0) (ptr-write-u64 result 8 0)
+           (let* ((mark_chunk (ptr-read-u64 268436168 0))
+                  (mark_cursor (nl_boundary_chunk_cursor mark_chunk))
+                  (epoch0 (ptr-read-u64 268435544 0))
+                  (prc (nelisp_reader_parse_one src cursor result pool 0)))
+             (if (= prc 1)
+                 (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+                      (nelisp_eval_call result ctx out)
+                      (nl_boundary_maybe_reclaim mark_chunk mark_cursor epoch0 out)
+                      (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
+                          0
+                        (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
+                               (bump (ptr-read-u64 268435456 0))
+                               (lo (+ (* live 3) 1048576))
+                               (hi (+ bump 536870912)))
+                          (ptr-write-u64 268435560 0 (if (< lo hi) hi lo))))
+                      (if (= (ptr-read-u64 268435464 0) 0)
+                          0
+                        (setq more 0)))
+               (setq more 0))))))
+      0))
+  "Reader source parse/eval loop split out of the always-recompiled driver.")
 
 (defun nelisp-standalone--runtime-image-command-src ()
   "Return embedded source implementing standalone-reader runtime-image commands."
@@ -3826,7 +3915,7 @@ correctly."
       (nelisp-standalone--reader-repl-eval-suffix))
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_no_print_suffix
-      "))) 0)\n")
+      "))) v)\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_prompt
       "nelisp> ")
@@ -4128,30 +4217,6 @@ correctly."
     (defun nl_repl_write_prompt (fbuf)
       (let* ((n (nl_repl_prompt fbuf 0)))
         (nl_os_write_stdout fbuf n)))
-    (defun nl_eval_source_all (src cursor result pool out ctx builtin_sym)
-      (seq
-       (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-       (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-       (let* ((more 1))
-         (while (= more 1)
-           (seq
-            (ptr-write-u64 result 0 0) (ptr-write-u64 result 8 0)
-            (let* ((prc (nelisp_reader_parse_one src cursor result pool 0)))
-              (if (= prc 1)
-                  (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                       (nelisp_eval_call result ctx out)
-                      (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
-                          0
-                        (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
-                               (bump (ptr-read-u64 268435456 0))
-                               (lo (+ (* live 3) 1048576))
-                               (hi (+ bump 536870912)))
-                           (ptr-write-u64 268435560 0 (if (< lo hi) hi lo))))
-                       (if (= (ptr-read-u64 268435464 0) 0)
-                           0
-                         (setq more 0)))
-                (setq more 0))))))
-       0))
     (defun nl_repl_loop (prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
       (let* ((done 0)
              (n 0))
@@ -4291,7 +4356,9 @@ correctly."
             (seq
              ,@(nelisp-standalone--reader-repl-prelude-forms
                 'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+             (ptr-write-u64 268436216 0 0)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
+             (ptr-write-u64 268436216 0 1)
              (if (= (ptr-read-u64 268435464 0) 0)
                  0
                (- (ptr-read-u64 268435464 0) 1)))))
@@ -4333,7 +4400,9 @@ correctly."
             (seq
              ,@(nelisp-standalone--reader-repl-prelude-forms
                 'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+             (ptr-write-u64 268436216 0 0)
              (nl_repl_loop prompt_p print_p linebuf fbuf src cursor result pool out ctx builtin_sym)
+             (ptr-write-u64 268436216 0 1)
              (if (= (ptr-read-u64 268435464 0) 0)
                  0
                (- (ptr-read-u64 268435464 0) 1)))))
@@ -4369,7 +4438,9 @@ correctly."
            ;; --- reader path (M8): read+eval EVERY top-level form, keep the last
            ;; value.  parse_one advances the shared cursor; it returns 1 per form
            ;; and != 1 (e.g. -1 at EOF) when no more forms remain.
+           (ptr-write-u64 268436216 0 0)
            (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+           (ptr-write-u64 268436216 0 1)
            (ptr-read-u64 out 8))))))))
 
 ;; REAL special-form + env machinery (Doc 137 M2/M3 un-trap).  Replaces the
@@ -4926,6 +4997,18 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (catch-throw (nelisp-standalone--cached-unit
                        "reader-catch-throw.o" nelisp-standalone--catch-throw-source
                        nelisp-standalone--this-file))
+         ;; Doc 140 Stage 5: top-level boundary reset helpers.  Keep this out of
+         ;; the always-recompiled driver so focused CLI/REPL work stays cacheable.
+         (boundary (nelisp-standalone--cached-unit
+                    "reader-boundary.o" nelisp-standalone--reader-boundary-source
+                    nelisp-standalone--this-file))
+         ;; Reader parse/eval loop.  This is called by CLI, --load, file loads,
+         ;; runtime-image dispatch, and REPL; keeping it cacheable avoids
+         ;; recompiling the loop whenever only the driver command surface moves.
+         (eval-source (nelisp-standalone--cached-unit
+                       "reader-eval-source.o"
+                       nelisp-standalone--reader-eval-source-source
+                       nelisp-standalone--this-file))
          ;; Tracing mark-sweep GC (form-boundary reclaimer).  Compiled from
          ;; the inline source above; the driver calls `nl_gc_collect'.
          (gc (nelisp-standalone--cached-unit
@@ -4936,7 +5019,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub) real-sf
-            (list sf-cc capture errstub fileio catch-throw gc arena))))
+            (list sf-cc capture errstub fileio catch-throw boundary eval-source gc arena))))
 
 (defun nelisp-standalone--codesign-macos-adhoc (out)
   "Apply an ad-hoc code signature to OUT for the macos-aarch64 target.
@@ -5005,6 +5088,19 @@ before executing." out out))
       (message "[standalone-reader] FAIL: %S -> exit %d (expected %d)"
                (nelisp-standalone--reader-src) code expected)
       (kill-emacs 1))))
+
+;;;###autoload
+(defun nelisp-standalone-reader-repl-test ()
+  "Build the reader binary and run only the REPL smoke.  Exits 0/1."
+  (nelisp-standalone-build-reader)
+  (condition-case err
+      (progn
+        (nelisp-standalone--reader-repl-smoke)
+        (kill-emacs 0))
+    (error
+     (message "[standalone-reader] FAIL: repl smoke: %s"
+              (error-message-string err))
+     (kill-emacs 1))))
 
 (defun nelisp-standalone--reader-cli-smoke ()
   "Assert the short CLI supports help/eval/load and readable printed values."

@@ -199,7 +199,17 @@ address of the target section (= the start of BYTES in the loaded
 image).  The return value matches the BYTES type (= string in →
 string out, vector in → vector out)."
   (let* ((vec (nelisp-link--ensure-mutable bytes))
-         (offset (plist-get reloc :offset))
+         (_patched (nelisp-link-apply-reloc-inplace vec reloc symtab section-va)))
+    (if (stringp bytes)
+        (nelisp-link--vec->ubstring vec)
+      vec)))
+
+(defun nelisp-link-apply-reloc-inplace (vec reloc symtab section-va)
+  "Patch mutable byte vector VEC with one RELOC entry, then return VEC.
+This is the destructive sibling of `nelisp-link-apply-reloc'.  Link passes that
+already own the combined section use it to avoid copying that section once per
+relocation."
+  (let* ((offset (plist-get reloc :offset))
          (type (plist-get reloc :type))
          (sym-name (nelisp-link--reloc-symbol-name reloc))
          (addend (or (plist-get reloc :addend) 0))
@@ -228,9 +238,7 @@ string out, vector in → vector out)."
        (nelisp-link--patch-le64 vec offset (+ S addend)))
       (_ (signal 'nelisp-link-error
                  (list :reloc-unsupported-type type))))
-    (if (stringp bytes)
-        (nelisp-link--vec->ubstring vec)
-      vec)))
+    vec))
 
 (defun nelisp-link-apply-relocs (bytes relocs symtab section-va)
   "Patch BYTES with every entry in RELOCS, return patched bytes.
@@ -472,7 +480,7 @@ SECTION-LAYOUT is the same alist passed to pass 1."
                 (signal 'nelisp-link-error
                         (list :reloc-bad-section rsec)))
               (setcdr (assq rsec out)
-                      (nelisp-link-apply-reloc
+                      (nelisp-link-apply-reloc-inplace
                        vec shifted symtab sec-va)))))))
     ;; Convert vectors back to unibyte-strings for downstream consumers.
     (mapcar (lambda (cell)

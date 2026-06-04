@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
 
 EMACS ?= emacs
 
@@ -120,6 +120,14 @@ standalone-reader-load-smoke: standalone-reader
 	  echo "[standalone-reader-load-smoke] FAIL: --load -> $$out"; \
 	  exit 1; \
 	fi
+
+# Fast focused loop for REPL work.  Builds/relinks target/nelisp with the
+# incremental unit cache, then runs only the REPL smoke used by the full reader
+# test.
+standalone-reader-repl-smoke:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-reader-repl-test
 
 # Prelude-load breadth test (Wave-1 (A)+(B)).  Builds the reader binary, then
 # runs it on  scripts/nelisp-stdlib-prelude.el  followed by a breadth test that
