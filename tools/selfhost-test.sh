@@ -106,7 +106,22 @@ selected_smoke_p() {
 }
 
 RB="target/nelisp"
-if [ ! -x "$RB" ]; then
+reader_needs_build() {
+  if [ ! -x "$RB" ]; then
+    return 0
+  fi
+  if [ scripts/nelisp-standalone-build.el -nt "$RB" ]; then
+    return 0
+  fi
+  case "$(uname -s)" in
+    Linux)
+      file "$RB" 2>/dev/null | grep -q 'ELF 64-bit LSB executable, x86-64' || return 0
+      ;;
+  esac
+  return 1
+}
+
+if reader_needs_build; then
   echo "[selfhost] building reader binary..."
   "$EMACS" --batch -Q -L lisp -L src -L scripts \
         --eval '(setq load-prefer-newer t)' \
