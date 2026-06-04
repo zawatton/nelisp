@@ -3561,6 +3561,9 @@ correctly."
         (nl_cstr_len_loop ptr (+ n 1))))
     (defun nl_cstr_len (ptr)
       (if (= ptr 0) 0 (nl_cstr_len_loop ptr 0)))
+    (defun nl_cstr_starts_dash_p (ptr)
+      (if (= ptr 0) 0
+        (if (= (ptr-read-u8 ptr 0) 45) 1 0)))
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_dump_runtime_image
                                        "dump-runtime-image")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_extend_runtime_image
@@ -3583,6 +3586,14 @@ correctly."
                                        "--no-prompt")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_no_print
                                        "--no-print")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_bare_eval
+                                       "eval")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_bare_load
+                                       "load")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_bare_repl
+                                       "repl")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_bare_help
+                                       "help")
     ,(nelisp-standalone--copy-lit-defun
       'nl_runtime_image_eval_prefix
       "(let ((v (progn\n")
@@ -3606,7 +3617,7 @@ correctly."
       "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [FILE]\n")
+      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value\n  --load FILE                    Load FILE and print the last value\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE FORM...\n  extend-runtime-image IMAGE OUT FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -3650,6 +3661,14 @@ correctly."
               (if (= (nl_cstr_eq_embedded ptr) 1)
                   1
                 (nl_runtime_image_command_p ptr)))))))
+    (defun nl_cli_bare_legacy_command_p (ptr)
+      (if (= (nl_cstr_eq_bare_eval ptr) 1)
+          1
+        (if (= (nl_cstr_eq_bare_load ptr) 1)
+            1
+          (if (= (nl_cstr_eq_bare_repl ptr) 1)
+              1
+            (nl_cstr_eq_bare_help ptr)))))
     (defun nl_cli_argv_shifted_p (argc slot0 slot1)
       (if (> argc 1)
           (if (= slot1 0)
@@ -3659,6 +3678,9 @@ correctly."
     (defun nl_cli_write_help (fbuf)
       (let* ((n (nl_cli_help_text fbuf 0)))
         (nl_os_write_stdout fbuf n)))
+    (defun nl_cli_one_arg_p (arg2 arg3)
+      (if (= arg2 0) 0
+        (if (= arg3 0) 1 0)))
     (defun nl_cstr_copy_into (src dst off)
       (if (= src 0)
           off
@@ -3731,7 +3753,9 @@ correctly."
              (n (nl_os_read_file_cpath
                  path_ptr (+ fbuf off)
                  (- ,nelisp-standalone--reader-read-cap off))))
-        (nl_cli_wrap_source_at fbuf (+ off (if (< n 0) 0 n)) src)))
+        (if (< n 0)
+            0
+          (seq (nl_cli_wrap_source_at fbuf (+ off n) src) 1))))
     (defun nl_copy_bytes_into (src dst i n off)
       (seq
        (while (< i n)
@@ -3940,7 +3964,7 @@ correctly."
         (cond
          ((= path 0)
           (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
-              2
+              (seq (nl_cli_write_help fbuf) 2)
             (seq
              ,@(nelisp-standalone--reader-repl-prelude-forms
                 'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
@@ -3949,9 +3973,11 @@ correctly."
                  0
                (- (ptr-read-u64 268435464 0) 1)))))
          ((= (nl_cli_help_command_p path) 1)
-          (seq (nl_cli_write_help fbuf) 0))
+          (if (= arg2 0)
+              (seq (nl_cli_write_help fbuf) 0)
+            (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cli_eval_command_p path) 1)
-          (if (> argc 2)
+          (if (= (nl_cli_one_arg_p arg2 arg3) 1)
               (seq
                (nl_cli_eval_source sp0 fbuf src)
                (nl_eval_source_all src cursor result pool out ctx builtin_sym)
@@ -3960,17 +3986,23 @@ correctly."
                  (- (ptr-read-u64 268435464 0) 1)))
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_load path) 1)
-          (if (> argc 2)
-              (seq
-               (nl_cli_load_source sp0 fbuf src)
-               (nl_eval_source_all src cursor result pool out ctx builtin_sym)
-               (if (= (ptr-read-u64 268435464 0) 0)
-                   0
-                 (- (ptr-read-u64 268435464 0) 1)))
+          (if (= (nl_cli_one_arg_p arg2 arg3) 1)
+              (if (= (nl_cli_load_source sp0 fbuf src) 1)
+                  (seq
+                   (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+                   (if (= (ptr-read-u64 268435464 0) 0)
+                       0
+                     (- (ptr-read-u64 268435464 0) 1)))
+                (seq (nl_cli_write_help fbuf) 2))
             (seq (nl_cli_write_help fbuf) 2)))
+         ((= (nl_cstr_eq_embedded path) 1)
+          (seq
+           (sexp-write-str-lit src ,(nelisp-standalone--reader-src))
+           (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+           (ptr-read-u64 out 8)))
          ((= (nl_cstr_eq_repl path) 1)
           (if (= (nl_repl_usage_error_p argc arg2 arg3) 1)
-              2
+              (seq (nl_cli_write_help fbuf) 2)
             (seq
              ,@(nelisp-standalone--reader-repl-prelude-forms
                 'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
@@ -3980,6 +4012,10 @@ correctly."
                (- (ptr-read-u64 268435464 0) 1)))))
          ((= (nl_cstr_eq_dump_runtime_image path) 1)
           (nl_runtime_image_write_dump sp0 argc fbuf))
+         ((= (nl_cli_bare_legacy_command_p path) 1)
+          (seq (nl_cli_write_help fbuf) 2))
+         ((= (nl_cstr_starts_dash_p path) 1)
+          (seq (nl_cli_write_help fbuf) 2))
          (t
           (seq
            ;; --- source selection: embedded vs. file (M7 dual mode) ---
@@ -3996,14 +4032,13 @@ correctly."
                     (nl_argv_list_from argc sp0 1 argv_list)
                     (nl_env_set_value ctx argv_sym argv_list)
                     (sexp-write-str-lit src ,(nelisp-standalone--runtime-image-command-src)))
-                 (if (= (nl_cstr_eq_embedded path) 1)
-                     ;; embedded NELISP_SRC (gate path)
-                     (sexp-write-str-lit src ,(nelisp-standalone--reader-src))
-                   ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
-                   (let* ((n (nl_os_read_file_cpath
-                              path fbuf
-                              ,nelisp-standalone--reader-read-cap)))
-                     (nl_alloc_str fbuf (if (< n 0) 0 n) src)))))))
+                 ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
+                 (let* ((n (nl_os_read_file_cpath
+                            path fbuf
+                            ,nelisp-standalone--reader-read-cap)))
+                   (if (< n 0)
+                       (sexp-write-str-lit src "1")
+                     (nl_alloc_str fbuf n src)))))))
            ;; --- reader path (M8): read+eval EVERY top-level form, keep the last
            ;; value.  parse_one advances the shared cursor; it returns 1 per form
            ;; and != 1 (e.g. -1 at EOF) when no more forms remain.

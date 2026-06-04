@@ -143,6 +143,32 @@ function Assert-Output {
     Write-Host ("[windows-standalone-reader] PASS: " + $Label)
 }
 
+function Assert-CodeOutputContains {
+    param(
+        [string]$Label,
+        [string[]]$Output,
+        [int]$Code,
+        [string]$Needle,
+        [int]$ExpectedCode = 2
+    )
+
+    $Text = $Output -join "`n"
+    if ($Code -ne $ExpectedCode) {
+        Write-Host ("[windows-standalone-reader] FAIL: " + $Label +
+                    " -> exit " + $Code + " (expected " + $ExpectedCode + ")")
+        Write-Host $Text
+        exit 1
+    }
+    if (-not ($Text.Contains($Needle))) {
+        Write-Host ("[windows-standalone-reader] FAIL: " + $Label +
+                    " output missing " + $Needle)
+        Write-Host $Text
+        exit 1
+    }
+    Write-Host ("[windows-standalone-reader] PASS: " + $Label +
+                " -> exit " + $ExpectedCode)
+}
+
 function Convert-ReaderOutputText {
     param([string]$Text)
 
@@ -211,6 +237,46 @@ if ($null -eq $LoadCode) {
     $LoadCode = 0
 }
 Assert-Output -Label "--load" -Output $LoadOutput -Code $LoadCode -Expected "43"
+
+$BareEvalOutput = & $Exe eval "(+ 40 2)"
+$BareEvalCode = $LASTEXITCODE
+if ($null -eq $BareEvalCode) {
+    $BareEvalCode = 0
+}
+Assert-CodeOutputContains -Label "bare eval rejected" -Output $BareEvalOutput `
+    -Code $BareEvalCode -Needle "Arguments:"
+
+$UnknownOptionOutput = & $Exe --bad-option
+$UnknownOptionCode = $LASTEXITCODE
+if ($null -eq $UnknownOptionCode) {
+    $UnknownOptionCode = 0
+}
+Assert-CodeOutputContains -Label "unknown option rejected" `
+    -Output $UnknownOptionOutput -Code $UnknownOptionCode -Needle "Arguments:"
+
+$HelpExtraOutput = & $Exe --help extra
+$HelpExtraCode = $LASTEXITCODE
+if ($null -eq $HelpExtraCode) {
+    $HelpExtraCode = 0
+}
+Assert-CodeOutputContains -Label "--help extra arg rejected" `
+    -Output $HelpExtraOutput -Code $HelpExtraCode -Needle "Arguments:"
+
+$EvalMissingOutput = & $Exe --eval
+$EvalMissingCode = $LASTEXITCODE
+if ($null -eq $EvalMissingCode) {
+    $EvalMissingCode = 0
+}
+Assert-CodeOutputContains -Label "--eval missing expr rejected" `
+    -Output $EvalMissingOutput -Code $EvalMissingCode -Needle "Arguments:"
+
+$LoadMissingOutput = & $Exe --load
+$LoadMissingCode = $LASTEXITCODE
+if ($null -eq $LoadMissingCode) {
+    $LoadMissingCode = 0
+}
+Assert-CodeOutputContains -Label "--load missing file rejected" `
+    -Output $LoadMissingOutput -Code $LoadMissingCode -Needle "Arguments:"
 
 $RuntimeImage = Join-Path $SmokeDir "runtime-smoke.nlri"
 

@@ -91,6 +91,26 @@ run_expect_output() {
   echo "[macos-standalone-reader] PASS: $label"
 }
 
+run_expect_code_output_contains() {
+  local label="$1" want="$2" needle="$3"; shift 3
+  local output code
+  set +e
+  output="$("$@")"
+  code=$?
+  set -e
+  if [ "$code" -ne "$want" ]; then
+    echo "[macos-standalone-reader] FAIL: $label -> exit $code (expected $want)"
+    echo "$output"
+    exit 1
+  fi
+  if ! printf '%s\n' "$output" | grep -q "$needle"; then
+    echo "[macos-standalone-reader] FAIL: $label output missing $needle"
+    echo "$output"
+    exit 1
+  fi
+  echo "[macos-standalone-reader] PASS: $label -> exit $want"
+}
+
 run_lldb_with_stdin() {
   local input="$1"; shift
   if command -v lldb >/dev/null 2>&1; then
@@ -158,6 +178,16 @@ echo "[macos-standalone-reader] PASS: --help"
 
 run_expect_output "--eval" "42" "$EXE" --eval "(+ 40 2)"
 run_expect_output "--load" "43" "$EXE" --load "$FILE_SMOKE"
+run_expect_code_output_contains "bare eval rejected" 2 "Arguments:" \
+  "$EXE" eval "(+ 40 2)"
+run_expect_code_output_contains "unknown option rejected" 2 "Arguments:" \
+  "$EXE" --bad-option
+run_expect_code_output_contains "--help extra arg rejected" 2 "Arguments:" \
+  "$EXE" --help extra
+run_expect_code_output_contains "--eval missing expr rejected" 2 "Arguments:" \
+  "$EXE" --eval
+run_expect_code_output_contains "--load missing file rejected" 2 "Arguments:" \
+  "$EXE" --load
 
 RUNTIME_IMAGE="$SMOKE_DIR/runtime-smoke.nlri"
 run_expect_output "dump-runtime-image" "" \
