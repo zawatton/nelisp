@@ -3818,15 +3818,13 @@ correctly."
        (setq off (+ off 1))
        (setq off (nl_cli_eval_suffix fbuf off))
        (nl_alloc_str fbuf off src)))
-    (defun nl_cli_eval_source (sp fbuf src)
-      (let* ((form_ptr (ptr-read-u64 sp 24))
-             (off (nl_cli_eval_prefix fbuf 0)))
+    (defun nl_cli_eval_source (form_ptr fbuf src)
+      (let* ((off (nl_cli_eval_prefix fbuf 0)))
         (seq
          (setq off (nl_cstr_copy_into form_ptr fbuf off))
          (nl_cli_wrap_source_at fbuf off src))))
-    (defun nl_cli_load_source (sp fbuf src)
-      (let* ((path_ptr (ptr-read-u64 sp 24))
-             (off (nl_cli_eval_prefix fbuf 0))
+    (defun nl_cli_load_source (path_ptr fbuf src)
+      (let* ((off (nl_cli_eval_prefix fbuf 0))
              (n (nl_os_read_file_cpath
                  path_ptr (+ fbuf off)
                  (- ,nelisp-standalone--reader-read-cap off))))
@@ -4056,7 +4054,7 @@ correctly."
          ((= (nl_cli_eval_command_p path) 1)
           (if (= (nl_cli_one_arg_p arg2 arg3) 1)
               (seq
-               (nl_cli_eval_source sp0 fbuf src)
+               (nl_cli_eval_source arg2 fbuf src)
                (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                (if (= (ptr-read-u64 268435464 0) 0)
                    0
@@ -4064,7 +4062,7 @@ correctly."
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_load path) 1)
           (if (= (nl_cli_one_arg_p arg2 arg3) 1)
-              (if (= (nl_cli_load_source sp0 fbuf src) 1)
+              (if (= (nl_cli_load_source arg2 fbuf src) 1)
                   (seq
                    (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                    (if (= (ptr-read-u64 268435464 0) 0)
