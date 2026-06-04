@@ -3948,12 +3948,16 @@ correctly."
          (nl_cli_wrap_source_at fbuf off src))))
     (defun nl_cli_load_source (path_ptr fbuf src)
       (let* ((off (nl_cli_eval_prefix fbuf 0))
+             (filebuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1))
              (n (nl_os_read_file_cpath
-                 path_ptr (+ fbuf off)
-                 (- ,nelisp-standalone--reader-read-cap off))))
+                 path_ptr filebuf
+                 (- ,nelisp-standalone--reader-read-cap off 512))))
         (if (< n 0)
             0
-          (seq (nl_cli_wrap_source_at fbuf (+ off n) src) 1))))
+          (seq
+           (setq off (nl_copy_bytes_into filebuf fbuf 0 n off))
+           (nl_cli_wrap_source_at fbuf off src)
+           1))))
     (defun nl_copy_bytes_into (src dst i n off)
       (seq
        (while (< i n)

@@ -303,6 +303,32 @@
     (should (memq 'big-probe_chunk_001 chunk-flat))
     (should (memq 'big-probe_chunk_002 chunk-flat))))
 
+(ert-deftest nelisp-standalone-target-reader-load-uses-scratch-read-buffer ()
+  "`--load' reads into scratch storage before wrapping source for output."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((forms (nelisp-standalone--reader-driver-source)))
+      (should (tree-member-p
+               '(filebuf (alloc-bytes 4194304 1))
+               forms))
+      (should (tree-member-p
+               '(nl_os_read_file_cpath path_ptr filebuf
+                                       (- 4194304 off 512))
+               forms))
+      (should (tree-member-p
+               '(setq off (nl_copy_bytes_into filebuf fbuf 0 n off))
+               forms))
+      (should (tree-member-p '(nl_cli_wrap_source_at fbuf off src) forms))
+      (should-not (tree-member-p
+                   '(nl_os_read_file_cpath path_ptr (+ fbuf off)
+                                           (- 4194304 off))
+                   forms)))))
+
 (ert-deftest nelisp-standalone-target-reader-repl-suffix-is-target-aware ()
   "REPL runtime wrapper must not embed the Linux arena quit slot on macOS."
   (let ((nelisp-standalone--target 'macos-aarch64))
