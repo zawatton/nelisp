@@ -70,28 +70,63 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
 # --- balance files across shards by descending size (LPT heuristic) ---------
-# Heavy files (e.g. the float/stdlib suites) dominate wall time, so greedily
-# drop each next-largest file into the currently-lightest shard.
+# Seed a few known-slow files into their own shards first so the wall clock
+# approaches the single slowest file instead of one shard inheriting multiple
+# long poles.  Then greedily drop the remaining files into the currently-
+# lightest shard, preserving the existing count/verdict aggregation logic.
 declare -a SHARD_LOAD   # accumulated bytes per shard
 declare -a SHARD_FILES  # newline-joined file list per shard
 for ((i=0; i<JOBS; i++)); do SHARD_LOAD[i]=0; SHARD_FILES[i]=""; done
 
-while IFS= read -r line; do
+# Small explicit slow-file seed list.  In this checkout the byte-size scan does
+# not make the reader tests stand out, so keep the 2-3 largest `test/' files on
+# dedicated shards first and let the size balancer place everything else.
+KNOWN_SLOW_FILES=(
+  test/nelisp-phase47-doc129-test.el
+  test/nelisp-stdlib-os-test.el
+  test/nelisp-cc-test.el
+)
+
+mapfile -t FILE_SIZE_LINES < <(
+  for f in "${FILES[@]}"; do
+    sz=$(stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f" 2>/dev/null || echo 0)
+    printf '%s %s\n' "$sz" "$f"
+  done | sort -rn
+)
+
+declare -A DEDICATED_SLOW
+next_dedicated_shard=0
+for slow_file in "${KNOWN_SLOW_FILES[@]}"; do
+  [ "$next_dedicated_shard" -ge "$JOBS" ] && break
+  for line in "${FILE_SIZE_LINES[@]}"; do
+    f="${line#* }"
+    [ "$f" != "$slow_file" ] && continue
+    sz="${line%% *}"
+    SHARD_LOAD[next_dedicated_shard]="$sz"
+    SHARD_FILES[next_dedicated_shard]="${f}"$'\n'
+    DEDICATED_SLOW["$f"]=1
+    next_dedicated_shard=$(( next_dedicated_shard + 1 ))
+    break
+  done
+done
+
+# LPT over ALL shards: the dedicated slow shards above are pre-seeded with
+# their slow file's byte load, so the greedy "lightest shard" pick naturally
+# leaves them alone until the other shards catch up.  Considering every shard
+# (not just the non-dedicated tail) keeps balancing correct for SMALL JOBS too
+# — otherwise a low JOBS count would funnel every remaining file into one shard.
+for line in "${FILE_SIZE_LINES[@]}"; do
   sz="${line%% *}"
   f="${line#* }"
-  # pick lightest shard
+  [ -n "${DEDICATED_SLOW[$f]:-}" ] && continue
+  # pick lightest shard across all shards
   min=0
   for ((i=1; i<JOBS; i++)); do
     if (( SHARD_LOAD[i] < SHARD_LOAD[min] )); then min="$i"; fi
   done
   SHARD_LOAD[min]=$(( SHARD_LOAD[min] + sz ))
   SHARD_FILES[min]="${SHARD_FILES[min]}${f}"$'\n'
-done < <(
-  for f in "${FILES[@]}"; do
-    sz=$(stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f" 2>/dev/null || echo 0)
-    printf '%s %s\n' "$sz" "$f"
-  done | sort -rn
-)
+done
 
 echo "[parallel-test] $NFILES files across $JOBS shards (EMACS=$EMACS)"
 T0=$(date +%s.%N)

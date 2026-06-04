@@ -1,4 +1,4 @@
-.PHONY: test test-parallel test-one compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
+.PHONY: test test-fast test-parallel test-one compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -45,6 +45,17 @@ PACKAGE_TEST_LOADS := $(addprefix -L ,$(PACKAGE_TEST_DIRS))
 all: test
 
 test: clean
+	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
+	  $(PACKAGE_SRC_LOADS) \
+	  $(PACKAGE_TEST_LOADS) \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l ert \
+	  $(TEST_LOADS) \
+	  -f ert-run-tests-batch-and-exit
+
+# Fast TDD loop: same test load graph as `test' but skips `clean';
+# use `test' as the clean verification gate before trusting results.
+test-fast:
 	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
 	  $(PACKAGE_SRC_LOADS) \
 	  $(PACKAGE_TEST_LOADS) \
