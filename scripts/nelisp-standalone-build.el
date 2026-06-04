@@ -141,6 +141,15 @@ still uses the historical fixed first arena.")
 (defconst nelisp-standalone--arena-chunk-desc-data-start-offset #x18)
 (defconst nelisp-standalone--arena-chunk-desc-limit-offset #x20)
 (defconst nelisp-standalone--arena-chunk-desc-flags-offset #x28)
+;; Doc 140 Stage 6: chunk desc.flags generation bits.  Bit 0 = the historical
+;; "in use" marker.  Bit 1 (`persistent') marks the boot/global generation
+;; (chunk 0 — boot image, the global mirror, definitions, escaped values) that
+;; top-level boundary reclamation must NEVER reset.  Grown chunks omit the
+;; persistent bit (temporary per-form scratch) so `nl_boundary_reset_tail_chunks'
+;; reclaims only them.  In the current head=chunk0 / tail=grown topology this is
+;; a no-op (chunk 0 is never a reclaim tail), but it makes the persistent /
+;; temporary generation split explicit and robust to future list reordering.
+(defconst nelisp-standalone--arena-chunk-flag-persistent 2)
 (defconst nelisp-standalone--arena-chunk-desc-next-offset #x30)
 
 (defconst nelisp-standalone--arena-default-chunk-size #x4000000
@@ -812,7 +821,7 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-limit-offset)
                      0 ,(+ base size))
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-flags-offset)
-                     0 1)
+                     0 ,(logior 1 nelisp-standalone--arena-chunk-flag-persistent))
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-next-offset)
                      0 0))))
 
@@ -855,7 +864,8 @@ with the base literal)."
       (ptr-write-u64 (+ ,b ,(+ d0 16)) 0 ,ds)      ; desc.cursor (= data-start)
       (ptr-write-u64 (+ ,b ,(+ d0 24)) 0 (+ ,b ,ds)) ; desc.data-start
       (ptr-write-u64 (+ ,b ,(+ d0 32)) 0 (+ ,b ,size)) ; desc.limit
-      (ptr-write-u64 (+ ,b ,(+ d0 40)) 0 1)        ; desc.flags
+      (ptr-write-u64 (+ ,b ,(+ d0 40)) 0
+                     ,(logior 1 nelisp-standalone--arena-chunk-flag-persistent)) ; desc.flags (persistent: boot generation)
       (ptr-write-u64 (+ ,b ,(+ d0 48)) 0 0))))     ; desc.next
 
 (defun nelisp-standalone--linux-arena-init-form ()
@@ -3556,14 +3566,18 @@ fixed-base immediate until `data-addr' lands for those toolchains."
     (defun nl_boundary_reset_tail_chunks (chunk reclaimed)
       (if (= chunk 0)
           reclaimed
-        (let* ((cursor-addr (nl_chunk_cursor_addr chunk))
-               (cursor (ptr-read-u64 cursor-addr 0))
-               (used (nl_boundary_chunk_used cursor)))
-          (seq
-           (ptr-write-u64 cursor-addr 0 1024)
-           (nl_boundary_reset_tail_chunks
-            (ptr-read-u64 (+ chunk 48) 0)
-            (+ reclaimed used))))))
+        (let* ((flags (ptr-read-u64 (+ chunk 40) 0))
+               (next (ptr-read-u64 (+ chunk 48) 0)))
+          ;; Doc 140 Stage 6: never reset a persistent (boot/global) chunk's
+          ;; cursor — only temporary per-form scratch chunks are reclaimed.
+          (if (= (logand flags 2) 2)
+              (nl_boundary_reset_tail_chunks next reclaimed)
+            (let* ((cursor-addr (nl_chunk_cursor_addr chunk))
+                   (cursor (ptr-read-u64 cursor-addr 0))
+                   (used (nl_boundary_chunk_used cursor)))
+              (seq
+               (ptr-write-u64 cursor-addr 0 1024)
+               (nl_boundary_reset_tail_chunks next (+ reclaimed used))))))))
     (defun nl_boundary_immediate_result_p (out)
       (if (<= (ptr-read-u64 out 0) 3) 1 0))
     (defun nl_boundary_reclaim (mark_chunk mark_cursor)

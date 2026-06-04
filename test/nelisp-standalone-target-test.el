@@ -582,6 +582,31 @@ untouched.  Non-linux targets keep their fixed/rebased literals."
               '(defun f () (ptr-read-u64 268435552 0)))
              '(defun f () (ptr-read-u64 268435552 0))))))
 
+(ert-deftest nelisp-standalone-target-stage6-generation-split ()
+  "Doc 140 Stage 6: chunk 0 (boot generation) is tagged persistent and the
+top-level boundary reclaimer skips persistent chunks — only temporary per-form
+scratch chunks have their cursor reset."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    ;; the reclaimer gates the reset on the persistent flag bit.
+    (should (tree-member-p '(logand flags 2)
+                           nelisp-standalone--reader-boundary-source))
+    ;; chunk-0 init writes desc.flags = (logior 1 persistent) = 3 on both the
+    ;; linux dynamic-base path and the windows/macos fixed-base path.
+    (let ((dyn (nelisp-standalone--arena-init-metadata-forms-dynamic 'base 256)))
+      (should (tree-member-p
+               (list 'ptr-write-u64
+                     (list '+ 'base (+ nelisp-standalone--arena-chunk0-desc-offset
+                                       nelisp-standalone--arena-chunk-desc-flags-offset))
+                     0 3)
+               dyn)))
+    (should (= 3 (logior 1 nelisp-standalone--arena-chunk-flag-persistent)))))
+
 (ert-deftest nelisp-standalone-target-gc-walks-chunk-descriptors ()
   "Doc 140 Stage 3 makes GC membership and sweep chunk-aware."
   (cl-labels ((tree-member-p
