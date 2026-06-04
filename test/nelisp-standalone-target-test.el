@@ -457,7 +457,7 @@
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(syscall-direct 9 #x10000000 #x200000000 3 #x100022 -1 0)
+                 '(syscall-direct 9 #x10000000 #x10000000 3 #x100022 -1 0)
                  arena))
         (should (tree-member-p
                  '(syscall-direct 60 88 0 0 0 0 0)
@@ -466,13 +466,15 @@
                      '(syscall-direct 9 #x10000000 #x400000000 3 50 -1 0)
                      arena))
         (should-not (tree-member-p
-                     '(syscall-direct 9 #x10000000 #x200000000 3 50 -1 0)
+                     '(syscall-direct 9 #x10000000 #x10000000 3 50 -1 0)
                      arena))))))
 
 (ert-deftest nelisp-standalone-target-linux-arena-size-stays-pressure-visible ()
-  "Linux must not hide arena pressure by growing the fixed virtual reservation."
+  "Linux must not hide arena pressure by growing the fixed virtual reservation.
+Doc 140 Stage 7: the fixed first chunk is 256 MiB (=#x10000000=), not the
+historical 8 GiB — pressure beyond it is handled by chunk growth."
   (should (= (nelisp-standalone--target-arena-size 'linux-x86_64)
-             #x200000000)))
+             #x10000000)))
 
 (ert-deftest nelisp-standalone-target-arena-size-slot-is-initialized ()
   "All native standalone targets expose reservation size through arena metadata."
@@ -485,7 +487,7 @@
                      (tree-member-p needle (cdr tree)))))))
     (let ((nelisp-standalone--target 'linux-x86_64))
       (should (tree-member-p
-               '(ptr-write-u64 #x100000d8 0 #x200000000)
+               '(ptr-write-u64 #x100000d8 0 #x10000000)
                (nelisp-standalone--target-arena-source))))
     (let ((nelisp-standalone--target 'windows-x86_64)
           (nelisp-standalone--windows-arena-base #x70000000))
@@ -512,9 +514,9 @@
         (should (tree-member-p '(ptr-write-u64 #x100002c0 0 #x10000300) arena))
         (should (tree-member-p '(ptr-write-u64 #x100002c8 0 #x10000300) arena))
         (should (tree-member-p '(ptr-write-u64 #x100002d0 0 1) arena))
-        (should (tree-member-p '(ptr-write-u64 #x100002d8 0 #x200000000) arena))
+        (should (tree-member-p '(ptr-write-u64 #x100002d8 0 #x10000000) arena))
         (should (tree-member-p '(ptr-write-u64 #x10000300 0 #x10000000) arena))
-        (should (tree-member-p '(ptr-write-u64 #x10000308 0 #x200000000) arena))
+        (should (tree-member-p '(ptr-write-u64 #x10000308 0 #x10000000) arena))
         (should (tree-member-p '(ptr-write-u64 #x10000318 0 #x10000400) arena))
         (should (tree-member-p '(ptr-write-u64 #x10000330 0 0) arena))))
     (let ((nelisp-standalone--target 'windows-x86_64)

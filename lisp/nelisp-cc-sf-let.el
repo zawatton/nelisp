@@ -41,10 +41,7 @@
 ;;   Every function has even arity so body-entry rsp ≡ 0 mod 16.
 ;;   Every extern-call appears as argument 0 at its call site.
 ;;
-;; Structure (12 defuns):
-;;   nl_sf_let_restore_ret (restore-rc pop-rc saved out) — arity 4
-;;   nl_sf_let_restore     (pop-rc saved out _pad) — arity 4
-;;   nl_sf_let_pop_saved   (save-rc env saved out) — arity 4
+;; Structure (7 defuns):
 ;;   nl_sf_let_ret        (pop-rc body-rc _p2 _p3) — arity 4
 ;;     Return body-rc after frame pop.
 ;;   nl_sf_let_finish     (body-rc env out _pad) — arity 4
@@ -71,45 +68,18 @@
 (defconst nelisp-cc-sf-let--source
   '(seq
 
-    ;; After restoring the saved body result: discard restore-rc, return 0.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_restore_ret (_restore-rc _pop-rc _saved _out)
-      0)
-
-    ;; After nl_env_pop_frame: restore the result saved before popping the frame.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_restore (pop-rc saved out _pad)
-      (if (= pop-rc 0)
-          (nl_sf_let_restore_ret
-           (extern-call nl_sexp_clone_into saved out)
-           pop-rc saved out)
-        1))
-
-    ;; After saving the body result: pop frame, then restore the saved result.
-    ;; Arity 4 (even).
-    (defun nl_sf_let_pop_saved (_save-rc env saved out)
-      (nl_sf_let_restore
-       (extern-call nl_env_pop_frame env)
-       saved out 0))
-
     ;; After nl_env_pop_frame: discard pop-rc, return body-rc.
     ;; Arity 4 (even).
     (defun nl_sf_let_ret (pop-rc body-rc _p2 _p3)
       body-rc)
 
     ;; body-rc = result of body eval (0=Ok or 1=Err).
-    ;; On success, save *out before popping the lexical frame; the result may
-    ;; be a pointer to a frame slot.  On error, just pop and propagate body-rc.
+    ;; Pop frame unconditionally (extern-call FIRST ✓), then return body-rc.
     ;; Arity 4 (even).
     (defun nl_sf_let_finish (body-rc env out _pad)
-      (if (= body-rc 0)
-          (let* ((saved (alloc-bytes 32 8)))
-            (nl_sf_let_pop_saved
-             (extern-call nl_sexp_clone_into out saved)
-             env saved out))
-        (nl_sf_let_ret
-         (extern-call nl_env_pop_frame env)
-         body-rc 0 0)))
+      (nl_sf_let_ret
+       (extern-call nl_env_pop_frame env)
+       body-rc 0 0))
 
     ;; After nelisp_eval_call on one body form: check rc, advance list.
     ;; eval-rc=0 → recurse on remaining body forms.
@@ -184,7 +154,7 @@
 
   "Phase 47 source for `nl_sf_let' (eval/special_forms.rs sf_let → elisp).
 
-Twelve defuns (seq form).  CPS chain decomposed into frame-setup +
+Nine defuns (seq form).  CPS chain decomposed into frame-setup +
 body-eval + frame-pop phases.
 
 Externs:

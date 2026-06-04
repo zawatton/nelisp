@@ -78,11 +78,19 @@ Accepts decimal strings and 0x-prefixed hexadecimal strings."
 (defconst nelisp-standalone--arena-base #x10000000
   "Default standalone arena base used by the Linux/SysV path.")
 
-(defconst nelisp-standalone--linux-arena-size #x200000000
-  "Linux standalone fixed arena reservation size.
-Keep this at 8 GiB as a temporary virtual reservation.  Increasing this is the
-last-resort path; pressure should be made visible and then handled by GC/root
-fixes or chunked arena growth.")
+(defconst nelisp-standalone--linux-arena-size
+  (let* ((env (getenv "NELISP_LINUX_ARENA_SIZE"))
+         (n (and env (string-to-number env))))
+    (if (and n (> n 0)) n #x10000000))
+  "Linux standalone fixed FIRST-CHUNK reservation size (default 256 MiB).
+Doc 140 Stage 7: reduced from the historical 8 GiB to 256 MiB.  This is no
+longer the whole arena — it is just the bootstrap first chunk.  Allocation
+beyond it grows by adding `nl_os_alloc_chunk' chunks (`nl_alloc_bytes' ->
+`nl_chunk_alloc_new'), so pressure is handled by chunk growth instead of an
+ever-larger fixed reservation.  The chunk descriptor stores this size
+dynamically, so shrinking it does not change any membership/sweep bound.
+Override via the NELISP_LINUX_ARENA_SIZE env var (bytes) — used by the
+chunk-growth pressure test to force growth with a tiny first chunk.")
 
 (defconst nelisp-standalone--windows-arena-base
   (nelisp-standalone--parse-int-env
