@@ -299,6 +299,65 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
         (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
           (walk source))))))
 
+(defun nelisp-standalone--chunk-arena-rewrite (source)
+  "Doc 140 Stage 8: rewrite fixed-arena-base metadata immediates in SOURCE to
+load the runtime mmap(NULL) base from the driver-owned `nl_arena_base' bss
+slot, so NO normal runtime path embeds a fixed arena base.
+
+Active only for the linux-x86_64 target — the platform whose chunked arena no
+longer uses a fixed reservation.  windows/macos keep their `data-addr'-free
+rebased fixed base until the address-of-data-symbol primitive lands for their
+toolchains (windows shares the x86_64 pc32 reloc; macos-aarch64 needs
+ADRP+ADD), tracked as the Stage 8 follow-up.
+
+Every integer atom N in [arena-base, arena-base+span) — the compact metadata
+block plus the chunk-0 descriptor — becomes `(+ (ptr-read-u64 (data-addr
+nl_arena_base) 0) OFF)' where OFF = N - arena-base.  Because in the chunked
+model that whole range is *always* arena-base-relative (the chunk-0 bump
+cursor at +0, control slots, the chunk-0 descriptor), the rewrite is uniform
+and unambiguous.  The `nl_arena_init' defun is left untouched: it is the one
+site that reserves the chunk via mmap(NULL), seeds the slot from a runtime
+base var, and carries the reservation SIZE literal (= arena-base numerically,
+which would otherwise collide with the base immediate)."
+  (if (not (eq nelisp-standalone--target 'linux-x86_64))
+      source
+    (let ((base nelisp-standalone--arena-base)
+          (span nelisp-standalone--arena-rebase-span))
+      (cl-labels
+          ((rewrite-int
+            (n)
+            (if (and (integerp n) (<= base n) (< n (+ base span)))
+                `(+ (ptr-read-u64 (data-addr nl_arena_base) 0) ,(- n base))
+              n))
+           (walk
+            (form)
+            (cond
+             ;; Leave the base-establishing init untouched (mmap(NULL) call +
+             ;; SIZE literal live here; the runtime base var does the writes).
+             ((and (consp form) (eq (car form) 'defun)
+                   (eq (cadr form) 'nl_arena_init))
+              form)
+             ((integerp form) (rewrite-int form))
+             ((consp form) (cons (walk (car form)) (walk (cdr form))))
+             (t form))))
+        (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
+          (walk source))))))
+
+(defun nelisp-standalone--arena-base-slot-unit ()
+  "Doc 140 Stage 8 (linux x86_64): a tiny driver-owned bss link unit exporting
+`nl_arena_base'.  `nl_arena_init' stores the mmap(NULL) chunk-0 base in this
+8-byte slot; the chunk-arena rewrite makes every former fixed-arena-base
+metadata access load the slot (via the `data-addr' cross-unit pc32 reloc) +
+offset.  The slot lives in the binary's own bss (linker-assigned VA, present
+in the program headers like any C global), so the ONLY remaining fixed address
+is driver-owned global storage — not an arena reservation."
+  (nelisp-link-unit-make
+   (nelisp-standalone--target-object-name "arena-base.o")
+   (list (cons 'bss 8))
+   (list (nelisp-link-symbol "nl_arena_base" 0
+                             :section 'bss :bind 'global :type 'object))
+   nil))
+
 ;; ===================================================================
 ;; my-compile-to-unit — Phase47 source -> in-memory link-unit.
 ;; reloc :addend normalized to 0 (the linker uses P = va+offset+4; the
@@ -383,6 +442,7 @@ standalone units can call each other."
   "Compile Phase47 SOURCE to a link-unit labelled NAME."
   (let* ((name (nelisp-standalone--target-object-name name))
          (source (nelisp-standalone--rebase-arena-source source))
+         (source (nelisp-standalone--chunk-arena-rewrite source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
          (nelisp-phase47-compiler--label-counter 0)
@@ -756,25 +816,68 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-next-offset)
                      0 0))))
 
-(defun nelisp-standalone--linux-arena-init-form ()
-  "Return the Linux `nl_arena_init' form using mmap.
+(defun nelisp-standalone--arena-init-metadata-forms-dynamic (base-sym size)
+  "Like `nelisp-standalone--arena-init-metadata-forms' but BASE-SYM names a
+runtime VARIABLE (the chunk-0 base reserved by mmap(NULL) at run time), not a
+fixed compile-time address.  Used by the Doc 140 Stage 8 linux init: the
+arena is no longer mapped at the historical 0x10000000 base, so every metadata
+slot is seeded relative to the runtime base instead of a baked immediate.
+SIZE is the first-chunk reservation in bytes (a literal — kept inside
+`nl_arena_init', which the chunk-arena rewrite skips, so it never collides
+with the base literal)."
+  (let* ((ds nelisp-standalone--arena-data-start-offset)
+         (b base-sym)
+         (d0 nelisp-standalone--arena-chunk0-desc-offset))
+    `((ptr-write-u64 ,b 0 ,ds)              ; chunk-0 bump cursor (= data-start)
+      (ptr-write-u64 (+ ,b 8) 0 0)          ; quit flag
+      (ptr-write-u64 (+ ,b 16) 0 0)         ; throw flag
+      (ptr-write-u64 (+ ,b 96) 0 0)         ; free-list head
+      (ptr-write-u64 (+ ,b 104) 0 0)        ; gc trigger
+      (ptr-write-u64 (+ ,b 112) 0 (+ ,b ,ds)) ; data start addr
+      (ptr-write-u64 (+ ,b 120) 0 0)        ; live bytes
+      (ptr-write-u64 (+ ,b 128) 0 0)        ; sweep free dead blocks
+      (ptr-write-u64 (+ ,b 136) 0 0)        ; mark phase enabled
+      (ptr-write-u64 (+ ,b 160) 0 1)        ; collect disabled
+      (ptr-write-u64 (+ ,b 168) 0 0)        ; free-list reuse
+      (ptr-write-u64 (+ ,b 192) 0 0)        ; probe off
+      (ptr-write-u64 (+ ,b 200) 0 0)        ; min reuse block_total
+      (ptr-write-u64 (+ ,b 216) 0 ,size)    ; reservation size
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-head-offset) 0 (+ ,b ,d0))
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-current-offset) 0 (+ ,b ,d0))
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-count-offset) 0 1)
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-bytes-reserved-offset) 0 ,size)
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-bytes-used-offset) 0 0)
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-bytes-reclaimed-offset) 0 0)
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-alloc-failures-offset) 0 0)
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-boundary-reclaim-enabled-offset) 0 1)
+      (ptr-write-u64 (+ ,b ,d0) 0 ,b)              ; chunk-0 desc.base
+      (ptr-write-u64 (+ ,b ,(+ d0 8)) 0 ,size)     ; desc.size
+      (ptr-write-u64 (+ ,b ,(+ d0 16)) 0 ,ds)      ; desc.cursor (= data-start)
+      (ptr-write-u64 (+ ,b ,(+ d0 24)) 0 (+ ,b ,ds)) ; desc.data-start
+      (ptr-write-u64 (+ ,b ,(+ d0 32)) 0 (+ ,b ,size)) ; desc.limit
+      (ptr-write-u64 (+ ,b ,(+ d0 40)) 0 1)        ; desc.flags
+      (ptr-write-u64 (+ ,b ,(+ d0 48)) 0 0))))     ; desc.next
 
-The reservation still uses the historical low arena base because the current
-Phase47 standalone runtime embeds arena metadata addresses as immediates.  Use
-MAP_FIXED_NOREPLACE rather than MAP_FIXED so a collision fails cleanly instead
-of replacing an existing mapping.  The size remains 8 GiB; larger reservations
-are a last-resort workaround, not the correctness path."
-  (let ((base nelisp-standalone--arena-base)
-        (size nelisp-standalone--linux-arena-size)
-        ;; MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE
-        (flags (+ 2 32 #x100000)))
+(defun nelisp-standalone--linux-arena-init-form ()
+  "Return the Linux `nl_arena_init' form (Doc 140 Stage 8: fully chunked).
+
+chunk 0 is now reserved by `nl_os_alloc_chunk' (= mmap with addr=NULL) — there
+is NO fixed base address and no MAP_FIXED reservation.  The kernel-chosen base
+is stored in the driver-owned `nl_arena_base' bss slot; the per-unit
+`nelisp-standalone--chunk-arena-rewrite' turns every former
+fixed-arena-base metadata immediate into a load of that slot + offset, so the
+standalone runtime no longer depends on the historical 0x10000000 mapping.
+This is the linux completion of Stage 8: pressure is bounded by chunk growth,
+addressing by a runtime base, never by a fixed reservation."
+  (let ((size nelisp-standalone--linux-arena-size))
     `(defun nl_arena_init ()
-       (let ((p (syscall-direct 9 ,base ,size 3 ,flags -1 0)))
-         (if (= p ,base)
-             (seq
-              ,@(nelisp-standalone--arena-init-metadata-forms base size)
-              p)
-           (syscall-direct 60 88 0 0 0 0 0))))))
+       (let ((base (nl_os_alloc_chunk ,size)))
+         (if (= base 0)
+             (nl_os_alloc_fail)
+           (seq
+            (ptr-write-u64 (data-addr nl_arena_base) 0 base)
+            ,@(nelisp-standalone--arena-init-metadata-forms-dynamic 'base size)
+            base))))))
 
 (defun nelisp-standalone--linux-alloc-chunk-form ()
   "Return Linux chunk allocation forms using mmap(NULL, ...)."
@@ -3240,6 +3343,11 @@ units)."
   "Incrementally build the standalone NeLisp eval ELF; return its path."
   (setq nelisp-standalone--recompiled nil)
   (let* ((units (mapcar #'nelisp-standalone--unit-for nelisp-standalone--manifest))
+         ;; Doc 140 Stage 8 (linux): append the driver-owned `nl_arena_base'
+         ;; bss slot unit referenced by the chunk-arena rewrite.
+         (units (if (eq nelisp-standalone--target 'linux-x86_64)
+                    (append units (list (nelisp-standalone--arena-base-slot-unit)))
+                  units))
          (out (nelisp-standalone--output-path nil)))
     (pcase nelisp-standalone--target
       ('windows-x86_64
@@ -3425,9 +3533,19 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
        (ptr-write-u64 268436216 0 1)))))
 
 (defun nelisp-standalone--reader-repl-eval-suffix ()
-  "Return target-aware source appended to one standalone REPL input form."
-  (format "))) (if (= (ptr-read-u64 %d 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
-          (nelisp-standalone--target-arena-metadata-address 8)))
+  "Return target-aware source appended to one standalone REPL input form.
+
+The suffix reads the quit/throw flag at arena-base+8 to decide whether to
+print the form's value.  Doc 140 Stage 8: on linux the arena base is a runtime
+mmap(NULL) address, and runtime-PARSED REPL code cannot use the compile-time
+`data-addr' primitive (it never reaches the chunk-arena rewrite), so the flag
+address is computed from `(car (nelisp--arena-stats))' — whose car is the live
+runtime base — instead of a baked fixed immediate.  windows/macos keep their
+fixed-base immediate until `data-addr' lands for those toolchains."
+  (if (eq nelisp-standalone--target 'linux-x86_64)
+      "))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
+    (format "))) (if (= (ptr-read-u64 %d 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
+            (nelisp-standalone--target-arena-metadata-address 8))))
 
 (defconst nelisp-standalone--reader-boundary-source
   '(seq
@@ -5023,11 +5141,16 @@ genuine general interpreter for the 11 special forms + installed builtins."
               "reader-gc.o" nelisp-standalone--gc-source
               nelisp-standalone--this-file))
          (arena (nelisp-standalone--unit-for
-                 (assoc "arena.o" nelisp-standalone--manifest))))
+                 (assoc "arena.o" nelisp-standalone--manifest)))
+         ;; Doc 140 Stage 8 (linux): driver-owned bss slot holding the
+         ;; mmap(NULL) arena base referenced by the chunk-arena rewrite.
+         (arena-base (when (eq nelisp-standalone--target 'linux-x86_64)
+                       (nelisp-standalone--arena-base-slot-unit))))
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub) real-sf
-            (list sf-cc capture errstub fileio catch-throw boundary eval-source gc arena))))
+            (list sf-cc capture errstub fileio catch-throw boundary eval-source gc arena)
+            (delq nil (list arena-base)))))
 
 (defun nelisp-standalone--codesign-macos-adhoc (out)
   "Apply an ad-hoc code signature to OUT for the macos-aarch64 target.
@@ -5360,9 +5483,15 @@ guards the slot-pool floor directly without loading the full vendor file."
           (with-temp-file near-end-file
             (insert "(setq near-end-ok 42)\n"))
           (with-temp-buffer
-            (insert (format "(ptr-write-u64 %d 0 %d)\n"
-                            (nelisp-standalone--target-arena-metadata-address 0)
-                            near-end-bump))
+            ;; Doc 140 Stage 8 (linux): the chunk-0 bump cursor is at the
+            ;; runtime mmap base + 0; runtime-parsed test code reaches it via
+            ;; `(car (nelisp--arena-stats))' rather than a fixed immediate.
+            (if (eq nelisp-standalone--target 'linux-x86_64)
+                (insert (format "(ptr-write-u64 (car (nelisp--arena-stats)) 0 %d)\n"
+                                near-end-bump))
+              (insert (format "(ptr-write-u64 %d 0 %d)\n"
+                              (nelisp-standalone--target-arena-metadata-address 0)
+                              near-end-bump)))
             (insert (format "(if (= (length (rdf %S)) 22) (nelisp--write-stdout-bytes \"near-end-ok\\n\") (nelisp--write-stdout-bytes \"near-end-bad\\n\"))\n"
                             near-end-file))
             (insert "(exit)\n")

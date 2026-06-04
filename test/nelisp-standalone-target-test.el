@@ -445,8 +445,11 @@
                    (atomic-fetch-add #x70000058 1)
                    (ptr-write-u64 4096 0 #x70000000))))))
 
-(ert-deftest nelisp-standalone-target-linux-arena-uses-noreplace-mmap ()
-  "Linux arena fails cleanly on fixed-base collision instead of clobbering it."
+(ert-deftest nelisp-standalone-target-linux-arena-uses-anonymous-mmap ()
+  "Doc 140 Stage 8: linux reserves chunk 0 with mmap(NULL) — no fixed base.
+The kernel-chosen base is stored in the driver-owned `nl_arena_base' bss slot
+and reached at run time through it; there is no MAP_FIXED / MAP_FIXED_NOREPLACE
+reservation at 0x10000000 left in the normal runtime path."
   (let ((nelisp-standalone--target 'linux-x86_64))
     (cl-labels ((tree-member-p
                  (needle tree)
@@ -456,17 +459,18 @@
                    (or (tree-member-p needle (car tree))
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
+        ;; chunk 0 is reserved through the anonymous chunk allocator.
+        (should (tree-member-p '(nl_os_alloc_chunk #x10000000) arena))
+        ;; its kernel-chosen base is stored in the driver-owned bss slot.
         (should (tree-member-p
-                 '(syscall-direct 9 #x10000000 #x10000000 3 #x100022 -1 0)
-                 arena))
-        (should (tree-member-p
-                 '(syscall-direct 60 88 0 0 0 0 0)
-                 arena))
+                 '(ptr-write-u64 (data-addr nl_arena_base) 0 base) arena))
+        ;; `nl_os_alloc_chunk' uses MAP_PRIVATE|MAP_ANONYMOUS mmap at NULL.
+        (should (tree-member-p '(syscall-direct 9 0 size 3 34 -1 0) arena))
+        ;; the OOM path still exits cleanly.
+        (should (tree-member-p '(syscall-direct 60 88 0 0 0 0 0) arena))
+        ;; NO fixed-base reservation remains in the normal runtime path.
         (should-not (tree-member-p
-                     '(syscall-direct 9 #x10000000 #x400000000 3 50 -1 0)
-                     arena))
-        (should-not (tree-member-p
-                     '(syscall-direct 9 #x10000000 #x10000000 3 50 -1 0)
+                     '(syscall-direct 9 #x10000000 #x10000000 3 #x100022 -1 0)
                      arena))))))
 
 (ert-deftest nelisp-standalone-target-linux-arena-size-stays-pressure-visible ()
@@ -485,9 +489,11 @@ historical 8 GiB — pressure beyond it is handled by chunk growth."
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
+    ;; Doc 140 Stage 8: linux seeds the reservation-size slot relative to the
+    ;; runtime mmap base (`(+ base 216)') rather than a fixed immediate.
     (let ((nelisp-standalone--target 'linux-x86_64))
       (should (tree-member-p
-               '(ptr-write-u64 #x100000d8 0 #x10000000)
+               '(ptr-write-u64 (+ base 216) 0 #x10000000)
                (nelisp-standalone--target-arena-source))))
     (let ((nelisp-standalone--target 'windows-x86_64)
           (nelisp-standalone--windows-arena-base #x70000000))
@@ -499,8 +505,12 @@ historical 8 GiB — pressure beyond it is handled by chunk growth."
                '(ptr-write-u64 #x8000000d8 0 #x20000000)
                (nelisp-standalone--target-arena-source))))))
 
-(ert-deftest nelisp-standalone-target-arena-registers-fixed-first-chunk ()
-  "Doc 140 Stage 2 registers the current fixed arena as chunk 0."
+(ert-deftest nelisp-standalone-target-arena-registers-first-chunk ()
+  "Registers chunk 0's descriptor + control slots at init.
+Doc 140 Stage 8 (linux): the writes are relative to the runtime mmap base
+(`(+ base OFF)') instead of a fixed immediate — chunk 0 is no longer pinned at
+0x10000000.  windows/macos keep their fixed-base (rebased) immediates until
+`data-addr' lands for those toolchains."
   (cl-labels ((tree-member-p
                (needle tree)
                (cond
@@ -510,15 +520,15 @@ historical 8 GiB — pressure beyond it is handled by chunk growth."
                      (tree-member-p needle (cdr tree)))))))
     (let ((nelisp-standalone--target 'linux-x86_64))
       (let ((arena (nelisp-standalone--target-arena-source)))
-        (should (tree-member-p '(ptr-write-u64 #x10000000 0 #x400) arena))
-        (should (tree-member-p '(ptr-write-u64 #x100002c0 0 #x10000300) arena))
-        (should (tree-member-p '(ptr-write-u64 #x100002c8 0 #x10000300) arena))
-        (should (tree-member-p '(ptr-write-u64 #x100002d0 0 1) arena))
-        (should (tree-member-p '(ptr-write-u64 #x100002d8 0 #x10000000) arena))
-        (should (tree-member-p '(ptr-write-u64 #x10000300 0 #x10000000) arena))
-        (should (tree-member-p '(ptr-write-u64 #x10000308 0 #x10000000) arena))
-        (should (tree-member-p '(ptr-write-u64 #x10000318 0 #x10000400) arena))
-        (should (tree-member-p '(ptr-write-u64 #x10000330 0 0) arena))))
+        (should (tree-member-p '(ptr-write-u64 base 0 #x400) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 704) 0 (+ base 768)) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 712) 0 (+ base 768)) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 720) 0 1) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 728) 0 #x10000000) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 768) 0 base) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 776) 0 #x10000000) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 792) 0 (+ base #x400)) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 816) 0 0) arena))))
     (let ((nelisp-standalone--target 'windows-x86_64)
           (nelisp-standalone--windows-arena-base #x70000000))
       (let ((arena (nelisp-standalone--target-arena-source)))
@@ -532,6 +542,45 @@ historical 8 GiB — pressure beyond it is handled by chunk growth."
         (should (tree-member-p '(ptr-write-u64 #x8000002d0 0 1) arena))
         (should (tree-member-p '(ptr-write-u64 #x8000002d8 0 #x20000000) arena))
         (should (tree-member-p '(ptr-write-u64 #x800000318 0 #x800000400) arena))))))
+
+(ert-deftest nelisp-standalone-target-stage8-arena-base-slot-unit ()
+  "Doc 140 Stage 8 (linux): the driver-owned `nl_arena_base' bss slot unit
+exports an 8-byte bss object the chunked allocator loads the runtime arena
+base from (via the `data-addr' cross-unit reloc)."
+  (let* ((nelisp-standalone--target 'linux-x86_64)
+         (u (nelisp-standalone--arena-base-slot-unit))
+         (syms (plist-get u :symbols))
+         (sym (car syms)))
+    (should (= 1 (length syms)))
+    (should (equal "nl_arena_base" (plist-get sym :name)))
+    (should (eq 'bss (plist-get sym :section)))
+    (should (equal 8 (cdr (assq 'bss (plist-get u :sections)))))))
+
+(ert-deftest nelisp-standalone-target-stage8-chunk-arena-rewrite ()
+  "Doc 140 Stage 8: on linux the chunk-arena rewrite turns a fixed control-slot
+immediate into a runtime load of `nl_arena_base' + offset, and leaves the
+base-establishing `nl_arena_init' (with its SIZE literal + mmap(NULL) call)
+untouched.  Non-linux targets keep their fixed/rebased literals."
+  ;; linux: free-list-head (arena-base + 96) -> runtime base load + 96.
+  (let ((nelisp-standalone--target 'linux-x86_64))
+    (should (equal
+             (nelisp-standalone--chunk-arena-rewrite
+              '(defun f () (ptr-read-u64 268435552 0)))
+             '(defun f ()
+                (ptr-read-u64
+                 (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 96) 0))))
+    ;; nl_arena_init is left untouched (its SIZE literal == arena-base would
+    ;; otherwise be corrupted by a blanket rewrite).
+    (should (equal
+             (nelisp-standalone--chunk-arena-rewrite
+              '(defun nl_arena_init () (nl_os_alloc_chunk 268435456)))
+             '(defun nl_arena_init () (nl_os_alloc_chunk 268435456)))))
+  ;; windows: rewrite is a no-op (keeps the rebased fixed-base literals).
+  (let ((nelisp-standalone--target 'windows-x86_64))
+    (should (equal
+             (nelisp-standalone--chunk-arena-rewrite
+              '(defun f () (ptr-read-u64 268435552 0)))
+             '(defun f () (ptr-read-u64 268435552 0))))))
 
 (ert-deftest nelisp-standalone-target-gc-walks-chunk-descriptors ()
   "Doc 140 Stage 3 makes GC membership and sweep chunk-aware."

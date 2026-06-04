@@ -23,6 +23,10 @@
 ;; path does not pull the (heavy) Phase 47 compiler at require time.
 (declare-function nelisp-phase47-compile-to-object "nelisp-phase47-compiler"
                   (sexp file-path &rest keys))
+(declare-function nelisp-phase47-compile-to-link-unit "nelisp-phase47-compiler"
+                  (sexp &rest keys))
+(declare-function nelisp-elf-write-binary "nelisp-elf-write"
+                  (file-path sections))
 
 (defconst nelisp-artifact--magic ";;; nelisp-private-nelc-v2\n")
 (defconst nelisp-artifact--format 'nelisp-private-nelc-v2)
@@ -53,6 +57,7 @@
 (defconst nelisp-artifact--native-runtime-abi "nelisp-neln-aot-v1")
 (defconst nelisp-artifact--native-class 'native)
 (defconst nelisp-artifact--native-object-format 'nelisp-aot-elf-v1)
+(defconst nelisp-artifact--native-section-version 2)
 (defconst nelisp-artifact--usage
   "usage: nelisp compile-elisp-artifact --kind nelc|neln|elc|auto --input FILE.el --output FILE.nelc|FILE.neln|FILE.elc [--manifest FILE.manifest.el] [--load-path DIR]... [--preload FILE.el]... [--feature FEATURE] [--target TARGET] [--cache-key KEY]
        nelisp exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
@@ -242,7 +247,9 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
     :macroexpander "elisp"
     :bytecode-version 2
     :bytecode-backend "nelisp-bcl-vm"
-    :module-init-format "compiled-module-v2"))
+    :module-init-format "compiled-module-v2"
+    :artifact-schema-version 3
+    :native-section-version 2))
 
 (defun nelisp-artifact--read-binary (path)
   "Read PATH as a raw unibyte byte string (no decoding)."
@@ -258,6 +265,27 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
    ((string-match-p "x86_64\\|amd64" target) 'x86_64)
    ((string-match-p "aarch64\\|arm64" target) 'arm64)
    (t nil)))
+
+(defun nelisp-artifact--write-elf-rel-object (path unit)
+  "Write ELF relocatable UNIT to PATH."
+  (nelisp-elf-write-binary
+   path
+   (list :e-type 'rel
+         :text (plist-get unit :text)
+         :rodata (plist-get unit :rodata)
+         :symbols (plist-get unit :symbols)
+         :relocs (plist-get unit :relocs)
+         :machine (plist-get unit :machine))))
+
+(defun nelisp-artifact--native-defun-entry (entry)
+  "Normalize one native defun ENTRY plist for artifact storage."
+  (list :name (plist-get entry :name)
+        :offset (plist-get entry :offset)
+        :size (plist-get entry :size)
+        :arity (plist-get entry :arity)
+        :param-class (plist-get entry :param-class)
+        :rt-slot-count (plist-get entry :rt-slot-count)
+        :body-offset (plist-get entry :body-offset)))
 
 (defun nelisp-artifact--native-compile-section (forms target)
   "Compile native-eligible top-level `defun's in FORMS to one ET_REL object.
@@ -286,16 +314,27 @@ object via the pure-elisp Phase 47 compiler."
         (when eligible
           (let ((obj (nelisp-artifact--make-temp-path "neln-obj" "o")))
             (unwind-protect
-                (progn
-                  (nelisp-phase47-compile-to-object
-                   (cons 'seq (nreverse eligible)) obj :arch arch :format 'elf)
+                (let* ((unit
+                        (nelisp-phase47-compile-to-link-unit
+                         (cons 'seq (nreverse eligible))
+                         :arch arch :format 'elf))
+                       (text-bytes (plist-get unit :text)))
+                  (nelisp-artifact--write-elf-rel-object obj unit)
                   (let ((bytes (nelisp-artifact--read-binary obj)))
-                    (list :object-format nelisp-artifact--native-object-format
+                    (list :native-section-version
+                          nelisp-artifact--native-section-version
+                          :object-format nelisp-artifact--native-object-format
                           :arch (symbol-name arch)
                           :symbols (nreverse symbols)
                           :object-size (length bytes)
                           :object-sha256 (secure-hash 'sha256 bytes)
-                          :object-base64 (base64-encode-string bytes t))))
+                          :object-base64 (base64-encode-string bytes t)
+                          :text-size (length text-bytes)
+                          :text-base64 (base64-encode-string text-bytes t)
+                          :relocs (plist-get unit :relocs)
+                          :extern-symbols (plist-get unit :extern-symbols)
+                          :defuns (mapcar #'nelisp-artifact--native-defun-entry
+                                          (plist-get unit :defuns)))))
               (nelisp-artifact--delete-if-exists obj))))))))
 
 (defun nelisp-artifact--artifact-payload (source-path module features
@@ -373,11 +412,17 @@ ABI, and NATIVE metadata (object hash, symbols, arch) is recorded."
    (when native
      ;; manifest records native METADATA only (the bytes live in the
      ;; artifact, covered by :artifact-sha256).
-     (list :native (list :object-format (plist-get native :object-format)
+     (list :native (list :native-section-version
+                         (plist-get native :native-section-version)
+                         :object-format (plist-get native :object-format)
                          :arch (plist-get native :arch)
                          :symbols (plist-get native :symbols)
                          :object-size (plist-get native :object-size)
-                         :object-sha256 (plist-get native :object-sha256))))
+                         :object-sha256 (plist-get native :object-sha256)
+                         :text-size (plist-get native :text-size)
+                         :relocs (plist-get native :relocs)
+                         :extern-symbols (plist-get native :extern-symbols)
+                         :defuns (plist-get native :defuns))))
    (list :entry (list :type 'module-init
                       :id (file-name-nondirectory source-path)))))
 
@@ -850,6 +895,420 @@ native object, or SYMBOL is not one of its native functions."
                                              args ",")))))
               (unless (eq 0 (call-process cc nil nil nil "-O2" "-o" exe csrc obj2))
                 (error "native link failed for %s" symbol))
+              (with-temp-buffer
+                (apply #'call-process exe nil t nil
+                       (mapcar #'number-to-string args))
+                (string-to-number (string-trim (buffer-string)))))
+          (delete-directory dir t))))))
+
+(defconst nelisp-artifact--native-boundary-slot-names
+  '("out" "mirror" "frames" "scratch" "name_slot"
+    "callback-slot-0" "callback-slot-1" "callback-slot-2" "callback-slot-3"
+    "callback-slot-4" "callback-slot-5" "callback-slot-6" "callback-slot-7"
+    "callback-slot-8" "callback-slot-9" "callback-slot-10" "callback-slot-11")
+  "Object-mode hidden boundary slots for ordinary native user defuns.")
+
+(defun nelisp-artifact--native-defun-metadata (native symbol)
+  "Return SYMBOL's metadata plist from NATIVE, or nil when absent."
+  (seq-find (lambda (entry)
+              (equal (plist-get entry :name) symbol))
+            (plist-get native :defuns)))
+
+(defun nelisp-artifact--native-general-unsupported-externs (native)
+  "Return NATIVE extern symbols not supported by the host proof harness."
+  (seq-remove
+   (lambda (name)
+     (member name '("nl_alloc_symbol"
+                    "nelisp_aot_builtin_call1")))
+   (plist-get native :extern-symbols)))
+
+(defun nelisp-artifact--native-trampoline-frame-bytes (meta)
+  "Return the synthetic frame size in bytes required by META."
+  (let* ((arity (or (plist-get meta :arity) 0))
+         (rt-slot-count (or (plist-get meta :rt-slot-count) 0))
+         (rt-rounded (if (zerop rt-slot-count)
+                         0
+                       (if (zerop (logand rt-slot-count 1))
+                           rt-slot-count
+                         (1+ rt-slot-count)))))
+    (+ (* 8 arity)
+       (if (= 1 (logand arity 1)) 8 0)
+       (* 8 rt-rounded))))
+
+(defun nelisp-artifact--native-trampoline-slot-disp (slot-index)
+  "Return the rbp-relative displacement for SLOT-INDEX."
+  (- (* 8 (1+ slot-index))))
+
+(defun nelisp-artifact--native-trampoline-asm (csym meta)
+  "Return the assembly trampoline source for CSYM using META."
+  (let* ((arity (or (plist-get meta :arity) 0))
+         (body-offset (plist-get meta :body-offset))
+         (frame-bytes (nelisp-artifact--native-trampoline-frame-bytes meta))
+         (arg-regs '("rdi" "rsi" "rdx" "rcx" "r8" "r9"))
+         (base-boundary-labels '("out" "mirror" "frames" "scratch" "name_slot"))
+         (lines
+          (list ".text"
+                ".globl call_target"
+                ".type call_target, @function"
+                "call_target:"
+                "  pushq %rbp"
+                "  movq %rsp, %rbp")))
+    (when (> frame-bytes 0)
+      (setq lines
+            (append lines
+                    (list (format "  subq $%d, %%rsp" frame-bytes)))))
+    (dotimes (i arity)
+      (setq lines
+            (append
+             lines
+             (list
+              (format "  movq %%%s, %d(%%rbp)"
+                      (nth i arg-regs)
+                      (nelisp-artifact--native-trampoline-slot-disp i))))))
+    (dotimes (i (length base-boundary-labels))
+      (let ((slot-index (+ arity i)))
+        (setq lines
+              (append
+               lines
+               (list
+                (format "  leaq neln_%s(%%rip), %%rax"
+                        (nth i base-boundary-labels))
+                (format "  movq %%rax, %d(%%rbp)"
+                        (nelisp-artifact--native-trampoline-slot-disp
+                         slot-index)))))))
+    (dotimes (i 12)
+      (let ((slot-index (+ arity 5 i)))
+        (setq lines
+              (append
+               lines
+               (list
+                (format "  leaq neln_callback_slots+%d(%%rip), %%rax" (* i 32))
+                (format "  movq %%rax, %d(%%rbp)"
+                        (nelisp-artifact--native-trampoline-slot-disp
+                         slot-index)))))))
+    (setq lines
+          (append
+           lines
+           (list (format "  leaq %s+%d(%%rip), %%rax" csym body-offset)
+                 "  jmp *%rax"
+                 ".size call_target, .-call_target")))
+    (mapconcat #'identity lines "\n")))
+
+(defun nelisp-artifact--native-driver-c (csym meta)
+  "Return the C harness source for CSYM using META."
+  (let* ((arity (or (plist-get meta :arity) 0))
+         (extern-args (if (= arity 0)
+                          "void"
+                        (mapconcat (lambda (_i) "long")
+                                   (number-sequence 1 arity)
+                                   ", ")))
+         (invoke-args (if (= arity 0)
+                          ""
+                        (mapconcat (lambda (i)
+                                     (format "argv_vals[%d]" i))
+                                   (number-sequence 0 (1- arity))
+                                   ", "))))
+    (concat
+     "#include <stdint.h>\n"
+     "#include <stdio.h>\n"
+     "#include <stdlib.h>\n"
+     "#include <string.h>\n"
+     "\n"
+     "typedef struct NelnSexp {\n"
+     "  unsigned char tag;\n"
+     "  unsigned char pad[7];\n"
+     "  uint64_t a;\n"
+     "  uint64_t b;\n"
+     "  uint64_t c;\n"
+     "} NelnSexp;\n"
+     "\n"
+     "typedef struct NelnConsBox {\n"
+     "  NelnSexp car;\n"
+     "  NelnSexp cdr;\n"
+     "  uint64_t refcount;\n"
+     "} NelnConsBox;\n"
+     "\n"
+     "enum {\n"
+     "  NELN_TAG_NIL = 0,\n"
+     "  NELN_TAG_T = 1,\n"
+     "  NELN_TAG_INT = 2,\n"
+     "  NELN_TAG_SYMBOL = 4,\n"
+     "  NELN_TAG_CONS = 7\n"
+     "};\n"
+     "\n"
+     "NelnSexp neln_out;\n"
+     "NelnSexp neln_mirror;\n"
+     "NelnSexp neln_frames;\n"
+     "NelnSexp neln_scratch;\n"
+     "NelnSexp neln_name_slot;\n"
+     "NelnSexp neln_callback_slots[12];\n"
+     "\n"
+     "static const void *neln_slot_registry[64];\n"
+     "static size_t neln_slot_registry_len = 0;\n"
+     "\n"
+     "static void neln_fail(const char *msg) {\n"
+     "  fprintf(stderr, \"neln native harness: %s\\n\", msg);\n"
+     "  exit(125);\n"
+     "}\n"
+     "\n"
+     "static void neln_clear_sexp(NelnSexp *slot) {\n"
+     "  memset(slot, 0, sizeof(*slot));\n"
+     "}\n"
+     "\n"
+     "static void neln_write_nil(NelnSexp *slot) {\n"
+     "  neln_clear_sexp(slot);\n"
+     "  slot->tag = NELN_TAG_NIL;\n"
+     "}\n"
+     "\n"
+     "static void neln_write_t(NelnSexp *slot) {\n"
+     "  neln_clear_sexp(slot);\n"
+     "  slot->tag = NELN_TAG_T;\n"
+     "}\n"
+     "\n"
+     "static void neln_write_int(NelnSexp *slot, int64_t value) {\n"
+     "  neln_clear_sexp(slot);\n"
+     "  slot->tag = NELN_TAG_INT;\n"
+     "  slot->a = (uint64_t)value;\n"
+     "}\n"
+     "\n"
+     "static void neln_register_slot(const void *ptr) {\n"
+     "  if (neln_slot_registry_len >= (sizeof(neln_slot_registry) / sizeof(neln_slot_registry[0]))) {\n"
+     "    neln_fail(\"slot registry overflow\");\n"
+     "  }\n"
+     "  neln_slot_registry[neln_slot_registry_len++] = ptr;\n"
+     "}\n"
+     "\n"
+     "static int neln_is_registered_slot(const void *ptr) {\n"
+     "  size_t i;\n"
+     "  for (i = 0; i < neln_slot_registry_len; i++) {\n"
+     "    if (neln_slot_registry[i] == ptr) {\n"
+     "      return 1;\n"
+     "    }\n"
+     "  }\n"
+     "  return 0;\n"
+     "}\n"
+     "\n"
+     "static void neln_reset_slots(void) {\n"
+     "  size_t i;\n"
+     "  neln_slot_registry_len = 0;\n"
+     "  neln_write_nil(&neln_out);\n"
+     "  neln_write_nil(&neln_mirror);\n"
+     "  neln_write_nil(&neln_frames);\n"
+     "  neln_write_nil(&neln_scratch);\n"
+     "  neln_write_nil(&neln_name_slot);\n"
+     "  neln_register_slot(&neln_out);\n"
+     "  neln_register_slot(&neln_mirror);\n"
+     "  neln_register_slot(&neln_frames);\n"
+     "  neln_register_slot(&neln_scratch);\n"
+     "  neln_register_slot(&neln_name_slot);\n"
+     "  for (i = 0; i < 12; i++) {\n"
+     "    neln_write_nil(&neln_callback_slots[i]);\n"
+     "    neln_register_slot(&neln_callback_slots[i]);\n"
+     "  }\n"
+     "}\n"
+     "\n"
+     "static int64_t neln_sexp_to_int(const NelnSexp *slot) {\n"
+     "  if (slot->tag != NELN_TAG_INT) {\n"
+     "    neln_fail(\"expected Sexp::Int\");\n"
+     "  }\n"
+     "  return (int64_t)slot->a;\n"
+     "}\n"
+     "\n"
+     "static const char *neln_symbol_name(const NelnSexp *slot) {\n"
+     "  if (slot->tag != NELN_TAG_SYMBOL) {\n"
+     "    neln_fail(\"expected Sexp::Symbol\");\n"
+     "  }\n"
+     "  return (const char *)(uintptr_t)slot->b;\n"
+     "}\n"
+     "\n"
+     "static const NelnSexp *neln_raw_to_sexp(int64_t raw, NelnSexp *scratch_slot) {\n"
+     "  const NelnSexp *ptr = (const NelnSexp *)(uintptr_t)raw;\n"
+     "  if (neln_is_registered_slot(ptr)) {\n"
+     "    return ptr;\n"
+     "  }\n"
+     "  neln_write_int(scratch_slot, raw);\n"
+     "  return scratch_slot;\n"
+     "}\n"
+     "\n"
+     "static int64_t neln_raw_to_int(int64_t raw) {\n"
+     "  const NelnSexp *ptr = (const NelnSexp *)(uintptr_t)raw;\n"
+     "  if (neln_is_registered_slot(ptr)) {\n"
+     "    return neln_sexp_to_int(ptr);\n"
+     "  }\n"
+     "  return raw;\n"
+     "}\n"
+     "\n"
+     "static void neln_clone_into(const NelnSexp *src, NelnSexp *dst) {\n"
+     "  memcpy(dst, src, sizeof(*dst));\n"
+     "}\n"
+     "\n"
+     "NelnSexp *nl_alloc_symbol(const unsigned char *bytes_ptr, int64_t len, NelnSexp *result_slot) {\n"
+     "  size_t n = (len <= 0) ? 0u : (size_t)len;\n"
+     "  size_t cap = (n == 0) ? 1u : n;\n"
+     "  char *buf = (char *)calloc(cap + 1u, 1u);\n"
+     "  if (!buf) {\n"
+     "    neln_fail(\"calloc failed in nl_alloc_symbol\");\n"
+     "  }\n"
+     "  if (bytes_ptr && n > 0) {\n"
+     "    memcpy(buf, bytes_ptr, n);\n"
+     "  }\n"
+     "  neln_clear_sexp(result_slot);\n"
+     "  result_slot->tag = NELN_TAG_SYMBOL;\n"
+     "  result_slot->a = (uint64_t)cap;\n"
+     "  result_slot->b = (uint64_t)(uintptr_t)buf;\n"
+     "  result_slot->c = (uint64_t)n;\n"
+     "  return result_slot;\n"
+     "}\n"
+     "\n"
+     "NelnSexp *nelisp_aot_builtin_call1(void *mirror, void *frames, NelnSexp *name, int64_t arg, NelnSexp *out, NelnSexp *scratch) {\n"
+     "  const char *builtin = neln_symbol_name(name);\n"
+     "  const NelnSexp *boxed = neln_raw_to_sexp(arg, scratch);\n"
+     "  (void)mirror;\n"
+     "  (void)frames;\n"
+     "  if (strcmp(builtin, \"1+\") == 0) {\n"
+     "    neln_write_int(out, neln_raw_to_int(arg) + 1);\n"
+     "    return out;\n"
+     "  }\n"
+     "  if (strcmp(builtin, \"1-\") == 0) {\n"
+     "    neln_write_int(out, neln_raw_to_int(arg) - 1);\n"
+     "    return out;\n"
+     "  }\n"
+     "  if (strcmp(builtin, \"car\") == 0) {\n"
+     "    if (boxed->tag != NELN_TAG_CONS) {\n"
+     "      neln_fail(\"car expects a cons argument\");\n"
+     "    }\n"
+     "    neln_clone_into(&((const NelnConsBox *)(uintptr_t)boxed->a)->car, out);\n"
+     "    return out;\n"
+     "  }\n"
+     "  neln_fail(\"unsupported builtin1 in host proof\");\n"
+     "  return out;\n"
+     "}\n"
+     "\n"
+     "NelnSexp *nelisp_aot_builtin_calln(void *mirror, void *frames, NelnSexp *name, int64_t argc, NelnSexp *out, NelnSexp *scratch,\n"
+     "                                   int64_t a0, int64_t a1, int64_t a2, int64_t a3,\n"
+     "                                   int64_t a4, int64_t a5, int64_t a6, int64_t a7) {\n"
+     "  const char *builtin = neln_symbol_name(name);\n"
+     "  (void)mirror;\n"
+     "  (void)frames;\n"
+     "  (void)scratch;\n"
+     "  if (strcmp(builtin, \"cons\") == 0) {\n"
+     "    NelnSexp tmp_a;\n"
+     "    NelnSexp tmp_b;\n"
+     "    const NelnSexp *a;\n"
+     "    const NelnSexp *b;\n"
+     "    NelnConsBox *box;\n"
+     "    if (argc != 2) {\n"
+     "      neln_fail(\"cons expects argc=2\");\n"
+     "    }\n"
+     "    a = neln_raw_to_sexp(a0, &tmp_a);\n"
+     "    b = neln_raw_to_sexp(a1, &tmp_b);\n"
+     "    box = (NelnConsBox *)calloc(1u, sizeof(*box));\n"
+     "    if (!box) {\n"
+     "      neln_fail(\"calloc failed in cons\");\n"
+     "    }\n"
+     "    neln_clone_into(a, &box->car);\n"
+     "    neln_clone_into(b, &box->cdr);\n"
+     "    box->refcount = 1u;\n"
+     "    neln_clear_sexp(out);\n"
+     "    out->tag = NELN_TAG_CONS;\n"
+     "    out->a = (uint64_t)(uintptr_t)box;\n"
+     "    return out;\n"
+     "  }\n"
+     "  neln_fail(\"unsupported builtinn in host proof\");\n"
+     "  return out;\n"
+     "}\n"
+     "\n"
+     (format "extern NelnSexp *call_target(%s);\n" extern-args)
+     "\n"
+     "static int64_t neln_decode_result(NelnSexp *ret) {\n"
+     "  if (!ret) {\n"
+     "    neln_fail(\"native function returned NULL\");\n"
+     "  }\n"
+     "  return neln_sexp_to_int(ret);\n"
+     "}\n"
+     "\n"
+     "int main(int argc, char **argv) {\n"
+     (format "  long argv_vals[%d];\n" (max 1 arity))
+     "  int i;\n"
+     (format "  if (argc != %d) {\n" (1+ arity))
+     "    fprintf(stderr, \"usage mismatch\\n\");\n"
+     "    return 2;\n"
+     "  }\n"
+     "  for (i = 1; i < argc; i++) {\n"
+     "    argv_vals[i - 1] = strtol(argv[i], NULL, 10);\n"
+     "  }\n"
+     "  neln_reset_slots();\n"
+     (format "  printf(\"%%ld\\n\", neln_decode_result(call_target(%s)));\n"
+             invoke-args)
+     "  return 0;\n"
+     "}\n")))
+
+(defun nelisp-artifact-native-exec-general (artifact-path symbol args)
+  "Host-side native EXEC proof for builtin-calling `.neln' defuns.
+This links the embedded object against a generated C/asm harness that
+provides the `nl_alloc_symbol' + `nelisp_aot_builtin_call1' runtime
+shims and a boundary-populating trampoline, then returns the decoded
+integer result."
+  (unless (and (eq system-type 'gnu/linux)
+               (equal (or (car-safe (split-string system-configuration "-")) "")
+                      "x86_64"))
+    (error "native-exec-general currently requires x86_64 Linux"))
+  (let ((cc (or (executable-find "cc") (executable-find "gcc")))
+        (objcopy (executable-find "objcopy")))
+    (unless (and cc objcopy)
+      (error "native-exec-general needs cc + objcopy on PATH"))
+    (let* ((payload (nelisp-artifact--read-payload artifact-path))
+           (native (plist-get payload :native))
+           (b64 (and native (plist-get native :object-base64)))
+           (meta (and native (nelisp-artifact--native-defun-metadata native symbol)))
+           (unsupported (and native
+                             (nelisp-artifact--native-general-unsupported-externs
+                              native))))
+      (unless b64
+        (error "%s has no embedded native object" artifact-path))
+      (unless meta
+        (error "native symbol %s not in artifact defun metadata" symbol))
+      (when unsupported
+        (error "native-exec-general unsupported externs: %S" unsupported))
+      (unless (equal (plist-get native :arch) "x86_64")
+        (error "native-exec-general only supports x86_64 native artifacts"))
+      (unless (eq (plist-get meta :param-class) 'gp)
+        (error "native-exec-general only supports gp/integer defuns"))
+      (unless (equal (plist-get meta :arity) (length args))
+        (error "native-exec-general arity mismatch for %s: expected %d, got %d"
+               symbol (plist-get meta :arity) (length args)))
+      (unless (integerp (plist-get meta :body-offset))
+        (error "native-exec-general requires stored :body-offset metadata"))
+      (let* ((dir (make-temp-file "neln-exec-general-" t))
+             (obj (expand-file-name "mod.o" dir))
+             (obj2 (expand-file-name "mod-c.o" dir))
+             (asrc (expand-file-name "tramp.S" dir))
+             (csrc (expand-file-name "drv.c" dir))
+             (exe (expand-file-name "run" dir))
+             (csym (replace-regexp-in-string "[^A-Za-z0-9_]" "_" symbol)))
+        (unwind-protect
+            (progn
+              (let ((coding-system-for-write 'binary))
+                (write-region (base64-decode-string b64) nil obj nil 'silent))
+              (unless (eq 0 (call-process objcopy nil nil nil
+                                          (format "--redefine-sym=%s=%s" symbol csym)
+                                          obj obj2))
+                (error "objcopy symbol rename failed for %s" symbol))
+              (with-temp-file asrc
+                (insert (nelisp-artifact--native-trampoline-asm csym meta) "\n"))
+              (with-temp-file csrc
+                (insert (nelisp-artifact--native-driver-c csym meta)))
+              (unless (eq 0 (call-process cc nil nil nil "-O2" "-c" "-o"
+                                          (expand-file-name "tramp.o" dir) asrc))
+                (error "native trampoline assembly failed for %s" symbol))
+              (unless (eq 0 (call-process cc nil nil nil "-O2" "-c" "-o"
+                                          (expand-file-name "drv.o" dir) csrc))
+                (error "native driver compile failed for %s" symbol))
+              (unless (eq 0 (call-process cc nil nil nil "-O2" "-o" exe
+                                          (expand-file-name "drv.o" dir)
+                                          (expand-file-name "tramp.o" dir)
+                                          obj2))
+                (error "native general link failed for %s" symbol))
               (with-temp-buffer
                 (apply #'call-process exe nil t nil
                        (mapcar #'number-to-string args))

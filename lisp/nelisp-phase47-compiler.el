@@ -189,6 +189,34 @@ modules.  Static executable output keeps the stricter historical rule:
 ordinary calls must target a same-unit Phase 47 defun unless they use
 the explicit `extern-call' surface.")
 
+(defun nelisp-phase47-compiler--x86_64-push-width (reg)
+  "Return the encoded byte width of `push REG' in the current backend subset."
+  (if (memq reg '(r8 r9)) 2 1))
+
+(defun nelisp-phase47-compiler--object-defun-body-offset (defun-ir)
+  "Return the body-entry PC offset for DEFUN-IR in object mode, or nil.
+This is the offset immediately after the emitted prologue/spill sequence.
+The host-side Doc 142 proof uses it to jump into the compiled body after
+populating the hidden boundary slots in a synthetic frame."
+  (let* ((arity (length (or (nelisp-phase47-compiler--ir-get defun-ir :param-regs)
+                            nil)))
+         (param-regs (nelisp-phase47-compiler--ir-get defun-ir :param-regs))
+         (param-class (or (nelisp-phase47-compiler--ir-get defun-ir :param-class) 'gp))
+         (rt-slot-count (or (nelisp-phase47-compiler--ir-get defun-ir :rt-slot-count) 0)))
+    (cond
+     ((not (and (eq nelisp-phase47-compiler--arch 'x86_64)
+                (eq nelisp-phase47-compiler--abi 'sysv)
+                (eq param-class 'gp)
+                (not (cl-some #'consp param-regs))))
+      nil)
+     (t
+      (+ 1                              ; push rbp
+         3                              ; mov rbp, rsp
+         (apply #'+ (mapcar #'nelisp-phase47-compiler--x86_64-push-width
+                            param-regs))
+         (if (= 1 (logand arity 1)) 7 0)
+         (if (> rt-slot-count 0) 7 0))))))
+
 (defun nelisp-phase47-compiler--byte-vec->string (vec)
   "Convert byte VEC into a unibyte-string without large-arity `apply'.
 The standalone interpreter still mis-handles `(apply #'unibyte-string
@@ -645,6 +673,7 @@ at its kind-fixed offset since per-kind layout is constant."
 (defconst nelisp-phase47-compiler--ir-kind-tags
   '((alloc-bytes . 0)
     (addr-of . 97)
+    (data-addr . 99)
     (arith . 1)
     (aot-root-scope . 92)
     (atomic-compare-exchange . 2)
@@ -9216,6 +9245,18 @@ functions `((NAME . ARITY) ...)'."
       (signal 'nelisp-phase47-compiler-error
               (list :addr-of-needs-symbol sexp)))
     (nelisp-phase47-compiler--make-ir 'addr-of :name (nth 1 sexp)))
+   ;; (data-addr NAME) — load the runtime address of an EXTERNAL data/bss
+   ;; symbol (Doc 140 Stage 8).  Unlike `addr-of' (which resolves an
+   ;; intra-object function label through the per-object fixup pass),
+   ;; `data-addr' references a symbol defined in ANOTHER link unit (e.g. the
+   ;; driver-owned `nl_ctrl_block' bss control block), so the address is
+   ;; patched by the static linker via a cross-unit pc32 reloc — no fixed
+   ;; immediate, no arena base constant.
+   ((and (consp sexp) (eq (car sexp) 'data-addr))
+    (unless (and (= (length sexp) 2) (symbolp (nth 1 sexp)))
+      (signal 'nelisp-phase47-compiler-error
+              (list :data-addr-needs-symbol sexp)))
+    (nelisp-phase47-compiler--make-ir 'data-addr :name (nth 1 sexp)))
    ((and (consp sexp) (memq (car sexp) '(extern-call extern-call-f64)))
     (when (< (length sexp) 2)
       (signal 'nelisp-phase47-compiler-error
@@ -10867,6 +10908,8 @@ the node's class to consume the result correctly."
          (nelisp-phase47-compiler--emit-logic node buf))
         ((= tag 97)             ; addr-of — aarch64 ADR x0,<name>
          (nelisp-phase47-compiler--emit-addr-of node buf))
+        ((= tag 99)             ; data-addr — external data/bss symbol addr
+         (nelisp-phase47-compiler--emit-data-addr node buf))
         ((= tag 80)             ; static-imm32-table-lookup — u32 in x0
          (nelisp-phase47-compiler--emit-table-lookup node buf))
         ((= tag 14)             ; cons-cdr-raw — aarch64 boxed cdr walk
@@ -11035,6 +11078,8 @@ the node's class to consume the result correctly."
        (nelisp-phase47-compiler--emit-shift node buf))
       ((= tag 97)               ; addr-of
        (nelisp-phase47-compiler--emit-addr-of node buf))
+      ((= tag 99)               ; data-addr — external data/bss symbol addr
+       (nelisp-phase47-compiler--emit-data-addr node buf))
       ((= tag 5)                ; call
        (nelisp-phase47-compiler--emit-call node buf))
       ((= tag 23)               ; extern-call
@@ -11412,6 +11457,34 @@ self-host section (no GOT, no ADRP+ADD page split needed)."
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
         (nelisp-asm-arm64-adr buf 'x0 name)
       (nelisp-asm-x86_64-lea-reg-rip-label buf 'rax name))))
+
+(defun nelisp-phase47-compiler--emit-data-addr (node buf)
+  "Emit a load of EXTERNAL data/bss symbol NAME's runtime address into the
+value register (Doc 140 Stage 8 `data-addr').
+
+This is the companion of `addr-of' for CROSS-UNIT *data* symbols.  Where
+`addr-of' resolves an intra-object function label through the per-object
+fixup pass (and errors if the label is undefined locally), `data-addr'
+records a cross-unit relocation so the static linker patches the address
+against the symbol's section VA.  Its purpose is to let the chunked-arena
+allocator reach the driver-owned `nl_ctrl_block' control block in the
+binary's own bss WITHOUT any fixed arena-base immediate — the linker
+supplies the address, so removing the fixed reservation no longer breaks
+the embedded metadata pointers.
+
+x86_64: `LEA rax, [rip + disp32]' (REX.W 0x8D /5) + a pc32 reloc with
+addend -4 (the CPU's RIP base = the byte after the disp32).  aarch64
+would need ADRP+ADD or a literal-pool load; until that lands the arm64
+standalone path keeps its fixed control-block base, so emitting
+`data-addr' on aarch64 is a compiler bug -> signal."
+  (let ((name (symbol-name (nelisp-phase47-compiler--ir-get node :name))))
+    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (signal 'nelisp-phase47-compiler-error
+                (list :data-addr-aarch64-unsupported name))
+      ;; LEA rax, [rip + disp32]: REX.W=0x48, opcode 0x8D,
+      ;; ModRM mod=00 reg=rax(000) rm=101(RIP-rel) = 0x05.
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8D #x05))
+      (nelisp-asm-x86_64-reloc-pc32-here buf name -4))))
 
 (defun nelisp-phase47-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.
@@ -15860,31 +15933,24 @@ drift (= a Doc 92 emitter invariant violation)."
 ;; pure-int return values to prove the cargo-build wiring end-to-end.
 
 ;;;###autoload
-(cl-defun nelisp-phase47-compile-to-object
-    (sexp file-path &key (arch 'x86_64) (format 'elf) auto-frame-roots)
-  "Compile SEXP (= one or more defuns) to an ET_REL .o at FILE-PATH.
+(cl-defun nelisp-phase47-compile-to-link-unit
+    (sexp &key (arch 'x86_64) (format 'elf) auto-frame-roots)
+  "Compile SEXP to the in-memory pre-ELF object unit consumed by writers.
 
-SEXP must be either a single `(defun NAME (PARAMS...) BODY)' form or
-a `(seq (defun ...) ...)' wrapping multiple defuns.  Each defun
-becomes a GLOBAL STT_FUNC symbol named after the defun (= symbol-name
-of the elisp identifier, with underscores preserved for C linkage).
+The returned plist contains the final post-fixup section payloads and
+symbol/relocation metadata for one relocatable object:
 
-ARCH defaults to `x86_64'.  v1 signals
-`nelisp-phase47-compiler-error' for any other ARCH outside
-`(x86_64 aarch64)'.
+  :text           final `.text' bytes
+  :rodata         final `.rodata' bytes (or nil)
+  :symbols        writer-ready symbol plists
+  :relocs         writer-ready relocation plists
+  :machine        target arch symbol
+  :defuns         sorted per-defun plists `(:name NAME :offset N :size N)'
+  :extern-symbols sorted distinct external symbol names
 
-Spike scope: defun bodies must not reference strings.  Signals
-`nelisp-phase47-compiler-error' with `:object-mode-no-strings' if
-the IR contains a `write' node, because rodata vaddr baking does
-not survive linker relocation in v1.
-
-When AUTO-FRAME-ROOTS is non-nil, object emission uses module root
-metadata to insert loader-selected `auto_frame_roots' markers into
-eligible non-boundary defuns before parsing.
-
-Returns FILE-PATH on success.  Signals on parse error, free symbol
-reference, out-of-range integer, or any pass-1/pass-2 byte-length
-drift (= a Doc 92 emitter invariant violation)."
+FORMAT is consulted only for ABI-sensitive parse/emit setup (not for the
+returned plist shape), so callers that later write COFF still get Win64
+register budgeting while ELF/Mach-O keep SysV."
   (unless (memq arch '(x86_64 aarch64))
     (signal 'nelisp-phase47-compiler-error
             (list :unsupported-arch arch)))
@@ -15917,30 +15983,14 @@ drift (= a Doc 92 emitter invariant violation)."
     (when empty-source-p
       (dolist (form (plist-get extracted :module-forms))
         (nelisp-phase47-compiler--eval-top-level-module-form form))
-      (pcase format
-        ('elf
-         (nelisp-elf-write-binary
-          file-path
-          (list :e-type 'rel :text (unibyte-string) :rodata (unibyte-string)
-                :symbols nil :relocs nil :machine arch)))
-        ('mach-o
-         (require 'nelisp-mach-o-write)
-         (nelisp-mach-o-write-binary
-          file-path
-          (list :text (unibyte-string) :symbols nil :machine arch)))
-        ('coff
-         (unless (eq arch 'x86_64)
-           (signal 'nelisp-phase47-compiler-error
-                   (list :coff-only-supports-x86_64 arch)))
-         (require 'nelisp-pe-write)
-         (nelisp-pe-write-binary
-          file-path
-          (list :text (unibyte-string) :symbols nil :relocs nil
-                :machine arch)))
-        (_
-         (signal 'nelisp-phase47-compiler-error
-                 (list :unknown-output-format format))))
-      (cl-return-from nelisp-phase47-compile-to-object file-path))
+      (cl-return-from nelisp-phase47-compile-to-link-unit
+        (list :text (unibyte-string)
+              :rodata (unibyte-string)
+              :symbols nil
+              :relocs nil
+              :machine arch
+              :defuns nil
+              :extern-symbols nil)))
     (unless (zerop (length rodata-bytes))
       (signal 'nelisp-phase47-compiler-error
               (list :object-mode-no-strings
@@ -15954,17 +16004,17 @@ drift (= a Doc 92 emitter invariant violation)."
     ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
     ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
     (let ((tag (nelisp-phase47-compiler--ir-kind-tag ir)))
-     (cond
-      ((= tag 21) nil)          ; defun
-      ((= tag 54)               ; seq
-       (dolist (f (nelisp-phase47-compiler--ir-get ir :forms))
-         (unless (eq (nelisp-phase47-compiler--ir-kind f) 'defun)
-           (signal 'nelisp-phase47-compiler-error
-                   (list :object-mode-non-defun-form f)))))
-      (t
-       (let ((other (nelisp-phase47-compiler--ir-kind ir)))
-         (signal 'nelisp-phase47-compiler-error
-                 (list :object-mode-bad-top-form other))))))
+      (cond
+       ((= tag 21) nil)          ; defun
+       ((= tag 54)               ; seq
+        (dolist (f (nelisp-phase47-compiler--ir-get ir :forms))
+          (unless (eq (nelisp-phase47-compiler--ir-kind f) 'defun)
+            (signal 'nelisp-phase47-compiler-error
+                    (list :object-mode-non-defun-form f)))))
+       (t
+        (let ((other (nelisp-phase47-compiler--ir-kind ir)))
+          (signal 'nelisp-phase47-compiler-error
+                  (list :object-mode-bad-top-form other))))))
     ;; Emit pass: only the defuns, no main `_start' body.  We reuse
     ;; the existing emit-defun helper and call `resolve-fixups' so
     ;; intra-`.text' cross-defun calls bake their rel32 in place
@@ -15990,19 +16040,28 @@ drift (= a Doc 92 emitter invariant violation)."
              ;; must also have a matching SHN_UNDEF symtab entry in
              ;; the output `.o', or the ELF writer's reloc lookup
              ;; loop signals `relocation references unknown symbol'.
-             (relocs (if (eq arch 'aarch64)
-                         (nelisp-asm-arm64-buffer-relocs buf)
-                       (nelisp-asm-x86_64-extract-relocs buf)))
+             (raw-relocs (if (eq arch 'aarch64)
+                             (nelisp-asm-arm64-buffer-relocs buf)
+                           (nelisp-asm-x86_64-extract-relocs buf)))
+             (relocs
+              (mapcar
+               (lambda (r)
+                 (list :offset (plist-get r :offset)
+                       :type (plist-get r :type)
+                       :symbol (let ((nm (or (plist-get r :symbol)
+                                             (plist-get r :sym))))
+                                 (if (stringp nm) nm (symbol-name nm)))
+                       :addend (or (plist-get r :addend) 0)))
+               raw-relocs))
              (extern-names
-              (delete-dups
-               (mapcar (lambda (r)
-                         (let ((nm (or (plist-get r :symbol)
-                                       (plist-get r :sym))))
-                           (if (stringp nm) nm (symbol-name nm))))
-                       (cl-remove-if-not
-                        (lambda (r)
-                          (memq (plist-get r :type) '(plt32 b26-pc)))
-                        relocs))))
+              (sort
+               (delete-dups
+                (mapcar (lambda (r) (plist-get r :symbol))
+                        (cl-remove-if-not
+                         (lambda (r)
+                           (memq (plist-get r :type) '(pc32 plt32 abs64 b26-pc)))
+                         relocs)))
+               #'string<))
              ;; Only the user-defined defun names should appear as
              ;; GLOBAL FUNC symbols.  The control-flow helper labels
              ;; emitted by `--emit-if' / `--emit-while' / `--emit-cond'
@@ -16036,6 +16095,36 @@ drift (= a Doc 92 emitter invariant violation)."
                     (push (cons (car cur) (- end start)) acc))
                   (setq pairs (cdr pairs)))
                 acc))
+             (defun-layout
+              (mapcar
+               (lambda (cell)
+                 (let* ((name (car cell))
+                        (ir-node
+                         (cl-find-if
+                          (lambda (d)
+                            (equal (let ((nm (nelisp-phase47-compiler--ir-get d :name)))
+                                     (if (stringp nm) nm (symbol-name nm)))
+                                   name))
+                          defuns)))
+                   (list :name name
+                         :offset (cdr cell)
+                         :size (or (cdr (assoc name label-size-map)) 0)
+                         :arity (length (or (and ir-node
+                                                 (nelisp-phase47-compiler--ir-get
+                                                  ir-node :params))
+                                            nil))
+                         :param-class (or (and ir-node
+                                               (nelisp-phase47-compiler--ir-get
+                                                ir-node :param-class))
+                                          'gp)
+                         :rt-slot-count (or (and ir-node
+                                                 (nelisp-phase47-compiler--ir-get
+                                                  ir-node :rt-slot-count))
+                                            0)
+                         :body-offset (and ir-node
+                                           (nelisp-phase47-compiler--object-defun-body-offset
+                                            ir-node)))))
+               label-positions))
              (symbols
               (mapcar
                (lambda (cell)
@@ -16071,52 +16160,90 @@ drift (= a Doc 92 emitter invariant violation)."
              (all-symbols (append metadata-symbols
                                   symbols
                                   extern-symbol-plists)))
-        (pcase format
-          ('elf
-           (nelisp-elf-write-binary
-            file-path
-            (list :e-type 'rel
-                  :text text-bytes
-                  :rodata (plist-get object-metadata :bytes)
-                  :symbols all-symbols
-                  :relocs relocs
-                  :machine arch)))
-          ('mach-o
-           ;; Doc 100 §100.D Stage 3: macOS uses Mach-O instead of
-           ;; ELF.  Reloc surface trimmed because Mach-O writer v1
-           ;; does not emit relocation entries — the 12 jit_arith
-           ;; trampolines have no external relocs, so this is sound
-           ;; for the §100.D Stage 1-3 swap set.
-           ;; Wave 3: x86_64 added alongside aarch64.
-           (unless (memq arch '(aarch64 x86_64))
-             (signal 'nelisp-phase47-compiler-error
-                     (list :mach-o-unsupported-arch arch)))
-           (when relocs
-             (signal 'nelisp-phase47-compiler-error
-                     (list :mach-o-no-reloc-support relocs)))
-           (require 'nelisp-mach-o-write)
-           (nelisp-mach-o-write-binary
-            file-path
-            (list :text text-bytes
-                  :symbols all-symbols
-                  :machine arch)))
-          ('coff
-           ;; Doc 101 §101.A: Windows uses PE32+/COFF instead of ELF.
-           ;; Only x86_64 is supported in v1; aarch64 COFF is deferred.
-           (unless (eq arch 'x86_64)
-             (signal 'nelisp-phase47-compiler-error
-                     (list :coff-only-supports-x86_64 arch)))
-           (require 'nelisp-pe-write)
-           (nelisp-pe-write-binary
-            file-path
-            (list :text     text-bytes
-                  :symbols  all-symbols
-                  :relocs   relocs
-                  :machine  arch)))
-          (other
-           (signal 'nelisp-phase47-compiler-error
-                   (list :unknown-output-format other))))
-        file-path))))
+        (list :text text-bytes
+              :rodata (or (plist-get object-metadata :bytes) (unibyte-string))
+              :symbols all-symbols
+              :relocs relocs
+              :machine arch
+              :defuns defun-layout
+              :extern-symbols extern-names)))))
+
+;;;###autoload
+(cl-defun nelisp-phase47-compile-to-object
+    (sexp file-path &key (arch 'x86_64) (format 'elf) auto-frame-roots)
+  "Compile SEXP (= one or more defuns) to an ET_REL .o at FILE-PATH.
+
+SEXP must be either a single `(defun NAME (PARAMS...) BODY)' form or
+a `(seq (defun ...) ...)' wrapping multiple defuns.  Each defun
+becomes a GLOBAL STT_FUNC symbol named after the defun (= symbol-name
+of the elisp identifier, with underscores preserved for C linkage).
+
+ARCH defaults to `x86_64'.  v1 signals
+`nelisp-phase47-compiler-error' for any other ARCH outside
+`(x86_64 aarch64)'.
+
+Spike scope: defun bodies must not reference strings.  Signals
+`nelisp-phase47-compiler-error' with `:object-mode-no-strings' if
+the IR contains a `write' node, because rodata vaddr baking does
+not survive linker relocation in v1.
+
+When AUTO-FRAME-ROOTS is non-nil, object emission uses module root
+metadata to insert loader-selected `auto_frame_roots' markers into
+eligible non-boundary defuns before parsing.
+
+Returns FILE-PATH on success.  Signals on parse error, free symbol
+reference, out-of-range integer, or any pass-1/pass-2 byte-length
+drift (= a Doc 92 emitter invariant violation)."
+  (let* ((unit (nelisp-phase47-compile-to-link-unit
+                sexp :arch arch :format format
+                :auto-frame-roots auto-frame-roots))
+         (text-bytes (plist-get unit :text))
+         (rodata-bytes (plist-get unit :rodata))
+         (symbols (plist-get unit :symbols))
+         (relocs (plist-get unit :relocs)))
+    (pcase format
+      ('elf
+       (nelisp-elf-write-binary
+        file-path
+        (list :e-type 'rel
+              :text text-bytes
+              :rodata rodata-bytes
+              :symbols symbols
+              :relocs relocs
+              :machine arch)))
+      ('mach-o
+       ;; Doc 100 §100.D Stage 3: macOS uses Mach-O instead of ELF.
+       ;; Reloc surface trimmed because Mach-O writer v1 does not emit
+       ;; relocation entries.
+       (unless (memq arch '(aarch64 x86_64))
+         (signal 'nelisp-phase47-compiler-error
+                 (list :mach-o-unsupported-arch arch)))
+       (when relocs
+         (signal 'nelisp-phase47-compiler-error
+                 (list :mach-o-no-reloc-support relocs)))
+       (require 'nelisp-mach-o-write)
+       (nelisp-mach-o-write-binary
+        file-path
+        (list :text text-bytes
+              :symbols symbols
+              :machine arch)))
+      ('coff
+       ;; Doc 101 §101.A: Windows uses PE32+/COFF instead of ELF.
+       ;; Only x86_64 is supported in v1; aarch64 COFF is deferred.
+       (unless (eq arch 'x86_64)
+         (signal 'nelisp-phase47-compiler-error
+                 (list :coff-only-supports-x86_64 arch)))
+       (require 'nelisp-pe-write)
+       (nelisp-pe-write-binary
+        file-path
+        (list :text text-bytes
+              :symbols symbols
+              :relocs relocs
+              :machine arch)))
+      (other
+       (signal 'nelisp-phase47-compiler-error
+               (list :unknown-output-format other))))
+    file-path))
 
 (provide 'nelisp-phase47-compiler)
 
