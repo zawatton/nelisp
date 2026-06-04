@@ -55,6 +55,11 @@
 
 ;;; Code:
 
+(declare-function compile-elisp-artifact "nelisp-artifact" (args))
+(declare-function exec-elisp-artifact "nelisp-artifact" (args))
+(declare-function eval-elisp-artifact "nelisp-artifact" (args))
+(declare-function inspect-elisp-artifact "nelisp-artifact" (args))
+
 (defvar nelisp--cli-version "unknown"
   "Production binary version string.
 
@@ -67,6 +72,10 @@ constant before the elisp `nelisp-cli-main' dispatch runs.")
        nelisp eval EXPR                 # evaluate EXPR and print the result
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
+       nelisp compile-elisp-artifact ...  # write a private .nelc + manifest
+       nelisp exec-elisp-artifact FILE.nelc FORM...
+       nelisp eval-elisp-artifact FILE.nelc FORM...
+       nelisp inspect-elisp-artifact FILE.nelc
        nelisp -                         # read from stdin and print the last result
        nelisp --batch [-Q] [-L DIR...] [--setenv VAR=VAL...] [--eval EXPR...] [-l FILE...] [-f FUNC]
                                         # Doc 49 build-host batch mode"
@@ -166,6 +175,17 @@ to stderr / exit 1."
       (nelisp--cli-print-error (format "cannot read %s" path))
       nil)
      (t src))))
+
+(defun nelisp--cli-run-artifact-command (fn args)
+  "Load `nelisp-artifact' then call FN with ARGS."
+  (condition-case err
+      (progn
+        (require 'nelisp-artifact)
+        (funcall fn args))
+    (error
+     (nelisp--cli-print-error
+      (format "artifact command error: %s" (error-message-string err)))
+     1)))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 49 Wave 7 — batch-mode dispatcher
@@ -659,6 +679,18 @@ See file header for the CLI surface + exit-code contract."
      ((and (= n 2) (equal (nth 0 args) "exec"))
       (let ((src (nelisp--cli-read-file (nth 1 args))))
         (if src (nelisp--cli-exec-string-silent src) 1)))
+     ;; compile-elisp-artifact ...
+     ((and (>= n 1) (equal (nth 0 args) "compile-elisp-artifact"))
+      (nelisp--cli-run-artifact-command #'compile-elisp-artifact args))
+     ;; exec-elisp-artifact FILE.nelc FORM...
+     ((and (>= n 2) (equal (nth 0 args) "exec-elisp-artifact"))
+      (nelisp--cli-run-artifact-command #'exec-elisp-artifact args))
+     ;; eval-elisp-artifact FILE.nelc FORM...
+     ((and (>= n 2) (equal (nth 0 args) "eval-elisp-artifact"))
+      (nelisp--cli-run-artifact-command #'eval-elisp-artifact args))
+     ;; inspect-elisp-artifact FILE.nelc
+     ((and (>= n 2) (equal (nth 0 args) "inspect-elisp-artifact"))
+      (nelisp--cli-run-artifact-command #'inspect-elisp-artifact args))
      ;; -  (stdin)
      ((and (= n 1) (equal (nth 0 args) "-"))
       (nelisp--cli-eval-string-all-print (nelisp--cli-slurp-stdin)))

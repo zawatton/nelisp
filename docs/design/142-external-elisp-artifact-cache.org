@@ -1,0 +1,526 @@
+#+TITLE: Doc 142 - External Elisp native/bytecode artifact cache command surface
+#+DATE: 2026-06-04
+#+STATUS: DRAFT
+
+* Status
+
+- *State*: DRAFT 2026-06-04.  =.nelc= bytecode (§6.1), =.neln= native
+  compile+bundle and leaf-EXEC (§6.4), and =.elc= GNU Emacs compatibility
+  (§6.2) all IMPLEMENTED 2026-06-04 in =lisp/nelisp-artifact.el=.  Acceptance
+  gates 1-4, 7, 8, 9 pass; the remaining gap is general native EXEC for
+  builtin/boundary defuns (an in-process standalone mmap loader).
+- *§6.2 =.elc= SHIPPED*: =--kind elc= byte-compiles the source in a CLEAN
+  =emacs -Q --batch= subprocess (so NeLisp's own shadowing byte-compiler does
+  not intercept it) and emits a GENUINE GNU Emacs-readable =.elc= (the =;ELC=
+  magic).  Verified by gate 9: a fresh =emacs -Q= with no NeLisp loaded
+  =load='s the artifact and runs it.  Loading dispatches by manifest =:kind=
+  (=.elc= -> host =load= + host eval; =.nelc=/=.neln= -> NeLisp runtime
+  replay).  The manifest pins =:emacs-major-version= and the =.elc= integrity
+  hash so a stale source or wrong Emacs version is rejected before load.
+- *Implementation note (§6.1 SHIPPED)*: the =.nelc= lane now precompiles
+  eligible top-level =defun= bodies to NeLisp bytecode closures
+  (=nelisp-bcl=, via =nelisp-bc-compile=) and replays them onto the NeLisp
+  runtime function table; non-function / VM-unsupported top-level effects
+  fall back to =nelisp-eval= replay.  Load-time validation (§7) enforces
+  artifact integrity hash, source/preload freshness (mtime+size fast path,
+  sha256 fallback), runtime-abi, artifact-class, and compiler-format match
+  before any module init runs.  Acceptance gates 1-4, 7, and 8 pass; gate 8
+  measures ~80x faster artifact load than source replay for a function-heavy
+  module (the host C decoder is used to read the cache file — the pure-elisp
+  UTF-8 decoder was the original bottleneck).  Gates 5/6/9 (=nelisp-emacs=
+  proof reuse, native artifact, GNU =.elc= compatibility) remain open.
+- *Native (§6.4) compile lane IMPLEMENTED 2026-06-04*: =--kind neln=
+  compiles native-eligible top-level =defun= bodies through the pure-elisp
+  Phase 47 compiler (=nelisp-phase47-compile-to-object=) into one ET_REL
+  object, embeds it (base64) in the artifact's =:native= section alongside
+  the FULL portable bytecode module, and records native metadata (arch,
+  symbols, object sha256) in the manifest with =:artifact-class native= and
+  =:runtime-abi nelisp-neln-aot-v1=.  Per §6.3 the bytecode lane is the
+  portable fallback, so a =.neln= loads and runs on host (and any non-x86_64
+  target) via bytecode while carrying native code for a standalone runtime.
+  Each defun is probed individually so one unsupported body does not sink the
+  module.  Verified: real ELF emitted, host load+run, =--kind auto= resolves
+  to neln by suffix.
+- *Native (§6.4) EXEC — leaf subset SHIPPED 2026-06-04*: the embedded
+  object now ACTUALLY EXECUTES end-to-end via =nelisp-artifact-native-exec=:
+  elisp -> Phase-47 =.o= -> embed -> extract -> link -> run -> correct
+  result.  Verified for the reloc-free leaf arithmetic subset (plain C
+  integer ABI, no boundary slots — confirmed by disassembly: =(* x x)=
+  takes =x= in =rdi=, returns in =rax=, reads no boundary slot).  The host
+  C toolchain (cc + objcopy) acts as the loader.
+- *Native (§6.4) EXEC mechanism — PROVEN in the standalone runtime
+  2026-06-04*: the in-process native-exec mechanism for gate 6 now works
+  end-to-end in a Phase-47-built standalone binary — mmap a RWX page
+  (=syscall-direct 9= with =PROT_READ|WRITE|EXEC=), memcpy a reloc-free
+  function's machine code into it, and CALL THE COPIED CODE through a
+  runtime-computed pointer via Phase 47's =(call-ptr PTR ARG...)= (=call r11=
+  on x86_64).  Verified by =nelisp-phase47-compiler/e2e-native-exec-mmap-call-ptr=
+  (target(9)=81 -> exit 81).  Combined with host-side =nelisp-artifact-native-exec=
+  (which confirms the emitted code is correct for the reloc-free subset:
+  arithmetic, =let=/=if=, comparisons, multi-arg), gate 6 holds for reloc-free
+  native functions: the artifact's native code is correct AND the standalone
+  runtime can load+execute it in-process.
+- *Native (§6.4) EXEC remaining — general case*: builtin-calling defuns emit
+  =R_X86_64_PLT32= relocs (=nelisp_aot_builtin_call1/calln=, =nl_alloc_symbol=)
+  and some read the Phase-47 boundary slots
+  (=out/mirror/frames/scratch/name_slot=).  Executing those in-process still
+  needs (1) load-time reloc resolution against the runtime's symbol addresses
+  (the static linker's =pc32/plt32= patcher is reusable) and (2) a
+  boundary-populating trampoline.  The mmap+exec+=call-ptr= mechanism they ride
+  on is proven; what remains is the reloc/boundary glue.  The portable bytecode
+  lane already runs every =.neln= today.
+- *Trigger*: =nelisp-emacs= needs a fast development loop for large vendor
+  Emacs Lisp files.  Re-reading, normalizing, and re-evaluating every file on
+  each diagnostic run is too slow, and generated tables such as
+  =emoji-labels.el= make the persistent REPL path fragile.
+- *Design boundary*: This document defines a generic =nelisp= command/API
+  surface for producing reusable Elisp module artifacts: first bytecode, then
+  native artifacts when NeLisp can emit a real runtime-owned native artifact.
+  The final public bytecode compatibility target is GNU Emacs-readable =.elc=,
+  but the first useful implementation may use NeLisp-private artifact formats
+  with distinct suffixes.  This document does not move =nelisp-emacs= build
+  policy into =nelisp=.  =nelisp-emacs= remains responsible for choosing which
+  vendor files to compile, where to store cache entries, and when to invalidate
+  them.
+- *Cache handoff*: After =nelisp= can emit real bytecode/native artifacts via
+  external commands, =nelisp-emacs= should use the emitted artifact plus the
+  manifest described here as its cache storage format, instead of inventing a
+  separate serialized cache for already-proven vendor files.
+
+* 1. Goal
+
+Provide external commands that let tools build a real reusable artifact from an
+Elisp source file, then later load that artifact without parsing and evaluating
+the full source again.
+
+An artifact may be:
+
+- a NeLisp-private bytecode module;
+- a GNU Emacs-compatible bytecode module, once supported;
+- a NeLisp-private native module, once native emission has a stable runtime ABI.
+
+The immediate consumer is =nelisp-emacs=:
+
+1. First run:
+   - read vendor source,
+   - compile it into a reusable bytecode or native module artifact,
+   - write the artifact file plus a NeLisp cache manifest.
+2. Later runs:
+   - compare source/runtime/cache metadata,
+   - if valid, load the artifact,
+   - skip the original source file.
+
+The long-term performance target is that a successfully cached vendor prefix is
+replayed from artifacts in time proportional to artifact loading, not source
+reader/macroexpansion/evaluation.
+
+* 2. Non-goals
+
+- Do not add =nelisp-emacs=-specific file lists, proof forms, or vendor policy
+  to =nelisp=.
+- Do not implement or specify GNU Emacs =.eln= compatibility in this document.
+  Emacs =.eln= is a native shared-library artifact tied to Emacs internals,
+  compiler ABI, GC metadata, and platform loader behavior; it is too different
+  from the current NeLisp standalone path to be part of this cache MVP.
+- Do not require a native artifact before the bytecode cache works.  Native is
+  a later lane that reuses the same module/manifest/cache contract after the
+  native ABI is stable.
+- Do not require GNU Emacs =.elc= compatibility as the first implementation.
+  Compatibility remains the long-term direction, but the first useful cache lane
+  can be NeLisp-private if it uses a non-=.elc= suffix and a manifest that makes
+  the format explicit.
+- Do not make the pure Elisp runtime depend on =nelisp-emacs=.  The runtime
+  remains a pure Elisp execution environment; this is a command/tooling surface
+  exposed by the NeLisp runtime/toolchain, not editor-distribution policy.
+
+* 2.1 Compatibility goal
+
+The final public bytecode target is Emacs-compatible =.elc=.
+
+- If an artifact uses the =.elc= suffix, GNU Emacs must be able to read/load it
+  for the emitted supported subset.
+- If the artifact is NeLisp-private, it must not use public Emacs suffixes such
+  as =.elc= or =.eln=.  Use distinct suffixes such as =.nelc= / =.neln= and
+  record =:artifact-format= and =:artifact-class= in the manifest.
+- NeLisp-specific cache metadata lives in a sidecar manifest, not by redefining
+  the public meaning of =.elc=.
+
+This is a goal, not a shortcut.  If NeLisp cannot yet emit a fully
+Emacs-compatible =.elc= for a source file, compilation must report an explicit
+unsupported-form error, or write a NeLisp-private =.nelc= artifact when the
+caller requested the MVP private format.  It must not silently write a file
+named =.elc= whose format GNU Emacs cannot recognize.
+
+* 3. Required Semantics
+
+An artifact must represent a source *module*, not only compiled function bodies.
+Loading the artifact must reproduce the source file's observable load-time
+effects:
+
+- =defun= / =defmacro= / =defsubst= function cells,
+- =defvar= / =defconst= / =defcustom= value cells and documentation,
+- =put= / property side effects,
+- =provide= and =features= updates,
+- load-time table materialization such as =#s(hash-table ...)=,
+- macroexpanded top-level forms when the compiler chooses to store expanded
+  code,
+- enough source metadata for diagnostics.
+
+This is the critical distinction from a function-only compiler.  Vendor files
+are loaded for their top-level initialization.  A cache entry that installs only
+compiled functions is not sufficient for =nelisp-emacs=.
+
+* 3.1 Emacs bytecode model to reuse
+
+GNU Emacs' byte-compilation model is the compatibility target.
+
+Emacs normally uses a layered load model:
+
+1. =.elc= is the stable compiled Lisp layer.
+2. =.eln= is an optional native layer for a specific Emacs/runtime/target.
+
+When =load= finds byte-compiled Lisp, native-comp-enabled Emacs can prefer the
+corresponding =.eln=.  If the =.eln= is missing, stale, or incompatible, Emacs
+can still load the =.elc= and optionally compile native code in the background.
+The native file is treated like a shared library: it is not portable across
+different CPUs, operating systems, runtime libraries, or incompatible Emacs
+calling conventions.
+
+Doc 142 should follow the same shape:
+
+- =.elc= is the final bytecode compatibility target;
+- the MVP may use a NeLisp-private =.nelc= artifact to get fast development
+  loops sooner;
+- GNU Emacs =.eln= compatibility is deliberately out of scope for Doc 142;
+- future implicit source loading may prefer a valid NeLisp-native artifact,
+  fall back to a valid NeLisp bytecode artifact, then to a valid
+  Emacs-compatible =.elc= when available, and finally fall back to source.
+
+This keeps the cache useful before full =.elc= compatibility is complete,
+without committing to an =.eln= design that would duplicate Emacs native-comp
+internals.
+
+* 4. Command Surface
+
+The command names are intentionally explicit and batch-friendly.
+
+** 4.1 Compile
+
+#+begin_src sh
+nelisp compile-elisp-artifact \
+  --kind nelc|elc|neln|auto \
+  --input FILE.el \
+  --output FILE.nelc|FILE.elc|FILE.neln \
+  --manifest FILE.nelc.manifest.el|FILE.elc.manifest.el|FILE.neln.manifest.el \
+  [--load-path DIR]... \
+  [--preload FILE.el]... \
+  [--feature FEATURE] \
+  [--target TARGET] \
+  [--cache-key KEY]
+#+end_src
+
+Required behavior:
+
+- Exit 0 only after both artifact and manifest are atomically written.
+- Exit non-zero without leaving a partial output at the final path.
+- Compile in an environment equivalent to later artifact load, after applying
+  =--load-path= and =--preload= in order.
+- If =--kind auto= is used, choose the best supported artifact for the current
+  runtime and request.  For MVP this may choose =nelc= unconditionally.
+- =--kind nelc= writes a NeLisp-private bytecode artifact and must not use the
+  =.elc= suffix.
+- =--kind elc= must write a GNU Emacs-compatible byte-compiled file, not a
+  NeLisp-private text format with an =.elc= suffix.
+- =--kind neln= writes a NeLisp-private native artifact and must not use the
+  =.eln= suffix unless NeLisp deliberately implements GNU Emacs =.eln=
+  compatibility in a future design.  The working suffix in this document is
+  =.neln=.
+- The compiler may reject unsupported forms, but the error must identify the
+  source file, top-level form index, and phase.
+
+** 4.2 Load/exec
+
+#+begin_src sh
+nelisp exec-elisp-artifact FILE.nelc|FILE.elc|FILE.neln FORM...
+nelisp eval-elisp-artifact FILE.nelc|FILE.elc|FILE.neln FORM...
+#+end_src
+
+Required behavior:
+
+- Load the artifact before evaluating =FORM...=.
+- =exec-elisp-artifact= follows the existing =exec-runtime-image= convention:
+  no printed value is required; exit status is the result channel.
+- =eval-elisp-artifact= prints the last value for diagnostics.
+- Loading an artifact must not re-open the original source file unless debug
+  metadata explicitly requests it.
+
+** 4.3 Inspect
+
+#+begin_src sh
+nelisp inspect-elisp-artifact FILE.nelc|FILE.elc|FILE.neln
+#+end_src
+
+Required behavior:
+
+- Print the manifest as an Elisp plist.
+- This gives build tools a source-independent way to verify artifact metadata.
+
+* 5. Manifest Format
+
+Use an Elisp plist so pure Elisp tools can read it without JSON dependencies.
+
+#+begin_src elisp
+(:format nelisp-elisp-artifact-manifest-v1
+ :kind nelc
+ :artifact-format nelisp-bytecode-v1
+ :artifact-class bytecode
+ :target "x86_64-unknown-linux-gnu"
+ :runtime-abi "nelisp-runtime-abi-v1"
+ :nelisp-version "..."
+ :emacs-compat (:emacs-version "30.2"
+                :bytecode-version "..."
+                :compatible nil)
+ :artifact-sha256 "..."
+ :source (:path "/abs/vendor/foo.el"
+          :truename "/abs/vendor/foo.el"
+          :sha256 "..."
+          :size 12345
+          :mtime (HIGH LOW USEC PSEC))
+ :preloads ((:path "/abs/prelude.el" :sha256 "..."))
+ :load-path ("/abs/src" "/abs/vendor/emacs-lisp")
+ :features (foo)
+ :top-level-count 42
+ :compiler (:frontend "reader-vN"
+            :macroexpander "elisp"
+            :bytecode-version 3
+            :bytecode-backend "nelisp-bcl"
+            :module-init-format "top-level-effects-v1")
+ :entry (:type module-init
+         :id "foo.el"))
+#+end_src
+
+=nelisp-emacs= can use this manifest directly as its cache-validity record:
+
+- source hash/mtime/size must match,
+- target and =nelisp-version= must match,
+- artifact format and compiler format versions must match,
+- artifact class and runtime ABI must match,
+- for future =.elc= artifacts, Emacs compatibility fields must match,
+- preload hashes must match,
+- requested feature/proof policy remains owned by =nelisp-emacs=.
+
+* 6. Artifact Kinds
+
+** 6.1 NeLisp-private =.nelc= module artifact
+
+First implementation target.
+
+- Store module init bytecode for top-level effects in a NeLisp-readable =.nelc=
+  file.
+- Store precompiled NeLisp bytecode bodies for eligible functions.
+- Leave unsupported function bodies as source/interpreter thunks only when the
+  resulting =.nelc= still avoids re-reading the original source file.
+- Loading the artifact executes module init once per environment, then marks
+  provided features as usual.
+- May reuse the current NeLisp bytecode machinery, but the public suffix must be
+  =.nelc= or another clearly NeLisp-private suffix, not =.elc=.
+
+** 6.2 Emacs-compatible =.elc= module artifact
+
+Long-term bytecode compatibility target.
+
+- Store module init bytecode for top-level effects in a GNU Emacs-readable
+  =.elc= file.
+- Store byte-compiled function bodies using Emacs-compatible bytecode objects
+  and load forms.
+- Leave unsupported function bodies as source/interpreter thunks only when the
+  resulting =.elc= remains a valid GNU Emacs-readable file and still avoids
+  re-reading the original source file.
+- Loading the artifact executes module init once per environment, then marks
+  provided features as usual.
+- Must not reuse the current NeLisp private text =.elc= magic header
+  =nelisp-bytecode-elc-v1= as the public artifact format.
+
+** 6.3 No GNU Emacs =.eln= compatibility in Doc 142
+
+GNU Emacs =.eln= compatibility is intentionally out of scope.  The Emacs native
+artifact format is too tightly coupled to Emacs native-comp internals and
+platform loader behavior.
+
+This does not forbid NeLisp-native artifacts.  A NeLisp-native artifact uses a
+NeLisp-owned suffix such as =.neln=, a NeLisp runtime ABI field in the manifest,
+and a loader implemented by =nelisp=.  It is valid cache material for
+=nelisp-emacs= only when it can reproduce source module load-time effects and
+the manifest matches the current runtime.
+
+** 6.4 NeLisp-private =.neln= native module artifact
+
+Future implementation target after bytecode module artifacts are reliable.
+
+- Store native code for module init and eligible function bodies.
+- Use a stable NeLisp runtime ABI that describes value representation, GC root
+  protocol, calling convention, unwind/error protocol, symbol/function-cell
+  access, and module initialization contract.
+- Reject cache load before executing code if the runtime ABI, target triple,
+  compiler version, artifact hash, or source/preload hashes do not match.
+- Fall back to =.nelc= or source when native artifact loading is unsupported or
+  stale.
+- Do not make native artifacts the only cache lane; bytecode remains the
+  portable fallback for faster development loops across targets.
+
+** 6.5 Auto artifact
+
+Build tools can request =--kind auto=.  The compiler chooses the best supported
+artifact kind, records the chosen kind in the manifest, and exits non-zero if no
+available artifact kind can faithfully represent the module.
+
+For MVP, =auto= may choose =nelc= unconditionally.  Once Emacs-compatible
+=.elc= emission is reliable, =auto= may prefer =elc= for modules in the
+supported compatibility subset.  Once NeLisp-native artifacts have a stable ABI,
+=auto= may prefer =neln= for the current target while retaining =nelc= as the
+fallback cache format.
+
+* 7. Atomicity and Cache Safety
+
+Compilation must write to temporary files and rename into place only after both
+artifact and manifest are complete.
+
+Required failure rules:
+
+- A failed compile must not leave a valid-looking manifest.
+- A failed load must report artifact path, format version, and failing phase.
+- A stale artifact must be rejected before executing any module init code.
+- Artifact hash, source hash, runtime version, artifact format, and compiler
+  format all participate in the cache key.
+
+* 7.1 Future implicit load selection
+
+The first implementation uses explicit commands:
+
+- =compile-elisp-artifact=
+- =eval-elisp-artifact=
+- =exec-elisp-artifact=
+- =inspect-elisp-artifact=
+
+A later =nelisp --load FILE.el= integration may use an Emacs-like selection
+order:
+
+1. If a valid NeLisp-private =.neln= artifact exists for the current runtime ABI
+   and target, load it.
+2. Else if a valid NeLisp-private =.nelc= artifact exists for the current runtime,
+   load it.
+3. Else if a valid Emacs-compatible =.elc= artifact exists, load it.
+4. Else load the source file.
+5. Optionally produce or refresh artifacts after successful source load.
+
+This implicit path is deliberately not part of the MVP.  The explicit commands
+are easier to test and give =nelisp-emacs= full control over cache policy.
+
+* 8. Interaction With Runtime Images
+
+Runtime images and module artifacts are related but distinct.
+
+- Runtime image: whole-environment replay or snapshot.
+- Elisp artifact: one source module's reusable load unit.
+
+A future =extend-runtime-image= can consume =.neln= / =.nelc= / =.elc=
+artifacts, but those artifacts must also be loadable without building a whole
+runtime image.
+This keeps =nelisp-emacs= development loops incremental:
+
+1. base bootstrap image or REPL,
+2. load cached native/bytecode module artifacts for unchanged vendor files,
+3. source-load only changed or uncached files,
+4. optionally write a new runtime image after a stable prefix is proven.
+
+* 9. Acceptance Gates
+
+The first usable version should pass these gates:
+
+1. Compile a small source file containing =defun=, =defvar=, =defconst=,
+   =put=, and =provide= to a NeLisp-private =.nelc= artifact.
+2. Load that artifact in a fresh =nelisp= process without reading the source.
+3. Verify =featurep=, =fboundp=, value cells, and property cells.
+4. Compile and load a generated hash-table source equivalent to:
+
+   #+begin_src elisp
+   (defconst sample '#s(hash-table test equal data ("a" 1 "b" (2 3))))
+   (provide 'sample)
+   #+end_src
+
+5. =nelisp-emacs= can replace a source replay of one vendor file with bytecode
+   artifact load and get the same proof result.
+6. After the native ABI exists, =nelisp-emacs= can replace the same source replay
+   with native artifact load and get the same proof result.
+7. Cache invalidation rejects an artifact after source content changes.
+8. Artifact load is measurably faster than source replay for a generated table
+   file.
+9. Long-term compatibility gate: for a simple supported subset, =--kind elc=
+   emits a GNU Emacs-readable =.elc= and GNU Emacs can load it.
+
+* 10. Open Questions
+
+- Should the artifact store macroexpanded top-level forms, original forms, or
+  both?
+- Should docstrings and source locations be stored in the artifact or a sidecar
+  debug file?
+- How much of =load-history= compatibility is required for vendor workflows?
+- Should the private bytecode/native suffixes be =.nelc= and =.neln= or another
+  project-specific extension pair?
+- How should artifacts represent host-tool rewrites such as the
+  =nelisp-emacs= standalone source normalizer?  The recommended answer is to
+  record such rewrites as a compiler frontend version/hash in the manifest,
+  while keeping rewrite policy outside =nelisp=.
+- Should =auto= prefer =neln= over =elc= for =nelisp-emacs= when both are valid,
+  or should =nelisp-emacs= make that policy decision explicitly?
+
+* 11. Migration Plan for nelisp-emacs
+
+Once this command surface exists:
+
+1. =nelisp-emacs= keeps its current source normalizer and fast diagnostics.
+2. Add a build-tool cache directory such as =build/nelisp-artifacts/= with
+   =neln/=, =nelc/=, future =elc/=, and =manifest/= subdirectories.
+3. For each vendor file, compute the manifest key from source, prelude,
+   bootstrap, load-path, =nelisp= version, and normalizer version.
+4. On cache hit, emit REPL/input forms that load the =.neln=, =.nelc=, or
+   =.elc= artifact instead of replaying every normalized source form.
+5. On cache miss, source-load the vendor file, then optionally call
+   =compile-elisp-artifact= after the file has passed the proof for that lane.
+6. Keep proof ownership in =nelisp-emacs=; =nelisp= only guarantees artifact
+   semantic fidelity and metadata.
+
+This allows =nelisp-emacs= to use vendor sources as the authoritative input
+while avoiding repeated full source replay for files that have already been
+compiled and proven.
+
+* 11.1 nelisp-emacs cache record shape
+
+=nelisp-emacs= should treat the =nelisp= artifact and manifest pair as the cache
+record:
+
+#+begin_src text
+build/nelisp-artifacts/
+  manifests/<cache-key>.manifest.el
+  neln/<cache-key>.neln
+  nelc/<cache-key>.nelc
+  elc/<cache-key>.elc
+#+end_src
+
+Only one artifact is required for a given manifest, but the directory layout
+allows the same source/preload key to keep multiple artifact classes when useful.
+
+The manifest is the authoritative cache metadata.  =nelisp-emacs= may keep a
+small index for lookup speed, but the index is derived data and can be deleted.
+On startup or diagnostic replay, =nelisp-emacs= should:
+
+1. compute the cache key from source/preload/tool inputs;
+2. read the manifest plist with pure Elisp;
+3. reject the entry if any manifest field does not match;
+4. load the artifact path recorded by the manifest;
+5. run the same proof form that the source replay lane uses.
+
+The manifest must not encode =nelisp-emacs= policy such as vendor allowlists,
+org-load order, or proof selection.  Those remain in =nelisp-emacs= build tools.
+The artifact must not depend on =nelisp-emacs= being present unless the source
+module itself depends on =nelisp-emacs= packages through normal load paths.

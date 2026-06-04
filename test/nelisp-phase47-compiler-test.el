@@ -513,6 +513,38 @@ through `call-ptr'.  target(5) = 5 + 100 = 105 -> exit 105."
     (let ((r (nelisp-phase47-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 105)))))
 
+(ert-deftest nelisp-phase47-compiler/e2e-native-exec-mmap-call-ptr ()
+  "Doc 142 §6.4 gate 6 — general native EXEC mechanism in the standalone
+runtime: mmap a RWX page, memcpy a reloc-free function's machine code
+into it, then CALL THE COPIED CODE through a runtime-computed pointer via
+`call-ptr'.  This is the core of dynamically loading a `.neln' artifact's
+native object in-process (no static link): the code is moved to a fresh
+executable page and run.  target(9) = 9*9 = 81 -> exit 81."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (nelisp-phase47-compiler-test--with-tmp-binary path "native-exec"
+    (nelisp-phase47-compile-sexp
+     '(seq
+       (defun target (x) (* x x))      ; reloc-free leaf, position-independent
+       (defun memcpy8 (dst src n)
+         (let ((i 0))
+           (while (< i n)
+             (ptr-write-u64 (+ dst i) 0 (ptr-read-u64 (+ src i) 0))
+             (setq i (+ i 8)))
+           dst))
+       (defun native-exec (x)
+         ;; mmap(NULL, 4096, PROT_READ|WRITE|EXEC, MAP_PRIVATE|ANON, -1, 0)
+         (let ((page (syscall-direct 9 0 4096 7 34 -1 0)))
+           (if (< page 4096)
+               99                        ; mmap failed sentinel
+             (seq (memcpy8 page (addr-of target) 256)   ; load code into RX page
+                  (call-ptr page x)))))                 ; EXEC the loaded code
+       (exit (native-exec 9)))
+     path)
+    (should (file-executable-p path))
+    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+      (should (= (plist-get r :exit) 81)))))
+
 (ert-deftest nelisp-phase47-compiler/e2e-call-ptr-zero-arg ()
   "Doc 133 Phase 0: indirect call with no args.
 `via' calls a zero-arg `answer' through its address. answer() = 42."
