@@ -3947,17 +3947,80 @@ correctly."
          (setq off (nl_cstr_copy_into form_ptr fbuf off))
          (nl_cli_wrap_source_at fbuf off src))))
     (defun nl_cli_load_source (path_ptr fbuf src)
-      (let* ((off (nl_cli_eval_prefix fbuf 0))
-             (filebuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1))
-             (n (nl_os_read_file_cpath
-                 path_ptr filebuf
-                 (- ,nelisp-standalone--reader-read-cap off 512))))
+      (let* ((n (nl_os_read_file_cpath
+                 path_ptr fbuf
+                 ,nelisp-standalone--reader-read-cap)))
         (if (< n 0)
             0
-          (seq
-           (setq off (nl_copy_bytes_into filebuf fbuf 0 n off))
-           (nl_cli_wrap_source_at fbuf off src)
-           1))))
+          (seq (nl_alloc_str fbuf n src) 1))))
+    (defun nl_cli_put_byte (fbuf off b)
+      (seq (ptr-write-u8 fbuf off b) (+ off 1)))
+    (defun nl_cli_put_udec (fbuf off v)
+      (if (< v 10)
+          (nl_cli_put_byte fbuf off (+ 48 v))
+        (let* ((off2 (nl_cli_put_udec fbuf off (/ v 10))))
+          (nl_cli_put_byte fbuf off2 (+ 48 (mod v 10))))))
+    (defun nl_cli_put_dec (fbuf off v)
+      (if (< v 0)
+          (nl_cli_put_udec fbuf (nl_cli_put_byte fbuf off 45) (- 0 v))
+        (nl_cli_put_udec fbuf off v)))
+    (defun nl_cli_put_raw_bytes (src fbuf i n off)
+      (if (= i n)
+          off
+        (nl_cli_put_raw_bytes
+         src fbuf (+ i 1) n
+         (nl_cli_put_byte fbuf off (ptr-read-u8 src i)))))
+    (defun nl_cli_put_string_value (fbuf off sx quoted)
+      (let* ((off2 (if (= quoted 1) (nl_cli_put_byte fbuf off 34) off))
+             (off3 (nl_cli_put_raw_bytes (nl_bi_strptr sx) fbuf 0
+                                         (nl_bi_strlen sx) off2)))
+        (if (= quoted 1)
+            (nl_cli_put_byte fbuf off3 34)
+          off3)))
+    (defun nl_cli_put_nil (fbuf off)
+      (nl_cli_put_byte
+       fbuf (nl_cli_put_byte fbuf (nl_cli_put_byte fbuf off 110) 105) 108))
+    (defun nl_cli_put_object (fbuf off)
+      (nl_cli_put_byte
+       fbuf
+       (nl_cli_put_byte
+        fbuf
+        (nl_cli_put_byte
+         fbuf
+         (nl_cli_put_byte
+          fbuf
+          (nl_cli_put_byte
+           fbuf
+           (nl_cli_put_byte
+            fbuf
+            (nl_cli_put_byte
+             fbuf
+             (nl_cli_put_byte
+              fbuf
+              (nl_cli_put_byte fbuf off 35) 60)
+             111)
+            98)
+           106)
+          101)
+         99)
+        116)
+       62))
+    (defun nl_cli_value_to_buf (fbuf off out)
+      (let* ((tag (ptr-read-u64 out 0)))
+        (cond
+         ((= tag 0) (nl_cli_put_nil fbuf off))
+         ((= tag 1) (nl_cli_put_byte fbuf off 116))
+         ((= tag 2) (nl_cli_put_dec fbuf off (ptr-read-u64 out 8)))
+         ((= tag 4) (nl_cli_put_string_value fbuf off out 0))
+         ((= tag 5) (nl_cli_put_string_value fbuf off out 1))
+         ((= tag 6) (nl_cli_put_string_value fbuf off out 1))
+         (t (nl_cli_put_object fbuf off)))))
+    (defun nl_cli_write_value (fbuf out)
+      (let* ((n (nl_cli_value_to_buf fbuf 0 out)))
+        (seq
+         (ptr-write-u8 fbuf n 10)
+         (nl_os_write_stdout fbuf (+ n 1))
+         0)))
     (defun nl_copy_bytes_into (src dst i n off)
       (seq
        (while (< i n)
@@ -4193,7 +4256,7 @@ correctly."
                   (seq
                    (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                    (if (= (ptr-read-u64 268435464 0) 0)
-                       0
+                       (nl_cli_write_value fbuf out)
                      (- (ptr-read-u64 268435464 0) 1)))
                 (seq (nl_cli_write_help fbuf) 2))
             (seq (nl_cli_write_help fbuf) 2)))

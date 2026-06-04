@@ -303,8 +303,8 @@
     (should (memq 'big-probe_chunk_001 chunk-flat))
     (should (memq 'big-probe_chunk_002 chunk-flat))))
 
-(ert-deftest nelisp-standalone-target-reader-load-uses-scratch-read-buffer ()
-  "`--load' reads into scratch storage before wrapping source for output."
+(ert-deftest nelisp-standalone-target-reader-load-uses-direct-source-printer ()
+  "`--load' evaluates raw file source and prints the resulting value."
   (cl-labels ((tree-member-p
                (needle tree)
                (cond
@@ -314,19 +314,25 @@
                      (tree-member-p needle (cdr tree)))))))
     (let ((forms (nelisp-standalone--reader-driver-source)))
       (should (tree-member-p
-               '(filebuf (alloc-bytes 4194304 1))
+               '(nl_alloc_str fbuf n src)
                forms))
       (should (tree-member-p
-               '(nl_os_read_file_cpath path_ptr filebuf
-                                       (- 4194304 off 512))
+               '(nl_cli_write_value fbuf out)
                forms))
       (should (tree-member-p
-               '(setq off (nl_copy_bytes_into filebuf fbuf 0 n off))
+               '(defun nl_cli_value_to_buf (fbuf off out)
+                  (let* ((tag (ptr-read-u64 out 0)))
+                    (cond
+                     ((= tag 0) (nl_cli_put_nil fbuf off))
+                     ((= tag 1) (nl_cli_put_byte fbuf off 116))
+                     ((= tag 2) (nl_cli_put_dec fbuf off (ptr-read-u64 out 8)))
+                     ((= tag 4) (nl_cli_put_string_value fbuf off out 0))
+                     ((= tag 5) (nl_cli_put_string_value fbuf off out 1))
+                     ((= tag 6) (nl_cli_put_string_value fbuf off out 1))
+                     (t (nl_cli_put_object fbuf off)))))
                forms))
-      (should (tree-member-p '(nl_cli_wrap_source_at fbuf off src) forms))
       (should-not (tree-member-p
-                   '(nl_os_read_file_cpath path_ptr (+ fbuf off)
-                                           (- 4194304 off))
+                   '(nl_cli_wrap_source_at fbuf (+ off n) src)
                    forms)))))
 
 (ert-deftest nelisp-standalone-target-reader-repl-suffix-is-target-aware ()
