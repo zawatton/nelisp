@@ -391,6 +391,29 @@
   (should (= (nelisp-standalone--target-arena-size 'linux-x86_64)
              #x200000000)))
 
+(ert-deftest nelisp-standalone-target-arena-size-slot-is-initialized ()
+  "All native standalone targets expose reservation size through arena metadata."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((nelisp-standalone--target 'linux-x86_64))
+      (should (tree-member-p
+               '(ptr-write-u64 #x100000d8 0 #x200000000)
+               (nelisp-standalone--target-arena-source))))
+    (let ((nelisp-standalone--target 'windows-x86_64)
+          (nelisp-standalone--windows-arena-base #x70000000))
+      (should (tree-member-p
+               '(ptr-write-u64 #x700000d8 0 #x4000000)
+               (nelisp-standalone--target-arena-source))))
+    (let ((nelisp-standalone--target 'macos-aarch64))
+      (should (tree-member-p
+               '(ptr-write-u64 #x8000000d8 0 #x20000000)
+               (nelisp-standalone--target-arena-source))))))
+
 (ert-deftest nelisp-standalone-target-macos-rebases-arena-slots ()
   "macOS source rebase moves fixed metadata above Mach-O __PAGEZERO."
   (let ((nelisp-standalone--target 'macos-aarch64))

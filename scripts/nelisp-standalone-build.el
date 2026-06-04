@@ -516,6 +516,7 @@ or the toolchain is newer than the cached object."
 ;;   +112 (268435568): arena DATA-START absolute addr (first header) for
 ;;                     the sweep walker
 ;;   +120 (268435576): live-bytes-after-last-gc (advisory)
+;;   +216 (268435672): arena reservation size in bytes
 ;;
 ;; The bump allocator still NEVER auto-frees mid-eval; reclamation is the
 ;; GC sweep at the top-level form boundary (see the reader driver).
@@ -632,6 +633,7 @@ are a last-resort workaround, not the correctness path."
               (ptr-write-u64 ,(+ base 168) 0 0)  ; free-list reuse
               (ptr-write-u64 ,(+ base 192) 0 0)  ; probe off
               (ptr-write-u64 ,(+ base 200) 0 0)  ; min reuse block_total
+              (ptr-write-u64 ,(+ base 216) 0 ,size) ; reservation size
               p)
            (syscall-direct 60 88 0 0 0 0 0))))))
 
@@ -657,7 +659,9 @@ are a last-resort workaround, not the correctness path."
                    (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 168) 0 0)
                     (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 192) 0 0)
                      (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 200) 0 0)
-                              p)))))))))))))))))
+                      (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 216)
+                                              0 ,nelisp-standalone--windows-arena-size)
+                               p))))))))))))))))))
 
 (defun nelisp-standalone--macos-arena-init-form ()
   "Return the macOS `nl_arena_init' form using Darwin mmap."
@@ -680,6 +684,8 @@ are a last-resort workaround, not the correctness path."
             (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 168) 0 0)
             (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 192) 0 0)
             (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 200) 0 0)
+            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 216)
+                           0 ,nelisp-standalone--macos-arena-size)
             p)
          (syscall-direct 1 88 0 0 0 0 0)))))
 
@@ -1074,6 +1080,7 @@ argument (reachability + in-arena bounds checks).")
                                    (seq (mut-str-make-empty ms 32)
                                         (m5_prin1 ms (wf_arg_ptr args 0))
                                         (mut-str-finalize ms out) 0)))
+    ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
     ((:u8 "wrf")  . (seq (nl_bi_write_file args out) 0))
     ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
@@ -1193,6 +1200,39 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
     (defun wf_write_nil (out)
       (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
            (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0) 0))
+    (defun wf_cons_int (v rest out)
+      (let* ((slot (alloc-bytes 32 8)))
+        (seq (wf_write_int slot v)
+             (nelisp_cons_construct slot rest out)
+             0)))
+    ;; Portable arena telemetry:
+    ;;   (base size bump-offset used-bytes live-after-last-gc next-trigger
+    ;;    free-list-head collect-disabled reuse-disabled)
+    (defun bf_arena_stats (out)
+      (let* ((nil-slot (alloc-bytes 32 8))
+             (s8 (alloc-bytes 32 8))
+             (s7 (alloc-bytes 32 8))
+             (s6 (alloc-bytes 32 8))
+             (s5 (alloc-bytes 32 8))
+             (s4 (alloc-bytes 32 8))
+             (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8))
+             (s1 (alloc-bytes 32 8)))
+        (seq
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 268435624 0) nil-slot s8)
+         (wf_cons_int (ptr-read-u64 268435616 0) s8 s7)
+         (wf_cons_int (ptr-read-u64 268435552 0) s7 s6)
+         (wf_cons_int (ptr-read-u64 268435560 0) s6 s5)
+         (wf_cons_int (ptr-read-u64 268435576 0) s5 s4)
+         (wf_cons_int (if (< (ptr-read-u64 268435456 0) 256)
+                          0
+                        (- (ptr-read-u64 268435456 0) 256))
+                      s4 s3)
+         (wf_cons_int (ptr-read-u64 268435456 0) s3 s2)
+         (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
+         (wf_cons_int 268435456 s1 out)
+         0)))
     ;; wf_dirty: bump the MUTATION EPOCH counter @268435544 (NO-ESCAPE gate
     ;; in `nelisp_eval_call').  Called by every primitive that installs a box
     ;; into PRE-EXISTING (persistent) structure — setcar/setcdr/aset/puthash —
@@ -3111,7 +3151,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr"
+    "nelisp--repr" "nelisp--arena-stats"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
@@ -4590,6 +4630,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
         (help-out nil)
         (eval-out nil)
         (escape-out nil)
+        (stats-out nil)
         (load-out nil)
         (rc nil))
     (unwind-protect
@@ -4611,6 +4652,15 @@ genuine general interpreter for the 11 special forms + installed builtins."
             (setq escape-out (buffer-string)))
           (unless (and (= rc 0) (equal escape-out "\"\\\"\\\\\"\n"))
             (error "--eval escape exit=%S stdout=%S" rc escape-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "--eval" "(nelisp--arena-stats)"))
+            (setq stats-out (buffer-string)))
+          (unless (and (= rc 0)
+                       (string-match-p
+                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01])\n\\'"
+                        stats-out))
+            (error "--eval arena-stats exit=%S stdout=%S" rc stats-out))
           (with-temp-file tmp
             (insert "(list 1 2 3)\n"))
           (with-temp-buffer
