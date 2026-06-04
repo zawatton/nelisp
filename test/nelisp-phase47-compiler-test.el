@@ -594,6 +594,266 @@ sq(9) = 81 -> exit 81."
                   (should (= (plist-get r :exit) 81)))))))
       (delete-directory dir t))))
 
+(defun nelisp-phase47-compiler-test--u32le-bytes (value)
+  "Return VALUE as 4 little-endian bytes."
+  (let ((u (logand value #xffffffff)))
+    (list (logand u #xff)
+          (logand (ash u -8) #xff)
+          (logand (ash u -16) #xff)
+          (logand (ash u -24) #xff))))
+
+(defun nelisp-phase47-compiler-test--native-trampoline-slot-disp (slot-index)
+  "Return the rbp-relative spill displacement for SLOT-INDEX."
+  (- (* 8 (1+ slot-index))))
+
+(defun nelisp-phase47-compiler-test--native-mov-rbp-disp-reg-bytes (reg disp)
+  "Return `mov [rbp+DISP], REG' bytes for the x86_64 SysV trampoline."
+  (let ((spec (alist-get reg '((rax . (#x48 #x45 #x85))
+                               (rcx . (#x48 #x4d #x8d))
+                               (rdx . (#x48 #x55 #x95))
+                               (rsi . (#x48 #x75 #xb5))
+                               (rdi . (#x48 #x7d #xbd))
+                               (r8 . (#x4c #x45 #x85))
+                               (r9 . (#x4c #x4d #x8d))))))
+    (unless spec
+      (error "unsupported trampoline register %S" reg))
+    (pcase-let ((`(,rex ,modrm8 ,modrm32) spec))
+      (append (list rex #x89 (if (<= -128 disp 127) modrm8 modrm32))
+              (if (<= -128 disp 127)
+                  (list (logand disp #xff))
+                (nelisp-phase47-compiler-test--u32le-bytes disp))))))
+
+(defun nelisp-phase47-compiler-test--ptr-write-u8-forms (base-sym bytes)
+  "Return `(ptr-write-u8 ...)' forms that copy BYTES into BASE-SYM."
+  (let ((idx -1))
+    (mapcar (lambda (byte)
+              (setq idx (1+ idx))
+              `(ptr-write-u8 ,base-sym ,idx ,byte))
+            bytes)))
+
+(defun nelisp-phase47-compiler-test--native-trampoline-bytes (meta)
+  "Return raw trampoline bytes and imm64 patch offsets for META."
+  (let* ((arity (or (plist-get meta :arity) 0))
+         (frame-bytes (nelisp-artifact--native-trampoline-frame-bytes meta))
+         (arg-regs '(rdi rsi rdx rcx r8 r9))
+         (bytes nil)
+         (imm64-offsets nil))
+    (unless (<= arity (length arg-regs))
+      (error "trampoline arity %d exceeds gp register support" arity))
+    (cl-labels
+        ((emit (chunk)
+           (setq bytes (append bytes chunk)))
+         (emit-imm64-placeholder ()
+           (push (+ (length bytes) 2) imm64-offsets)
+           (emit '(#x48 #xb8 0 0 0 0 0 0 0 0))))
+      (emit '(#x55 #x48 #x89 #xe5))
+      (when (> frame-bytes 0)
+        (emit (append '(#x48 #x81 #xec)
+                      (nelisp-phase47-compiler-test--u32le-bytes frame-bytes))))
+      (dotimes (i arity)
+        (emit
+         (nelisp-phase47-compiler-test--native-mov-rbp-disp-reg-bytes
+          (nth i arg-regs)
+          (nelisp-phase47-compiler-test--native-trampoline-slot-disp i))))
+      (dotimes (i (+ 5 12))
+        (emit-imm64-placeholder)
+        (emit
+         (nelisp-phase47-compiler-test--native-mov-rbp-disp-reg-bytes
+          'rax
+          (nelisp-phase47-compiler-test--native-trampoline-slot-disp
+           (+ arity i)))))
+      (emit-imm64-placeholder)
+      (emit '(#xff #xe0)))
+    (list :bytes bytes
+          :imm64-offsets (nreverse imm64-offsets))))
+
+(ert-deftest nelisp-phase47-compiler/e2e-native-exec-neln-artifact-call1-in-process ()
+  "Doc 142 §6.4 gate 6 (in-process MECHANISM) — load a builtin-calling
+`.neln' artifact and execute it in-process.  The standalone program copies
+the artifact `.text' into an mmap'd RX page, builds absolute-jump stubs
+(a `plt32' rel32 from an mmap(NULL) page is out of signed-32-bit range of
+the helpers) and patches the artifact's two `plt32' relocs to those stubs,
+writes a raw machine-code trampoline mirroring the host-proof spill-frame
+ABI (args + the out/mirror/frames/scratch/name_slot + 12 callback boundary
+slots), then `call-ptr's the entry so `inc1(41)' -> 42.
+
+NOTE: the extern helpers `nl_alloc_symbol' / `nelisp_aot_builtin_call1' here
+are TEST-LOCAL subset shims, because `nelisp-phase47-compile-sexp' builds a
+MINIMAL binary with no runtime env.  This proves the in-process loader
+MECHANISM end-to-end (trampoline bytes, reloc patching via abs-stubs,
+boundary slots, call-ptr, boxed-result decode).  Wiring the loader to the
+REAL reader-linked `nelisp_aot_builtin_call1' (which `nelisp-standalone--reader-units'
+already links) inside the full standalone reader is the remaining gate-6
+integration step."
+  (unless (nelisp-phase47-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (require 'nelisp-artifact)
+  (let* ((dir (make-temp-file "neln-inproc-call1-" t))
+         (src (expand-file-name "inc1.el" dir))
+         (out (expand-file-name "inc1.neln" dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file src
+            (insert "(defun inc1 (x) (1+ x))\n(provide 'inc1)\n"))
+          (load src nil t)
+          (nelisp-artifact-compile-file src out nil nil nil nil nil 'neln)
+          (let* ((native (plist-get (nelisp-artifact--read-payload out) :native))
+                 (defun0 (car (plist-get native :defuns)))
+                 (text-bytes (string-to-list
+                              (base64-decode-string
+                               (plist-get native :text-base64))))
+                 (relocs (plist-get native :relocs))
+                 (externs (plist-get native :extern-symbols))
+                 (trampoline
+                  (nelisp-phase47-compiler-test--native-trampoline-bytes defun0))
+                 (trampoline-bytes (plist-get trampoline :bytes))
+                 (imm64-offsets (plist-get trampoline :imm64-offsets))
+                 (stub-template-bytes '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0))
+                 (stub-specs
+                  (cl-loop for name in externs
+                           for idx from 0
+                           collect (list :name name :offset (+ 256 (* idx 16)))))
+                 (body-entry (+ (plist-get defun0 :offset)
+                                (plist-get defun0 :body-offset))))
+            (should (equal (plist-get defun0 :name) "inc1"))
+            (should (= (plist-get defun0 :arity) 1))
+            (should (= (plist-get defun0 :rt-slot-count) 17))
+            (should (= (plist-get defun0 :body-offset) 19))
+            (should (equal (sort (copy-sequence externs) #'string<)
+                           '("nelisp_aot_builtin_call1" "nl_alloc_symbol")))
+            (should (= (length relocs) 2))
+            (should (equal (mapcar (lambda (reloc) (plist-get reloc :type)) relocs)
+                           '(plt32 plt32)))
+            (should (= (length imm64-offsets) 18))
+            (let* ((text-writes
+                    (nelisp-phase47-compiler-test--ptr-write-u8-forms
+                     'codepage text-bytes))
+                   (reloc-forms
+                    (mapcar
+                     (lambda (reloc)
+                        (let* ((offset (plist-get reloc :offset))
+                              (stub
+                               (cl-find-if
+                                (lambda (spec)
+                                  (equal (plist-get spec :name)
+                                         (plist-get reloc :symbol)))
+                                stub-specs))
+                              (stub-offset (or (plist-get stub :offset)
+                                               (error "missing stub for %s"
+                                                      (plist-get reloc :symbol))))
+                              (addend (or (plist-get reloc :addend) 0)))
+                         `(ptr-write-u32 codepage ,offset
+                                         (- (+ codepage ,stub-offset ,addend)
+                                            (+ codepage ,offset)))))
+                     relocs))
+                   (stub-writes
+                    (apply
+                     #'append
+                     (mapcar
+                      (lambda (spec)
+                        (nelisp-phase47-compiler-test--ptr-write-u8-forms
+                         `(+ codepage ,(plist-get spec :offset))
+                         stub-template-bytes))
+                      stub-specs)))
+                   (stub-patches
+                    (mapcar
+                     (lambda (spec)
+                       `(ptr-write-u64 (+ codepage ,(plist-get spec :offset))
+                                       2
+                                       (addr-of ,(intern (plist-get spec :name)))))
+                     stub-specs))
+                   (trampoline-writes
+                    (nelisp-phase47-compiler-test--ptr-write-u8-forms
+                     'trampage trampoline-bytes))
+                   (slot-values
+                    (append
+                     (list '(+ slots 0) 0 0 '(+ slots 32) '(+ slots 64))
+                     (cl-loop for i from 0 below 12
+                              collect `(+ slots ,(+ 96 (* i 32))))
+                     (list `(+ codepage ,body-entry))))
+                   (imm64-patches
+                   (cl-mapcar
+                     (lambda (offset value)
+                       `(ptr-write-u64 trampage ,offset ,value))
+                     imm64-offsets
+                     slot-values))
+                   (read-int-slot-def
+                    '(defun read-int-slot (slot)
+                       (if (= (ptr-read-u64 slot 0) 2)
+                           (ptr-read-u64 slot 8)
+                         98)))
+                   (zero-slot-def
+                    '(defun zero-slot (slot)
+                       (seq
+                        (ptr-write-u64 slot 0 0)
+                        (ptr-write-u64 (+ slot 8) 0 0)
+                        (ptr-write-u64 (+ slot 16) 0 0)
+                        (ptr-write-u64 (+ slot 24) 0 0)
+                        0)))
+                   (write-int-slot-def
+                    '(defun write-int-slot (slot value)
+                       (seq
+                        (ptr-write-u64 slot 0 2)
+                        (ptr-write-u64 (+ slot 8) 0 value)
+                        (ptr-write-u64 (+ slot 16) 0 0)
+                        (ptr-write-u64 (+ slot 24) 0 0)
+                        slot)))
+                   (nl-alloc-symbol-def
+                    '(defun nl_alloc_symbol (bytes-ptr len result-slot)
+                       (seq
+                        (ptr-write-u64 result-slot 0 4)
+                        (ptr-write-u64 (+ result-slot 8) 0 (ptr-read-u64 bytes-ptr 0))
+                        (ptr-write-u64 (+ result-slot 16) 0 len)
+                        (ptr-write-u64 (+ result-slot 24) 0 0)
+                        result-slot)))
+                   (builtin-call1-def
+                    '(defun nelisp_aot_builtin_call1 (_mirror _frames name arg out _scratch)
+                       (if (= (ptr-read-u64 (+ name 16) 0) 2)
+                           (if (= (ptr-read-u8 (+ name 8) 0) 49)
+                               (if (= (ptr-read-u8 (+ name 8) 1) 43)
+                                   (seq (write-int-slot out (+ arg 1)) out)
+                                 (seq (write-int-slot out 254) out))
+                             (seq (write-int-slot out 253) out))
+                         (seq (write-int-slot out 252) out))))
+                   (native-exec-seq
+                    `(seq
+                      ,@text-writes
+                      ,@stub-writes
+                      ,@stub-patches
+                      ,@reloc-forms
+                      ,@trampoline-writes
+                      ,@imm64-patches
+                      (call-ptr trampage x)
+                      (read-int-slot slots)))
+                   (native-exec-def
+                    `(defun native-exec (x)
+                       (let ((codepage (syscall-direct 9 0 4096 7 34 -1 0)))
+                         (if (< codepage 4096)
+                             90
+                           (let ((slots (syscall-direct 9 0 4096 3 34 -1 0)))
+                             (if (< slots 4096)
+                                 91
+                               (let ((trampage (syscall-direct 9 0 4096 7 34 -1 0)))
+                                 (if (< trampage 4096)
+                                     92
+                                   ,native-exec-seq))))))))
+                   (sexp
+                    `(seq
+                      ,zero-slot-def
+                      ,write-int-slot-def
+                      ,nl-alloc-symbol-def
+                      ,builtin-call1-def
+                      ,read-int-slot-def
+                      ,native-exec-def
+                      (exit (native-exec 41)))))
+              (nelisp-phase47-compiler-test--with-tmp-binary path
+                  "neln-inproc-call1"
+                (nelisp-phase47-compile-sexp sexp path)
+                (should (file-executable-p path))
+                (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+                  (should (= (plist-get r :exit) 42))))))
+      (delete-directory dir t)))))
+
 (ert-deftest nelisp-phase47-compiler/e2e-call-ptr-zero-arg ()
   "Doc 133 Phase 0: indirect call with no args.
 `via' calls a zero-arg `answer' through its address. answer() = 42."
