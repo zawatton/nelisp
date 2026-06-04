@@ -4310,13 +4310,17 @@ correctly."
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_load path) 1)
           (if (= (nl_cli_one_arg_p arg2 arg3) 1)
-              (if (= (nl_cli_load_source arg2 fbuf src) 1)
+              (let* ((n (nl_os_read_file_cpath
+                         arg2 fbuf
+                         ,nelisp-standalone--reader-read-cap)))
+                (if (< n 0)
+                    (seq (nl_cli_write_help fbuf) 2)
                   (seq
+                   (nl_alloc_str fbuf n src)
                    (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                    (if (= (ptr-read-u64 268435464 0) 0)
                        (nl_cli_write_value fbuf out)
-                     (- (ptr-read-u64 268435464 0) 1)))
-                (seq (nl_cli_write_help fbuf) 2))
+                     (- (ptr-read-u64 268435464 0) 1)))))
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_embedded path) 1)
           (seq
