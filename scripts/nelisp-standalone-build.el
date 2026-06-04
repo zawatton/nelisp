@@ -134,6 +134,12 @@ still uses the historical fixed first arena.")
 (defconst nelisp-standalone--arena-chunk-desc-flags-offset #x28)
 (defconst nelisp-standalone--arena-chunk-desc-next-offset #x30)
 
+(defconst nelisp-standalone--arena-default-chunk-size #x4000000
+  "Default standalone arena chunk size after the fixed first chunk.")
+
+(defconst nelisp-standalone--arena-chunk-align #x10000
+  "Alignment used for standalone chunk reservations and large chunk sizing.")
+
 (defun nelisp-standalone--target-arena-base (&optional target)
   "Return standalone arena base for TARGET."
   (pcase (or target nelisp-standalone--target)
@@ -565,6 +571,8 @@ or the toolchain is newer than the cached object."
     (defun nl_block_total (size)
       (let ((p (nl_align_up size 8))) (+ 16 (if (< p 8) 8 p))))
     (defun nl_arena_init () 0)
+    (defun nl_os_alloc_chunk (_size) 0)
+    (defun nl_os_alloc_fail () 0)
     ;; Pop a free-list block whose BLOCK_TOTAL exactly matches WANT.
     ;; Returns the object pointer (mark reset to 0) or 0 if none.  PREV is
     ;; the object pointer whose payload (prev+0) links to CUR, 0 = head.
@@ -602,6 +610,61 @@ or the toolchain is newer than the cached object."
           (nl_seq2 (ptr-write-u64 (+ obj off) 0 0)
                    (nl_alloc_zero_fill obj (+ off 8) nbytes))
         0))
+    (defun nl_chunk_cursor_addr (chunk)
+      (if (= chunk (ptr-read-u64 268436160 0))
+          268435456
+        (+ chunk 16)))
+    (defun nl_chunk_size_for (want)
+      (let ((need (nl_align_up (+ want 1024) 65536)))
+        (if (> need 67108864)
+            need
+          (if (> want 33554432) need 67108864))))
+    (defun nl_chunk_init_descriptor (base size)
+      (let ((desc (+ base 768)))
+        (seq
+         (ptr-write-u64 (+ desc 0) 0 base)
+         (ptr-write-u64 (+ desc 8) 0 size)
+         (ptr-write-u64 (+ desc 16) 0 1024)
+         (ptr-write-u64 (+ desc 24) 0 (+ base 1024))
+         (ptr-write-u64 (+ desc 32) 0 (+ base size))
+         (ptr-write-u64 (+ desc 40) 0 1)
+         (ptr-write-u64 (+ desc 48) 0 0)
+         desc)))
+    (defun nl_chunk_alloc_new (want)
+      (let* ((size (nl_chunk_size_for want))
+             (base (nl_os_alloc_chunk size)))
+        (if (= base 0)
+            (nl_seq2 (ptr-write-u64 268436208 0 (+ (ptr-read-u64 268436208 0) 1)) 0)
+          (let* ((desc (nl_chunk_init_descriptor base size))
+                 (cur (ptr-read-u64 268436168 0)))
+            (seq
+             (if (= cur 0)
+                 (ptr-write-u64 268436160 0 desc)
+               (ptr-write-u64 (+ cur 48) 0 desc))
+             (ptr-write-u64 268436168 0 desc)
+             (ptr-write-u64 268436176 0 (+ (ptr-read-u64 268436176 0) 1))
+             (ptr-write-u64 268436184 0 (+ (ptr-read-u64 268436184 0) size))
+             desc)))))
+    (defun nl_chunk_try_alloc (chunk want)
+      (let* ((base (ptr-read-u64 (+ chunk 0) 0))
+             (size (ptr-read-u64 (+ chunk 8) 0))
+             (cursor_addr (nl_chunk_cursor_addr chunk))
+             (obj 0)
+             (done 0))
+        (seq
+         (while (= done 0)
+           (let* ((old (ptr-read-u64 cursor_addr 0))
+                  (new (+ old want)))
+             (if (> new size)
+                 (setq done 1)
+               (if (= (atomic-compare-exchange cursor_addr old new) 1)
+                   (seq
+                    (setq obj (+ base (+ old 16)))
+                    (ptr-write-u64 (- obj 16) 0 want)
+                    (ptr-write-u64 (- obj 8) 0 0)
+                    (setq done 1))
+                 0))))
+         obj)))
     (defun nl_alloc_bytes (size align)
       (let ((want (nl_block_total size)))
         ;; 1) try exact-fit free-list reuse (sweep populates the list).
@@ -611,19 +674,17 @@ or the toolchain is newer than the cached object."
                           (let ((r (nl_freelist_take 0 (ptr-read-u64 268435552 0) want)))
                             (nl_seq2 (if (= r 0) 0 (nl_alloc_zero_fill r 0 (- want 16))) r))))))
           (if (= reused 0)
-              ;; 2) bump: header at CUR (16-aligned), object at CUR+16.
-              ;; ATOMIC bump reserve: `atomic-fetch-add' returns the OLD bump
-              ;; offset and advances it in one SeqCst RMW, so N clone(2)
-              ;; threads can `nl_alloc_bytes' concurrently — each gets a
-              ;; disjoint [cur,cur+want) region; the header writes below land
-              ;; in this thread's own reservation.  (Free-list reuse + GC are
-              ;; the non-lock-free paths; the parallel-build driver disables
-              ;; both via slots 268435624=1 / 268435616=1 during the fan-out.)
-              (let ((cur (atomic-fetch-add 268435456 want)))
-                (let ((obj (+ 268435456 (+ cur 16))))
-                  (nl_seq2 (ptr-write-u64 (- obj 16) 0 want)       ; hdr.block_total
-                   (nl_seq2 (ptr-write-u64 (- obj 8) 0 0)          ; hdr.mark = live
-                    obj))))
+              ;; 2) bump in current chunk; if full, append a new chunk and
+              ;; retry there.  CAS reserves a disjoint [old,new) cursor range
+              ;; for concurrent allocators without overshooting the chunk.
+              (let* ((cur_chunk (ptr-read-u64 268436168 0))
+                     (obj (nl_chunk_try_alloc cur_chunk want)))
+                (if (= obj 0)
+                    (let* ((new_chunk (nl_chunk_alloc_new want)))
+                      (if (= new_chunk 0)
+                          (nl_seq2 (nl_os_alloc_fail) 0)
+                        (nl_chunk_try_alloc new_chunk want)))
+                  obj))
             reused))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
     (defun nl_quit_flag_ptr () 268435464)))
@@ -704,6 +765,14 @@ are a last-resort workaround, not the correctness path."
               p)
            (syscall-direct 60 88 0 0 0 0 0))))))
 
+(defun nelisp-standalone--linux-alloc-chunk-form ()
+  "Return Linux chunk allocation forms using mmap(NULL, ...)."
+  '((defun nl_os_alloc_chunk (size)
+      (let ((p (syscall-direct 9 0 size 3 34 -1 0)))
+        (if (< p 4096) 0 p)))
+    (defun nl_os_alloc_fail ()
+      (syscall-direct 60 88 0 0 0 0 0))))
+
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc."
   `(defun nl_arena_init ()
@@ -718,6 +787,13 @@ are a last-resort workaround, not the correctness path."
              nelisp-standalone--windows-arena-size)
           p)))))
 
+(defun nelisp-standalone--windows-alloc-chunk-form ()
+  "Return Windows chunk allocation forms using VirtualAlloc(NULL, ...)."
+  '((defun nl_os_alloc_chunk (size)
+      (extern-call VirtualAlloc 0 size 12288 4))
+    (defun nl_os_alloc_fail ()
+      (extern-call ExitProcess 88))))
+
 (defun nelisp-standalone--macos-arena-init-form ()
   "Return the macOS `nl_arena_init' form using Darwin mmap."
   `(defun nl_arena_init ()
@@ -731,6 +807,14 @@ are a last-resort workaround, not the correctness path."
             p)
          (syscall-direct 1 88 0 0 0 0 0)))))
 
+(defun nelisp-standalone--macos-alloc-chunk-form ()
+  "Return macOS chunk allocation forms using mmap(NULL, ...)."
+  '((defun nl_os_alloc_chunk (size)
+      (let ((p (syscall-direct 197 0 size 3 4098 -1 0)))
+        (if (< p 4096) 0 p)))
+    (defun nl_os_alloc_fail ()
+      (syscall-direct 1 88 0 0 0 0 0))))
+
 (defun nelisp-standalone--target-arena-source ()
   "Return the arena source adjusted for the current standalone target."
   (pcase nelisp-standalone--target
@@ -738,14 +822,25 @@ are a last-resort workaround, not the correctness path."
      (let ((init-form (pcase nelisp-standalone--target
                         ('linux-x86_64 (nelisp-standalone--linux-arena-init-form))
                         ('windows-x86_64 (nelisp-standalone--windows-arena-init-form))
-                        ('macos-aarch64 (nelisp-standalone--macos-arena-init-form)))))
+                        ('macos-aarch64 (nelisp-standalone--macos-arena-init-form))))
+           (chunk-forms (pcase nelisp-standalone--target
+                          ('linux-x86_64 (nelisp-standalone--linux-alloc-chunk-form))
+                          ('windows-x86_64 (nelisp-standalone--windows-alloc-chunk-form))
+                          ('macos-aarch64 (nelisp-standalone--macos-alloc-chunk-form)))))
        (cons 'seq
              (mapcar (lambda (form)
                        (if (and (consp form)
                                 (eq (car form) 'defun)
                                 (eq (cadr form) 'nl_arena_init))
                            init-form
-                         form))
+                         (if (and (consp form)
+                                  (eq (car form) 'defun)
+                                  (memq (cadr form)
+                                        '(nl_os_alloc_chunk nl_os_alloc_fail)))
+                             (cl-find-if (lambda (chunk-form)
+                                           (eq (cadr chunk-form) (cadr form)))
+                                         chunk-forms)
+                           form)))
                      (cdr nelisp-standalone--arena-source)))))
     (_ nelisp-standalone--arena-source)))
 
@@ -1150,6 +1245,7 @@ argument (reachability + in-arena bounds checks).")
                                         (m5_prin1 ms (wf_arg_ptr args 0))
                                         (mut-str-finalize ms out) 0)))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
+    ((:lit "nelisp--arena-force-grow-smoke") . (bf_arena_force_grow_smoke out))
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
     ((:u8 "wrf")  . (seq (nl_bi_write_file args out) 0))
     ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
@@ -1278,9 +1374,22 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
     ;;   (base size bump-offset used-bytes live-after-last-gc next-trigger
     ;;    free-list-head collect-disabled reuse-disabled
     ;;    chunk-count chunk-bytes-reserved chunk-bytes-used)
+    (defun bf_arena_chunk_cursor (chunk)
+      (if (= chunk (ptr-read-u64 268436160 0))
+          (ptr-read-u64 268435456 0)
+        (ptr-read-u64 (+ chunk 16) 0)))
+    (defun bf_arena_chunk_used (chunk)
+      (let ((cursor (bf_arena_chunk_cursor chunk)))
+        (if (< cursor 1024) 0 (- cursor 1024))))
+    (defun bf_arena_chunks_used (chunk acc)
+      (if (= chunk 0)
+          acc
+        (bf_arena_chunks_used
+         (ptr-read-u64 (+ chunk 48) 0)
+         (+ acc (bf_arena_chunk_used chunk)))))
     (defun bf_arena_stats (out)
       (let* ((bump (ptr-read-u64 268435456 0))
-             (used (if (< bump 1024) 0 (- bump 1024)))
+             (used (bf_arena_chunks_used (ptr-read-u64 268436160 0) 0))
              (nil-slot (alloc-bytes 32 8))
              (s11 (alloc-bytes 32 8))
              (s10 (alloc-bytes 32 8))
@@ -1310,6 +1419,20 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
          (wf_cons_int 268435456 s1 out)
          0)))
+    (defun bf_arena_force_grow_smoke (out)
+      (let* ((chunk (ptr-read-u64 268436168 0))
+             (cursor-addr (if (= chunk (ptr-read-u64 268436160 0))
+                              268435456
+                            (+ chunk 16)))
+             (size (ptr-read-u64 (+ chunk 8) 0))
+             (near (if (< size 2048) 1024 (- size 32)))
+             (p 0))
+        (seq
+         (ptr-write-u64 cursor-addr 0 near)
+         (setq p (alloc-bytes 64 8))
+         (if (= p 0)
+             (wf_write_int out 0)
+           (bf_arena_stats out)))))
     ;; wf_dirty: bump the MUTATION EPOCH counter @268435544 (NO-ESCAPE gate
     ;; in `nelisp_eval_call').  Called by every primitive that installs a box
     ;; into PRE-EXISTING (persistent) structure — setcar/setcdr/aset/puthash —
@@ -3229,7 +3352,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--arena-stats"
+    "nelisp--repr" "nelisp--arena-stats" "nelisp--arena-force-grow-smoke"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
@@ -4761,6 +4884,7 @@ before executing." out out))
         (eval-out nil)
         (escape-out nil)
         (stats-out nil)
+        (growth-out nil)
         (load-out nil)
         (rc nil))
     (unwind-protect
@@ -4791,6 +4915,15 @@ before executing." out out))
                         "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [0-9]+ [0-9]+ [0-9]+)\n\\'"
                         stats-out))
             (error "--eval arena-stats exit=%S stdout=%S" rc stats-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "--eval" "(nelisp--arena-force-grow-smoke)"))
+            (setq growth-out (buffer-string)))
+          (unless (and (= rc 0)
+                       (string-match-p
+                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [2-9][0-9]* [0-9]+ [0-9]+)\n\\'"
+                        growth-out))
+            (error "--eval arena-force-grow exit=%S stdout=%S" rc growth-out))
           (with-temp-file tmp
             (insert "(list 1 2 3)\n"))
           (with-temp-buffer

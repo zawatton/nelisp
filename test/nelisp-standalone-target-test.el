@@ -477,6 +477,53 @@
              0))
         nelisp-standalone--gc-source)))))
 
+(ert-deftest nelisp-standalone-target-arena-adds-target-chunk-allocator ()
+  "Doc 140 Stage 4 adds target-specific non-fixed chunk allocation."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((nelisp-standalone--target 'linux-x86_64))
+      (should (tree-member-p
+               '(syscall-direct 9 0 size 3 34 -1 0)
+               (nelisp-standalone--target-arena-source))))
+    (let ((nelisp-standalone--target 'windows-x86_64)
+          (nelisp-standalone--windows-arena-base #x70000000))
+      (should (tree-member-p
+               '(extern-call VirtualAlloc 0 size 12288 4)
+               (nelisp-standalone--target-arena-source))))
+    (let ((nelisp-standalone--target 'macos-aarch64))
+      (should (tree-member-p
+               '(syscall-direct 197 0 size 3 4098 -1 0)
+               (nelisp-standalone--target-arena-source))))))
+
+(ert-deftest nelisp-standalone-target-arena-allocation-is-chunk-aware ()
+  "Doc 140 Stage 4 routes allocation through current chunk descriptors."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((flat (flatten-tree (nelisp-standalone--target-arena-source))))
+      (should (memq 'nl_chunk_alloc_new flat))
+      (should (memq 'nl_chunk_try_alloc flat))
+      (should (memq 'atomic-compare-exchange flat))
+      (should (member 268436168 flat))
+      (should (tree-member-p
+               '(= (atomic-compare-exchange cursor_addr old new) 1)
+               (nelisp-standalone--target-arena-source)))
+      (should (tree-member-p
+               '(defun nl_os_alloc_chunk (size)
+                  (let ((p (syscall-direct 9 0 size 3 34 -1 0)))
+                    (if (< p 4096) 0 p)))
+               (let ((nelisp-standalone--target 'linux-x86_64))
+                 (nelisp-standalone--target-arena-source)))))))
+
 (ert-deftest nelisp-standalone-target-macos-rebases-arena-slots ()
   "macOS source rebase moves fixed metadata above Mach-O __PAGEZERO."
   (let ((nelisp-standalone--target 'macos-aarch64))
