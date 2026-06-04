@@ -4047,11 +4047,38 @@ correctly."
                                             out 0 (vector-len out)))
          (t (nl_cli_put_object fbuf off)))))
     (defun nl_cli_write_value (fbuf out)
-      (let* ((n (nl_cli_value_to_buf fbuf 0 out)))
-        (seq
-         (ptr-write-u8 fbuf n 10)
-         (nl_os_write_stdout fbuf (+ n 1))
-         0)))
+      (let* ((tag (ptr-read-u64 out 0))
+             (v (ptr-read-u64 out 8)))
+        (if (= tag 2)
+            (if (>= v 0)
+                (if (< v 100)
+                    (if (< v 10)
+                        (seq
+                         (ptr-write-u8 fbuf 0 (+ 48 v))
+                         (ptr-write-u8 fbuf 1 10)
+                         (nl_os_write_stdout fbuf 2)
+                         0)
+                      (seq
+                       (ptr-write-u8 fbuf 0 (+ 48 (/ v 10)))
+                       (ptr-write-u8 fbuf 1 (+ 48 (mod v 10)))
+                       (ptr-write-u8 fbuf 2 10)
+                       (nl_os_write_stdout fbuf 3)
+                       0))
+                  (let* ((n (nl_cli_value_to_buf fbuf 0 out)))
+                    (seq
+                     (ptr-write-u8 fbuf n 10)
+                     (nl_os_write_stdout fbuf (+ n 1))
+                     0)))
+              (let* ((n (nl_cli_value_to_buf fbuf 0 out)))
+                (seq
+                 (ptr-write-u8 fbuf n 10)
+                 (nl_os_write_stdout fbuf (+ n 1))
+                 0)))
+          (let* ((n (nl_cli_value_to_buf fbuf 0 out)))
+            (seq
+             (ptr-write-u8 fbuf n 10)
+             (nl_os_write_stdout fbuf (+ n 1))
+             0)))))
     (defun nl_copy_bytes_into (src dst i n off)
       (seq
        (while (< i n)
