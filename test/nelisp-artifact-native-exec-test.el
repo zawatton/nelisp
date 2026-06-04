@@ -63,6 +63,33 @@ x86_64 Linux."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/native-exec-general-builtin-calln-eq ()
+  "A vararg builtin calln defun executes through the host proof harness."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-native-exec-" t))
+         (source-path (expand-file-name "m.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          "(defun nat-ng-eq-flag (x y)
+  (eq x y))
+(provide 'nat-ng-eq)\n"))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (load source-path nil t)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (should (= (nelisp-artifact-native-exec-general
+                      artifact-path "nat-ng-eq-flag" '(5 5))
+                     1))
+          (should (= (nelisp-artifact-native-exec-general
+                      artifact-path "nat-ng-eq-flag" '(-2 7))
+                     0)))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (provide 'nelisp-artifact-native-exec-test)
 
 ;;; nelisp-artifact-native-exec-test.el ends here
