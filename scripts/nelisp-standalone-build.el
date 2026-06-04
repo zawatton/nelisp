@@ -110,6 +110,30 @@ Large enough for the reader/bootstrap path while avoiding the historical 8 GiB
 fixed reservation that some Darwin environments reject before the first page is
 touched.")
 
+(defconst nelisp-standalone--arena-data-start-offset #x400
+  "Offset where normal standalone arena object headers begin.
+
+The bytes below this offset are the bootstrap control block.  Doc 140 Stage 2
+adds chunk control slots and the first chunk descriptor there while allocation
+still uses the historical fixed first arena.")
+
+(defconst nelisp-standalone--arena-chunk-head-offset #x2c0)
+(defconst nelisp-standalone--arena-chunk-current-offset #x2c8)
+(defconst nelisp-standalone--arena-chunk-count-offset #x2d0)
+(defconst nelisp-standalone--arena-chunk-bytes-reserved-offset #x2d8)
+(defconst nelisp-standalone--arena-chunk-bytes-used-offset #x2e0)
+(defconst nelisp-standalone--arena-chunk-bytes-reclaimed-offset #x2e8)
+(defconst nelisp-standalone--arena-chunk-alloc-failures-offset #x2f0)
+
+(defconst nelisp-standalone--arena-chunk0-desc-offset #x300)
+(defconst nelisp-standalone--arena-chunk-desc-base-offset #x00)
+(defconst nelisp-standalone--arena-chunk-desc-size-offset #x08)
+(defconst nelisp-standalone--arena-chunk-desc-cursor-offset #x10)
+(defconst nelisp-standalone--arena-chunk-desc-data-start-offset #x18)
+(defconst nelisp-standalone--arena-chunk-desc-limit-offset #x20)
+(defconst nelisp-standalone--arena-chunk-desc-flags-offset #x28)
+(defconst nelisp-standalone--arena-chunk-desc-next-offset #x30)
+
 (defun nelisp-standalone--target-arena-base (&optional target)
   "Return standalone arena base for TARGET."
   (pcase (or target nelisp-standalone--target)
@@ -509,7 +533,7 @@ or the toolchain is newer than the cached object."
 ;; All allocations use align 1 or 8 (verified across lisp/ + scripts/),
 ;; both <= 16, so obj = hdr+16 (16-byte aligned) satisfies every align.
 ;;
-;; Fixed GC arena slots (in the reserved region, bump now starts at 256):
+;; Fixed GC arena slots (in the reserved region, bump now starts at +1024):
 ;;   +96  (268435552): free-list head OBJECT pointer (0 = empty)
 ;;   +104 (268435560): GC next-trigger bump offset (when bump reaches it,
 ;;                     the driver runs a collection at the form boundary)
@@ -517,6 +541,15 @@ or the toolchain is newer than the cached object."
 ;;                     the sweep walker
 ;;   +120 (268435576): live-bytes-after-last-gc (advisory)
 ;;   +216 (268435672): arena reservation size in bytes
+;;   +704: chunk-head descriptor pointer
+;;   +712: chunk-current descriptor pointer
+;;   +720: chunk-count
+;;   +728: chunk-bytes-reserved
+;;   +736: chunk-bytes-used (telemetry; refreshed by arena stats)
+;;   +744: chunk-bytes-reclaimed
+;;   +752: chunk-alloc-failures
+;;   +768: chunk 0 descriptor:
+;;         base, size, cursor, data-start, limit, flags, next
 ;;
 ;; The bump allocator still NEVER auto-frees mid-eval; reclamation is the
 ;; GC sweep at the top-level form boundary (see the reader driver).
@@ -600,6 +633,57 @@ or the toolchain is newer than the cached object."
 This matches the Linux standalone trampoline's 1 GiB native stack, but remains a
 virtual reservation in the PE header; committed stack pages grow on demand.")
 
+(defun nelisp-standalone--arena-init-metadata-forms (base size)
+  "Return bootstrap arena metadata writes for fixed first chunk BASE/SIZE."
+  (let* ((data-start nelisp-standalone--arena-data-start-offset)
+         (desc (+ base nelisp-standalone--arena-chunk0-desc-offset)))
+    `((ptr-write-u64 ,base 0 ,data-start) ; bump starts after control block
+      (ptr-write-u64 ,(+ base 8) 0 0)     ; quit flag
+      (ptr-write-u64 ,(+ base 16) 0 0)    ; throw flag
+      (ptr-write-u64 ,(+ base 96) 0 0)    ; free-list head
+      (ptr-write-u64 ,(+ base 104) 0 0)   ; gc trigger
+      (ptr-write-u64 ,(+ base 112) 0 ,(+ base data-start)) ; data start
+      (ptr-write-u64 ,(+ base 120) 0 0)   ; live bytes
+      (ptr-write-u64 ,(+ base 128) 0 0)   ; sweep free dead blocks
+      (ptr-write-u64 ,(+ base 136) 0 0)   ; mark phase enabled
+      ;; RECLAIMER GATE: base+160 = 1 -> nl_gc_collect is a NO-OP.
+      ;; Keep collection disabled until the standalone root/mark gap is
+      ;; fixed; pressure is visible via smoke/tests, not hidden by
+      ;; increasing the virtual arena reservation.
+      (ptr-write-u64 ,(+ base 160) 0 1)   ; collect disabled
+      (ptr-write-u64 ,(+ base 168) 0 0)   ; free-list reuse
+      (ptr-write-u64 ,(+ base 192) 0 0)   ; probe off
+      (ptr-write-u64 ,(+ base 200) 0 0)   ; min reuse block_total
+      (ptr-write-u64 ,(+ base 216) 0 ,size) ; reservation size
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-head-offset)
+                     0 ,desc)
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-current-offset)
+                     0 ,desc)
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-count-offset)
+                     0 1)
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-bytes-reserved-offset)
+                     0 ,size)
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-bytes-used-offset)
+                     0 0)
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-bytes-reclaimed-offset)
+                     0 0)
+      (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-alloc-failures-offset)
+                     0 0)
+      (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-base-offset)
+                     0 ,base)
+      (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-size-offset)
+                     0 ,size)
+      (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-cursor-offset)
+                     0 ,data-start)
+      (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-data-start-offset)
+                     0 ,(+ base data-start))
+      (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-limit-offset)
+                     0 ,(+ base size))
+      (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-flags-offset)
+                     0 1)
+      (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-next-offset)
+                     0 0))))
+
 (defun nelisp-standalone--linux-arena-init-form ()
   "Return the Linux `nl_arena_init' form using mmap.
 
@@ -616,24 +700,7 @@ are a last-resort workaround, not the correctness path."
        (let ((p (syscall-direct 9 ,base ,size 3 ,flags -1 0)))
          (if (= p ,base)
              (seq
-              (ptr-write-u64 ,base 0 256)        ; bump starts at 256
-              (ptr-write-u64 ,(+ base 8) 0 0)    ; quit flag
-              (ptr-write-u64 ,(+ base 16) 0 0)   ; throw flag
-              (ptr-write-u64 ,(+ base 96) 0 0)   ; free-list head
-              (ptr-write-u64 ,(+ base 104) 0 0)  ; gc trigger
-              (ptr-write-u64 ,(+ base 112) 0 (+ ,base 256)) ; data start
-              (ptr-write-u64 ,(+ base 120) 0 0)  ; live bytes
-              (ptr-write-u64 ,(+ base 128) 0 0)  ; sweep free dead blocks
-              (ptr-write-u64 ,(+ base 136) 0 0)  ; mark phase enabled
-              ;; RECLAIMER GATE: base+160 = 1 -> nl_gc_collect is a NO-OP.
-              ;; Keep collection disabled until the standalone root/mark gap is
-              ;; fixed; pressure is visible via smoke/tests, not hidden by
-              ;; increasing the virtual arena reservation.
-              (ptr-write-u64 ,(+ base 160) 0 1)  ; collect disabled
-              (ptr-write-u64 ,(+ base 168) 0 0)  ; free-list reuse
-              (ptr-write-u64 ,(+ base 192) 0 0)  ; probe off
-              (ptr-write-u64 ,(+ base 200) 0 0)  ; min reuse block_total
-              (ptr-write-u64 ,(+ base 216) 0 ,size) ; reservation size
+              ,@(nelisp-standalone--arena-init-metadata-forms base size)
               p)
            (syscall-direct 60 88 0 0 0 0 0))))))
 
@@ -645,23 +712,11 @@ are a last-resort workaround, not the correctness path."
                            12288 4)))
        (if (= p 0)
            (extern-call ExitProcess 88)
-         (nl_seq2 (ptr-write-u64 ,nelisp-standalone--windows-arena-base 0 256)
-          (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 8) 0 0)
-           (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 16) 0 0)
-            (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 96) 0 0)
-             (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 104) 0 0)
-              (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 112)
-                                      0 (+ ,nelisp-standalone--windows-arena-base 256))
-               (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 120) 0 0)
-                (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 128) 0 0)
-                 (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 136) 0 0)
-                  (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 160) 0 1)
-                   (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 168) 0 0)
-                    (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 192) 0 0)
-                     (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 200) 0 0)
-                      (nl_seq2 (ptr-write-u64 ,(+ nelisp-standalone--windows-arena-base 216)
-                                              0 ,nelisp-standalone--windows-arena-size)
-                               p))))))))))))))))))
+         (seq
+          ,@(nelisp-standalone--arena-init-metadata-forms
+             nelisp-standalone--windows-arena-base
+             nelisp-standalone--windows-arena-size)
+          p)))))
 
 (defun nelisp-standalone--macos-arena-init-form ()
   "Return the macOS `nl_arena_init' form using Darwin mmap."
@@ -670,22 +725,9 @@ are a last-resort workaround, not the correctness path."
                               ,nelisp-standalone--macos-arena-size 3 4114 -1 0)))
        (if (= p ,nelisp-standalone--macos-arena-base)
            (seq
-            (ptr-write-u64 ,nelisp-standalone--macos-arena-base 0 256)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 8) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 16) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 96) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 104) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 112)
-                           0 (+ ,nelisp-standalone--macos-arena-base 256))
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 120) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 128) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 136) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 160) 0 1)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 168) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 192) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 200) 0 0)
-            (ptr-write-u64 ,(+ nelisp-standalone--macos-arena-base 216)
-                           0 ,nelisp-standalone--macos-arena-size)
+            ,@(nelisp-standalone--arena-init-metadata-forms
+               nelisp-standalone--macos-arena-base
+               nelisp-standalone--macos-arena-size)
             p)
          (syscall-direct 1 88 0 0 0 0 0)))))
 
@@ -1207,9 +1249,15 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
              0)))
     ;; Portable arena telemetry:
     ;;   (base size bump-offset used-bytes live-after-last-gc next-trigger
-    ;;    free-list-head collect-disabled reuse-disabled)
+    ;;    free-list-head collect-disabled reuse-disabled
+    ;;    chunk-count chunk-bytes-reserved chunk-bytes-used)
     (defun bf_arena_stats (out)
-      (let* ((nil-slot (alloc-bytes 32 8))
+      (let* ((bump (ptr-read-u64 268435456 0))
+             (used (if (< bump 1024) 0 (- bump 1024)))
+             (nil-slot (alloc-bytes 32 8))
+             (s11 (alloc-bytes 32 8))
+             (s10 (alloc-bytes 32 8))
+             (s9 (alloc-bytes 32 8))
              (s8 (alloc-bytes 32 8))
              (s7 (alloc-bytes 32 8))
              (s6 (alloc-bytes 32 8))
@@ -1219,17 +1267,19 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
              (s2 (alloc-bytes 32 8))
              (s1 (alloc-bytes 32 8)))
         (seq
+         (ptr-write-u64 268436192 0 used) ; chunk-bytes-used
+         (ptr-write-u64 268436240 0 bump) ; chunk0.cursor mirrors bump offset
          (wf_write_nil nil-slot)
-         (wf_cons_int (ptr-read-u64 268435624 0) nil-slot s8)
+         (wf_cons_int used nil-slot s11)
+         (wf_cons_int (ptr-read-u64 268436184 0) s11 s10)
+         (wf_cons_int (ptr-read-u64 268436176 0) s10 s9)
+         (wf_cons_int (ptr-read-u64 268435624 0) s9 s8)
          (wf_cons_int (ptr-read-u64 268435616 0) s8 s7)
          (wf_cons_int (ptr-read-u64 268435552 0) s7 s6)
          (wf_cons_int (ptr-read-u64 268435560 0) s6 s5)
          (wf_cons_int (ptr-read-u64 268435576 0) s5 s4)
-         (wf_cons_int (if (< (ptr-read-u64 268435456 0) 256)
-                          0
-                        (- (ptr-read-u64 268435456 0) 256))
-                      s4 s3)
-         (wf_cons_int (ptr-read-u64 268435456 0) s3 s2)
+         (wf_cons_int used s4 s3)
+         (wf_cons_int bump s3 s2)
          (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
          (wf_cons_int 268435456 s1 out)
          0)))
@@ -4713,7 +4763,7 @@ before executing." out out))
             (setq stats-out (buffer-string)))
           (unless (and (= rc 0)
                        (string-match-p
-                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01])\n\\'"
+                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [0-9]+ [0-9]+ [0-9]+)\n\\'"
                         stats-out))
             (error "--eval arena-stats exit=%S stdout=%S" rc stats-out))
           (with-temp-file tmp

@@ -32,7 +32,8 @@ The current pressure tuple is:
 
 #+begin_src elisp
 (base size bump-offset used-bytes live-after-last-gc next-trigger
-      free-list-head collect-disabled reuse-disabled)
+      free-list-head collect-disabled reuse-disabled
+      chunk-count chunk-bytes-reserved chunk-bytes-used)
 #+end_src
 
 This is sufficient to measure pressure while the arena architecture is changed.
