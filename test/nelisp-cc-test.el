@@ -40,6 +40,15 @@
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
 (require 'nelisp-cc-runtime)
+;; `nelisp-cc-runtime--aot-default-apply-dispatch' prefers the real
+;; NeLisp apply (`nelisp--apply', from `nelisp-eval') when it is
+;; `fboundp', falling back to a `nelisp-cc-runtime-error' only when it
+;; is absent.  The `*-validates-boundary' tests assert the intended
+;; `nelisp-void-function' path, so require `nelisp-eval' explicitly
+;; rather than relying on a sibling test file to load it first (which
+;; made these tests pass only under full-suite load order — they failed
+;; in isolation / under the sharded `make test-parallel' runner).
+(require 'nelisp-eval)
 (require 'nelisp-closure)
 (require 'nelisp-gc)
 

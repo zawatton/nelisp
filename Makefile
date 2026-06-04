@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
+.PHONY: test test-parallel test-one compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test
 
 EMACS ?= emacs
 
@@ -51,6 +51,32 @@ test: clean
 	  --eval '(setq load-prefer-newer t)' \
 	  -l ert \
 	  $(TEST_LOADS) \
+	  -f ert-run-tests-batch-and-exit
+
+# Super-parallel host ERT runner.  Same file set + `-L' load paths as
+# `test', but the ~160 test files are sharded (balanced by size) across
+# JOBS worker `emacs --batch' processes and run concurrently, then the
+# per-shard ert summaries are aggregated into one verdict.  The total
+# `Ran N tests' count is invariant vs serial `test' — that is the
+# runner's correctness gate.  On a 32-core box this turns a multi-minute
+# serial suite into a sub-30s loop.
+#   make test-parallel              # JOBS = nproc
+#   make test-parallel JOBS=8
+test-parallel:
+	@JOBS=$(JOBS) EMACS="$(EMACS)" ./tools/run-tests-parallel.sh
+
+# Focused single-file loop: run just one (or a few) test file(s) with the
+# full `-L' load paths, no `clean', for tight TDD iteration.
+#   make test-one FILE=test/nelisp-artifact-test.el
+#   make test-one FILE="test/nelisp-artifact-test.el test/nelisp-core-fileio-test.el"
+test-one:
+	@test -n "$(FILE)" || { echo 'usage: make test-one FILE=test/nelisp-FOO-test.el'; exit 2; }
+	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
+	  $(PACKAGE_SRC_LOADS) \
+	  $(PACKAGE_TEST_LOADS) \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l ert \
+	  $(addprefix -l ,$(FILE)) \
 	  -f ert-run-tests-batch-and-exit
 
 compile:
@@ -177,6 +203,14 @@ standalone-selfhost-mt-test:
 # isolated so no shared-state race), joined via a MAP_SHARED atomic counter.
 standalone-parallel-compile-test:
 	./tools/parallel-compile-test.sh
+
+# Doc 140 chunked-arena GROWTH pressure test: build the standalone reader
+# with an 8 MiB first chunk (< boot footprint) so allocation overflows it
+# and MUST grow a second chunk; assert chunk-count > 1 and that a value
+# escaping a `let' body survives the growth.  Proves pressure is handled by
+# chunk growth, not a fixed-size reservation.
+standalone-chunk-growth-test:
+	@EMACS="$(EMACS)" ./tools/chunk-growth-test.sh
 
 
 # Multi-process parallel compile (startup-bound for the current unit set:

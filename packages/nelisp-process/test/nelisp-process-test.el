@@ -23,6 +23,12 @@
 
 (require 'ert)
 (require 'cl-lib)
+;; The filter/sentinel trampolines dispatch through `nelisp--apply'
+;; (from `nelisp-eval'); require it explicitly so these tests are
+;; hermetic rather than relying on a sibling test file to load it first
+;; (they failed in isolation / under sharded `make test-parallel' with
+;; `(void-function nelisp--apply)').
+(require 'nelisp-eval)
 (require 'nelisp-actor)
 (require 'nelisp-eventloop)
 (require 'nelisp-process)
