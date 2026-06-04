@@ -277,6 +277,16 @@
     (should (memq 'big-probe_chunk_001 chunk-flat))
     (should (memq 'big-probe_chunk_002 chunk-flat))))
 
+(ert-deftest nelisp-standalone-target-reader-repl-suffix-is-target-aware ()
+  "REPL runtime wrapper must not embed the Linux arena quit slot on macOS."
+  (let ((nelisp-standalone--target 'macos-aarch64))
+    (let ((suffix (nelisp-standalone--reader-repl-eval-suffix)))
+      (should (string-match-p
+               (number-to-string
+                (nelisp-standalone--target-arena-metadata-address 8))
+               suffix))
+      (should-not (string-match-p "268435464" suffix)))))
+
 (ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
   "Windows arena source replaces Linux mmap with VirtualAlloc."
   (let ((nelisp-standalone--target 'windows-x86_64))

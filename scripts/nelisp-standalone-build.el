@@ -85,6 +85,13 @@ Accepts decimal strings and 0x-prefixed hexadecimal strings."
 Can be overridden with NELISP_STANDALONE_WINDOWS_ARENA_BASE.  Keep the default
 below 2 GiB so Phase47's current signed imm32 materialization remains valid.")
 
+(defconst nelisp-standalone--windows-arena-size #x4000000
+  "Windows standalone fixed arena size.
+The arena base is `nelisp-standalone--windows-arena-base' after source rebase.
+Keep the committed mapping at 64 MiB: Windows `VirtualAlloc' with MEM_COMMIT
+charges the full range up front, unlike Linux's demand-paged mmap, and 1 GiB can
+fail on normal developer machines before the first metadata write.")
+
 (defconst nelisp-standalone--macos-arena-base #x800000000
   "macOS standalone arena base.
 Must live above the 4 GiB __PAGEZERO segment used by the Mach-O executable
@@ -96,6 +103,24 @@ executables.")
 Large enough for the reader/bootstrap path while avoiding the historical 8 GiB
 fixed reservation that some Darwin environments reject before the first page is
 touched.")
+
+(defun nelisp-standalone--target-arena-base (&optional target)
+  "Return standalone arena base for TARGET."
+  (pcase (or target nelisp-standalone--target)
+    ('windows-x86_64 nelisp-standalone--windows-arena-base)
+    ('macos-aarch64 nelisp-standalone--macos-arena-base)
+    (_ nelisp-standalone--arena-base)))
+
+(defun nelisp-standalone--target-arena-size (&optional target)
+  "Return standalone arena size for TARGET."
+  (pcase (or target nelisp-standalone--target)
+    ('windows-x86_64 nelisp-standalone--windows-arena-size)
+    ('macos-aarch64 nelisp-standalone--macos-arena-size)
+    (_ #x200000000)))
+
+(defun nelisp-standalone--target-arena-metadata-address (offset &optional target)
+  "Return target arena metadata address at OFFSET."
+  (+ (nelisp-standalone--target-arena-base target) offset))
 
 (defun nelisp-standalone--target-abi (&optional target)
   "Return the compiler ABI for standalone TARGET."
@@ -208,10 +233,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--rebase-arena-source (source)
   "Rebase fixed arena metadata constants in SOURCE for the current target."
-  (let ((target-base (pcase nelisp-standalone--target
-                       ('windows-x86_64 nelisp-standalone--windows-arena-base)
-                       ('macos-aarch64 nelisp-standalone--macos-arena-base)
-                       (_ nelisp-standalone--arena-base))))
+  (let ((target-base (nelisp-standalone--target-arena-base)))
     (if (= target-base nelisp-standalone--arena-base)
         source
       (cl-labels
@@ -593,13 +615,6 @@ or the toolchain is newer than the cached object."
             reused))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
     (defun nl_quit_flag_ptr () 268435464)))
-
-(defconst nelisp-standalone--windows-arena-size #x4000000
-  "Windows standalone fixed arena size.
-The arena base is `nelisp-standalone--windows-arena-base' after source rebase.
-Keep the committed mapping at 64 MiB: Windows `VirtualAlloc' with MEM_COMMIT
-charges the full range up front, unlike Linux's demand-paged mmap, and 1 GiB can
-fail on normal developer machines before the first metadata write.")
 
 (defconst nelisp-standalone--windows-stack-reserve #x40000000
   "Windows standalone PE stack reserve size.
@@ -2190,13 +2205,13 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
     (defun nl_bi_rf_withfd (fd buf out)
       (if (< fd 0)
           (wf_copy32_strnil out)
-        (let* ((n (nl_os_read_file_handle fd buf 1048576)))
+        (let* ((n (nl_os_read_file_handle fd buf 4194304)))
           (nl_seq2 (nl_os_close_handle fd)
                    (nl_seq2 (nl_alloc_str buf (if (< n 0) 0 n) out) 0)))))
     (defun nl_bi_read_file (args out)
       (let* ((path_sx (wf_arg_ptr args 0)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
-               (buf (alloc-bytes 1048576 1))
+               (buf (alloc-bytes 4194304 1))
                (fd (nl_os_open_read cpath)))
           (nl_bi_rf_withfd fd buf out))))
     (defun nl_bi_slen (args out)
@@ -3104,13 +3119,8 @@ Each is dispatched by the pure-elisp `nelisp_apply_function' (see
 `nelisp-standalone--reader-driver-source' plus the `sexp-name-eq'
 dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 
-(defconst nelisp-standalone--reader-read-cap 1048576
-  "1 MiB read cap for the file-load path.
-
-The read buffer is arena allocated and the standalone reader currently
-keeps GC disabled during large vendor loads.  A 4 MiB buffer consumed
-the 8 GiB arena after ~253 persistent-REPL file loads even though the
-largest current nelisp-emacs vendor file is below 900 KiB.")
+(defconst nelisp-standalone--reader-read-cap 4194304
+  "4 MiB read cap for file-load and standalone compiler load paths.")
 
 (defconst nelisp-standalone--windows-reader-imports
   (list (cons "KERNEL32.dll"
@@ -3140,6 +3150,11 @@ largest current nelisp-emacs vendor file is below 900 KiB.")
       (seq
        (nl_alloc_str ,fbuf n ,src)
        (nl_eval_source_all ,src ,cursor ,result ,pool ,out ,ctx ,builtin-sym)))))
+
+(defun nelisp-standalone--reader-repl-eval-suffix ()
+  "Return target-aware source appended to one standalone REPL input form."
+  (format "))) (if (= (ptr-read-u64 %d 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0) 0))\n"
+          (nelisp-standalone--target-arena-metadata-address 8)))
 
 (defun nelisp-standalone--runtime-image-command-src ()
   "Return embedded source implementing standalone-reader runtime-image commands."
@@ -3542,7 +3557,7 @@ correctly."
       "(let ((v (progn\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_suffix
-      "))) (if (= (ptr-read-u64 268435464 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0) 0))\n")
+      (nelisp-standalone--reader-repl-eval-suffix))
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_no_print_suffix
       "))) 0)\n")
@@ -4735,6 +4750,10 @@ guards the slot-pool floor directly without loading the full vendor file."
         (near-end-file (make-temp-file "nelisp-repl-near-end-" nil ".el"))
         (near-end-rc nil)
         (near-end-out nil)
+        (near-end-bump (max 256
+                            (- (nelisp-standalone--target-arena-size)
+                               nelisp-standalone--reader-read-cap
+                               65536)))
         (bad-rc nil))
     (with-temp-buffer
       (insert stdin)
@@ -4768,7 +4787,9 @@ guards the slot-pool floor directly without loading the full vendor file."
           (with-temp-file near-end-file
             (insert "(setq near-end-ok 42)\n"))
           (with-temp-buffer
-            (insert "(ptr-write-u64 268435456 0 8587837440)\n")
+            (insert (format "(ptr-write-u64 %d 0 %d)\n"
+                            (nelisp-standalone--target-arena-metadata-address 0)
+                            near-end-bump))
             (insert (format "(if (= (length (rdf %S)) 22) (nelisp--write-stdout-bytes \"near-end-ok\\n\") (nelisp--write-stdout-bytes \"near-end-bad\\n\"))\n"
                             near-end-file))
             (insert "(exit)\n")
