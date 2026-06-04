@@ -1,0 +1,407 @@
+#+TITLE: Doc 141 - NeLisp core, packages, and nelisp-emacs boundary
+#+DATE: 2026-06-04
+#+STATUS: DESIGN
+
+* Goal
+
+Define the repository and module boundaries for NeLisp as a general-purpose
+Elisp runtime.
+
+The final direction is:
+
+- =nelisp= is the small language/runtime/toolchain core.
+- =packages= is the standard and extension library set, eventually split into
+  one or more package repositories.
+- =nelisp-emacs= is not the dumping ground for editor-like code.  It is the
+  Emacs replacement distribution assembled from packages.
+
+This document is primarily for the =nelisp= repository, but it should have a
+matching design note in the future =nelisp-emacs= repository because the package
+set and integration boundary must be agreed on both sides.
+
+* Motivation
+
+Historically, several modules lived in =src/= because NeLisp was growing toward
+the goal of running Emacs-like applications such as =anvil.el=.
+
+That was practical during bootstrap, but it mixes three different concerns:
+
+1. language runtime and standalone execution
+2. general-purpose libraries for Elisp as a normal language
+3. Emacs-compatible editor environment
+
+Now that standalone NeLisp can run reader/eval/REPL paths without Emacs, the
+core should shrink.  A smaller core improves:
+
+- standalone stability across Linux, macOS, and Windows
+- GC and arena correctness work
+- bootstrap/debug time
+- package reuse outside editor workloads
+- future extraction of =packages/= into separate repositories
+
+* Repository Roles
+
+** =nelisp=
+
+The =nelisp= repository owns the minimal system needed to build and run NeLisp
+itself.
+
+It should contain:
+
+- reader
+- evaluator
+- macro expander
+- special forms
+- loader
+- allocator and GC
+- heap/value model
+- bytecode support if required by bootstrap
+- compiler/toolchain/native code generation
+- standalone runtime units
+- minimal file I/O needed by the loader
+- minimal UTF-8/coding support needed to read source files
+- core tests and cross-platform verification tools
+
+It should not own editor APIs, worker pools, file notification services, full
+coding tables, or Emacs compatibility layers unless they are temporarily needed
+to break a bootstrap cycle.
+
+** =packages=
+
+=packages= is the future standard and extension library set for NeLisp as a
+general-purpose language.
+
+Packages should be usable without depending on the full Emacs replacement.
+
+Examples:
+
+- text buffers
+- buffer registry and point model
+- coding systems beyond the core UTF-8 minimum
+- process and worker libraries
+- event loops
+- networking
+- file notification
+- JSON
+- HTTP
+- SQLite
+- redisplay primitives
+- face/text-property/overlay abstractions
+- Emacs compatibility wrappers
+
+The current in-repository =packages/= tree can remain as a staging area until a
+separate package repository exists.
+
+** =nelisp-emacs=
+
+=nelisp-emacs= should be a distribution/integration layer.
+
+It should assemble packages into an Emacs-compatible environment:
+
+- startup/init
+- command loop
+- editor state
+- keymap integration
+- buffer/window/display integration
+- package selection
+- Emacs API compatibility policy
+
+It should depend on packages such as =nelisp-buffer=, =nelisp-text-buffer=,
+=nelisp-face=, =nelisp-overlay=, =nelisp-redisplay=, =nelisp-process=,
+=nelisp-file-notify=, and =nelisp-emacs-compat=.
+
+It should not become the place where all editor-adjacent libraries are copied.
+
+* Current Problem Files
+
+The following files currently live in =src/= but are not all core-runtime
+responsibilities.
+
+#+begin_src text
+src/nelisp-buffer.el
+src/nelisp-text-buffer.el
+src/nelisp-file-notify.el
+src/nelisp-filenotify.el
+src/nelisp-process-pool.el
+src/nelisp-worker.el
+src/nelisp-worker-child.el
+src/nelisp-emacs-compat.el
+src/nelisp-emacs-compat-face.el
+src/nelisp-emacs-compat-fileio.el
+src/nelisp-coding.el
+src/nelisp-coding-jis-tables.el
+src/nelisp-dev-audit.el
+src/nelisp-integration.el
+src/nelisp-ec-bridge.el
+#+end_src
+
+* Classification
+
+** Move to packages
+
+These should become ordinary packages rather than core files.
+
+| Current file | Proposed package | Reason |
+|--------------+------------------+--------|
+| =src/nelisp-text-buffer.el= | =packages/nelisp-text-buffer= | Generic mutable text container. Useful outside Emacs compatibility. |
+| =src/nelisp-buffer.el= | =packages/nelisp-buffer= | Buffer registry, point, narrowing, and editing model belong above core. |
+| =src/nelisp-file-notify.el= | =packages/nelisp-file-notify= | Host-backed file notify wrapper is a service library. |
+| =src/nelisp-filenotify.el= | =packages/nelisp-file-notify= | Standalone/polling backend should share the same package API. |
+| =src/nelisp-process-pool.el= | =packages/nelisp-worker= or =packages/nelisp-process= | Worker/process pooling is a library feature. |
+| =src/nelisp-worker.el= | =packages/nelisp-worker= | Lane-aware worker API belongs outside core. |
+| =src/nelisp-worker-child.el= | =packages/nelisp-worker= | Backend child loop for the worker package. |
+| =src/nelisp-emacs-compat.el= | =packages/nelisp-emacs-compat= | Compatibility API, not language runtime. |
+| =src/nelisp-emacs-compat-fileio.el= | =packages/nelisp-emacs-compat= | Emacs-style file I/O wrapper, not core loader. |
+| =src/nelisp-ec-bridge.el= | =packages/nelisp-emacs-compat= | Symbol bridge for Emacs names should be part of compat. |
+| =src/nelisp-emacs-compat-face.el= | =packages/nelisp-face= plus compat wrapper | Face resolution can be a generic UI package; Emacs naming belongs in compat. |
+| =src/nelisp-coding.el= | =packages/nelisp-coding=, after core split | Full coding layer is a standard library package. |
+| =src/nelisp-coding-jis-tables.el= | =packages/nelisp-coding= | Generated JIS/CP932/EUC-JP data is too large for core. |
+
+** Move to tools or split
+
+| Current file | Proposed owner | Reason |
+|--------------+----------------+--------|
+| =src/nelisp-dev-audit.el= | =tools/dev= or =packages/nelisp-dev-tools= | Release/design audit tooling is not runtime. |
+| =src/nelisp-integration.el= | split between core contracts and dev tools | It mixes GC/allocator contracts, cold-init, release verification, and coding checks. |
+
+** Keep in core after extracting dependencies
+
+The following responsibilities should remain in =nelisp=, but may need new
+smaller files:
+
+| Responsibility | Proposed file |
+|----------------+---------------|
+| loader file resolution/read support | =src/nelisp-core-fileio.el= |
+| minimal UTF-8 source decoding | =src/nelisp-core-coding.el= |
+| allocator/GC contract bridge needed by core | =src/nelisp-runtime-contract.el= or =src/nelisp-gc-contract.el= |
+
+* Required Dependency Cuts
+
+Some files cannot be moved immediately because core currently requires them.
+
+** =nelisp-load.el= depends on Emacs compatibility file I/O
+
+Current dependency:
+
+#+begin_src elisp
+(require 'nelisp-emacs-compat)
+(require 'nelisp-emacs-compat-fileio)
+#+end_src
+
+This should be replaced with a minimal core loader I/O layer.
+
+Target direction:
+
+#+begin_src elisp
+(require 'nelisp-core-fileio)
+(require 'nelisp-core-coding)
+#+end_src
+
+The core file I/O layer must provide only what =nelisp-load.el= needs:
+
+- expand a file name
+- test readability/existence
+- read a file as a string
+- resolve load path entries
+
+It must not expose Emacs editor APIs such as buffers, point,
+=insert-file-contents=, or =write-region= as core concepts.
+
+** =nelisp-coding.el= is too broad for core
+
+The core needs enough UTF-8 support to load source.  It does not need the full
+Shift-JIS, CP932, EUC-JP, and JIS table set.
+
+Split direction:
+
+#+begin_src text
+src/nelisp-core-coding.el
+  UTF-8 minimum for source loading
+
+packages/nelisp-coding/
+  UTF-8 public API
+  Latin-1
+  Shift-JIS
+  CP932
+  EUC-JP
+  generated JIS tables
+#+end_src
+
+** =nelisp-integration.el= mixes runtime and release tooling
+
+=src/nelisp-gc-inner.el= currently requires =nelisp-integration=.  The required
+runtime contract pieces should be extracted first; release/cold-init tooling can
+then move out of core.
+
+* Proposed Package Layout
+
+Initial staging layout inside the current repository:
+
+#+begin_src text
+packages/
+  nelisp-text-buffer/
+    src/nelisp-text-buffer.el
+    test/nelisp-text-buffer-test.el
+
+  nelisp-buffer/
+    src/nelisp-buffer.el
+    test/nelisp-buffer-test.el
+
+  nelisp-file-notify/
+    src/nelisp-file-notify.el
+    src/nelisp-file-notify-host.el
+    src/nelisp-file-notify-poll.el
+    test/nelisp-file-notify-test.el
+
+  nelisp-worker/
+    src/nelisp-process-pool.el
+    src/nelisp-worker.el
+    src/nelisp-worker-child.el
+    test/nelisp-worker-test.el
+
+  nelisp-emacs-compat/
+    src/nelisp-emacs-compat.el
+    src/nelisp-emacs-compat-fileio.el
+    src/nelisp-ec-bridge.el
+    test/nelisp-emacs-compat-test.el
+
+  nelisp-face/
+    src/nelisp-face.el
+    test/nelisp-face-test.el
+
+  nelisp-coding/
+    src/nelisp-coding.el
+    src/nelisp-coding-jis-tables.el
+    test/nelisp-coding-test.el
+#+end_src
+
+After the package repository split, the same package names should survive.
+
+* =nelisp-emacs= Companion Design
+
+The =nelisp-emacs= repository should get a companion design document with this
+policy:
+
+- it depends on packages rather than owning their source directly
+- it defines the curated Emacs replacement package set
+- it owns startup, command loop, and compatibility defaults
+- it may vendor or pin package versions for releases
+- it may expose an Emacs-like distribution profile, but the libraries remain
+  separately reusable
+
+Expected dependency shape:
+
+#+begin_src text
+nelisp-emacs
+  depends on:
+    nelisp-text-buffer
+    nelisp-buffer
+    nelisp-marker
+    nelisp-overlay
+    nelisp-face
+    nelisp-textprop-display
+    nelisp-textprop-keymap
+    nelisp-redisplay
+    nelisp-file-notify
+    nelisp-process
+    nelisp-worker
+    nelisp-network
+    nelisp-eventloop
+    nelisp-emacs-compat
+#+end_src
+
+* Migration Plan
+
+** Stage 1 - Document and freeze the boundary
+
+- Add this design document.
+- Do not move files yet.
+- Add a companion =nelisp-emacs= design note when that repository is ready.
+- Treat new editor-adjacent code as package code, not core code.
+
+** Stage 2 - Cut loader dependency on Emacs compatibility
+
+- Introduce =src/nelisp-core-fileio.el=.
+- Introduce =src/nelisp-core-coding.el= if needed.
+- Change =src/nelisp-load.el= to depend on the core layer only.
+- Keep =nelisp-emacs-compat-fileio= as a package wrapper on top.
+
+** Stage 3 - Split coding
+
+- Move full coding support into =packages/nelisp-coding=.
+- Keep only source-loading UTF-8 support in core.
+- Move generated JIS tables out of =src/=.
+- Update =tools/coding-table-gen.el= output path.
+
+** Stage 4 - Extract editor and text packages
+
+- Move =nelisp-text-buffer= first.
+- Move =nelisp-buffer= after dependents are package-aware.
+- Move face, text-property, overlay, redisplay dependents into package-level
+  dependencies.
+
+** Stage 5 - Extract service packages
+
+- Move file notification into =packages/nelisp-file-notify=.
+- Move worker/process-pool into =packages/nelisp-worker= or merge with
+  =packages/nelisp-process= after API review.
+
+** Stage 6 - Split integration/dev tools
+
+- Extract runtime contract definitions needed by GC/allocator into core.
+- Move release/cold-init/design audit code to =tools/dev= or a dev-tools
+  package.
+
+** Stage 7 - Rename =lisp/=
+
+The =lisp/= directory name is too vague because all source is Lisp.
+
+Preferred rename:
+
+#+begin_src text
+lisp/ -> toolchain/
+#+end_src
+
+This should happen separately from package extraction to keep diffs readable.
+
+The renamed =toolchain/= should own:
+
+- Phase-47 compiler
+- assemblers
+- object writers/linker support
+- standalone native runtime units
+- =nelisp-cc-*= low-level codegen units
+
+* Non-goals
+
+- Do not move files in the same change that defines this design.
+- Do not make =nelisp-emacs= the owner of every editor-adjacent library.
+- Do not move Phase-47 compiler or standalone runtime units into packages.
+- Do not make the core depend on packages to start a REPL or run =--eval=.
+- Do not require a package manager before the core can self-host.
+
+* Acceptance Criteria
+
+The boundary is healthy when:
+
+- =target/nelisp= can start REPL, run =--eval=, and run =--load= without any
+  editor compatibility package.
+- core tests do not require buffer, face, file-notify, worker, or Emacs-compat
+  packages.
+- packages can be loaded and tested independently.
+- =nelisp-emacs= can be described as a package set plus integration layer.
+- generated coding tables no longer live in =src/=.
+- =lisp/= has been renamed or split into a name that describes toolchain
+  ownership.
+
+* Open Questions
+
+- Should =nelisp-worker= be a separate package or part of =nelisp-process=?
+- Should =nelisp-face= be independent from text properties, or owned by a
+  broader UI package?
+- Should =nelisp-core-coding= expose a public API, or remain private to loader?
+- How should package versioning work after =packages/= leaves the core
+  repository?
+- Should =nelisp-emacs= vendor exact package revisions for reproducible
+  releases?
+

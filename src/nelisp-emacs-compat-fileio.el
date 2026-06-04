@@ -56,7 +56,8 @@
 ;;
 ;; nelisp-coding integration:
 ;;
-;;   `nelisp-ec-insert-file-contents' = read raw bytes via simulator →
+;;   `nelisp-ec-insert-file-contents' = read raw bytes via
+;;     `nelisp-core-fileio' →
 ;;     `nelisp-coding-utf8-decode' (UTF-8 default, replace strategy) →
 ;;     insert into current `nelisp-ec' buffer at point.
 ;;   `nelisp-ec-write-region'         = grab `buffer-substring' from
@@ -76,7 +77,15 @@
 
 (require 'cl-lib)
 (require 'nelisp-coding)
-(require 'nelisp-emacs-compat)
+(require 'nelisp-core-fileio)
+
+(declare-function nelisp-ec--ensure-current "nelisp-emacs-compat")
+(declare-function nelisp-ec-erase-buffer "nelisp-emacs-compat")
+(declare-function nelisp-ec-insert "nelisp-emacs-compat")
+(declare-function nelisp-ec-buffer-substring "nelisp-emacs-compat")
+
+(unless (bound-and-true-p byte-compile-current-file)
+  (require 'nelisp-emacs-compat))
 
 ;;; ──────────────────────────────────────────────────────────────────────
 ;;; Errors
@@ -123,21 +132,14 @@
   "Return non-nil if NAME starts with `/' (POSIX absolute path).
 Tilde-expansion (~user/) is treated as absolute as in Emacs.  This
 helper does NOT touch the filesystem."
-  (unless (stringp name)
-    (signal 'wrong-type-argument (list 'stringp name)))
-  (and (> (length name) 0)
-       (or (eq (aref name 0) ?/)
-           (eq (aref name 0) ?~))))
+  (nelisp-core-file-name-absolute-p name))
 
 ;;;###autoload
 (defun nelisp-ec-file-name-directory (name)
   "Return the directory part of NAME, or nil if NAME has no slash.
 The trailing slash is preserved (= directory part is itself a
 directory name)."
-  (unless (stringp name)
-    (signal 'wrong-type-argument (list 'stringp name)))
-  (let ((idx (cl-position ?/ name :from-end t)))
-    (and idx (substring name 0 (1+ idx)))))
+  (nelisp-core-file-name-directory name))
 
 ;;;###autoload
 (defun nelisp-ec-file-name-nondirectory (name)
@@ -167,24 +169,12 @@ returns `.bashrc').  No extension → NAME returned unchanged."
 ;;;###autoload
 (defun nelisp-ec-file-name-as-directory (name)
   "Return NAME with a trailing `/' appended (idempotent)."
-  (unless (stringp name)
-    (signal 'wrong-type-argument (list 'stringp name)))
-  (if (and (> (length name) 0)
-           (eq (aref name (1- (length name))) ?/))
-      name
-    (concat name "/")))
+  (nelisp-core-file-name-as-directory name))
 
 (defun nelisp-ec--collapse-segments (segments)
   "Collapse `.' / `..' / empty SEGMENTS in a POSIX-style path list.
 Returns the simplified list (does NOT touch leading `/')."
-  (let ((acc nil))
-    (dolist (seg segments)
-      (cond
-       ((or (string-empty-p seg) (string-equal seg ".")) nil)
-       ((string-equal seg "..")
-        (when acc (pop acc)))
-       (t (push seg acc))))
-    (nreverse acc)))
+  (nelisp-core--collapse-segments segments))
 
 ;;;###autoload
 (defun nelisp-ec-expand-file-name (name &optional default-dir)
@@ -197,29 +187,7 @@ used.
 
 This helper is *pure NeLisp string surgery* — no host syscall is
 invoked beyond reading `default-directory' for the seed CWD."
-  (unless (stringp name)
-    (signal 'wrong-type-argument (list 'stringp name)))
-  (let* ((dd (or default-dir
-                 (and (boundp 'default-directory) default-directory)
-                 "/"))
-         (dd (if (eq (aref dd 0) ?/) dd (concat "/" dd)))
-         (seed (cond
-                ;; NAME absolute → seed = NAME, ignore dd
-                ((nelisp-ec-file-name-absolute-p name) name)
-                (t (concat (nelisp-ec-file-name-as-directory dd) name))))
-         ;; Tilde at very start of seed → expand to $HOME (host getenv).
-         (seed (cond
-                ((and (> (length seed) 0) (eq (aref seed 0) ?~))
-                 (let ((home (or (getenv "HOME") "/")))
-                   (cond
-                    ((or (= (length seed) 1) (eq (aref seed 1) ?/))
-                     (concat home (substring seed 1)))
-                    (t seed)))) ;; ~user/ unsupported — leave verbatim
-                (t seed)))
-         (segments (split-string seed "/" t))
-         (collapsed (nelisp-ec--collapse-segments segments))
-         (joined (mapconcat #'identity collapsed "/")))
-    (concat "/" joined)))
+  (nelisp-core-expand-file-name name default-dir))
 
 ;;; ──────────────────────────────────────────────────────────────────────
 ;;; §2. Stat-backed predicates
@@ -233,23 +201,12 @@ invoked beyond reading `default-directory' for the seed CWD."
 ;;;###autoload
 (defun nelisp-ec-file-exists-p (file)
   "Return non-nil if FILE exists.  Wraps stat(2)."
-  (unless (stringp file)
-    (signal 'wrong-type-argument (list 'stringp file)))
-  (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-    (let ((rc (nl-syscall-stat-ex file)))
-      (and rc (>= (or (plist-get rc :rc) 0) 0))))
-   (t (file-exists-p file))))
+  (nelisp-core-file-exists-p file))
 
 ;;;###autoload
 (defun nelisp-ec-file-readable-p (file)
   "Return non-nil if FILE exists and is readable.  Wraps access(F_OK | R_OK)."
-  (unless (stringp file)
-    (signal 'wrong-type-argument (list 'stringp file)))
-  (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-access)
-    (zerop (nl-syscall-access file 4))) ;; R_OK = 4
-   (t (file-readable-p file))))
+  (nelisp-core-file-readable-p file))
 
 ;;;###autoload
 (defun nelisp-ec-file-directory-p (file)
@@ -448,14 +405,12 @@ currently a no-op (Phase 9d MVP is local-only)."
   "Read FILE between byte offsets BEG (inclusive) and END (exclusive).
 Returns a unibyte string of raw bytes.  Phase 7.5 will swap this to
 `nl-syscall-read-file' once T76 lands."
-  (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-read-file)
-    (nl-syscall-read-file file (or beg 0) end))
-   (t
-    (with-temp-buffer
-      (set-buffer-multibyte nil)
-      (insert-file-contents-literally file nil beg end)
-      (buffer-substring-no-properties (point-min) (point-max))))))
+  (nelisp-core--read-raw-bytes file beg end))
+
+(defun nelisp-ec--ensure-editor-layer ()
+  "Load `nelisp-emacs-compat' before buffer-oriented file APIs run."
+  (unless (featurep 'nelisp-emacs-compat)
+    (require 'nelisp-emacs-compat)))
 
 (defun nelisp-ec--write-raw-bytes (file unibyte append)
   "Write UNIBYTE bytes to FILE.  When APPEND non-nil, append.
@@ -490,6 +445,7 @@ file size."
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (ignore visit)
+  (nelisp-ec--ensure-editor-layer)
   (nelisp-ec--ensure-current)
   (unless (nelisp-ec-file-exists-p file)
     (signal 'nelisp-ec-file-missing (list file)))
@@ -517,6 +473,7 @@ Returns the number of *bytes* written to disk."
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (ignore visit)
+  (nelisp-ec--ensure-editor-layer)
   (let* ((text (nelisp-ec-buffer-substring (min start end) (max start end)))
          (unibyte (nelisp-coding-utf8-encode-string text)))
     (nelisp-ec--write-raw-bytes file unibyte append)

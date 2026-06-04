@@ -24,10 +24,11 @@
 ;;      file I/O primitive remains in the body of `nelisp-load-file' /
 ;;      `nelisp-locate-file'.  Catches regressions where someone re-
 ;;      introduces `with-temp-buffer' / `insert-file-contents'.
-;;   2. Behavioural audit — advise `nelisp-ec-insert-file-contents' and
-;;      `nelisp-ec-file-readable-p', drive `nelisp-load-file' against a
-;;      tmp file, verify both wrappers fired at least once.  Proves the
-;;      route actually exercised the compat layer.
+;;   2. Behavioural audit — advise `nelisp-core-read-file-as-string'
+;;      and `nelisp-core-file-readable-p', drive `nelisp-load-file'
+;;      against a tmp file, verify both wrappers fired at least once.
+;;      Proves the route actually exercised the core loader I/O layer
+;;      (Doc 141 Stage 2), not the Emacs-compat editor layer.
 ;;   3. Roundtrip — write tmp .el via `nelisp-ec-write-region', load
 ;;      via `nelisp-load-file', verify evaluator side effects.  Proves
 ;;      end-to-end functional parity with the pre-T86 path.
@@ -82,46 +83,46 @@ Used so the audit grep ignores explanation text in docstrings."
     (should-not (string-match-p "(with-temp-buffer" src))))
 
 (ert-deftest nelisp-load-selfhost-no-insert-file-contents ()
-  "After T86, nelisp-load.el body must not call host `insert-file-contents'.
-The compat wrapper `nelisp-ec-insert-file-contents' is allowed."
-  (let* ((src (nelisp-load-selfhost-test--strip-comments-and-strings
-               (nelisp-load-selfhost-test--load-source)))
-         ;; Mask the compat wrapper so its substring match doesn't
-         ;; trip the host-primitive check.
-         (masked (replace-regexp-in-string
-                  "nelisp-ec-insert-file-contents" "" src)))
-    (should-not (string-match-p "(insert-file-contents" masked))))
+  "Doc 141 Stage 2: nelisp-load.el body must not call host
+`insert-file-contents'.  The core loader reads source via
+`nelisp-core-read-file-as-string'."
+  (let ((src (nelisp-load-selfhost-test--strip-comments-and-strings
+              (nelisp-load-selfhost-test--load-source))))
+    (should-not (string-match-p "(insert-file-contents" src))))
 
 (ert-deftest nelisp-load-selfhost-no-host-file-readable-p ()
-  "After T86, nelisp-load.el body must not call host `file-readable-p'.
-The compat wrapper `nelisp-ec-file-readable-p' is allowed."
+  "Doc 141 Stage 2: nelisp-load.el body must not call host
+`file-readable-p'.  The core wrapper `nelisp-core-file-readable-p'
+is allowed."
   (let* ((src (nelisp-load-selfhost-test--strip-comments-and-strings
                (nelisp-load-selfhost-test--load-source)))
          (masked (replace-regexp-in-string
-                  "nelisp-ec-file-readable-p" "" src)))
+                  "nelisp-core-file-readable-p" "" src)))
     (should-not (string-match-p "(file-readable-p" masked))))
 
 (ert-deftest nelisp-load-selfhost-no-host-expand-file-name ()
-  "After T86, nelisp-load.el body must not call host `expand-file-name'.
-The compat wrapper `nelisp-ec-expand-file-name' is allowed."
+  "Doc 141 Stage 2: nelisp-load.el body must not call host
+`expand-file-name'.  The core wrapper `nelisp-core-expand-file-name'
+is allowed."
   (let* ((src (nelisp-load-selfhost-test--strip-comments-and-strings
                (nelisp-load-selfhost-test--load-source)))
          (masked (replace-regexp-in-string
-                  "nelisp-ec-expand-file-name" "" src)))
+                  "nelisp-core-expand-file-name" "" src)))
     (should-not (string-match-p "(expand-file-name" masked))))
 
-;;; §2. Behavioural audit — compat wrappers actually fire --------------
+;;; §2. Behavioural audit — core wrappers actually fire ---------------
 
-(ert-deftest nelisp-load-selfhost-uses-nelisp-ec-wrappers ()
-  "`nelisp-load-file' must drive `nelisp-ec-insert-file-contents' and
-`nelisp-ec-file-readable-p' during a successful load.  Advice counts
-the wrapper invocations to prove the standalone path is live."
+(ert-deftest nelisp-load-selfhost-uses-nelisp-core-wrappers ()
+  "Doc 141 Stage 2: `nelisp-load-file' must drive
+`nelisp-core-read-file-as-string' and `nelisp-core-file-readable-p'
+during a successful load.  Advice counts the wrapper invocations to
+prove the core loader I/O path (not the Emacs-compat layer) is live."
   (nelisp--reset)
   (let* ((tmp (make-temp-file "nelisp-load-selfhost" nil ".el"))
-         (insert-cell (list 0))
+         (read-cell (list 0))
          (readable-cell (list 0))
-         (insert-advice (lambda (&rest _args)
-                          (setcar insert-cell (1+ (car insert-cell)))))
+         (read-advice (lambda (&rest _args)
+                        (setcar read-cell (1+ (car read-cell)))))
          (readable-advice (lambda (&rest _args)
                             (setcar readable-cell
                                     (1+ (car readable-cell))))))
@@ -129,35 +130,35 @@ the wrapper invocations to prove the standalone path is live."
         (progn
           (with-temp-file tmp
             (let ((coding-system-for-write 'utf-8))
-              (insert "(defvar *t86-marker* 86)\n")))
-          (advice-add 'nelisp-ec-insert-file-contents :before insert-advice)
-          (advice-add 'nelisp-ec-file-readable-p :before readable-advice)
+              (insert "(defvar *doc141-marker* 141)\n")))
+          (advice-add 'nelisp-core-read-file-as-string :before read-advice)
+          (advice-add 'nelisp-core-file-readable-p :before readable-advice)
           (unwind-protect
               (progn
                 (nelisp-load-file tmp)
-                (should (>= (car insert-cell) 1))
+                (should (>= (car read-cell) 1))
                 (should (>= (car readable-cell) 1))
-                (should (= (nelisp-eval '*t86-marker*) 86)))
-            (advice-remove 'nelisp-ec-insert-file-contents insert-advice)
-            (advice-remove 'nelisp-ec-file-readable-p readable-advice)))
+                (should (= (nelisp-eval '*doc141-marker*) 141)))
+            (advice-remove 'nelisp-core-read-file-as-string read-advice)
+            (advice-remove 'nelisp-core-file-readable-p readable-advice)))
       (delete-file tmp))))
 
-(ert-deftest nelisp-load-selfhost-locate-uses-nelisp-ec-readable-p ()
-  "`nelisp-locate-file' must consult `nelisp-ec-file-readable-p' so
-feature lookup works under the standalone runtime where host
-`file-readable-p' is unavailable."
+(ert-deftest nelisp-load-selfhost-locate-uses-nelisp-core-readable-p ()
+  "Doc 141 Stage 2: `nelisp-locate-file' must consult
+`nelisp-core-file-readable-p' so feature lookup works under the
+standalone runtime where host `file-readable-p' is unavailable."
   ;; Use a list cell so the advice closure shares a mutable container
   ;; with the test body, regardless of how ert macroexpands the body.
   (let* ((counter (list 0))
          (probe (lambda (&rest _args)
                   (setcar counter (1+ (car counter))))))
-    (advice-add 'nelisp-ec-file-readable-p :before probe)
+    (advice-add 'nelisp-core-file-readable-p :before probe)
     (unwind-protect
         (let ((nelisp-load-path '("/nonexistent/nelisp/feature/dir")))
           ;; Lookup should miss but still go through the wrapper.
           (should (null (nelisp-locate-file 'definitely-not-there)))
           (should (>= (car counter) 1)))
-      (advice-remove 'nelisp-ec-file-readable-p probe))))
+      (advice-remove 'nelisp-core-file-readable-p probe))))
 
 ;;; §3. Roundtrip via nelisp-ec-write-region ----------------------------
 
@@ -185,7 +186,7 @@ layer cooperate end-to-end (= the pure-NeLisp self-host I/O cycle)."
 
 (ert-deftest nelisp-load-selfhost-utf8-content ()
   "`nelisp-load-file' decodes UTF-8 source through `nelisp-coding'
-inside `nelisp-ec-insert-file-contents'.  A multibyte string literal
+inside `nelisp-core-read-file-as-string'.  A multibyte string literal
 must survive the read/eval round trip."
   (nelisp--reset)
   (let ((tmp (make-temp-file "nelisp-load-selfhost-utf8" nil ".el")))
@@ -203,9 +204,9 @@ must survive the read/eval round trip."
 ;;; §5. Missing file contract preserved --------------------------------
 
 (ert-deftest nelisp-load-selfhost-missing-file-signals-file-error ()
-  "After T86 the missing-file contract still raises `file-error'.
-Routed through `nelisp-ec-file-readable-p' but caller observation is
-unchanged from the pre-T86 implementation."
+  "The missing-file contract still raises `file-error'.  Routed
+through `nelisp-core-file-readable-p' but caller observation is
+unchanged from the pre-Doc-141 implementation."
   (should-error
    (nelisp-load-file "/definitely/not/here/nelisp-t86.el")
    :type 'file-error))
@@ -232,22 +233,43 @@ all state into the global NeLisp tables, exactly like pre-T86."
           (should (= (nelisp-eval '*t86-c*) 3)))
       (delete-file tmp))))
 
-;;; §7. Header dependency assertion ------------------------------------
+;;; §7. Core file I/O dependency assertion -----------------------------
 
-(ert-deftest nelisp-load-selfhost-requires-emacs-compat-fileio ()
-  "After T86, `nelisp-load' must `require' the compat fileio module so
-loading nelisp-load.el alone is enough to wire the standalone path.
-Catches the regression where someone removes the require but the
-file happens to load because an earlier test pulled the dependency."
-  (should (featurep 'nelisp-emacs-compat))
-  (should (featurep 'nelisp-emacs-compat-fileio))
-  ;; And the API symbols we depend on must be `fboundp'.
-  (should (fboundp 'nelisp-ec-insert-file-contents))
-  (should (fboundp 'nelisp-ec-file-readable-p))
-  (should (fboundp 'nelisp-ec-expand-file-name))
-  (should (fboundp 'nelisp-ec-generate-new-buffer))
-  (should (fboundp 'nelisp-ec-buffer-string))
-  (should (fboundp 'nelisp-ec-kill-buffer)))
+(ert-deftest nelisp-load-selfhost-requires-core-fileio ()
+  "Doc 141 Stage 2: `nelisp-load' must `require' the core file I/O
+module so loading nelisp-load.el alone is enough to wire the
+standalone loader path.  Catches the regression where the core
+wrappers are swapped back to the `nelisp-emacs-compat' editor layer."
+  (should (featurep 'nelisp-core-fileio))
+  ;; The minimal loader API surface must be `fboundp'.
+  (should (fboundp 'nelisp-core-read-file-as-string))
+  (should (fboundp 'nelisp-core-file-readable-p))
+  (should (fboundp 'nelisp-core-expand-file-name)))
+
+(ert-deftest nelisp-load-selfhost-loads-without-emacs-compat ()
+  "Doc 141 Stage 2 acceptance: `nelisp-load' must load in a fresh
+process WITHOUT pulling in `nelisp-emacs-compat'.  This is the core/
+package boundary the migration establishes — the loader depends only
+on `nelisp-core-fileio'.  Spawned in a clean `emacs --batch' because
+THIS test session deliberately `require's the compat layer (for the
+§3 roundtrip), which would otherwise mask the regression."
+  ;; `nelisp-load-selfhost-test--src-path' is a load-time `defconst'
+  ;; (.../src/nelisp-load.el); `load-file-name' is nil while the test
+  ;; BODY runs, so derive the dirs from that constant instead.
+  (let* ((src-dir (file-name-directory nelisp-load-selfhost-test--src-path))
+         (lisp-dir (expand-file-name "../lisp" src-dir))
+         (emacs (expand-file-name invocation-name invocation-directory))
+         (out (with-output-to-string
+                (with-current-buffer standard-output
+                  (call-process
+                   emacs nil t nil
+                   "--batch" "-Q"
+                   "-L" lisp-dir "-L" src-dir
+                   "--eval" "(setq load-prefer-newer t)"
+                   "--eval" "(require 'nelisp-load)"
+                   "--eval" "(princ (if (featurep 'nelisp-emacs-compat) \"COMPAT\" \"CLEAN\"))")))))
+    (should (string-match-p "CLEAN" out))
+    (should-not (string-match-p "COMPAT" out))))
 
 (provide 'nelisp-load-selfhost-test)
 ;;; nelisp-load-selfhost-test.el ends here

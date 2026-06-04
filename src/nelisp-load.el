@@ -45,16 +45,11 @@
 ;; Phase 2 `require' stub returned early.  Now that `require' actually
 ;; loads files the macro layer must be present.
 (require 'nelisp-macro)
-;; T86 (Phase 7+ Wave 2 F): route file I/O through `nelisp-emacs-compat'
-;; (T78 SHIPPED) so NeLisp standalone path can load .el files without
-;; depending on host Emacs `with-temp-buffer' / `insert-file-contents'
-;; / `file-readable-p' / `expand-file-name'.  T76 (Rust syscall) is the
-;; eventual hard backend; today the `nelisp-ec-*' wrappers fall back to
-;; host primitives so behaviour is preserved when running under host
-;; Emacs.  This severs nelisp-load.el → host file I/O — the
-;; chicken-and-egg blocker for anvil.el standalone mode.
-(require 'nelisp-emacs-compat)
-(require 'nelisp-emacs-compat-fileio)
+;; Doc 141 Stage 2: loader file I/O now depends only on the minimal
+;; core file layer.  Path resolution, readability checks, and UTF-8
+;; source reads live in `nelisp-core-fileio'; editor/buffer concepts
+;; remain in the package-side Emacs compatibility layer.
+(require 'nelisp-core-fileio)
 
 (define-error 'nelisp-load-error "NeLisp load error")
 
@@ -82,9 +77,9 @@ first, then host `load-path' when `nelisp-load-path-include-host'
 is non-nil.  Within each directory, the `.el' suffix is tried
 first; if FEATURE already ends with `.el', that exact name is used.
 
-T86: file I/O routed through `nelisp-ec-expand-file-name' /
-`nelisp-ec-file-readable-p' so NeLisp standalone path resolves
-features without host Emacs file primitives."
+Doc 141 Stage 2: file resolution is routed through
+`nelisp-core-expand-file-name' / `nelisp-core-file-readable-p' so
+the loader no longer depends on the Emacs compatibility layer."
   (let* ((name (cond ((symbolp feature) (symbol-name feature))
                      ((stringp feature) feature)
                      (t (signal 'wrong-type-argument
@@ -100,8 +95,8 @@ features without host Emacs file primitives."
       (let ((tail candidates)
             (dir (car dirs)))
         (while (and tail (not found))
-          (let ((full (nelisp-ec-expand-file-name (car tail) dir)))
-            (when (nelisp-ec-file-readable-p full)
+          (let ((full (nelisp-core-expand-file-name (car tail) dir)))
+            (when (nelisp-core-file-readable-p full)
               (setq found full)))
           (setq tail (cdr tail))))
       (setq dirs (cdr dirs)))
@@ -199,19 +194,13 @@ load-path search is performed at this layer (see `nelisp-require'
 Read / eval failures are propagated as `nelisp-load-error' with
 PATH recorded in the :source plist slot.
 
-T86: disk read goes through `nelisp-ec-*' (T78 SHIPPED) — host
-`with-temp-buffer' / `insert-file-contents' / `file-readable-p'
-are no longer reached, so NeLisp standalone path can load .el
-files without the host Emacs file I/O surface.  UTF-8 decoding is
-handled by `nelisp-coding' inside `nelisp-ec-insert-file-contents'."
-  (unless (nelisp-ec-file-readable-p path)
+Doc 141 Stage 2: disk read goes through `nelisp-core-fileio', so
+the loader no longer depends on Emacs compatibility buffers or
+editor-style file APIs.  UTF-8 decoding is handled by
+`nelisp-coding' inside `nelisp-core-read-file-as-string'."
+  (unless (nelisp-core-file-readable-p path)
     (signal 'file-error (list "Cannot read NeLisp file" path)))
-  (let ((buf (nelisp-ec-generate-new-buffer " *nelisp-load*")))
-    (unwind-protect
-        (nelisp-ec-with-current-buffer buf
-          (nelisp-ec-insert-file-contents path)
-          (nelisp-load-string (nelisp-ec-buffer-string) path))
-      (nelisp-ec-kill-buffer buf))))
+  (nelisp-load-string (nelisp-core-read-file-as-string path) path))
 
 ;;; Feature registry (Doc 12 §3.3) -----------------------------------
 
