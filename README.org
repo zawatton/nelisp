@@ -370,7 +370,9 @@ Default install root: =$HOME/.local/share/anvil-stage-d-v3.0/=.
 On Windows the default root is under =$env:LOCALAPPDATA\anvil-stage-d-v3.0=.
 (The =anvil-= prefix is historical packaging — the tarball *is* the
 NeLisp runtime; use =bin/nelisp= or =bin/nelisp.exe= directly.)
-Verification, manual extraction, and platform notes:
+Full install-to-run runbook for Linux x86_64, macOS arm64, and Windows x86_64
+(release install, local tarball install, PATH setup, =eval=, file loading,
+REPL, runtime images, verification, and uninstall):
 [[file:README-stage-d-v3.0.org][README-stage-d-v3.0.org]].
 
 Older release lines, for reference only:

@@ -16,24 +16,104 @@ tarball.  The executable is short and platform-native:
 The archive does not contain an Emacs binary, =anvil-runtime=,
 =libnelisp_runtime=, cargo output, or a Rust runtime dependency.
 
-* Install
+* Install to runbook
 
-For local iteration:
+This section is the end-to-end path from install to execution.  It covers
+release installs, local tarball installs, PATH setup, CLI commands, REPL use,
+and verification.
+
+** Supported platforms
+
+| Platform        | Tarball name suffix | Installed command |
+|-----------------+---------------------+-------------------|
+| Linux x86_64    | =linux-x86_64=      | =nelisp=          |
+| macOS arm64     | =macos-aarch64=     | =nelisp=          |
+| Windows x86_64  | =windows-x86_64=    | =nelisp.exe=      |
+
+Default install roots:
+
+| Platform       | Default prefix                                  |
+|----------------+-------------------------------------------------|
+| Linux x86_64   | =$HOME/.local/share/anvil-stage-d-v3.0=        |
+| macOS arm64    | =$HOME/.local/share/anvil-stage-d-v3.0=        |
+| Windows x86_64 | =$env:LOCALAPPDATA\anvil-stage-d-v3.0=         |
+
+The =anvil-= prefix is historical packaging.  The installed runtime is the
+standalone NeLisp CLI in =bin/nelisp= or =bin/nelisp.exe=.
+
+** Install from GitHub release
+
+Linux x86_64 and macOS arm64:
 
 #+begin_src shell
+curl -fsSL https://github.com/zawatton/nelisp/releases/latest/download/install-v3.sh -o install-v3.sh
+sh install-v3.sh
+export PATH="$HOME/.local/share/anvil-stage-d-v3.0/bin:$PATH"
+nelisp eval "(+ 40 2)"
+#+end_src
+
+Windows x86_64 PowerShell:
+
+#+begin_src powershell
+iwr https://github.com/zawatton/nelisp/releases/latest/download/install-v3.ps1 -OutFile install-v3.ps1
+.\install-v3.ps1
+$Prefix = Join-Path $env:LOCALAPPDATA "anvil-stage-d-v3.0"
+$env:Path = (Join-Path $Prefix "bin") + ";" + $env:Path
+nelisp.exe eval "(+ 40 2)"
+#+end_src
+
+Expected output:
+
+#+begin_src text
+42
+#+end_src
+
+To pin a non-default prefix:
+
+#+begin_src shell
+sh install-v3.sh --prefix "$HOME/opt/nelisp"
+export PATH="$HOME/opt/nelisp/bin:$PATH"
+#+end_src
+
+#+begin_src powershell
+.\install-v3.ps1 -Prefix "$HOME\opt\nelisp"
+$env:Path = "$HOME\opt\nelisp\bin;" + $env:Path
+#+end_src
+
+** Build and install from a source checkout
+
+Linux x86_64:
+
+#+begin_src shell
+git pull --ff-only
 make standalone-tarball PLATFORM=linux-x86_64
 make standalone-tarball-verify PLATFORM=linux-x86_64
 ./release/stage-d-v3.0/install-v3.sh --from "$(pwd)/dist"
-$HOME/.local/share/anvil-stage-d-v3.0/bin/nelisp eval "(+ 40 2)"
+export PATH="$HOME/.local/share/anvil-stage-d-v3.0/bin:$PATH"
+nelisp eval "(+ 40 2)"
 #+end_src
 
-On Apple Silicon:
+macOS arm64:
 
 #+begin_src shell
+git pull --ff-only
 make standalone-tarball PLATFORM=macos-aarch64
 make standalone-tarball-verify PLATFORM=macos-aarch64
 ./release/stage-d-v3.0/install-v3.sh --from "$(pwd)/dist"
-$HOME/.local/share/anvil-stage-d-v3.0/bin/nelisp eval "(+ 40 2)"
+export PATH="$HOME/.local/share/anvil-stage-d-v3.0/bin:$PATH"
+nelisp eval "(+ 40 2)"
+#+end_src
+
+Windows x86_64 PowerShell:
+
+#+begin_src powershell
+git pull --ff-only
+.\tools\build-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
+.\tools\verify-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
+.\release\stage-d-v3.0\install-v3.ps1 -From .\dist
+$Prefix = Join-Path $env:LOCALAPPDATA "anvil-stage-d-v3.0"
+$env:Path = (Join-Path $Prefix "bin") + ";" + $env:Path
+nelisp.exe eval "(+ 40 2)"
 #+end_src
 
 The macOS arm64 tarball is ad-hoc signed at build time with =codesign -s -=.
@@ -41,21 +121,81 @@ The verifier checks that signature before running =bin/nelisp=; it does not
 repair or re-sign the extracted binary.  =install-v3.sh= also verifies the
 installed =bin/nelisp= signature on Apple Silicon before reporting success.
 
-On Windows x86_64 the tarball contains =bin/nelisp.exe=.
+** Run without installing
 
-For local Windows PowerShell iteration:
+From a source checkout, build the native reader and run it directly:
 
-#+begin_src powershell
-.\tools\build-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
-.\tools\verify-standalone-tarball.ps1 -Version stage-d-v3.0 -Target windows-x86_64
-.\release\stage-d-v3.0\install-v3.ps1 -From .\dist -Prefix "$env:TEMP\nelisp-install-smoke"
-& "$env:TEMP\nelisp-install-smoke\bin\nelisp.exe" eval "(+ 40 2)"
+Linux x86_64:
+
+#+begin_src shell
+NELISP_STANDALONE_TARGET=linux-x86_64 make standalone-reader
+./target/nelisp eval "(+ 40 2)"
+./target/nelisp repl
 #+end_src
 
-* Verify the CLI
+macOS arm64:
+
+#+begin_src shell
+NELISP_STANDALONE_TARGET=macos-aarch64 make standalone-reader
+./target/nelisp eval "(+ 40 2)"
+./target/nelisp repl
+#+end_src
+
+Windows x86_64 PowerShell:
+
+#+begin_src powershell
+$env:NELISP_STANDALONE_TARGET = "windows-x86_64"
+emacs --batch -Q -L lisp -L src -L scripts --eval "(setq load-prefer-newer t)" -l nelisp-standalone-build -f nelisp-standalone-build-reader
+.\target\nelisp.exe eval "(+ 40 2)"
+.\target\nelisp.exe repl
+#+end_src
+
+** CLI commands
+
+Evaluate one form and print the result:
 
 #+begin_src shell
 nelisp eval "(+ 40 2)"
+nelisp -e '(vector 1 "a" nil t)'
+#+end_src
+
+Load a file:
+
+#+begin_src shell
+printf '%s\n' "(+ 40 3)" > /tmp/nelisp-smoke.el
+nelisp load /tmp/nelisp-smoke.el
+nelisp /tmp/nelisp-smoke.el
+#+end_src
+
+Windows PowerShell equivalents:
+
+#+begin_src powershell
+nelisp.exe eval "(+ 40 2)"
+nelisp.exe -e '(vector 1 "a" nil t)'
+Set-Content -Path "$env:TEMP\nelisp-smoke.el" -Value "(+ 40 3)"
+nelisp.exe load "$env:TEMP\nelisp-smoke.el"
+nelisp.exe "$env:TEMP\nelisp-smoke.el"
+#+end_src
+
+Runtime image commands:
+
+#+begin_src shell
+nelisp dump-runtime-image /tmp/base.nlri "(setq base 40)"
+nelisp eval-runtime-image /tmp/base.nlri "(setq add 2)" "(+ base add)"
+nelisp exec-runtime-image /tmp/base.nlri "(setq add 2)" "(+ base add)"
+#+end_src
+
+** REPL
+
+Interactive REPL:
+
+#+begin_src shell
+nelisp repl
+#+end_src
+
+Promptless REPL for scripts:
+
+#+begin_src shell
 printf '%s\n' "(+ 40 2)" "(vector 1 \"a\" nil t)" "(exit)" | nelisp repl --no-prompt
 #+end_src
 
@@ -63,8 +203,35 @@ Expected output:
 
 #+begin_src text
 42
-42
 [1 "a" nil t]
+#+end_src
+
+REPL forms to try:
+
+#+begin_src lisp
+(+ 40 2)
+(* 6 7)
+(concat "hello" " " "nelisp")
+(vector 1 "a" nil t)
+(quote (1 2 3))
+(defun square (x) (* x x))
+(square 9)
+(exit)
+#+end_src
+
+Use =(exit)= to terminate the REPL.  There is intentionally no =(quit)=
+alias, because Emacs Lisp already uses =quit= for the quit signal path.
+
+** Uninstall
+
+Remove the install prefix:
+
+#+begin_src shell
+rm -rf "$HOME/.local/share/anvil-stage-d-v3.0"
+#+end_src
+
+#+begin_src powershell
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\anvil-stage-d-v3.0"
 #+end_src
 
 * Full native verification
