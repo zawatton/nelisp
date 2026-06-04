@@ -329,6 +329,12 @@
                      ((= tag 4) (nl_cli_put_string_value fbuf off out 0))
                      ((= tag 5) (nl_cli_put_string_value fbuf off out 1))
                      ((= tag 6) (nl_cli_put_string_value fbuf off out 1))
+                     ((= tag 7) (nl_cli_put_list_tail fbuf
+                                                       (nl_cli_put_byte fbuf off 40)
+                                                       out 1))
+                     ((= tag 8) (nl_cli_put_vector_loop fbuf
+                                                        (nl_cli_put_byte fbuf off 91)
+                                                        out 0 (vector-len out)))
                      (t (nl_cli_put_object fbuf off)))))
                forms))
       (should-not (tree-member-p

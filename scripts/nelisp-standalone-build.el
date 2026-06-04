@@ -3977,6 +3977,34 @@ correctly."
         (if (= quoted 1)
             (nl_cli_put_byte fbuf off3 34)
           off3)))
+    (defun nl_cli_put_list_tail (fbuf off node first)
+      (let* ((tag (ptr-read-u64 node 0)))
+        (if (= tag 7)
+            (let* ((off2 (if (= first 1)
+                             off
+                           (nl_cli_put_byte fbuf off 32)))
+                   (off3 (nl_cli_value_to_buf fbuf off2
+                                              (nl_cons_car_ptr node))))
+              (nl_cli_put_list_tail fbuf off3 (nl_cons_cdr_ptr node) 0))
+          (if (= tag 0)
+              (nl_cli_put_byte fbuf off 41)
+            (nl_cli_put_byte
+             fbuf
+             (nl_cli_value_to_buf
+              fbuf
+              (nl_cli_put_byte
+               fbuf (nl_cli_put_byte fbuf (nl_cli_put_byte fbuf off 32) 46)
+               32)
+              node)
+             41)))))
+    (defun nl_cli_put_vector_loop (fbuf off vec i n)
+      (if (= i n)
+          (nl_cli_put_byte fbuf off 93)
+        (let* ((off2 (if (= i 0)
+                         off
+                       (nl_cli_put_byte fbuf off 32)))
+               (off3 (nl_cli_value_to_buf fbuf off2 (vector-ref-ptr vec i))))
+          (nl_cli_put_vector_loop fbuf off3 vec (+ i 1) n))))
     (defun nl_cli_put_nil (fbuf off)
       (nl_cli_put_byte
        fbuf (nl_cli_put_byte fbuf (nl_cli_put_byte fbuf off 110) 105) 108))
@@ -4014,6 +4042,9 @@ correctly."
          ((= tag 4) (nl_cli_put_string_value fbuf off out 0))
          ((= tag 5) (nl_cli_put_string_value fbuf off out 1))
          ((= tag 6) (nl_cli_put_string_value fbuf off out 1))
+         ((= tag 7) (nl_cli_put_list_tail fbuf (nl_cli_put_byte fbuf off 40) out 1))
+         ((= tag 8) (nl_cli_put_vector_loop fbuf (nl_cli_put_byte fbuf off 91)
+                                            out 0 (vector-len out)))
          (t (nl_cli_put_object fbuf off)))))
     (defun nl_cli_write_value (fbuf out)
       (let* ((n (nl_cli_value_to_buf fbuf 0 out)))
