@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test
 
 EMACS ?= emacs
 
@@ -106,6 +106,20 @@ standalone-reader-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-test
+
+# Fast focused loop for CLI load work.  Builds/relinks target/nelisp using the
+# incremental unit cache, then checks only `--load' output instead of running
+# the full reader CLI/runtime-image/REPL smoke.
+standalone-reader-load-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' '(+ 40 3)' > target/standalone-reader-load-smoke.el
+	@out="$$(./target/nelisp --load target/standalone-reader-load-smoke.el)"; \
+	if [ "$$out" = "43" ]; then \
+	  echo "[standalone-reader-load-smoke] PASS: --load -> $$out"; \
+	else \
+	  echo "[standalone-reader-load-smoke] FAIL: --load -> $$out"; \
+	  exit 1; \
+	fi
 
 # Prelude-load breadth test (Wave-1 (A)+(B)).  Builds the reader binary, then
 # runs it on  scripts/nelisp-stdlib-prelude.el  followed by a breadth test that
