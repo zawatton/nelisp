@@ -78,6 +78,12 @@ Accepts decimal strings and 0x-prefixed hexadecimal strings."
 (defconst nelisp-standalone--arena-base #x10000000
   "Default standalone arena base used by the Linux/SysV path.")
 
+(defconst nelisp-standalone--linux-arena-size #x200000000
+  "Linux standalone fixed arena reservation size.
+Keep this at 8 GiB as a temporary virtual reservation.  Increasing this is the
+last-resort path; pressure should be made visible and then handled by GC/root
+fixes or chunked arena growth.")
+
 (defconst nelisp-standalone--windows-arena-base
   (nelisp-standalone--parse-int-env
    "NELISP_STANDALONE_WINDOWS_ARENA_BASE" #x70000000)
@@ -116,7 +122,7 @@ touched.")
   (pcase (or target nelisp-standalone--target)
     ('windows-x86_64 nelisp-standalone--windows-arena-size)
     ('macos-aarch64 nelisp-standalone--macos-arena-size)
-    (_ #x200000000)))
+    (_ nelisp-standalone--linux-arena-size)))
 
 (defun nelisp-standalone--target-arena-metadata-address (offset &optional target)
   "Return target arena metadata address at OFFSET."
@@ -466,9 +472,10 @@ or the toolchain is newer than the cached object."
         unit))))
 
 ;; ===================================================================
-;; BOTTOM LAYER (pure elisp) — bump arena over an mmap MAP_FIXED region at
-;; 0x10000000.  bump-offset@+0 (init 16), QUIT_FLAG slot@+8 (init 0), data
-;; from +16.  Supplies nl_alloc_bytes (the target of every `alloc-bytes' op
+;; BOTTOM LAYER (pure elisp) — bump arena over a target-specific mmap /
+;; VirtualAlloc region at the standalone arena base.  bump-offset@+0 (init 16),
+;; QUIT_FLAG slot@+8 (init 0), data from +16.  Supplies nl_alloc_bytes (the
+;; target of every `alloc-bytes' op
 ;; reloc), nl_dealloc_bytes, nl_quit_flag_ptr.
 ;; ===================================================================
 ;; M6 catch/throw stash region lives in the reserved arena bytes [16,96):
@@ -523,36 +530,7 @@ or the toolchain is newer than the cached object."
     ;; would otherwise have obj+0 == the next header).
     (defun nl_block_total (size)
       (let ((p (nl_align_up size 8))) (+ 16 (if (< p 8) 8 p))))
-    (defun nl_arena_init ()
-      ;; 8 GiB bump arena (virtual; only TOUCHED pages consume RAM).
-      ;; 0x10000000..0x210000000, far below the high stack -> MAP_FIXED safe.
-      (let ((p (syscall-direct 9 268435456 8589934592 3 50 -1 0)))
-        (nl_seq2 (ptr-write-u64 268435456 0 256)        ; bump starts at 256
-         (nl_seq2 (ptr-write-u64 268435464 0 0)         ; quit flag
-          (nl_seq2 (ptr-write-u64 268435472 0 0)        ; throw flag
-           (nl_seq2 (ptr-write-u64 268435552 0 0)       ; free-list head
-            (nl_seq2 (ptr-write-u64 268435560 0 0)      ; gc trigger (set by driver)
-             (nl_seq2 (ptr-write-u64 268435568 0 (+ 268435456 256)) ; data start
-              (nl_seq2 (ptr-write-u64 268435576 0 0)    ; live bytes
-              (nl_seq2 (ptr-write-u64 268435584 0 0)    ; sweep: free dead blocks (0=free)
-              (nl_seq2 (ptr-write-u64 268435592 0 0)    ; mark phase enabled (0=enabled)
-              ;; RECLAIMER GATE: 268435616 = 1 -> nl_gc_collect is a NO-OP.
-              ;; Keep collection disabled for now.  Large vendored Emacs load
-              ;; surfaces can corrupt a still-live cons graph under the active
-              ;; mark/sweep path; after `org-agenda.el' prefix 612, a fresh
-              ;; `(cons ...)' can SIGSEGV.  The 8 GiB virtual arena is enough
-              ;; for the current standalone true-load surface, so correctness
-              ;; takes priority until the GC root/mark gap is fixed.
-              ;; KNOWN LIMIT: a SINGLE deeply-recursive top-level form (e.g.
-              ;; `(fib 26)') is still memory-unbounded because GC's only safe
-              ;; point is the top-level form boundary -- there is no interior
-              ;; safe point during one form's recursion, so its garbage cannot
-              ;; be reclaimed mid-form.  Set 268435616 to 0 to re-enable.
-              (nl_seq2 (ptr-write-u64 268435616 0 1)    ; collect disabled
-              (nl_seq2 (ptr-write-u64 268435624 0 0)    ; free-list reuse (0=on)
-              (nl_seq2 (ptr-write-u64 268435648 0 0)    ; probe off
-              (nl_seq2 (ptr-write-u64 268435656 0 0) ; min reuse block_total (0=all)
-               p)))))))))))))))
+    (defun nl_arena_init () 0)
     ;; Pop a free-list block whose BLOCK_TOTAL exactly matches WANT.
     ;; Returns the object pointer (mark reset to 0) or 0 if none.  PREV is
     ;; the object pointer whose payload (prev+0) links to CUR, 0 = head.
@@ -621,6 +599,42 @@ or the toolchain is newer than the cached object."
 This matches the Linux standalone trampoline's 1 GiB native stack, but remains a
 virtual reservation in the PE header; committed stack pages grow on demand.")
 
+(defun nelisp-standalone--linux-arena-init-form ()
+  "Return the Linux `nl_arena_init' form using mmap.
+
+The reservation still uses the historical low arena base because the current
+Phase47 standalone runtime embeds arena metadata addresses as immediates.  Use
+MAP_FIXED_NOREPLACE rather than MAP_FIXED so a collision fails cleanly instead
+of replacing an existing mapping.  The size remains 8 GiB; larger reservations
+are a last-resort workaround, not the correctness path."
+  (let ((base nelisp-standalone--arena-base)
+        (size nelisp-standalone--linux-arena-size)
+        ;; MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE
+        (flags (+ 2 32 #x100000)))
+    `(defun nl_arena_init ()
+       (let ((p (syscall-direct 9 ,base ,size 3 ,flags -1 0)))
+         (if (= p ,base)
+             (seq
+              (ptr-write-u64 ,base 0 256)        ; bump starts at 256
+              (ptr-write-u64 ,(+ base 8) 0 0)    ; quit flag
+              (ptr-write-u64 ,(+ base 16) 0 0)   ; throw flag
+              (ptr-write-u64 ,(+ base 96) 0 0)   ; free-list head
+              (ptr-write-u64 ,(+ base 104) 0 0)  ; gc trigger
+              (ptr-write-u64 ,(+ base 112) 0 (+ ,base 256)) ; data start
+              (ptr-write-u64 ,(+ base 120) 0 0)  ; live bytes
+              (ptr-write-u64 ,(+ base 128) 0 0)  ; sweep free dead blocks
+              (ptr-write-u64 ,(+ base 136) 0 0)  ; mark phase enabled
+              ;; RECLAIMER GATE: base+160 = 1 -> nl_gc_collect is a NO-OP.
+              ;; Keep collection disabled until the standalone root/mark gap is
+              ;; fixed; pressure is visible via smoke/tests, not hidden by
+              ;; increasing the virtual arena reservation.
+              (ptr-write-u64 ,(+ base 160) 0 1)  ; collect disabled
+              (ptr-write-u64 ,(+ base 168) 0 0)  ; free-list reuse
+              (ptr-write-u64 ,(+ base 192) 0 0)  ; probe off
+              (ptr-write-u64 ,(+ base 200) 0 0)  ; min reuse block_total
+              p)
+           (syscall-direct 60 88 0 0 0 0 0))))))
+
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc."
   `(defun nl_arena_init ()
@@ -672,10 +686,11 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
 (defun nelisp-standalone--target-arena-source ()
   "Return the arena source adjusted for the current standalone target."
   (pcase nelisp-standalone--target
-    ((or 'windows-x86_64 'macos-aarch64)
-     (let ((init-form (if (eq nelisp-standalone--target 'windows-x86_64)
-                          (nelisp-standalone--windows-arena-init-form)
-                        (nelisp-standalone--macos-arena-init-form))))
+    ((or 'linux-x86_64 'windows-x86_64 'macos-aarch64)
+     (let ((init-form (pcase nelisp-standalone--target
+                        ('linux-x86_64 (nelisp-standalone--linux-arena-init-form))
+                        ('windows-x86_64 (nelisp-standalone--windows-arena-init-form))
+                        ('macos-aarch64 (nelisp-standalone--macos-arena-init-form)))))
        (cons 'seq
              (mapcar (lambda (form)
                        (if (and (consp form)

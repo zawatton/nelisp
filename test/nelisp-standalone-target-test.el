@@ -362,6 +362,35 @@
                    (atomic-fetch-add #x70000058 1)
                    (ptr-write-u64 4096 0 #x70000000))))))
 
+(ert-deftest nelisp-standalone-target-linux-arena-uses-noreplace-mmap ()
+  "Linux arena fails cleanly on fixed-base collision instead of clobbering it."
+  (let ((nelisp-standalone--target 'linux-x86_64))
+    (cl-labels ((tree-member-p
+                 (needle tree)
+                 (cond
+                  ((equal needle tree) t)
+                  ((consp tree)
+                   (or (tree-member-p needle (car tree))
+                       (tree-member-p needle (cdr tree)))))))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p
+                 '(syscall-direct 9 #x10000000 #x200000000 3 #x100022 -1 0)
+                 arena))
+        (should (tree-member-p
+                 '(syscall-direct 60 88 0 0 0 0 0)
+                 arena))
+        (should-not (tree-member-p
+                     '(syscall-direct 9 #x10000000 #x400000000 3 50 -1 0)
+                     arena))
+        (should-not (tree-member-p
+                     '(syscall-direct 9 #x10000000 #x200000000 3 50 -1 0)
+                     arena))))))
+
+(ert-deftest nelisp-standalone-target-linux-arena-size-stays-pressure-visible ()
+  "Linux must not hide arena pressure by growing the fixed virtual reservation."
+  (should (= (nelisp-standalone--target-arena-size 'linux-x86_64)
+             #x200000000)))
+
 (ert-deftest nelisp-standalone-target-macos-rebases-arena-slots ()
   "macOS source rebase moves fixed metadata above Mach-O __PAGEZERO."
   (let ((nelisp-standalone--target 'macos-aarch64))
