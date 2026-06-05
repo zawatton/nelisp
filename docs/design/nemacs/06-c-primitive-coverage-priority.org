@@ -1,0 +1,276 @@
+#+TITLE: nemacs Doc 06 — GNU Emacs C-primitive coverage & elisp-ization priority (was nelisp Doc 143)
+#+DATE: 2026-06-05
+#+STATUS: INVENTORY
+
+* Purpose
+
+Prioritised worklist for re-implementing GNU Emacs C-core primitives (DEFUN'd
+=subr=s) in elisp, ordered by how often real Emacs Lisp CALLS them.  Doing the
+high-call-frequency, currently-missing ones first maximises how much vendor
+elisp loads/runs on NeLisp.  The work is PARALLELISABLE: disjoint primitive
+batches to codex + claude agents concurrently.
+
+* Method
+
+- Universe: 1730 C primitives from GNU Emacs 30.1 via =subr-primitive-p=
+  (DEFUN subrs only; native-comp elisp excluded).  Full data:
+  =143-c-primitive-coverage-priority.csv=.
+- Call frequency: =(NAME ...)= call-head occurrences across the nemacs vendor
+  corpus (1654 .el files).
+- Coverage: =runtime-ok= (fboundp live) / =source-unbootstrapped= (defun
+  exists but not loaded — WIRE only) / =MISSING= (no impl in source).
+- Layer: =runtime= (bare NeLisp) vs =substrate/ui= (buffer/marker/point/window/
+  keymap/text-prop/process — nemacs substrate, per the layer boundary).
+
+* CRITICAL rule
+
+Defining =(defun foo ...)= is NOT enough: =car-safe= is in
+=lisp/nelisp-stdlib-list.el= yet void in the runtime because never bootstrapped.
+Each task = write defun + WIRE into runtime bootstrap + verify =fboundp= live +
+GNU-Emacs-equivalent behaviour.
+
+* 2026-06-05 REPL-accurate correction + the key lever
+
+Measurement caveat: the first coverage pass probed =./target/nelisp --eval= and
+the anvil =nelisp-eval= subprocess, BOTH of which do NOT load the reader REPL
+prelude (=scripts/nelisp-stdlib-prelude.el=) — so they OVER-reported "missing".
+Re-measured against the reader REPL (stdin, prelude loaded): of the top-220
+called fn primitives, *142 are genuinely missing*, *~78 are live*.  (Note also
+there are multiple runtime configs: the anvil =nelisp-eval= subprocess carries
+more stdlib — e.g. =regexp-quote=, =cl-defun= — than the shipped standalone
+reader; the reader is what nemacs vendor-bootstrap uses, so it is the oracle.)
+
+*KEY LEVER (highest dev-efficiency ROI)*: most reader-"missing" primitives are
+ALREADY implemented in =lisp/nelisp-stdlib*.el= but are simply NOT WIRED into
+the reader's prelude/bootstrap — e.g. =max=/=min=/=abs=/=floor= (nelisp-stdlib.el),
+=string=/=regexp-quote=/=mapconcat=/=downcase=/=upcase=/=string-equal=
+(nelisp-stdlib-plist-str.el), =expand-file-name=/=file-exists-p=
+(nelisp-stdlib-misc.el), =prin1=/=prin1-to-string= (nelisp-stdlib-prn.el).  So
+the biggest win is NOT writing primitives one-by-one — it is *wiring the
+existing nelisp stdlib into the reader bootstrap*, which makes dozens live at
+once.  Only a few are true WRITE targets (no source anywhere): =nconc=, =delq=
+(DONE — added to the prelude), =delete= (DONE), and =string-match= (needs a
+regexp engine — large, dedicated task).
+
+*Revised parallel plan*: (1) one focused task wires =lisp/nelisp-stdlib*.el=
+into the reader prelude/bootstrap (huge batch live at once) — verify the live
+set jumps; (2) parallel codex+claude write the genuinely-missing few; (3)
+=string-match= regexp engine = its own dedicated agent; (4) the substrate/ui
+cluster (point/goto-char/insert/buffer/marker/window/keymap, 102 of top-220)
+is the nemacs SUBSTRATE track, separate from the bare runtime.
+
+NOTE: the anvil-orchestrator daemon restarted mid-run during this session and
+killed an in-flight codex+claude wave — re-dispatch needs a stable daemon, or
+drive batches in-process (as delq/delete were).
+
+* Top 60 most-called C primitives
+
+| rank | freq | name | type | layer | nelisp |
+|--+--+--+--+--+--|
+| 1 | 59071 | =setq= | special | runtime | source-unbootstrapped |
+| 2 | 52839 | =if= | special | runtime | source-unbootstrapped |
+| 3 | 35454 | =let= | special | runtime | source-unbootstrapped |
+| 4 | 32147 | =and= | special | runtime | source-unbootstrapped |
+| 5 | 25346 | =or= | special | runtime | source-unbootstrapped |
+| 6 | 23184 | =car= | fn | runtime | runtime-ok |
+| 7 | 21357 | =not= | fn | runtime | runtime-ok |
+| 8 | 20810 | =eq= | fn | runtime | runtime-ok |
+| 9 | 17638 | =point= | fn | substrate/ui | MISSING |
+| 10 | 16968 | =cdr= | fn | runtime | runtime-ok |
+| 11 | 15127 | =list= | fn | runtime | runtime-ok |
+| 12 | 14516 | =nth= | fn | runtime | runtime-ok |
+| 13 | 13588 | =defvar= | special | runtime | source-unbootstrapped |
+| 14 | 13544 | =goto-char= | fn | substrate/ui | source-unbootstrapped |
+| 15 | 11779 | =interactive= | special | runtime | MISSING |
+| 16 | 11728 | =while= | special | runtime | MISSING |
+| 17 | 11041 | =concat= | fn | runtime | runtime-ok |
+| 18 | 10475 | =cons= | fn | runtime | runtime-ok |
+| 19 | 9931 | =cond= | special | runtime | source-unbootstrapped |
+| 20 | 9226 | =let*= | special | runtime | source-unbootstrapped |
+| 21 | 8596 | =insert= | fn | substrate/ui | source-unbootstrapped |
+| 22 | 8533 | =progn= | special | runtime | source-unbootstrapped |
+| 23 | 8238 | =format= | fn | runtime | runtime-ok |
+| 24 | 7993 | =define-key= | fn | substrate/ui | MISSING |
+| 25 | 7940 | =save-excursion= | special | runtime | source-unbootstrapped |
+| 26 | 7734 | =autoload= | fn | runtime | MISSING |
+| 27 | 6784 | =point-min= | fn | substrate/ui | source-unbootstrapped |
+| 28 | 5919 | =length= | fn | runtime | runtime-ok |
+| 29 | 5670 | =memq= | fn | runtime | runtime-ok |
+| 30 | 5188 | =funcall= | fn | runtime | runtime-ok |
+| 31 | 5081 | =looking-at= | fn | substrate/ui | MISSING |
+| 32 | 4980 | =require= | fn | runtime | runtime-ok |
+| 33 | 4898 | =equal= | fn | runtime | runtime-ok |
+| 34 | 4830 | =string-match= | fn | runtime | MISSING |
+| 35 | 4775 | =point-max= | fn | substrate/ui | source-unbootstrapped |
+| 36 | 4065 | =aref= | fn | runtime | runtime-ok |
+| 37 | 3970 | =null= | fn | runtime | runtime-ok |
+| 38 | 3770 | =match-end= | fn | substrate/ui | MISSING |
+| 39 | 3700 | =put= | fn | runtime | source-unbootstrapped |
+| 40 | 3694 | =re-search-forward= | fn | substrate/ui | MISSING |
+| 41 | 3570 | =mapcar= | fn | runtime | runtime-ok |
+| 42 | 3568 | =match-beginning= | fn | substrate/ui | MISSING |
+| 43 | 3404 | =current-buffer= | fn | substrate/ui | source-unbootstrapped |
+| 44 | 3266 | =defconst= | special | runtime | MISSING |
+| 45 | 3250 | =stringp= | fn | runtime | runtime-ok |
+| 46 | 3171 | =forward-line= | fn | substrate/ui | MISSING |
+| 47 | 3077 | =assq= | fn | runtime | runtime-ok |
+| 48 | 2995 | =substring= | fn | runtime | runtime-ok |
+| 49 | 2604 | =string= | fn | runtime | runtime-ok |
+| 50 | 2559 | =append= | fn | runtime | runtime-ok |
+| 51 | 2519 | =assoc= | fn | runtime | runtime-ok |
+| 52 | 2406 | =apply= | fn | runtime | runtime-ok |
+| 53 | 2370 | =string== | fn | runtime | runtime-ok |
+| 54 | 2355 | =plist-get= | fn | runtime | runtime-ok |
+| 55 | 2136 | =expand-file-name= | fn | runtime | runtime-ok |
+| 56 | 2084 | =consp= | fn | runtime | runtime-ok |
+| 57 | 2073 | =member= | fn | runtime | runtime-ok |
+| 58 | 1988 | =forward-char= | fn | substrate/ui | MISSING |
+| 59 | 1913 | =car-safe= | fn | runtime | source-unbootstrapped |
+| 60 | 1861 | =throw= | fn | runtime | runtime-ok |
+
+* WORKLIST A — runtime, MISSING fn (write pure elisp + bootstrap)
+
+| rank | freq | name | type | layer | nelisp |
+|--+--+--+--+--+--|
+| 26 | 7734 | =autoload= | fn | runtime | MISSING |
+| 34 | 4830 | =string-match= | fn | runtime | MISSING |
+| 92 | 1095 | =delq= | fn | runtime | MISSING |
+| 119 | 813 | =nconc= | fn | runtime | MISSING |
+| 120 | 810 | =purecopy= | fn | runtime | MISSING |
+| 152 | 558 | =prefix-numeric-value= | fn | runtime | MISSING |
+| 169 | 407 | =format-message= | fn | runtime | MISSING |
+| 171 | 404 | =delete= | fn | runtime | MISSING |
+| 185 | 340 | =file-attributes= | fn | runtime | MISSING |
+| 187 | 323 | =format-time-string= | fn | runtime | MISSING |
+| 190 | 321 | =default-value= | fn | runtime | MISSING |
+| 230 | 216 | =int-to-string= | fn | runtime | MISSING |
+| 232 | 214 | =assoc-string= | fn | runtime | MISSING |
+| 248 | 186 | =parse-partial-sexp= | fn | runtime | MISSING |
+| 249 | 184 | =natnump= | fn | runtime | MISSING |
+| 251 | 179 | =fset= | fn | runtime | MISSING |
+| 253 | 174 | =float-time= | fn | runtime | MISSING |
+| 254 | 173 | =get-char-property= | fn | runtime | MISSING |
+| 255 | 171 | =documentation= | fn | runtime | MISSING |
+| 258 | 170 | =file-name-absolute-p= | fn | runtime | MISSING |
+| 260 | 167 | =current-time= | fn | runtime | MISSING |
+| 261 | 166 | =set-default= | fn | runtime | MISSING |
+| 268 | 155 | =string<= | fn | runtime | MISSING |
+| 269 | 153 | =delete-process= | fn | runtime | MISSING |
+| 271 | 152 | =exp= | fn | runtime | MISSING |
+| 273 | 149 | =string-width= | fn | runtime | MISSING |
+| 275 | 149 | =call-process= | fn | runtime | MISSING |
+| 276 | 145 | =beep= | fn | runtime | MISSING |
+| 279 | 142 | =time-less-p= | fn | runtime | MISSING |
+| 284 | 131 | =line-number-at-pos= | fn | runtime | MISSING |
+| 289 | 125 | =file-writable-p= | fn | runtime | MISSING |
+| 293 | 123 | =random= | fn | runtime | MISSING |
+| 295 | 121 | =key-description= | fn | runtime | MISSING |
+| 299 | 117 | =rename-file= | fn | runtime | MISSING |
+| 310 | 111 | =user-login-name= | fn | runtime | MISSING |
+| 313 | 109 | =rassq= | fn | runtime | MISSING |
+| 314 | 109 | =char-equal= | fn | runtime | MISSING |
+| 315 | 108 | =set-char-table-range= | fn | runtime | MISSING |
+| 316 | 108 | =read-char= | fn | runtime | MISSING |
+| 321 | 102 | =copy-file= | fn | runtime | MISSING |
+
+Notes: =string-match= (4830) needs a regexp engine (own large task).
+=delq/delete/nconc/int-to-string/assoc-string/rassq= trivial.
+=format-message/format-time-string/current-time/float-time= format/time batch.
+
+* WORKLIST B — source-unbootstrapped (WIRE only, cheapest wave)
+
+| rank | freq | name | type | layer | nelisp |
+|--+--+--+--+--+--|
+| 1 | 59071 | =setq= | special | runtime | source-unbootstrapped |
+| 2 | 52839 | =if= | special | runtime | source-unbootstrapped |
+| 3 | 35454 | =let= | special | runtime | source-unbootstrapped |
+| 4 | 32147 | =and= | special | runtime | source-unbootstrapped |
+| 5 | 25346 | =or= | special | runtime | source-unbootstrapped |
+| 13 | 13588 | =defvar= | special | runtime | source-unbootstrapped |
+| 14 | 13544 | =goto-char= | fn | substrate/ui | source-unbootstrapped |
+| 19 | 9931 | =cond= | special | runtime | source-unbootstrapped |
+| 20 | 9226 | =let*= | special | runtime | source-unbootstrapped |
+| 21 | 8596 | =insert= | fn | substrate/ui | source-unbootstrapped |
+| 22 | 8533 | =progn= | special | runtime | source-unbootstrapped |
+| 25 | 7940 | =save-excursion= | special | runtime | source-unbootstrapped |
+| 27 | 6784 | =point-min= | fn | substrate/ui | source-unbootstrapped |
+| 35 | 4775 | =point-max= | fn | substrate/ui | source-unbootstrapped |
+| 39 | 3700 | =put= | fn | runtime | source-unbootstrapped |
+| 43 | 3404 | =current-buffer= | fn | substrate/ui | source-unbootstrapped |
+| 59 | 1913 | =car-safe= | fn | runtime | source-unbootstrapped |
+| 75 | 1307 | =get= | fn | runtime | source-unbootstrapped |
+| 86 | 1160 | =function= | special | runtime | source-unbootstrapped |
+| 93 | 1092 | =save-restriction= | special | runtime | source-unbootstrapped |
+| 100 | 1020 | =prog1= | special | runtime | source-unbootstrapped |
+| 126 | 767 | =buffer-substring-no-properties= | fn | substrate/ui | source-unbootstrapped |
+| 158 | 533 | =buffer-string= | fn | substrate/ui | source-unbootstrapped |
+| 167 | 415 | =insert-file-contents= | fn | substrate/ui | source-unbootstrapped |
+| 209 | 272 | =write-region= | fn | substrate/ui | source-unbootstrapped |
+| 218 | 243 | =cdr-safe= | fn | runtime | source-unbootstrapped |
+| 235 | 210 | =bufferp= | fn | substrate/ui | source-unbootstrapped |
+| 246 | 190 | =string-to-char= | fn | runtime | source-unbootstrapped |
+| 247 | 188 | =quote= | special | runtime | source-unbootstrapped |
+| 259 | 169 | =logior= | fn | runtime | source-unbootstrapped |
+| 280 | 142 | =atom= | fn | runtime | source-unbootstrapped |
+| 281 | 140 | =vconcat= | fn | runtime | source-unbootstrapped |
+| 290 | 125 | =error-message-string= | fn | runtime | source-unbootstrapped |
+| 291 | 124 | =round= | fn | runtime | source-unbootstrapped |
+| 292 | 124 | =remhash= | fn | runtime | source-unbootstrapped |
+| 296 | 121 | =encode-coding-string= | fn | substrate/ui | source-unbootstrapped |
+| 297 | 121 | =capitalize= | fn | runtime | source-unbootstrapped |
+| 301 | 116 | =keywordp= | fn | runtime | source-unbootstrapped |
+| 302 | 115 | =save-current-buffer= | special | substrate/ui | source-unbootstrapped |
+| 305 | 114 | =decode-coding-string= | fn | substrate/ui | source-unbootstrapped |
+
+* WORKLIST C — substrate/ui MISSING (nemacs substrate track)
+
+| rank | freq | name | type | layer | nelisp |
+|--+--+--+--+--+--|
+| 9 | 17638 | =point= | fn | substrate/ui | MISSING |
+| 24 | 7993 | =define-key= | fn | substrate/ui | MISSING |
+| 31 | 5081 | =looking-at= | fn | substrate/ui | MISSING |
+| 38 | 3770 | =match-end= | fn | substrate/ui | MISSING |
+| 40 | 3694 | =re-search-forward= | fn | substrate/ui | MISSING |
+| 42 | 3568 | =match-beginning= | fn | substrate/ui | MISSING |
+| 46 | 3171 | =forward-line= | fn | substrate/ui | MISSING |
+| 58 | 1988 | =forward-char= | fn | substrate/ui | MISSING |
+| 63 | 1677 | =delete-region= | fn | substrate/ui | MISSING |
+| 64 | 1628 | =beginning-of-line= | fn | substrate/ui | MISSING |
+| 72 | 1381 | =get-text-property= | fn | substrate/ui | MISSING |
+| 73 | 1376 | =modify-syntax-entry= | fn | substrate/ui | MISSING |
+| 74 | 1352 | =buffer-substring= | fn | substrate/ui | MISSING |
+| 79 | 1248 | =skip-chars-forward= | fn | substrate/ui | MISSING |
+| 80 | 1232 | =char-after= | fn | substrate/ui | MISSING |
+| 82 | 1192 | =eobp= | fn | substrate/ui | MISSING |
+| 83 | 1186 | =set-buffer= | fn | substrate/ui | MISSING |
+| 85 | 1184 | =line-beginning-position= | fn | substrate/ui | MISSING |
+| 87 | 1159 | =replace-match= | fn | substrate/ui | MISSING |
+| 88 | 1136 | =line-end-position= | fn | substrate/ui | MISSING |
+| 90 | 1104 | =search-forward= | fn | substrate/ui | MISSING |
+| 96 | 1050 | =current-column= | fn | substrate/ui | MISSING |
+| 103 | 980 | =put-text-property= | fn | substrate/ui | MISSING |
+| 104 | 966 | =end-of-line= | fn | substrate/ui | MISSING |
+| 105 | 948 | =erase-buffer= | fn | substrate/ui | MISSING |
+| 107 | 902 | =buffer-name= | fn | substrate/ui | MISSING |
+| 111 | 867 | =re-search-backward= | fn | substrate/ui | MISSING |
+| 113 | 860 | =propertize= | fn | substrate/ui | MISSING |
+| 115 | 834 | =skip-chars-backward= | fn | substrate/ui | MISSING |
+| 122 | 800 | =bolp= | fn | substrate/ui | MISSING |
+| 123 | 795 | =narrow-to-region= | fn | substrate/ui | MISSING |
+| 127 | 765 | =widget-get= | fn | substrate/ui | MISSING |
+| 128 | 765 | =kill-buffer= | fn | substrate/ui | MISSING |
+| 130 | 747 | =overlay-put= | fn | substrate/ui | MISSING |
+| 131 | 743 | =run-hooks= | fn | substrate/ui | MISSING |
+| 132 | 722 | =get-buffer-create= | fn | substrate/ui | MISSING |
+| 133 | 715 | =delete-char= | fn | substrate/ui | MISSING |
+| 134 | 705 | =char-before= | fn | substrate/ui | MISSING |
+| 137 | 696 | =widen= | fn | substrate/ui | MISSING |
+| 138 | 665 | =set-marker= | fn | substrate/ui | MISSING |
+
+* Parallel plan
+
+Dispatch disjoint batches via anvil-orchestrator with MIXED providers
+(codex + claude), each in its own worktree; oracle = targets become =fboundp=
+live AND pass GNU-Emacs-equivalence tests; verify independently before merge.
+Order: Worklist B (wire-only) -> Worklist A (pure runtime) -> string-match +
+Worklist C (substrate).
