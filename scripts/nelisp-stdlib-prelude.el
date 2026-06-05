@@ -2230,3 +2230,128 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
   (put 'error 'error-conditions (list 'error))
   (put 'error 'error-message "error"))
 (defmacro cl-loop (&rest clauses) (nelisp-cl-macros--loop-build clauses))
+
+;; --- Doc 143: wire the elisp Sexp printer into the reader runtime ---------
+;; prin1-to-string / prin1 were void in the reader (lisp/nelisp-stdlib-prn.el
+;; was never bootstrapped here), so all print-then-read roundtrips failed with
+;; "Wrong type argument".  Functions below are copied verbatim from
+;; lisp/nelisp-stdlib-prn.el; deps char-to-string/aref/length/concat/nreverse/
+;; number-to-string/substring/symbol-name are reader primitives, string-search
+;; + the record accessors are added here.
+
+(unless (fboundp 'string-search)
+  (defun string-search (needle haystack &optional start)
+    (let ((nl (length needle)) (hl (length haystack)) (i (or start 0)) (found nil))
+      (if (= nl 0) i
+        (while (and (not found) (<= (+ i nl) hl))
+          (if (string= needle (substring haystack i (+ i nl)))
+              (setq found i)
+            (setq i (1+ i))))
+        found))))
+
+;; Record accessors: a record supports aref/length directly (slot 0 = type).
+(unless (fboundp 'nelisp--record-type)
+  (defun nelisp--record-type (rec) (aref rec 0)))
+(unless (fboundp 'nelisp--record-length)
+  (defun nelisp--record-length (rec) (length rec)))
+(unless (fboundp 'nelisp--record-ref)
+  (defun nelisp--record-ref (rec i) (aref rec i)))
+
+(defun nelisp--prn-string-escaped (s)
+  (let ((out nil) (i 0) (n (length s)))
+    (while (< i n)
+      (let ((c (aref s i)))
+        (cond
+         ((= c 34) (setq out (cons "\\\"" out)))
+         ((= c 92) (setq out (cons "\\\\" out)))
+         ((= c 10) (setq out (cons "\\n" out)))
+         ((= c 13) (setq out (cons "\\r" out)))
+         ((= c 9)  (setq out (cons "\\t" out)))
+         (t        (setq out (cons (char-to-string c) out)))))
+      (setq i (1+ i)))
+    (apply #'concat (nreverse out))))
+
+(defun nelisp--prn-float (x)
+  (let ((s (number-to-string x)))
+    (cond
+     ((string= s "inf") s)
+     ((string= s "-inf") s)
+     ((string= s "NaN") s)
+     (t
+      (let ((dot (string-search "." s))
+            (eee (or (string-search "e" s) (string-search "E" s))))
+        (cond
+         (eee s)
+         ((null dot) (concat s ".0"))
+         (t
+          (let ((i (1- (length s))))
+            (while (and (> i (1+ dot)) (eq (aref s i) ?0))
+              (setq i (1- i)))
+            (substring s 0 (1+ i))))))))))
+
+(defun nelisp--prn-reader-macro-abbrev (lst escape)
+  (when (and (consp lst) (symbolp (car lst))
+             (consp (cdr lst)) (null (cdr (cdr lst))))
+    (let* ((tag-name (symbol-name (car lst)))
+           (arg (car (cdr lst)))
+           (prefix (cond ((string= tag-name "quote")     "'")
+                         ((string= tag-name "function")  "#'")
+                         ((string= tag-name "backquote") "`")
+                         ((string= tag-name "comma")     ",")
+                         ((string= tag-name "comma-at")  ",@")
+                         (t nil))))
+      (when prefix
+        (concat prefix (nelisp--prn-to-string arg escape))))))
+
+(defun nelisp--prn-list-body (lst escape)
+  (let ((parts nil) (cur lst) (first t))
+    (while (consp cur)
+      (unless first (setq parts (cons " " parts)))
+      (setq parts (cons (nelisp--prn-to-string (car cur) escape) parts))
+      (setq first nil)
+      (setq cur (cdr cur)))
+    (unless (null cur)
+      (setq parts (cons " . " parts))
+      (setq parts (cons (nelisp--prn-to-string cur escape) parts)))
+    (apply #'concat (nreverse parts))))
+
+(defun nelisp--prn-vector (vec escape)
+  (let ((n (length vec)) (parts (list "[")))
+    (let ((i 0))
+      (while (< i n)
+        (when (> i 0) (setq parts (cons " " parts)))
+        (setq parts (cons (nelisp--prn-to-string (aref vec i) escape) parts))
+        (setq i (1+ i))))
+    (setq parts (cons "]" parts))
+    (apply #'concat (nreverse parts))))
+
+(defun nelisp--prn-record (rec escape)
+  (let ((tag (nelisp--record-type rec)) (n (nelisp--record-length rec))
+        (parts (list "#s(")))
+    (setq parts (cons (nelisp--prn-to-string tag escape) parts))
+    (let ((i 1))
+      (while (< i n)
+        (setq parts (cons " " parts))
+        (setq parts (cons (nelisp--prn-to-string (nelisp--record-ref rec i) escape) parts))
+        (setq i (1+ i))))
+    (setq parts (cons ")" parts))
+    (apply #'concat (nreverse parts))))
+
+(defun nelisp--prn-to-string (obj escape)
+  (cond
+   ((null obj) "nil")
+   ((eq obj t) "t")
+   ((integerp obj) (number-to-string obj))
+   ((floatp obj)   (nelisp--prn-float obj))
+   ((symbolp obj)  (symbol-name obj))
+   ((stringp obj)
+    (if escape (concat "\"" (nelisp--prn-string-escaped obj) "\"") obj))
+   ((consp obj)
+    (or (nelisp--prn-reader-macro-abbrev obj escape)
+        (concat "(" (nelisp--prn-list-body obj escape) ")")))
+   ((vectorp obj) (nelisp--prn-vector obj escape))
+   ((recordp obj) (nelisp--prn-record obj escape))
+   (t (format "#<unprintable %S>" obj))))
+
+(unless (fboundp 'prin1-to-string)
+  (defun prin1-to-string (object) (nelisp--prn-to-string object t)))
