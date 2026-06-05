@@ -389,6 +389,23 @@
   (nelisp--write-stdout-bytes "\n")
   nil)
 
+;; Doc 143 more pure primitives.
+(defun string (&rest chars)
+  (apply #'concat (mapcar #'char-to-string chars)))
+(defun prin1 (object &optional _stream)
+  (nelisp--write-stdout-bytes (nelisp--prn-to-string object t))
+  object)
+(defun format-message (fmt &rest args)
+  (apply #'format (cons fmt args)))
+(defun assoc-string (key alist &optional _case-fold)
+  (let ((k (if (symbolp key) (symbol-name key) key)) (found nil))
+    (while (and alist (not found))
+      (let* ((entry (car alist))
+             (ek (if (consp entry) (car entry) entry))
+             (eks (if (symbolp ek) (symbol-name ek) ek)))
+        (if (string= k eks) (setq found entry) (setq alist (cdr alist)))))
+    found))
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
