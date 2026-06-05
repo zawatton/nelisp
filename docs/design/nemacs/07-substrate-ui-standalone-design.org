@@ -1,0 +1,278 @@
+#+TITLE: Doc 07 — nemacs substrate / UI 設計（pure-elisp standalone 経路）
+#+AUTHOR: nelisp-emacs
+#+STARTUP: overview
+#+OPTIONS: toc:3 num:t
+
+* §0 目的・位置づけ
+
+本 doc は **Rust を完全撤廃した後の pure-elisp standalone NeLisp ランタイム上に
+nemacs の editor substrate / UI を構築する**ための設計書である。実装は別セッション
+で行う前提で、本 doc は「次セッションが着手できる粒度の設計」のみを提供する。
+
+** 0.1 既存設計との関係（重複回避）
+
+| doc | 内容 | 本 doc との関係 |
+|-----+------+----------------|
+| [[file:01-architecture.org][01-architecture]] | Layer2 module / Layer3 backend / Phase 1-5(redisplay=xdisp.c port, self-host) の全体像 | 全体の親。ただし **Rust delegate escape hatch (§9.5) を前提**にした旧計画。07 は rust delegate を廃した standalone 前提で再定義 |
+| [[file:02-v01-daily-driver.org][02-v01-daily-driver]] | M1-M4(file/buffer/dired, dev体験, org subset, shell/completion) | **GTK/Rust 経路で SHIPPED 済**。07 はその機能を standalone 経路へ載せ替える設計 |
+| [[file:03-v02-vendor-migration.org][03-vendor-migration]] | vendor .el の取り込み計画 | 07 の substrate が動けば vendor onboarding が進む依存関係 |
+| [[file:05-legacy-omission-scope.org][05-legacy-omission]] | OMIT/KEEP（UTF-8 only / terminal限定 / obsolete 廃止 等） | 07 の各 subsystem の scope 制約として参照 |
+| [[file:06-c-primitive-coverage-priority.org][06-c-primitive-coverage]] | 1730 C primitive を呼出頻度順 + layer 分類 | 07 の substrate primitive inventory の母体 |
+
+** 0.2 何が変わったか（2026-06-05 時点の前提変更）
+
+- **Rust binary / test / delegate を完全撤廃**。substrate も全て elisp（標準ランタイム
+  は pure-elisp standalone reader = Phase-47 ELF、Rust ゼロ）。
+- **#1 blocker(vendor-load segfault) を解消**（commit `d6ed05d9`、unsound
+  boundary-reclaim 無効化）。vendor-load-standalone が file5→file45+ へ前進。
+- → 旧 01-architecture の「Rust delegate に逃がす」前提は失効。substrate/UI は
+  **全て NeLisp 言語層の上に elisp で実装**する。これが本 doc の出発点。
+
+* §1 現状（post-Rust-removal）
+
+** 1.1 layer 構成（現実）
+
+#+begin_example
+  ┌─────────────────────────────────────────────┐
+  │ vendor .el packages (org, dired, isearch …)  │  ← 319 file、~45 load 済
+  ├─────────────────────────────────────────────┤
+  │ nemacs UI / display                          │  ← redisplay / window / frame / face
+  │  (本 doc §3.4-3.9)                            │     terminal backend
+  ├─────────────────────────────────────────────┤
+  │ nemacs editor substrate                      │  ← buffer / point / marker /
+  │  (本 doc §3.1-3.3, §3.6-3.7)                  │     text-prop / overlay / keymap /
+  │                                              │     command-loop / minibuffer
+  ├─────────────────────────────────────────────┤
+  │ NeLisp 言語ランタイム (~85%)                  │  ← cons/eval/string/regexp/seq/
+  │  standalone reader (Phase-47 ELF, Rust 0)    │     reader/printer/~70 primitive
+  └─────────────────────────────────────────────┘
+#+end_example
+
+**層境界（厳守）**: NeLisp = 言語 primitive のみ（buffer/point/marker は持たない）。
+buffer 以上は全て nemacs substrate。これは [[file:../../../nelisp/CLAUDE.md][nelisp/CLAUDE.md]] / memory
+`feedback_layer_boundary_nelisp_vs_nemacs` で確立済の不変条件。
+
+** 1.2 既存 substrate src/（資産）
+
+以下は既に存在する（多くは GTK/Rust 経路向けに書かれ、standalone 載せ替え要）:
+
+| subsystem | files | 状態 |
+|-----------+-------+------|
+| buffer | =emacs-buffer.el= =emacs-buffer-builtins.el= =emacs-buffer-ui.el= =nelisp-text-buffer.el=(730L) =files-standalone-buffer.el= | 実装あり。text 格納モデルの standalone 検証要 |
+| point/marker | =nelisp-text-buffer.el= 内 | 実装あり |
+| keymap | =emacs-keymap.el=(1090L) =emacs-keymap-builtins.el= | 実装あり |
+| command loop | =emacs-command-loop.el= =emacs-command-loop-builtins.el= | 実装あり |
+| window/frame | =emacs-window.el= =emacs-window-builtins.el= =emacs-frame.el= =emacs-frame-builtins.el= | 実装あり |
+| redisplay | =emacs-redisplay-core.el= =emacs-redisplay.el= =emacs-redisplay-builtins.el= | core あり。standalone backend 要 |
+| faces/font-lock | =emacs-faces.el= =emacs-faces-builtins.el= =emacs-font-lock.el= =emacs-font-lock-builtins.el= | 実装あり |
+| minibuffer | =emacs-minibuffer.el= =emacs-minibuffer-builtins.el= =minibuffer.el= | 実装あり |
+| mode/edit | =emacs-mode.el= =emacs-edit-builtins.el= =emacs-easy-mmode.el= | 実装あり |
+
+→ substrate の「機能」は GTK 経路で相当部分が存在する。**07 の主眼は「standalone
+reader 上でこれらが動くか」の検証 + 不足の埋め + display backend の standalone 化**。
+
+** 1.3 standalone vendor-load の現在の律速（2026-06-05）
+
+- ~45/319 file load（segfault 解消後）。org.el 以降で停止。
+- 停止機構 = 外側 --load の `parse_one` 失敗（= prc≠1）で loop 終了（eval error は無視
+  される設計）。rc=0 silent。
+- 真因の最有力 = **メモリ枯渇**: reclaim 無効(d6ed05d9)で 25+ファイル（巨大 Unicode
+  データ charprop/emoji-labels/idna-mapping/eucjp-ms 含む）が ~60GB 蓄積（実測: 暴走
+  プロセス 60GB RSS）→ arena 成長が system RAM(~62GB) 限界で失敗 → alloc 失敗 → 停止。
+- → **substrate 着手の前提として、sound な reclamation（tracing GC 健全化）が必要**。
+  これは言語層の課題だが substrate の vendor onboarding を律速するため §7 に記載。
+
+* §2 設計原則
+
+1. **pure-elisp only**: rust delegate なし。性能は JIT + native comp + sound GC で担保。
+2. **層境界厳守**: buffer 以上は nemacs。NeLisp に buffer primitive を足さない。
+3. **modern path only**（[[file:05-legacy-omission-scope.org][Doc 05]]）: UTF-8 only、terminal は xterm系 + linux console
+   に限定、obsolete subsystem(Gnus/Rmail/legacy-vc) は OMIT、coding-system は UTF-8 +
+   最小限。
+4. **differential testing**: 各 subsystem は host GNU Emacs を oracle に差分検証
+   （[[file:../../../nelisp/test/nelisp-regexp-diff-test.el][regexp diff test]] と同方式）。
+5. **TTY first**: GUI(GTK) より先に terminal backend を完成（daily-driver の最短路）。
+6. **既存資産の載せ替え優先**: §1.2 の src/ を捨てず standalone reader 上で通す。
+
+* §3 subsystem 設計
+
+各 §は「責務 / 現状 / standalone 設計 / 必要 primitive / 検証 / next-session 粒度」。
+
+** 3.1 buffer & text storage
+
+- 責務: テキスト格納、insert/delete、narrowing、multibyte 位置(char↔byte)。
+- 現状: =nelisp-text-buffer.el=(730L) に格納モデルあり。
+- 設計:
+  - 格納は **gap buffer**（Emacs 準拠、insert/delete が O(1) amortized）。NeLisp の
+    string/vector primitive 上に gap を elisp で実装、または NeLisp に「可変バイト
+    バッファ」primitive を 1 つだけ足す（層境界: これは「言語の可変列」なので NeLisp
+    側に置く余地あり。要 §7 判断）。
+  - multibyte は UTF-8 固定（Doc 05）。char position ↔ byte position の変換表を持つ。
+  - narrowing = (point-min)/(point-max) の論理窓。実体は別途持たず offset で表現。
+- 必要 primitive（substrate）: `insert` `delete-region` `buffer-substring`
+  `point-min/max` `narrow-to-region` `widen` `goto-char` `char-after/before`
+  `forward-char` `buffer-string` `erase-buffer` `generate-new-buffer` 等（Doc 06 参照）。
+- 検証: host Emacs と insert/delete/narrow 後の buffer-string 差分一致。
+- next-session 粒度: 「空 buffer に insert→buffer-string が一致」「narrow/widen が一致」
+  を ERT 化し、=nelisp-text-buffer.el= を standalone reader で load→通す。
+
+** 3.2 point & markers
+
+- 責務: point、mark、marker（insert/delete に追随する位置）。
+- 設計: marker は (buffer . charpos) + insertion-type。insert/delete 時に全 marker を
+  更新（buffer ごとに marker list を持つ）。
+- 必要 primitive: `point` `goto-char` `point-marker` `make-marker`
+  `set-marker` `marker-position` `copy-marker` `region-beginning/end`。
+- 検証: insert/delete 前後の marker-position が host と一致。
+
+** 3.3 text properties & overlays
+
+- 責務: テキストへの property（face 等）付与、overlay（位置に紐づく属性）。
+- 設計:
+  - text property = 区間木 or interval list（Emacs の intervals.c 相当）。MVP は
+    区間 list（put-text-property/get-text-property/next-property-change）。
+  - overlay = (start-marker end-marker . plist)。buffer ごとに list。
+- 必要 primitive: `put-text-property` `get-text-property` `propertize`
+  `next-single-property-change` `make-overlay` `overlay-put` `overlays-at`
+  `move-overlay` `delete-overlay`。
+- 検証: font-lock が要求する property 操作の host 差分一致。
+
+** 3.4 window & frame model
+
+- 責務: frame（端末/GUI の1画面）、window（frame 内の分割領域）、window↔buffer 対応。
+- 現状: =emacs-window.el= =emacs-frame.el= あり。
+- 設計: MVP は **single frame + 任意 window 分割木**（split-window/delete-window）。
+  各 window は (buffer start-point point dimensions) を保持。frame は terminal 1枚。
+- 必要 primitive: `selected-window` `split-window` `delete-window`
+  `window-buffer` `set-window-buffer` `other-window` `window-start/point`
+  `selected-frame` `frame-width/height`。
+- 検証: split/delete 後の window tree 構造が host と一致。
+
+** 3.5 redisplay engine（最大難所、Doc 01 §6.1 = xdisp.c port）
+
+- 責務: buffer + window + face → 端末への描画。Emacs 最大の複雑性。
+- 設計（MVP, TTY-first）:
+  1. **line-based redisplay**: window の (start-point) から (window-height) 行分を
+     buffer から取り出し、text-property/overlay の face を解決して、端末セル行列
+     (glyph matrix) を構築。
+  2. **diff 描画**: 前回の glyph matrix と差分のみ端末へ出力（ANSI escape）。
+  3. continuation/truncation、tab 展開、multibyte 幅(東アジア全角)を考慮。
+  4. point の cursor 位置を端末カーソルへ反映。
+  5. mode-line / echo-area を最下行に描画。
+- 段階: (a) 折返しなし fixed-width → (b) 折返し/切詰 → (c) face/色 → (d) スクロール
+  最適化。Doc 01 Phase 3 の MVP(~1300-2500 LOC) に対応。
+- 必要 primitive: terminal 出力（§3.9）+ char 幅計算 `char-width` `string-width`。
+- 検証: 既知 buffer+window+face → 期待 glyph matrix（host の `dump-redisplay` 相当を
+  自作し差分）。これは subsystem 単位 ERT が難しいので **golden glyph matrix** 方式。
+- next-session 粒度: 「1 window, 折返しなし, face なし」で buffer 内容を TTY に出す
+  最小 redisplay を通す。これが daily-driver の心臓。
+
+** 3.6 input / command loop / keymaps
+
+- 責務: 端末入力 → key event → keymap 引き → command 実行 → redisplay。
+- 現状: =emacs-command-loop.el= =emacs-keymap.el=(1090L) あり。
+- 設計: read-key（端末 raw mode + escape sequence parse）→ key sequence →
+  keymap lookup（global/local/minor）→ command-execute → (redisplay)。prefix-arg /
+  this-command / last-command を保持。
+- 必要 primitive: 端末 raw 入力（§3.9）、`read-key-sequence` `lookup-key`
+  `define-key` `key-binding` `command-execute` `call-interactively`。
+- 検証: keymap lookup の host 差分一致 + 端末 escape sequence → key の table 一致。
+
+** 3.7 minibuffer & completion
+
+- 責務: ミニバッファ入力、completion。
+- 現状: =emacs-minibuffer.el= =minibuffer.el= あり（M4.2 で GTK 経路 SHIPPED）。
+- 設計: minibuffer も 1 buffer + echo-area window。completion は
+  completion-at-point + completing-read。standalone reader 上で通す。
+- 必要 primitive: `read-from-minibuffer` `completing-read`
+  `completion-all-completions` `try-completion`。
+
+** 3.8 faces & font-lock
+
+- 責務: face 定義、font-lock（構文強調）。
+- 現状: =emacs-faces.el= =emacs-font-lock.el= あり。
+- 設計: face は (fg bg weight slant underline) → 端末 ANSI SGR へ map。font-lock は
+  regexp/keyword で text-property(face) を付与（§3.3 依存）。256色/truecolor 端末対応。
+- 必要 primitive: `defface` `face-attribute` `set-face-attribute`
+  `font-lock-mode` + §3.3 の text-property。
+- 検証: font-lock-keywords 適用後の (point→face) map が host 一致。
+
+** 3.9 display / input backend（TTY first）
+
+- 責務: 端末との raw I/O 抽象。
+- 設計:
+  - 出力: ANSI/xterm escape（cursor move, SGR color, clear, scroll region）。
+    termcap 全網羅はせず xterm系 + linux console に限定（Doc 05）。
+  - 入力: termios raw mode、escape sequence → key。SIGWINCH で frame resize。
+  - backend interface（Doc 01 §2.2）を 1 本に絞る: =nemacs-tty-backend=。GUI(GTK)
+    は将来別 backend として差し込む（同 interface）。
+- 必要 primitive: termios 設定 / read / write / ioctl(TIOCGWINSZ) / signal。
+  → これらは **NeLisp の OS surface（Doc 53-60、既に fork/execve/poll/socket/signalfd
+  等を elisp 化済）に termios + TIOCGWINSZ を足す**ことで供給。層境界: OS syscall は
+  NeLisp OS surface 側、key/glyph 解釈は nemacs 側。
+- 検証: escape sequence 出力の byte 列 golden test + 既知端末入力の key 変換 table。
+
+** 3.10 coding systems
+
+- 責務: ファイル/端末の文字コード。
+- 設計（Doc 05）: **UTF-8 only**（内部表現も UTF-8）。decode/encode は UTF-8 ↔
+  内部 char。legacy coding-system（iso-2022, sjis 入出力等）は OMIT、ただし
+  vendor がロード時に要求する coding-system シンボルは no-op stub で受ける。
+- 必要 primitive: `encode-coding-string` `decode-coding-string`（UTF-8 のみ実装）
+  `coding-system-p`(stub)。
+
+* §4 substrate primitive inventory
+
+- 母体 = [[file:06-c-primitive-coverage-priority.org][Doc 06]]（layer 列が substrate/ui のもの）。
+- 本 doc §3 各 subsystem の「必要 primitive」を Doc 06 の優先度（呼出頻度）と突き合わせ、
+  次セッションで **頻度高 × substrate** から実装する worklist を作る。
+- 概算: substrate/ui primitive は ~102（Doc 06 集計）。daily-driver MVP に必須な
+  コア（buffer/point/marker/insert/delete/window/redisplay/keymap/face）は ~40-50。
+
+* §5 phasing（次セッション以降）
+
+| phase | gate | 主 subsystem | 規模目安 |
+|-------+------+--------------+---------|
+| S0（前提） | sound reclamation で vendor 319 が org.el を越える | 言語層 tracing GC 健全化（§7） | 中（言語層、別 doc 候補） |
+| S1 | standalone reader 上で buffer に insert/delete/narrow が host 一致 | §3.1-3.3 | 既存 src 載せ替え + ERT |
+| S2 | 1 window を TTY に最小 redisplay（折返しなし/face なし）で表示 | §3.4-3.5(a) §3.9 | 中〜大（redisplay MVP） |
+| S3 | 端末入力→keymap→command→redisplay の loop が回る（文字入力で編集できる） | §3.6 | 中 |
+| S4 | face/font-lock 付き redisplay + minibuffer/completion | §3.5(c) §3.7 §3.8 | 中 |
+| S5 | daily-driver: file open/edit/save + org/dired subset を TTY standalone で | §3 全 + 02 機能の載せ替え | 大 |
+
+- S5 = 「pure-elisp standalone nemacs が端末で日常編集できる」= 本 repo の v0.1-standalone。
+- GUI(GTK) は S5 後に §3.9 backend 差し替えで（Doc 01 Phase 4/§6.2）。
+
+* §6 testing 方針
+
+- subsystem 単位 ERT（buffer/point/marker/text-prop/window/keymap/face）: host Emacs を
+  oracle に差分（[[file:../../../nelisp/test/nelisp-regexp-diff-test.el][regexp diff]] 方式）。
+- redisplay: **golden glyph matrix**（期待セル行列を固定し差分）。subsystem ERT が
+  難しいため、代表 buffer+window+face の組合せを golden 化。
+- integration smoke: standalone reader で「file open→編集→save→再 open で一致」。
+- 既存の =test/= 群（emacs-buffer-builtins-test.el 等）を standalone reader 上で再実行。
+
+* §7 open questions（次セッションが決める）
+
+1. **可変バイトバッファを NeLisp 言語層に置くか nemacs に置くか**（§3.1）。「言語の可変列」
+   と見れば NeLisp、「editor の buffer」と見れば nemacs。性能(gap buffer)と層境界の
+   トレードオフ。→ 暫定案: 低レベル可変バイト列 primitive のみ NeLisp、buffer 意味論
+   （point/marker/narrow）は nemacs。
+2. **S0 の tracing GC 健全化**（vendor 319 律速）: Doc 01 §9.5 の rust delegate は廃。
+   codebase の nl_gc_collect(root/mark gap) を健全化して reclaim を戻すのが正道
+   （boundary-reclaim は unsound で無効化済）。これは言語層 doc（nelisp 側 Doc 14x）で
+   扱うべきか、本 repo で扱うか。→ vendor onboarding の前提なので nelisp 側へ依頼。
+3. **redisplay の golden 基準**を host のどの出力から作るか（terminal-test / dump系）。
+4. **char-width（東アジア全角）table** を vendor(charprop) から得るか自前持ちか。
+5. GUI backend(GTK) を S5 後に同 interface で差すための backend API 凍結時期。
+
+* §8 まとめ
+
+- pure-elisp standalone 経路の substrate/UI は、**既存 src/ 資産（buffer/window/redisplay
+  -core/keymap/face/minibuffer）を standalone reader 上で通す**ことから始め、
+  **TTY redisplay MVP（§3.5）と command-loop（§3.6）**を心臓として daily-driver
+  (S5) へ至る。
+- 最大難所は redisplay（Doc 01 §6.1 = xdisp.c port）。TTY line-based + diff 描画で MVP。
+- 前提(S0)として、vendor 319 onboarding を律速する **sound reclamation（tracing GC
+  健全化）**が必要（segfault は d6ed05d9 で解消済、次はメモリ枯渇）。
+- 実装は本 doc §5 の S0→S5 順で別セッションが進める。
