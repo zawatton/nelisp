@@ -286,6 +286,22 @@ on identity should re-bind the variable holding PLIST."
 (unless (fboundp 'string-make-unibyte)
   (defalias 'string-make-unibyte 'string-as-unibyte))
 
+(unless (fboundp 'vconcat)
+  (defun vconcat (&rest sequences)
+    (apply 'vector (apply 'append (mapcar (lambda (s) (append s nil)) sequences)))))
+(unless (fboundp 'delete-dups)
+  (defun delete-dups (list)
+    (let ((tail list))
+      (while tail
+        (setcdr tail (let ((rest (cdr tail)) (kept nil))
+                       (while rest
+                         (unless (equal (car tail) (car rest))
+                           (setq kept (cons (car rest) kept)))
+                         (setq rest (cdr rest)))
+                       (nreverse kept)))
+        (setq tail (cdr tail))))
+    list))
+
 (provide 'emacs-fns)
 
 ;;; emacs-fns.el ends here

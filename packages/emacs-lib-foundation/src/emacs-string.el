@@ -90,6 +90,30 @@ is non-nil, each returned line keeps its trailing newline when present."
       (nreverse out))))
 
 
+(unless (fboundp 'string-lessp) (defun string-lessp (a b) (string< a b)))
+(unless (fboundp 'string-greaterp) (defun string-greaterp (a b) (string< b a)))
+(unless (fboundp 'string>) (defun string> (a b) (string< b a)))
+(unless (fboundp 'substring-no-properties)
+  (defun substring-no-properties (s &optional from to)
+    (substring s (or from 0) (or to (length s)))))
+(unless (fboundp 'truncate-string-to-width)
+  (defun truncate-string-to-width (str width &rest _)
+    (if (<= (length str) width) str (substring str 0 (max 0 width)))))
+(unless (fboundp 'capitalize)
+  (defun capitalize (s)
+    (if (stringp s)
+        (let ((res "") (i 0) (n (length s)) (prev-alpha nil))
+          (while (< i n)
+            (let* ((c (aref s i))
+                   (alpha (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90))))
+                   (ch (cond ((and alpha (not prev-alpha) (>= c 97) (<= c 122)) (- c 32))
+                             ((and alpha prev-alpha (>= c 65) (<= c 90)) (+ c 32))
+                             (t c))))
+              (setq res (concat res (char-to-string ch)) prev-alpha alpha))
+            (setq i (1+ i)))
+          res)
+      s)))
+
 (provide 'emacs-string)
 
 ;;; emacs-string.el ends here

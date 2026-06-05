@@ -65,6 +65,12 @@ Equivalent to `error' under NeLisp standalone."
           (list 'error nil))))
 
 
+(unless (fboundp 'error-message-string)
+  (defun error-message-string (err)
+    (cond ((and (consp err) (cdr err)) (format "%s" (car (cdr err))))
+          ((consp err) (format "%s" (car err)))
+          (t (format "%s" err)))))
+
 (provide 'emacs-error)
 
 ;;; emacs-error.el ends here
