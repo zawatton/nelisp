@@ -29,6 +29,40 @@ Defining =(defun foo ...)= is NOT enough: =car-safe= is in
 Each task = write defun + WIRE into runtime bootstrap + verify =fboundp= live +
 GNU-Emacs-equivalent behaviour.
 
+* 2026-06-05 REPL-accurate correction + the key lever
+
+Measurement caveat: the first coverage pass probed =./target/nelisp --eval= and
+the anvil =nelisp-eval= subprocess, BOTH of which do NOT load the reader REPL
+prelude (=scripts/nelisp-stdlib-prelude.el=) — so they OVER-reported "missing".
+Re-measured against the reader REPL (stdin, prelude loaded): of the top-220
+called fn primitives, *142 are genuinely missing*, *~78 are live*.  (Note also
+there are multiple runtime configs: the anvil =nelisp-eval= subprocess carries
+more stdlib — e.g. =regexp-quote=, =cl-defun= — than the shipped standalone
+reader; the reader is what nemacs vendor-bootstrap uses, so it is the oracle.)
+
+*KEY LEVER (highest dev-efficiency ROI)*: most reader-"missing" primitives are
+ALREADY implemented in =lisp/nelisp-stdlib*.el= but are simply NOT WIRED into
+the reader's prelude/bootstrap — e.g. =max=/=min=/=abs=/=floor= (nelisp-stdlib.el),
+=string=/=regexp-quote=/=mapconcat=/=downcase=/=upcase=/=string-equal=
+(nelisp-stdlib-plist-str.el), =expand-file-name=/=file-exists-p=
+(nelisp-stdlib-misc.el), =prin1=/=prin1-to-string= (nelisp-stdlib-prn.el).  So
+the biggest win is NOT writing primitives one-by-one — it is *wiring the
+existing nelisp stdlib into the reader bootstrap*, which makes dozens live at
+once.  Only a few are true WRITE targets (no source anywhere): =nconc=, =delq=
+(DONE — added to the prelude), =delete= (DONE), and =string-match= (needs a
+regexp engine — large, dedicated task).
+
+*Revised parallel plan*: (1) one focused task wires =lisp/nelisp-stdlib*.el=
+into the reader prelude/bootstrap (huge batch live at once) — verify the live
+set jumps; (2) parallel codex+claude write the genuinely-missing few; (3)
+=string-match= regexp engine = its own dedicated agent; (4) the substrate/ui
+cluster (point/goto-char/insert/buffer/marker/window/keymap, 102 of top-220)
+is the nemacs SUBSTRATE track, separate from the bare runtime.
+
+NOTE: the anvil-orchestrator daemon restarted mid-run during this session and
+killed an in-flight codex+claude wave — re-dispatch needs a stable daemon, or
+drive batches in-process (as delq/delete were).
+
 * Top 60 most-called C primitives
 
 | rank | freq | name | type | layer | nelisp |
