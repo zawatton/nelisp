@@ -249,6 +249,59 @@ vendor-load-replay の実走で、language/memory 層（segfault 解消・S0 sou
 syntax-table** の順。これらが揃えば org.el load は 43% を超えて深まる（call-process は
 ffd5875 で graceful 化済、もう blocker でない）。
 
+** 4.2 char-table TURNKEY 実装仕様（2026-06-05 調査完了、次セッション即着手用）
+
+org.el/isearch.el の load を 43% 超へ進めるのに必要な char-table op を実走で確定。
+fresh context での実装をそのまま行えるよう全要素を記載（この長時間セッションでは
+回帰リスク回避のため実装を見送り、仕様化のみ）。
+
+*** 必要 op（isearch-mode-map 実走で確定）
+isearch.el の =isearch-mode-map= defvar が要求する最小集合:
+1. =(char-table-p (nth 1 map))= が t（make-keymap の slot が char-table）
+2. =(set-char-table-range CT (cons #x100 (max-char)) VAL)= が動く
+3. =(max-char)= が #x3FFFFF を返す
+4. その後の =define-key= 群（char→binding を char-table 経由で格納）
+
+*** 実装要素（src/ + 場合により reader primitive）
+- *char-table 型*: tagged record/vector。例 =[:char-table DEFAULT PARENT SUBTYPE
+  RANGES ASCII-VEC]=。char-table-p はこの tag を判定。
+  - =make-char-table SUBTYPE &optional INIT= → 上記を生成（256 ASCII slot + 疎な
+    range alist + default）。
+  - =char-table-p OBJ= → tag 判定。
+  - =aref/aset CT CHAR= → CHAR<256 は ASCII-VEC、≥256 は RANGES を走査/追加（or
+    default）。既存 =aref/aset= が char-table を branch するか専用 fn。
+  - =set-char-table-range CT RANGE VAL= / =char-table-range CT RANGE=:
+    RANGE = nil(default) | t(全体) | (FROM . TO)(範囲) | CHAR。範囲は RANGES alist に
+    =((FROM . TO) . VAL)= で push（load 用は格納のみで十分、lookup は runtime 精度）。
+  - =char-table-parent= / =set-char-table-parent= / =char-table-subtype= / =map-char-table=
+    （map は ASCII-VEC + RANGES を走査して (KEY . VAL) を funcall）。
+- =max-char= → #x3FFFFF（Doc 05 = UTF-8、unicode max）。
+- *make-keymap 改修* (src/emacs-keymap.el:142 =emacs-keymap-make-keymap=):
+  現状 =(list 'keymap (cons t slot-vec))=。→ =(list 'keymap (make-char-table 'keymap))=
+  に。char-table に char→binding を格納。
+- *keymap helper 追従* (ripple は局所、~7箇所): emacs-keymap.el の
+  「(t . VECTOR) cell を返す」helper(~line 252) と define-key 挿入(~line 277) を
+  char-table アクセス(aref/aset/set-char-table-range)に置換。lookup-key の char 経路も
+  char-table aref に。
+- 層: char-table は値表現の substrate。型と op は src/ に新規 module
+  =src/emacs-char-table.el= を作り emacs-*-enable 配線。reader primitive 化は性能課題が
+  出てから（まず elisp で）。
+
+*** 検証
+- 既存 nemacs keymap ERT（test/emacs-keymap-builtins-test.el 等）が green。
+- host Emacs 差分: make-char-table/set-char-table-range/char-table-range/map-char-table を
+  host と差分一致（[[file:../../../nelisp/test/nelisp-regexp-diff-test.el][regexp diff]] 方式）。
+- bundle 再生成 (=make build-nelisp-bootstrap=) 後、vendor-load-replay で isearch.el +
+  org.el が 43% を超えて進むこと（org-local-logging 以降へ）。
+- dev/nelisp 4438 PASS は無関係（reader 非変更）だが、変更が reader に及ぶ場合は要確認。
+
+*** 着手順（最小リスク）
+1. =src/emacs-char-table.el= 新規（型 + 全 op）+ ERT → host 差分 green。
+2. make-keymap + keymap helper を char-table 化 + keymap ERT green。
+3. max-char 追加。
+4. bundle 再生成 → isearch/org.el load が 43% 超を確認。
+5. 次の blocker を [[*4.2]] と同手法（form-source+stash 診断）で surface し継続。
+
 * §5 phasing（次セッション以降）
 
 | phase | gate | 主 subsystem | 規模目安 |
