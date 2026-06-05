@@ -369,6 +369,26 @@
           ((eq (aref path (1- n)) ?/) (substring path 0 (1- n)))
           (t path))))
 
+;; Doc 143: purecopy (no pure space -> identity), destructive nconc (setcdr),
+;; princ/terpri (via the wired printer + nelisp--write-stdout-bytes).
+(defun purecopy (x) x)
+(defun nconc (&rest lists)
+  (let ((result nil) (tail nil))
+    (while lists
+      (let ((l (car lists)))
+        (when (consp l)
+          (if tail (setcdr tail l) (setq result l))
+          (setq tail l)
+          (while (consp (cdr tail)) (setq tail (cdr tail)))))
+      (setq lists (cdr lists)))
+    result))
+(defun princ (object &optional _stream)
+  (nelisp--write-stdout-bytes (nelisp--prn-to-string object nil))
+  object)
+(defun terpri (&optional _stream)
+  (nelisp--write-stdout-bytes "\n")
+  nil)
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
