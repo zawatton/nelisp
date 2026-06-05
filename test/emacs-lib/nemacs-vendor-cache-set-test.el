@@ -109,22 +109,19 @@
                      (cadr (assoc (plist-get entry :name)
                                   (plist-get cold-proof :aggregate-proof))))))
     (should (equal (plist-get cold-proof :selected-set)
-                   '(format-spec org-version)))
+                   '(format-spec org-version org-macs)))
     (should (equal (plist-get warm-proof :selected-set)
                    (plist-get cold-proof :selected-set)))
     (should (equal (plist-get invalidated-proof :selected-set)
                    (plist-get cold-proof :selected-set)))
-    (should (equal (mapcar (lambda (item) (plist-get item :name))
-                           (plist-get cold-proof :dropped-candidates))
-                   '(org-macs)))
-    ;; org-macs.el now compiles (reader escape gap fixed); the remaining
-    ;; blocker is the NeLisp eval runtime missing `defalias' at module load.
-    (should (string-match-p
-             "defalias"
-             (plist-get (car (plist-get cold-proof :dropped-candidates)) :reason)))
+    ;; No drops: the reader string-escape fix + defalias/cl-defun/defvar-local
+    ;; eval builtins (dev/nelisp) make org-macs.el fully cacheable, so the full
+    ;; format-spec -> org-version -> org-macs chain is cached.
+    (should (null (plist-get cold-proof :dropped-candidates)))
     (should (equal (plist-get cold-proof :aggregate-proof)
                    '((format-spec (t t "x"))
-                     (org-version (t t "9.7.11")))))
+                     (org-version (t t "9.7.11"))
+                     (org-macs (t t " x ")))))
     (should (equal (plist-get warm-proof :aggregate-proof)
                    (plist-get cold-proof :aggregate-proof)))
     (should (equal (plist-get invalidated-proof :aggregate-proof)

@@ -121,19 +121,20 @@ Nil means `build/nelisp-artifacts/vendor-set' under the repo root.")
         (nemacs-vendor-cache-set-org-macs-entry)))
 
 (defun nemacs-vendor-cache-set-dropped-candidates ()
-  "Return dropped candidate metadata."
-  (list (list :name 'org-macs
-              :reason nemacs-vendor-cache-set--org-macs-drop-reason)))
+  "Return dropped candidate metadata.
+Empty: the two blockers are resolved in dev/nelisp — the reader gained
+GNU Emacs-compatible string escapes (org-macs.el compiles to .nelc) and the
+host eval runtime gained `defalias' + `cl-defun' + `defvar-local' (org-macs
+loads from its artifact). The full format-spec -> org-version -> org-macs
+chain is now cacheable."
+  nil)
 
 (defun nemacs-vendor-cache-set-default-entries ()
   "Return the chosen cacheable vendor set for this host.
-The reader string-escape gap is now fixed (org-macs.el COMPILES to .nelc),
-but loading its module replay still hits a NeLisp eval-runtime gap —
-`defalias' is void — so org-macs is not yet cacheable end-to-end.
-format-spec + org-version remain the proven cacheable set; see the drop
-reason for the next runtime builtin to add."
-  (list (nemacs-vendor-cache-set-format-spec-entry)
-        (nemacs-vendor-cache-set-org-version-entry)))
+The full dependency-ordered Org foundation chain: format-spec -> org-version
+-> org-macs.  org-macs became cacheable once dev/nelisp gained the reader
+string-escape fix and the defalias/cl-defun/defvar-local eval builtins."
+  (nemacs-vendor-cache-set-candidate-entries))
 
 (defun nemacs-vendor-cache-set-proof-org-version ()
   "Return the proof tuple for `org-version.el'."
