@@ -221,3 +221,28 @@ char-table 後、org.el は次の blocker で止まる。*実エラーを surfac
   *触らない*ので char-table とは別系統の不足（§4 の reader-patch 法で error tag を surface して特定する）。
 - 続行手順は §4（=bf_eval_source_string= のエラー枝を一時改造 → error tag + form source を stdout →
   *必ず =git checkout= で revert*）。§5 の syntax-table / text-property 系も近い。
+
+** 8.4 診断で判明した真の根本原因 (2026-06-05, §4 reader-patch 法で確定)
+*重要*: §8.1 の char-table 実装単体では standalone で *無効*だった。§4 の reader-patch 診断
+（=bf_eval_source_string= の error 枝に error tag/VAL + 失敗 form source を stdout dump、診断後 revert 済）
+と complementary-pair プローブで以下を確定:
+- *NeLisp reader は host 同様 =emacs-version= を束縛する*。このため
+  =(not (boundp 'emacs-version))= による standalone 検出が *破綻*し、
+  =emacs-char-table.el= の =(when standalone (fset ...))= も
+  =emacs-keymap-builtins.el= の =make-keymap= install も *発火していなかった*
+  （char-table-p / make-keymap が stub-bulk の nil-stub のまま → isearch assertion 失敗）。
+- 影響は *stub-bulk に nil-stub 登録済みのシンボルのみ*（非 stub シンボルは
+  =(not (fboundp X))= パスで install されるため大半は無事）。src で
+  =(not (boundp 'emacs-version))= を fallback 無しに使う module は *35 個*（systemic、要追随）。
+- *修正*: 両 module の standalone 検出を codebase 標準の =nl-write-file= marker
+  （NeLisp 固有 primitive、host に無い）へ。=emacs-keymap.el:928= / =emacs-fileio-builtins.el= 等と統一。
+- *検証*: 修正後プローブで =make-keymap= が =emacs-keymap-make-keymap= に、
+  =(char-table-p (nth 1 (make-keymap)))= が *t* に。isearch-mode-map assertion は error dump から消滅。
+
+** 8.5 修正後の到達点と次フロンティア
+- isearch / minibuffer / charprop / ... を通過し *load-status = start:org-cycle.el (#43)* で
+  *reader レベルのハードストップ*（exit 0 で proof 未達、=org-cycle-hide-archived-subtrees= 定義付近）。
+  これは char-table/keymap とは *独立*（org-cycle.el は load 時に両者を触らない）。次セッションは §4 法で要特定。
+- 非致命的に *=emacs-keymap-not-keymap= 46 件*（=minibuffer-local-map= 等が nil → real define-key が signal）。
+  =minibuffer-local-map= は src 未定義で standalone で nil。*同じ emacs-version 検出バグの別 module 波及*の疑い。
+  → 標準 keymap 変数 (=minibuffer-local-map= 系) の standalone 初期化と、35 module の =nl-write-file= 追随が次の塊。
