@@ -2457,6 +2457,11 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
+    ;; nl-current-unix-time: epoch seconds via the linux-x86_64 time(2)
+    ;; syscall (__NR_time=201, NULL arg).  Lets interpreted code (e.g.
+    ;; nelisp-emacs `float-time'/`current-time' polyfills) read wall-clock
+    ;; time without process-exiting on an undispatched builtin.
+    ((:lit "nl-current-unix-time") . (wf_write_int out (syscall-direct 201 0 0 0 0 0 0)))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ((:lit "ash")     . (wf_write_int out (bf_ash (wf_argval args 0) (wf_argval args 1))))
     ((:lit "logand")  . (wf_write_int out (wf_logand_fold args (- 0 1))))
@@ -3512,6 +3517,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
+    "nl-current-unix-time"
     "exit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
