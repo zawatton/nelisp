@@ -260,6 +260,24 @@
 (defun cdr-safe (object)
   (if (consp object) (cdr object) nil))
 
+;; Doc 143 worklist A (WRITE): delq/delete were void in the reader runtime
+;; (not in source).  List forms (the dominant use); rebuild semantics.
+(defun delq (elt list)
+  (let ((acc nil))
+    (while list
+      (if (not (eq (car list) elt))
+          (setq acc (cons (car list) acc)))
+      (setq list (cdr list)))
+    (nreverse acc)))
+
+(defun delete (elt seq)
+  (let ((acc nil))
+    (while seq
+      (if (not (equal (car seq) elt))
+          (setq acc (cons (car seq) acc)))
+      (setq seq (cdr seq)))
+    (nreverse acc)))
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
