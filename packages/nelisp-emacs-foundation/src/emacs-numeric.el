@@ -177,6 +177,21 @@ vendor load-time constants such as `(exp 1)'."
     (if x 1 1))
   (put 'exp 'emacs-stub-bulk nil))
 
+(unless (fboundp '/=)
+  (defun /= (a b) (not (= a b))))
+(unless (fboundp 'float)
+  (defun float (x) (if (integerp x) (* x 1.0) x)))
+(unless (fboundp 'floor)
+  (defun floor (x &optional divisor) (truncate (if divisor (/ x divisor) x))))
+(unless (fboundp 'ceiling)
+  (defun ceiling (x &optional divisor)
+    (let* ((v (if divisor (/ x divisor) x)) (tv (truncate v)))
+      (if (= v tv) tv (+ tv 1)))))
+(unless (fboundp 'round)
+  (defun round (x &optional divisor)
+    (let ((v (if divisor (/ x divisor) x)))
+      (truncate (+ v (if (< v 0) -0.5 0.5))))))
+
 (provide 'emacs-numeric)
 
 ;;; emacs-numeric.el ends here

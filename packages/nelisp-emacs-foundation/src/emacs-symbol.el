@@ -51,6 +51,10 @@ the underlying NeLisp runtime has no native property-cell.")
     new-plist))
 
 
+(unless (fboundp 'intern-soft)
+  (defun intern-soft (name &optional _obarray)
+    (intern (if (symbolp name) (symbol-name name) name))))
+
 (provide 'emacs-symbol)
 
 ;;; emacs-symbol.el ends here

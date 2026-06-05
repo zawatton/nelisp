@@ -371,6 +371,19 @@ etc.) is silently re-shadowed before the binding step."
 
 (emacs-help--ensure-global-bindings)
 
+(unless (fboundp 'documentation)
+  (defun documentation (function &optional _raw)
+    (let ((f (if (symbolp function) (and (fboundp function) function) nil)))
+      (and f (get f 'function-documentation)))))
+(unless (fboundp 'help-function-arglist)
+  (defun help-function-arglist (def &optional _preserve-names)
+    (let ((f (cond ((symbolp def) (and (fboundp def) (symbol-function def))) (t def))))
+      (cond ((null f) nil)
+            ((and (consp f) (eq (car f) 'lambda)) (car (cdr f)))
+            ((and (consp f) (eq (car f) 'closure)) (car (cdr (cdr f))))
+            ((and (consp f) (eq (car f) 'macro)) (help-function-arglist (cdr f)))
+            (t nil)))))
+
 (provide 'emacs-help)
 
 ;;; emacs-help.el ends here
