@@ -475,13 +475,14 @@ NELISP_LOAD_PATH = -L $(NELISP_ROOT)/src \
 SRC_FILES = $(wildcard src/*.el)
 TEST_FILES = $(wildcard test/*.el)
 
-.PHONY: compile test gate5 test-redisplay-core-smoke doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-repl-replay-fast verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test gate5 vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-repl-replay-fast verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
 	@echo "  make compile         byte-compile src/*.el"
 	@echo "  make test            run ERT under host emacs"
 	@echo "  make gate5           prove vendor source replay == .nelc artifact load"
+	@echo "  make vendor-nelc-cache-set prove vendor cache set cold/warm/invalidation"
 	@echo "  make test-redisplay-core-smoke  run isolated lightweight redisplay core smoke"
 	@echo "  make doctor          run host/NeLisp driver readiness checks"
 	@echo "  make build-nelisp-bootstrap  generate build/nemacs-bootstrap.el and .repl"
@@ -557,6 +558,14 @@ vendor-nelc-cache:
 		-L /home/madblack-21/Cowork/Notes/dev/nelisp/src \
 		-l scripts/nemacs-vendor-cache.el \
 		-l test/nemacs-vendor-cache-test.el \
+		-f ert-run-tests-batch-and-exit
+
+vendor-nelc-cache-set:
+	$(EMACS) -Q -L scripts -L test \
+		-L /home/madblack-21/Cowork/Notes/dev/nelisp/lisp \
+		-L /home/madblack-21/Cowork/Notes/dev/nelisp/src \
+		-l scripts/nemacs-vendor-cache-set.el \
+		-l test/nemacs-vendor-cache-set-test.el \
 		-f ert-run-tests-batch-and-exit
 
 test-redisplay-core-smoke:
