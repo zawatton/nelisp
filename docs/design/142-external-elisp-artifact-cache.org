@@ -28,10 +28,21 @@
     so =addr-of= resolves the real helper in the reader.
   - *Remaining (gate 6 real-runtime integration)*: the mechanism test uses
     test-local subset shims (=nelisp-phase47-compile-sexp= builds a minimal
-    binary with no runtime env).  The last step is a baked-in loader in
-    =reader-units= executing a =.neln= against the real =nelisp_aot_builtin_call1=
-    / =nl_alloc_symbol= (live mirror/frames for env-touching builtins); plus
-    the =calln= in-process lane and nelisp-emacs gate 5/6 wiring.
+    binary with no runtime env).
+  - *real-runtime gate 6 SHIPPED (call1, linux-x86_64)*: the standalone
+    READER now exposes =--neln-selftest= — a baked-in loader unit
+    (=nl_neln_demo_exec=) that mmaps an embedded =inc1=(1+ x) =.neln=, patches
+    its PLT32 relocs through absolute-jump stubs, boxes the arg into a live
+    =Sexp= slot, passes the live =ctx= mirror/frames, and =call-ptr='s the
+    entry — executing through the REAL linked =nelisp_aot_builtin_call1= (the
+    stubs target thin local bridges =nl_neln_demo_call1_bridge= /
+    =_alloc_symbol_bridge= that =extern-call= the real helpers, since the
+    compiler has no cross-unit =addr-of=; there is NO shim defun of the
+    helpers).  =./target/nelisp --neln-selftest= -> exit 42; verified by
+    =make standalone-reader-realrt-smoke= + 40/40 target tests on main.
+  - *Remaining*: the =calln= in-process lane, a file-driven (vs baked) loader,
+    non-linux targets (=--neln-selftest= returns 125 elsewhere), and the
+    nelisp-emacs gate 5/6 (.nelc/.neln vendor-bootstrap) wiring.
 - *§6.2 =.elc= SHIPPED*: =--kind elc= byte-compiles the source in a CLEAN
   =emacs -Q --batch= subprocess (so NeLisp's own shadowing byte-compiler does
   not intercept it) and emits a GENUINE GNU Emacs-readable =.elc= (the =;ELC=
