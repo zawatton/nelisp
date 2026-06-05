@@ -246,3 +246,22 @@ char-table 後、org.el は次の blocker で止まる。*実エラーを surfac
 - 非致命的に *=emacs-keymap-not-keymap= 46 件*（=minibuffer-local-map= 等が nil → real define-key が signal）。
   =minibuffer-local-map= は src 未定義で standalone で nil。*同じ emacs-version 検出バグの別 module 波及*の疑い。
   → 標準 keymap 変数 (=minibuffer-local-map= 系) の standalone 初期化と、35 module の =nl-write-file= 追随が次の塊。
+
+** 8.6 org-cycle.el hard-stop の正体 = 累積メモリ枯渇（2026-06-05 特定済）
+§4 のエラー tag dump は *捕捉される Lisp error* 用で、この hard-stop（reader が exit 0 で終了）には不適。
+*直接 reader 実行 + truncation 二分 + /proc VmHWM 測定*で特定:
+- *不足 primitive でも私の char-table/keymap 変更でもない*:
+  - 停止フォーム =org-cycle-show-empty-lines= は header+bootstrap のみの隔離で *正常に定義*（exit 55 生存）。
+  - メモリ増加は *フォーム数に一様比例*（isearch=keymap-heavy も simple.el も charscript も同程度/行）→ keymap 固有でない。
+- *正体 = 累積メモリ枯渇*:
+  - bootstrap のみで *1.3GB*、vendor 1-42 + org-cycle 大半で *13.9GB*。
+  - reader GC: 新 threshold = =max(3×live, bump+512MB)= → *RSS ≒ live set の 3 倍*。
+    reader は *"no interning"*（=bf_eq2= コメント: symbol は name 比較、intern 無し）= 同名 symbol の
+    出現ごとに新規 symbol+name を割当 → 319 file の定義群で live set が肥大。
+  - *物理 RAM(64GB)ではなく reader の arena/allocator 上限 ~14GB* に達し alloc 失敗 → exit 0。
+    org-cycle.el (#43) は累積使用量が上限を超える地点にすぎない（特定フォーム依存でない）。
+- *結論*: これは *reader(dev/nelisp)のメモリ効率問題*。nemacs substrate primitive では解けない。
+  真の対策は reader 側の *symbol interning / s-expr 共有*（live set 縮小）。GC headroom 3× や
+  threshold 512MB を下げるのは doc §6 通り thrash するので非推奨。arena 上限引き上げは延命のみ。
+- *診断手順の証跡*: =/tmp/full-prog.el= を保存し =build/nelisp-experiment --load= を直接実行、
+  =head -n N= で truncation 二分、=/proc/PID/status VmHWM= で peak RSS 測定（replay の出力捕捉編集は revert 済）。
