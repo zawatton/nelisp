@@ -66,6 +66,18 @@
   (should (equal (nelisp-read "\"\\r\"") "\r"))
   (should (equal (nelisp-read "\"\\\\\"") "\\")))
 
+(ert-deftest nelisp-read-string-emacs-compat-escapes ()
+  (should (= (string-to-char (nelisp-read "\"\\v\""))
+             (string-to-char "\v")))
+  (should (= (string-to-char (nelisp-read "\"\\f\""))
+             (string-to-char "\f")))
+  (should (= (string-to-char (nelisp-read "\"\\s\""))
+             (string-to-char " ")))
+  (should (= (string-to-char (nelisp-read "\"\\C-a\"")) 1))
+  (should (= (string-to-char (nelisp-read "\"\\M-a\"")) 225))
+  (should (equal (nelisp-read "\"\\(\"") "("))
+  (should (equal (nelisp-read "\"\\ \"") "")))
+
 ;;; Lists --------------------------------------------------------------
 
 (ert-deftest nelisp-read-list-empty ()
@@ -131,7 +143,7 @@ marker, not the symbol `.'.  But `.foo' or `foo.' is still a symbol."
 (ert-deftest nelisp-read-error-trailing-input ()
   (should-error (nelisp-read "foo bar") :type 'nelisp-read-error))
 
-(ert-deftest nelisp-read-error-unknown-escape ()
+(ert-deftest nelisp-read-error-invalid-hex-escape ()
   (should-error (nelisp-read "\"\\x\"") :type 'nelisp-read-error))
 
 (ert-deftest nelisp-read-error-dot-before-car ()

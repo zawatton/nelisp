@@ -63,9 +63,10 @@
 ;;     quote / backquote / comma / comma-at / function-quote / dot /
 ;;     sharps-paren / char-table bracket / int / float / str / sym / char /
 ;;     radix-int / eof.
-;;   - String escapes: \\n, \\t, \\r, \\\\, \\\"; line continuation
-;;     `\\<LF>'; any other `\\X' drops the backslash + pushes X
-;;     (= Doc 51 Phase 3-A''-1 Emacs reader compat).
+;;   - String escapes: \\n, \\t, \\r, \\f, \\v, \\e, \\a, \\b, \\d,
+;;     \\s, \\\\, \\\"; line continuation `\\<SP>' / `\\<LF>';
+;;     any other `\\X' drops the backslash + pushes X (= Doc 51
+;;     Phase 3-A''-1 Emacs reader compat).
 ;;   - Char literals `?X' / `?\\C-a' / `?\\M-X' covered (Doc 116 §116.B+).
 ;;     Payload is the raw body bytes (after the `?'); parser-side decoder
 ;;     in `nelisp-cc-reader-parser.el' handles the escape + Meta-modifier
@@ -459,20 +460,60 @@
     (defun nelisp_reader_string_escape (str-ptr cursor n scratch)
       ;; CURSOR points at the byte AFTER `\\'.
       (cond
+       ;; `\\a' -> BEL
+       ((= (str-byte-at str-ptr cursor) 97)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 7)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\b' -> BS
+       ((= (str-byte-at str-ptr cursor) 98)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 8)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\d' -> DEL
+       ((= (str-byte-at str-ptr cursor) 100)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 127)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\e' -> ESC
+       ((= (str-byte-at str-ptr cursor) 101)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 27)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\f' -> FF
+       ((= (str-byte-at str-ptr cursor) 102)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 12)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
        ;; `\\n' -> LF
        ((= (str-byte-at str-ptr cursor) 110)
         (nelisp_reader_prog2
          (mut-str-push-byte scratch 10)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\r' -> CR
+       ((= (str-byte-at str-ptr cursor) 114)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 13)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\s' -> SP
+       ((= (str-byte-at str-ptr cursor) 115)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 32)
          (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
        ;; `\\t' -> TAB
        ((= (str-byte-at str-ptr cursor) 116)
         (nelisp_reader_prog2
          (mut-str-push-byte scratch 9)
          (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
-       ;; `\\r' -> CR
-       ((= (str-byte-at str-ptr cursor) 114)
+       ;; `\\v' -> VT
+       ((= (str-byte-at str-ptr cursor) 118)
         (nelisp_reader_prog2
-         (mut-str-push-byte scratch 13)
+         (mut-str-push-byte scratch 11)
+         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\0' -> NUL
+       ((= (str-byte-at str-ptr cursor) 48)
+        (nelisp_reader_prog2
+         (mut-str-push-byte scratch 0)
          (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
        ;; `\\\\' -> backslash
        ((= (str-byte-at str-ptr cursor) 92)
@@ -484,6 +525,9 @@
         (nelisp_reader_prog2
          (mut-str-push-byte scratch 34)
          (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))
+       ;; `\\<SP>' -> line continuation (drop both bytes).
+       ((= (str-byte-at str-ptr cursor) 32)
+        (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))
        ;; `\\<LF>' -> line continuation (drop both bytes).
        ((= (str-byte-at str-ptr cursor) 10)
         (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch))

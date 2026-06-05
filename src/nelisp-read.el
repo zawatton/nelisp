@@ -145,6 +145,153 @@ Return (VALUE . NEW-POS)."
             (intern tok))
           end)))
 
+(defun nelisp-read--hex-digit-value (c)
+  "Return the numeric value of hex digit C, or nil when C is not hex."
+  (cond
+   ((and (>= c ?0) (<= c ?9)) (- c ?0))
+   ((and (>= c ?a) (<= c ?f)) (+ 10 (- c ?a)))
+   ((and (>= c ?A) (<= c ?F)) (+ 10 (- c ?A)))
+   (t nil)))
+
+(defun nelisp-read--read-string-octal-escape (str pos len)
+  "Read up to three octal digits from STR at POS.
+Return (CHAR . NEW-POS)."
+  (let ((end pos)
+        (cap (min len (+ pos 3))))
+    (while (and (< end cap)
+                (let ((c (aref str end)))
+                  (and (>= c ?0) (<= c ?7))))
+      (setq end (1+ end)))
+    (cons (string-to-number (substring str pos end) 8) end)))
+
+(defun nelisp-read--read-string-unicode-escape (str pos len digits)
+  "Read exactly DIGITS hex chars from STR at POS.
+Return (CHAR . NEW-POS)."
+  (when (< (- len pos) digits)
+    (signal 'nelisp-read-error
+            (list "short unicode escape" pos digits)))
+  (let ((tok (substring str pos (+ pos digits))))
+    (unless (string-match-p "\\`[0-9a-fA-F]+\\'" tok)
+      (signal 'nelisp-read-error
+              (list "non-hex unicode escape" tok pos)))
+    (cons (string-to-number tok 16) (+ pos digits))))
+
+(defun nelisp-read--read-string-hex-escape (str pos len)
+  "Read a greedy `\\x' escape from STR at POS.
+Return (CHAR . NEW-POS)."
+  (let ((end pos))
+    (while (and (< end len)
+                (nelisp-read--hex-digit-value (aref str end)))
+      (setq end (1+ end)))
+    (when (= end pos)
+      (signal 'nelisp-read-error
+              (list "empty hex escape" pos)))
+    (cons (string-to-number (substring str pos end) 16) end)))
+
+(defun nelisp-read--string-ctrl-char (c)
+  "Return the Emacs control-code collapse of C, or nil if invalid."
+  (cond
+   ((and (>= c ?A) (<= c ?Z)) (1+ (- c ?A)))
+   ((and (>= c ?a) (<= c ?z)) (1+ (- c ?a)))
+   ((eq c ??) 127)
+   ((eq c ?@) 0)
+   ((eq c ?\s) 0)
+   ((and (>= c 91) (<= c 95)) (- c 64))
+   (t nil)))
+
+(defun nelisp-read--read-string-basic-escape (str pos len)
+  "Decode one non-modifier string escape in STR at POS.
+POS points at the byte after `\\'.  Return (CHAR-OR-NIL . NEW-POS)."
+  (let ((e (aref str pos)))
+    (cond
+     ((eq e ?\\) (cons ?\\ (1+ pos)))
+     ((eq e ?\") (cons ?\" (1+ pos)))
+     ((eq e ?\') (cons ?\' (1+ pos)))
+     ((eq e ?\?) (cons ?? (1+ pos)))
+     ((eq e ?a)  (cons ?\a (1+ pos)))
+     ((eq e ?b)  (cons ?\b (1+ pos)))
+     ((eq e ?d)  (cons 127 (1+ pos)))
+     ((eq e ?e)  (cons 27 (1+ pos)))
+     ((eq e ?f)  (cons ?\f (1+ pos)))
+     ((eq e ?n)  (cons ?\n (1+ pos)))
+     ((eq e ?r)  (cons ?\r (1+ pos)))
+     ((eq e ?s)  (cons ?\s (1+ pos)))
+     ((eq e ?t)  (cons ?\t (1+ pos)))
+     ((eq e ?v)  (cons 11 (1+ pos)))
+     ((eq e ?\s) (cons nil (1+ pos)))
+     ((eq e ?\n) (cons nil (1+ pos)))
+     ((and (>= e ?0) (<= e ?7))
+      (nelisp-read--read-string-octal-escape str pos len))
+     ((eq e ?x)
+      (nelisp-read--read-string-hex-escape str (1+ pos) len))
+     ((eq e ?u)
+      (nelisp-read--read-string-unicode-escape str (1+ pos) len 4))
+     ((eq e ?U)
+      (nelisp-read--read-string-unicode-escape str (1+ pos) len 8))
+     (t (cons e (1+ pos))))))
+
+(defun nelisp-read--read-string-modified-target (str pos len meta ctrl shift)
+  "Read one string escape target from STR at POS, applying modifiers.
+META, CTRL, and SHIFT are booleans tracking `\\M-', `\\C-'/`\\^',
+and `\\S-' prefixes respectively.  Return (CHAR . NEW-POS)."
+  (when (>= pos len)
+    (signal 'nelisp-read-error
+            (list "invalid string modifier" pos)))
+  (when (and shift ctrl)
+    (signal 'nelisp-read-error
+            (list "invalid string modifier" pos)))
+  (let ((res
+         (if (eq (aref str pos) ?\\)
+             (progn
+               (when (>= (1+ pos) len)
+                 (signal 'nelisp-read-error
+                         (list "unterminated escape")))
+               (let ((e (aref str (1+ pos))))
+                 (cond
+                  ((and (memq e '(?C ?M ?S))
+                        (< (+ pos 2) len)
+                        (eq (aref str (+ pos 2)) ?-))
+                   (nelisp-read--read-string-modified-target
+                    str (+ pos 3) len
+                    (or meta (eq e ?M))
+                    (or ctrl (eq e ?C))
+                    (or shift (eq e ?S))))
+                  ((eq e ?^)
+                   (nelisp-read--read-string-modified-target
+                    str (+ pos 2) len meta t shift))
+                  (t
+                   (nelisp-read--read-string-basic-escape
+                    str (1+ pos) len)))))
+           (cons (aref str pos) (1+ pos)))))
+    (let ((code (car res)))
+      (when shift
+        (when (and (>= code ?a) (<= code ?z))
+          (setq code (- code 32))))
+      (when ctrl
+        (setq code (nelisp-read--string-ctrl-char code))
+        (unless code
+          (signal 'nelisp-read-error
+                  (list "invalid string modifier" pos))))
+      (when meta
+        (setq code (logior code 128)))
+      (cons code (cdr res)))))
+
+(defun nelisp-read--read-string-escape (str pos len)
+  "Decode one Emacs-compatible string escape in STR at POS.
+POS points at the byte after `\\'.  Return (CHAR-OR-NIL . NEW-POS)."
+  (let ((e (aref str pos)))
+    (cond
+     ((and (memq e '(?C ?M ?S))
+           (< (1+ pos) len)
+           (eq (aref str (1+ pos)) ?-))
+      (nelisp-read--read-string-modified-target
+       str (+ pos 2) len (eq e ?M) (eq e ?C) (eq e ?S)))
+     ((eq e ?^)
+      (nelisp-read--read-string-modified-target
+       str (1+ pos) len nil t nil))
+     (t
+      (nelisp-read--read-string-basic-escape str pos len)))))
+
 (defun nelisp-read--string (str pos)
   "Read a string literal in STR at the opening quote at POS.
 Return (VALUE . NEW-POS) where NEW-POS is past the closing quote."
@@ -162,22 +309,11 @@ Return (VALUE . NEW-POS) where NEW-POS is past the closing quote."
            ((eq c ?\\)
             (when (>= (1+ pos) len)
               (signal 'nelisp-read-error (list "unterminated escape")))
-            (let* ((e (aref str (1+ pos)))
-                   (decoded
-                    (pcase e
-                      (?\\ ?\\)
-                      (?\" ?\")
-                      (?n  ?\n)
-                      (?t  ?\t)
-                      (?r  ?\r)
-                      (?f  ?\f)
-                      (?a  ?\a)
-                      (?b  ?\b)
-                      (?\n nil)         ; line continuation: drop both bytes
-                      (_ (signal 'nelisp-read-error
-                                 (list "unknown string escape" e))))))
-              (when decoded (push decoded chars))
-              (setq pos (+ pos 2))))
+            (let ((res (nelisp-read--read-string-escape
+                        str (1+ pos) len)))
+              (when (car res)
+                (push (car res) chars))
+              (setq pos (cdr res))))
            (t
             (push c chars)
             (setq pos (1+ pos)))))))

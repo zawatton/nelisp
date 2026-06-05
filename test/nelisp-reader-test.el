@@ -83,8 +83,17 @@
   (should (equal (nelisp-reader-read "\"\\t\"") "\t"))
   (should (equal (nelisp-reader-read "\"\\r\"") "\r"))
   (should (equal (nelisp-reader-read "\"\\f\"") "\f"))
+  (should (equal (nelisp-reader-read "\"\\v\"") "\v"))
   (should (equal (nelisp-reader-read "\"\\a\"") "\a"))
-  (should (equal (nelisp-reader-read "\"\\b\"") "\b")))
+  (should (equal (nelisp-reader-read "\"\\b\"") "\b"))
+  (should (equal (nelisp-reader-read "\"\\s\"") " ")))
+
+(ert-deftest nelisp-reader-test/string-emacs-compat-escapes ()
+  (should (= (string-to-char (nelisp-reader-read "\"\\C-a\"")) 1))
+  (should (= (string-to-char (nelisp-reader-read "\"\\M-a\"")) 225))
+  (should (= (string-to-char (nelisp-reader-read "\"\\^?\"")) 127))
+  (should (equal (nelisp-reader-read "\"\\(\"") "("))
+  (should (equal (nelisp-reader-read "\"\\ \"") "")))
 
 (ert-deftest nelisp-reader-test/string-escape-octal ()
   ;; \101 = 'A', \12 = newline, \7 = bell.
@@ -337,8 +346,8 @@
   (should-error (nelisp-reader-read 42)  :type 'wrong-type-argument)
   (should-error (nelisp-reader-read nil) :type 'wrong-type-argument))
 
-(ert-deftest nelisp-reader-test/error-unknown-string-escape ()
-  (should-error (nelisp-reader-read "\"\\q\"")
+(ert-deftest nelisp-reader-test/error-invalid-string-escape ()
+  (should-error (nelisp-reader-read "\"\\x\"")
                 :type 'nelisp-reader-error))
 
 ;;; --- nelisp-reader-read-from-string --------------------------------
