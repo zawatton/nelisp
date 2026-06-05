@@ -856,7 +856,7 @@ with the base literal)."
       (ptr-write-u64 (+ ,b 120) 0 0)        ; live bytes
       (ptr-write-u64 (+ ,b 128) 0 0)        ; sweep free dead blocks
       (ptr-write-u64 (+ ,b 136) 0 0)        ; mark phase enabled
-      (ptr-write-u64 (+ ,b 160) 0 1)        ; collect disabled
+      (ptr-write-u64 (+ ,b 160) 0 0)        ; collect ENABLED (S0 sound-GC: form-boundary mark-sweep)
       (ptr-write-u64 (+ ,b 168) 0 0)        ; free-list reuse
       (ptr-write-u64 (+ ,b 192) 0 0)        ; probe off
       (ptr-write-u64 (+ ,b 200) 0 0)        ; min reuse block_total
@@ -2227,7 +2227,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
              (bsym (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
-         (ptr-write-u64 268435624 0 1)
+         (ptr-write-u64 268435624 0 0)
          (nl_bi_read_file args src)
          (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
          (vector-make 32768 pool)
@@ -2246,7 +2246,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
              (bsym (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
-         (ptr-write-u64 268435624 0 1)
+         (ptr-write-u64 268435624 0 0)
          (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
          (vector-make 32768 pool)
          (if (= (bf_eval_source_string_loop src cursor result pool env out bsym 1) 2)
