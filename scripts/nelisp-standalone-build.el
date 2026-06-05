@@ -1806,7 +1806,9 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
             (if (= tag 5) (m5_push_str ms vptr)
               (if (= tag 4) (m5_push_str ms vptr)
                 (if (= tag 6) (m5_push_str ms vptr)
-                  1)))))))
+                  ;; tag 0/1/7/8 (nil/t/cons/vector): fall back to full prin1
+                  ;; so `format' %s/%S render them instead of emitting nothing.
+                  (m5_prin1 ms vptr))))))))
     (defun m5_s2n_mag (s i n acc)
       (if (>= i n) acc
         (let* ((c (str-byte-at s i)))
