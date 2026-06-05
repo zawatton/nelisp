@@ -1412,7 +1412,16 @@ MATCH = (:u8 NAME) for <=8-byte u64-packed names, (:lit NAME) for full-length
   "Fold the (MATCH . IMPL) TABLE (default the full dispatch table) into a
 nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
   (let ((u #'nelisp-standalone--name-u64)
-        (dispatch 1))
+        ;; Unknown-builtin default: write the symbol name to stderr (was a
+        ;; silent failure) so interpreted callers surface WHICH registered-but-
+        ;; undispatched builtin is missing, then fall through to rc 1.  A symbol
+        ;; Sexp (tag 4) keeps its name bytes at ptr@16 / len@24, same as a Str.
+        (dispatch '(let* ((unkb (alloc-bytes 1 1)))
+                     (seq (ptr-write-u8 unkb 0 10)
+                          (nl_os_write_stderr (ptr-read-u64 name_ptr 16)
+                                              (ptr-read-u64 name_ptr 24))
+                          (nl_os_write_stderr unkb 1)
+                          1))))
     (dolist (entry (reverse (or table nelisp-standalone--applyfn-dispatch-table)))
       (let* ((match (car entry))
              (impl (cdr entry))

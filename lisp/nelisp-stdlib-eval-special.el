@@ -209,20 +209,28 @@ Reserved for future nemacs layer parity."
   "NeLisp has no buffer-local; equivalent to `setq'."
   (cons 'setq pairs))
 
-(defmacro defvar (name &optional value _docstring)
+(defmacro defvar (name &rest args)
   "Define NAME as a global variable, set initial VALUE if unbound.
-DOCSTRING is currently ignored.  Returns NAME."
-  ;; (progn (if (boundp 'NAME) nil (set 'NAME VALUE)) 'NAME)
-  (cons 'progn
-        (cons (cons 'if
-                    (cons (cons 'boundp
-                                (cons (cons 'quote (cons name nil)) nil))
-                          (cons nil
-                                (cons (cons 'set
-                                            (cons (cons 'quote (cons name nil))
-                                                  (cons value nil)))
-                                      nil))))
-              (cons (cons 'quote (cons name nil)) nil))))
+With NO value form (`(defvar NAME)' forward declaration) NAME is only
+declared, NOT bound — matching Emacs `defvar' so that a later
+`(defvar NAME VALUE)' still initializes it.  Distinguishing the
+zero-value form requires `&rest' (arity), not `&optional' (which cannot
+tell `(defvar X)' from `(defvar X nil)').  DOCSTRING ignored.  Returns NAME."
+  (if args
+      ;; (defvar NAME VALUE [DOC]):
+      ;;   (progn (if (boundp 'NAME) nil (set 'NAME VALUE)) 'NAME)
+      (cons 'progn
+            (cons (cons 'if
+                        (cons (cons 'boundp
+                                    (cons (cons 'quote (cons name nil)) nil))
+                              (cons nil
+                                    (cons (cons 'set
+                                                (cons (cons 'quote (cons name nil))
+                                                      (cons (car args) nil)))
+                                          nil))))
+                  (cons (cons 'quote (cons name nil)) nil)))
+    ;; (defvar NAME): forward declaration — return 'NAME, leave it UNBOUND.
+    (cons 'quote (cons name nil))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' (NeLisp lacks buffer-local distinction)."

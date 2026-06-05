@@ -212,18 +212,28 @@
   "NeLisp has no buffer-local distinction; alias to `setq'."
   (cons 'setq pairs))
 
-(defmacro defvar (name &optional value _docstring)
-  "Define NAME as a global variable, setting VALUE if unbound."
-  (cons 'progn
-        (cons (cons 'if
-                    (cons (cons 'boundp
-                                (cons (cons 'quote (cons name nil)) nil))
-                          (cons nil
-                                (cons (cons 'set
-                                            (cons (cons 'quote (cons name nil))
-                                                  (cons value nil)))
-                                      nil))))
-              (cons (cons 'quote (cons name nil)) nil))))
+(defmacro defvar (name &rest args)
+  "Define NAME as a global variable, setting VALUE if unbound.
+With NO value form (`(defvar NAME)' forward declaration) NAME is only
+declared, NOT bound — matching Emacs `defvar' so a later
+`(defvar NAME VALUE)' still initializes it.  Detecting the zero-value
+form needs `&rest' (arity); `&optional value' cannot tell `(defvar X)'
+from `(defvar X nil)'."
+  (if args
+      ;; (defvar NAME VALUE [DOC]):
+      ;;   (progn (if (boundp 'NAME) nil (set 'NAME VALUE)) 'NAME)
+      (cons 'progn
+            (cons (cons 'if
+                        (cons (cons 'boundp
+                                    (cons (cons 'quote (cons name nil)) nil))
+                              (cons nil
+                                    (cons (cons 'set
+                                                (cons (cons 'quote (cons name nil))
+                                                      (cons (car args) nil)))
+                                          nil))))
+                  (cons (cons 'quote (cons name nil)) nil)))
+    ;; (defvar NAME): forward declaration — return 'NAME, leave it UNBOUND.
+    (cons 'quote (cons name nil))))
 
 (defmacro defvar-local (name &optional value docstring)
   "Alias for `defvar' in the standalone."
