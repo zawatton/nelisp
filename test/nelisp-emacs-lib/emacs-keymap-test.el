@@ -53,11 +53,13 @@
 (ert-deftest emacs-keymap-make-keymap-has-full-slot ()
   (let ((m (emacs-keymap-make-keymap)))
     (should (emacs-keymap-keymapp m))
-    ;; tail should have one (t . VECTOR) cell
-    (should (cl-some (lambda (e)
-                       (and (consp e) (eq (car e) t) (vectorp (cdr e))
-                            (= 256 (length (cdr e)))))
-                     (cdr m)))))
+    ;; Real-Emacs full-keymap shape: the second element is a char-table,
+    ;; so vendor `(char-table-p (nth 1 map))' assertions (e.g. isearch)
+    ;; pass.  Its ASCII fast-path covers the 256 low character codes.
+    (should (emacs-char-table-p (nth 1 m)))
+    (should (= 256 (length (emacs-char-table-ascii-vector (nth 1 m)))))
+    ;; `emacs-keymap--full-slot' resolves it for the binding helpers.
+    (should (emacs-char-table-p (emacs-keymap--full-slot m)))))
 
 (ert-deftest emacs-keymap-keymapp-rejects-non-keymaps ()
   (should-not (emacs-keymap-keymapp nil))
