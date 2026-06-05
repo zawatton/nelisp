@@ -1,0 +1,187 @@
+#+TITLE: Doc 08 — 次セッション指示書: char-table substrate 実装 + vendor onboarding
+#+AUTHOR: nelisp-emacs
+#+STARTUP: overview
+#+OPTIONS: toc:3 num:t
+
+* §0 この指示書について
+
+**目的**: 次セッション（または別 AI）が、この 1 文書だけで「char-table substrate を実装し、
+vendor onboarding（org.el〜）を 43% から先へ進める」作業を、迷わず・安全に実行できる
+ようにする自己完結した手順書。
+
+**前提知識**: [[file:07-substrate-ui-standalone-design.org][Doc 07]]（substrate/UI 設計、§4.1/§4.2 に char-table 仕様）、
+[[file:05-legacy-omission-scope.org][Doc 05]]（OMIT/KEEP、UTF-8 only）。本書は Doc 07 §4.2 を実行手順に展開したもの。
+
+**最初にやること**: =dev/nelisp/CLAUDE.md= と =dev/CLAUDE.md= を読む（drift 防止ルール）。
+NeLisp = 純 elisp 言語ランタイム、nemacs = editor substrate という層境界を厳守。
+
+* §1 現在地（2026-06-05 時点、全て push 済）
+
+** 1.1 完了済み基盤（この上に積む）
+- *Rust 完全削除*、*Doc 142 完遂*（artifact cache 9/9 gate）。
+- *segfault 解消* (dev/nelisp commit =d6ed05d9=): unsound escape-epoch boundary-reclaim 無効化。
+- *S0 sound GC* (dev/nelisp =f9469912=): form 境界 tracing GC + free-list reuse を有効化。
+  無制限メモリ増(60GB)を解消。dev/nelisp =make test-parallel= = 4438 PASS。
+- *12.7GB メモリ blowup 解消*: primitive 不足時の病的計算経路が原因で、上記 + 並列開発の
+  primitive 追加で full 319 vendor-load が *peak 3MB*（実 Emacs 同等）に。
+- *graceful call-process* (dev/nelisp-emacs =ffd5875=): =src/emacs-process.el= の
+  call-process を未実装時 graceful 1 return に。org.el load が *15%→43%* へ前進。
+- branch: dev/nelisp = =fix/read-stdin-bytes-interpreter-dispatch=、
+  dev/nelisp-emacs = =feat/doc142-gate5-nemacs=。
+
+** 1.2 現在の vendor-load 到達点
+- =cd dev/nelisp-emacs && make diagnose-vendor-load-replay= で full 319 vendor-load。
+- org.el が *43%（line 9592, org-local-logging 付近）* で停止。
+- 停止原因 = *char-table 未実装*（次節）。peak 3MB、segfault なし、exit=0。
+
+** 1.3 確定した停止原因（実走診断済）
+isearch.el の =isearch-mode-map= defvar:
+#+begin_src elisp
+(defvar isearch-mode-map
+  (let ((i 0) (map (make-keymap)))
+    (or (char-table-p (nth 1 map))
+        (error "The initialization of isearch-mode-map must be updated"))   ; ← ここで停止
+    (set-char-table-range (nth 1 map) (cons #x100 (max-char)) 'isearch-printing-char)
+    ...))
+#+end_src
+- nemacs の =make-keymap= (=src/emacs-keymap.el:142 emacs-keymap-make-keymap=) は
+  =(list 'keymap (cons t slot-vec))= を返す → =(nth 1 map)= が cons で *char-table でない*。
+- かつ =char-table-p= / =make-char-table= / =set-char-table-range= が
+  *=src/emacs-stub-bulk.el= の nil-stub リスト*（line 152/188/212 付近）に登録されている
+  ため、=char-table-p= が常に nil → assertion 失敗。
+- → *本書のタスク = char-table を実装し、make-keymap に char-table を埋め込む*。
+
+* §2 タスク本体: char-table substrate 実装
+
+** 2.1 必要 op（isearch-mode-map 実走で確定した最小集合）
+1. =(char-table-p OBJ)= → char-table なら t。
+2. =(make-char-table SUBTYPE &optional INIT)= → char-table を生成。
+3. =(set-char-table-range CT RANGE VAL)= / =(char-table-range CT RANGE)=
+   - RANGE = nil(default) | t(全体) | =(FROM . TO)=(範囲) | CHAR(単一)。
+4. =(aref CT CHAR)= / =(aset CT CHAR VAL)=（char 添字アクセス）。
+5. =(map-char-table FUNCTION CT)=（非 default slot を (KEY . VAL) で funcall）。
+6. =(char-table-parent CT)= / =(set-char-table-parent CT NEW)= / =(char-table-subtype CT)=。
+7. =(max-char)= → =#x3FFFFF=（Doc 05 = UTF-8 / Unicode max）。
+
+** 2.2 char-table の表現（推奨）
+records が標準で使えるか不明なら *tagged vector* を使う（vector op は確実に存在）:
+#+begin_example
+  [--nemacs-char-table SUBTYPE DEFAULT PARENT ASCII-VEC RANGES]
+    slot0 = tag symbol '--nemacs-char-table（char-table-p の判定キー）
+    SUBTYPE  = make-char-table の引数
+    DEFAULT  = 範囲外/未設定 char の既定値
+    PARENT   = 親 char-table または nil
+    ASCII-VEC = (make-vector 256 nil)  ; char<256 の高速 slot
+    RANGES   = alist: ((FROM . TO) . VAL) ...  ; char>=256 の疎な範囲（load 用は格納のみで十分）
+#+end_example
+- =char-table-p= = =(and (vectorp x) (> (length x) 6) (eq (aref x 0) '--nemacs-char-table))=。
+  （注: 真 Emacs では char-table は vectorp で nil だが、load を通すには tagged vector で実用上十分。
+   将来 reader primitive 化する際に独立型へ。）
+- =aref/aset= は CHAR<256 を ASCII-VEC、>=256 を RANGES 走査（無ければ DEFAULT/PARENT）。
+- lookup の厳密性は *runtime の課題*。load を通すには「格納が落ちない」ことが最優先。
+
+** 2.3 配置と enable（既存パターンに従う）
+- 新規 =src/emacs-char-table.el= に =emacs-char-table-*= prefix で全 op を実装
+  （=src/emacs-process.el= / =src/emacs-keymap.el= と同じ構造: =(require 'cl-lib)= +
+  =(require 'emacs-standalone)= + define + 末尾で =(provide 'emacs-char-table)=）。
+- standalone で unprefixed 名へ alias する。パターンは
+  =src/emacs-keymap-builtins.el= の =--install-function-p= + =defalias= を踏襲
+  （新規 =src/emacs-char-table-builtins.el= を作るか、emacs-char-table.el 末尾で alias）。
+- *重要*: =src/emacs-stub-bulk.el= の nil-stub リストから
+  =char-table-p= =make-char-table= =char-table-range= =set-char-table-range=
+  =set-char-table-parent= =char-table-subtype= =map-char-table= を *除去*
+  （または install 側が後勝ちで上書きすることを確認）。stub が後で上書きすると無効化される
+  ので、enable 順序に注意。
+- =max-char= も同様に実装/alias（stub なら除去）。
+- 新 module を =emacs-*-enable= の配線（bootstrap が load する module リスト）に追加。
+  =grep -rn 'emacs-keymap' src/*.el bin/ scripts/= で配線箇所を見つけて倣う。
+
+** 2.4 make-keymap 改修
+=src/emacs-keymap.el:142 emacs-keymap-make-keymap=:
+#+begin_src elisp
+;; 現状:
+  (let ((slot-vec (make-vector 256 nil)))
+    (if prompt (list 'keymap (cons t slot-vec) prompt)
+      (list 'keymap (cons t slot-vec))))
+;; 変更後:
+  (let ((ct (make-char-table 'keymap)))
+    (if prompt (list 'keymap ct prompt)
+      (list 'keymap ct)))
+#+end_src
+- ripple は局所（emacs-keymap.el ~7箇所）。=grep -nE 'slot-vec|cons t |\(t \.' src/emacs-keymap.el=。
+  「(t . VECTOR) cell を返す」helper(~line 252) と define-key 挿入(~line 277) を
+  char-table アクセス(=aref=/=aset=/=set-char-table-range=)へ置換。
+- =lookup-key= の char 経路も char-table =aref= に。
+- =make-sparse-keymap= は char-table 不要（=(list 'keymap)=）のまま。assertion は full keymap
+  (=make-keymap=) のみ。
+
+* §3 検証（各ステップ後に必ず実行）
+
+1. *新 module 単体*: host Emacs で =emacs -Q --batch -L src -l emacs-char-table.el
+   --eval '(progn ... basic asserts ...)'=。host の真 char-table と差分一致する ERT を
+   =test/emacs-char-table-test.el= に作る（[[file:../../../nelisp/test/nelisp-regexp-diff-test.el][regexp diff test]] 方式 =should (equal host mine)=）。
+2. *keymap ERT*: =make= で =test/emacs-keymap-builtins-test.el= 等が green
+   （make-keymap 改修の回帰チェック）。
+3. *bundle 再生成*: =cd dev/nelisp-emacs && make build-nelisp-bootstrap=
+   （build/nemacs-bootstrap.el を再生成。重い。rc=0 + "nelisp-bootstrap bundle=..." を確認）。
+4. *load 前進確認*: =make diagnose-vendor-load-replay= で org.el が *43% (line 9592) を超える*
+   こと。停止点が後ろへ動けば成功。
+5. *reader 無関係*: dev/nelisp =make test-parallel= = 4438 PASS は char-table が src/ のみなら
+   無関係（reader を触ったら要確認）。
+
+* §4 char-table の次: 反復 onboarding 手法（再利用可能）
+
+char-table 後、org.el は次の blocker で止まる。*実エラーを surface する診断手法*（本セッションで確立、
+再利用可）:
+
+1. =dev/nelisp/scripts/nelisp-standalone-build.el= の =bf_eval_source_string= (defun, ~line 2241)
+   のエラー枝（=bf_eval_source_string_loop ... 2)= の then 側、現状 =1=）を一時的に下記へ:
+#+begin_src elisp
+   (seq
+    (if (= (ptr-read-u64 268435472 0) 1)   ; throw/error flag in flight
+        (let* ((ms (alloc-bytes 32 8)) (s (alloc-bytes 32 8)) (n (str-len src)))
+          (seq (mut-str-make-empty ms 32)
+               (m5_push_str_bytes ms src 0 (if (< n 160) n 160))  ; 失敗 form の source 先頭
+               (m5_prin1 ms 268435480)   ; error tag @stash
+               (mut-str-finalize ms s)
+               (nl_os_write_stdout (nl_bi_strptr s) (nl_bi_strlen s))))
+      0)
+    1)
+#+end_src
+   = エラー stash (tag@268435480 / val@268435512) と失敗 form の source 先頭を stdout 出力。
+2. =make standalone-reader= で reader 再ビルド → =target/nelisp= を
+   =dev/nelisp-emacs/build/nelisp-experiment= に cp（gitignored、make が使う実体）。
+3. 失敗ケースの生成プログラムを捕獲して直接実行（NELISP_BIN を cap wrapper にして
+   =--load= の引数を =/tmp/prog.el= へ cp → =target/nelisp --load /tmp/prog.el </dev/null 2>&1=）。
+   出力末尾の error tag + form source が *次の不足 primitive*。
+4. *必ず =git checkout scripts/nelisp-standalone-build.el= で診断を revert*（S0/reclaim flag を
+   壊さないこと: =reclaim-enabled-offset) 0 0= が 1 個、=(+ ,b 160) 0 0= が 1 個 残ること確認）。
+5. 特定した primitive を src/ に実装 → §3 検証 → 繰り返し。
+
+* §5 想定される後続 blocker（char-table の次）
+- syntax-table（=make-syntax-table= は char-table 上、=string-to-syntax= / =map-char-table=）。
+- category-table / case-table（同じく char-table 上）。
+- text-property / overlay（[[file:07-substrate-ui-standalone-design.org][Doc 07]] §3.3）。
+- これらを反復 onboarding で潰すと org.el が完走 → 319 vendor が深まる。
+- その先は Doc 07 §5 の S2（TTY redisplay MVP）→ S3（command loop）→ S5（daily-driver）。
+
+* §6 やってはいけないこと（drift 防止）
+- NeLisp(reader) に buffer/char-table/keymap を足さない（層境界違反。これらは nemacs substrate）。
+  reader 側は言語 primitive（cons/vector/string/eval 等）のみ。
+- vendor の .el を「通すために」書き換えない（substrate を実装して通す）。
+- S0/Bug1 の flag を壊さない（§4.4 の revert 確認）。
+- 12.7GB は解決済（primitive 不足の病的経路が原因だった）。再発したら primitive 不足を疑う、
+  GC threshold(512MB)は下げない（thrash する。検証済）。
+
+* §7 着手チェックリスト（コピペ用）
+1. [ ] dev/nelisp/CLAUDE.md, dev/CLAUDE.md, 本書, Doc 07 §4.2 を読む。
+2. [ ] =src/emacs-char-table.el= 作成（§2.1 op 全部、§2.2 表現）。
+3. [ ] =test/emacs-char-table-test.el= で host 差分 ERT green。
+4. [ ] =src/emacs-stub-bulk.el= から char-table-*/make-char-table/max-char stub 除去。
+5. [ ] 新 module を bootstrap 配線に追加 + standalone alias。
+6. [ ] =make-keymap= を char-table 埋込に改修 + keymap helper 追従。
+7. [ ] keymap ERT green。
+8. [ ] =make build-nelisp-bootstrap= で bundle 再生成（rc=0）。
+9. [ ] =make diagnose-vendor-load-replay= で org.el が line 9592 超を確認。
+10. [ ] §4 診断手法で次 blocker を surface → 繰り返し。
+11. [ ] commit + push（dev/nelisp-emacs feat/doc142-gate5-nemacs）。worklog 記録。
