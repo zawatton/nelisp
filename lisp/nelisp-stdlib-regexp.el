@@ -135,6 +135,8 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
          ((eq d ?S)
           (let ((j (+ i 2))) (when (< j n) (setq j (1+ j)))
                (cons (list :space t) j)))
+         ((eq d 96) (cons (list :bos) (+ i 2)))  ;; \` = beginning of string
+         ((eq d 39) (cons (list :eos) (+ i 2)))  ;; \' = end of string
          (t (cons (list :lit d) (+ i 2))))))
      (t (cons (list :lit c) (1+ i))))))
 
@@ -182,6 +184,8 @@ Does NOT continue to any rest (used for one repetition)."
      ((eq tag :space) (and (< pos n) (let ((w (nlre--space-p (aref s pos)))) (if (nth 1 node) (not w) w)) (1+ pos)))
      ((eq tag :bol) (and (or (= pos 0) (eq (aref s (1- pos)) ?\n)) pos))
      ((eq tag :eol) (and (or (= pos n) (eq (aref s pos) ?\n)) pos))
+     ((eq tag :bos) (and (= pos 0) pos))
+     ((eq tag :eos) (and (= pos n) pos))
      (t nil))))
 
 (defun nlre--match-list (nodes s pos n)
