@@ -11473,14 +11473,16 @@ supplies the address, so removing the fixed reservation no longer breaks
 the embedded metadata pointers.
 
 x86_64: `LEA rax, [rip + disp32]' (REX.W 0x8D /5) + a pc32 reloc with
-addend -4 (the CPU's RIP base = the byte after the disp32).  aarch64
-would need ADRP+ADD or a literal-pool load; until that lands the arm64
-standalone path keeps its fixed control-block base, so emitting
-`data-addr' on aarch64 is a compiler bug -> signal."
+addend -4 (the CPU's RIP base = the byte after the disp32).  aarch64:
+`ADRP x0, NAME' + `ADD x0, x0, #:lo12:NAME' with the standard
+R_AARCH64_ADR_PREL_PG_HI21 / R_AARCH64_ADD_ABS_LO12_NC relocation
+pair, giving GOT-less ±4 GiB page-relative materialization of an
+external data symbol."
   (let ((name (symbol-name (nelisp-phase47-compiler--ir-get node :name))))
     (if (eq nelisp-phase47-compiler--arch 'aarch64)
-        (signal 'nelisp-phase47-compiler-error
-                (list :data-addr-aarch64-unsupported name))
+        (progn
+          (nelisp-asm-arm64-adrp buf 'x0 name)
+          (nelisp-asm-arm64-add-abs-lo12-nc buf 'x0 'x0 name))
       ;; LEA rax, [rip + disp32]: REX.W=0x48, opcode 0x8D,
       ;; ModRM mod=00 reg=rax(000) rm=101(RIP-rel) = 0x05.
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8D #x05))
@@ -16035,11 +16037,11 @@ register budgeting while ELF/Mach-O keep SysV."
              (labels (if (eq arch 'aarch64)
                          (nelisp-asm-arm64-buffer-labels buf)
                        (nelisp-asm-x86_64-buffer-labels buf)))
-             ;; Doc 100 §100.A: extract external relocs (= plt32 ones
-             ;; emitted by `--emit-extern-call').  Each surfaced reloc
-             ;; must also have a matching SHN_UNDEF symtab entry in
-             ;; the output `.o', or the ELF writer's reloc lookup
-             ;; loop signals `relocation references unknown symbol'.
+             ;; Extract external relocs (= extern-call / data-addr on
+             ;; arm64).  Each surfaced reloc must also have a matching
+             ;; SHN_UNDEF symtab entry in the output `.o', or the object
+             ;; writer's reloc lookup loop signals `relocation
+             ;; references unknown symbol'.
              (raw-relocs (if (eq arch 'aarch64)
                              (nelisp-asm-arm64-buffer-relocs buf)
                            (nelisp-asm-x86_64-extract-relocs buf)))
@@ -16059,7 +16061,9 @@ register budgeting while ELF/Mach-O keep SysV."
                 (mapcar (lambda (r) (plist-get r :symbol))
                         (cl-remove-if-not
                          (lambda (r)
-                           (memq (plist-get r :type) '(pc32 plt32 abs64 b26-pc)))
+                           (memq (plist-get r :type)
+                                 '(pc32 plt32 abs64 b26-pc
+                                   adr-prel-pg-hi21 add-abs-lo12-nc)))
                          relocs)))
                #'string<))
              ;; Only the user-defined defun names should appear as

@@ -252,6 +252,26 @@
      (nelisp-link-apply-reloc bytes reloc tab 0)
      :type 'nelisp-link--branch26-overflow)))
 
+(ert-deftest nelisp-link-adrp-add-reloc-pair-patches-arm64-data-addr ()
+  "ADRP+ADD relocs materialize an external data symbol address in x0."
+  (let* ((tab (nelisp-link-symtab-make))
+         (_ (nelisp-link-symtab-add
+             tab (nelisp-link-symbol "nl_ctrl_block" #x401ABC
+                                     :section 'data :type 'object)))
+         (bytes (nelisp-link-test--ub
+                 #x00 #x00 #x00 #x90
+                 #x00 #x00 #x00 #x91))
+         (relocs (list (nelisp-link-reloc 0 'adr-prel-pg-hi21 "nl_ctrl_block")
+                       (nelisp-link-reloc 4 'add-abs-lo12-nc "nl_ctrl_block")))
+         (out (nelisp-link-apply-relocs bytes relocs tab #x400000)))
+    ;; Symbol 0x401ABC from a section at 0x400000:
+    ;;   ADRP page delta = +1 page -> 0xB0000000
+    ;;   ADD  lo12      = 0xABC    -> 0x912AF000
+    (should (equal out
+                   (nelisp-link-test--ub
+                    #x00 #x00 #x00 #xB0
+                    #x00 #xF0 #x2A #x91)))))
+
 ;; ---- §93.a (4) multi-reloc ----
 
 (ert-deftest nelisp-link-apply-relocs-three-entries ()

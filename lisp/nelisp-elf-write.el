@@ -104,6 +104,10 @@
 (defconst nelisp-elf--r-x86-64-64    1 "R_X86_64_64 (= 64-bit absolute).")
 (defconst nelisp-elf--r-x86-64-pc32  2 "R_X86_64_PC32 (= 32-bit PC-relative).")
 (defconst nelisp-elf--r-x86-64-plt32 4 "R_X86_64_PLT32 (= 32-bit PC-rel via PLT).")
+(defconst nelisp-elf--r-aarch64-adr-prel-pg-hi21 275
+  "R_AARCH64_ADR_PREL_PG_HI21 (= ADRP page-relative hi21).")
+(defconst nelisp-elf--r-aarch64-add-abs-lo12-nc 277
+  "R_AARCH64_ADD_ABS_LO12_NC (= ADD absolute low 12 bits).")
 (defconst nelisp-elf--r-aarch64-call26 283 "R_AARCH64_CALL26 (= BL imm26).")
 
 (defconst nelisp-elf--shn-undef 0 "SHN_UNDEF (= unresolved symbol).")
@@ -757,13 +761,17 @@ Returns the number of bytes written (= 24)."
 (defun nelisp-elf--reloc-type-code (sym)
   "Translate the user-facing reloc TYPE symbol SYM to its ELF constant.
 Supported: `pc32' (= R_X86_64_PC32), `abs64' (= R_X86_64_64),
-`plt32' (= R_X86_64_PLT32), `b26-pc' (= R_AARCH64_CALL26).
-Raw integers pass through unchanged."
+`plt32' (= R_X86_64_PLT32), `adr-prel-pg-hi21' (=
+R_AARCH64_ADR_PREL_PG_HI21), `add-abs-lo12-nc' (=
+R_AARCH64_ADD_ABS_LO12_NC), `b26-pc' (= R_AARCH64_CALL26).  Raw
+integers pass through unchanged."
   (cond
    ((integerp sym) sym)
    ((eq sym 'pc32)  nelisp-elf--r-x86-64-pc32)
    ((eq sym 'abs64) nelisp-elf--r-x86-64-64)
    ((eq sym 'plt32) nelisp-elf--r-x86-64-plt32)
+   ((eq sym 'adr-prel-pg-hi21) nelisp-elf--r-aarch64-adr-prel-pg-hi21)
+   ((eq sym 'add-abs-lo12-nc) nelisp-elf--r-aarch64-add-abs-lo12-nc)
    ((eq sym 'b26-pc) nelisp-elf--r-aarch64-call26)
    (t (error "nelisp-elf: unknown relocation type %S" sym))))
 
