@@ -423,6 +423,27 @@
         (setq b (1- b)))
       (substring s a b))))
 
+;; Doc 143 common modern-elisp pure utilities.
+(unless (fboundp 'alist-get)
+  (defun alist-get (key alist &optional default _remove _testfn)
+    (let ((e (assq key alist))) (if e (cdr e) default))))
+(unless (fboundp 'take)
+  (defun take (n list)
+    (let ((acc nil) (i 0))
+      (while (and (< i n) list)
+        (setq acc (cons (car list) acc)) (setq list (cdr list)) (setq i (1+ i)))
+      (nreverse acc))))
+(unless (fboundp 'ensure-list)
+  (defun ensure-list (x) (if (listp x) x (list x))))
+(unless (fboundp 'flatten-tree)
+  (defun flatten-tree (tree)
+    (cond ((null tree) nil)
+          ((consp tree) (append (flatten-tree (car tree)) (flatten-tree (cdr tree))))
+          (t (list tree)))))
+(unless (fboundp 'string-join)
+  (defun string-join (strings &optional separator)
+    (mapconcat (lambda (x) x) strings (or separator ""))))
+
 ;; Doc 143: purecopy (no pure space -> identity), destructive nconc (setcdr),
 ;; princ/terpri (via the wired printer + nelisp--write-stdout-bytes).
 (defun purecopy (x) x)
