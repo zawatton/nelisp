@@ -38,11 +38,15 @@ remaining gap against the Goal).
   turns every former fixed-base metadata immediate into a runtime base load.
   *Verified at runtime*: the built reader's arena base is an mmap address, not
   =0x10000000= (chunk-growth smoke + arena-stats).
-- *Residual*: macOS and Windows still use target-specific fixed bases. Windows
-  shares the x86_64 =pc32= reloc and can adopt the same =VirtualAlloc(NULL)= +
-  =chunk-arena-rewrite= path (needs a Windows runtime to execution-verify);
-  macOS-aarch64 first needs an arm64 =data-addr= (ADRP+ADD) primitive (today
-  it signals unsupported in the Phase-47 backend).
+- *Residual*: macOS and Windows still use target-specific fixed bases. The
+  Phase-47 prerequisite is now in place on BOTH: x86_64 =pc32= (Windows) and
+  aarch64 =data-addr= via ADRP+ADD (macOS, R_AARCH64_ADR_PREL_PG_HI21 /
+  ADD_ABS_LO12_NC, shipped 2026-06-05). The remaining work is purely the
+  =standalone-build.el= wiring — extend =chunk-arena-rewrite= + a
+  =VirtualAlloc(NULL)= / =mmap(NULL)= arena-init to those targets so they use a
+  driver-owned =nl_arena_base= like linux. This is structure-verifiable here;
+  execution verification needs a Windows / macOS runtime (absent on the linux
+  dev host).
 - Arena pressure is observable through =(nelisp--arena-stats)=.
 
 The current pressure tuple is:
