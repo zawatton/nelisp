@@ -302,6 +302,12 @@
       (setq i (1+ i)))
     out))
 
+;; Doc 143 (pure, no-helper primitives): high-frequency, dependency-free.
+(defun natnump (x) (and (integerp x) (>= x 0)))
+(defun int-to-string (n) (number-to-string n))
+(defun prefix-numeric-value (arg)
+  (cond ((null arg) 1) ((eq arg '-) -1) ((consp arg) (car arg)) (t arg)))
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
