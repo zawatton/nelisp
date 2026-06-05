@@ -3531,11 +3531,26 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
   nelisp-standalone--windows-reader-imports)
 
 (defun nelisp-standalone--reader-repl-prelude-source ()
-  "Return source evaluated once before the standalone reader REPL loop."
+  "Return source evaluated once before the standalone reader REPL loop.
+Concatenates the stdlib prelude with the pure-elisp regexp matcher (Doc 143)
+and the `string-match' family aliases over it."
   (with-temp-buffer
     (insert-file-contents
      (expand-file-name "scripts/nelisp-stdlib-prelude.el"
                        nelisp-standalone--repo-root))
+    (goto-char (point-max))
+    (insert "\n;; --- Doc 143: regexp matcher + string-match family ---\n")
+    (insert-file-contents
+     (expand-file-name "lisp/nelisp-stdlib-regexp.el"
+                       nelisp-standalone--repo-root))
+    (goto-char (point-max))
+    (insert "\n(defun string-match (re s &optional start) (nlre-string-match re s start))\n"
+            "(defun string-match-p (re s &optional start) (nlre-string-match re s start))\n"
+            "(defun match-beginning (n) (nlre-match-beginning n))\n"
+            "(defun match-end (n) (nlre-match-end n))\n"
+            "(defun match-string (n &optional str)\n"
+            "  (let ((b (nlre-match-beginning n)) (e (nlre-match-end n)))\n"
+            "    (if (and str b e) (substring str b e) nil)))\n")
     (buffer-string)))
 
 (defun nelisp-standalone--reader-repl-prelude-forms (fbuf src cursor result pool
