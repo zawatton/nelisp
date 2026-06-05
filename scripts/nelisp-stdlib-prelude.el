@@ -2606,6 +2606,27 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; vectorp-based recordp is sufficient here (replaces the nil stub).
 (defun recordp (x) (vectorp x))
 
+;; Hash-table predicate + iteration for the reader's builtin hash table.
+;; The builtin `make-hash-table' returns the cons pair (MARKER . ALIST) where
+;; MARKER is the integer 0 and ALIST is ((KEY . VALUE) ...).  `make-hash-table'
+;; / `gethash' / `puthash' / `hash-table-count' ship as native builtins, but
+;; `maphash' ships only as a no-op stub and `hash-table-p' is absent -- an
+;; incomplete substrate, not a minimal one.  Complete it here in the core
+;; stdlib (these are the ops over the core-owned representation): the elisp
+;; `maphash' overrides the stub, and `hash-table-p' keys off the integer-0 car
+;; (an alist has a cons car, a plist a keyword car, so the discrimination is
+;; clean for the shapes Elisp passes to `hash-table-p').
+(defun hash-table-p (x)
+  (and (consp x) (integerp (car x)) (eq (car x) 0)
+       (let ((c (cdr x))) (or (null c) (and (consp c) (consp (car c)))))))
+(defun maphash (fn table)
+  (let ((node (cdr table)))
+    (while (consp node)
+      (let ((entry (car node)))
+        (when (consp entry) (funcall fn (car entry) (cdr entry))))
+      (setq node (cdr node)))
+    nil))
+
 (defun nelisp--prn-string-escaped (s)
   (let ((out nil) (i 0) (n (length s)))
     (while (< i n)
