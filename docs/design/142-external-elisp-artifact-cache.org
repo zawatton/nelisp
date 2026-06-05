@@ -1,10 +1,28 @@
 #+TITLE: Doc 142 - External Elisp native/bytecode artifact cache command surface
 #+DATE: 2026-06-04
-#+STATUS: DRAFT
+#+STATUS: SHIPPED
 
 * Status
 
-- *State*: DRAFT 2026-06-04.  =.nelc= bytecode (§6.1), =.neln= native
+- *COMPLETE 2026-06-05* (branch =feat/doc-140-142-complete=): *all 9 acceptance
+  gates pass* — Doc 142 is shipped.
+  - Gates 1-4, 7, 8, 9 (=.nelc= compile/load/verify, hash-table source, cache
+    invalidation, speed, =.elc= GNU-Emacs compat): =test/nelisp-artifact-test.el=
+    15/15 green.
+  - Native EXEC lanes (calln host-proof + in-process reloc-free):
+    =test/nelisp-artifact-native-exec-test.el= 2/2 green.
+  - *Gate 5* (=nelisp-emacs= vendor source replay == =.nelc= artifact load,
+    same proof): =make gate5= green — format-spec P1==P2==(t t "x"),
+    =source-read-paths=nil= (warm artifact load reads no source).  The
+    dependency-ordered set (=make vendor-nelc-cache-set=) extends this to the
+    format-spec -> org-version -> org-macs foundation chain (~6.7x warm).
+  - *Gate 6* (native artifact load, real runtime): the standalone reader
+    =--neln-selftest= runs the in-process native EXEC of a builtin-calling
+    defun via the real =nelisp_aot_builtin_call1= path and exits 0.
+  - Remaining BEYOND-acceptance enhancement (not required by the gates):
+    general native EXEC for arbitrary builtin/boundary defuns (vs the proven
+    call1/calln subset) — tracked as future work, does not block Doc 142.
+- *State (history)*: DRAFT 2026-06-04.  =.nelc= bytecode (§6.1), =.neln= native
   compile+bundle and leaf-EXEC (§6.4), and =.elc= GNU Emacs compatibility
   (§6.2) all IMPLEMENTED 2026-06-04 in =lisp/nelisp-artifact.el=.  Acceptance
   gates 1-4, 7, 8, 9 pass; the remaining gap is general native EXEC for
