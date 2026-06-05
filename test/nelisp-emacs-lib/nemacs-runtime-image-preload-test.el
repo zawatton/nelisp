@@ -912,7 +912,7 @@
              nil t))
     (goto-char (point-min))
     (should (search-forward
-             "\"$(NELISP_BIN)\" \"$$tmp\""
+             "\"$(NELISP_BIN)\" --load \"$$tmp\""
              nil t))
     (goto-char (point-min))
     (should-not (search-forward
@@ -947,6 +947,18 @@
     (should (search-forward "-l vendor-load-standalone-replay" nil t))
     (goto-char (point-min))
     (should (search-forward "-f vendor-load-standalone-batch" nil t))
+    (goto-char (point-min))
+    (should (search-forward "diagnose-vendor-repl-replay: build-nelisp-bootstrap" nil t))
+    (goto-char (point-min))
+    (should (search-forward "vendor-repl-standalone-bootstrap-repl" nil t))
+    (goto-char (point-min))
+    (should (search-forward "vendor-repl-standalone-prelude" nil t))
+    (goto-char (point-min))
+    (should (search-forward "vendor-repl-standalone-detail-form" nil t))
+    (goto-char (point-min))
+    (should (search-forward "-l vendor-repl-standalone-replay" nil t))
+    (goto-char (point-min))
+    (should (search-forward "-f vendor-repl-standalone-batch" nil t))
     (goto-char (point-min))
     (should-not (search-forward
                  "standalone-reader does not provide eval FORM yet"

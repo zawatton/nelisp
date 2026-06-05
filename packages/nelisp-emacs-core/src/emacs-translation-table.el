@@ -13,49 +13,89 @@
 
 ;;; Code:
 
-(defvar translation-table-vector []
-  "Vector of registered lightweight translation tables.")
+(unless (boundp 'translation-table-vector)
+  (setq translation-table-vector nil))
 
-(defvar translation-table-for-input nil
-  "Input translation table placeholder for standalone NeLisp.")
+(unless (boundp 'translation-table-for-input)
+  (setq translation-table-for-input nil))
+
+(setq emacs-translation-table--max-vector-key #x10ffff)
+(setq emacs-translation-table--vector-density-factor 8)
 
 (unless (fboundp 'decode-char)
   (defun decode-char (_charset code-point &optional _restriction)
-    "Return CODE-POINT as a lightweight decoded character.
-This is a compatibility fallback for standalone NeLisp.  It preserves
-stable integer identity for generated table keys until full charset
-decoding is available in Layer 1."
     code-point))
 
-(defun emacs-translation-table--alist->hash (alist)
-  "Return a hash-table translation table populated from ALIST."
-  (let ((table (make-hash-table :test 'equal)))
+(defun emacs-translation-table--integer-alist-max-key (alist)
+  (let ((max-key -1)
+        (ok t))
+    (dolist (entry alist)
+      (cond
+       ((not (consp entry))
+        (setq ok nil))
+       ((and (integerp (car entry))
+             (>= (car entry) 0)
+             (<= (car entry) emacs-translation-table--max-vector-key))
+        (when (> (car entry) max-key)
+          (setq max-key (car entry))))
+       (t
+        (setq ok nil))))
+    (and ok max-key)))
+
+(defun emacs-translation-table--alist-vector (alist max-key)
+  (let ((table (make-vector (1+ max-key) nil)))
+    (dolist (entry alist)
+      (aset table (car entry) (cdr entry)))
+    table))
+
+(defun emacs-translation-table--copy-alist (alist)
+  (let (out)
     (dolist (entry alist)
       (when (consp entry)
-        (puthash (car entry) (cdr entry) table)))
-    table))
+        (push (cons (car entry) (cdr entry)) out)))
+    (nreverse out)))
+
+(defun emacs-translation-table--alist-table (alist)
+  (let ((max-key (emacs-translation-table--integer-alist-max-key alist)))
+    (if (and max-key
+             (<= (1+ max-key)
+                 (* (length alist)
+                    emacs-translation-table--vector-density-factor)))
+        (emacs-translation-table--alist-vector alist max-key)
+      (emacs-translation-table--copy-alist alist))))
+
+(defun emacs-translation-table--retain-source-alist-p (symbol)
+  (eq symbol 'eucjp-ms-encode))
 
 (unless (fboundp 'make-translation-table-from-alist)
   (defun make-translation-table-from-alist (alist)
-    "Create a lightweight translation table from ALIST."
-    (emacs-translation-table--alist->hash alist)))
+    (emacs-translation-table--alist-table alist)))
 
 (unless (fboundp 'make-translation-table)
   (defun make-translation-table (&rest args)
-    "Create a lightweight translation table from ARGS.
-Only the common alist form is modeled in standalone NeLisp."
-    (emacs-translation-table--alist->hash
+    (emacs-translation-table--alist-table
      (if (and (= (length args) 1) (listp (car args)))
          (car args)
        args))))
 
 (unless (fboundp 'define-translation-table)
   (defun define-translation-table (symbol &rest args)
-    "Register SYMBOL as a lightweight translation table."
-    (let* ((table (if (and (= (length args) 1)
-                           (hash-table-p (car args)))
-                      (car args)
-                    (apply #'make-translation-table args)))
+    (let* ((single-arg-p (= (length args) 1))
+           (source (and single-arg-p (car args)))
+           (table (cond
+                   ((and single-arg-p (hash-table-p source))
+                    source)
+                   ((and single-arg-p
+                         (listp source)
+                         (emacs-translation-table--retain-source-alist-p
+                          symbol))
+                    ;; Vendored generated tables reverse the decode alist in
+                    ;; place and immediately register the encode table.  The
+                    ;; reversed list is no longer mutated, so retaining it
+                    ;; avoids a second large traversal in persistent REPLs.
+                    source)
+                   (t
+                    (apply #'make-translation-table args))))
            (id (length translation-table-vector)))
       (put symbol 'translation-table table)
       (put symbol 'translation-table-id id)
@@ -64,7 +104,6 @@ Only the common alist form is modeled in standalone NeLisp."
       symbol)))
 
 (defun emacs-translation-table-get (table key)
-  "Return TABLE's translation for KEY, or nil."
   (let ((object (if (symbolp table)
                     (get table 'translation-table)
                   table)))

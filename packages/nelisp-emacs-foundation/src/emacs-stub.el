@@ -184,6 +184,12 @@ Recognised values (list grows as backends ship):
 Provided for parity with the canonical Emacs name (= startup code
 reads it to detect GUI mode without round-tripping `(window-system)')."))
 
+(unless (boundp 'user-mail-address)
+  (defvar user-mail-address nil))
+
+(unless (boundp 'user-full-name)
+  (defvar user-full-name nil))
+
 (defun emacs-display-window-system (&optional frame)
   "Return the active window-system symbol (= `emacs-display-system'),
 ignoring FRAME (= future per-frame override slot)."
@@ -265,6 +271,9 @@ single-frame backends (= some bare-minimum TUIs) ship."
 (unless (boundp 'font-lock-keywords)
   (defvar font-lock-keywords nil))
 
+(unless (boundp 'cpp-font-lock-keywords)
+  (defvar cpp-font-lock-keywords nil))
+
 (unless (fboundp 'font-lock-fontify-buffer)
   (defun font-lock-fontify-buffer () nil))
 
@@ -307,13 +316,24 @@ single-frame backends (= some bare-minimum TUIs) ship."
   (defun set-default (symbol value)
     (set symbol value)))
 
-(unless (fboundp 'make-variable-buffer-local)
+(when (or (not (boundp 'emacs-version))
+          (get 'make-variable-buffer-local 'emacs-stub-bulk)
+          (not (fboundp 'make-variable-buffer-local)))
   (defun make-variable-buffer-local (variable)
-    "Stub: no-op (NeLisp standalone has no buffer-local subsystem)."
-    (ignore variable) nil))
+    "Stub: accept VARIABLE and return it.
+Even without a full buffer-local subsystem, callers such as
+`setq-local' depend on Emacs's contract that this returns the symbol
+that can then be passed to `set'."
+    variable))
 
-(unless (fboundp 'make-local-variable)
-  (defun make-local-variable (variable) (ignore variable) nil))
+(when (or (not (boundp 'emacs-version))
+          (get 'make-local-variable 'emacs-stub-bulk)
+          (not (fboundp 'make-local-variable)))
+  (defun make-local-variable (variable)
+    "Stub: accept VARIABLE and return it.
+This keeps `(set (make-local-variable 'foo) value)' from attempting to
+set nil or another constant symbol in standalone NeLisp."
+    variable))
 
 (unless (fboundp 'local-variable-p)
   (defun local-variable-p (variable &optional buffer) (ignore variable buffer) nil))
@@ -326,6 +346,11 @@ single-frame backends (= some bare-minimum TUIs) ship."
   (defmacro condition-case-unless-debug (var bodyform &rest handlers)
     "Stub: route through plain condition-case (= NeLisp has no debug-on-error toggle)."
     (cons 'condition-case (cons var (cons bodyform handlers)))))
+
+(unless (fboundp 'with-silent-modifications)
+  (defmacro with-silent-modifications (&rest body)
+    "Stub: evaluate BODY without modified-flag bookkeeping."
+    (cons 'progn body)))
 
 ;; Quoting helpers
 (unless (fboundp 'kbd)
@@ -368,6 +393,89 @@ single-frame backends (= some bare-minimum TUIs) ship."
   (defmacro defvar-local (var val &optional docstring)
     `(progn (defvar ,var ,val ,docstring)
             (make-variable-buffer-local ',var))))
+
+;;;; --- version helpers -----------------------------------------------------
+
+(defun emacs-stub--version-skip-nondigits (string index)
+  "Return first digit position in STRING at or after INDEX."
+  (let ((len (length string)))
+    (while (and (< index len)
+                (let ((char (aref string index)))
+                  (or (< char ?0) (> char ?9))))
+      (setq index (1+ index)))
+    index))
+
+(defun emacs-stub--version-read-component (string index)
+  "Read one numeric version component from STRING at INDEX.
+Return (VALUE . NEXT-INDEX), where VALUE is nil when no component remains."
+  (let ((len (length string))
+        (value 0)
+        (seen nil))
+    (setq index (emacs-stub--version-skip-nondigits string index))
+    (while (and (< index len)
+                (let ((char (aref string index)))
+                  (and (>= char ?0) (<= char ?9))))
+      (setq value (+ (* value 10) (- (aref string index) ?0)))
+      (setq seen t)
+      (setq index (1+ index)))
+    (cons (and seen value) index)))
+
+(defun emacs-stub--version-compare (v1 v2)
+  "Compare V1 and V2 as dotted numeric version strings.
+Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
+  (let ((s1 (if (stringp v1) v1 (format "%s" v1)))
+        (s2 (if (stringp v2) v2 (format "%s" v2)))
+        (i1 0)
+        (i2 0)
+        (result 0)
+        (done nil))
+    (while (not done)
+      (setq i1 (emacs-stub--version-skip-nondigits s1 i1))
+      (setq i2 (emacs-stub--version-skip-nondigits s2 i2))
+      (if (and (>= i1 (length s1)) (>= i2 (length s2)))
+          (setq done t)
+        (let* ((c1 (emacs-stub--version-read-component s1 i1))
+               (c2 (emacs-stub--version-read-component s2 i2))
+               (n1 (or (car c1) 0))
+               (n2 (or (car c2) 0)))
+          (setq i1 (cdr c1))
+          (setq i2 (cdr c2))
+          (cond
+           ((< n1 n2) (setq result -1 done t))
+           ((> n1 n2) (setq result 1 done t))))))
+    result))
+
+(unless (fboundp 'version<)
+  (defun version< (v1 v2)
+    "Return non-nil when version string V1 is older than V2."
+    (< (emacs-stub--version-compare v1 v2) 0)))
+
+(unless (fboundp 'version<=)
+  (defun version<= (v1 v2)
+    "Return non-nil when version string V1 is not newer than V2."
+    (not (version< v2 v1))))
+
+(unless (fboundp 'combine-change-calls)
+  (defmacro combine-change-calls (_beg _end &rest body)
+    "Standalone fallback: evaluate BODY without buffer-change coalescing."
+    (cons 'progn body)))
+
+(unless (fboundp 'define-advice)
+  (defmacro define-advice (symbol args &rest body)
+    "Standalone fallback for `nadvice.el' `define-advice'.
+Define the generated advice function and call `advice-add'.  The current
+standalone `advice-add' is load-time-only, so this preserves definitions
+without attempting to weave advice into existing function cells."
+    (let* ((how (car args))
+           (arglist (cadr args))
+           (name (caddr args))
+           (props (cdddr args))
+           (advice (intern (concat (symbol-name symbol)
+                                   "@"
+                                   (symbol-name name)))))
+      `(prog1
+           (defun ,advice ,arglist ,@body)
+         (advice-add ',symbol ,how #',advice ,@(and props `(',props)))))))
 
 ;; Buffer search primitives — all stubs (= no real buffer text in standalone)
 (unless (fboundp 're-search-forward)
@@ -463,6 +571,27 @@ single-frame backends (= some bare-minimum TUIs) ship."
 (unless (fboundp 'line-number-at-pos)
   (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1))
 
+(unless (fboundp 'line-number-display-width)
+  (defun line-number-display-width (&optional pixelwise)
+    "Standalone fallback line-number display width.
+Return one canonical column by default; callers such as
+`display-line-numbers-update-width' only need a stable positive width
+when no real redisplay window is available."
+    (ignore pixelwise)
+    1))
+
+(unless (boundp 'display-line-numbers)
+  (defvar display-line-numbers nil))
+
+(unless (boundp 'display-line-numbers-width)
+  (defvar display-line-numbers-width nil))
+
+(unless (boundp 'display-line-numbers-widen)
+  (defvar display-line-numbers-widen nil))
+
+(unless (boundp 'display-line-numbers-current-absolute)
+  (defvar display-line-numbers-current-absolute t))
+
 (unless (fboundp 'eobp)
   (defun eobp () t))
 
@@ -518,6 +647,12 @@ single-frame backends (= some bare-minimum TUIs) ship."
 (unless (fboundp 'with-temp-buffer)
   (defmacro with-temp-buffer (&rest body) (cons 'progn body)))
 
+(when (or (emacs-stub--install-function-p 'bound-and-true-p)
+          (get 'bound-and-true-p 'emacs-stub-bulk))
+  (defmacro bound-and-true-p (var)
+    "Return VAR's value if VAR is bound and non-nil."
+    `(and (boundp ',var) ,var)))
+
 (unless (fboundp 'narrow-to-region)
   (defun narrow-to-region (start end) (ignore start end) nil))
 
@@ -526,16 +661,27 @@ single-frame backends (= some bare-minimum TUIs) ship."
 
 ;; Syntax tables
 (unless (fboundp 'standard-syntax-table)
-  (defun standard-syntax-table () nil))
+  (defun standard-syntax-table () '(syntax-table)))
 
 (unless (fboundp 'syntax-table)
-  (defun syntax-table () nil))
+  (defun syntax-table () (standard-syntax-table)))
 
 (unless (fboundp 'set-syntax-table)
   (defun set-syntax-table (table) (ignore table) nil))
 
+(when (or (not (fboundp 'make-syntax-table))
+          (get 'make-syntax-table 'emacs-stub-bulk))
+  (defun make-syntax-table (&optional table)
+    "Standalone load-time fallback for syntax table objects."
+    (list 'syntax-table table)))
+
 (unless (fboundp 'modify-syntax-entry)
   (defun modify-syntax-entry (char newentry &optional table) (ignore char newentry table) nil))
+
+(unless (boundp 'outline-mode-syntax-table)
+  (defvar outline-mode-syntax-table (standard-syntax-table)))
+(unless (boundp 'text-mode-syntax-table)
+  (defvar text-mode-syntax-table (standard-syntax-table)))
 
 ;; `set' is a special form in NeLisp bootstrap but appears as void-function
 ;; in some funcall contexts.  Polyfill by routing through `eval' + `setq'.
@@ -768,6 +914,83 @@ single-frame backends (= some bare-minimum TUIs) ship."
     (ignore order)
     (add-to-list list-var element)))
 
+;;;; --- regex/menu load-time helpers --------------------------------------
+
+(unless (fboundp 'regexp-quote)
+  (defun regexp-quote (string)
+    "Minimal regexp quote for standalone load-time keyword tables."
+    (let ((i 0)
+          (out ""))
+      (while (< i (length string))
+        (let ((ch (aref string i)))
+          (when (memq ch '(?\\ ?. ?* ?+ ?? ?^ ?$ ?\[ ?\] ?\( ?\) ?{ ?} ?|))
+            (setq out (concat out "\\")))
+          (setq out (concat out (string ch))))
+        (setq i (1+ i)))
+      out)))
+
+(unless (fboundp 'regexp-opt)
+  (defun regexp-opt (strings &optional paren)
+    "Minimal `regexp-opt' fallback for standalone keyword tables."
+    (let ((body (mapconcat #'regexp-quote strings "\\|")))
+      (if paren
+          (concat "\\(?:" body "\\)")
+        body))))
+
+(unless (fboundp 'easy-menu-define)
+  (defmacro easy-menu-define (&rest _args)
+    "Standalone load-time fallback: ignore menu declarations."
+    nil))
+
+(unless (fboundp 'easy-menu-add-item)
+  (defun easy-menu-add-item (&rest _args)
+    "Standalone load-time fallback: ignore menu mutations."
+    nil))
+
+(unless (fboundp 'current-idle-time)
+  (defun current-idle-time ()
+    "Standalone fallback: no UI event loop means no idle-time sample."
+    nil))
+
+(unless (fboundp 'shell-command-to-string)
+  (defun shell-command-to-string (command)
+    "Standalone fallback: do not run external shell commands."
+    (ignore command)
+    ""))
+
+(unless (fboundp 'call-process-shell-command)
+  (defun call-process-shell-command (&rest _args)
+    "Standalone fallback: report external shell command failure."
+    1))
+
+(unless (fboundp 'syntax-propertize-rules)
+  (defmacro syntax-propertize-rules (&rest _rules)
+    "Standalone fallback: return an inert syntax propertizer."
+    `(lambda (&rest _args) nil)))
+
+(unless (fboundp 'cc-require)
+  (defmacro cc-require (&rest _features)
+    "Standalone load-time fallback: ignore CC Mode compile-time requires."
+    nil))
+
+(unless (fboundp 'cc-provide)
+  (defmacro cc-provide (feature)
+    "Standalone load-time fallback: provide FEATURE for CC Mode fragments."
+    `(provide ,feature)))
+
+(unless (boundp 'c-style-alist)
+  (defvar c-style-alist nil))
+
+(unless (fboundp 'c-add-style)
+  (defun c-add-style (style description &optional set-p)
+    "Standalone load-time fallback: remember a CC Mode STYLE."
+    (ignore set-p)
+    (let ((existing (assoc style c-style-alist)))
+      (if existing
+          (setcdr existing description)
+        (setq c-style-alist (cons (cons style description) c-style-alist))))
+    style))
+
 ;; Load the auto-generated bulk stubs last so emacs-stub.el's specific
 ;; (= more accurate) implementations above take precedence — bulk fills
 ;; only the remaining `(unless (fboundp X) ...)' gaps.  Without this
@@ -794,8 +1017,11 @@ single-frame backends (= some bare-minimum TUIs) ship."
 
 (unless (fboundp 'gv-define-simple-setter)
   (defmacro gv-define-simple-setter (name setter &optional fix)
-    "Stub: no-op."
-    (ignore name setter fix) nil))
+    "Stub: register NAME as a simple generalized variable setter."
+    (ignore fix)
+    (list 'put (list 'quote name)
+          (list 'quote 'cl-simple-setter)
+          (list 'quote setter))))
 
 (unless (fboundp 'gv-letplace)
   (defmacro gv-letplace (vars place &rest body)
@@ -988,20 +1214,57 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
         (list 'let (list (list value-sym expr))
               (cons 'cond forward))))))
 
+(defun emacs-stub--pcase-let-binding (binding)
+  "Return (TEMP TEST BINDINGS) for a single pcase-let BINDING."
+  (let* ((pattern (car binding))
+         (expr (car (cdr binding)))
+         (value-sym (make-symbol "--pcase-let-value--"))
+         (built (emacs-stub--pcase-test pattern value-sym)))
+    (list (list value-sym expr) (car built) (cdr built))))
+
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)
-    "Stub: equivalent to plain `let'."
-    (cons 'let (cons bindings body))))
+    "Minimal `pcase-let' supporting the local pcase pattern subset."
+    (let ((forms body)
+          (rev-bindings nil))
+      (dolist (binding bindings)
+        (push binding rev-bindings))
+      (dolist (binding rev-bindings)
+        (let* ((built (emacs-stub--pcase-let-binding binding))
+               (temp-binding (car built))
+               (test (car (cdr built)))
+               (pattern-bindings (car (cdr (cdr built)))))
+          (setq forms
+                (list (list 'let (list temp-binding)
+                            (if pattern-bindings
+                                (list 'when test
+                                      (cons 'let (cons pattern-bindings forms)))
+                              (cons 'when (cons test forms))))))))
+      (if bindings (car forms) (cons 'progn body)))))
 
 (unless (fboundp 'pcase-let*)
   (defmacro pcase-let* (bindings &rest body)
-    "Stub: equivalent to plain `let*'."
-    (cons 'let* (cons bindings body))))
+    "Minimal `pcase-let*' supporting sequential pcase bindings."
+    (if bindings
+        (list 'pcase-let (list (car bindings))
+              (cons 'pcase-let* (cons (cdr bindings) body)))
+      (cons 'progn body))))
 
 (unless (fboundp 'pcase-dolist)
   (defmacro pcase-dolist (spec &rest body)
-    "Stub: equivalent to plain `dolist'."
-    (cons 'dolist (cons spec body))))
+    "Minimal `pcase-dolist' supporting the local pcase pattern subset."
+    (let* ((pattern (car spec))
+           (list-form (car (cdr spec)))
+           (result-form (car (cdr (cdr spec))))
+           (value-sym (make-symbol "--pcase-dolist-value--"))
+           (built (emacs-stub--pcase-test pattern value-sym))
+           (test (car built))
+           (pattern-bindings (cdr built)))
+      (list 'dolist (list value-sym list-form result-form)
+            (if pattern-bindings
+                (list 'when test
+                      (cons 'let (cons pattern-bindings body)))
+              (cons 'when (cons test body)))))))
 
 (unless (featurep 'pcase) (provide 'pcase))
 
@@ -1378,6 +1641,8 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
                   forms)))
         (cons 'progn (nreverse forms))))))
 
+(put 'cl-defstruct 'emacs-stub-placeholder t)
+
 (unless (fboundp 'cl-case)
   (defmacro cl-case (expr &rest cases)
     "Stub: cl-case → equivalent to cond with eql tests."
@@ -1655,9 +1920,50 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
          (or (get variable 'standard-value)
              (get variable 'custom-autoload)))))
 
+(unless (fboundp 'defgroup)
+  (defmacro defgroup (name members doc &rest args)
+    "Standalone load-time fallback for Custom group declarations."
+    `(progn
+       (put ',name 'custom-group ',members)
+       (put ',name 'group-documentation ,doc)
+       (put ',name 'custom-args ',args)
+       ',name)))
+
+(unless (fboundp 'defcustom)
+  (defmacro defcustom (symbol standard doc &rest args)
+    "Standalone load-time fallback for Custom variable declarations."
+    `(progn
+       (defvar ,symbol ,standard ,doc)
+       (put ',symbol 'standard-value (list ',standard))
+       (put ',symbol 'custom-args ',args)
+       ',symbol)))
+
+(unless (fboundp 'convert-standard-filename)
+  (defun convert-standard-filename (filename)
+    "Standalone fallback for GNU-style standard filename conversion.
+NeLisp currently targets POSIX paths, so no platform-specific rewriting
+is required."
+    filename))
+
+(unless (fboundp 'string-to-list)
+  (defun string-to-list (string)
+    "Return a list of character codes in STRING."
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (let ((i (1- (length string)))
+          chars)
+      (while (>= i 0)
+        (setq chars (cons (aref string i) chars))
+        (setq i (1- i)))
+      chars)))
+
 ;; Phase B5 globals — anvil-server.el / vendor cl-* reach for these as
 ;; `defcustom' defaults / load-path participants.  Empty defaults are
 ;; safe because anvil callers fall back through (or VAR DEFAULT).
+(unless (boundp 'emacs-major-version)
+  (defvar emacs-major-version 29))
+(unless (boundp 'emacs-minor-version)
+  (defvar emacs-minor-version 1))
 (unless (boundp 'user-emacs-directory)
   (defvar user-emacs-directory ""))
 (unless (boundp 'user-init-file)

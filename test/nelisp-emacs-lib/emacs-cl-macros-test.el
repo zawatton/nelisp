@@ -19,7 +19,8 @@
   (should (featurep 'cl-macs))
   (should (featurep 'cl-seq))
   (should (featurep 'cl-extra))
-  (should (featurep 'cl-generic)))
+  (should (featurep 'cl-generic))
+  (should (fboundp 'cl-deftype)))
 
 ;;;; Arglist helpers
 
@@ -44,7 +45,8 @@
   (should (cl-every (lambda (x) (< x 10)) '(1 2 3)))
   (should-not (cl-every (lambda (x) (< x 3)) '(1 2 3)))
   (should (equal (cl-find 3 '(1 2 3 4)) 3))
-  (should (equal (cl-position 3 '(1 2 3 4)) 2)))
+  (should (equal (cl-position 3 '(1 2 3 4)) 2))
+  (should (equal (cl-position-if (lambda (x) (> x 3)) '(1 2 4 5)) 2)))
 
 (ert-deftest emacs-cl-macros-test/cl-remove-if-and-cl-remove-if-not-filter-correctly ()
   (should (equal (cl-remove-if (lambda (x) (= 1 (% x 2))) '(1 2 3 4 5)) '(2 4)))
@@ -68,6 +70,14 @@
     (should (= 1 (cl-decf n 3)))
     (should (equal (progn (cl-pushnew 'a xs) xs) '(b a)))
     (should (equal (progn (cl-pushnew 'c xs) xs) '(c b a)))))
+
+(ert-deftest emacs-cl-macros-test/letrec-and-cl-progv-load-time-contract ()
+  (letrec ((countdown (lambda (n)
+                        (if (= n 0)
+                            42
+                          (funcall countdown (1- n))))))
+    (should (= 42 (funcall countdown 3))))
+  (should (equal (cl-progv nil nil 'ok) 'ok)))
 
 (provide 'emacs-cl-macros-test)
 

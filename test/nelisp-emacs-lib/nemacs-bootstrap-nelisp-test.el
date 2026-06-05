@@ -36,8 +36,8 @@ running the subprocess gate), then the vendored copy populated by
 `make nelisp'.  Sibling and legacy checkouts are deliberately not
 auto-probed here: the nelisp-driver bootstrap is a slow cold-load
 gate and should be entered explicitly via NELISP_HOME.  Returns nil
-when no candidate has a built `target/nelisp-standalone-reader'
-binary."
+when no candidate has a built `target/nelisp' or compatibility
+`target/nelisp-standalone-reader' binary."
   (let* ((vendor (expand-file-name "vendor/nelisp"
                                    nemacs-bootstrap-nelisp-test--repo-root))
          (env (getenv "NELISP_HOME")))
@@ -46,8 +46,10 @@ binary."
       (while (and candidates (not found))
         (let ((dir (car candidates)))
           (when (and dir
-                     (file-executable-p
-                      (expand-file-name "target/nelisp-standalone-reader" dir)))
+                     (or (file-executable-p
+                          (expand-file-name "target/nelisp" dir))
+                         (file-executable-p
+                          (expand-file-name "target/nelisp-standalone-reader" dir))))
             (setq found dir)))
         (setq candidates (cdr candidates)))
       found)))
@@ -64,7 +66,10 @@ binary."
       ((not home)
        (ert-skip "no standalone reader found (set NELISP_HOME or run `make nelisp')"))
       (t
-       (let* ((reader (expand-file-name "target/nelisp-standalone-reader" home))
+       (let* ((reader (or (and (file-executable-p
+                                (expand-file-name "target/nelisp" home))
+                               (expand-file-name "target/nelisp" home))
+                          (expand-file-name "target/nelisp-standalone-reader" home)))
               (process-environment
                (append (list (format "NELISP_HOME=%s" home)
                              (format "NEMACS_NELISP=%s" reader))
@@ -223,6 +228,8 @@ list below catches it."
                     "emacs-undo" "emacs-undo-builtins"
                     "emacs-mode" "emacs-mode-builtins"
                     "emacs-faces" "emacs-faces-builtins"
+                    "emacs-syntax-table"
+                    "emacs-font-lock" "emacs-font-lock-builtins"
                     "emacs-edit-builtins" "emacs-line-builtins"
                     "emacs-search-builtins" "emacs-fileio-builtins"
                     "emacs-process" "emacs-process-builtins"

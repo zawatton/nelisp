@@ -623,6 +623,42 @@ edit primitive (= the existing pattern for
 `emacs-buffer-record-insertion')."
   (emacs-font-lock-mark-dirty-region beg end buf))
 
+(defun emacs-font-lock--remove-eq (item list)
+  "Return LIST without elements `eq' to ITEM."
+  (let ((out nil))
+    (while list
+      (unless (eq item (car list))
+        (setq out (cons (car list) out)))
+      (setq list (cdr list)))
+    (nreverse out)))
+
+(defun emacs-font-lock-jit-lock-register (function &optional _contextual)
+  "Register FUNCTION in the lightweight jit-lock function list.
+
+Standalone NeLisp does not implement lazy redisplay fontification yet,
+but packages such as visual-wrap expect `jit-lock-register' to exist and
+to remember registered functions."
+  (unless (boundp 'jit-lock-functions)
+    (defvar jit-lock-functions nil))
+  (unless (memq function jit-lock-functions)
+    (setq jit-lock-functions (append jit-lock-functions (list function))))
+  function)
+
+(defun emacs-font-lock-jit-lock-unregister (function)
+  "Remove FUNCTION from the lightweight jit-lock function list."
+  (when (boundp 'jit-lock-functions)
+    (setq jit-lock-functions
+          (emacs-font-lock--remove-eq function jit-lock-functions)))
+  function)
+
+(defun emacs-font-lock-jit-lock-functions (&optional buf)
+  "Return the lightweight jit-lock functions registered for BUF.
+BUF is accepted for API symmetry with other font-lock introspection
+helpers; the current fallback stores jit-lock registrations in the
+buffer-local-compatible `jit-lock-functions' variable."
+  (ignore buf)
+  (and (boundp 'jit-lock-functions) jit-lock-functions))
+
 (provide 'emacs-font-lock)
 
 ;;; emacs-font-lock.el ends here

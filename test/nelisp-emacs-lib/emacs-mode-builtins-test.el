@@ -185,6 +185,15 @@
                          sym)
                  nil t))))))
 
+(ert-deftest emacs-mode-builtins-test/install-gate-overwrites-bulk-stubs ()
+  (let ((original (get 'define-derived-mode 'emacs-stub-bulk)))
+    (unwind-protect
+        (progn
+          (put 'define-derived-mode 'emacs-stub-bulk t)
+          (should (emacs-mode-builtins--install-function-p
+                   'define-derived-mode)))
+      (put 'define-derived-mode 'emacs-stub-bulk original))))
+
 (provide 'emacs-mode-builtins-test)
 
 ;;; emacs-mode-builtins-test.el ends here

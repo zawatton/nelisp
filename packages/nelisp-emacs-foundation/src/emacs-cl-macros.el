@@ -19,7 +19,8 @@
 ;;   - macros: cl-defun, cl-incf, cl-decf, cl-loop, cl-defstruct,
 ;;             cl-case, cl-pushnew, cl-letf, cl-letf*, cl-flet,
 ;;             cl-labels, cl-block, cl-return-from, cl-return,
-;;             cl-defgeneric, cl-defmethod
+;;             cl-defgeneric, cl-defmethod, cl-deftype, cl-progv,
+;;             letrec
 ;;   - fns:    cl-some, cl-every, cl-find, cl-position,
 ;;             cl-remove-if(-not), cl-delete-if(-not),
 ;;             cl-delete-duplicates, cl-union, cl-intersection,
@@ -44,7 +45,43 @@ is loaded.  When this local shim wins `load-path', those autoloads
 would otherwise prevent the shim from defining the requested macro."
   (or (not (fboundp symbol))
       (and (fboundp 'autoloadp)
-           (autoloadp (symbol-function symbol)))))
+           (autoloadp (symbol-function symbol)))
+      (get symbol 'emacs-stub-placeholder)))
+
+(defun emacs-cl-macros--defstruct-ctor-parts (arglist)
+  "Return (FORMALS AUX-BINDINGS VALUE-SYMS) for constructor ARGLIST.
+`cl-defstruct' constructor lambda lists can mention non-slot helper
+arguments and `&aux' bindings.  The standalone evaluator does not bind
+`&aux' itself, so generated constructors lower those bindings into an
+ordinary `let'."
+  (let ((cur arglist)
+        (formals nil)
+        (aux-bindings nil)
+        (value-syms nil)
+        (in-aux nil))
+    (while cur
+      (let ((item (car cur)))
+        (cond
+         ((eq item '&aux)
+          (setq in-aux t))
+         (in-aux
+          (let ((var (if (consp item) (car item) item))
+                (init (and (consp item) (consp (cdr item)) (cadr item))))
+            (push (list var init) aux-bindings)
+            (push var value-syms)))
+         ((memq item '(&optional &rest))
+          (push item formals))
+         ((consp item)
+          (let ((var (car item)))
+            (push var formals)
+            (push var value-syms)))
+         (t
+          (push item formals)
+          (push item value-syms))))
+      (setq cur (cdr cur)))
+    (list (nreverse formals)
+          (nreverse aux-bindings)
+          (nreverse value-syms))))
 
 ;;;; --- arglist parsing helpers ------------------------------------------
 
@@ -257,6 +294,39 @@ default `eql'-style equality)."
             (setq i (1+ i)))
           found))))))
 
+(unless (fboundp 'cl-position-if)
+  (defun cl-position-if (predicate sequence &rest keys)
+    "Return index of first element in SEQUENCE matching PREDICATE.
+
+Supports the same minimal sequence shapes and `:from-end' key as the
+local `cl-position' shim."
+    (let* ((from-end (plist-get keys :from-end))
+           (n (cond ((null sequence) 0)
+                    ((stringp sequence) (length sequence))
+                    ((vectorp sequence) (length sequence))
+                    (t (length sequence))))
+           (get-elt (cond ((null sequence) (lambda (_i) nil))
+                          ((stringp sequence)
+                           (lambda (i) (aref sequence i)))
+                          ((vectorp sequence)
+                           (lambda (i) (aref sequence i)))
+                          (t (lambda (i) (nth i sequence))))))
+      (cond
+       (from-end
+        (let ((i (1- n)) (found nil))
+          (while (and (>= i 0) (not found))
+            (when (funcall predicate (funcall get-elt i))
+              (setq found i))
+            (setq i (1- i)))
+          found))
+       (t
+        (let ((i 0) (found nil))
+          (while (and (< i n) (not found))
+            (when (funcall predicate (funcall get-elt i))
+              (setq found i))
+            (setq i (1+ i)))
+          found))))))
+
 (unless (fboundp 'cl-find)
   (defun cl-find (item sequence &rest keys)
     "Doc 51 MVP `cl-find'.
@@ -345,6 +415,31 @@ Return the first element of SEQUENCE matching ITEM (= via
     (sort sequence predicate)))
 
 ;;;; --- cl-loop ----------------------------------------------------------
+
+(unless (fboundp 'emacs-cl-macros--loop-destructure-bindings)
+  (defun emacs-cl-macros--loop-destructure-bindings (pattern source)
+    "Return `let' bindings destructuring PATTERN from SOURCE."
+    (let ((bindings nil)
+          (cur pattern)
+          (access source))
+      (while (consp cur)
+        (when (car cur)
+          (setq bindings
+                (cons (list (car cur) (list 'car access)) bindings)))
+        (setq access (list 'cdr access))
+        (setq cur (cdr cur)))
+      (when cur
+        (setq bindings (cons (list cur access) bindings)))
+      (nreverse bindings))))
+
+(unless (fboundp 'emacs-cl-macros--loop-wrap-body)
+  (defun emacs-cl-macros--loop-wrap-body (pattern item forms)
+    "Return one loop body form for PATTERN bound from ITEM and FORMS."
+    (if (symbolp pattern)
+        (cons 'progn forms)
+      (cons 'let
+            (cons (emacs-cl-macros--loop-destructure-bindings pattern item)
+                  forms)))))
 
 (when (or (not (boundp 'emacs-version))
           (emacs-cl-macros--define-p 'cl-loop))
@@ -460,7 +555,20 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
                ((eq next-kw 'do)
                 (setq when-do-cond cond-form
                       when-do-forms (cons next-form when-do-forms)
-                      cur (cdr (cdr (cdr (cdr cur))))))
+                      cur (cdr (cdr (cdr (cdr cur)))))
+                (while (and cur (eq (car cur) 'and))
+                  (let ((and-kw (car (cdr cur)))
+                        (and-form (car (cdr (cdr cur)))))
+                    (cond
+                     ((eq and-kw 'do)
+                      (setq when-do-forms (cons and-form when-do-forms)
+                            cur (cdr (cdr (cdr cur)))))
+                     ((eq and-kw 'collect)
+                      (setq when-collect-cond cond-form
+                            when-collect-form and-form
+                            cur (cdr (cdr (cdr cur)))))
+                     (t (setq recognised nil
+                              cur nil))))))
                ((eq next-kw 'collect)
                 (setq when-collect-cond cond-form
                       when-collect-form next-form
@@ -491,58 +599,93 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
        ;; throw on first hit.  Result of cl-loop = FORM (or nil).
        (when-return-cond
         (let ((tag-sym (make-symbol "--loop-tag--"))
-              (result-sym (make-symbol "--loop-r--")))
+              (result-sym (make-symbol "--loop-r--"))
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
           (list 'let (cons (list result-sym nil) with-bindings)
                 (list 'catch (list 'quote tag-sym)
-                      (list 'dolist (list var list-form)
-                            (list 'when when-return-cond
-                                  (list 'setq result-sym when-return-form)
-                                  (list 'throw (list 'quote tag-sym) nil))))
+                      (list 'dolist (list loop-var list-form)
+                            (emacs-cl-macros--loop-wrap-body
+                             var loop-var
+                             (list (list 'when when-return-cond
+                                         (list 'setq result-sym when-return-form)
+                                         (list 'throw (list 'quote tag-sym) nil))))))
                 result-sym)))
-       (collect-form
-        (let ((acc-sym (make-symbol "--loop-acc--")))
+       ((or collect-form when-collect-cond)
+        (let ((acc-sym (make-symbol "--loop-acc--"))
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--")))
+              (body nil)
+              (rev nil))
+          (when collect-form
+            (setq body
+                  (append body
+                          (list (list 'setq acc-sym
+                                      (list 'cons collect-form acc-sym))))))
+          (when when-do-cond
+            (while when-do-forms
+              (setq rev (cons (car when-do-forms) rev))
+              (setq when-do-forms (cdr when-do-forms)))
+            (setq body
+                  (append body
+                          (list (cons 'when
+                                      (cons when-do-cond rev))))))
+          (when when-collect-cond
+            (setq body
+                  (append body
+                          (list (list 'when when-collect-cond
+                                      (list 'setq acc-sym
+                                            (list 'cons when-collect-form acc-sym)))))))
           (list 'let (cons (list acc-sym nil) with-bindings)
-                (list 'dolist (list var list-form)
-                      (list 'setq acc-sym (list 'cons collect-form acc-sym)))
-                (list 'nreverse acc-sym))))
-       (when-collect-cond
-        (let ((acc-sym (make-symbol "--loop-acc--")))
-          (list 'let (cons (list acc-sym nil) with-bindings)
-                (list 'dolist (list var list-form)
-                      (list 'when when-collect-cond
-                            (list 'setq acc-sym
-                                  (list 'cons when-collect-form acc-sym))))
+                (list 'dolist (list loop-var list-form)
+                      (emacs-cl-macros--loop-wrap-body var loop-var body))
                 (list 'nreverse acc-sym))))
        (sum-form
-        (let ((acc-sym (make-symbol "--loop-sum--")))
+        (let ((acc-sym (make-symbol "--loop-sum--"))
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
           (list 'let (cons (list acc-sym 0) with-bindings)
-                (list 'dolist (list var list-form)
-                      (list 'setq acc-sym (list '+ acc-sym sum-form)))
+                (list 'dolist (list loop-var list-form)
+                      (emacs-cl-macros--loop-wrap-body
+                       var loop-var
+                       (list (list 'setq acc-sym (list '+ acc-sym sum-form)))))
                 acc-sym)))
        (count-form
-        (let ((acc-sym (make-symbol "--loop-count--")))
+        (let ((acc-sym (make-symbol "--loop-count--"))
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
           (list 'let (cons (list acc-sym 0) with-bindings)
-                (list 'dolist (list var list-form)
-                      (list 'when count-form
-                            (list 'setq acc-sym (list '+ acc-sym 1))))
+                (list 'dolist (list loop-var list-form)
+                      (emacs-cl-macros--loop-wrap-body
+                       var loop-var
+                       (list (list 'when count-form
+                                   (list 'setq acc-sym (list '+ acc-sym 1))))))
                 acc-sym)))
        (when-do-cond
         ;; `when COND do FORMS …'
-        (let ((rev nil))
+        (let ((rev nil)
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
           (while when-do-forms
             (setq rev (cons (car when-do-forms) rev))
             (setq when-do-forms (cdr when-do-forms)))
           (list 'let with-bindings
-                (list 'dolist (list var list-form)
-                      (cons 'when (cons when-do-cond rev))))))
+                (list 'dolist (list loop-var list-form)
+                      (emacs-cl-macros--loop-wrap-body
+                       var loop-var
+                       (list (cons 'when (cons when-do-cond rev))))))))
        (do-forms
-        (let ((rev nil))
+        (let ((rev nil)
+              (loop-var (if (symbolp var) var (make-symbol "--loop-item--"))))
           (while do-forms (setq rev (cons (car do-forms) rev)) (setq do-forms (cdr do-forms)))
           (list 'let with-bindings
-                (cons 'dolist (cons (list var list-form) rev)))))
+                (list 'dolist (list loop-var list-form)
+                      (emacs-cl-macros--loop-wrap-body var loop-var rev)))))
        (t (list 'let with-bindings nil))))))
 
 ;;;; --- cl-defgeneric / cl-defmethod / cl-defstruct -------------------
+
+(when (or (not (boundp 'emacs-version))
+          (emacs-cl-macros--define-p 'cl-deftype))
+  (defmacro cl-deftype (name arglist &rest body)
+    "Standalone load-time fallback: ignore CL type declarations."
+    (ignore arglist body)
+    (list 'quote name)))
 
 (unless (fboundp 'cl-defgeneric)
   (defmacro cl-defgeneric (name arglist &rest body)
@@ -569,52 +712,29 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
 (when (or (not (boundp 'emacs-version))
           (emacs-cl-macros--define-p 'cl-defstruct))
   (defmacro cl-defstruct (name &rest slots)
-    "Stub: defstruct → minimal alist-backed accessors.
+    "Stub: defstruct → minimal alist/vector-backed accessors.
 
 Skips a leading docstring among SLOTS (= host `cl-defstruct'
 accepts an optional docstring before the slot list).  For the
 NAME-options shape `(NAME (:constructor X) (:copier nil) ...)'
-extracts X as the constructor name when supplied (otherwise
-defaults to `make-NAME')."
+supports default, disabled, renamed, and positional constructors.
+Also supports the `(:type vector)' shape used by `avl-tree.el'."
     (let* ((sname (if (consp name) (car name) name))
-           ;; Walk NAME's option list (= cdr when name is a cons)
-           ;; and pick out (:constructor X) — earliest wins.
-           (ctor-from-opts
-            (and (consp name)
-                 (let ((opts (cdr name)) found)
-                   (while (and opts (not found))
-                     (let ((o (car opts)))
-                       (when (and (consp o) (eq (car o) :constructor)
-                                  (consp (cdr o)) (symbolp (cadr o)))
-                         (setq found (cadr o))))
-                     (setq opts (cdr opts)))
-                   found)))
-           (ctor-name (or ctor-from-opts
-                          (intern (concat "make-" (symbol-name sname)))))
-           ;; (:predicate X) → use X as the predicate name instead of
-           ;; the default `NAME-p'.
-           (pred-from-opts
-            (and (consp name)
-                 (let ((opts (cdr name)) found)
-                   (while (and opts (not found))
-                     (let ((o (car opts)))
-                       (when (and (consp o) (eq (car o) :predicate)
-                                  (consp (cdr o)) (symbolp (cadr o)))
-                         (setq found (cadr o))))
-                     (setq opts (cdr opts)))
-                   found)))
-           (pred-name (or pred-from-opts
-                          (intern (concat (symbol-name sname) "-p"))))
+           (opts (and (consp name) (cdr name)))
+           (ctor-opts nil)
+           (ctor-saw nil)
+           (pred-saw nil)
+           (pred-from-opts nil)
+           (type-from-opts nil)
            (conc-from-opts
-            (and (consp name)
-                 (let ((opts (cdr name)) found seen)
-                   (while (and opts (not seen))
-                     (let ((o (car opts)))
-                       (when (and (consp o) (eq (car o) :conc-name))
-                         (setq seen t)
-                         (setq found (cadr o))))
-                     (setq opts (cdr opts)))
-                   (if seen found :absent))))
+            (let ((cur opts) found seen)
+              (while (and cur (not seen))
+                (let ((o (car cur)))
+                  (when (and (consp o) (eq (car o) :conc-name))
+                    (setq seen t)
+                    (setq found (cadr o))))
+                (setq cur (cdr cur)))
+              (if seen found :absent)))
            (conc-name (cond
                        ((eq conc-from-opts :absent)
                         (concat (symbol-name sname) "-"))
@@ -639,71 +759,158 @@ defaults to `make-NAME')."
                                           (cadr s))))
                         (cons slot default)))
                     slot-list)))
+      (let ((cur opts))
+        (while cur
+          (let ((o (car cur)))
+            (cond
+             ((and (consp o) (eq (car o) :constructor))
+              (setq ctor-saw t)
+              (when (cadr o)
+                (setq ctor-opts
+                      (cons (list (cadr o) (cadr (cdr o))) ctor-opts))))
+             ((and (consp o) (eq (car o) :predicate))
+              (setq pred-saw t)
+              (setq pred-from-opts (cadr o)))
+             ((and (consp o) (eq (car o) :type))
+              (setq type-from-opts (cadr o)))))
+          (setq cur (cdr cur))))
+      (unless ctor-saw
+        (setq ctor-opts
+              (list (list (intern (concat "make-" (symbol-name sname))) nil))))
       (let ((forms nil))
-        ;; CTOR constructor → returns alist of slots.
-        ;; Built with `list' so the inner `sname' splice is explicit
-        ;; (= nelisp's reader rejects `,X' outside a backquote, so we
-        ;; cannot use the convenient backtick form here).
-        (push (list 'defun ctor-name
-                    '(&rest args)
-                    (list 'let
-                          (list
-                           (list 'alist
-                                 (cons 'list
-                                       (mapcar
-                                        (lambda (cell)
-                                          (list 'cons
-                                                (list 'quote
-                                                      (intern
-                                                       (concat ":"
-                                                               (symbol-name
-                                                                (car cell)))))
-                                                (cdr cell)))
-                                        slot-defaults)))
-                           '(cur args))
-                          '(while cur
-                             (let ((cell (assoc (car cur) alist)))
-                               (if cell
-                                   (setcdr cell (car (cdr cur)))
-                                 (setq alist
-                                       (cons (cons (car cur)
-                                                   (car (cdr cur)))
-                                             alist))))
-                             (setq cur (cdr (cdr cur))))
-                          (list 'cons (list 'quote sname) 'alist)))
-              forms)
+        ;; Constructor generation.  Positional `(:constructor NAME
+        ;; (SLOT ...))' is needed by `avl-tree.el'; the no-arg option
+        ;; keeps the old keyword constructor behavior.
+        (dolist (ctor (nreverse ctor-opts))
+          (let* ((ctor-name (car ctor))
+                 (ctor-args (car (cdr ctor)))
+                 (ctor-parts
+                  (and ctor-args
+                       (emacs-cl-macros--defstruct-ctor-parts ctor-args)))
+                 (ctor-formals (car ctor-parts))
+                 (ctor-aux-bindings (cadr ctor-parts))
+                 (ctor-value-syms (caddr ctor-parts)))
+            (push
+             (if (eq type-from-opts 'vector)
+                 (if ctor-args
+                     (list 'defun ctor-name ctor-formals
+                           (let ((body
+                                  (cons 'vector
+                                        (mapcar
+                                         (lambda (slot)
+                                           (if (memq slot ctor-value-syms)
+                                               slot
+                                             (cdr (assoc slot slot-defaults))))
+                                         slot-names))))
+                             (if ctor-aux-bindings
+                                 (list 'let ctor-aux-bindings body)
+                               body)))
+                   (list 'defun ctor-name '(&rest args)
+                         (list 'let
+                               (list (list 'values
+                                           (cons 'vector
+                                                 (mapcar #'cdr slot-defaults)))
+                                     '(cur args))
+                               '(while cur
+                                  (let ((pos (cl-position
+                                              (intern
+                                               (substring (symbol-name (car cur)) 1))
+                                              (quote nil))))
+                                    (ignore pos))
+                                  (setq cur (cdr (cdr cur))))
+                               'values)))
+               (if ctor-args
+                   (list 'defun ctor-name ctor-formals
+                         (let ((body
+                                (list 'cons
+                                      (list 'quote sname)
+                                      (cons 'list
+                                            (mapcar
+                                             (lambda (slot)
+                                               (list 'cons
+                                                     (list 'quote
+                                                           (intern
+                                                            (concat ":"
+                                                                    (symbol-name slot))))
+                                                     (if (memq slot ctor-value-syms)
+                                                         slot
+                                                       (cdr (assoc slot slot-defaults)))))
+                                             slot-names)))))
+                           (if ctor-aux-bindings
+                               (list 'let ctor-aux-bindings body)
+                             body)))
+                 (list 'defun ctor-name
+                       '(&rest args)
+                       (list 'let
+                             (list
+                              (list 'alist
+                                    (cons 'list
+                                          (mapcar
+                                           (lambda (cell)
+                                             (list 'cons
+                                                   (list 'quote
+                                                         (intern
+                                                          (concat ":"
+                                                                  (symbol-name
+                                                                   (car cell)))))
+                                                   (cdr cell)))
+                                           slot-defaults)))
+                              '(cur args))
+                             '(while cur
+                                (let ((cell (assoc (car cur) alist)))
+                                  (if cell
+                                      (setcdr cell (car (cdr cur)))
+                                    (setq alist
+                                          (cons (cons (car cur)
+                                                      (car (cdr cur)))
+                                                alist))))
+                                (setq cur (cdr (cdr cur))))
+                             (list 'cons (list 'quote sname) 'alist)))))
+             forms)))
         ;; NAME-p predicate (or whatever (:predicate X) renamed it to).
-        (push (list 'defun pred-name
-                    '(obj)
-                    (list 'and '(consp obj) (list 'eq '(car obj) (list 'quote sname))))
-              forms)
+        (let ((pred-name (if pred-saw
+                             pred-from-opts
+                           (intern (concat (symbol-name sname) "-p")))))
+          (when pred-name
+            (push (list 'defun pred-name
+                        '(obj)
+                        (if (eq type-from-opts 'vector)
+                            (list 'and '(vectorp obj)
+                                  (list '= '(length obj) (length slot-names)))
+                          (list 'and '(consp obj)
+                                (list 'eq '(car obj) (list 'quote sname)))))
+                  forms)))
         ;; NAME-SLOT accessor + setter for each slot.
         ;;
-        ;; The accessor returns (cdr (assoc :slot (cdr obj))).
-        ;; The setter mutates the cell when present, otherwise pushes a
-        ;; fresh (cons :slot value) onto (cdr obj).  Setter is bound on
-        ;; both `name-slot--setter` (callable) and on the accessor's
-        ;; symbol `cl-struct-setter` property so that our minimal `setf`
-        ;; macro can find it via `(get accessor 'cl-struct-setter)`.
-        (dolist (slot slot-names)
+        ;; The alist accessor returns (cdr (assoc :slot (cdr obj))).
+        ;; The vector accessor returns (aref obj INDEX).  Setter is
+        ;; registered on the accessor's `cl-struct-setter` property so
+        ;; our minimal `setf` macro can find it.
+        (let ((index 0))
+          (dolist (slot slot-names)
           (let* ((kw (intern (concat ":" (symbol-name slot))))
                  (acc (intern (concat conc-name (symbol-name slot))))
                  (setter (intern (concat conc-name (symbol-name slot) "--setter")))
                  (gv-setter (intern (format "(setf %s)" acc))))
-            (push (list 'defun acc
-                        '(obj)
-                        (list 'cdr (list 'assoc kw '(cdr obj))))
+            (push (if (eq type-from-opts 'vector)
+                      (list 'defun acc '(obj) (list 'aref 'obj index))
+                    (list 'defun acc
+                          '(obj)
+                          (list 'cdr (list 'assoc kw '(cdr obj)))))
                   forms)
-            (push (list 'defun setter
-                        '(obj val)
-                        (list 'let
-                              (list (list 'cell (list 'assoc kw '(cdr obj))))
-                              (list 'if 'cell
-                                    '(progn (setcdr cell val) val)
-                                    (list 'progn
-                                          (list 'setcdr 'obj
-                                                (list 'cons (list 'cons kw 'val) '(cdr obj)))
-                                          'val))))
+            (push (if (eq type-from-opts 'vector)
+                      (list 'defun setter '(obj val)
+                            (list 'aset 'obj index 'val))
+                    (list 'defun setter
+                          '(obj val)
+                          (list 'let
+                                (list (list 'cell (list 'assoc kw '(cdr obj))))
+                                (list 'if 'cell
+                                      '(progn (setcdr cell val) val)
+                                      (list 'progn
+                                            (list 'setcdr 'obj
+                                                  (list 'cons (list 'cons kw 'val) '(cdr obj)))
+                                            'val)))))
                   forms)
             (push (list 'put (list 'quote acc)
                         (list 'quote 'cl-struct-setter)
@@ -714,7 +921,8 @@ defaults to `make-NAME')."
                               (list 'quote gv-setter)
                               (list 'lambda '(val obj)
                                     (list setter 'obj 'val))))
-                  forms)))
+                  forms)
+            (setq index (1+ index)))))
         (cons 'progn (nreverse forms))))))
 
 ;;;; --- cl-case / cl-pushnew --------------------------------------------
@@ -744,6 +952,75 @@ defaults to `make-NAME')."
           (list 'setq place (list 'cons item place)))))
 
 ;;;; --- cl-letf / cl-flet / cl-block -----------------------------------
+
+(unless (fboundp 'letrec)
+  (defmacro letrec (bindings &rest body)
+    "Minimal `letrec' for recursive local function values.
+Each variable is bound before initializer evaluation, then assigned in
+order.  This is enough for vendor load-time macros such as
+`let-when-compile', where a local lambda recursively calls itself."
+    (let ((lets nil)
+          (sets nil)
+          (cur bindings))
+      (while cur
+        (let ((binding (car cur)))
+          (setq lets (cons (list (car binding) nil) lets))
+          (setq sets
+                (cons (list 'setq (car binding)
+                            (car (cdr binding)))
+                      sets)))
+        (setq cur (cdr cur)))
+      (cons 'let
+            (cons (nreverse lets)
+                  (append (nreverse sets) body))))))
+
+(unless (fboundp 'cl-progv)
+  (defmacro cl-progv (_symbols _values &rest body)
+    "Load-time fallback for `cl-progv' using global value cells.
+This is not full dynamic binding, but it is enough for vendor
+`let-when-compile': bind a runtime list of symbols while BODY computes
+macro-time constants, then restore previously bound values."
+    (let ((syms (make-symbol "cl-progv-symbols"))
+          (vals (make-symbol "cl-progv-values"))
+          (saved (make-symbol "cl-progv-saved"))
+          (cur (make-symbol "cl-progv-cur"))
+          (vcur (make-symbol "cl-progv-vcur"))
+          (sym (make-symbol "cl-progv-sym"))
+          (val (make-symbol "cl-progv-val"))
+          (cell (make-symbol "cl-progv-cell")))
+      (list 'let (list (list syms _symbols)
+                       (list vals _values)
+                       (list saved nil))
+            (list 'let (list (list cur syms)
+                             (list vcur vals))
+                  (list 'while cur
+                        (list 'let (list (list sym (list 'car cur))
+                                         (list val (list 'car vcur)))
+                              (list 'setq saved
+                                    (list 'cons
+                                          (list 'list sym
+                                                (list 'boundp sym)
+                                                (list 'and
+                                                      (list 'boundp sym)
+                                                      (list 'symbol-value sym)))
+                                          saved))
+                              (list 'set sym val)
+                              (list 'setq cur (list 'cdr cur))
+                              (list 'setq vcur (list 'cdr vcur)))))
+            (list 'unwind-protect
+                  (cons 'progn body)
+                  (list 'while saved
+                        (list 'let (list (list cell (list 'car saved)))
+                              (list 'if
+                                    (list 'car (list 'cdr cell))
+                                    (list 'set (list 'car cell)
+                                          (list 'car (list 'cdr (list 'cdr cell))))
+                                    ;; No `makunbound' in the small
+                                    ;; bootstrap yet.  Restore unbound
+                                    ;; cells to nil rather than leaking
+                                    ;; macro-time values.
+                                    (list 'set (list 'car cell) nil))
+                              (list 'setq saved (list 'cdr saved)))))))))
 
 (when (or (not (boundp 'emacs-version))
           (emacs-cl-macros--define-p 'cl-letf))
@@ -837,6 +1114,73 @@ defining `emit-before-strings' / `emit-after-strings')."
 
 (unless (fboundp 'cl-labels)
   (defalias 'cl-labels 'cl-flet))
+
+(unless (fboundp 'emacs-cl-macros--symbol-macrolet-walk)
+  (defun emacs-cl-macros--symbol-macrolet-walk (form env)
+    "Replace symbol references in FORM according to ENV."
+    (cond
+     ((symbolp form)
+      (let ((cell (assq form env)))
+        (if cell (cdr cell) form)))
+     ((not (consp form)) form)
+     ((memq (car form) '(quote function)) form)
+     ((eq (car form) 'setq)
+      (let ((pairs (cdr form))
+            (out nil))
+        (while pairs
+          (let* ((place (car pairs))
+                 (value (cadr pairs))
+                 (cell (and (symbolp place) (assq place env))))
+            (setq out
+                  (append out
+                          (list (if cell (cdr cell) place)
+                                (emacs-cl-macros--symbol-macrolet-walk
+                                 value env)))))
+          (setq pairs (cddr pairs)))
+        (cons 'setq out)))
+     ((memq (car form) '(let let*))
+      (let ((bindings (cadr form))
+            (body (cddr form))
+            (shadowed nil)
+            (new-bindings nil)
+            new-env)
+        (dolist (binding bindings)
+          (let ((var (if (symbolp binding) binding (car binding))))
+            (push var shadowed)
+            (push (if (symbolp binding)
+                      binding
+                    (list var
+                          (emacs-cl-macros--symbol-macrolet-walk
+                           (cadr binding) env)))
+                  new-bindings)))
+        (setq new-env
+              (let ((cur env) (acc nil))
+                (while cur
+                  (unless (memq (caar cur) shadowed)
+                    (push (car cur) acc))
+                  (setq cur (cdr cur)))
+                (nreverse acc)))
+        (cons (car form)
+              (cons (nreverse new-bindings)
+                    (mapcar (lambda (body-form)
+                              (emacs-cl-macros--symbol-macrolet-walk
+                               body-form new-env))
+                            body)))))
+     (t
+      (mapcar (lambda (item)
+                (emacs-cl-macros--symbol-macrolet-walk item env))
+              form)))))
+
+(unless (fboundp 'cl-symbol-macrolet)
+  (defmacro cl-symbol-macrolet (bindings &rest body)
+    "Minimal symbol macro substitution used by generator.el CPS rewrites."
+    (let ((env (mapcar (lambda (binding)
+                         (cons (car binding) (cadr binding)))
+                       bindings)))
+      (cons 'progn
+            (mapcar (lambda (body-form)
+                      (emacs-cl-macros--symbol-macrolet-walk body-form env))
+                    body)))))
 
 ;; cl-block / cl-return-from / cl-return:
 ;;   - host driver:    host emacs's cl-lib provides real impls

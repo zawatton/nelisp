@@ -52,6 +52,9 @@
     file-name-unquote
     buffer-file-name
     set-visited-file-name
+    locate-library
+    executable-find
+    substitute-in-file-name
     find-file-noselect
     find-file
     save-buffer
@@ -90,6 +93,7 @@ on those semantics during bootstrap.")
            file-name-directory
            file-name-nondirectory
            file-name-as-directory
+           substitute-in-file-name
            ;; --- predicates / attributes
            file-exists-p
            file-readable-p
@@ -111,6 +115,60 @@ on those semantics during bootstrap.")
 ;; expand-file-name / file-name-absolute-p / file-name-directory /
 ;; file-name-nondirectory / file-name-as-directory batched into the dolist
 ;; near the top.
+
+(defun emacs-fileio--directory-file-names (dir)
+  "Return the non-full file names in DIR, or nil if DIR cannot be read."
+  (condition-case nil
+      (directory-files dir nil nil t)
+    (error nil)))
+
+(defun emacs-fileio--safe-directory-probe-p ()
+  "Return non-nil when `locate-library' may inspect directories.
+The legacy standalone `nelisp--syscall-readdir' / stat predicates can
+stop the evaluator on some failure paths.  Until the newer opendir API
+is present, standalone `locate-library' must prefer a safe nil result
+over probing the filesystem."
+  (or (not (fboundp 'nl-write-file))
+      (fboundp 'nl-syscall-opendir)))
+
+(defun emacs-fileio--locate-library-candidate (base name)
+  "Return absolute path for NAME under BASE when the directory lists it."
+  (let* ((relative-dir (file-name-directory name))
+         (leaf (file-name-nondirectory name))
+         (search-dir (if relative-dir
+                         (expand-file-name relative-dir base)
+                       base))
+         (entries (emacs-fileio--directory-file-names search-dir)))
+    (and (member leaf entries)
+         (expand-file-name name base))))
+
+(defun emacs-fileio-locate-library (library &optional nosuffix path interactive-call)
+  "Return the absolute path of LIBRARY found on PATH or `load-path'.
+This standalone implementation searches plain LIBRARY first, then
+LIBRARY.el unless NOSUFFIX is non-nil.  INTERACTIVE-CALL is accepted for
+Emacs API parity and ignored."
+  (ignore interactive-call)
+  (when (emacs-fileio--safe-directory-probe-p)
+    (let ((dirs (or path load-path))
+          (names (if nosuffix
+                     (list library)
+                   (list library (concat library ".el"))))
+          found)
+      (catch 'done
+        (dolist (dir dirs)
+          (let ((base (if dir
+                          (file-name-as-directory dir)
+                        (or (and (boundp 'default-directory) default-directory)
+                            ""))))
+            (dolist (name names)
+              (let ((candidate (emacs-fileio--locate-library-candidate base name)))
+                (when candidate
+                  (setq found candidate)
+                  (throw 'done nil)))))))
+      found)))
+
+(when (emacs-fileio-builtins--install-function-p 'locate-library)
+  (defalias 'locate-library #'emacs-fileio-locate-library))
 
 (when (emacs-fileio-builtins--install-function-p 'file-name-quoted-p)
   (defun file-name-quoted-p (name &optional top)

@@ -3,12 +3,13 @@
 #
 # Layer-2 self-containment: nemacs depends on a NeLisp executable when
 # the experimental `--driver=nelisp' path is used.  Current NeLisp
-# builds target/nelisp-standalone-reader via a pure-Elisp AOT path.
+# builds target/nelisp via a pure-Elisp AOT path.
 #
 # Default behaviour: clone the upstream nelisp repo into
 # vendor/nelisp/ (gitignored) and run `make standalone-reader'.
-# The resulting binary is at vendor/nelisp/target/nelisp-standalone-reader,
-# which is what `bin/nemacs` looks for by default.
+# The resulting binary is at vendor/nelisp/target/nelisp.  Older
+# checkouts may still produce target/nelisp-standalone-reader; this
+# script accepts that path as a compatibility fallback.
 #
 # Idempotent: re-running `bin/build-nelisp` is a no-op when the
 # vendored checkout exists and is up to date.  Pass `--rebuild` to
@@ -62,13 +63,16 @@ elif (( PULL )); then
 fi
 
 if (( REBUILD )); then
-  ( cd "$VENDOR_DIR" && rm -f target/nelisp-standalone-reader && rm -rf target/standalone-units )
+  ( cd "$VENDOR_DIR" && rm -f target/nelisp target/nelisp-standalone-reader && rm -rf target/standalone-units )
 fi
 
 echo "build-nelisp: make standalone-reader"
 ( cd "$VENDOR_DIR" && EMACS="$EMACS" "$MAKE" standalone-reader )
 
-BIN="$VENDOR_DIR/target/nelisp-standalone-reader"
+BIN="$VENDOR_DIR/target/nelisp"
+if [[ ! -x "$BIN" && -x "$VENDOR_DIR/target/nelisp-standalone-reader" ]]; then
+  BIN="$VENDOR_DIR/target/nelisp-standalone-reader"
+fi
 if [[ ! -x "$BIN" ]]; then
   echo "build-nelisp: build succeeded but $BIN is missing — fatal" >&2
   exit 1
@@ -78,7 +82,7 @@ echo "build-nelisp: OK — binary at $BIN"
 tmp="$(mktemp "${TMPDIR:-/tmp}/nelisp-standalone-reader-smoke.XXXXXX.el")"
 printf '%s\n' '(+ 40 2)' > "$tmp"
 set +e
-"$BIN" "$tmp"
+"$BIN" --load "$tmp"
 rc=$?
 set -e
 rm -f "$tmp"

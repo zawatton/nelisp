@@ -248,7 +248,7 @@ Forwarder to `forward-char' with negated count."
        '(after-change-functions after-load-alist before-change-functions buffer-invisibility-spec buffer-list-update-hook buffer-read-only case-fold-search cl--generic-derived-generalizer
     cl--generic-eql-generalizer cl--generic-head-generalizer cl--generic-oclosure-generalizer cl--generic-t-generalizer cl--generic-typeof-generalizer command-debug-status command-error-function comp-enable-subr-trampolines
     current-load-list cursor-in-echo-area data-directory debugger debug-ignored-errors debug-on-error default-directory defun-declarations-alist
-    delayed-after-hook-functions delayed-mode-hooks delayed-warnings-list echo-keystrokes emacs-startup-hook enable-recursive-minibuffers executing-kbd-macro features
+    delayed-after-hook-functions delayed-mode-hooks delayed-warnings-list echo-keystrokes emacs-basic-display emacs-startup-hook enable-recursive-minibuffers executing-kbd-macro features
     find-tag-default-function find-word-boundary-function-table font-lock-defaults function-key-map help-char help-fns-describe-function-functions help-form history-delete-duplicates
     history-length horizontal-scroll-bar inhibit-changing-match-data inhibit-field-text-motion inhibit-modification-hooks inhibit-nul-byte-detection inhibit-null-byte-detection inhibit-point-motion-hooks
     inhibit-read-only input-decode-map input-method-function jka-compr-load-suffixes keyboard-translate-table kill-buffer-hook kill-buffer-query-functions lexical-binding

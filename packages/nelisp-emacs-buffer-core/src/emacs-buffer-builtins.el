@@ -99,6 +99,8 @@
          (set-marker                 . nelisp-ec-set-marker)
          (marker-position            . nelisp-ec-marker-position)
          (marker-buffer              . nelisp-ec-marker-buffer)
+         (marker-insertion-type      . nelisp-ec-marker-insertion-type)
+         (set-marker-insertion-type  . nelisp-ec-set-marker-insertion-type)
          (point-marker               . nelisp-ec-point-marker))))
   (if (not (boundp 'emacs-version))
       (dolist (--cell-- --aliases--)
@@ -107,6 +109,66 @@
       (let ((--name-- (car --cell--)) (--target-- (cdr --cell--)))
         (unless (fboundp --name--)
           (defalias --name-- --target--))))))
+
+(defun emacs-buffer-builtins--text-property-object (object)
+  "Return OBJECT when it is a buffer, or nil for current buffer/string MVP."
+  (cond
+   ((null object) nil)
+   ((and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object)) object)
+   (t :string-or-unsupported)))
+
+(when (emacs-buffer-builtins--install-function-p 'put-text-property)
+  (defun put-text-property (start end prop value &optional object)
+    "Set text property PROP to VALUE on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-put-text-property
+         (list start end prop value target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'get-text-property)
+  (defun get-text-property (pos prop &optional object)
+    "Return text property PROP at POS on buffer OBJECT."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (eq target :string-or-unsupported)
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-get-text-property
+         (list pos prop target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'add-text-properties)
+  (defun add-text-properties (start end props &optional object)
+    "Add text PROPS on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-add-text-properties
+         (list start end props target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'remove-text-properties)
+  (defun remove-text-properties (start end props &optional object)
+    "Remove text PROPS on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-remove-text-properties
+         (list start end props target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'set-text-properties)
+  (defun set-text-properties (start end props &optional object)
+    "Set text PROPS on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-set-text-properties
+         (list start end props target))))))
 
 (defun emacs-buffer-builtins-ensure-initial-buffer (&optional name)
   "Ensure standalone NeLisp has a selected initial buffer.

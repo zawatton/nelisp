@@ -34,6 +34,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'emacs-stub)
 
 (defconst emacs-stub-residuals-test--builtin-bridge-libraries
@@ -73,10 +74,45 @@
                   emacs-display-color-p emacs-display-multi-frame-p
                   window-live-p frame-selected-window
                   custom-add-option custom-add-frequent-value
-                  custom-variable-p))
+                  custom-variable-p defgroup defcustom
+                  convert-standard-filename string-to-list
+                  regexp-quote regexp-opt easy-menu-define
+                  easy-menu-add-item
+                  current-idle-time shell-command-to-string
+                  call-process-shell-command
+                  bound-and-true-p
+                  line-number-display-width
+                  syntax-propertize-rules cc-require cc-provide
+                  version< version<= combine-change-calls define-advice
+                  c-add-style))
     (should (fboundp sym)))
   (should (boundp 'emacs-display-system))
-  (should (boundp 'initial-window-system)))
+  (should (boundp 'emacs-basic-display))
+  (should (boundp 'initial-window-system))
+  (should (boundp 'user-mail-address))
+  (should (boundp 'user-full-name))
+  (should (boundp 'display-line-numbers))
+  (should (boundp 'display-line-numbers-width))
+  (should (boundp 'display-line-numbers-widen))
+  (should (boundp 'display-line-numbers-current-absolute))
+  (should (boundp 'outline-mode-syntax-table))
+  (should (boundp 'text-mode-syntax-table))
+  (should (integerp emacs-major-version))
+  (should (integerp emacs-minor-version)))
+
+(ert-deftest emacs-stub-residuals-test/display-line-number-core-defaults ()
+  (should (integerp (line-number-display-width)))
+  (should-not display-line-numbers)
+  (should-not display-line-numbers-width)
+  (should-not display-line-numbers-widen)
+  (should display-line-numbers-current-absolute)
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward "(defun line-number-display-width" nil t))
+      (should (search-forward "    1))" nil t)))))
 
 ;;;; B. define-key-after has a real keymap substrate
 
@@ -165,7 +201,29 @@ must be able to overwrite early bootstrap stubs with real substrates."
         (goto-char (point-min))
         (should (search-forward "(boundp 'emacs-version)" nil t))))))
 
-;;;; D. window-live-p has a real window substrate
+;;;; D. buffer-local variable stubs preserve setq-local's contract
+
+(ert-deftest emacs-stub-residuals-test/buffer-local-stubs-return-symbols ()
+  ;; Standalone `setq-local' expands through `make-local-variable'; the
+  ;; no-op fallback must return the original symbol, not nil.
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward "(get 'make-variable-buffer-local 'emacs-stub-bulk)" nil t))
+      (goto-char (point-min))
+      (should (search-forward "(defun make-variable-buffer-local (variable)" nil t))
+      (should (search-forward "    variable))" nil t)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward "(get 'make-local-variable 'emacs-stub-bulk)" nil t))
+      (goto-char (point-min))
+      (should (search-forward "(defun make-local-variable (variable)" nil t))
+      (should (search-forward "    variable))" nil t)))))
+
+;;;; E. window-live-p has a real window substrate
 
 (ert-deftest emacs-stub-residuals-test/window-live-p-bridged-by-window-builtins ()
   (require 'emacs-window-builtins)
@@ -181,7 +239,7 @@ must be able to overwrite early bootstrap stubs with real substrates."
         (should-not (emacs-window-window-live-p w2)))
     (emacs-window-reset)))
 
-;;;; E. frame-selected-window has a real window substrate
+;;;; F. frame-selected-window has a real window substrate
 
 (ert-deftest emacs-stub-residuals-test/frame-selected-window-bridged-by-window-builtins ()
   (require 'emacs-window-builtins)
@@ -195,7 +253,7 @@ must be able to overwrite early bootstrap stubs with real substrates."
         (should (eq w2 (emacs-window-frame-selected-window 'ignored-frame))))
     (emacs-window-reset)))
 
-;;;; F. Custom metadata helpers
+;;;; G. Custom metadata helpers
 
 (ert-deftest emacs-stub-residuals-test/custom-add-option-deduplicates ()
   (let ((sym (make-symbol "nelisp-emacs-custom-option")))
@@ -216,7 +274,55 @@ must be able to overwrite early bootstrap stubs with real substrates."
     (should-not (custom-variable-p plain))
     (should-not (custom-variable-p "not-a-symbol"))))
 
-;;;; G. Idempotence — re-loading emacs-stub leaves bindings unchanged
+(ert-deftest emacs-stub-residuals-test/custom-declarations-have-standalone-fallbacks ()
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((source (buffer-string)))
+        (should (string-match-p "defmacro defgroup" source))
+        (should (string-match-p "defmacro defcustom" source))
+        (should (string-match-p "standard-value" source))
+        (should (string-match-p "custom-args" source))))))
+
+(ert-deftest emacs-stub-residuals-test/convert-standard-filename-identity ()
+  (should (equal "~/.notes" (convert-standard-filename "~/.notes"))))
+
+(ert-deftest emacs-stub-residuals-test/string-to-list-character-codes ()
+  (should (equal '(65 122 48) (string-to-list "Az0"))))
+
+(ert-deftest emacs-stub-residuals-test/vendor-load-helpers-have-fallbacks ()
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((source (buffer-string)))
+        (should (string-match-p "defun regexp-opt" source))
+        (should (string-match-p "defmacro easy-menu-define" source))
+        (should (string-match-p "defun easy-menu-add-item" source))
+        (should (string-match-p "defun current-idle-time" source))
+        (should (string-match-p "defun shell-command-to-string" source))
+        (should (string-match-p "defun call-process-shell-command" source))
+        (should (string-match-p "defmacro bound-and-true-p" source))
+        (should (string-match-p "defmacro syntax-propertize-rules" source))
+        (should (string-match-p "defun make-syntax-table" source))
+        (should (string-match-p "defmacro cc-require" source))
+        (should (string-match-p "defmacro cc-provide" source))
+        (should (string-match-p "defun version<" source))
+        (should (string-match-p "defun version<=" source))
+        (should (string-match-p "defmacro combine-change-calls" source))
+        (should (string-match-p "defmacro define-advice" source))
+        (should (string-match-p "defun c-add-style" source))
+        (should (string-match-p "cpp-font-lock-keywords" source))))))
+
+(ert-deftest emacs-stub-residuals-test/version-compare-numeric-components ()
+  (should (= -1 (emacs-stub--version-compare "27.1" "29")))
+  (should (= -1 (emacs-stub--version-compare "29" "29.1")))
+  (should (= 0 (emacs-stub--version-compare "29" "29.0")))
+  (should (= 1 (emacs-stub--version-compare "30.1" "29.99")))
+  (should (= -1 (emacs-stub--version-compare "29.0.50" "29.1"))))
+
+;;;; H. Idempotence — re-loading emacs-stub leaves bindings unchanged
 
 (ert-deftest emacs-stub-residuals-test/require-is-idempotent ()
   (let ((before-define-key-after     (symbol-function 'define-key-after))

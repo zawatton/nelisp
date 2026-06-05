@@ -24,6 +24,9 @@
 ;;   - font-lock-add-keywords                   (function)
 ;;   - font-lock-remove-keywords                (function)
 ;;   - font-lock-set-defaults                   (function)
+;;   - font-lock-specified-p                    (function)
+;;   - jit-lock-register                        (function)
+;;   - jit-lock-unregister                      (function)
 ;;
 ;; State variables (`unless (boundp ...)'):
 ;;   - font-lock-defaults
@@ -33,6 +36,9 @@
 ;;   - font-lock-syntax-table
 ;;   - font-lock-multiline
 ;;   - font-lock-set-defaults
+;;   - font-lock-major-mode
+;;   - char-property-alias-alist
+;;   - jit-lock-functions
 ;;
 ;; Standard face names (`font-lock-keyword-face' etc) are registered
 ;; by the substrate at load-time — no further wiring needed here.
@@ -46,6 +52,7 @@
 (defun emacs-font-lock-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   (or (not (boundp 'emacs-version))
+      (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 
 (when (emacs-font-lock-builtins--install-function-p 'font-lock-mode)
@@ -76,6 +83,26 @@
 (when (emacs-font-lock-builtins--install-function-p 'font-lock-set-defaults)
   (defalias 'font-lock-set-defaults #'emacs-font-lock-set-defaults))
 
+(when (emacs-font-lock-builtins--install-function-p 'font-lock-specified-p)
+  (defun font-lock-specified-p (mode)
+    "Return non-nil when font-lock has defaults or active keywords.
+This is the subset of vendor `font-lock.el' needed by `font-core.el'
+when it is loaded without the full font-lock implementation."
+    (or font-lock-defaults
+        (and (boundp 'font-lock-keywords)
+             font-lock-keywords)
+        (and mode
+             font-lock-set-defaults
+             font-lock-major-mode
+             (boundp 'major-mode)
+             (not (eq font-lock-major-mode major-mode))))))
+
+(when (emacs-font-lock-builtins--install-function-p 'jit-lock-register)
+  (defalias 'jit-lock-register #'emacs-font-lock-jit-lock-register))
+
+(when (emacs-font-lock-builtins--install-function-p 'jit-lock-unregister)
+  (defalias 'jit-lock-unregister #'emacs-font-lock-jit-lock-unregister))
+
 ;;;; --- variable bridges ----------------------------------------------
 
 (unless (boundp 'font-lock-defaults)
@@ -105,6 +132,18 @@
 (unless (boundp 'font-lock-set-defaults)
   (defvar font-lock-set-defaults nil
     "Non-nil when `font-lock-set-defaults' has run for the current buffer."))
+
+(unless (boundp 'font-lock-major-mode)
+  (defvar font-lock-major-mode nil
+    "Major mode for which font-lock defaults were last installed."))
+
+(unless (boundp 'char-property-alias-alist)
+  (defvar char-property-alias-alist nil
+    "Alist mapping character properties to their aliases."))
+
+(unless (boundp 'jit-lock-functions)
+  (defvar jit-lock-functions nil
+    "Functions registered for jit-lock fontification."))
 
 (unless (boundp 'font-lock-comment-face)
   (defvar font-lock-comment-face 'font-lock-comment-face))

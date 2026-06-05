@@ -3,15 +3,22 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'standalone-source-normalize)
 
 (defvar vendor-form-standalone-reader nil
-  "Path to target/nelisp-standalone-reader.")
+  "Path to target/nelisp or a compatible standalone reader binary.")
 
 (defvar vendor-form-standalone-bootstrap nil
   "Path to the generated nemacs bootstrap bundle.")
 
+(defvar vendor-form-standalone-prelude nil
+  "Path to the standalone reader stdlib prelude, or nil.")
+
 (defvar vendor-form-standalone-file nil
   "Vendor file to evaluate form-by-form.")
+
+(defvar vendor-form-standalone-preload-files nil
+  "Whitespace-separated string or list of files to load before form walking.")
 
 (defvar vendor-form-standalone-start-index 1
   "One-based top-level form index to start reporting.")
@@ -94,35 +101,79 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
 (defun vendor-form-standalone--form-text (form)
   "Return source text for FORM, applying diagnostic rewrites if enabled."
   (let ((text (plist-get form :text)))
-    (if (not vendor-form-standalone-normalize-floats)
-        text
-      (condition-case nil
-          (with-temp-buffer
-            (prin1 (vendor-form-standalone--normalize-floats
-                    (read text))
-                   (current-buffer))
-            (buffer-string))
-        (error text)))))
+    (condition-case nil
+        (with-temp-buffer
+          (let ((rewritten
+                 (standalone-source-normalize-form
+                  (if vendor-form-standalone-normalize-floats
+                      (vendor-form-standalone--normalize-floats (read text))
+                    (read text)))))
+            (prin1 rewritten (current-buffer)))
+          (buffer-string))
+      (error text))))
+
+(defun vendor-form-standalone--eval-source-form (source)
+  "Return a standalone form that evaluates SOURCE through NeLisp's reader."
+  (format "(nelisp--eval-source-string %S)\n" source))
+
+(defun vendor-form-standalone--preload-files ()
+  "Return normalized absolute preload file list."
+  (cond
+   ((stringp vendor-form-standalone-preload-files)
+    (mapcar #'expand-file-name
+            (split-string vendor-form-standalone-preload-files
+                          "[ \t\n]+" t)))
+   ((listp vendor-form-standalone-preload-files)
+    (mapcar #'expand-file-name vendor-form-standalone-preload-files))
+   (t nil)))
+
+(defun vendor-form-standalone--load-form (file)
+  "Return a top-level standalone form that loads FILE."
+  (concat
+   (format "(setq load-file-name %S)\n" file)
+   (format "(setq buffer-file-name %S)\n" file)
+   (mapconcat #'vendor-form-standalone--eval-source-form
+              (standalone-source-normalize-file-to-form-strings file)
+              "")))
+
+(defun vendor-form-standalone--load-paths ()
+  "Return the load paths needed for standalone vendor form probes."
+  (list (expand-file-name "src" vendor-form-standalone-repo-root)
+        (expand-file-name "scripts" vendor-form-standalone-repo-root)
+        (expand-file-name "vendor/emacs-lisp" vendor-form-standalone-repo-root)
+        (expand-file-name "vendor/emacs-lisp/emacs-lisp"
+                          vendor-form-standalone-repo-root)
+        (expand-file-name "vendor/emacs-lisp/vc"
+                          vendor-form-standalone-repo-root)))
 
 (defun vendor-form-standalone--write-program
-    (bootstrap vendor-file forms upto output)
+    (bootstrap vendor-file forms upto output &optional preload-files)
   "Write standalone-reader program for FORMS through one-based UPTO."
-  (with-temp-file output
-    (insert ";;; standalone vendor form walk probe -*- lexical-binding: t; -*-\n")
-    (insert (vendor-form-standalone--read-file bootstrap))
-    (insert "\n")
-    (insert (format "(setq nelisp-emacs-vendor-root %S)\n"
-                    (expand-file-name "vendor" vendor-form-standalone-repo-root)))
-    (insert (format "(setq load-file-name %S)\n" vendor-file))
-    (insert (format "(setq buffer-file-name %S)\n" vendor-file))
-    (dolist (form forms)
-      (let ((index (plist-get form :index)))
-        (when (<= index upto)
-          (insert (vendor-form-standalone--form-text form))
-          (insert "\n"))))
-    ;; The standalone reader currently reports Lisp errors as exit 0.
-    ;; A successful probe must therefore reach this explicit sentinel.
-    (insert "\n42\n")))
+  (let ((coding-system-for-write 'utf-8-unix))
+    (with-temp-file output
+      (insert ";;; standalone vendor form walk probe -*- lexical-binding: t; -*-\n")
+      (insert (format "(setq nelisp-emacs-vendor-root %S)\n"
+                      (expand-file-name "vendor" vendor-form-standalone-repo-root)))
+      (insert (format "(setq load-path '%S)\n"
+                      (vendor-form-standalone--load-paths)))
+      (when vendor-form-standalone-prelude
+        (insert (vendor-form-standalone--eval-source-form
+                 (vendor-form-standalone--read-file
+                  vendor-form-standalone-prelude))))
+      (insert (vendor-form-standalone--read-file bootstrap))
+      (insert "\n")
+      (dolist (file preload-files)
+        (insert (vendor-form-standalone--load-form file)))
+      (insert (format "(setq load-file-name %S)\n" vendor-file))
+      (insert (format "(setq buffer-file-name %S)\n" vendor-file))
+      (dolist (form forms)
+        (let ((index (plist-get form :index)))
+          (when (<= index upto)
+            (insert (vendor-form-standalone--form-text form))
+            (insert "\n"))))
+      ;; The standalone reader currently reports Lisp errors as exit 0.
+      ;; A successful probe must therefore reach this explicit sentinel.
+      (insert "\n(exit 42)\n"))))
 
 (defun vendor-form-standalone--run-prefix (forms upto)
   "Run standalone reader on FORMS through one-based UPTO."
@@ -134,8 +185,11 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
           (vendor-form-standalone--write-program
            vendor-form-standalone-bootstrap
            vendor-form-standalone-file
-           forms upto tmp)
-          (setq exit (call-process vendor-form-standalone-reader nil nil nil tmp))
+           forms upto tmp
+           (vendor-form-standalone--preload-files))
+          (setq exit
+                (call-process vendor-form-standalone-reader nil nil nil
+                              "--load" tmp))
           (setq elapsed (- (float-time) start))
           (list exit elapsed))
       (when (file-exists-p tmp)
@@ -151,10 +205,18 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
                (file-readable-p vendor-form-standalone-bootstrap))
     (error "vendor-form-standalone-bootstrap is not readable: %S"
            vendor-form-standalone-bootstrap))
+  (when (and vendor-form-standalone-prelude
+             (not (file-readable-p vendor-form-standalone-prelude)))
+    (error "vendor-form-standalone-prelude is not readable: %S"
+           vendor-form-standalone-prelude))
   (unless (and vendor-form-standalone-file
                (file-readable-p vendor-form-standalone-file))
     (error "vendor-form-standalone-file is not readable: %S"
            vendor-form-standalone-file))
+  (dolist (file (vendor-form-standalone--preload-files))
+    (unless (file-readable-p file)
+      (error "vendor-form-standalone-preload file is not readable: %S"
+             file)))
   (let* ((forms (vendor-form-standalone--forms vendor-form-standalone-file))
          (start (max 1 vendor-form-standalone-start-index))
          (limit vendor-form-standalone-limit)

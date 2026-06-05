@@ -35,15 +35,12 @@
                    "/calendar" "/eshell" "/mail" "/cedet"
                    "/leim" "/term" "/erc" "/org" "/gnus"))
       (let ((path (concat root sub)))
-        ;; nelisp does not yet provide `file-directory-p'; if missing we
-        ;; just accept the path and let later `require' calls error if
-        ;; anything is genuinely absent.
-        (when (or (not (fboundp 'file-directory-p))
-                  (file-directory-p path))
-          (unless (and (boundp 'load-path) (member path load-path))
-            (setq load-path
-                  (append (and (boundp 'load-path) load-path)
-                          (list path)))))))))
+        ;; Avoid filesystem probes here: standalone diagnostics provide an
+        ;; explicit load-path and missing entries are harmless until required.
+        (unless (and (boundp 'load-path) (member path load-path))
+          (setq load-path
+                (append (and (boundp 'load-path) load-path)
+                        (list path))))))))
 
 ;; Phase B5 (= 2026-05-09): also surface this file's own directory on
 ;; load-path so that the `(require 'emacs-...)' lines below resolve

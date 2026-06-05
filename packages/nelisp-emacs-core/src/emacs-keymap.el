@@ -880,7 +880,10 @@ to plug into a real event source."
       (progn (emacs-keymap--standalone-key-parse keys) t)
     (error nil)))
 
-(when (not (boundp 'emacs-version))
+(when (or (fboundp 'nl-write-file)
+          (not (boundp 'emacs-version))
+          (get 'key-parse 'emacs-stub-bulk)
+          (get 'defvar-keymap 'emacs-stub-bulk))
   ;; GNU keymap.el's regexp-heavy parser is too much for the current
   ;; standalone NeLisp regex subset.  Route the common API through the
   ;; shared keymap substrate with a small kbd parser.
@@ -964,6 +967,9 @@ to plug into a real event source."
     "Standalone NeLisp fallback for GNU `defvar-keymap'."
     (let ((opts nil)
           doc
+          parent
+          suppress
+          keymap
           repeat)
       (while (and defs
                   (keywordp (car defs))
@@ -974,16 +980,32 @@ to plug into a real event source."
           (cond
            ((eq keyword :doc) (setq doc (pop defs)))
            ((eq keyword :repeat) (setq repeat (pop defs)))
+           ((eq keyword :parent) (setq parent (pop defs)))
+           ((eq keyword :suppress) (setq suppress (pop defs)))
+           ((eq keyword :keymap) (setq keymap (pop defs)))
            (t
             (push keyword opts)
             (push (pop defs) opts)))))
       (ignore repeat)
+      (ignore opts)
       (unless (zerop (% (length defs) 2))
         (error "Uneven number of key/definition pairs: %S" defs))
-      (let ((form `(defvar ,variable-name
-                     (define-keymap ,@(nreverse opts) ,@defs)
-                     ,@(and doc (list doc)))))
-        form))))
+      ;; Standalone load-time materialization must not be blocked by
+      ;; complex GNU key syntax such as "<remap> <foo>".  The real
+      ;; binding parser remains available through `keymap-set'; this
+      ;; fallback only guarantees that mode maps exist as keymaps.
+      ;;
+      ;; Build the expansion without backquote.  The standalone prelude
+      ;; installs its own backquote/macroexpander before this file is
+      ;; loaded in replay diagnostics, so avoiding backquote here keeps
+      ;; the macro independent of that implementation.
+      (cons 'progn
+            (cons (append (list 'defvar
+                                variable-name
+                                (or keymap
+                                    (list 'list (list 'quote 'keymap))))
+                          (and doc (list doc)))
+                  (cons (list 'quote variable-name) nil))))))
 
 ;;;###autoload
 (defun emacs-keymap-key-parse (keys)

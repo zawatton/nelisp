@@ -85,6 +85,15 @@
     "Minimal class lookup stub for code paths that probe EIEIO classes."
     nil))
 
+(unless (fboundp 'cl-assert)
+  (defmacro cl-assert (form &optional _show-args string &rest args)
+    "Signal an error unless FORM evaluates non-nil.
+This minimal shim covers load-time CL assertions in vendored libraries."
+    (list 'unless form
+          (cons 'error
+                (cons (or string "Assertion failed: %S")
+                      (if string args (list (list 'quote form))))))))
+
 (unless (fboundp 'cl-subseq)
   (defun cl-subseq (sequence start &optional end)
     "Return the subsequence of SEQUENCE from START to END.
@@ -179,6 +188,7 @@ Supported PLACE forms:
   (nth N L)          → setcar of nthcdr
   (aref V I)         → aset
   (gethash K H)      → puthash
+  registered simple setter → calls the setter with PLACE args + value
   (struct-slot OBJ)  → uses property `cl-struct-setter` on slot symbol
 
 For unrecognised places, signals an error at expansion time."
@@ -208,14 +218,19 @@ For unrecognised places, signals an error at expansion time."
                 ((eq fn 'plist-get)
                  (list 'plist-put (car args) (cadr args) value))
                 ((symbolp fn)
-                 (list 'funcall
-                       (list 'or
-                             (list 'get (list 'quote fn)
-                                   (list 'quote 'cl-struct-setter))
-                             (list 'quote
-                                   (intern (concat (symbol-name fn)
-                                                   "--setter"))))
-                       (car args) value))
+                 (let ((simple-setter (get fn 'cl-simple-setter)))
+                   (if simple-setter
+                       (cons 'funcall
+                             (cons (list 'quote simple-setter)
+                                   (append args (list value))))
+                     (list 'funcall
+                           (list 'or
+                                 (list 'get (list 'quote fn)
+                                       (list 'quote 'cl-struct-setter))
+                                 (list 'quote
+                                       (intern (concat (symbol-name fn)
+                                                       "--setter"))))
+                           (car args) value))))
                 (t (error "setf: unsupported place form: %S" place))))))
            forms)))
       (cons 'progn (nreverse forms)))))

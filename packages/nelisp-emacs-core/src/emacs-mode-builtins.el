@@ -73,6 +73,7 @@ parent mode is initialised but before the user hooks fire."))
 (defun emacs-mode-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   (or (not (boundp 'emacs-version))
+      (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 
 (when (emacs-mode-builtins--install-function-p 'fundamental-mode)

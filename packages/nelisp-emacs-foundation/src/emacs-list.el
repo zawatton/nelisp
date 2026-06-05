@@ -15,6 +15,18 @@
 
 ;;; Code:
 
+;;;; --- safe cons access ---------------------------------------------------
+
+(unless (fboundp 'car-safe)
+  (defun car-safe (object)
+    "Return the car of OBJECT if it is a cons cell, otherwise nil."
+    (if (consp object) (car object) nil)))
+
+(unless (fboundp 'cdr-safe)
+  (defun cdr-safe (object)
+    "Return the cdr of OBJECT if it is a cons cell, otherwise nil."
+    (if (consp object) (cdr object) nil)))
+
 ;;;; --- copy / shape -------------------------------------------------------
 
 (unless (fboundp 'copy-sequence)

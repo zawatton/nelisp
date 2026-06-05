@@ -43,7 +43,8 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
                  font-lock-fontify-buffer font-lock-add-keywords
                  font-lock-remove-keywords font-lock-set-defaults
                  font-lock-unfontify-region font-lock-unfontify-buffer
-                 font-lock-default-fontify-region))
+                 font-lock-default-fontify-region font-lock-specified-p
+                 jit-lock-register jit-lock-unregister))
     (should (fboundp sym))))
 
 (ert-deftest emacs-font-lock-builtins-test/require-is-idempotent ()
@@ -58,6 +59,13 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
 (ert-deftest emacs-font-lock-builtins-test/bridge-overwrites-standalone-stubs-in-source ()
   (should (fboundp 'emacs-font-lock-builtins--install-function-p))
   (should-not (emacs-font-lock-builtins--install-function-p 'font-lock-mode))
+  (let ((original-marker (get 'font-lock-mode 'emacs-stub-bulk)))
+    (unwind-protect
+        (progn
+          (put 'font-lock-mode 'emacs-stub-bulk t)
+          (should (emacs-font-lock-builtins--install-function-p
+                   'font-lock-mode)))
+      (put 'font-lock-mode 'emacs-stub-bulk original-marker)))
   (let* ((file (locate-library "emacs-font-lock-builtins"))
          (file (if (and file (string-match-p "\\.elc\\'" file))
                    (concat (substring file 0 (- (length file) 1)))
@@ -69,7 +77,8 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
                      font-lock-fontify-buffer font-lock-unfontify-region
                      font-lock-unfontify-buffer font-lock-default-fontify-region
                      font-lock-add-keywords font-lock-remove-keywords
-                     font-lock-set-defaults))
+                     font-lock-set-defaults font-lock-specified-p jit-lock-register
+                     jit-lock-unregister))
         (goto-char (point-min))
         (should (search-forward
                  (format "(when (emacs-font-lock-builtins--install-function-p '%s)"
@@ -83,6 +92,24 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
                   font-lock-constant-face font-lock-builtin-face
                   font-lock-warning-face font-lock-doc-face))
     (should (emacs-faces-facep face))))
+
+(ert-deftest emacs-font-lock-builtins-test/vendor-font-core-state-vars-bound ()
+  "Vendor `font-core.el' expects these core variables before toggling."
+  (dolist (sym '(font-lock-major-mode char-property-alias-alist))
+    (should (boundp sym))))
+
+(ert-deftest emacs-font-lock-builtins-test/font-lock-specified-p-subset ()
+  "The lightweight `font-lock-specified-p' follows vendor's nil-default case."
+  (let ((font-lock-defaults nil)
+        (font-lock-keywords nil)
+        (font-lock-set-defaults nil)
+        (font-lock-major-mode nil)
+        (major-mode 'fundamental-mode))
+    (should-not (font-lock-specified-p nil))
+    (let ((font-lock-defaults '(("x"))))
+      (should (font-lock-specified-p nil)))
+    (let ((font-lock-keywords '(("x"))))
+      (should (font-lock-specified-p nil)))))
 
 ;;;; B. keyword compilation
 
@@ -518,6 +545,28 @@ the interval keep whatever face they had before."
     (emacs-font-lock-after-change-handler 2 6 0 b)
     (let ((d (emacs-font-lock-pending-dirty-region b)))
       (should (equal '(2 . 6) d)))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-jit-lock-registers ()
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-jit-register" "xxxxxxx"
+    (let ((jit-lock-functions nil)
+          (fn (lambda (_beg _end))))
+      (should (eq fn (emacs-font-lock-jit-lock-register fn)))
+      (should (eq fn (car (emacs-font-lock-jit-lock-functions b))))
+      (should (eq fn (car jit-lock-functions)))
+      (emacs-font-lock-jit-lock-register fn)
+      (should (= 1 (length (emacs-font-lock-jit-lock-functions b))))
+      (should (= 1 (length jit-lock-functions))))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-jit-lock-unregisters ()
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-jit-unregister" "xxxxxxx"
+    (let ((jit-lock-functions nil)
+          (fn (lambda (_beg _end))))
+      (emacs-font-lock-jit-lock-register fn)
+      (should (eq fn (emacs-font-lock-jit-lock-unregister fn)))
+      (should-not (memq fn (emacs-font-lock-jit-lock-functions b)))
+      (should-not (memq fn jit-lock-functions)))))
 
 (provide 'emacs-font-lock-builtins-test)
 
