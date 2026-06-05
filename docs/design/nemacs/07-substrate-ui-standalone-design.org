@@ -229,6 +229,26 @@ reader 上でこれらが動くか」の検証 + 不足の埋め + display backe
 - 概算: substrate/ui primitive は ~102（Doc 06 集計）。daily-driver MVP に必須な
   コア（buffer/point/marker/insert/delete/window/redisplay/keymap/face）は ~40-50。
 
+** 4.1 実証された最優先 substrate primitive（2026-06-05 vendor-onboarding 実測）
+
+vendor-load-replay の実走で、language/memory 層（segfault 解消・S0 sound GC・12.7GB
+解消）+ call-process graceful 化の後、org.el の load が **43%（line 9592）まで前進**し、
+そこで止まる原因を診断（失敗 form source + error tag を surface）した結果、次が
+**実証された最優先の substrate primitive 不足**:
+
+1. *keymap* — standalone の =make-keymap= が =(nth 1 map)= に char-table を生成しない。
+   isearch.el の =(or (char-table-p (nth 1 map)) (error "...must be updated"))= が失敗
+   → vendor load 中断。=make-keymap= を「char-table を内蔵した full keymap」に。
+2. *char-table 一式* — =make-char-table= / =char-table-p= / =char-table-range= /
+   =set-char-table-range= / =map-char-table= / =aref/aset on char-table=。keymap・
+   syntax-table・category-table・font-lock の土台。最優先。
+3. *syntax-table* — =make-syntax-table= / =string-to-syntax= / =map-char-table=
+   （minibuffer-local-filename-syntax 等が依存）。char-table の上に。
+
+→ §5 S1 の最初の worklist は **char-table 一式 → make-keymap(char-table 内蔵) →
+syntax-table** の順。これらが揃えば org.el load は 43% を超えて深まる（call-process は
+ffd5875 で graceful 化済、もう blocker でない）。
+
 * §5 phasing（次セッション以降）
 
 | phase | gate | 主 subsystem | 規模目安 |
