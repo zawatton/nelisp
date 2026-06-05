@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test
 
 EMACS ?= emacs
 
@@ -155,6 +155,25 @@ standalone-reader-load-smoke: standalone-reader
 	  echo "[standalone-reader-load-smoke] PASS: --load -> $$out"; \
 	else \
 	  echo "[standalone-reader-load-smoke] FAIL: --load -> $$out"; \
+	  exit 1; \
+	fi
+
+# Fast focused loop for Doc 142 gate-6 REAL-RUNTIME in-process native exec.
+# Builds/relinks target/nelisp, then runs the embedded `--neln-selftest'
+# loader path against the REAL reader-linked `nelisp_aot_builtin_call1`.
+standalone-reader-realrt-smoke: standalone-reader
+	@mkdir -p target
+	@stdout_file=target/standalone-reader-realrt-smoke.out; \
+	rm -f "$$stdout_file"; \
+	set +e; \
+	./target/nelisp --neln-selftest >"$$stdout_file"; \
+	rc=$$?; \
+	set -e; \
+	out="$$(cat "$$stdout_file")"; \
+	if [ "$$rc" -eq 42 ] && [ -z "$$out" ]; then \
+	  echo "[standalone-reader-realrt-smoke] PASS: exit=$$rc stdout=<empty>"; \
+	else \
+	  echo "[standalone-reader-realrt-smoke] FAIL: exit=$$rc stdout=$$out"; \
 	  exit 1; \
 	fi
 

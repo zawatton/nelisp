@@ -3788,6 +3788,259 @@ never recurse through one enormous `seq' cdr chain."
           ,@(nreverse calls)
           off))))))
 
+(defun nelisp-standalone--u32le-bytes (value)
+  "Return VALUE as 4 little-endian bytes."
+  (let ((u (logand value #xffffffff)))
+    (list (logand u #xff)
+          (logand (ash u -8) #xff)
+          (logand (ash u -16) #xff)
+          (logand (ash u -24) #xff))))
+
+(defun nelisp-standalone--native-trampoline-slot-disp (slot-index)
+  "Return the rbp-relative spill displacement for SLOT-INDEX."
+  (- (* 8 (1+ slot-index))))
+
+(defun nelisp-standalone--native-mov-rbp-disp-reg-bytes (reg disp)
+  "Return `mov [rbp+DISP], REG' bytes for the x86_64 SysV trampoline."
+  (let ((spec (alist-get reg '((rax . (#x48 #x45 #x85))
+                               (rcx . (#x48 #x4d #x8d))
+                               (rdx . (#x48 #x55 #x95))
+                               (rsi . (#x48 #x75 #xb5))
+                               (rdi . (#x48 #x7d #xbd))
+                               (r8 . (#x4c #x45 #x85))
+                               (r9 . (#x4c #x4d #x8d))))))
+    (unless spec
+      (error "unsupported trampoline register %S" reg))
+    (pcase-let ((`(,rex ,modrm8 ,modrm32) spec))
+      (append (list rex #x89 (if (<= -128 disp 127) modrm8 modrm32))
+              (if (<= -128 disp 127)
+                  (list (logand disp #xff))
+                (nelisp-standalone--u32le-bytes disp))))))
+
+(defun nelisp-standalone--ptr-write-u8-forms (base-sym bytes)
+  "Return `(ptr-write-u8 ...)' forms that copy BYTES into BASE-SYM."
+  (let ((idx -1))
+    (mapcar (lambda (byte)
+              (setq idx (1+ idx))
+              `(ptr-write-u8 ,base-sym ,idx ,byte))
+            bytes)))
+
+(defun nelisp-standalone--native-trampoline-bytes (meta)
+  "Return raw trampoline bytes and imm64 patch offsets for META."
+  (let* ((arity (or (plist-get meta :arity) 0))
+         (frame-bytes (nelisp-artifact--native-trampoline-frame-bytes meta))
+         (arg-regs '(rdi rsi rdx rcx r8 r9))
+         (bytes nil)
+         (imm64-offsets nil))
+    (unless (<= arity (length arg-regs))
+      (error "trampoline arity %d exceeds gp register support" arity))
+    (cl-labels
+        ((emit (chunk)
+           (setq bytes (append bytes chunk)))
+         (emit-imm64-placeholder ()
+           (push (+ (length bytes) 2) imm64-offsets)
+           (emit '(#x48 #xb8 0 0 0 0 0 0 0 0))))
+      (emit '(#x55 #x48 #x89 #xe5))
+      (when (> frame-bytes 0)
+        (emit (append '(#x48 #x81 #xec)
+                      (nelisp-standalone--u32le-bytes frame-bytes))))
+      (dotimes (i arity)
+        (emit
+         (nelisp-standalone--native-mov-rbp-disp-reg-bytes
+          (nth i arg-regs)
+          (nelisp-standalone--native-trampoline-slot-disp i))))
+      (dotimes (i (+ 5 12))
+        (emit-imm64-placeholder)
+        (emit
+         (nelisp-standalone--native-mov-rbp-disp-reg-bytes
+          'rax
+          (nelisp-standalone--native-trampoline-slot-disp
+           (+ arity i)))))
+      (emit-imm64-placeholder)
+      (emit '(#xff #xe0)))
+    (list :bytes bytes
+          :imm64-offsets (nreverse imm64-offsets))))
+
+(defvar nelisp-standalone--reader-neln-demo-cache nil
+  "Cached embedded `.neln' demo metadata for the standalone reader.")
+
+(defun nelisp-standalone--reader-neln-demo-build-spec ()
+  "Compile the embedded `(defun inc1 (x) (1+ x))' demo and extract its metadata."
+  (require 'nelisp-artifact)
+  (let* ((dir (make-temp-file "nelisp-reader-neln-demo-" t))
+         (src (expand-file-name "inc1.el" dir))
+         (out (expand-file-name "inc1.neln" dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file src
+            (insert "(defun inc1 (x) (1+ x))\n(provide 'inc1)\n"))
+          (nelisp-artifact-compile-file src out nil nil nil nil nil 'neln)
+          (let* ((native (plist-get (nelisp-artifact--read-payload out) :native))
+                 (defun0 (car (plist-get native :defuns)))
+                 (text-bytes (string-to-list
+                              (base64-decode-string
+                               (plist-get native :text-base64))))
+                 (relocs (plist-get native :relocs))
+                 (externs (plist-get native :extern-symbols))
+                 (trampoline
+                  (nelisp-standalone--native-trampoline-bytes defun0))
+                 (stub-specs
+                  '((:name "nelisp_aot_builtin_call1"
+                     :bridge nl_neln_demo_call1_bridge
+                     :offset 256)
+                    (:name "nl_alloc_symbol"
+                     :bridge nl_neln_demo_alloc_symbol_bridge
+                     :offset 272))))
+            (unless (equal (plist-get defun0 :name) "inc1")
+              (error "embedded neln demo expected inc1, got %S"
+                     (plist-get defun0 :name)))
+            (unless (equal (sort (copy-sequence externs) #'string<)
+                           '("nelisp_aot_builtin_call1" "nl_alloc_symbol"))
+              (error "embedded neln demo externs drifted: %S" externs))
+            (list :text-bytes text-bytes
+                  :relocs relocs
+                  :defun0 defun0
+                  :trampoline-bytes (plist-get trampoline :bytes)
+                  :imm64-offsets (plist-get trampoline :imm64-offsets)
+                  :stub-specs stub-specs
+                  :body-entry (+ (plist-get defun0 :offset)
+                                 (plist-get defun0 :body-offset)))))
+      (delete-directory dir t))))
+
+(defun nelisp-standalone--reader-neln-demo-spec ()
+  "Return cached embedded `.neln' demo metadata."
+  (or nelisp-standalone--reader-neln-demo-cache
+      (setq nelisp-standalone--reader-neln-demo-cache
+            (nelisp-standalone--reader-neln-demo-build-spec))))
+
+(defun nelisp-standalone--reader-neln-demo-source ()
+  "Return the cached-unit source backing `--neln-selftest'."
+  (if (not (eq nelisp-standalone--target 'linux-x86_64))
+      '(seq
+        (defun nl_neln_demo_exec (_ctx _x)
+          125))
+    (let* ((spec (nelisp-standalone--reader-neln-demo-spec))
+           (text-bytes (plist-get spec :text-bytes))
+           (relocs (plist-get spec :relocs))
+           (trampoline-bytes (plist-get spec :trampoline-bytes))
+           (imm64-offsets (plist-get spec :imm64-offsets))
+           (stub-specs (plist-get spec :stub-specs))
+           (body-entry (plist-get spec :body-entry))
+           (stub-template-bytes '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0))
+           (callback-slot-exprs
+            (cl-loop for i from 0 below 12
+                     collect `(+ slots ,(+ 96 (* i 32)))))
+           (text-writes
+            (nelisp-standalone--ptr-write-u8-forms 'codepage text-bytes))
+           (stub-writes
+            (apply
+             #'append
+             (mapcar
+              (lambda (stub)
+                (nelisp-standalone--ptr-write-u8-forms
+                 `(+ codepage ,(plist-get stub :offset))
+                 stub-template-bytes))
+              stub-specs)))
+           (stub-patches
+            (mapcar
+             (lambda (stub)
+               `(ptr-write-u64 (+ codepage ,(plist-get stub :offset))
+                               2
+                               (addr-of ,(plist-get stub :bridge))))
+             stub-specs))
+           (reloc-forms
+            (mapcar
+             (lambda (reloc)
+               (let* ((offset (plist-get reloc :offset))
+                      (stub
+                       (cl-find-if
+                        (lambda (entry)
+                          (equal (plist-get entry :name)
+                                 (plist-get reloc :symbol)))
+                        stub-specs))
+                      (stub-offset (or (plist-get stub :offset)
+                                       (error "missing stub for %s"
+                                              (plist-get reloc :symbol))))
+                      (addend (or (plist-get reloc :addend) 0)))
+                 `(ptr-write-u32 codepage ,offset
+                                 (- (+ codepage ,stub-offset ,addend)
+                                    (+ codepage ,offset)))))
+             relocs))
+           (trampoline-writes
+            (nelisp-standalone--ptr-write-u8-forms
+             'trampage trampoline-bytes))
+           (slot-values
+            (append
+             (list 'slots '(+ ctx 0) '(+ ctx 32) '(+ slots 32) '(+ slots 64))
+             callback-slot-exprs
+             (list `(+ codepage ,body-entry))))
+           (imm64-patches
+            (cl-mapcar
+             (lambda (offset value)
+               `(ptr-write-u64 trampage ,offset ,value))
+             imm64-offsets
+             slot-values))
+           (slot-zero-forms
+            (append
+             (list '(nl_neln_demo_zero_slot slots)
+                   '(nl_neln_demo_zero_slot (+ slots 32))
+                   '(nl_neln_demo_zero_slot (+ slots 64)))
+             (mapcar (lambda (slot-expr)
+                       `(nl_neln_demo_zero_slot ,slot-expr))
+                     callback-slot-exprs))))
+      (cons
+       'seq
+       (append
+        '((defun nl_neln_demo_alloc_symbol_bridge (bytes-ptr len result-slot)
+            (seq
+             (extern-call nl_alloc_symbol bytes-ptr len result-slot)
+             result-slot))
+          (defun nl_neln_demo_call1_bridge (mirror frames name arg out scratch)
+            (seq
+             (extern-call nelisp_aot_builtin_call1
+                          mirror frames name arg out scratch)
+             out))
+          (defun nl_neln_demo_zero_slot (slot)
+            (seq
+             (ptr-write-u64 slot 0 0)
+             (ptr-write-u64 (+ slot 8) 0 0)
+             (ptr-write-u64 (+ slot 16) 0 0)
+             (ptr-write-u64 (+ slot 24) 0 0)
+             0))
+          (defun nl_neln_demo_write_int_slot (slot value)
+            (seq
+             (ptr-write-u64 slot 0 2)
+             (ptr-write-u64 (+ slot 8) 0 value)
+             (ptr-write-u64 (+ slot 16) 0 0)
+             (ptr-write-u64 (+ slot 24) 0 0)
+             slot))
+          (defun nl_neln_demo_read_int_slot (slot)
+            (if (= (ptr-read-u64 slot 0) 2)
+                (ptr-read-u64 slot 8)
+              98)))
+        (list
+         `(defun nl_neln_demo_exec (ctx x)
+            (let ((codepage (syscall-direct 9 0 4096 7 34 -1 0)))
+              (if (< codepage 4096)
+                  90
+                (let ((slots (syscall-direct 9 0 4096 3 34 -1 0)))
+                  (if (< slots 4096)
+                      91
+                    (let ((trampage (syscall-direct 9 0 4096 7 34 -1 0)))
+                      (if (< trampage 4096)
+                          92
+                        (seq
+                         ,@slot-zero-forms
+                         ,@text-writes
+                         ,@stub-writes
+                         ,@stub-patches
+                         ,@reloc-forms
+                         ,@trampoline-writes
+                         ,@imm64-patches
+                         (nl_neln_demo_write_int_slot (+ slots 480) x)
+                         (call-ptr trampage (+ slots 480))
+                         (nl_neln_demo_read_int_slot slots)))))))))))))))
+
 (defun nelisp-standalone--reader-install-builtins-forms ()
   "Phase47 forms that install every `nelisp-standalone--reader-builtins' name
 with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
@@ -4007,6 +4260,8 @@ correctly."
                                        "--eval")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_load
                                        "--load")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_neln_selftest
+                                       "--neln-selftest")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_embedded
                                        "--embedded")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_help
@@ -4046,7 +4301,7 @@ correctly."
       "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value\n  --load FILE                    Load FILE and print the last value\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE FORM...\n  extend-runtime-image IMAGE OUT FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n")
+      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [--neln-selftest] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value\n  --load FILE                    Load FILE and print the last value\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE FORM...\n  extend-runtime-image IMAGE OUT FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -4085,11 +4340,13 @@ correctly."
             1
           (if (= (nl_cstr_eq_load ptr) 1)
               1
-            (if (= (nl_cstr_eq_repl ptr) 1)
+            (if (= (nl_cstr_eq_neln_selftest ptr) 1)
                 1
-              (if (= (nl_cstr_eq_embedded ptr) 1)
+              (if (= (nl_cstr_eq_repl ptr) 1)
                   1
-                (nl_runtime_image_command_p ptr)))))))
+                (if (= (nl_cstr_eq_embedded ptr) 1)
+                    1
+                  (nl_runtime_image_command_p ptr))))))))
     (defun nl_cli_bare_legacy_command_p (ptr)
       (if (= (nl_cstr_eq_bare_eval ptr) 1)
           1
@@ -4529,6 +4786,8 @@ correctly."
                        (nl_cli_write_value fbuf out)
                      (- (ptr-read-u64 268435464 0) 1)))))
             (seq (nl_cli_write_help fbuf) 2)))
+         ((= (nl_cstr_eq_neln_selftest path) 1)
+          (nl_neln_demo_exec ctx 41))
          ((= (nl_cstr_eq_embedded path) 1)
           (seq
            (sexp-write-str-lit src ,(nelisp-standalone--reader-src))
@@ -5149,6 +5408,10 @@ genuine general interpreter for the 11 special forms + installed builtins."
                        "reader-eval-source.o"
                        nelisp-standalone--reader-eval-source-source
                        nelisp-standalone--this-file))
+         (neln-demo (nelisp-standalone--cached-unit
+                     "reader-neln-demo.o"
+                     (nelisp-standalone--reader-neln-demo-source)
+                     nelisp-standalone--this-file))
          ;; Tracing mark-sweep GC (form-boundary reclaimer).  Compiled from
          ;; the inline source above; the driver calls `nl_gc_collect'.
          (gc (nelisp-standalone--cached-unit
@@ -5163,7 +5426,8 @@ genuine general interpreter for the 11 special forms + installed builtins."
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub) real-sf
-            (list sf-cc capture errstub fileio catch-throw boundary eval-source gc arena)
+            (list sf-cc capture errstub fileio catch-throw boundary
+                  eval-source neln-demo gc arena)
             (delq nil (list arena-base)))))
 
 (defun nelisp-standalone--codesign-macos-adhoc (out)
@@ -5222,6 +5486,7 @@ before executing." out out))
               (nelisp-standalone--reader-setcar-setcdr-type-smoke)
               (nelisp-standalone--reader-runtime-image-smoke)
               (nelisp-standalone--reader-cli-smoke)
+              (nelisp-standalone--reader-neln-selftest-smoke)
               (nelisp-standalone--reader-repl-smoke)
               (message "[standalone-reader] PASS: %S -> exit %d (expected %d)"
                        (nelisp-standalone--reader-src) code expected)
@@ -5425,6 +5690,20 @@ guards the slot-pool floor directly without loading the full vendor file."
           (message "[standalone-reader] runtime-image smoke PASS"))
       (when (file-exists-p tmp)
         (delete-file tmp)))))
+
+(defun nelisp-standalone--reader-neln-selftest-smoke ()
+  "Assert `--neln-selftest' executes the embedded in-process native demo."
+  (let ((rc nil)
+        (expected (if (eq nelisp-standalone--target 'linux-x86_64) 42 125))
+        (stdout nil))
+    (with-temp-buffer
+      (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                             "--neln-selftest"))
+      (setq stdout (buffer-string)))
+    (unless (and (= rc expected) (equal stdout ""))
+      (error "--neln-selftest exit=%S (expected %S) stdout=%S"
+             rc expected stdout))
+    (message "[standalone-reader] neln selftest PASS")))
 
 (defun nelisp-standalone--reader-repl-smoke ()
   "Assert standalone-reader `repl --no-prompt' keeps one live environment."
