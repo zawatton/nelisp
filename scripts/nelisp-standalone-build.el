@@ -2454,6 +2454,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
+    ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ((:lit "ash")     . (wf_write_int out (bf_ash (wf_argval args 0) (wf_argval args 1))))
     ((:lit "logand")  . (wf_write_int out (wf_logand_fold args (- 0 1))))
@@ -2609,6 +2610,19 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
          (nl_os_write_stdout (nl_bi_strptr sx) (nl_bi_strlen sx))
          (wf_write_nil out)
          0)))
+    ;; read-stdin-bytes LIMIT: interpreter-side dispatch, symmetric with
+    ;; nl_bi_write_stdout_bytes.  Self-contained (no Rust shim): allocate a
+    ;; LIMIT-byte arena buffer, issue one read(0,...) via nl_os_read_stdin,
+    ;; and wrap the bytes into a Sexp::Str via nl_alloc_str.  n<1 (EOF=0 or
+    ;; err<0) returns nil so callers' `(while (setq c (read-stdin-bytes N)))'
+    ;; slurp loops terminate at EOF (matches nelisp--cli-slurp-stdin).
+    (defun nl_bi_read_stdin_bytes (args out)
+      (let* ((limit (wf_argval args 0))
+             (buf (alloc-bytes limit 1))
+             (n (nl_os_read_stdin buf limit)))
+        (if (< n 1)
+            (nl_seq2 (wf_write_nil out) 0)
+          (nl_seq2 (nl_alloc_str buf n out) 0))))
     (defun nl_bi_write_stderr_line (args out)
       (let* ((sx (wf_arg_ptr args 0))
              (nl (alloc-bytes 1 1)))
