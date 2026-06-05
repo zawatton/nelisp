@@ -72,6 +72,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'emacs-char-table)
 
 ;;; Errors
 
@@ -143,16 +144,18 @@ optional prompt string.  Compatible with Emacs `make-sparse-keymap'."
   "Construct and return a new full keymap (= 256 ASCII slot table).
 PROMPT, if non-nil, is a string used as menu prompt.
 
-Internally this is a sparse keymap whose tail begins with a
-char-table-like vector slot we model as a single =(t . SLOT-VECTOR)=
-entry.  Lookup by character integer falls back to vector index.
-This matches the visible Emacs API surface; full traversal via
-`emacs-keymap-map-keymap' yields each non-nil slot as a (CHAR . BINDING)
-pair followed by any sparse entries added later."
-  (let ((slot-vec (make-vector 256 nil)))
+Internally this matches the real Emacs full-keymap shape
+=(keymap CHAR-TABLE . SPARSE-ALIST)=: the second element is a real
+char-table (so vendor code such as isearch.el's
+=(char-table-p (nth 1 map))= assertion passes), and character bindings
+for chars below 256 are stored in its ASCII slots.  Lookup helpers also
+accept the legacy =(t . SLOT-VECTOR)= cons for backward compatibility.
+Full traversal via `emacs-keymap-map-keymap' yields each non-nil slot as
+a (CHAR . BINDING) pair followed by any sparse entries added later."
+  (let ((ct (emacs-char-table-make 'keymap)))
     (if prompt
-        (list 'keymap (cons t slot-vec) prompt)
-      (list 'keymap (cons t slot-vec)))))
+        (list 'keymap ct prompt)
+      (list 'keymap ct))))
 
 ;;;###autoload
 (defun emacs-keymap-keymapp (object)
@@ -170,9 +173,16 @@ strings, integers) are returned as-is (= shared)."
         (mapcar
          (lambda (e)
            (cond
-            ((and (consp e) (eq (car e) t) (vectorp (cdr e)))
-             ;; Full-keymap slot vector — copy element-wise, recurse on
+            ((emacs-char-table-p e)
+             ;; Full-keymap char-table slot — deep-copy, recursing on
              ;; nested keymap bindings.
+             (emacs-char-table-copy
+              e (lambda (b) (if (emacs-keymap-keymapp b)
+                                (emacs-keymap-copy-keymap b)
+                              b))))
+            ((and (consp e) (eq (car e) t) (vectorp (cdr e)))
+             ;; Legacy full-keymap slot vector — copy element-wise,
+             ;; recurse on nested keymap bindings.
              (let* ((src (cdr e))
                     (n (length src))
                     (dst (make-vector n nil)))
@@ -248,19 +258,45 @@ binding is not a keymap, signal `emacs-keymap-bad-key' (= matches Emacs
           (emacs-keymap--set-binding keymap k sub))
         (emacs-keymap--define-key-1 sub rest def))))))
 
+(defconst emacs-keymap--full-slot-size 256
+  "Number of ASCII character codes a full keymap addresses directly.")
+
+(defun emacs-keymap--slot-p (e)
+  "Return non-nil when E is a full-keymap slot (char-table or legacy cons)."
+  (or (emacs-char-table-p e)
+      (and (consp e) (eq (car e) t) (vectorp (cdr e)))))
+
 (defun emacs-keymap--full-slot (keymap)
-  "Return the (t . VECTOR) cell of KEYMAP, or nil if KEYMAP is sparse."
-  (let ((tail (cdr keymap)))
-    (cl-loop for e in tail
-             when (and (consp e) (eq (car e) t) (vectorp (cdr e)))
-             return e)))
+  "Return KEYMAP's full slot, or nil if KEYMAP is sparse.
+The slot is a char-table (current model) or a legacy =(t . VECTOR)=
+cons; use `emacs-keymap--slot-ref' / `emacs-keymap--slot-set' to access
+it regardless of representation."
+  (cl-loop for e in (cdr keymap)
+           when (emacs-keymap--slot-p e)
+           return e))
+
+(defun emacs-keymap--slot-char-p (k)
+  "Return non-nil when K is a character handled by a full slot's fast path."
+  (and (integerp k) (>= k 0) (< k emacs-keymap--full-slot-size)))
+
+(defun emacs-keymap--slot-ref (slot k)
+  "Return SLOT's binding for character K (char-table or legacy cons)."
+  (if (emacs-char-table-p slot)
+      (emacs-char-table-ref slot k)
+    (aref (cdr slot) k)))
+
+(defun emacs-keymap--slot-set (slot k def)
+  "Set SLOT's binding for character K to DEF (char-table or legacy cons)."
+  (if (emacs-char-table-p slot)
+      (emacs-char-table-set slot k def)
+    (aset (cdr slot) k def)))
 
 (defun emacs-keymap--set-binding (keymap k def)
   "Install K -> DEF in KEYMAP, replacing any existing binding."
   (let ((slot (emacs-keymap--full-slot keymap)))
-    (if (and slot (integerp k) (>= k 0) (< k (length (cdr slot))))
+    (if (and slot (emacs-keymap--slot-char-p k))
         ;; full-keymap slot path
-        (aset (cdr slot) k def)
+        (emacs-keymap--slot-set slot k def)
       ;; sparse path: search existing pair, then mutate or prepend
       (let ((existing (cl-loop for e in (cdr keymap)
                                when (and (consp e)
@@ -274,13 +310,14 @@ binding is not a keymap, signal `emacs-keymap-bad-key' (= matches Emacs
             ;; nil = remove
             (setcdr keymap (delq existing (cdr keymap)))))
          (def
-          ;; Insert AFTER the (t . VEC) slot if any, else right after the
-          ;; head; this preserves the prompt string at the very tail.
-          (let ((tail (cdr keymap)))
-            (if (and tail (consp (car tail)) (eq (caar tail) t)
-                     (vectorp (cdar tail)))
-                (setcdr tail (cons (cons k def) (cdr tail)))
-              (setcdr keymap (cons (cons k def) tail))))))))))
+          ;; Insert AFTER the full slot (char-table or legacy cons) if any,
+          ;; so the slot stays at `(nth 1 keymap)' and the prompt string
+          ;; stays at the very tail.
+          (let ((slot-cell (cl-member-if #'emacs-keymap--slot-p
+                                         (cdr keymap))))
+            (if slot-cell
+                (setcdr slot-cell (cons (cons k def) (cdr slot-cell)))
+              (setcdr keymap (cons (cons k def) (cdr keymap)))))))))))
 
 (defun emacs-keymap--binding-entry-p (entry)
   "Return non-nil when ENTRY is a sparse key binding cell."
@@ -298,7 +335,7 @@ keep their relative order outside the sparse binding block."
         (suffix '()))
     (dolist (entry (cdr keymap))
       (cond
-       ((and (consp entry) (eq (car entry) t) (vectorp (cdr entry)))
+       ((emacs-keymap--slot-p entry)
         (push entry prefix))
        ((emacs-keymap--binding-entry-p entry)
         (unless (equal (car entry) k)
@@ -333,8 +370,8 @@ keep their relative order outside the sparse binding block."
             (emacs-keymap--set-binding keymap k sub))
           (emacs-keymap--define-key-after-1 sub rest def after))
       (let ((slot (emacs-keymap--full-slot keymap)))
-        (if (and slot (integerp k) (>= k 0) (< k (length (cdr slot))))
-            (aset (cdr slot) k def)
+        (if (and slot (emacs-keymap--slot-char-p k))
+            (emacs-keymap--slot-set slot k def)
           (emacs-keymap--define-key-after-in-sparse keymap k def after))))))
 
 ;;;###autoload
@@ -359,8 +396,8 @@ Returns DEF."
 Walks the keymap *without* parent inheritance — that is the caller's
 job (see `emacs-keymap--lookup-with-parent')."
   (let ((slot (emacs-keymap--full-slot keymap)))
-    (or (and slot (integerp k) (>= k 0) (< k (length (cdr slot)))
-             (aref (cdr slot) k))
+    (or (and slot (emacs-keymap--slot-char-p k)
+             (emacs-keymap--slot-ref slot k))
         (cl-loop for e in (cdr keymap)
                  when (and (consp e)
                            (not (eq (car e) t))
@@ -593,8 +630,16 @@ behaviour).  Returns nil."
     (signal 'emacs-keymap-not-keymap (list keymap)))
   (dolist (e (cdr keymap))
     (cond
+     ((emacs-char-table-p e)
+      ;; full-keymap char-table slot — visit the ASCII range only, to
+      ;; mirror the legacy traversal (supra-ASCII range defaults such as
+      ;; isearch's catch-all are not surfaced as bindings).
+      (let ((vec (emacs-char-table-ascii-vector e)))
+        (dotimes (i (length vec))
+          (let ((b (aref vec i)))
+            (when b (funcall function i b))))))
      ((and (consp e) (eq (car e) t) (vectorp (cdr e)))
-      ;; full-keymap slot
+      ;; legacy full-keymap slot
       (let ((vec (cdr e)))
         (dotimes (i (length vec))
           (let ((b (aref vec i)))

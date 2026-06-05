@@ -185,3 +185,39 @@ char-table 後、org.el は次の blocker で止まる。*実エラーを surfac
 9. [ ] =make diagnose-vendor-load-replay= で org.el が line 9592 超を確認。
 10. [ ] §4 診断手法で次 blocker を surface → 繰り返し。
 11. [ ] commit + push（dev/nelisp-emacs feat/doc142-gate5-nemacs）。worklog 記録。
+
+* §8 進捗ログ (2026-06-05, char-table 着地)
+
+** 8.1 実装済み (このセッション)
+- *=src/emacs-char-table.el= 新規* — sparse char-table substrate（tagged vector
+  =[--nemacs-char-table SUBTYPE DEFAULT PARENT ASCII-VEC RANGES EXTRA]=、length 7）。
+  =char-table-p= / =make-char-table= / =char-table-range= / =set-char-table-range= /
+  =char-table-parent= / =set-char-table-parent= / =char-table-subtype= /
+  =char-table-extra-slot= / =set-char-table-extra-slot= / =map-char-table= / =max-char=
+  を実装。=(#x100 . (max-char))= は RANGES に *疎格納*（400万 aset 回避）。extra-slot 10 個対応。
+- *standalone install* — =(when standalone (fset ...))= で stub-bulk の nil-stub を後勝ち上書き。
+  =emacs-stub-bulk.el= の dense list は *未編集*（install loop が =(unless (fboundp))= ガード
+  付きのため、後ロード + 無条件 fset で確実に勝つ。dense list 編集はリスクのみで不要と判明）。
+- *配線* — =emacs-keymap.el= が =(require 'emacs-char-table)= → bundle line 18905
+  （stub-bulk 1621 の後、emacs-keymap 19223 の前）に自動配置。build-script 変更不要。
+- *make-keymap 改修* — real Emacs 準拠 =(keymap CHAR-TABLE . ALIST)= へ。helper は
+  char-table slot と legacy =(t . vec)= slot の *両対応*（=--slot-p= / =--slot-ref= /
+  =--slot-set=、builtins-test が legacy を手動構築するため後方互換必須）。
+  =--set-binding= の sparse insert は slot の *後ろ* に挿入し =(nth 1 map)= を保持。
+  =suppress-keymap= / =copy-keymap= / =map-keymap= / =define-key-after= も追従。
+- *ERT* — =test/emacs-char-table-test.el= 新規（18、host 差分含む）。
+  keymap ERT の =make-keymap-has-full-slot= を char-table モデルへ更新。
+  char-table 周辺 9 ファイル計 *112 ERT green / 0 unexpected*。byte-compile 警告ゼロ。
+
+** 8.2 load-replay の前進
+- 変更前: char-table-p = nil-stub → =isearch.el= (#2) の =isearch-mode-map= assertion で
+  uncaught error → load 停止。
+- 変更後: =make diagnose-vendor-load-replay= が *=org-cycle.el= (#43) まで到達*（41 ファイル前進）。
+  isearch / minibuffer / charprop / charscript / case-table / org-keys 等は全通過。
+
+** 8.3 次の blocker = org-cycle.el (#43)
+- reader stdout 末尾 = =org-cycle-show-empty-lines=、stderr 空、=exit=0=（Lisp error、segfault 非）。
+  =(defun org-cycle-show-empty-lines ...)= 定義直後で停止。char-table/keymap は load 時に
+  *触らない*ので char-table とは別系統の不足（§4 の reader-patch 法で error tag を surface して特定する）。
+- 続行手順は §4（=bf_eval_source_string= のエラー枝を一時改造 → error tag + form source を stdout →
+  *必ず =git checkout= で revert*）。§5 の syntax-table / text-property 系も近い。

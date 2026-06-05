@@ -81,19 +81,18 @@ When NODIGITS is nil, digits and `-' remain argument keys, matching
 the conventional shape expected by `defvar-keymap :suppress'."
     (let ((slot (emacs-keymap--full-slot keymap)))
       (unless slot
-        (setq slot (cons t (make-vector 256 nil)))
+        (setq slot (emacs-char-table-make 'keymap))
         (setcdr keymap (cons slot (cdr keymap))))
-      (let ((vec (cdr slot))
-            (i 32))
+      (let ((i 32))
         (while (<= i 126)
-          (aset vec i 'undefined)
+          (emacs-keymap--slot-set slot i 'undefined)
           (setq i (1+ i)))
         (unless nodigits
           (let ((digit ?0))
             (while (<= digit ?9)
-              (aset vec digit 'digit-argument)
+              (emacs-keymap--slot-set slot digit 'digit-argument)
               (setq digit (1+ digit))))
-          (aset vec ?- 'negative-argument))))
+          (emacs-keymap--slot-set slot ?- 'negative-argument))))
     keymap))
 
 (when (emacs-keymap-builtins--install-function-p 'set-keymap-parent)
