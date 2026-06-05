@@ -2,6 +2,32 @@
 #+DATE: 2026-06-05
 #+STATUS: INVENTORY
 
+* Progress (2026-06-05)
+
+The *runtime-layer* worklist is largely done in the nelisp repo's reader
+prelude (these are language primitives, correctly in nelisp, not nemacs):
+- list/seq/string/number/path families: delq delete nconc rassq last copy-tree
+  take flatten-tree alist-get string-equal regexp-quote string-search mapconcat
+  downcase upcase string assoc-string natnump max min abs file-name-* expand-
+  file-name string-prefix-p/suffix-p string-trim string-join + seq.el core
+  (seq-filter/map/find/reduce/some/every-p/uniq/take/into/...) + cl-remove-if.
+- printer: prin1-to-string/prin1/princ/terpri + record accessors.
+- reader: minimal read-from-string/read.
+- *regexp stack*: a differential-verified (67/67 vs host string-match) pure-elisp
+  matcher provides string-match / string-match-p / match-beginning / match-end /
+  match-string / split-string / replace-regexp-in-string.  Modern subset only
+  (legacy syntax-class coupling omitted per Doc 05).
+- top-220 fn primitives: reader-missing dropped from 142 to ~115; the residue is
+  by-design SUBSTRATE/UI (see below), not bare-runtime work.
+
+*Remaining = the SUBSTRATE track (this repo's domain).*  The ~102 top-220
+primitives still "missing" in the bare reader are point/goto-char/insert/buffer-
+*/marker/window/keymap/overlay/text-property/process — these live in the nemacs
+substrate (=src/emacs-buffer*.el, src/nelisp-text-buffer.el, ...), NOT the pure
+nelisp runtime, and are the next major lever for Emacs replacement.  Plus OS
+file primitives (file-exists-p via syscall) and core mechanisms (throw/eval/
+signal/autoload).  Scope is bounded by Doc 05 (omit legacy/old-environment).
+
 * Purpose
 
 Prioritised worklist for re-implementing GNU Emacs C-core primitives (DEFUN'd
