@@ -179,7 +179,7 @@
   "(defun NAME ARGS BODY...) → (progn (fset 'NAME (lambda ARGS BODY...)) 'NAME).\nUnlike Rust `sf_defun' which stores the raw `(lambda ...)' form\nunmodified, the elisp expansion goes through evaluation of\n`(lambda ARGS BODY...)' = produces a closure with the current lexical\nenv captured.  For top-level defun the captured env is empty so\nsemantics match Rust; defuns nested inside `let' would receive a\nnon-empty captured env in elisp but the bare form in Rust — this is\nan intentional improvement, not a regression."
   (let*
       ((real-body
-	(if (and body (stringp (car body)))
+	(if (and body (cdr body) (stringp (car body)))
 	    (cdr body)
 	  body))
        (lambda-form (cons 'lambda (cons args real-body)))
@@ -2581,13 +2581,30 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
             (setq i (1+ i))))
         found))))
 
-;; Record accessors: a record supports aref/length directly (slot 0 = type).
+;; Record primitives backing cl-defstruct.  Representation = a plain
+;; vector `[TAG slot0 slot1 ...]': index 0 is the type tag, slots are
+;; 1-based in the vector but 0-based / tag-excluded through the
+;; -record-ref/-set API (the contract cl-defstruct accessors assume,
+;; per the macro docstring "0-based and excludes the tag").
+(unless (fboundp 'nelisp--make-record)
+  (defun nelisp--make-record (type-tag &rest slots)
+    "Build a record vector [TYPE-TAG . SLOTS] for cl-defstruct."
+    (apply 'vector type-tag slots)))
 (unless (fboundp 'nelisp--record-type)
   (defun nelisp--record-type (rec) (aref rec 0)))
 (unless (fboundp 'nelisp--record-length)
+  ;; Total vector length = 1 tag + N slots (matches nelisp--prn-record).
   (defun nelisp--record-length (rec) (length rec)))
-(unless (fboundp 'nelisp--record-ref)
-  (defun nelisp--record-ref (rec i) (aref rec i)))
+;; Override the older tag-inclusive -ref with the tag-excluded 0-based
+;; form the cl-defstruct accessors expect; (defun is unconditional so a
+;; previously-bound buggy version is replaced.)
+(defun nelisp--record-ref (rec i) (aref rec (1+ i)))
+(unless (fboundp 'nelisp--record-set)
+  (defun nelisp--record-set (rec i val) (aset rec (1+ i) val) val))
+;; A record is represented as a vector; the real discrimination is the
+;; type-tag check inside cl-defstruct predicates, so a permissive
+;; vectorp-based recordp is sufficient here (replaces the nil stub).
+(defun recordp (x) (vectorp x))
 
 (defun nelisp--prn-string-escaped (s)
   (let ((out nil) (i 0) (n (length s)))
@@ -2661,8 +2678,8 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
   (let ((tag (nelisp--record-type rec)) (n (nelisp--record-length rec))
         (parts (list "#s(")))
     (setq parts (cons (nelisp--prn-to-string tag escape) parts))
-    (let ((i 1))
-      (while (< i n)
+    (let ((i 0))
+      (while (< i (1- n))
         (setq parts (cons " " parts))
         (setq parts (cons (nelisp--prn-to-string (nelisp--record-ref rec i) escape) parts))
         (setq i (1+ i))))
