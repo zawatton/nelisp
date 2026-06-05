@@ -136,11 +136,44 @@
                          (string-match-p "(ptr-read-u8 ptr 1) 45" source)))))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_eval))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_load))
+      (should (starts-with-dash-dash-p 'nl_cstr_eq_neln_selftest))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_repl))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_embedded))
       (should (memq 'nl_cstr_eq_help flat))
       (should-not (memq 'nl_cstr_eq_dash_e flat))
       (should-not (memq 'nl_cstr_eq_dash_h flat)))))
+
+(ert-deftest nelisp-standalone-target-reader-cli-dispatches-neln-selftest ()
+  "The standalone reader dispatch table includes `--neln-selftest'."
+  (let ((source (prin1-to-string (nelisp-standalone--reader-driver-source))))
+    (should (string-match-p "nl_cstr_eq_neln_selftest" source))
+    (should (string-match-p "(nl_neln_demo_exec ctx 41)" source))))
+
+(ert-deftest nelisp-standalone-target-reader-neln-demo-bridges-real-helpers ()
+  "The embedded native demo reaches the real helpers through local bridges."
+  (let* ((nelisp-standalone--target 'linux-x86_64)
+         (source (prin1-to-string
+                  (nelisp-standalone--reader-neln-demo-source))))
+    (should (string-match-p
+             "(defun nl_neln_demo_alloc_symbol_bridge"
+             source))
+    (should (string-match-p
+             "(extern-call nl_alloc_symbol bytes-ptr len result-slot)"
+             source))
+    (should (string-match-p
+             "(defun nl_neln_demo_call1_bridge"
+             source))
+    (should (string-match-p
+             "(extern-call nelisp_aot_builtin_call1"
+             source))
+    (should (string-match-p
+             "(addr-of nl_neln_demo_alloc_symbol_bridge)"
+             source))
+    (should (string-match-p
+             "(addr-of nl_neln_demo_call1_bridge)"
+             source))
+    (should-not (string-match-p "(defun nelisp_aot_builtin_call1" source))
+    (should-not (string-match-p "(defun nl_alloc_symbol" source))))
 
 (ert-deftest nelisp-standalone-target-macos-reader-cli-name-is-short ()
   "The macOS user-facing standalone reader is target/nelisp."
