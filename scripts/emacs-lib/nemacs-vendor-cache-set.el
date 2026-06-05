@@ -8,12 +8,12 @@
 (require 'nelisp-artifact)
 (require 'nemacs-vendor-cache)
 
-(defconst nemacs-vendor-cache-set--org-macs-drop-reason
-  "Dropped from the cached set: org-macs.el now COMPILES to .nelc (the reader \
-string-escape gap was fixed), but loading its module replay raises \
-`nelisp-void-function' for `defalias' — the NeLisp eval runtime is missing \
-`defalias' (and likely further org-fold/cl builtins org-macs needs). Adding \
-those runtime builtins is the next step to make org-macs cacheable end-to-end.")
+(defconst nemacs-vendor-cache-set--seq-drop-reason
+  "Dropped from the cached set: `seq.el' source replay compiles to `.nelc', \
+but the warm artifact proof raises `nelisp-void-function' for \
+`eval-when-compile' while replaying the cached module -- the NeLisp eval \
+runtime still lacks `eval-when-compile' support, so the vendored `seq' \
+dependency is not cacheable end-to-end yet.")
 
 (defvar nemacs-vendor-cache-set-root-override nil
   "Override root for set-cache artifacts.
@@ -114,27 +114,112 @@ Nil means `build/nelisp-artifacts/vendor-set' under the repo root.")
         :load-paths (nemacs-vendor-cache-set-load-paths)
         :proof-function 'nemacs-vendor-cache-set-proof-org-macs))
 
+(defun nemacs-vendor-cache-set-seq-entry ()
+  "Return the vendored `seq.el' candidate entry."
+  (list :name 'seq
+        :source-path (nemacs-vendor-cache-set--source-path
+                      'seq
+                      "vendor/emacs-lisp/emacs-lisp/seq.el")
+        :requested-feature 'seq
+        :dependencies nil
+        :preloads (nemacs-vendor-cache-set-preloads)
+        :load-paths (nemacs-vendor-cache-set-load-paths)
+        :proof-function 'nemacs-vendor-cache-set-proof-seq))
+
+(defun nemacs-vendor-cache-set-org-compat-entry ()
+  "Return the `org-compat.el' candidate entry."
+  (list :name 'org-compat
+        :source-path (nemacs-vendor-cache-set--source-path
+                      'org-compat
+                      "vendor/emacs-lisp/org/org-compat.el")
+        :requested-feature 'org-compat
+        :dependencies '(seq org-macs)
+        :preloads (nemacs-vendor-cache-set-preloads)
+        :load-paths (nemacs-vendor-cache-set-load-paths)
+        :proof-function 'nemacs-vendor-cache-set-proof-org-compat))
+
+(defun nemacs-vendor-cache-set-org-fold-core-entry ()
+  "Return the `org-fold-core.el' candidate entry."
+  (list :name 'org-fold-core
+        :source-path (nemacs-vendor-cache-set--source-path
+                      'org-fold-core
+                      "vendor/emacs-lisp/org/org-fold-core.el")
+        :requested-feature 'org-fold-core
+        :dependencies '(org-macs org-compat)
+        :preloads (nemacs-vendor-cache-set-preloads)
+        :load-paths (nemacs-vendor-cache-set-load-paths)
+        :proof-function 'nemacs-vendor-cache-set-proof-org-fold-core))
+
+(defun nemacs-vendor-cache-set-org-fold-entry ()
+  "Return the `org-fold.el' candidate entry."
+  (list :name 'org-fold
+        :source-path (nemacs-vendor-cache-set--source-path
+                      'org-fold
+                      "vendor/emacs-lisp/org/org-fold.el")
+        :requested-feature 'org-fold
+        :dependencies '(org-fold-core org-macs)
+        :preloads (nemacs-vendor-cache-set-preloads)
+        :load-paths (nemacs-vendor-cache-set-load-paths)
+        :proof-function 'nemacs-vendor-cache-set-proof-org-fold))
+
 (defun nemacs-vendor-cache-set-candidate-entries ()
   "Return the candidate dependency-ordered vendor chain."
   (list (nemacs-vendor-cache-set-format-spec-entry)
         (nemacs-vendor-cache-set-org-version-entry)
-        (nemacs-vendor-cache-set-org-macs-entry)))
+        (nemacs-vendor-cache-set-org-macs-entry)
+        (nemacs-vendor-cache-set-seq-entry)
+        (nemacs-vendor-cache-set-org-compat-entry)
+        (nemacs-vendor-cache-set-org-fold-core-entry)
+        (nemacs-vendor-cache-set-org-fold-entry)))
+
+(defun nemacs-vendor-cache-set--dropped-candidate
+    (name relative-path dependencies reason)
+  "Return dropped candidate metadata for NAME at RELATIVE-PATH."
+  (list :name name
+        :relative-path relative-path
+        :dependencies dependencies
+        :reason reason))
 
 (defun nemacs-vendor-cache-set-dropped-candidates ()
   "Return dropped candidate metadata.
-Empty: the two blockers are resolved in dev/nelisp — the reader gained
-GNU Emacs-compatible string escapes (org-macs.el compiles to .nelc) and the
-host eval runtime gained `defalias' + `cl-defun' + `defvar-local' (org-macs
-loads from its artifact). The full format-spec -> org-version -> org-macs
-chain is now cacheable."
-  nil)
+The next dependency-chain blocker is vendored `seq.el': the current host can
+cache format-spec -> org-version -> org-macs, but `seq.el' still fails on the
+warm artifact path when replaying `eval-when-compile', which drops
+`org-compat', `org-fold-core', and `org-fold' downstream."
+  (list
+   (nemacs-vendor-cache-set--dropped-candidate
+    'seq
+    "vendor/emacs-lisp/emacs-lisp/seq.el"
+    nil
+    nemacs-vendor-cache-set--seq-drop-reason)
+   (nemacs-vendor-cache-set--dropped-candidate
+    'org-compat
+    "vendor/emacs-lisp/org/org-compat.el"
+    '(seq org-macs)
+    (format "Dropped from the cached set: dependency `seq' was dropped. %s"
+            nemacs-vendor-cache-set--seq-drop-reason))
+   (nemacs-vendor-cache-set--dropped-candidate
+    'org-fold-core
+    "vendor/emacs-lisp/org/org-fold-core.el"
+    '(org-macs org-compat)
+    (format "Dropped from the cached set: dependency `org-compat' was dropped \
+because vendored `seq.el' still raises `nelisp-void-function' for \
+`eval-when-compile'."))
+   (nemacs-vendor-cache-set--dropped-candidate
+    'org-fold
+    "vendor/emacs-lisp/org/org-fold.el"
+    '(org-fold-core org-macs)
+    (format "Dropped from the cached set: dependency `org-fold-core' was \
+dropped because vendored `seq.el' still raises `nelisp-void-function' for \
+`eval-when-compile'."))))
 
 (defun nemacs-vendor-cache-set-default-entries ()
   "Return the chosen cacheable vendor set for this host.
-The full dependency-ordered Org foundation chain: format-spec -> org-version
--> org-macs.  org-macs became cacheable once dev/nelisp gained the reader
-string-escape fix and the defalias/cl-defun/defvar-local eval builtins."
-  (nemacs-vendor-cache-set-candidate-entries))
+The selected cacheable set currently stops at org-macs because vendored
+`seq.el' still hits `nelisp-void-function' for `eval-when-compile'."
+  (list (nemacs-vendor-cache-set-format-spec-entry)
+        (nemacs-vendor-cache-set-org-version-entry)
+        (nemacs-vendor-cache-set-org-macs-entry)))
 
 (defun nemacs-vendor-cache-set-proof-org-version ()
   "Return the proof tuple for `org-version.el'."
@@ -147,6 +232,36 @@ string-escape fix and the defalias/cl-defun/defvar-local eval builtins."
   (list (featurep 'org-macs)
         (fboundp 'org-string-nw-p)
         (org-string-nw-p " x ")))
+
+(defun nemacs-vendor-cache-set-proof-seq ()
+  "Return a stable proof tuple for `seq.el'."
+  (list (featurep 'seq)
+        (fboundp 'seq-first)
+        (seq-first [7 8])))
+
+(defun nemacs-vendor-cache-set-proof-org-compat ()
+  "Return a stable proof tuple for `org-compat.el'."
+  (list (featurep 'org-compat)
+        (fboundp 'org-string-equal-ignore-case)
+        (org-string-equal-ignore-case "Ab" "aB")))
+
+(defun nemacs-vendor-cache-set-proof-org-fold-core ()
+  "Return a stable proof tuple for `org-fold-core.el'."
+  (list (featurep 'org-fold-core)
+        (fboundp 'org-fold-core-initialize)
+        (with-temp-buffer
+          (setq-local org-fold-core-style 'text-properties)
+          (org-fold-core-initialize '((demo (:visible . nil))))
+          (org-fold-core-folding-spec-p 'demo))))
+
+(defun nemacs-vendor-cache-set-proof-org-fold ()
+  "Return a stable proof tuple for `org-fold.el'."
+  (list (featurep 'org-fold)
+        (fboundp 'org-fold-initialize)
+        (with-temp-buffer
+          (setq-local org-fold-core-style 'text-properties)
+          (org-fold-initialize "...")
+          (org-fold-folding-spec-p 'headline))))
 
 (defun nemacs-vendor-cache-set--proof (entry)
   "Run ENTRY's proof function."

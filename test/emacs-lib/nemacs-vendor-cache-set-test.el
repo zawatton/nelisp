@@ -43,7 +43,7 @@
     (plist-get proof :dropped-candidates))))
 
 (ert-deftest nemacs-vendor-cache-set-cold-warm-invalidation ()
-  "Doc 142 §11 set proof: cold build, warm artifact load, invalidation."
+  "Doc 142 section 11 set proof: cold build, warm artifact load, invalidation."
   (let* ((entries (nemacs-vendor-cache-set-default-entries))
          (cache-root (make-temp-file "nemacs-vendor-cache-set-root-" t))
          (temp-dir (make-temp-file "nemacs-vendor-cache-set-src-" t))
@@ -57,7 +57,8 @@
          cold-proof warm-proof invalidated-proof
          cold-entry warm-entry invalidated-entry
          cold-format warm-format invalidated-format
-         cold-total warm-total invalidated-total aggregate-speedup)
+         cold-total warm-total invalidated-total
+         expected-dropped aggregate-speedup)
     (setq cold-proof
           (nemacs-vendor-cache-set-run-subprocess
            'nemacs-vendor-cache-set-batch-proof
@@ -86,7 +87,7 @@
           cold-format (nemacs-vendor-cache-set-test--entry cold-proof 'format-spec)
           warm-format (nemacs-vendor-cache-set-test--entry warm-proof 'format-spec)
           invalidated-format (nemacs-vendor-cache-set-test--entry
-                              invalidated-proof 'format-spec)
+                             invalidated-proof 'format-spec)
           cold-total (plist-get cold-proof :aggregate-elapsed)
           warm-total (plist-get warm-proof :aggregate-elapsed)
           invalidated-total (plist-get invalidated-proof :aggregate-elapsed)
@@ -114,10 +115,29 @@
                    (plist-get cold-proof :selected-set)))
     (should (equal (plist-get invalidated-proof :selected-set)
                    (plist-get cold-proof :selected-set)))
-    ;; No drops: the reader string-escape fix + defalias/cl-defun/defvar-local
-    ;; eval builtins (dev/nelisp) make org-macs.el fully cacheable, so the full
-    ;; format-spec -> org-version -> org-macs chain is cached.
-    (should (null (plist-get cold-proof :dropped-candidates)))
+    (setq expected-dropped
+          '((:name seq
+             :relative-path "vendor/emacs-lisp/emacs-lisp/seq.el"
+             :dependencies nil
+             :reason "Dropped from the cached set: `seq.el' source replay compiles to `.nelc', but the warm artifact proof raises `nelisp-void-function' for `eval-when-compile' while replaying the cached module -- the NeLisp eval runtime still lacks `eval-when-compile' support, so the vendored `seq' dependency is not cacheable end-to-end yet.")
+            (:name org-compat
+             :relative-path "vendor/emacs-lisp/org/org-compat.el"
+             :dependencies (seq org-macs)
+             :reason "Dropped from the cached set: dependency `seq' was dropped. Dropped from the cached set: `seq.el' source replay compiles to `.nelc', but the warm artifact proof raises `nelisp-void-function' for `eval-when-compile' while replaying the cached module -- the NeLisp eval runtime still lacks `eval-when-compile' support, so the vendored `seq' dependency is not cacheable end-to-end yet.")
+            (:name org-fold-core
+             :relative-path "vendor/emacs-lisp/org/org-fold-core.el"
+             :dependencies (org-macs org-compat)
+             :reason "Dropped from the cached set: dependency `org-compat' was dropped because vendored `seq.el' still raises `nelisp-void-function' for `eval-when-compile'.")
+            (:name org-fold
+             :relative-path "vendor/emacs-lisp/org/org-fold.el"
+             :dependencies (org-fold-core org-macs)
+             :reason "Dropped from the cached set: dependency `org-fold-core' was dropped because vendored `seq.el' still raises `nelisp-void-function' for `eval-when-compile'.")))
+    (should (equal (plist-get cold-proof :dropped-candidates)
+                   expected-dropped))
+    (should (equal (plist-get warm-proof :dropped-candidates)
+                   expected-dropped))
+    (should (equal (plist-get invalidated-proof :dropped-candidates)
+                   expected-dropped))
     (should (equal (plist-get cold-proof :aggregate-proof)
                    '((format-spec (t t "x"))
                      (org-version (t t "9.7.11"))
