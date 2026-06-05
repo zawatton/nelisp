@@ -1677,10 +1677,10 @@ form through emit-extern-call → asm reloc → ELF writer so that
            path)
           (let ((rs-out (with-output-to-string
                           (with-current-buffer standard-output
-                            (call-process "readelf" nil t nil "-r" path))))
+                            (call-process "readelf" nil t nil "-W" "-r" path))))
                 (ss-out (with-output-to-string
                           (with-current-buffer standard-output
-                            (call-process "readelf" nil t nil "-s" path)))))
+                            (call-process "readelf" nil t nil "-W" "-s" path)))))
             (should (string-match-p "R_X86_64_PLT32" rs-out))
             (should (string-match-p "ext_helper" rs-out))
             (should (string-match-p "UND[ \t]+ext_helper" ss-out))))
@@ -1709,6 +1709,55 @@ arena base."
             (should (string-match-p "R_X86_64_PC32" rs-out))
             (should (string-match-p "nl_arena_base" rs-out))
             (should (string-match-p "UND[ \t]+nl_arena_base" ss-out))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-phase47-compiler/aarch64-data-addr-emits-adrp-add-relocs ()
+  "Doc 140 Stage 8: arm64 `data-addr' lowers to ADRP+ADD reloc pair."
+  (let ((nelisp-phase47-compiler--arch 'aarch64)
+        (buf (nelisp-asm-arm64-make-buffer))
+        (node (nelisp-phase47-compiler--make-ir
+               'data-addr :name 'nl_ctrl_block)))
+    (nelisp-phase47-compiler--emit-data-addr node buf)
+    (should (equal (nelisp-asm-arm64-buffer-bytes buf)
+                   (concat
+                    (unibyte-string #x00 #x00 #x00 #x90)
+                    (unibyte-string #x00 #x00 #x00 #x91))))
+    (should (equal (nelisp-asm-arm64-buffer-relocs buf)
+                   (list
+                    (list :type 'adr-prel-pg-hi21
+                          :symbol "nl_ctrl_block"
+                          :sym "nl_ctrl_block"
+                          :offset 0
+                          :addend 0
+                          :section 'text)
+                    (list :type 'add-abs-lo12-nc
+                          :symbol "nl_ctrl_block"
+                          :sym "nl_ctrl_block"
+                          :offset 4
+                          :addend 0
+                          :section 'text))))))
+
+(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-data-addr-emits-elf-relocs ()
+  "AArch64 ET_REL output surfaces ADRP+ADD relocations for `data-addr'."
+  (skip-unless (executable-find "readelf"))
+  (let ((path (make-temp-file "nelisp-doc140-arm64-data-addr-" nil ".o")))
+    (unwind-protect
+        (progn
+          (nelisp-phase47-compile-to-object
+           '(defun probe () (data-addr nl_ctrl_block))
+           path :arch 'aarch64)
+          (let ((rs-out (with-output-to-string
+                          (with-current-buffer standard-output
+                            (call-process "readelf" nil t nil "-W" "-r" path))))
+                (ss-out (with-output-to-string
+                          (with-current-buffer standard-output
+                            (call-process "readelf" nil t nil "-W" "-s" path)))))
+            ;; This readelf build abbreviates long AArch64 reloc names in
+            ;; the Type column, so match the stable type code + prefix.
+            (should (string-match-p "000200000113 R_AARCH64_ADR_PRE" rs-out))
+            (should (string-match-p "000200000115 R_AARCH64_ADD_ABS" rs-out))
+            (should (string-match-p "nl_ctrl_block" rs-out))
+            (should (string-match-p "UND[ \t]+nl_ctrl_block" ss-out))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-phase47-compiler/object-mode-extern-call-smoke ()

@@ -621,6 +621,32 @@
     (should-error (nelisp-asm-arm64-emit-reloc b 'absurd 'foo)
                   :type 'nelisp-asm-arm64-error)))
 
+(ert-deftest nelisp-asm-arm64-data-addr-reloc-pair ()
+  "ADRP + ADD(lo12) records the expected external relocation pair."
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-adrp b 'x0 'nl_ctrl_block)
+    (nelisp-asm-arm64-add-abs-lo12-nc b 'x0 'x0 'nl_ctrl_block)
+    (should (equal (nelisp-asm-arm64-buffer-bytes b)
+                   (concat
+                    (nelisp-asm-arm64-test--word #x90000000)
+                    (nelisp-asm-arm64-test--word #x91000000))))
+    (let ((relocs (nelisp-asm-arm64-buffer-relocs b)))
+      (should (= (length relocs) 2))
+      (should (equal relocs
+                     (list
+                      (list :type 'adr-prel-pg-hi21
+                            :symbol "nl_ctrl_block"
+                            :sym 'nl_ctrl_block
+                            :offset 0
+                            :addend 0
+                            :section 'text)
+                      (list :type 'add-abs-lo12-nc
+                            :symbol "nl_ctrl_block"
+                            :sym 'nl_ctrl_block
+                            :offset 4
+                            :addend 0
+                            :section 'text)))))))
+
 ;; ---- composite: minimal exit(0) ----
 
 (ert-deftest nelisp-asm-arm64-exit0-shape ()

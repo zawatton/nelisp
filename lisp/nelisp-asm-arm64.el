@@ -36,7 +36,10 @@
 ;;     ; TYPE = 'b26 (= B  imm26) / 'bl26 (= BL imm26)
 ;;   (nelisp-asm-arm64-resolve-fixups BUF)   ; -> patched unibyte-string
 ;;   (nelisp-asm-arm64-emit-reloc   BUF TYPE SYM &optional ADDEND)
-;;     ; TYPE = 'b26-pc (= R_AARCH64_CALL26) / 'abs64 (= R_AARCH64_ABS64)
+;;     ; TYPE = 'b26-pc (= R_AARCH64_CALL26)
+;;     ;      | 'abs64 (= R_AARCH64_ABS64)
+;;     ;      | 'adr-prel-pg-hi21 (= R_AARCH64_ADR_PREL_PG_HI21)
+;;     ;      | 'add-abs-lo12-nc (= R_AARCH64_ADD_ABS_LO12_NC)
 ;;
 ;; State shape (§92.d-arm64 chunk-build, mirroring §92.d x86_64):
 ;;   `(:chunks (CHUNK_N ... CHUNK_2 CHUNK_1) :length N
@@ -64,9 +67,10 @@
 ;;   svc         brk         ret         nop
 ;;   bl          b           (with imm26 fixup against a label)
 ;;
-;; Relocation marker API records `:b26-pc' / `:abs64' entries for
-;; Doc 93 linker handoff — placeholder bytes (4 zero for instr,
-;; 8 zero for abs64) are emitted at the recorded offset by the caller.
+;; Relocation marker API records `:b26-pc' / `:abs64' /
+;; `:adr-prel-pg-hi21' / `:add-abs-lo12-nc' entries for Doc 93
+;; linker handoff — placeholder bytes are emitted at the recorded
+;; offset by the caller.
 ;;
 ;; Not wired into baker — freestanding spike per Doc 92 §0.2 + §8.1.
 
@@ -240,12 +244,13 @@ imm field = 0) before recording the fixup."
 (defun nelisp-asm-arm64-emit-reloc (buf type sym &optional addend)
   "Record a pending relocation entry against external symbol SYM.
 TYPE is one of `b26-pc' (= R_AARCH64_CALL26, PC-relative 26-bit
-BL imm) / `abs64' (= R_AARCH64_ABS64, 64-bit absolute).  This
-helper records only; the caller is responsible for emitting the
-placeholder bytes (4 zeros for b26-pc, 8 zeros for abs64) at the
-recorded offset.  ADDEND defaults to 0 (= matches ELF64
-r_addend)."
-  (unless (memq type '(b26-pc abs64))
+BL imm) / `abs64' (= R_AARCH64_ABS64, 64-bit absolute) /
+`adr-prel-pg-hi21' (= R_AARCH64_ADR_PREL_PG_HI21, ADRP page-rel) /
+`add-abs-lo12-nc' (= R_AARCH64_ADD_ABS_LO12_NC, ADD imm12 lo12).
+This helper records only; the caller is responsible for emitting the
+placeholder bytes at the recorded offset.  ADDEND defaults to 0 (=
+matches ELF64 r_addend)."
+  (unless (memq type '(b26-pc abs64 adr-prel-pg-hi21 add-abs-lo12-nc))
     (signal 'nelisp-asm-arm64-error
             (list :unknown-reloc-type type)))
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
@@ -468,6 +473,18 @@ Base 0x91000000 | (imm12 << 10) | (Rn << 5) | Rd."
                        d)))
     (nelisp-asm-arm64--emit-word buf word)))
 
+(defun nelisp-asm-arm64-add-abs-lo12-nc (buf dst src sym &optional addend)
+  "Emit `ADD Xd, Xn, #:lo12:SYM' with an external relocation.
+Writes the 4-byte placeholder = base 0x91000000 | (Rn << 5) | Rd
+\(imm12 field = 0), recording an `add-abs-lo12-nc' reloc at the
+instruction slot.  The linker patches bits [21:10] with the low
+12 bits of SYM (+ ADDEND)."
+  (let* ((d (logand (nelisp-asm-arm64--reg-num dst) #x1F))
+         (n (logand (nelisp-asm-arm64--reg-num src) #x1F))
+         (word (logior #x91000000 (ash n 5) d)))
+    (nelisp-asm-arm64-emit-reloc buf 'add-abs-lo12-nc sym addend)
+    (nelisp-asm-arm64--emit-word buf word)))
+
 (defun nelisp-asm-arm64-sub-imm (buf dst src imm12)
   "Emit `SUB Xd, Xn, #IMM12' (12-bit unsigned, no shift).
 Base 0xD1000000 | (imm12 << 10) | (Rn << 5) | Rd."
@@ -542,6 +559,16 @@ intra-text — the aarch64 counterpart of x86_64 `LEA reg, [rip+sym]'
         (slot (nelisp-asm-arm64-buffer-pos buf)))
     (nelisp-asm-arm64--emit-word buf (logior #x10000000 d))
     (nelisp-asm-arm64-emit-fixup buf slot label 'adr21)))
+
+(defun nelisp-asm-arm64-adrp (buf reg sym &optional addend)
+  "Emit `ADRP Xd, SYM' with an external page-relative relocation.
+Writes the 4-byte placeholder = base 0x90000000 | Rd (page imm =
+0), recording an `adr-prel-pg-hi21' reloc at the instruction slot.
+The linker patches immhi:immlo with the signed page delta
+`page(SYM + ADDEND) - page(PC)'."
+  (let ((d (logand (nelisp-asm-arm64--reg-num reg) #x1F)))
+    (nelisp-asm-arm64-emit-reloc buf 'adr-prel-pg-hi21 sym addend)
+    (nelisp-asm-arm64--emit-word buf (logior #x90000000 d))))
 
 (defun nelisp-asm-arm64-blr (buf reg)
   "Emit `BLR Xn' (= branch with link to register, indirect call).

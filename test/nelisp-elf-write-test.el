@@ -149,6 +149,14 @@
   "b26-pc relocation keyword maps to R_AARCH64_CALL26."
   (should (= (nelisp-elf--reloc-type-code 'b26-pc) 283)))
 
+(ert-deftest nelisp-elf-write-reloc-type-aarch64-adr-prel-pg-hi21 ()
+  "adr-prel-pg-hi21 maps to R_AARCH64_ADR_PREL_PG_HI21."
+  (should (= (nelisp-elf--reloc-type-code 'adr-prel-pg-hi21) 275)))
+
+(ert-deftest nelisp-elf-write-reloc-type-aarch64-add-abs-lo12-nc ()
+  "add-abs-lo12-nc maps to R_AARCH64_ADD_ABS_LO12_NC."
+  (should (= (nelisp-elf--reloc-type-code 'add-abs-lo12-nc) 277)))
+
 ;; ---------------------------------------------------------------- Phdr L1
 
 (ert-deftest nelisp-elf-write-phdr-shape ()

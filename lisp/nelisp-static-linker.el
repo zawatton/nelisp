@@ -17,9 +17,16 @@
 ;; bytes.  Three relocation types are supported (= Doc 93 §3.1
 ;; minimum set):
 ;;
-;;   `pc32'   = R_X86_64_PC32   (2) -- S + A - P, 4-byte LE.
-;;   `abs64'  = R_X86_64_64     (1) -- S + A,     8-byte LE.
-;;   `plt32'  = R_X86_64_PLT32  (4) -- S + A - P, 4-byte LE.
+;;   `pc32'             = R_X86_64_PC32                 (2)
+;;                      -- S + A - P, 4-byte LE.
+;;   `abs64'            = R_X86_64_64                   (1)
+;;                      -- S + A, 8-byte LE.
+;;   `plt32'            = R_X86_64_PLT32                (4)
+;;                      -- S + A - P, 4-byte LE.
+;;   `adr-prel-pg-hi21' = R_AARCH64_ADR_PREL_PG_HI21  (275)
+;;                      -- page(S + A) - page(P), ADRP immhi:immlo.
+;;   `add-abs-lo12-nc'  = R_AARCH64_ADD_ABS_LO12_NC   (277)
+;;                      -- (S + A) & 0xFFF into ADD imm12.
 ;;
 ;; For ET_EXEC + static link (= Phase 47 scope), `plt32' is
 ;; semantically identical to `pc32' (= no PLT trampoline needed).
@@ -44,7 +51,8 @@
 ;; through the linker into the ELF writer unchanged.
 ;;
 ;; Relocation entry shape:
-;;   (:offset N :type pc32|abs64|plt32 :symbol NAME :addend A)
+;;   (:offset N :type pc32|abs64|plt32|b26-pc|adr-prel-pg-hi21
+;;             |add-abs-lo12-nc :symbol NAME :addend A)
 ;; Matches the per-entry plist produced by `nelisp-asm-x86_64-emit-
 ;; reloc' (= `:type' / `:sym' / `:offset' / `:addend'); the `:sym'
 ;; spelling from the assembler is accepted as an alias of `:symbol'
@@ -109,9 +117,11 @@ land in §93.b; here LOCAL is permitted to shadow LOCAL silently
 (defun nelisp-link-reloc (offset type symbol &optional addend)
   "Build a relocation entry plist.
 OFFSET is the patch site (= byte position within the target
-section).  TYPE is one of `pc32' / `abs64' / `plt32' / `b26-pc'.  SYMBOL is
-the referenced symbol name (string).  ADDEND defaults to 0."
-  (unless (memq type '(pc32 abs64 plt32 b26-pc))
+section).  TYPE is one of `pc32' / `abs64' / `plt32' / `b26-pc' /
+`adr-prel-pg-hi21' / `add-abs-lo12-nc'.  SYMBOL is the referenced
+symbol name (string).  ADDEND defaults to 0."
+  (unless (memq type '(pc32 abs64 plt32 b26-pc
+                             adr-prel-pg-hi21 add-abs-lo12-nc))
     (signal 'nelisp-link-error (list :unknown-reloc-type type)))
   (list :offset offset :type type :symbol symbol
         :addend (or addend 0)))
@@ -171,6 +181,17 @@ reporting)."
                (>= (ash d -2) (- (ash 1 25)))
                (<  (ash d -2) (ash 1 25)))
     (signal 'nelisp-link--branch26-overflow (list sym d))))
+
+(define-error 'nelisp-link--adrp-page-overflow
+  "nelisp static linker: arm64 ADRP page displacement out of range"
+  'nelisp-link-error)
+
+(defun nelisp-link--check-adrp-page-range (d sym)
+  "Signal if page displacement D cannot fit an AArch64 ADRP imm21."
+  (unless (and (zerop (logand d #xFFF))
+               (>= (ash d -12) (- (ash 1 20)))
+               (<  (ash d -12) (ash 1 20)))
+    (signal 'nelisp-link--adrp-page-overflow (list sym d))))
 
 (defun nelisp-link--vec->ubstring (vec)
   "Convert byte VEC into a unibyte-string (= ELF writer input).
@@ -233,6 +254,32 @@ relocation."
                            (ash (aref vec (+ offset 3)) 24)))
               (patched (logior (logand cur #xfc000000) imm26)))
          (nelisp-link--check-branch26-range d sym-name)
+         (nelisp-link--patch-le32 vec offset patched)))
+      ('adr-prel-pg-hi21
+       (let* ((P (+ section-va offset))
+              (page-s (logand (+ S addend) (lognot #xFFF)))
+              (page-p (logand P (lognot #xFFF)))
+              (d (- page-s page-p))
+              (imm21 (ash d -12))
+              (immlo (logand imm21 #x3))
+              (immhi (logand (ash imm21 -2) #x7ffff))
+              (cur (logior (aref vec offset)
+                           (ash (aref vec (+ offset 1)) 8)
+                           (ash (aref vec (+ offset 2)) 16)
+                           (ash (aref vec (+ offset 3)) 24)))
+              (patched (logior (logand cur #x9F00001F)
+                               (ash immlo 29)
+                               (ash immhi 5))))
+         (nelisp-link--check-adrp-page-range d sym-name)
+         (nelisp-link--patch-le32 vec offset patched)))
+      ('add-abs-lo12-nc
+       (let* ((imm12 (logand (+ S addend) #xFFF))
+              (cur (logior (aref vec offset)
+                           (ash (aref vec (+ offset 1)) 8)
+                           (ash (aref vec (+ offset 2)) 16)
+                           (ash (aref vec (+ offset 3)) 24)))
+              (patched (logior (logand cur #xFFC003FF)
+                               (ash imm12 10))))
          (nelisp-link--patch-le32 vec offset patched)))
       ('abs64
        (nelisp-link--patch-le64 vec offset (+ S addend)))
