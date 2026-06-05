@@ -4346,16 +4346,27 @@ Return the addrlen (= 2 + 1 + bytes)."
    (or nelisp-os--windows-abstract-unix-dir
        (expand-file-name "nelisp-afunix" temporary-file-directory))))
 
+(defun nelisp-os--windows-drive-absolute-path-p (path)
+  "Return non-nil when PATH uses a Windows drive-letter absolute form."
+  (and (stringp path)
+       (string-match-p "\\`[[:alpha:]]:[/\\\\]" path)))
+
 (defun nelisp-os--windows-abstract-unix-path (name)
   "Return a filesystem AF_UNIX path for Windows abstract socket NAME."
   (nelisp-os--check-unix-abstract-name name)
-  (let* ((hash (secure-hash 'sha1 name))
+  (let* ((base-dir (nelisp-os--windows-abstract-unix-base-dir))
+         (hash (secure-hash 'sha1 name))
          ;; Windows AF_UNIX still has a small sun_path budget.  Keep enough
          ;; hash bits for practical uniqueness while leaving room for Temp dirs.
          (short-hash (substring hash 0 20))
-         (path (expand-file-name
-                (concat "nl-" short-hash ".sock")
-                (nelisp-os--windows-abstract-unix-base-dir))))
+         ;; On non-Windows hosts, `expand-file-name' treats `C:/...'
+         ;; as relative and prefixes the current directory, which
+         ;; breaks the host-side compatibility tests for Windows paths.
+         (path (if (nelisp-os--windows-drive-absolute-path-p base-dir)
+                   (concat base-dir "nl-" short-hash ".sock")
+                 (expand-file-name
+                  (concat "nl-" short-hash ".sock")
+                  base-dir))))
     (when (> (string-bytes path) (1- nelisp-os-SUN-PATH-MAX))
       (signal 'nelisp-os-error (list 36))) ; ENAMETOOLONG
     path))

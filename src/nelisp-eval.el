@@ -30,8 +30,9 @@
 ;;
 ;; Implemented special forms:
 ;;   quote, function, if, cond, and, or, when, unless,
-;;   progn, prog1, prog2, let, let*, lambda, defun, defvar, defconst,
-;;   setq, while, catch, throw, unwind-protect, condition-case
+;;   progn, prog1, prog2, let, let*, lambda, defun, defvar,
+;;   defvar-local, defconst, cl-defun, setq, while, catch, throw,
+;;   unwind-protect, condition-case
 ;;
 ;; Installed builtins (delegated to the host Elisp functions):
 ;;   List:   car cdr caar cadr cdar cddr
@@ -155,6 +156,10 @@ returned and `nelisp--apply-closure' handles it."
            (funcall 'nelisp-bc-try-compile-lambda env params body))
       (list 'nelisp-closure env params body)))
 
+(defun nelisp--make-interpreter-closure (env params body)
+  "Build an interpreter-only closure from ENV / PARAMS / BODY."
+  (list 'nelisp-closure env params body))
+
 (defun nelisp--lambda-body (body)
   "Return BODY with an optional leading docstring removed.
 Emacs treats a string after the lambda list in `defun' and `lambda'
@@ -240,7 +245,9 @@ Signal `nelisp-void-function' if none is bound."
                               (nelisp--lambda-body (cdr args))))
        ((eq head 'defun)     (nelisp--eval-defun args env))
        ((eq head 'defvar)    (nelisp--eval-defvar args env))
+       ((eq head 'defvar-local) (nelisp--eval-defvar-local args env))
        ((eq head 'defconst)  (nelisp--eval-defconst args env))
+       ((eq head 'cl-defun)  (nelisp--eval-cl-defun args env))
        ((eq head 'setq)      (nelisp--eval-setq args env))
        ((eq head 'while)     (nelisp--eval-while args env))
        ((eq head 'catch)           (nelisp--eval-catch args env))
@@ -340,7 +347,7 @@ If a clause has no body, the test value itself is returned."
    ((and (consp form) (eq (car form) 'lambda))
     (nelisp--make-closure env (cadr form)
                           (nelisp--lambda-body (cddr form))))
-   ((symbolp form) (nelisp--function-of form))
+   ((symbolp form) form)
    (t (signal 'nelisp-eval-error
               (list "cannot take function value of" form)))))
 
@@ -425,6 +432,20 @@ has just mutated."
              nelisp--functions)
     name))
 
+(defun nelisp--eval-cl-defun (args env)
+  "(cl-defun NAME (PARAMS) BODY...) — install a closure with CL optionals.
+The host evaluator only supports the `org-macs.el' subset here:
+required args, `&optional' entries as symbols or `(VAR DEFAULT
+[SUPPLIEDP])', and `&rest'."
+  (let ((name (car args))
+        (params (cadr args))
+        (body (nelisp--lambda-body (cddr args))))
+    (unless (symbolp name)
+      (signal 'nelisp-eval-error (list "cl-defun needs a symbol" name)))
+    (puthash name (nelisp--make-interpreter-closure env params body)
+             nelisp--functions)
+    name))
+
 (defun nelisp--eval-defvar (args env)
   "(defvar NAME [INITVAL [DOCSTRING]]) — declare special, maybe init."
   (let ((name (car args)))
@@ -436,6 +457,14 @@ has just mutated."
                    nelisp--unbound))
       (puthash name (nelisp-eval-form (cadr args) env) nelisp--globals))
     name))
+
+(defun nelisp--eval-defvar-local (args env)
+  "(defvar-local NAME VALUE [DOCSTRING]) — like `defvar' at load time.
+The host-side NeLisp evaluator does not model buffer-local lookup, so
+artifact replay needs only the top-level declaration and default value
+installation that `defvar-local' performs before adding its localness
+metadata."
+  (nelisp--eval-defvar args env))
 
 (defun nelisp--eval-defconst (args env)
   "(defconst NAME VALUE [DOCSTRING]) — always (re-)initializes unlike `defvar'."
@@ -599,7 +628,10 @@ dispatches straight into the VM."
     (nelisp--eval-body body call-env)))
 
 (defun nelisp--bind-params (params args env)
-  "Extend ENV by binding PARAMS to ARGS; support &optional and &rest."
+  "Extend ENV by binding PARAMS to ARGS.
+Supports plain Elisp `&optional' / `&rest' lambda lists plus the
+`cl-defun' subset needed by `org-macs.el': optional entries written
+as `(VAR DEFAULT [SUPPLIEDP])'."
   (let ((state 'required)
         (done nil))
     (while (and params (not done))
@@ -618,12 +650,40 @@ dispatches straight into the VM."
           (setq done t))
          (t
           (cond
-           ((and (eq state 'required) (null args))
-            (signal 'nelisp-eval-error (list "too few args")))
-           (t
+           ((eq state 'required)
+            (unless (symbolp p)
+              (signal 'nelisp-eval-error
+                      (list "unsupported required parameter" p)))
+            (when (null args)
+              (signal 'nelisp-eval-error (list "too few args")))
             (setq env (cons (cons p (car args)) env))
             (setq args (cdr args))
-            (setq params (cdr params))))))))
+            (setq params (cdr params)))
+           ((symbolp p)
+            (setq env (cons (cons p (car args)) env))
+            (setq args (cdr args))
+            (setq params (cdr params)))
+           ((and (consp p)
+                 (symbolp (car p))
+                 (<= (safe-length p) 3))
+            (let* ((var (car p))
+                   (default-form (cadr p))
+                   (suppliedp (nth 2 p))
+                   (supplied (not (null args)))
+                   (val (if supplied
+                            (prog1 (car args)
+                              (setq args (cdr args)))
+                          (nelisp-eval-form default-form env))))
+              (when (and suppliedp (not (symbolp suppliedp)))
+                (signal 'nelisp-eval-error
+                        (list "optional supplied-p must be symbol" suppliedp)))
+              (setq env (cons (cons var val) env))
+              (when suppliedp
+                (setq env (cons (cons suppliedp supplied) env)))
+              (setq params (cdr params))))
+           (t
+            (signal 'nelisp-eval-error
+                    (list "unsupported optional parameter" p))))))))
     (when args
       (signal 'nelisp-eval-error (list "too many args")))
     env))
@@ -800,6 +860,16 @@ Self-evaluating atoms (nil, t, keywords) are always bound."
 Matches Elisp `symbol-value' which never sees lexical bindings."
   (nelisp--lookup sym nil))
 
+(defun nelisp--builtin-defalias (symbol definition &optional _docstring)
+  "Set SYMBOL's function cell in the NeLisp runtime to DEFINITION.
+Like Emacs `defalias', return SYMBOL after installing the new
+binding.  DEFINITION may be a symbol alias or any callable object
+accepted by `nelisp--apply'."
+  (unless (symbolp symbol)
+    (signal 'wrong-type-argument (list 'symbolp symbol)))
+  (puthash symbol definition nelisp--functions)
+  symbol)
+
 (defun nelisp--builtin-require (feature &optional _filename _noerror)
   "Phase 2 NeLisp `require' stub.
 NeLisp does not yet maintain a module table; the dependents are
@@ -830,6 +900,7 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (puthash 'boundp       #'nelisp--builtin-boundp       nelisp--functions)
   (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
+  (puthash 'defalias     #'nelisp--builtin-defalias     nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
   (when (fboundp 'nelisp--builtin-load-file)

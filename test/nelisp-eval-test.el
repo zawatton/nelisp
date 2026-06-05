@@ -18,6 +18,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'nelisp-eval)
 
 ;;; Self-evaluating and variable lookup -------------------------------
@@ -47,7 +48,16 @@
 
 (ert-deftest nelisp-eval-function-symbol ()
   (nelisp--reset)
-  (should (functionp (nelisp-eval '(function +)))))
+  (should (eq (nelisp-eval '(function +)) '+))
+  (should (eq (nelisp-eval '(function not-yet-defined))
+              'not-yet-defined)))
+
+(ert-deftest nelisp-eval-function-symbol-resolves-at-call-time ()
+  (nelisp--reset)
+  (let ((fn (nelisp-eval '(function nelisp-eval-host-probe))))
+    (cl-letf (((symbol-function 'nelisp-eval-host-probe)
+               (lambda (x) (+ x 2))))
+      (should (= (nelisp--apply fn '(40)) 42)))))
 
 (ert-deftest nelisp-eval-function-lambda ()
   (nelisp--reset)
@@ -134,6 +144,19 @@
   (nelisp-eval '(defun add1 (n) (+ n 1)))
   (should (= (nelisp-eval '(add1 5)) 6)))
 
+(ert-deftest nelisp-eval-cl-defun-optional-defaults ()
+  (nelisp--reset)
+  (nelisp-eval
+   '(cl-defun nelisp-eval-cl-defun-probe
+      (x &optional (y (+ x 1) y-supplied-p))
+      (list x y y-supplied-p)))
+  (should (equal (nelisp-eval '(nelisp-eval-cl-defun-probe 1))
+                 '(1 2 nil)))
+  (should (equal (nelisp-eval '(nelisp-eval-cl-defun-probe 1 nil))
+                 '(1 nil t)))
+  (should (equal (nelisp-eval '(nelisp-eval-cl-defun-probe 1 5))
+                 '(1 5 t))))
+
 (ert-deftest nelisp-eval-defun-docstring-installs-function ()
   (nelisp--reset)
   (nelisp-eval
@@ -142,6 +165,16 @@
       42))
   (should (nelisp-eval '(fboundp (quote docstring-probe))))
   (should (= (nelisp-eval '(docstring-probe)) 42)))
+
+(ert-deftest nelisp-eval-defalias-installs-symbol-alias ()
+  (nelisp--reset)
+  (nelisp-eval '(defun nelisp-eval-defalias-target (x) (+ x 1)))
+  (should (eq (nelisp-eval
+               '(defalias 'nelisp-eval-defalias-alias
+                  #'nelisp-eval-defalias-target))
+              'nelisp-eval-defalias-alias))
+  (should (nelisp-eval '(fboundp 'nelisp-eval-defalias-alias)))
+  (should (= (nelisp-eval '(nelisp-eval-defalias-alias 41)) 42)))
 
 (ert-deftest nelisp-eval-defvar-sets-global ()
   (nelisp--reset)
@@ -154,6 +187,13 @@
   (nelisp-eval '(defvar *x* 1))
   (nelisp-eval '(defvar *x* 999))
   (should (= (nelisp-eval '*x*) 1)))
+
+(ert-deftest nelisp-eval-defvar-local-initializes-like-defvar ()
+  (nelisp--reset)
+  (nelisp-eval '(defvar-local nelisp-eval-local-probe 7))
+  (should (= (nelisp-eval 'nelisp-eval-local-probe) 7))
+  (nelisp-eval '(defvar-local nelisp-eval-local-probe 99))
+  (should (= (nelisp-eval 'nelisp-eval-local-probe) 7)))
 
 (ert-deftest nelisp-eval-setq-lexical ()
   (should (= (nelisp-eval '(let ((x 0)) (setq x 42) x)) 42)))
