@@ -218,7 +218,7 @@ Signal `nelisp-void-function' if none is bound."
 (defun nelisp-eval-form (form env)
   "Evaluate FORM in lexical ENV (alist of (symbol . value))."
   (cond
-   ((or (numberp form) (stringp form) (vectorp form) (keywordp form)
+   ((or (numberp form) (stringp form) (keywordp form)
         (eq form nil) (eq form t))
     form)
    ((symbolp form)
@@ -721,8 +721,6 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; host `symbol-function' is a useful escape hatch for bootstrap)
     symbolp keywordp intern make-symbol symbol-name gensym
     symbol-function
-    subr-arity
-    version<
     ;; Property lists (used by condition-case to read error-conditions)
     get put plist-get plist-put
     ;; Hash tables — raw data, safe to delegate wholesale
@@ -732,8 +730,6 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; host when NeLisp source is evaluated inside an Emacs session
     ;; that has already loaded the same feature (self-host + cycle)
     featurep
-    add-hook
-    advice-add
     ;; I/O (side-effect, but used for NeLisp-internal diagnostics)
     message
     ;; Terminal & frame metrics (Phase 5-B.0 — redisplay/eventloop 下地)
@@ -754,8 +750,6 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; Host-buffer helpers used by HTTP parsing / file-notify (Phase 5-C.0)
     goto-char point point-min point-max
     buffer-substring-no-properties re-search-forward
-    ;; Overlay primitives (vendor Org compatibility tables)
-    make-overlay move-overlay delete-overlay overlay-put
     ;; List util (Phase 5-C.0)
     assq-delete-all
     ;; Time + numeric rounding + RNG (Phase 5-D.0 — worker metrics
@@ -924,10 +918,7 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   ;; Only present once nelisp-bytecode.el has been loaded.
   (when (fboundp 'nelisp-bc-run)
     (puthash 'nelisp-bc-run (symbol-function 'nelisp-bc-run)
-             nelisp--functions))
-  ;; Host-version compatibility shims in vendor artifacts branch on this
-  ;; at top level; seed the current host value so replay can read it.
-  (puthash 'emacs-version emacs-version nelisp--globals))
+             nelisp--functions)))
 
 (defconst nelisp--core-macro-source
   "\
