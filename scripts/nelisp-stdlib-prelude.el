@@ -315,6 +315,41 @@
   (let ((acc x)) (while rest (if (< (car rest) acc) (setq acc (car rest))) (setq rest (cdr rest))) acc))
 (defun abs (x) (if (< x 0) (- 0 x) x))
 
+;; Doc 143 string ops (self-contained: funcall/aref/char-to-string/concat).
+(defun mapconcat (fn seq &optional sep)
+  (let ((parts nil) (tail seq) (s (or sep "")))
+    (while tail (setq parts (cons (funcall fn (car tail)) parts)) (setq tail (cdr tail)))
+    (setq parts (nreverse parts))
+    (let ((out "") (first t))
+      (while parts
+        (unless first (setq out (concat out s)))
+        (setq out (concat out (car parts)))
+        (setq first nil)
+        (setq parts (cdr parts)))
+      out)))
+
+(defun downcase (obj)
+  (cond ((stringp obj)
+         (let ((out "") (i 0) (n (length obj)))
+           (while (< i n)
+             (let ((c (aref obj i)))
+               (setq out (concat out (char-to-string (if (and (>= c 65) (<= c 90)) (+ c 32) c)))))
+             (setq i (1+ i)))
+           out))
+        ((integerp obj) (if (and (>= obj 65) (<= obj 90)) (+ obj 32) obj))
+        (t obj)))
+
+(defun upcase (obj)
+  (cond ((stringp obj)
+         (let ((out "") (i 0) (n (length obj)))
+           (while (< i n)
+             (let ((c (aref obj i)))
+               (setq out (concat out (char-to-string (if (and (>= c 97) (<= c 122)) (- c 32) c)))))
+             (setq i (1+ i)))
+           out))
+        ((integerp obj) (if (and (>= obj 97) (<= obj 122)) (- obj 32) obj))
+        (t obj)))
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
