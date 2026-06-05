@@ -363,5 +363,121 @@ malformed input."
         (emacs-json--read-error "trailing garbage after JSON value"))
       value)))
 
+;; Emacs 27+ native JSON entry points.  The reader has no native json_*
+;; C functions, so alias them onto the elisp reader/encoder.  anvil and
+;; other callers use (json-parse-string S :object-type 'alist :array-type
+;; 'list), which matches json-read-from-string's defaults (alists + lists).
+(defun emacs-json--object-alist-p (x)
+  "Non-nil if X is a JSON-object alist ((SYM . VAL) ...), not a JSON array."
+  (and (consp x)
+       (let ((ok t) (cur x))
+         (while (and ok (consp cur))
+           (unless (and (consp (car cur)) (symbolp (car (car cur)))) (setq ok nil))
+           (setq cur (cdr cur)))
+         (and ok (null cur)))))
+
+(defun emacs-json--reshape (x object-type array-type null-object false-object)
+  "Reshape json-read-from-string's alist/list tree to OBJECT-TYPE / ARRAY-TYPE
+and replace the :json-null / :json-false sentinels with NULL-OBJECT / FALSE-OBJECT."
+  (cond
+   ((eq x :json-null) null-object)
+   ((eq x :json-false) false-object)
+   ((emacs-json--object-alist-p x)
+    (cond
+     ((eq object-type 'plist)
+      (let ((out nil) (cur x))
+        (while cur
+          (let ((pair (car cur)))
+            (setq out (cons (intern (concat ":" (symbol-name (car pair)))) out))
+            (setq out (cons (emacs-json--reshape (cdr pair) object-type array-type
+                                                 null-object false-object)
+                            out)))
+          (setq cur (cdr cur)))
+        (nreverse out)))
+     ((eq object-type 'hash-table)
+      (let ((h (make-hash-table :test 'equal)) (cur x))
+        (while cur
+          (puthash (symbol-name (car (car cur)))
+                   (emacs-json--reshape (cdr (car cur)) object-type array-type
+                                        null-object false-object)
+                   h)
+          (setq cur (cdr cur)))
+        h))
+     (t
+      (mapcar (lambda (pair)
+                (cons (car pair)
+                      (emacs-json--reshape (cdr pair) object-type array-type
+                                           null-object false-object)))
+              x))))
+   ((consp x)
+    (let ((lst (mapcar (lambda (e)
+                         (emacs-json--reshape e object-type array-type
+                                              null-object false-object))
+                       x)))
+      (if (eq array-type 'array) (apply #'vector lst) lst)))
+   (t x)))
+
+(unless (fboundp 'json-parse-string)
+  (defun json-parse-string (string &rest args)
+    "Parse JSON STRING honoring :object-type (alist / plist / hash-table),
+:array-type (list / array), :null-object and :false-object (Emacs 27+ native
+semantics) on top of the alist/list `json-read-from-string'."
+    (let ((object-type (or (plist-get args :object-type) 'alist))
+          (array-type  (or (plist-get args :array-type) 'list))
+          (null-object (if (plist-member args :null-object)
+                           (plist-get args :null-object) :null))
+          (false-object (if (plist-member args :false-object)
+                            (plist-get args :false-object) :false)))
+      (emacs-json--reshape (json-read-from-string string)
+                           object-type array-type null-object false-object))))
+
+(defun emacs-json--to-encodable (x null-object false-object)
+  "Convert a plist / vector / :null / :false tree (the shape json-parse-string
+with :object-type 'plist produces) into the alist / json-null / json-false form
+that `json-encode' renders."
+  (cond
+   ((eq x null-object) json-null)
+   ((eq x false-object) json-false)
+   ((and (consp x) (keywordp (car x))) ;; plist -> object alist
+    (let ((out nil) (cur x))
+      (while (and (consp cur) (consp (cdr cur)))
+        (setq out (cons (cons (intern (substring (symbol-name (car cur)) 1))
+                              (emacs-json--to-encodable (car (cdr cur))
+                                                        null-object false-object))
+                        out))
+        (setq cur (cdr (cdr cur))))
+      (nreverse out)))
+   ((vectorp x)
+    (apply #'vector
+           (mapcar (lambda (e) (emacs-json--to-encodable e null-object false-object))
+                   (append x nil))))
+   ((consp x)
+    (mapcar (lambda (e) (emacs-json--to-encodable e null-object false-object)) x))
+   (t x)))
+
+(unless (fboundp 'json-serialize)
+  (defun json-serialize (object &rest args)
+    "Serialize OBJECT to a JSON string, honoring :null-object / :false-object
+(Emacs 27+ native semantics) and plist objects + vector arrays, on top of
+`json-encode'."
+    (let ((null-object (if (plist-member args :null-object)
+                           (plist-get args :null-object) :null))
+          (false-object (if (plist-member args :false-object)
+                            (plist-get args :false-object) :false)))
+      (json-encode (emacs-json--to-encodable object null-object false-object)))))
+
+(unless (fboundp 'json-parse-buffer)
+  (defun json-parse-buffer (&rest args)
+    "Parse JSON from the current buffer with `json-parse-string' keyword handling."
+    (apply #'json-parse-string (buffer-string) args)))
+
+(unless (fboundp 'json-pretty-print-buffer)
+  (defun json-pretty-print-buffer (&rest _args)
+    "No-op pretty printer for the standalone reader: the buffer already holds
+valid (compact) JSON, which is what callers ultimately write."
+    nil))
+(unless (fboundp 'json-pretty-print)
+  (defun json-pretty-print (_begin _end &rest _args) nil))
+
 (provide 'json)
 ;;; json.el ends here
