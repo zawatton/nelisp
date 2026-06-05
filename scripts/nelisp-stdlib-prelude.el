@@ -350,6 +350,25 @@
         ((integerp obj) (if (and (>= obj 97) (<= obj 122)) (- obj 32) obj))
         (t obj)))
 
+;; Doc 143 file-name path ops (pure string slicing, from nelisp-stdlib-plist-str.el).
+(defun file-name-directory (path)
+  (let ((idx -1) (i 0) (n (length path)))
+    (while (< i n) (when (eq (aref path i) ?/) (setq idx i)) (setq i (1+ i)))
+    (if (< idx 0) nil (substring path 0 (1+ idx)))))
+(defun file-name-nondirectory (path)
+  (let ((idx -1) (i 0) (n (length path)))
+    (while (< i n) (when (eq (aref path i) ?/) (setq idx i)) (setq i (1+ i)))
+    (if (< idx 0) path (substring path (1+ idx)))))
+(defun file-name-as-directory (path)
+  (cond ((= (length path) 0) "/")
+        ((eq (aref path (1- (length path))) ?/) path)
+        (t (concat path "/"))))
+(defun directory-file-name (path)
+  (let ((n (length path)))
+    (cond ((<= n 1) path)
+          ((eq (aref path (1- n)) ?/) (substring path 0 (1- n)))
+          (t path))))
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
