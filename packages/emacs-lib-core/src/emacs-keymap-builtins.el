@@ -45,8 +45,13 @@
 (require 'emacs-keymap)
 
 (defun emacs-keymap-builtins--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed by this bridge."
-  (or (not (boundp 'emacs-version))
+  "Return non-nil when SYMBOL should be installed by this bridge.
+The NeLisp reader binds `emacs-version', so detect the standalone path
+by the NeLisp-only `nl-write-file' primitive; otherwise the unprefixed
+keymap builtins (`make-keymap', `define-key', ...) silently stay as the
+`emacs-stub-bulk.el' nil-stubs in standalone."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 
 ;;;; --- constructors ----------------------------------------------------

@@ -74,8 +74,13 @@ property (0..10); we allocate the maximum so any subtype fits.")
 (defconst emacs-char-table--i-extra 6)
 
 (defun emacs-char-table--standalone-p ()
-  "Return non-nil under standalone NeLisp (no host `emacs-version')."
-  (not (boundp 'emacs-version)))
+  "Return non-nil under standalone NeLisp.
+The NeLisp reader binds `emacs-version' just like host Emacs, so a bare
+`(not (boundp 'emacs-version))' test misfires there.  Detect the
+standalone path by a NeLisp-only primitive (`nl-write-file'), matching
+the marker used in `emacs-keymap.el' / `emacs-fileio-builtins.el'."
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))))
 
 (defun emacs-char-table--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this substrate."
