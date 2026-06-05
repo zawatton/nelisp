@@ -136,7 +136,7 @@ without a hand-written C core.
   [[https://github.com/zawatton/nelisp][~nelisp~]] (vendored under
   =vendor/nelisp/= via =bin/build-nelisp=, or supplied by a sibling
   checkout via =NELISP_HOME=).  NeLisp provides the pure-Elisp
-  standalone reader at =target/nelisp-standalone-reader=, including
+  standalone reader at =target/nelisp=, including
   =repl [--no-prompt]= for persistent evaluator development.
 - =Layer 2 (extension package)= = partly upstream (the
   =nelisp-emacs-compat=, =nelisp-process=, =nelisp-regex=,
@@ -378,7 +378,7 @@ Plus the GTK frontend stack:
 - =bin/nemacs= — launcher script (host emacs driver default,
   =--driver=nelisp= for the experimental standalone driver).
 - =bin/build-nelisp= — fetches + builds NeLisp into =vendor/nelisp/=.
-  Current NeLisp checkouts build =target/nelisp-standalone-reader=
+  Current NeLisp checkouts build =target/nelisp=
   through the pure-Elisp AOT path.  =make nelisp= is the idempotent
   standalone-reader entry point.
 
@@ -417,7 +417,7 @@ plausible; interactive editing in =nelisp-emacs= is not.
 #+begin_src sh
 make nelisp          # optional: populate vendor/nelisp/ from upstream
 make compile         # byte-compile src/
-make test            # run the host-Emacs ERT suite (1549 tests)
+make test            # run the host-Emacs ERT suite (1560 tests)
 make test-redisplay-core-smoke # isolated lightweight redisplay core smoke
 make doctor          # check host/NeLisp driver readiness
 make build-nelisp-bootstrap # generate build/nemacs-bootstrap.el
@@ -433,6 +433,7 @@ make test-nelisp-ert # run the full opt-in nelisp-driver bootstrap ERTs
 make profile-nelisp-bootstrap # time standalone bootstrap bundle sections
 make diagnose-vendor-form-walk # form-by-form standalone vendor diagnostic
 make diagnose-vendor-load-replay # standalone true load replay diagnostic
+make diagnose-vendor-repl-replay # persistent REPL vendor replay diagnostic
 make verify-nelisp-standalone # pure standalone-reader gates
 make verify-vendor   # run vendor inventory + NeLisp vendor smoke gates
 make demo            # run the Phase 1 close mini demo and print result
@@ -652,7 +653,7 @@ loop path used by save/recover/delete workflows: =map-y-or-n-p=,
 work without loading the full vendor dialog/query-replace implementation.
 The full vendored =files.el=, =simple.el=, =dired.el=, =help-mode.el=,
 =help-fns.el=, =subr-x.el=, =seq.el=, =map.el=, =map-ynp.el=,
-=lisp.el=, =case-table.el=, =cdl.el=, =hex-util.el=, =charprop.el=, =charscript.el=, =emoji-labels.el=, =iso-transl.el=, =cp51932.el=, =eucjp-ms.el=, =fontset.el=, =idna-mapping.el=, =ja-dic-utl.el=, =range.el=, =regi.el=, =lisp-mode.el=, =ielm.el=, =isearch.el=, =minibuffer.el=, and =project.el= remain compatibility targets: the
+=lisp.el=, =case-table.el=, =cdl.el=, =hex-util.el=, =charprop.el=, =charscript.el=, =emoji-labels.el=, =iso-transl.el=, =cp51932.el=, =eucjp-ms.el=, =fontset.el=, =idna-mapping.el=, =ja-dic-utl.el=, =format-spec.el=, =range.el=, =regi.el=, =ring.el=, =generator.el=, =avl-tree.el=, =lisp-mode.el=, =ielm.el=, =isearch.el=, =minibuffer.el=, =project.el=, =org-version.el=, =org-macs.el=, =org-compat.el=, =org-fold-core.el=, =org-fold.el=, =org-duration.el=, =org-faces.el=, =oc.el=, =org-keys.el=, =org-cycle.el=, =org-inlinetask.el=, =ol-doi.el=, =ol-info.el=, =ol-man.el=, =ol-rmail.el=, =ol-mhe.el=, =ol-w3m.el=, =ol-irc.el=, =tempo.el=, =org-tempo.el=, =inline.el=, =easymenu.el=, =let-alist.el=, =radix-tree.el=, =text-property-search.el=, =thunk.el=, =rmc.el=, =generate-lisp-file.el=, =obarray.el=, =soundex.el=, =cursor-sensor.el=, =indent-aux.el=, =display-fill-column-indicator.el=, =thingatpt.el=, =time-date.el=, =iso8601.el=, =parse-time.el=, =uni-lowercase.el=, =uni-mirrored.el=, =uni-special-lowercase.el=, =uni-special-titlecase.el=, =uni-special-uppercase.el=, =uni-titlecase.el=, =uni-uppercase.el=, =tabify.el=, =rot13.el=, =underline.el=, =widget.el=, =dos-vars.el=, =mb-depth.el=, =ietf-drums.el=, =rfc2045.el=, =hmac-def.el=, =hmac-md5.el=, =rfc2104.el=, =compat.el=, =shorthands.el=, =dynamic-setting.el=, =uni-decimal.el=, =uni-digit.el=, =uni-numeric.el=, =benchmark.el=, =password-cache.el=, =double.el=, =chistory.el=, =scroll-lock.el=, =thread.el=, =qp.el=, =mailheader.el=, =yenc.el=, =flow-fill.el=, =uudecode.el=, =tq.el=, =org.el=, =org-agenda.el=, =org-capture.el=, =org-refile.el=, =org-datetree.el=, =org-archive.el=, =org-clock.el=, =ol.el=, =org-element-ast.el=, =org-footnote.el=, =org-list.el=, =org-entities.el=, and =org-macro.el= remain compatibility targets: the
 current standalone gate proves the daily-driver shims first.
 =profile-nelisp-bootstrap= now uses host Emacs to split the generated
 =build/nemacs-bootstrap.el= bundle into source sections, then runs the
@@ -662,17 +663,2376 @@ the first N bootstrap sections.  =diagnose-vendor-form-walk= likewise
 uses host Emacs to parse a vendor file into top-level forms, then runs
 the standalone reader on cumulative prefixes with a success sentinel.
 =diagnose-vendor-load-replay= goes one step closer to real loading: it
-generates a temporary standalone-reader script that loads the standalone
-stdlib prelude (=VENDOR_LOAD_PRELUDE=), the generated bootstrap bundle,
-and then the files in =VENDOR_LOAD_FILES= as top-level =load= forms.  It
-then requires =VENDOR_LOAD_PROOF_FORM= to become true before returning
-the sentinel.  This proof check is intentional: the standalone reader can
-continue after some failed forms, so a bare trailing sentinel would be a
-false positive.  The default replay currently proves true =load= replay
-for =lisp-mode.el=, =isearch.el=, =minibuffer.el=, and =project.el=.
+generates a temporary standalone-reader script that injects the
+standalone stdlib prelude (=VENDOR_LOAD_PRELUDE=), injects the generated
+bootstrap bundle, and then evaluates the files in =VENDOR_LOAD_FILES= as
+top-level =load= forms.  It then requires =VENDOR_LOAD_PROOF_FORM= to
+become true before returning the sentinel.  This proof check is
+intentional: the standalone reader can continue after some failed forms,
+so a bare trailing sentinel would be a false positive.  The default proof
+also requires =vendor-standalone-load-ok-count= to equal
+=vendor-standalone-load-file-count= so bootstrap-only definitions cannot
+make the diagnostic pass.
+=diagnose-vendor-repl-replay= exercises the same kind of proof inside
+the persistent =target/nelisp repl --no-prompt
+--no-print= environment.  It injects =VENDOR_REPL_PRELUDE=, feeds
+=build/nemacs-bootstrap.repl= into one live standalone evaluator, then
+loads =VENDOR_REPL_FILES= and requires =VENDOR_REPL_PROOF_FORM= before
+writing a marker-file success sentinel.  This is the development hot-load
+lane for testing whether vendor definitions can be added to a running
+NeLisp context without restarting the reader.  =--no-print= suppresses
+the REPL's per-form value printing during bootstrap/vendor replay while
+preserving explicit stdout writes from the evaluated forms.  The REPL
+diagnostic canonicalizes repo and load-file paths with =file-truename= so
+symlinked worktrees do not produce a different standalone path image; set
+=vendor-repl-standalone-keep-temp=t= when invoking the helper to retain the
+generated =.repl=, output, and sentinel files for post-crash inspection.
+The default true-load replay now proves =load-ok-count=319/319=: the daily-driver
+vendor set plus vendored =format-spec.el=, =org-version.el=, =org-macs.el=, =org-compat.el=, =org-fold-core.el=, =org-fold.el=, =org-duration.el=, =org-faces.el=, =oc.el=, =org-keys.el=, =org-cycle.el=, =org-inlinetask.el=, =ol-doi.el=, =ol-info.el=, =ol-man.el=, =ol-rmail.el=, =ol-mhe.el=, =ol-w3m.el=, =ol-irc.el=, =tempo.el=, =org-tempo.el=, =inline.el=, =easymenu.el=, =let-alist.el=, =radix-tree.el=, =text-property-search.el=, =thunk.el=, =version.el=, =help-macro.el=, =env.el=, =fileloop.el=, =rmc.el=, =generate-lisp-file.el=, =obarray.el=, =soundex.el=, =cursor-sensor.el=, =indent-aux.el=, =display-fill-column-indicator.el=, =thingatpt.el=, =time-date.el=, =iso8601.el=, =parse-time.el=, =org.el=, =org-agenda.el=, =org-capture.el=, =org-refile.el=, =org-datetree.el=, =org-archive.el=, =org-clock.el=, =ol.el=, =org-element-ast.el=, =org-footnote.el=, =org-list.el=, =org-entities.el=, and =org-macro.el=, local
+=src/emacs-translation-table.el=, and vendored =cp51932.el= / =eucjp-ms.el=.
+It also true-loads the small Unicode case/mirroring data files
+=uni-lowercase.el=, =uni-mirrored.el=, =uni-special-lowercase.el=,
+=uni-special-titlecase.el=, =uni-special-uppercase.el=,
+=uni-titlecase.el=, and =uni-uppercase.el=.
+It also true-loads the small utility/mail/HMAC files =tabify.el=,
+=rot13.el=, =underline.el=, =widget.el=, =dos-vars.el=, =mb-depth.el=,
+=ietf-drums.el=, =rfc2045.el=, =hmac-def.el=, =hmac-md5.el=,
+=rfc2104.el=, and =md4.el=.
+It also true-loads the small compatibility/dynamic setting helpers
+=compat.el=, =shorthands.el=, and =dynamic-setting.el=, plus the
+generated Unicode numeric data files =uni-decimal.el=, =uni-digit.el=,
+and =uni-numeric.el=.
+It also true-loads the core helper files =version.el=, =help-macro.el=,
+=env.el=, and =fileloop.el=.
+It also true-loads the small benchmark/password/interaction helpers
+=benchmark.el=, =password-cache.el=, =double.el=, =chistory.el=,
+=scroll-lock.el=, and =thread.el=.
+It also true-loads the small mail encoder/header and transaction queue helpers
+=qp.el=, =mailheader.el=, =yenc.el=, =flow-fill.el=, =uudecode.el=, and
+=tq.el=.
+It also true-loads the MIME/mail parsing helpers =mail-prsvr.el=,
+=mm-util.el=, =rfc2047.el=, =rfc2231.el=, =mail-parse.el=, and
+=rfc6068.el=.
+It also true-loads the mail utility/date/binhex helpers =mail-utils.el=,
+=rfc822.el=, =ietf-drums-date.el=, and =binhex.el=.
+It also true-loads the SASL authentication helper surface =sasl.el=,
+=sasl-cram.el=, =sasl-digest.el=, =sasl-scram-rfc.el=, and
+=sasl-scram-sha256.el=.
+It also true-loads the NTLM helper surface =ntlm.el= and
+=sasl-ntlm.el=.
+It also true-loads the small image/TRAMP helpers =compface.el=,
+=tramp-uu.el=, and =trampver.el=.
+It also true-loads the small terminal initialization helpers
+=bobcat.el=, =cygwin.el=, =vt200.el=, =linux.el=, =vt100.el=,
+=AT386.el=, =news.el=, =lk201.el=, and =w32console.el=.
+It also true-loads the small legacy/display helper files =meese.el=,
+=ps-def.el=, =ps-print-loaddefs.el=, =glyphless-mode.el=, and
+=word-wrap-mode.el=.
+It also true-loads the small SQLite/URL/obsolete terminal helper files
+=sqlite.el=, =url-future.el=, =url-domsuf.el=, and =vt100-led.el=.
+It also true-loads the small language environment helper files
+=khmer.el=, =cham.el=, =czech.el=, =slovak.el=, =georgian.el=,
+=sinhala.el=, =romanian.el=, and =utf-8-lang.el=.
+It also true-loads the next small language environment helper files
+=burmese.el=, =tai-viet.el=, =english.el=, =lao.el=, =greek.el=,
+=ethiopic.el=, =philippine.el=, =korean.el=, =vietnamese.el=, and
+=thai.el=.
+It also true-loads the small language utility/helper files
+=tv-util.el=, =cyril-util.el=, =indonesian.el=, and =korea-util.el=.
+It also true-loads the next small language main/helper files
+=china-util.el=, =cyrillic.el=, =hebrew.el=, and =japanese.el=.
+It also true-loads the additional small language utility/main files
+=viet-util.el=, =chinese.el=, =japan-util.el=, and =misc-lang.el=.
+It also true-loads the small play/obsolete/UI helper files
+=studly.el=, =dissociate.el=, =makesum.el=, =vt-control.el=,
+=flow-ctrl.el=, and =talk.el=.
+It also true-loads the small XML/VC/obsolete/mode/international helper files
+=nxml-maint.el=, =nxml-util.el=, =vc-filewise.el=, =pgg-def.el=,
+=autoconf.el=, =gssapi.el=, =scroll-all.el=, =utf-7.el=,
+=rfc2368.el=, =timer-list.el=, =master.el=, and =helper.el=.
+It also true-loads the small loaddefs/autoload registration files
+=holiday-loaddefs.el=, =cedet/ede/loaddefs.el=, =theme-loaddefs.el=,
+=esh-module-loaddefs.el=, =cedet/srecode/loaddefs.el=,
+=diary-loaddefs.el=, =texinfo-loaddefs.el=, and =calc-loaddefs.el=.
+It also true-loads the small non-Org standalone helpers =rfc1843.el=,
+=nxml-enc.el=, =bibtex-style.el=, =dictionary-connection.el=, and
+=m4-mode.el=.
+It also true-loads the small play/obsolete/terminal helpers =cookie1.el=,
+=spook.el=, =yow.el=, =bruce.el=, =autoarg.el=, =tvi970.el=, and
+=sun.el=.
+It also true-loads the small subdirectory/EDT/nXML RNG/URL privacy helpers
+=subdirs.el=, =edt-lk201.el=, =edt-vt100.el=, =rng-util.el=, =rng-dt.el=,
+=url-vars.el=, and =url-privacy.el=.
+It also true-loads the small UI/compatibility helpers =edt-pc.el=,
+=w32-vars.el=, =novice.el=, =page.el=, =cl-compat.el=, =elide-head.el=,
+=iimage.el=, and =emacs-authors-mode.el=.
+It also true-loads the next small utility/helper batch =textsec-check.el=,
+=debug-early.el=, =calc-macs.el=, =kinsoku.el=, =latexenc.el=,
+=reposition.el=, =ansi-osc.el=, and =morse.el=.
+It also true-loads the small MH/CEDET/EPA helper batch =mh-buffers.el=,
+=ede/make.el=, =cedet-files.el=, =epa-hook.el=, and =ede/makefile-edit.el=.
+It also true-loads the small mode/network/obsolete helper batch
+=isearch-x.el=, =wyse50.el=, =gulp.el=, =ediff-hook.el=, =ld-script.el=,
+=dig.el=, =rng-pttrn.el=, =sieve-mode.el=, =bat-mode.el=, and =netrc.el=.
+It also true-loads the small editing/UI helper batch =minibuf-eldef.el=,
+=visual-wrap.el=, =display-line-numbers.el=, =mouse-copy.el=, =animate.el=,
+=gmm-utils.el=, =userlock.el=, =rfn-eshadow.el=, =asm-mode.el=,
+=bib-mode.el=, =reveal.el=, =emacs-lock.el=, =linum.el=, and =refill.el=.
+It also true-loads the small miscellaneous helper batch =nnnil.el=,
+=po.el=, =cedet.el=, =cc-compat.el=, =cedet-cscope.el=, =metamail.el=,
+=string-edit.el=, =flymake-cc.el=, =external-completion.el=, and
+=yank-media.el=.
+It also true-loads the small standalone helper batch =cyril-jis.el=,
+=cedet-idutils.el=, =sup-mouse.el=, =cedet-global.el=, =mantemp.el=,
+=ediff-vers.el=, =gs.el=, =unrmail.el=, =backquote.el=, and
+=dirtrack.el=.
+It also true-loads the helper foundation batch =keypad.el=, =rtree.el=,
+=executable.el=, =shadow.el=, =cl-font-lock.el=, =starttls.el=, =diff.el=,
+=dos-fns.el=, =crm.el=, and =epg-config.el=.
+It also true-loads the small Org citation/Babel helper pair =oc-bibtex.el=
+and =ob-eval.el=.
+It also true-loads the small Org citation export backends =oc-natbib.el=
+and =oc-biblatex.el=.
+It also true-loads the small subword/superword movement helper
+=subword.el=.
+It also true-loads the small Font Lock core helper =font-core.el=.
+The default persistent-REPL replay proves =load-ok-count=253/253= with a
+count-only hot-load proof while keeping the generated CP/EUC tables out
+of the hot-load path: it loads the same vendor surface, local
+=src/emacs-translation-table.el=, vendored =fontset.el= and
+=ja-dic-utl.el=, vendored =format-spec.el=, =org-version.el=, =org-macs.el=, =org-compat.el=, =org-fold-core.el=, =org-fold.el=, =org-duration.el=, =org-faces.el=, =oc.el=, =org-keys.el=, =org-cycle.el=, =org-inlinetask.el=, =ol-doi.el=, =ol-info.el=, =ol-man.el=, =ol-rmail.el=, =ol-mhe.el=, =ol-w3m.el=, =ol-irc.el=, =tempo.el=, =org-tempo.el=, =inline.el=, =easymenu.el=, =let-alist.el=, =radix-tree.el=, =text-property-search.el=, =thunk.el=, =version.el=, =help-macro.el=, =env.el=, =fileloop.el=, =rmc.el=, =generate-lisp-file.el=, =obarray.el=, =soundex.el=, =cursor-sensor.el=, =indent-aux.el=, =display-fill-column-indicator.el=, =thingatpt.el=, =time-date.el=, =iso8601.el=, =parse-time.el=, =tabify.el=, =rot13.el=, =underline.el=, =widget.el=, =dos-vars.el=, =mb-depth.el=, =ietf-drums.el=, =rfc2045.el=, =hmac-def.el=, =hmac-md5.el=, =rfc2104.el=, =md4.el=, =compat.el=, =shorthands.el=, =dynamic-setting.el=, =uni-decimal.el=, =uni-digit.el=, =uni-numeric.el=, =benchmark.el=, =password-cache.el=, =double.el=, =chistory.el=, =scroll-lock.el=, =thread.el=, =qp.el=, =mailheader.el=, =yenc.el=, =flow-fill.el=, =uudecode.el=, =tq.el=, =mail-prsvr.el=, =mm-util.el=, =rfc2047.el=, =rfc2231.el=, =mail-parse.el=, =rfc6068.el=, =mail-utils.el=, =rfc822.el=, =ietf-drums-date.el=, =binhex.el=, =sasl.el=, =sasl-cram.el=, =sasl-digest.el=, =sasl-scram-rfc.el=, =sasl-scram-sha256.el=, =ntlm.el=, =sasl-ntlm.el=, =compface.el=, =tramp-uu.el=, =trampver.el=, =bobcat.el=, =cygwin.el=, =vt200.el=, =linux.el=, =vt100.el=, =AT386.el=, =news.el=, =lk201.el=, =w32console.el=, =meese.el=, =ps-def.el=, =ps-print-loaddefs.el=, =glyphless-mode.el=, =word-wrap-mode.el=, =sqlite.el=, =url-future.el=, =url-domsuf.el=, =vt100-led.el=, =khmer.el=, =cham.el=, =czech.el=, =slovak.el=, =georgian.el=, =sinhala.el=, =romanian.el=, =utf-8-lang.el=, =burmese.el=, =tai-viet.el=, =english.el=, =lao.el=, =greek.el=, =ethiopic.el=, =philippine.el=, =korean.el=, =vietnamese.el=, =thai.el=, =tv-util.el=, =cyril-util.el=, =indonesian.el=, =korea-util.el=, =china-util.el=, =cyrillic.el=, =hebrew.el=, =japanese.el=, =viet-util.el=, =chinese.el=, =japan-util.el=, =misc-lang.el=, =studly.el=, =dissociate.el=, =makesum.el=, =vt-control.el=, =flow-ctrl.el=, =talk.el=, =nxml-maint.el=, =nxml-util.el=, =vc-filewise.el=, =pgg-def.el=, =autoconf.el=, =gssapi.el=, =scroll-all.el=, =utf-7.el=, =rfc2368.el=, =timer-list.el=, =master.el=, =helper.el=, =org.el=, =org-agenda.el=, =org-capture.el=, =org-refile.el=, =org-datetree.el=, =org-archive.el=, =org-clock.el=, =ol.el=, =org-element-ast.el=, =org-footnote.el=, =org-list.el=, =org-entities.el=, and =org-macro.el=, then local lightweight
+=src/cp51932.el= and =src/eucjp-ms.el= facades for the CP51932/EUCJP-MS
+feature and =translation-table= proof surface.
+The small MH/CEDET/EPA helper batch listed above remains default true-load
+coverage only for now.  Each file passes isolated persistent-REPL replay as
+part of the batch, but adding any one of the five files to the accumulated
+default REPL set currently segfaults.
+The small mode/network/obsolete helper batch listed above is also default
+true-load coverage only for now.  The ten-file batch passes isolated
+persistent-REPL replay, but adding any one of the ten files to the accumulated
+default REPL set currently segfaults.
+The small editing/UI helper batch listed above is also default true-load
+coverage only for now.  The fourteen-file batch passes isolated
+persistent-REPL replay, but adding any one of the fourteen files to the
+accumulated default REPL set currently segfaults.
+The small miscellaneous helper batch listed above is also default true-load
+coverage only for now.  The ten-file batch passes isolated persistent-REPL
+replay, but adding any one of the ten files to the accumulated default REPL set
+currently segfaults.
+=morse.el= remains default true-load coverage only for now.  It passes an
+isolated persistent-REPL replay, but adding it to the accumulated default REPL
+set still segfaults before sentinel in the current 254-file probe.
+It also carries the small loaddefs/autoload registration files listed above;
+the EDE and SRecode files both provide =loaddefs=, so the load and REPL
+proofs keep that feature check deliberately coarse and use the SRecode
+=global-srecode-minor-mode= variable as an additional surface marker.
+The non-Org helper batch is included as feature/function surface coverage;
+live network/process/editor interactions are left as follow-ups.
+The play/terminal helper batch is likewise limited to load/function
+surface; fortune-cookie file IO and live terminal key behavior remain
+follow-ups.
+The subdirectory/EDT/nXML RNG/URL privacy helper batch is limited to
+load/function/variable surface.  Live terminal width changes and full URL
+privacy setup behavior remain follow-ups.
+The UI/compatibility helper batch is limited to feature/function/variable
+surface.  Generated minor-mode commands from =elide-head.el= and =iimage.el=,
+image display behavior, real page navigation, and AUTHORS buffer movement
+remain follow-up runtime smokes.
+The second utility/helper batch is limited to feature/function/variable
+surface.  Lazy =textsec= checks, debug backtrace formatting, real Kinsoku
+line-breaking, LaTeX coding detection, window repositioning, OSC buffer
+mutation, and Morse/NATO region conversion remain follow-up runtime smokes.
+The MH/CEDET/EPA helper batch is limited to feature/function/variable
+surface.  Live MH-E log truncation, GNU Make process execution, file-system
+recursive scans, encrypted-file handler mutation, and Makefile buffer editing
+remain follow-up runtime smokes.
+The current full persistent-REPL recheck for =mh-buffers.el= still fails:
+isolated load/REPL proves =mh-buffers=, =mh-log-buffer=, and
+=mh-truncate-log-buffer=, but adding it to the 253-file default REPL set
+segfaults before sentinel.
+The current full persistent-REPL recheck for =ede/make.el= also still fails:
+form-walk and isolated load/REPL prove =ede/make=,
+=ede-make-check-version=, the obsolete =defsubst= helper, and
+=ede-make-min-version=, but adding it to the 253-file default REPL set segfaults
+before sentinel.  The standalone proof does not yet treat the =defcustom=
+command value =ede-make-command= as stable surface.
+The current full persistent-REPL recheck for =cedet-files.el= also still
+fails: form-walk and isolated load/REPL prove =cedet-files=,
+=cedet-directory-name-to-file-name=, =cedet-file-name-to-directory-name=, and
+=cedet-files-list-recursively=, but adding it to the 253-file default REPL set
+segfaults before sentinel.  Host Emacs proves the filename conversion and
+recursive listing smokes, while standalone runtime conversion remains outside
+the stable proof surface.
+The current full persistent-REPL recheck for =epa-hook.el= also still fails:
+form-walk and isolated load/REPL prove =epa-hook=, =epa-file-handler=,
+=epa-file-name-regexp-update=, =epa-file-name-p=, and representative
+=epa-file= Custom variables, but adding it to the 253-file default REPL set
+segfaults before sentinel.  The current stable standalone proof keeps the
+regexp Custom value and generated =auto-encryption-mode= command out of the
+promoted surface.
+The current full persistent-REPL recheck for =ede/makefile-edit.el= also
+still fails: form-walk and isolated load/REPL prove =ede/makefile-edit=,
+=makefile-beginning-of-command=, =makefile-end-of-command=,
+=makefile-line-continued-p=, =makefile-move-to-macro=,
+=makefile-navigate-macro=, =makefile-macro-file-list=, and
+=makefile-extract-varname-from-text=, but adding it to the 253-file default
+REPL set segfaults before sentinel.  Host Emacs proves variable-reference
+extraction, recursive macro expansion, and command-boundary movement; current
+standalone still returns nil for the same =$(SRC)= extraction smoke, so regexp
+execution and live buffer scanning remain outside the promoted surface.
+The current full persistent-REPL recheck for =isearch-x.el= also still fails:
+form-walk and isolated load/REPL prove =isearch-toggle-input-method=,
+=isearch-toggle-specified-input-method=, =isearch-transient-input-method=,
+=isearch-exit-recursive-edit=, =isearch-with-keyboard-coding=,
+=isearch-with-input-method=, =isearch-process-search-multibyte-characters=,
+and =isearch-minibuffer-local-map=, but adding it to the 253-file default
+REPL set segfaults before sentinel.  Because =isearch-x.el= has no =provide=,
+the isolated proof checks definition/variable surface only; native Emacs sees
+the minibuffer local map as a keymap with the synthetic
+=with-keyboard-coding= / =with-input-method= bindings, while standalone leaves
+the value non-keymap, so live minibuffer/input-method behavior remains a
+follow-up.
+The current full persistent-REPL recheck for =wyse50.el= also still fails:
+form-walk and isolated load/REPL prove =term/wyse50=,
+=terminal-init-wyse50=, =enable-arrow-keys=, and the
+=wyse50-terminal-map= binding, but adding it to the 253-file default REPL set
+segfaults before sentinel.  Native Emacs proves the map value and representative
+=C-k= / =C-h= / =ESC K= / =C-a @ RET= lookups, and
+=enable-arrow-keys= self-disables there; current standalone leaves
+=wyse50-terminal-map= non-keymap and does not self-disable
+=enable-arrow-keys=, so keymap values and live terminal initialization remain
+outside the promoted surface.
+The current full persistent-REPL recheck for =gulp.el= also still fails:
+form-walk and isolated load/REPL prove =gulp=, =gulp-send-requests=,
+=gulp-create-message=, =gulp-create-m-p-alist=, =gulp-maintainer=, and the
+=gulp-discard=, =gulp-tmp-buffer=, =gulp-max-len=, and
+=gulp-request-header= Custom bindings, but adding it to the 253-file default
+REPL set segfaults before sentinel.  Native Emacs sees both request text
+Custom values as strings and can assemble =gulp-create-message= output with and
+without =Last modified:= timestamps; current standalone still does not bind
+=gulp-request-end= stably, so generated request text, directory scanning, and
+live mail-sending behavior remain outside the promoted surface.
+The current full persistent-REPL recheck for =ediff-hook.el= also still fails:
+form-walk and isolated load/REPL prove =ediff-hook= and the four Ediff menu
+keymap bindings/functions, but adding it to the 253-file default REPL set
+segfaults before sentinel.  Native Emacs sees the four values as keymaps and
+representative Compare/Merge/Patch/Misc lookup entries resolve to
+=ediff-files=, =ediff-merge-files=, =ediff-patch-file=, and
+=ediff-documentation=; current standalone leaves those bindings non-keymap, so
+individual menu item lookup behavior remains outside the promoted surface.
+The current full persistent-REPL recheck for =ld-script.el= also still fails:
+form-walk and isolated load/REPL prove =ld-script=, =ld-script-mode=, the mode
+syntax table, keyword/builtin lists, and location-counter face variable, but
+adding it to the 253-file default REPL set segfaults before sentinel.  The
+current Anvil =file-outline= / =emacs_eval= / =nelisp_eval= path still returns
+=Transport closed=.  Native Emacs proves the mode, location-counter face
+variable, keyword/builtin membership, and font-lock bindings; standalone
+font-lock keyword binding only becomes stable in the explicit =font-lock.el=
+plus =ld-script.el= two-file proof, which also proves =cpp-font-lock-keywords=
+and =ld-script-font-lock-keywords=.
+The current full persistent-REPL recheck for =dig.el= also still fails:
+form-walk and isolated load/REPL prove =dig=, =dig-invoke=,
+=dig-extract-rr=, =dig-rr-get-pkix-cert=, =dig-mode=, =dig-exit=,
+=dig-query=, =query-dig=, the =dig-mode-map= binding, and representative
+=dig= Custom variables.  The current Anvil =file-outline= / =emacs_eval= /
+=nelisp_eval= path still returns =Transport closed=.  Native Emacs proves the
+mode keymap with =q= bound to =dig-exit=, default option variables, an in-memory
+A-record extraction, and a simple PKIX CERT extraction returning ="abcd"=.
+Standalone isolated true-load/REPL prove the same definition surface and the
+A-record extraction, but separately prove the current boundary where
+=dig-mode-map= is bound but not a keymap.  The PKIX ="abcd"= value is not
+promoted: the positive standalone proof fails, while an explicit
+not-="abcd"= boundary proof passes.  Adding =dig.el= to the 253-file default
+REPL set still segfaults before sentinel.  External =dig= process execution,
+live mode/keymap behavior, and exact standalone PKIX CERT extraction remain
+follow-ups.
+The current full persistent-REPL recheck for =rng-pttrn.el= also still fails:
+form-walk and isolated load/REPL prove =rng-pttrn=, the schema variables,
+=rng-any-content=, =rng-any-element=, and the Relax NG constructor function
+surface.  The isolated proof also smokes ref mutation/lookup plus
+choice/element/any-pattern constructors and now proves
+=rng-make-datatype= returns the expected =(urn . string)= value for a simple
+symbol/string sample.  The current Anvil =file-outline= / =emacs_eval= /
+=nelisp_eval= path still returns =Transport closed=.  Native Emacs proves the
+same constructor values and top-level =rng-any-content= / =rng-any-element=
+tags.  Adding =rng-pttrn.el= to the 253-file default REPL set still segfaults
+before sentinel, so accumulated hot-load adoption remains deferred.
+The current full persistent-REPL recheck for =sieve-mode.el= also still fails:
+form-walk and isolated load/REPL prove =sieve-mode=,
+=sieve-mode-indent-function=, =sieve-syntax-propertize=,
+=sieve-syntax-propertize-text=, =sieve-mode-map=, =sieve-mode-hook=,
+=sieve-font-lock-keywords= as a cons, =sieve-mode-syntax-table= as a bound
+variable, and the four Sieve faces via =facep=.  The current Anvil
+=file-outline= / =emacs_eval= / =nelisp_eval= path still returns
+=Transport closed=.  Native Emacs proves the autoload targets, keymap lookups,
+menu binding, faces, live mode setup, simple indentation, and a
+syntax-propertize smoke.  Standalone keeps narrower boundaries: the
+=sieve-manage= / =sieve-upload= / =sieve-upload-and-kill= autoload commands are
+not =fboundp= after isolated load, =sieve-mode-map= is bound but not a keymap,
+=sieve-mode-menu= remains unbound, and =sieve-mode-syntax-table= is not a
+=syntax-table-p= value.  Live =sieve-mode= activation and indentation smokes do
+not return to a standalone sentinel yet.  Adding =sieve-mode.el= to the
+253-file default REPL set still segfaults before sentinel.
+The current full persistent-REPL recheck for =bat-mode.el= also still fails:
+the current Anvil =file_outline= / =nelisp_eval= path returns =Transport
+closed=.  Local source scan plus native Emacs prove the Windows batch major-mode
+surface, including the keymap/menu entries, =bat-label-face=, live =bat-mode=
+setup, =bat-template= insertion, and syntax-propertize smoke.  Standalone
+form-walk reaches 14/14 forms, and isolated true-load/REPL prove =bat-mode=,
+=bat-cmd-help=, =bat-run=, =bat-run-args=, =bat-template=,
+=bat-font-lock-keywords= as a cons, =bat-menu= as a cons,
+=bat-mode-syntax-table= as a bound variable, =bat-label-face= via =facep=, and
+the =auto-mode-alist= registration.  The current standalone proof still does
+not claim =bat-mode-map= or =bat--syntax-propertize= because probing those
+bindings does not return to the proof sentinel; =syntax-table-p= exactness and
+the in-memory =bat-template= behavior also remain unpromoted.  Adding
+=bat-mode.el= to the 253-file default REPL set still segfaults before sentinel,
+and live =bat-mode= activation plus external shell-command behavior remain
+deferred.
+The current full persistent-REPL recheck for =netrc.el= also still fails:
+current Anvil calls return =Transport closed=, but local scan/native Emacs
+cover the expected parser/credential helper surface, including synthetic
+=.authinfo= parsing, synthetic services-file lookup, and =netrc-credentials=.
+Standalone form-walk reaches 13/13 forms, and isolated true-load/REPL prove
+=netrc=, all public helper functions, the =netrc-file=, =netrc-services-file=,
+and =netrc-cache= bindings, parsed-list lookup/default/port behavior, and a
+pre-created temporary authinfo-file parse through =netrc-parse=,
+=netrc-machine=, =netrc-get=, and =netrc-machine-user-or-password=.  The
+current standalone proof still does not promote proof-form-local file creation,
+GPG cache behavior, =/etc/services= lookup behavior, or =netrc-credentials=
+file IO; adding =netrc.el= to the 253-file default REPL set still segfaults
+before sentinel.
+The current full persistent-REPL recheck for =minibuf-eldef.el= also still
+fails: current Anvil calls return =Transport closed=, but local scan/native
+Emacs cover the expected prompt-default helper surface.  Standalone form-walk
+reaches 18/18 forms, and isolated true-load/REPL prove =minibuf-eldef=,
+=minibuffer-default--in-prompt-regexps=, =minibuf-eldef-setup-minibuffer=,
+=minibuf-eldef-update-minibuffer=, =minibuffer-default-in-prompt-regexps= as
+a cons, the internal minibuffer-local state bindings, and default regexp-list
+generation.  The current standalone proof explicitly keeps
+=minibuffer-electric-default-mode= unpromoted: its command binding is absent
+and the mode variable binding is not stable there.  Adding =minibuf-eldef.el=
+to the 253-file default REPL set still segfaults before sentinel, and live
+minibuffer prompt overlay behavior remains deferred.
+The current full persistent-REPL recheck for =visual-wrap.el= also still
+fails: current Anvil calls return =Transport closed=, but local scan/native
+Emacs cover the expected wrap-prefix helper surface.  Standalone form-walk
+reaches 9/9 forms, and isolated true-load/REPL prove =visual-wrap=,
+=visual-wrap--face-extend-p=, =visual-wrap--prefix-face=,
+=visual-wrap--prefix=, =visual-wrap-fill-context-prefix=,
+=visual-wrap-prefix-function=, =visual-wrap-extra-indent=, the current
+standalone boundary where =visual-wrap-prefix-mode= and
+=global-visual-wrap-prefix-mode= are not =fboundp=, and the zero-extra-indent
+=visual-wrap--prefix= identity case.  Native Emacs also proves positive and
+negative =visual-wrap-extra-indent= behavior plus the minor-mode command
+bindings, but those are not promoted because standalone value-change probes do
+not return to the proof sentinel.  Adding =visual-wrap.el= to the 253-file
+default REPL set still segfaults before sentinel, and live jit-lock/redisplay
+behavior remains deferred.
+The current full persistent-REPL recheck for =display-line-numbers.el= also
+still fails: the current Anvil =file_outline= / =nelisp_eval= path returns
+=Transport closed=, while local form-walk reaches 15/15 forms.  Native Emacs
+loads the file with the =display-line-numbers= feature, the generated
+=display-line-numbers-mode=, =global-display-line-numbers-mode=, and
+=header-line-indent-mode= commands, the internal helper functions, Custom
+variables, display-line width initialization, grow-only hook installation, and
+header-line fallback width 4 behavior.  Isolated true-load/REPL prove count 1,
+the feature, =display-line-numbers-update-width=,
+=display-line-numbers--turn-on=, all three header-line helper functions, the
+display-line Custom bindings, and =header-line-indent= /
+=header-line-indent-width=.  Separate standalone probes confirm the current
+boundary: the three generated mode commands are not =fboundp=, the native
+=display-line-numbers= variable is unbound, and only an explicit local nil
+binding lets =header-line-indent--line-number-width= return 0.  Adding
+=display-line-numbers.el= to the 253-file default REPL set still segfaults
+before sentinel, so line-number display width mutation, live minor-mode
+behavior, redisplay, and window-scroll integration remain deferred.
+The current full persistent-REPL recheck for =mouse-copy.el= also still fails:
+the current Anvil =file_outline= / =nelisp_eval= path returns =Transport
+closed=, while local form-walk reaches 8/8 forms.  Native Emacs loads the file
+with =mouse-copy=, all four functions, the three interactive commands, nil
+state variables, and the GUI/mouse dependency surface
+=mouse-drag-secondary= / =mouse-start-end= / =gui-get-selection= /
+=gui-set-selection= / =mouse-secondary-overlay=.  Isolated true-load/REPL
+prove count 1, =mouse-copy=, all four function bindings, the three state
+variables, and their nil initial values.  Separate standalone probes confirm
+the current boundary: none of the four functions are =commandp=, and the
+native mouse/GUI dependencies plus =mouse-secondary-overlay= are absent.
+Adding =mouse-copy.el= to the 253-file default REPL set still segfaults before
+sentinel, so live mouse event handling, GUI secondary-selection behavior, and
+kill/move/paste effects remain deferred.
+The current full persistent-REPL recheck for =animate.el= also still fails:
+the current Anvil =file_outline= / =nelisp_eval= path returns =Transport
+closed=, while local form-walk reaches 11/11 forms.  Native Emacs loads the
+file with =animate=, all six public functions, =animate-birthday-present= as
+a command, default Custom/variable values, and small temp-buffer smokes for
+=animate-place-char=, =animate-step=, and =animate-initialize=.  Isolated
+true-load/REPL prove count 1, =animate=, all six function bindings, the three
+variable bindings, =animate-n-steps= 20, numeric
+=animate-total-added-delay=, and nil =animation-buffer-name=.  Separate
+standalone probes confirm the current boundary: none of the =animate-*=
+functions are =commandp=, non-empty string initialization currently returns an
+empty shape, nil input returns nil, and =animate-place-char= buffer mutation
+does not reach the proof sentinel.  Adding =animate.el= to the 253-file
+default REPL set still segfaults before sentinel, so live window/randomized
+placement, =sit-for= animation/undo, sequence buffers, birthday command
+behavior, and accumulated REPL adoption remain deferred.
+The current full persistent-REPL recheck for =gmm-utils.el= also still fails:
+the current Anvil =file_outline= / =emacs_eval= / =nelisp_eval= path returns
+=Transport closed=, while local form-walk reaches 18/18 forms.  Native Emacs
+loads the file with =gmm-utils=, all seven public function bindings,
+=defun-gmm= as a macro, =gmm-customize-mode= as a command, default
+=gmm-verbose= / =gmm-tool-bar-style= / =tool-bar-map= values, regexp
+concatenation, muted/live =gmm-message= return values, widget metadata for
+=gmm-tool-bar-item=, and a =defun-gmm= fallback smoke.  Isolated
+true-load/REPL prove count 1, =gmm-utils=, all seven function bindings, the
+=defun-gmm= macro binding, the three variable bindings, =gmm-verbose= 7,
+=gmm-tool-bar-style= =gnome=, bound =tool-bar-map=, nil/string/list
+=gmm-regexp-concat= cases, muted =gmm-message= return value, =defun-gmm=
+fallback expansion, and muted =gmm-error= returning nil.  Separate standalone
+probes confirm the current boundary: no =gmm-*= function or =defun-gmm= is
+=commandp=, =gmm-widget-p= reports no =gmm-tool-bar-item= widget metadata,
+=gmm-tool-bar-from-list= does not return to the sentinel even for an empty
+list, and =customize-group= is absent so =gmm-customize-mode= calls are not
+promoted.  Adding =gmm-utils.el= to the 253-file default REPL set still
+segfaults before sentinel, so widget value behavior, toolbar map construction,
+customize UI, audible/error timing, and accumulated REPL adoption remain
+deferred.
+The current full persistent-REPL recheck for =userlock.el= also still fails:
+the current Anvil =file_outline= / =emacs_eval= / =nelisp_eval= path returns
+=Transport closed=, while local form-walk reaches 11/11 forms.  Native Emacs
+loads the no-=provide= file with no =userlock= feature, all seven helper
+function bindings, the =file-locked= / =file-supersession= error conditions,
+the =create-lockfiles= safe-local-variable property, batch-mode lock and
+supersession prompt errors, content-unchanged/content-changed smokes, and
+unlock-warning behavior.  Isolated true-load/REPL prove count 1, no
+=userlock= feature, all seven function bindings, both error condition lists,
+=file-locked= error message, nil =file-supersession= error message, the
+=create-lockfiles= safe-local-variable property, no command metadata for the
+seven functions, bound =display-warning=, and currently unbound
+=create-lockfiles=.  Separate standalone probes confirm the current boundary:
+temporary-file content comparison does not return to the true-load/REPL
+sentinel, direct batch prompt calls do not return to the sentinel, and
+=userlock--handle-unlock-error= calls are not promoted.  Adding =userlock.el=
+to the 253-file default REPL set still segfaults before sentinel, so live
+lock/supersession prompts, file content comparison, unlock warning display,
+and accumulated REPL adoption remain deferred.
+The current full persistent-REPL recheck for =rfn-eshadow.el= also still fails:
+Anvil =file_outline= / =emacs_eval= / =nelisp_eval= currently return
+=Transport closed=, but form-walk reaches 13/13 forms and native Emacs loads
+=rfn-eshadow= with all three helper functions, =file-name-shadow-mode= as a
+command, default Custom/face metadata, non-file-name setup no-op, SIFN smoke,
+and mode hook mutation.  Isolated true-load/REPL prove count 1,
+=rfn-eshadow=, =rfn-eshadow-setup-minibuffer=, =rfn-eshadow-sifn-equal=,
+=rfn-eshadow-update-overlay=, the file-name shadow Custom/face/variable
+surface, the standalone default boundary where =file-name-shadow-properties=
+is a cons while =file-name-shadow-tty-properties= and the hook/state variables
+are nil, and the non-file-name setup no-op.  Separate standalone probes confirm
+=file-name-shadow-mode= is not currently =fboundp= / =commandp=, and the SIFN
+equivalence smoke does not reach the proof sentinel.  Adding
+=rfn-eshadow.el= to the 253-file default REPL set still segfaults before
+sentinel, so generated minor-mode command behavior, live minibuffer shadow
+overlay behavior, =substitute-in-file-name= equivalence behavior, and
+accumulated REPL adoption remain deferred.
+The current full persistent-REPL recheck for =asm-mode.el= also still fails:
+Anvil =file_outline= / =nelisp_eval= currently return =Transport closed=, but
+form-walk reaches 16/16 forms and native Emacs loads =asm-mode= with the
+major-mode command, the indent/colon/newline/comment commands, the safe-comment
+predicate, syntax/abbrev/keymap/font-lock variables, label/plain indentation
+smokes, and a temporary-buffer =asm-mode= activation smoke.  Isolated
+true-load/REPL prove count 1, =asm-mode=, =asm--safe-comment-char-p=,
+=asm-mode=, =asm-indent-line=, =asm-calculate-indentation=, =asm-colon=,
+=asm-newline=, =asm-comment=, =asm-comment-char=, =asm-mode-syntax-table=,
+=asm-mode-abbrev-table=, and =asm-mode-map=.  The safe-comment predicate
+accepts =?;=, =?#=, and =?@= while rejecting non-comment values, and standalone
+command metadata remains a boundary: none of the six functions is currently
+=commandp=.  The font-lock keyword surface is dependency-sensitive: single-file
+proof does not bind =asm-font-lock-keywords= / =cpp-font-lock-keywords=, but a
+two-file =font-lock.el= plus =asm-mode.el= load/REPL proof covers both.  Direct
+=asm-mode= activation and =asm-calculate-indentation= buffer smokes do not
+return to the proof sentinel, and adding =asm-mode.el= to the 253-file default
+REPL set still segfaults before sentinel, so live mode activation,
+indentation/comment command behavior, and accumulated REPL adoption remain
+deferred.
+The current full persistent-REPL recheck for =bib-mode.el= also still fails:
+Anvil =file_outline= / =nelisp_eval= currently return =Transport closed=, but
+form-walk reaches 23/23 forms and native Emacs loads =bib-mode= with the
+major-mode command, edit commands, obsolete function aliases, native
+=unread-bib-file= alias, Custom/variable/keymap/regexp surface, minimal
+=bib-mode= activation, title capitalization, and =bib-find-key= smoke.
+Isolated true-load/REPL prove count 1, =bib-mode=, =bib-add=, =bib-mode=,
+=bib-find-key=, =bib-return-key=, =bib-mark=, =bib-unread=,
+=bib-capitalize-title-region=, =bib-capitalize-title=, =bib-file=,
+=bib-unread-file=, =bib-mode-map=, =bib-assoc=, =bib-auto-capitalize=,
+=bib-capitalized-fields=, and title stop-word regexp variables.  The obsolete
+function aliases =addbib= / =return-key-bib= / =mark-bib= / =unread-bib= are
+bound, but standalone currently leaves the obsolete variable alias
+=unread-bib-file= unbound.  A minimal =with-temp-buffer= call to =bib-mode=
+sets =major-mode= to =bib-mode= in true-load/REPL, while standalone command
+metadata remains a boundary because the Bib functions and obsolete aliases are
+not =commandp=.  =bib-capitalize-title=, =bib-find-key= field progression, and
+=bib-return-key= buffer mutation do not return to the proof sentinel.  Adding
+=bib-mode.el= to the 253-file default REPL set still segfaults before
+sentinel, so variable-alias parity, command metadata, field-key progression,
+title capitalization, unread-file append behavior, and accumulated REPL
+adoption remain deferred.
+The current full persistent-REPL recheck for =reveal.el= also still fails:
+Anvil =file_outline= / =nelisp_eval= currently return =Transport closed=, but
+form-walk reaches 13/13 forms and native Emacs loads =reveal= with the
+internal overlay helpers, =reveal-hide-revealed=, generated =reveal-mode= /
+=global-reveal-mode= commands, Custom/local variables, keymap remaps, and a
+temporary-buffer =reveal-mode= activation smoke.  Isolated true-load/REPL
+prove count 1, =reveal=, =reveal-post-command=,
+=reveal-open-new-overlays=, =reveal-close-old-overlays=,
+=reveal-hide-revealed=, =reveal-around-mark=, =reveal-auto-hide=,
+=reveal-open-spots=, =reveal-last-tick=, and =reveal-mode-map=.  The current
+standalone boundary is narrower: generated =reveal-mode= /
+=global-reveal-mode= remain unbound, =reveal-hide-revealed= and
+=reveal-post-command= are not =commandp=, and live reveal paths still lack
+=with-local-quit=, =with-demoted-errors=, =invisible-p=, and
+=buffer-modified-tick=.  A minimal hidden-overlay =reveal-open-new-overlays=
+smoke does not return to the true-load or REPL proof sentinel.  Adding
+=reveal.el= to the 253-file default REPL set still segfaults before sentinel,
+so generated minor-mode commands, command metadata, live invisible-overlay
+reveal/hide behavior, post-command hook integration, and accumulated REPL
+adoption remain deferred.
+The current full persistent-REPL recheck for =emacs-lock.el= also still fails:
+Anvil =file_outline= / =nelisp_eval= currently return =Transport closed=, but
+form-walk reaches 21/21 forms and native Emacs loads =emacs-lock= with all
+eight helper functions, generated =emacs-lock-mode= as a command, the
+unload helper, Custom defaults, permanent-local state variables, setter
+behavior, direct =emacs-lock-mode= activation, and a kill-locked query smoke.
+Isolated true-load/REPL prove count 1, =emacs-lock=,
+=emacs-lock-live-process-p=, =emacs-lock--can-auto-unlock=,
+=emacs-lock--exit-locked-buffer=, =emacs-lock--kill-emacs-hook=,
+=emacs-lock--kill-emacs-query-functions=,
+=emacs-lock--kill-buffer-query-functions=, =emacs-lock--set-mode=,
+=emacs-lock-mode=, =emacs-lock-unload-function=, the Custom variables, and
+the buffer-local state variables.  Separate isolated probes prove current
+process/hook/prompt primitives, =emacs-lock--set-mode= transitions for
+=all= / default =all= / nil, =emacs-lock--kill-buffer-query-functions=
+returning nil for a kill-locked buffer, and
+=emacs-lock--exit-locked-buffer= returning the current all-locked buffer.  The
+current standalone command metadata remains a boundary: =emacs-lock-mode= and
+the helpers are not =commandp=, and direct =emacs-lock-mode= activation does
+not return to the proof sentinel.  Adding =emacs-lock.el= to the 253-file
+default REPL set still segfaults before sentinel, so minor-mode command
+metadata, live =emacs-lock-mode= activation, auto-unlock process behavior,
+kill/exit hook integration, unload prompts, and accumulated REPL adoption
+remain deferred.
+The current full persistent-REPL recheck for =linum.el= also still fails:
+form-walk and isolated load/REPL prove =linum=, =linum-on=,
+=linum-delete-overlays=, =linum-update-current=, =linum-update=,
+=linum--face-width=, =linum-update-window=, =linum-after-change=,
+=linum-after-scroll=, =linum-schedule=, =linum-unload-function=,
+=linum-overlays=, =linum-available=, =linum-before-numbering-hook=,
+=linum-format=, =linum-eager=, =linum-delay=, and =linum-version=.  The
+isolated proof also smokes =linum-delete-overlays= against empty overlay
+state.  Adding =linum.el= to the 253-file default REPL set segfaults before
+sentinel.  The current standalone proof does not yet claim generated
+=linum-mode= / =global-linum-mode= command bindings, live window
+margin/overlay line-number updates, idle scheduling, or unload behavior.
+The current full persistent-REPL recheck for =refill.el= also still fails:
+form-walk and isolated load/REPL prove =refill=,
+=refill-adjust-ignorable-overlay=, =refill-fill-paragraph-at=,
+=refill-fill-paragraph=, =refill-after-change-function=,
+=refill-post-command-function=, =refill-pre-command-function=,
+=refill-ignorable-overlay=, =refill-doit=, and =refill-saved-state=.  The
+isolated proof also smokes =refill-after-change-function= setting
+=refill-doit= when =undo-in-progress= is nil.  Adding =refill.el= to the
+253-file default REPL set segfaults before sentinel.  The current standalone
+proof does not yet claim generated =refill-mode= command binding, live
+paragraph refill/fill-prefix behavior, overlay modification-hook behavior, or
+hook integration.
+The current full persistent-REPL recheck for =nnnil.el= also still fails:
+form-walk and isolated load/REPL prove =nnnil=, the =nnnil-*= backend
+function surface, and =nnnil-status-string=.  The isolated proof also smokes
+the server/open/close/status helpers, no-group/no-post status updates, and a
+local =nntp-server-buffer= path through header retrieval, list request, and
+group request.  Adding =nnnil.el= to the 253-file default REPL set segfaults
+before sentinel.  The source uses =eval-and-compile= to require =nnheader=,
+but =featurep= for =nnheader= and global =nntp-server-buffer= are not stable
+standalone proof clauses yet.  The current standalone proof does not yet claim
+live Gnus backend dispatch behavior.
+The current full persistent-REPL recheck for =po.el= also still fails:
+form-walk and isolated load/REPL prove =po=, =po-find-charset=,
+=po-find-file-coding-system-guts=, =po-find-file-coding-system=, and
+=po-content-type-charset-alist=.  The file has no direct top-level require,
+but its fallback path can soft-require =code-pages=.  Adding =po.el= to the
+253-file default REPL set segfaults before sentinel.  The current standalone
+proof does not yet claim synthetic PO header charset/coding-system detection,
+charset alist lookup behavior, =code-pages= fallback behavior, or real file IO
+integration.
+The current full persistent-REPL recheck for =cedet.el= also still fails:
+form-walk and isolated load/REPL prove =cedet=, the =cedet-version= function
+and variable binding, the =2.0= version string, =cedet-packages=, the =cedet=
+package-table entry, and the =cedet-menu-map= binding.  Adding =cedet.el= to
+the 253-file default REPL set segfaults before sentinel.  The current
+standalone proof does not yet claim =cedet-menu-map= keymap predicate behavior,
+interactive =cedet-version= output, or the runtime =inversion= lookup path.
+The current full persistent-REPL recheck for =cc-compat.el= also still fails:
+form-walk and isolated load/REPL prove the obsolete C indentation compatibility
+variables, =cc-block-intro-offset=, =cc-block-close-offset=, and
+=cc-substatement-open-offset=.  The isolated proof also checks the historical
+default variable values and smokes =cc-substatement-open-offset= returning
+=2=.  Adding =cc-compat.el= to the 253-file default REPL set segfaults before
+sentinel.  The file uses =cc-require= and =cc-provide=, but =featurep
+'cc-compat= and the CC dependency feature markers are not stable proof clauses
+yet.  The current standalone proof does not yet claim live C indentation
+contexts for the block offset helpers.
+The current full persistent-REPL recheck for =cedet-cscope.el= also still
+fails: form-walk and isolated load/REPL prove =cedet-cscope=, the CScope
+function surface, =cedet-cscope-min-version=, =cedet-cscope-command=, and the
+default =cscope= command binding.  Adding =cedet-cscope.el= to the 253-file
+default REPL set segfaults before sentinel.  The local environment does not
+provide a =cscope= executable, and the current standalone proof does not yet
+claim =cedet-cscope-version-check=, support-file probes, filename expansion,
+database creation, search behavior, or other =call-process= paths.
+The current full persistent-REPL recheck for =metamail.el= also still fails:
+form-walk and isolated load/REPL prove =metamail=, the four public helper
+functions, =metamail-program-name=, =metamail-mailer-name=,
+=metamail-environment=, and =metamail-switches=.  The isolated proof also
+checks the default =metamail= program binding, default =emacs= mailer binding,
+and =MM_QUIET= environment entry.  Adding =metamail.el= to the 253-file default
+REPL set segfaults before sentinel.  The local environment does not provide a
+=metamail= executable, and the current standalone proof does not yet claim
+header/body processing, =mail-fetch-field= integration, temporary file IO,
+process invocation, or buffer mutation behavior.
+The current full persistent-REPL recheck for =string-edit.el= also still
+fails: form-walk and isolated load/REPL prove =string-edit=,
+=read-string-from-buffer=, =string-edit-done=, =string-edit-abort=, the
+generated =string-edit-mode= function, callback variables, and
+=string-edit-mode-map= binding.  The isolated proof also smokes
+=string-edit-mode= activation in a temporary buffer.  Adding =string-edit.el=
+to the 253-file default REPL set segfaults before sentinel.  The current
+standalone proof does not yet claim =string-edit-prompt= face binding,
+=keymapp= behavior for =string-edit-mode-map=, live =pop-to-buffer= /
+recursive-edit workflows, prompt text properties, done/abort callback behavior,
+or =quit-window= cleanup.
+The current full persistent-REPL recheck for =flymake-cc.el= also still fails:
+form-walk and isolated load/REPL prove =flymake-cc=,
+=flymake-cc--make-diagnostics=, =flymake-cc-use-special-make-target=,
+=flymake-cc-command=, =flymake-cc--proc=, and
+=flymake-proc-allowed-file-name-masks=.  The isolated proof also checks the
+default command binding to =flymake-cc-use-special-make-target=.  Adding
+=flymake-cc.el= to the 253-file default REPL set segfaults before sentinel.
+The current standalone proof does not yet claim
+=flymake-cc-use-special-make-target= execution, GNU-style diagnostic parsing
+into Flymake objects, live =make-process= backend execution, process sentinel
+behavior, or report callback behavior.
+The current full persistent-REPL recheck for =external-completion.el= also
+still fails: form-walk and isolated load/REPL prove =external-completion=,
+=external-completion-table=, =external-completion--call=,
+=external-completion--try-completion=, =external-completion--all-completions=,
+and =external= registration in =completion-styles-alist=.  Adding
+=external-completion.el= to the 253-file default REPL set segfaults before
+sentinel.  The current standalone proof does not yet claim generated table
+closure metadata, try/all-completion calls, lookup cache behavior,
+=completion-category-defaults= mutation semantics, or =complete-with-action=
+fallback behavior.
+The current full persistent-REPL recheck for =yank-media.el= also still fails:
+form-walk and isolated load/REPL prove =yank-media=, the clipboard helper
+function surface, and =yank-media--registered-handlers=.  The isolated proof
+also smokes =yank-media-types--format= stripping a trailing NUL from
+=text/plain= data, non-text data passthrough, and a non-UTF-16 negative case.
+Adding =yank-media.el= to the 253-file default REPL set segfaults before
+sentinel.  The current standalone proof does not yet claim
+=yank-media-handler= buffer-local registration, live =gui-get-selection=
+clipboard/TARGETS discovery, image type filtering, interactive type choice and
+insert behavior, or the UTF-16 decoding branch.
+The current full persistent-REPL recheck for =cyril-jis.el= also still fails:
+form-walk and isolated load/REPL prove both top-level Quail forms evaluate, and
+also prove that =featurep 'cyril-jis= remains nil because the file has no
+=provide=.  Adding =cyril-jis.el= to the 253-file default REPL set segfaults
+before sentinel.  The current standalone proof does not yet observe
+=quail-define-package= / =quail-define-rules= function bindings,
+=quail-package-alist= registration for =cyrillic-jis-russian=, or live
+input-method activation and rule lookup.
+The current full persistent-REPL recheck for =cedet-idutils.el= also still
+fails: form-walk and isolated load/REPL prove =cedet-idutils=, its wrapper
+function surface, and the default Custom command bindings for =fnid=, =lid=,
+and =mkid=.  Adding =cedet-idutils.el= to the 253-file default REPL set
+segfaults before sentinel.  The current standalone proof does not yet claim
+=cedet-idutils-version-check=, support probes, filename expansion, search
+behavior, database creation, or live ID Utils subprocess behavior.
+The current full persistent-REPL recheck for =sup-mouse.el= also still fails:
+form-walk and isolated load/REPL prove =sup-mouse=, the four terminal mouse
+helper functions, =sup-mouse-fast-select-window=, and the nine mouse button
+constants.  Adding =sup-mouse.el= to the 253-file default REPL set segfaults
+before sentinel.  The current standalone proof does not yet claim ESC mouse
+input parsing via =read-char=, window/mode-line/scrollbar/minibuffer dispatch,
+point/mark/kill/yank side effects, or live terminal mouse behavior.
+The current full persistent-REPL recheck for =cedet-global.el= also still
+fails: form-walk and isolated load/REPL prove =cedet-global=, its GNU Global
+wrapper function surface, and the default Custom command bindings for =global=
+and =gtags=.  Adding =cedet-global.el= to the 253-file default REPL set
+segfaults before sentinel.  The current standalone proof does not yet claim GNU
+Global version/root checks, scan-hit parsing semantics, filename expansion,
+search behavior, database creation, or live GNU Global subprocess behavior.
+The current full persistent-REPL recheck for =mantemp.el= also still fails:
+form-walk and isolated load/REPL prove =mantemp= and the seven obsolete C++
+template-instantiation transformer functions.  Adding =mantemp.el= to the
+253-file default REPL set segfaults before sentinel.  The current standalone
+proof does not yet claim g++ diagnostic comment stripping, member-function
+pruning, sort/unique behavior, C++ =template= syntax insertion, or region/buffer
+mutation behavior.
+The current full persistent-REPL recheck for =ediff-vers.el= also still fails:
+form-walk and isolated load/REPL prove =ediff-vers=, the obsolete VC aliases,
+the VC/RCS/Ediff helper function surface, =ediff-keep-tmp-versions=, and the
+delete-skip branch guarded by that option.  Adding =ediff-vers.el= to the
+253-file default REPL set segfaults before sentinel.  The current standalone
+proof does not yet claim VC latest-revision lookup, RCS =co= subprocess output,
+temp revision buffer creation, Ediff compare/merge startup hooks, or real
+temp-file deletion.
+The current full persistent-REPL recheck for =gs.el= also still fails: form-walk
+and isolated load/REPL prove =gs=, the Ghostscript option variables, and the
+obsolete image/window-property helper function surface.  Adding =gs.el= to the
+253-file default REPL set segfaults before sentinel.  The current standalone
+proof does not yet claim =gs-options= placeholder substitution, frame point
+conversion, =GHOSTVIEW= / =GHOSTVIEW_COLORS= X window-property mutation,
+environment mutation, or live Ghostscript subprocess launch.
+The current full persistent-REPL recheck for =unrmail.el= also still fails:
+form-walk and isolated load/REPL prove =unrmail=, =batch-unrmail=,
+=unrmail-mbox-format=, the declared =rmime-magic-string= variable, and the
+default =mboxrd= setting.  Adding =unrmail.el= to the 253-file default REPL set
+segfaults before sentinel.  The current standalone proof does not yet claim real
+Babyl parsing, coding detection/decoding, optional RMIME cleanup, header
+extraction, mboxrd/mboxo body quoting, output file writes, or batch
+=kill-emacs= flow.
+The current full persistent-REPL recheck for =backquote.el= also still fails:
+form-walk and isolated load/REPL prove =backquote=, the legacy backquote helper
+functions/macros/aliases, and the three construct-symbol bindings.  Adding
+=backquote.el= to the 253-file default REPL set segfaults before sentinel.  The
+current standalone proof does not yet claim =backquote-list*= dotted-list
+behavior, reader-construct properties for =,= / =,@=, or macro expansion
+semantics for quote, unquote, splice, vector, nesting, and error paths.
+The current full persistent-REPL recheck for =dirtrack.el= also still fails:
+form-walk and isolated load/REPL prove only the loaded =dirtrack= feature.
+Adding =dirtrack.el= to the 253-file default REPL set segfaults before sentinel.
+The current standalone proof does not yet claim the Custom/function/minor-mode
+generated command surface, prompt regexp matching, Windows/Cygwin
+canonicalization, debug-buffer logging, =comint-preoutput-filter-functions= hook
+mutation, =shell-process-cd= calls, or directory-change hook behavior.
+The current full persistent-REPL recheck for =keypad.el= also still fails:
+form-walk and isolated load/REPL prove =keypad=, the four default-nil keypad
+setup Custom variables, and the =keypad-setup= function binding.  Adding
+=keypad.el= to the 253-file default REPL set segfaults before sentinel.  The
+current standalone proof does not yet claim Custom =:set= entrypoints,
+numeric/prefix/cursor/S-cursor/none binding modes, decimal remapping,
+=function-key-map= mutation, =kp-begin= / =S-kp-begin= aliases, or the unknown
+setup error path.
+The current full persistent-REPL recheck for =rtree.el= also still fails:
+form-walk and isolated load/REPL prove =rtree=, the range-tree macro/function
+surface, the obsolete =rtree-normalise-range= alias, and a small
+make/memq/add/delq/extract/length smoke over =(1 (3 . 5) 8)=.  Adding
+=rtree.el= to the 253-file default REPL set segfaults before sentinel.  The
+current standalone proof does not yet claim balancing assumptions, larger tree
+shapes, deletion successor/predecessor edge cases, or destructive sharing
+behavior.
+The current full persistent-REPL recheck for =executable.el= also still fails:
+form-walk and isolated load/REPL prove =executable= plus
+=executable-set-magic= and
+=executable-make-buffer-file-executable-if-script-p=.  Adding =executable.el=
+to the 253-file default REPL set segfaults before sentinel.  The current
+standalone proof does not yet claim the broader Custom/variable/function
+surface, POSIX =find= probing, after-save chmod, interpreter insertion or
+replacement, self-display wrapping, compilation launch, or real file-mode
+mutation.
+The current full persistent-REPL recheck for =shadow.el= also still fails:
+form-walk and isolated load/REPL prove =shadow= plus
+=load-path-shadows-find= and =list-load-path-shadows=.  Adding =shadow.el= to
+the 253-file default REPL set segfaults before sentinel.  The current
+standalone proof does not yet claim the broader Custom/variable/mode/button
+surface, duplicate-directory handling, text comparison, real =load-path= shadow
+detection, =*Shadows*= buffer rendering/buttons, or batch message output.
+The current full persistent-REPL recheck for =cl-font-lock.el= also still
+fails: form-walk and isolated load/REPL prove only the loaded =cl-font-lock=
+feature.  Adding =cl-font-lock.el= to the 253-file default REPL set segfaults
+before sentinel.  The current standalone proof does not yet claim the built-in
+function/variable/type/symbol/character-name data tables, generated keyword
+regexps, =cl-font-lock-built-in-mode= binding or toggle, =lisp-mode= font-lock
+keyword mutation, or actual highlighting.
+The current full persistent-REPL recheck for =starttls.el= also still fails:
+form-walk and isolated load/REPL prove =starttls= plus =starttls-open-stream=
+and =starttls-available-p=.  Adding =starttls.el= to the 253-file default REPL
+set segfaults before sentinel.  The current standalone proof does not yet claim
+the broader Custom/function surface, external =starttls= / =gnutls-cli= tool
+selection, subprocess launch, connection wait loops, negotiation
+success/failure parsing, process signaling/deletion, or network stream behavior.
+The current full persistent-REPL recheck for =diff.el= also still fails:
+form-walk and isolated load/REPL prove =diff= plus the =diff-switches= /
+=diff-command= variables and =diff-no-select=, =diff-latest-backup-file=, and
+=diff-buffers= bindings.  Adding =diff.el= to the 253-file default REPL set
+segfaults before sentinel.  The current standalone proof does not yet claim
+external =diff= label probing, async/sync shell command execution, process
+filter/sentinel cleanup, temp-file deletion, revert-buffer wiring, real
+buffer/file diff output, or =diff-mode= rendering.
+The current full persistent-REPL recheck for =dos-fns.el= also still fails:
+form-walk and isolated load/REPL prove =dos-fns= plus filename/register helper
+bindings, =msdos-shells= / =dos-register-name-alist= bindings,
+=dosified-file-name= =.dir-locals= mapping, and a small =ax/al/ah= register
+smoke.  Adding =dos-fns.el= to the 253-file default REPL set segfaults before
+sentinel.  The current standalone proof does not yet claim real DOS long-name
+detection, 8.3 filesystem edge cases, =int86= interrupt calls, startup hook
+effects, process coding mutation, or frame resizing.
+The current full persistent-REPL recheck for =crm.el= also still fails:
+form-walk and isolated load/REPL prove =crm= plus separator/table/keymap
+variables, collection/current-element helpers, completion commands, and
+=completing-read-multiple=.  Adding =crm.el= to the 253-file default REPL set
+segfaults before sentinel.  The current standalone proof does not yet claim
+real minibuffer reading, require-match exit behavior, composed
+visible-completions keymaps, chooser hook mutation, completion replacement,
+per-element boundary movement, or help display.
+The current full persistent-REPL recheck for =epg-config.el= also still fails:
+form-walk and isolated load/REPL prove =epg-config= plus package/config
+variables and configuration lookup/check/requirement/group-expansion bindings.
+Adding =epg-config.el= to the 253-file default REPL set segfaults before
+sentinel.  The current standalone proof does not yet claim real =gpg= /
+=gpgsm= / =gpgconf= executable selection, subprocess output parsing,
+group/algorithm config parsing, cache mutation, Custom override behavior,
+version range rejection, or debug messages.
+The current full persistent-REPL recheck for =subword.el= also still fails:
+form-walk and isolated load/REPL prove =subword=, =superword=, =cap-words=,
+=subword-forward=, =subword-backward=, =subword-setup-buffer=, and the
+subword/superword keymap variables.  Adding =subword.el= to the 253-file
+default REPL set segfaults before sentinel.  The current standalone fallback
+still does not materialize =subword-mode=, =superword-mode=,
+=global-subword-mode=, or =global-superword-mode=, so real motion/editing,
+word-boundary table behavior, and mode toggling remain follow-up smokes.
+The current full persistent-REPL recheck for =font-core.el= also still fails:
+form-walk and isolated load/REPL prove =font-core= plus
+=font-lock-change-mode=, =font-lock-defontify=,
+=font-lock-default-function=, =turn-on-font-lock=,
+=turn-on-font-lock-if-desired=, and core Font Lock variables.  Adding
+=font-core.el= to the 253-file default REPL set segfaults before sentinel.
+The current standalone proof does not yet claim =font-lock-mode= /
+=global-font-lock-mode= toggling, initial fontification, text-property cleanup
+effects, hook wiring, major-mode auto enablement, or face alias mutation.
+The current accumulated replay recheck for =puny.el= still fails: form-walk and
+isolated load/REPL prove =puny= plus encode/decode/domain/restrictive helper
+bindings, core constants, and an ASCII digit encode/decode smoke.  Adding
+=puny.el= to the 319-file default true-load set segfaults at
+=start:puny.el=, and adding it to the 253-file default REPL set segfaults
+before sentinel.  Real Unicode Punycode round trips, glyph composition,
+char-script-table restriction checks, and invalid-code handling remain
+follow-up smokes.
+The current accumulated replay recheck for =sqlite-mode.el= still fails:
+form-walk and isolated load/REPL prove =sqlite-mode= plus the derived-mode
+command, map/db variables, and table/column/data/delete helper bindings.
+Adding =sqlite-mode.el= to the 319-file default true-load set segfaults at
+=start:sqlite-mode.el=, and adding it to the 253-file default REPL set
+segfaults before sentinel.  Real SQLite C primitive behavior, live DB
+browsing/mutation, buffer rendering, row text properties, kill-buffer cleanup,
+and delete confirmation remain follow-up smokes.
+The current accumulated replay recheck for =mh-acros.el= still fails:
+form-walk and isolated load/REPL prove =mh-acros= plus the MH-E macro/helper
+definitions for folder updating, show-buffer switching, event-location
+execution, sequence/range iteration, dynamic binding, and temporary function
+rebinding.  Adding =mh-acros.el= to the 319-file default true-load set
+segfaults at =start:mh-acros.el=, and adding it to the 253-file default REPL set
+segfaults before sentinel.  Real MH folder buffer mutation, window/event
+handling, scan parsing, range translation, and macro expansion through
+dependent MH-E files remain follow-up smokes.
+The current accumulated replay recheck for =regexp-opt.el= still fails:
+form-walk and isolated load/REPL prove =regexp-opt= plus =regexp-opt=,
+=regexp-opt-depth=, =regexp-opt-group=, and =regexp-opt-charset= bindings.
+Adding =regexp-opt.el= to the 319-file default true-load set segfaults at
+=start:regexp-opt.el=, and adding it to the 253-file default REPL set
+segfaults before sentinel.  Inserting it earlier before =textsec-check.el=
+lets =regexp-opt.el= load but still shifts the true-load crash boundary later
+to =start:font-core.el=, so it remains an accumulated-state/pressure boundary
+rather than a source-reader failure.  Simple runtime regexp generation/depth/matching
+smoke is still not stable, so large string-list optimization, charset range
+construction, invalid regexp signaling, and grouping variants remain follow-up
+smokes.
+The current generated data recheck keeps =float-sup.el= and the larger
+=uni-*.el= property files deferred before load/REPL replay.  =float-sup.el=
+still reads 10 forms and evaluates 6 before index 7 by default, the
+=radians-to-degrees= =defconst= using =(/ 180.0 float-pi)=, exits with a
+floating point exception.  Focused probes now narrow this to the default
+standalone-reader built-in =/=: direct =nl_jit_float_div= and a source-level
+redefinition of =/= both handle the =(atan 1)=-derived denominator, and
+preloading that source-level =/= lets =float-sup.el= pass full form-walk plus
+isolated load/REPL.  It remains deferred until the default bootstrap path works
+without that override.
+=uni-bidi.el=, =uni-category.el=, =uni-combining.el=, =uni-comment.el=,
+=uni-decomposition.el=, and =uni-old-name.el= still fail on their first
+=define-char-code-property= form with current exits 84, 88, 89, 87, 93, and 88
+respectively.  =uni-brackets.el= reads two forms and evaluates one before its
+second =define-char-code-property= exits 0 instead of the expected 42.
+=uni-confusable.el= still segfaults on the first giant generated
+=defconst=.  Runtime char-property lookup, table payload decoding, and
+accumulated replay adoption remain deferred for this whole group.
+The current Org link direct-require recheck keeps =ol-eshell.el=,
+=ol-docview.el=, =ol-eww.el=, and =ol-gnus.el= deferred from default replay
+even though each file now passes standalone form-walk and isolated
+true-load/REPL feature proof.  Their top-level =require= forms pull unscoped
+Eshell, DocView, EWW, and Gnus surfaces, so adopting them would implicitly
+widen the replay set through larger subsystems instead of through the small
+foundation queue.  Live Eshell directory links, DocView page navigation, EWW
+URL/keymap behavior, and Gnus group/article following remain separate runtime
+passes.
+The current mail/URL/terminal integration recheck keeps =blessmail.el= outside
+the replay queue and leaves only the terminal blocker in Defer.
+=blessmail.el= is an install-time generator that writes a =blessmail= script
+and calls =kill-emacs= at top level, so it is now tracked as out of replay
+scope rather than as a later replay candidate.  =xterm.el= still fails
+standalone form-walk after reading 45 top-level forms and evaluating 15.  The
+boundary is index 16, the large =xterm-function-map= =defvar= spanning many
+=define-key= entries and a modifier =dolist=.  Current focused probes show the
+static =define-key= prefix through the keypad bindings passes, a one-binding
+dynamic =dolist= passes, and a host-printed numeric version of the full
+modifier binding list passes; the remaining boundary is the original source
+spelling of modified character literals such as =[?\C-\']=, which fails before
+default =xterm.el= can leave index 16.  A host-reader =prin1= normalized
+temporary copy of the whole file reaches 45/45 forms and passes isolated
+true-load/REPL proof for =term/xterm=, =xterm=, =xterm-function-map=,
+=xterm-alternatives-map=, and =terminal-init-xterm=, so the remaining blocker is
+the default reader path rather than the xterm keymap body.  The
+smaller Rmail, URL parser, URL Dired, terminal mouse, and find-file-at-point
+helpers are tracked as isolated-only proof rows until their Rmail, Auth Source,
+URL, Dired, Gnus, Rmail, VM, mouse, global binding, and terminal side effects
+are scoped separately.
+The current accumulated persistent-REPL recheck for the latest small
+true-load-only pair still leaves =subword.el= and =font-core.el= out of the
+default hot-load set.  Each file passes isolated persistent REPL proof for its
+feature/function/keymap or variable surface, but appending either file to the
+expanded 253-file default REPL list creates a 254-file probe that segfaults
+before sentinel.
+The same corrected accumulated persistent-REPL method still leaves the small
+Org Babel/citation true-load-only helpers =ob-eval.el=, =oc-bibtex.el=,
+=oc-natbib.el=, and =oc-biblatex.el= out of the default hot-load set.  Each
+file passes isolated persistent REPL proof for its feature and representative
+export/eval helper bindings, but appending any one of them to the expanded
+253-file default REPL list creates a 254-file probe that segfaults before
+sentinel.
+The current Thai word-boundary recheck is isolated-only too.  =thai-word.el=
+and =thai-util.el= complete standalone form-walk across 15 and 21 top-level
+forms, and the explicit isolated true-load/REPL pair proves =thai-word=,
+=thai-util=, representative word-boundary helpers, composition/setup helpers,
+and =thai-word-mode-map=.  The large =thai-word-table= variable surface is
+still not stable in isolated proof after =ok:thai-word.el=, and appending the
+pair to the expanded default true-load set segfaults at =start:thai-word.el=;
+appending it to the default persistent REPL set also segfaults before sentinel.
+The current Org table recheck is isolated-only too.  The file now
+completes standalone form-walk across 348 top-level forms, and isolated
+true-load/REPL prove the =org-table= feature plus representative table
+create/align/recalculate/export helper bindings and table variables.  The
+generated =orgtbl-mode= command is not materialized in the current standalone
+fallback, and appending =org-table.el= to the expanded default true-load set
+segfaults at =start:org-table.el=; appending it to the default persistent REPL
+set also segfaults before sentinel, so only accumulated replay adoption remains
+deferred.
+The current text table recheck is isolated-only too.  =textmodes/table.el=
+completes standalone form-walk across 238 top-level forms, and isolated
+true-load/REPL prove the =table= feature plus representative
+insert/recognize/unrecognize/source/capture/release helper bindings,
+=table-cell-map=, and =table-command-list=.  Its live behavior depends on
+timers, text-property keymaps, cache buffers, menus, delayed cell updates, and
+source generation; appending it to the expanded default true-load set segfaults
+at =start:table.el=, and appending it to the default persistent REPL set
+segfaults before sentinel.
+The current calendar core recheck keeps =calendar.el= deferred before load/REPL
+replay.  The file still reads 171 top-level forms and evaluates 138 before
+index 139, the =calendar-day-header-array= =defcustom= defaulting through
+=calendar-day-header-construct= with =:set-after= over the day header width,
+abbreviation length, day-name, and day-abbreviation variables, segfaults.
+Focused replay from index 137 confirms =calendar-day-name-array= and
+=calendar-abbrev-length= pass before this Custom setter/default boundary, so
+the calendar core itself remains deferred before isolated load/REPL replay.
+The current dependent calendar helper recheck adds a narrower boundary:
+=cal-dst.el= and =solar.el= both complete standalone form-walk because
+=calendar.el= provides =calendar= early.  =cal-dst.el= passes isolated
+true-load/REPL on its own; =solar.el= needs an explicit =cal-dst.el= load first
+for full feature proof, after which the pair proves DST and sunrise/sunset
+helpers.  The pair is still not default-adoptable: adding it to default
+true-load segfaults at =start:cal-dst.el=, and adding it to default persistent
+REPL segfaults before sentinel.
+The full persistent-REPL path for the MH/CEDET/EPA helper batch remains a
+follow-up segfault investigation.
+The full persistent-REPL path for =morse.el= also remains a follow-up
+segfault investigation; the latest recheck still fails when adding it to the
+current 253-file default REPL set.
+The accumulated true-load and persistent-REPL proofs deliberately stay
+count-only.  Detailed feature/function surfaces are kept in isolated and
+smaller partition proofs; the single large accumulated true-load proof now
+segfaults during standalone proof evaluation at the 269-file boundary.
+The smaller load proofs also check the loaded feature/function surface for Dired,
+Help, sequence/map, range/regi, ring, generator/AVL tree including an
+=avl-tree-iter= runtime smoke that yields =1=, =2=, and =3=, IELM,
+hex, character-script and
+emoji-label/IDNA data, =project-current=, =find-file=, =forward-sexp=,
+=mark-defun=, =map-y-or-n-p=, =read-answer=, ISO translation helpers,
+fontset helpers, SKK dictionary helpers, =format-spec=, =org-version=,
+=org-release=, =org-git-version=, =org-macs=,
+=org-with-gensyms=, =org-string-nw-p=, =org-compat=,
+=org-string-equal-ignore-case=, =org-version-check=,
+=org-with-silent-modifications=, =org-fold-core=,
+=org-fold-core-add-folding-spec=, =org-fold-core-region=,
+=org-fold-core-folded-p=, =org-fold=, =org-fold-region=,
+=org-fold-show-all=, =org-fold-hide-subtree=, =org-duration=,
+=org-duration-p=, =org-duration-to-minutes=,
+=org-duration-from-minutes=, =org-duration-h:mm-only-p=,
+=org-faces=, =org-level-faces=, =org-set-tag-faces=,
+=org-todo-keyword-faces=, =org-tag-faces=, =oc=,
+=org-cite-register-processor=, =org-cite-get-processor=,
+=org-cite-processor-has-capability-p=, =org-cite--processors=,
+=org-keys=, =org-key=, =org-defkey=, =org-remap=,
+=org-speed-command-help=, =org-speed-command-activate=,
+=org-mode-map=, =org-mouse-map=, =org-babel-map=,
+=org-speed-commands=,
+=org-cycle=, =org-cycle-global=, =org-cycle-overview=,
+=org-cycle-content=, =org-cycle-hide-drawers=,
+=org-cycle-force-archived=, =org-cycle-hook=,
+=org-cycle-global-status=, =org-cycle-subtree-status=,
+=org-inlinetask=, =org-inlinetask-insert-task=,
+=org-inlinetask-outline-regexp=, =org-inlinetask-at-task-p=,
+=org-inlinetask-toggle-visibility=,
+=ol-doi=, =org-link-doi=, =org-link-doi-export=,
+=ol-info=, =org-info--link-file-node=, =org-info-map-html-url=,
+=org-info-export=,
+=ol-man=, =org-man-export=, =ol-rmail=, =org-rmail-open=,
+=ol-mhe=, =org-mhe-follow-link=, =ol-w3m=,
+=org-w3m-copy-for-org-mode=, =ol-irc=, =org-irc-export=,
+=tempo=, =tempo-define-template=, =tempo-insert-template=,
+=tempo-add-tag=, =tempo-use-tag-list=, =tempo-complete-tag=,
+=tempo-tags=, =tempo-local-tags=, =org-tempo=,
+=org-tempo-setup=, =org-tempo-add-templates=,
+=org-tempo-add-block=, =org-tempo-complete-tag=,
+=org-tempo-tags=, =org-tempo-keywords-alist=,
+=inline=, =define-inline=, =inline-quote=, =inline-letevals=,
+=inline-const-p=, =inline-const-val=, =inline-error=,
+=inline--do-quote=, =inline--do-leteval=, =inline--testconst-p=,
+=easymenu=, =easy-menu-define=, =easy-menu-create-menu=,
+=easy-menu-add-item=, =easy-menu-remove-item=,
+=easy-menu-lookup-name=, =easy-menu-avoid-duplicate-keys=,
+=easy-menu-converted-items-table=,
+=let-alist=, =let-alist--deep-dot-search=, =radix-tree=,
+=radix-tree-insert=, =radix-tree-lookup=, =radix-tree-from-map=,
+=text-property-search=, =text-property-search-forward=,
+=prop-match-beginning=, =thunk=, =thunk-force=,
+=emacs-major-version=, =emacs-minor-version=, =emacs-version=,
+=emacs-repository-get-version=, =emacs-repository-get-branch=,
+=help-macro=, =make-help-screen=, =help--help-screen=,
+=env=, =substitute-env-vars=, =substitute-env-in-file-name=,
+=setenv=, =getenv=, =fileloop=, =fileloop-initialize=,
+=fileloop-next-file=, =fileloop-continue=,
+=fileloop-initialize-search=, =fileloop-initialize-replace=,
+=rmc=, =read-multiple-choice=, =generate-lisp-file=,
+=generate-lisp-file-heading=, =obarray=, =obarray-get=, =soundex=,
+=cursor-sensor=, =cursor-sensor-tangible-pos=, =indent-aux=,
+=kill-ring-deindent-buffer-substring-function=,
+=display-fill-column-indicator=,
+=display-fill-column-indicator--turn-on=,
+=thingatpt=, =thing-at-point=, =bounds-of-thing-at-point=,
+=forward-thing=, =word-at-point=, =symbol-at-point=,
+=number-at-point=, =thing-at-point-looking-at=,
+=thing-at-point-provider-alist=, =forward-thing-provider-alist=,
+=bounds-of-thing-at-point-provider-alist=,
+=thing-at-point-email-regexp=, =thing-at-point-uuid-regexp=,
+=time-date=, =date-to-time=, =seconds-to-time=, =days-to-time=,
+=time-since=, =date-leap-year-p=, =format-seconds=,
+=seconds-to-string=, =date-days-in-month=, =decoded-time-add=,
+=make-decoded-time=, =decoded-time-set-defaults=,
+=decoded-time-period=,
+=iso8601=, =iso8601-parse=, =iso8601-parse-date=,
+=iso8601-parse-time=, =iso8601-parse-zone=, =iso8601-valid-p=,
+=iso8601-parse-duration=, =iso8601-parse-interval=,
+=parse-time=, =parse-time-string=, =parse-time-tokenize=,
+=parse-iso8601-time-string=, =parse-time-months=,
+=parse-time-weekdays=, =parse-time-zoneinfo=,
+=tabify=, =untabify=, =rot13=, =rot13-string=, =rot13-region=,
+=underline=, =underline-region=, =ununderline-region=, =widget=,
+=define-widget=, =define-widget-keywords=, =dos-vars=,
+=msdos-shells=, =mb-depth=, =minibuffer-depth-setup=,
+=minibuffer-depth-indicator-function=, =ietf-drums=,
+=ietf-drums-parse-address=, =ietf-drums-parse-addresses=,
+=rfc2045=, =rfc2045-encode-string=, =hmac-def=,
+=define-hmac-function=, =hmac-md5=, =md5-binary=, =hmac-md5-96=,
+=rfc2104=, =rfc2104-hash=, =md4=,
+=compat=, =compat-function=, =compat-call=,
+=hack-read-symbol-shorthands=, =shorthands-font-lock-shorthands=,
+=dynamic-setting=, =font-setting-change-default-font=,
+=dynamic-setting-handle-config-changed-event=,
+=benchmark=, =benchmark-call=, =benchmark-run=,
+=password-cache=, =password-cache-add=, =password-read-from-cache=,
+=double=, =double-translate-key=, =chistory=, =command-history=,
+=list-command-history=, =scroll-lock=, =scroll-lock-next-line=,
+=thread=, =list-threads=, =thread-list--get-entries=,
+=ntlm=, =ntlm-build-auth-request=, =ntlm-build-auth-response=,
+=ntlm-get-password-hashes=, =ntlm-md4hash=, =sasl-ntlm=,
+=sasl-ntlm-request=, =sasl-ntlm-response=,
+=term/bobcat=, =terminal-init-bobcat=, =term/cygwin=,
+=terminal-init-cygwin=, =term/vt200=, =terminal-init-vt200=,
+=term/linux=, =terminal-init-linux=, =term/vt100=,
+=terminal-init-vt100=, =term/AT386=, =terminal-init-AT386=,
+=term/news=, =terminal-init-news=, =term/lk201=,
+=terminal-init-lk201=, =lk201-function-map=, =term/w32console=,
+=terminal-init-w32console=, =w32-tty-standard-colors=,
+=meese=, =protect-innocence-hook=, =ps-def=, =ps-mark-active-p=,
+=ps-face-foreground-name=, =ps-face-background-name=,
+=ps-print-loaddefs=, =ps-multibyte-buffer=, =glyphless-mode=,
+=glyphless-mode-types=, =glyphless-mode--setup=, =word-wrap-mode=,
+=word-wrap-whitespace-characters=, =word-wrap-mode--previous-state=,
+=sqlite=, =with-sqlite-transaction=, =url-future=,
+=make-url-future=, =url-future-call=, =url-domsuf=,
+=url-domsuf-domains=, =url-domsuf-cookie-allowed-p=, =vt100-led=,
+=led-state=, =led-on=, =led-off=, =led-flash=, =led-update=,
+=cham=, =czech=, =slovak=, =georgian=, =romanian=, =utf-8-lang=,
+=burmese-composable-pattern=, =tai-viet=, =lao=, =greek=,
+=ethiopic=, =philippine=, =korean=, =vietnamese=, =thai=,
+=tai-tham-composable-pattern=,
+=tai-viet-util=, =tai-viet-re=, =tai-viet-compose-region=,
+=cyril-util=, =cyrillic-language-alist=,
+=standard-display-cyrillic-translit=, =indonesian=, =korea-util=,
+=setup-korean-environment-internal=,
+=china-util=, =decode-hz-region=, =encode-hz-region=, =cyrillic=,
+=hebrew=, =hebrew-shape-gstring=, =japanese=,
+=viet-util=, =viet-decode-viqr-region=, =viet-encode-viqr-region=,
+=chinese=, =japan-util=, =setup-japanese-environment-internal=,
+=japanese-katakana=, =japanese-hiragana=, =misc-lang=,
+=arabic-shape-gstring=, =egyptian-shape-grouping=,
+=studly=, =studlify-region=, =studlify-word=, =dissociate=,
+=dissociated-press=, =makesum=, =make-command-summary=,
+=double-column=, =vt-control=, =vt-applications-keypad-p=,
+=vt-wide-p=, =vt-wide=, =vt-narrow=, =vt-toggle-screen=,
+=flow-ctrl=, =flow-control-c-s-replacement=,
+=flow-control-c-q-replacement=, =enable-flow-control=,
+=enable-flow-control-on=, =talk=, =talk-display-alist=,
+=talk-connect=, =talk-add-display=, =talk-disconnect=,
+=nxml-maint=, =nxml-insert-target-repertoire-glyph-set=,
+=nxml-util=, =nxml-make-namespace=, =nxml-namespace-name=,
+=vc-filewise=, =vc-master-name=, =vc-filewise-registered=,
+=pgg-def=, =pgg-default-scheme=, =pgg-truncate-key-identifier=,
+=autoconf=, =autoconf-mode=, =autoconf-current-defun-function=,
+=gssapi=, =open-gssapi-stream=, =scroll-all=,
+=scroll-all-function-all=, =scroll-all-check-to-scroll=, =utf-7=,
+=utf-7-decode=, =utf-7-encode=, =rfc2368=,
+=rfc2368-unhexify-string=, =rfc2368-parse-mailto-url=,
+=timer-list=, =list-timers=, =timer-list-cancel=, =master=,
+=master-set-slave=, =master-says=, =helper=, =Helper-help=,
+=Helper-describe-function=,
+=holiday-loaddefs=, =theme-loaddefs=, =esh-module-loaddefs=, =loaddefs=,
+=global-srecode-minor-mode=, =diary-loaddefs=, =texinfo-loaddefs=,
+=calc-loaddefs=,
+=rfc1843=, =rfc1843-decode-string=, =nxml-enc=,
+=nxml-detect-coding-system=, =bibtex-style=, =bibtex-style-mode=,
+=dictionary-connection=, =dictionary-connection-create-data=,
+=m4-mode=,
+=cookie1=, =cookie=, =cookie-read=, =spook=, =yow=, =bruce=,
+=autoarg=, =autoarg-kp-digit-argument=, =term/tvi970=,
+=terminal-init-tvi970=, =term/sun=, =terminal-init-sun=,
+=*EDT-keys*=, =edt-set-term-width-80=, =edt-set-term-width-132=,
+=rng-util=, =rng-make-datatypes-uri=, =rng-escape-string=,
+=rng-dt=, =rng-dt-builtin-compile=, =url-vars=,
+=url-privacy-level=, =url-user-agent=, =url-privacy=,
+=url-device-type=, =url-setup-privacy-info=,
+=w32-vars=, =w32-use-w32-font-dialog=, =w32-fixed-font-alist=,
+=novice=, =disabled-command-function=, =enable-command=,
+=disable-command=, =page=, =forward-page=, =backward-page=,
+=what-page=, =cl-compat=, =keyword-of=, =setnth=,
+=elide-head=, =elide-head-show=, =iimage=, =iimage-recenter=,
+=iimage-mode-buffer=, =emacs-authors-mode=,
+=emacs-authors-next-author=, =emacs-authors-prev-author=,
+=textsec-check=, =textsec-suspicious-p=, =debug-early=,
+=debug-early-backtrace=, =calc-macs=, =calc-wrapper=,
+=math-with-extra-prec=, =kinsoku=, =kinsoku-limit=, =latexenc=,
+=latexenc-inputenc-to-coding-system=,
+=latexenc-coding-system-to-inputenc=, =reposition=,
+=reposition-window=, =repos-count-screen-lines=, =ansi-osc=,
+=ansi-osc-control-seq-regexp=, =ansi-osc-filter-region=,
+=ansi-osc-apply-on-region=, =morse=, =morse-code=, =morse-region=,
+=unmorse-region=, =nato-region=, =denato-region=,
+=mh-buffers=, =mh-log-buffer=, =mh-truncate-log-buffer=, =ede/make=,
+=ede-make-check-version=, =cedet-files=,
+=cedet-directory-name-to-file-name=, =cedet-file-name-to-directory-name=,
+=epa-hook=, =epa-file-handler=, =epa-file-name-regexp-update=,
+=ede/makefile-edit=, =makefile-macro-file-list=,
+=makefile-extract-varname-from-text=,
+=org=, =org-agenda=, =org-capture=, =org-refile=, =org-datetree=, =org-archive=, =org-clock=, =ol=, =org-element-ast=, =org-footnote=, =org-list=, =org-list-to-lisp=, =org-entities=, =org-entity-get=, =org-macro=, =org-macro-expand=, =org-macro-replace-all=, =org-macro-escape-arguments=, =org-macro-extract-arguments=, and CP51932/EUCJP-MS
+=translation-table= symbol properties.  The vendored =lisp.el= and
+=map-ynp.el= are proved by function surface rather than by =featurep=
+because those direct vendor files are useful load targets but do not
+provide matching features.
+The generated Unicode case/mirroring data files are included as
+load-only coverage; the REPL detail string reports
+=unicode-case-data=load-only= for that surface.
+The generated Unicode decimal/digit/numeric data files are also included
+as load-only coverage; the REPL detail string reports
+=unicode-numeric=load-only= for that surface.
+The small loaddefs/autoload registration files are included as
+feature/load coverage; standalone does not currently materialize those
+autoloads as ordinary =fboundp= function cells.
+The extra benchmark/password/interaction helper proof is limited to
+load/function surface except for a small =password-cache-add= /
+=password-read-from-cache= runtime smoke.  =benchmark-call= is proved as
+available but its return-shape semantics remain a follow-up.
+The mail encoder/header and transaction queue helper proof is limited to
+feature/function surface; external =uudecode= execution and live process
+=tq= interactions remain follow-ups.
+The MIME/mail parsing helper proof is limited to feature/function
+surface; an =rfc6068-parse-mailto-url= runtime smoke remains a follow-up.
+The mail utility/date/binhex proof is limited to feature/function
+surface; external BinHex decoding remains a follow-up.
+The SASL/NTLM helper proof is limited to feature/function surface plus
+small MD4 and NTLM request length smokes; live authentication exchanges
+remain follow-ups.
+The image/TRAMP helper proof is limited to feature/function surface;
+external =uncompface= / =icontopbm= execution and live TRAMP behavior
+remain follow-ups.
+The terminal initialization helper proof is limited to feature/function
+surface.  Running the terminal setup functions against a live terminal
+and materializing =vt100-wide-mode= remain follow-ups.
+The current xterm-derived terminal wrapper proof for =konsole.el=,
+=screen.el=, =tmux.el=, =fbterm.el=, and =st.el= is isolated-only: all five
+files finish standalone form-walk and isolated true-load/REPL proof for their
+=term/*= features, =terminal-init-*= functions, and capability Custom
+variables, but adding the batch to the accumulated default true-load path
+segfaults at =start:konsole.el= and the accumulated default persistent REPL
+segfaults before sentinel.
+The legacy/display helper proof is limited to feature/function/variable
+surface.  =ps-mule-*= autoload materialization and the minor-mode entry
+points from =glyphless-mode.el= / =word-wrap-mode.el= remain follow-ups.
+The SQLite/URL/obsolete terminal helper proof is limited to
+feature/function/variable surface.  =url-future= inline predicate
+materialization and live public suffix file parsing remain follow-ups.
+The small language helper proof is limited to load-count plus feature
+surface for the files that call =provide=.  NeLisp-side language-info and
+coding-system predicate checks are still follow-ups.
+The second language helper batch adds stable variable checks for the
+Burmese and Tai Tham composition patterns.  English and Burmese still
+have no matching =provide= feature.
+The language utility helper proof is limited to feature/function/variable
+surface.  =default-korean-keyboard= and =korean-key-bindings= are not
+default proof clauses because they can remain unbound until Korean
+environment setup materializes them.  Input method and display-table side
+effects remain follow-up runtime smokes.
+The language main/helper proof is limited to feature/function surface
+for HZ Chinese helpers, Cyrillic/Hebrew/Japanese language setup, and
+Hebrew shaping.  =hz-set-msb-table= remains outside the default proof
+because it is not materialized as a stable bound variable in standalone
+replay; coding-system and composition side effects remain follow-up
+runtime smokes.
+The additional language proof is limited to feature/function surface for
+Vietnamese VIQR helpers, Chinese language setup, Japanese conversion
+helpers, and miscellaneous Arabic/Egyptian shaping helpers.  Runtime
+coding-system/language-info/composition behavior remains follow-up smoke
+coverage.
+The current Quail input-method table proof is limited to form-walk and
+isolated load-count/function surface.  =arabic.el=, =thai.el=, =viqr.el=,
+=lrt.el=, =py-punct.el=, and =pypunct-b5.el= all load in isolation, and the
+batch proves =quail-lrt-update-translation= from =lrt.el=, but
+=quail-package-alist= registration is not stable in standalone proof.  Adding
+the batch to default true-load currently segfaults at =start:arabic.el=, and
+adding it to default persistent REPL segfaults before sentinel.
+The current small obsolete/calendar helper proof is also isolated-only.
+=sb-image.el=, =messcompat.el=, =cal-iso.el=, and =cal-x.el= all complete
+standalone form-walk and isolated true-load/REPL proof for their provided
+features plus representative speedbar image alias, ISO calendar conversion,
+and calendar frame setup surfaces.  =messcompat.el= is proved by feature
+surface only because its compatibility assignments use top-level =setq=
+targets that are not stable =boundp= clauses in standalone proof.  Adding the
+four-file batch to default true-load segfaults at =start:sb-image.el=, and
+adding it to default persistent REPL segfaults before sentinel.
+The current small SRecode helper proof is isolated-only as well.
+=srecode/filters.el=, =srecode.el=, and =srecode/template.el= complete
+standalone form-walk and isolated true-load/REPL proof for their provided
+features plus =srecode-comment-prefix=, =srecode-version=, and
+=srecode-template-setup-parser=.  =srecode/template.el= crosses the
+Semantic/Wisent parser setup requires in isolation, but live parser
+installation remains a follow-up.  Adding the three-file batch to default
+true-load segfaults at =start:filters.el=, and adding it to default persistent
+REPL segfaults before sentinel.
+The next SRecode language/helper proof is isolated-only too.
+=srecode/java.el=, =srecode/el.el=, =srecode/srt.el=,
+=srecode/expandproto.el=, =srecode/args.el=, =srecode/cpp.el=, and
+=srecode/extract.el= complete standalone form-walk and isolated true-load/REPL
+proof for their feature/function surface.  The batch deliberately avoids
+promoting live Semantic/EDE dictionary population, mode-local tag-to-dictionary
+overrides, minibuffer/template insertion UI, Semantic prototype analysis,
+standard argument value generation, C/C++ namespace/template behavior, region
+extraction, compiled-template stream walking, and accumulated replay adoption.
+Adding the seven-file batch to default true-load segfaults at =start:java.el=,
+and adding it to default persistent REPL segfaults before sentinel.
+The next small CEDET/Semantic helper proof is isolated-only too.
+=semantic/db-debug.el=, =semantic/doc.el=, =semantic/bovine/scm.el=,
+=semantic/bovine/debug.el=, =semantic/tag-write.el=, =semantic/chart.el=,
+=semantic/db-ref.el=, =semantic/tag-file.el=, =semantic/symref/filter.el=, and
+=semantic/symref/grep.el= complete standalone form-walk and isolated
+true-load/REPL proof for their feature/function surface.  The batch
+deliberately avoids promoting live Semantic DB/debug buffers, documentation
+comment sniffing, Scheme lexer/parser setup, Bovine debug UI, tag writer
+output validation, chart rendering, DB reference object lifecycle, tag-file
+navigation, symref filtering/renaming, external grep execution, and
+accumulated replay adoption.  Adding the ten-file batch to default true-load
+segfaults at =start:db-debug.el=, and adding it to default persistent REPL
+segfaults before sentinel.
+The current small EDE project target proof is isolated-only too.
+=ede/proj-aux.el=, =ede/proj-scheme.el=, and =ede/proj-archive.el= complete
+standalone form-walk and isolated true-load/REPL proof for their provided
+features.  The files define EIEIO target/linker classes and project methods,
+but class objects and linker variables are not stable as standalone proof
+clauses yet, so the proof stays at feature/load surface with one generic
+binding check during true-load exploration.  Adding the three-file batch to
+default true-load segfaults at =start:proj-aux.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The current EDE shell/Dired/utility helper proof is isolated-only as well.
+=ede/shell.el=, =ede/dired.el=, and =ede/util.el= complete standalone
+form-walk and isolated true-load/REPL proof for their provided features plus
+representative shell command, Dired add-to-target, update-version, and
+buffer-writable helper bindings.  Live shell/comint startup, Dired
+keymap/minor-mode behavior, project target selection, source/version mutation,
+and accumulated replay adoption remain deferred.  Adding the three-file batch
+to default true-load segfaults at =start:shell.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The next small EDE integration/helper proof is isolated-only too.
+=ede/proj-misc.el=, =ede/srecode.el=, =ede/simple.el=, =ede/system.el=, and
+=ede/source.el= complete standalone form-walk and isolated true-load/REPL proof
+for their feature surface plus representative SRecode setup/insert, simple
+projectfile, and VC project-directory helpers.  =ede/source.el= stays at
+feature proof because its source lookup/match methods are not stable
+=fboundp= clauses in standalone diagnostics.  Live Makefile target behavior,
+SRecode dictionary/table insertion, persistent project file IO, browser/upload
+commands, VC shell behavior, source scheme matching, and accumulated replay
+adoption remain deferred.  Adding the five-file batch to default true-load
+segfaults at =start:proj-misc.el=, and adding it to default persistent REPL
+segfaults before sentinel.
+The current small URL protocol/helper proof is isolated-only too.
+=url-ftp.el=, =url-cid.el=, =url-proxy.el=, =url-nfs.el=, =url-tramp.el=,
+=url-misc.el=, =url-news.el=, =obsolete/url-about.el=, and
+=obsolete/url-ns.el= complete standalone form-walk and isolated true-load/REPL
+proof for their feature/function surface.  The batch deliberately avoids
+promoting live URL parsing, proxy dispatch, file/NFS/TRAMP handlers, Gnus/MIME
+CID lookup, NNTP fetches, terminal handler startup, DNS/proxy preference
+parsing, and registry display behavior.  The current single-file
+=url-proxy.el= recheck reaches 7/7 top-level forms and proves the feature,
+implicit =url-parse= load, =url-find-proxy-for-url=, and =url-proxy= in
+isolated true-load/REPL, but it still avoids promoting live proxy dispatch:
+direct =string-match= positives such as =^PROXY += against
+="PROXY proxy.local:8080"= fail in the persistent proof path.  Adding the
+nine-file batch to default true-load segfaults at =start:url-ftp.el=, while
+adding only =url-proxy.el= to the current default true-load segfaults at
+=start:url-proxy.el=; both persistent REPL additions segfault before sentinel.
+The current single-file =url-nfs.el= recheck reaches 16/16 top-level forms and
+proves =url-nfs=, implicit =url-parse=, =url-nfs-build-filename=,
+=url-nfs-unescape=, and generated wrappers such as =url-nfs-file-exists-p= /
+=url-nfs-directory-files= in isolated true-load/REPL, but it still avoids
+promoting automounter/runtime filename rewriting because the =%= regexp and
+=url-nfs-unescape= proof path fails after =ok:url-nfs.el= / with empty REPL
+detail.  Adding only =url-nfs.el= to the current default true-load segfaults at
+=start:url-nfs.el=, and the persistent REPL addition segfaults before sentinel.
+The current single-file =url-tramp.el= recheck reaches 8/8 top-level forms and
+proves =url-tramp=, implicit =url-parse=, =url-tramp-convert-url-to-tramp=,
+=url-tramp-convert-tramp-to-url=, and =url-tramp-file-handler= in isolated
+true-load/REPL.  A non-TRAMP URL identity smoke through
+=url-tramp-convert-url-to-tramp= also passes, but strict =tramp= /
+=password-cache= feature proof, =url-tramp-convert-tramp-to-url= runtime
+smoke, live file-handler behavior, and password cache mutation remain deferred.
+Adding only =url-tramp.el= to the current default true-load segfaults at
+=start:url-tramp.el=, and the persistent REPL addition segfaults before
+sentinel.
+The current single-file =url-misc.el= recheck reaches 16/16 top-level forms and
+proves =url-misc=, implicit =url-vars= / =url-parse=, =url-man=,
+=url-info=, =url-do-terminal-emulator=, emulator aliases, and =url-data= in
+isolated true-load/REPL.  Runtime handler behavior remains deferred: a minimal
+=data:,hello= smoke fails after =ok:url-misc.el= in true-load and before REPL
+sentinel, so Man/Info/terminal/data execution is not promoted.  Adding only
+=url-misc.el= to the current default true-load segfaults at
+=start:url-misc.el=, and the persistent REPL addition segfaults before
+sentinel.
+The current single-file =url-news.el= recheck reaches 12/12 top-level forms and
+proves the =url-news= feature, public =url-news= / =url-snews= entry points,
+and helpers =url-news-open-host=, =url-news-fetch-message-id=, and
+=url-news-fetch-newsgroup= in isolated true-load/REPL.  A broader dependency
+feature proof for =url-vars= / =url-util= / =url-parse= / =nntp= still fails
+after =ok:url-news.el= in true-load and before the REPL sentinel, so live
+NNTP/Gnus open/fetch/group behavior remains deferred.  Adding only
+=url-news.el= to the current default true-load segfaults at
+=start:url-news.el=, and the persistent REPL addition segfaults before
+sentinel.
+The next small URL parser/dispatcher helper proof is isolated-only too.
+=url-imap.el=, =url-irc.el=, =url-mailto.el=, =url-methods.el=, and
+=url-expand.el= complete standalone form-walk and isolated true-load/REPL
+proof for their function/feature surface.  =url-imap.el= has no =provide=, so
+the proof uses the =url-imap= function.  Live NNIMAP/IMAP fetches, IRC client
+dispatch, mail compose/send flows, scheme registry/proxy loader behavior,
+relative URL expansion behavior, and accumulated replay adoption remain
+deferred.  Adding the five-file batch to default true-load segfaults at
+=start:url-imap.el=, and adding it to default persistent REPL segfaults before
+sentinel.
+The current single-file =url-imap.el= recheck reaches 9/9 top-level forms and
+proves the no-=provide= binding surface =url-imap=, =url-imap-open-host=, and
+=url-imap-default-port= in isolated true-load/REPL.  Broader dependency proof
+for =url-util= / =url-parse= / =nnimap= / =mm-util= feature and helper bindings
+still fails after =ok:url-imap.el= in true-load and before the REPL sentinel.
+Even a non-network wrong-type smoke for =url-imap= is not promoted, so live
+NNIMAP/IMAP open/fetch behavior remains deferred.  Adding only =url-imap.el=
+to the current default true-load segfaults at =start:url-imap.el=, and the
+persistent REPL addition segfaults before sentinel.
+The current single-file =url-irc.el= recheck reaches 15/15 top-level forms and
+proves =url-irc=, =url-vars= / =url-parse= dependency surface, =url-irc= /
+=url-ircs=, the rcirc/ERC/zenirc wrapper bindings, =url-irc-default-port=,
+=url-ircs-default-port=, and =url-irc-function= in isolated true-load/REPL.  A
+stubbed =url-irc-function= smoke also proves that =url-irc= can parse a sample
+IRC URL and invoke the configured dispatcher without opening a live client, but
+exact parsed argument equality is not promoted yet.  Live rcirc/ERC/zenirc
+dispatch remains deferred.  Adding only =url-irc.el= to the current default
+true-load segfaults at =start:url-irc.el=, and the persistent REPL addition
+segfaults before sentinel.
+The current single-file =url-mailto.el= recheck reaches 7/7 top-level forms and
+proves the =url-mailto= feature, =url-mailto=, =url-mail-goto-field=, and the
+=url-mail= alias in isolated true-load/REPL.  The broader dependency/helper
+proof for =url-vars= / =url-parse= / =url-util= and representative URL helpers
+still fails after =ok:url-mailto.el= in true-load and with a failing REPL
+sentinel.  A temp-buffer =url-mail-goto-field= smoke is not promoted yet, so
+buffer header mutation plus live compose/send behavior remain deferred.  Adding
+only =url-mailto.el= to the current default true-load segfaults at
+=start:url-mailto.el=, and the persistent REPL addition segfaults before
+sentinel.
+The current single-file =url-methods.el= recheck reaches 9/9 top-level forms
+and proves =url-methods=, implicit =url-parse=, =url-scheme-get-property=,
+=url-scheme-register-proxy=, =url-scheme-default-loader=, and the scheme
+registry/method variables in isolated true-load/REPL.  A non-live unknown-scheme
+smoke also proves the default property fallback for =default-port=, =parse-url=,
+and =file-exists-p=.  Backend loading, proxy environment registration, and
+unknown-scheme loader error signaling remain deferred.  Adding only
+=url-methods.el= to the current default true-load segfaults at
+=start:url-methods.el=, and the persistent REPL addition segfaults before
+sentinel.
+The current single-file =url-expand.el= recheck reaches 8/8 top-level forms and
+proves =url-expand=, =url-expand-file-name=,
+=url-expander-remove-relative-links=, =url-identity-expander=, and
+=url-default-expander= in isolated true-load/REPL.  A broader dependency proof
+for =url-methods= / =url-util= / =url-parse= still fails after
+=ok:url-expand.el= in true-load and with a failing REPL sentinel.  Non-empty
+relative-link normalization is not promoted yet; only the empty-name branch is
+confirmed in the persistent REPL.  Adding only =url-expand.el= to the current
+default true-load segfaults at =start:url-expand.el=, and the persistent REPL
+addition segfaults before sentinel.
+The current single-file =epa-dired.el= recheck reaches 7/7 top-level forms and
+proves =epa-dired= plus =epa-dired-do-encrypt=,
+=epa-dired-do-decrypt=, =epa-dired-do-sign=, and =epa-dired-do-verify= in
+isolated true-load/REPL.  A broader dependency/helper proof for =epa= and
+=dired= still fails after =ok:epa-dired.el= in true-load and with a failing
+REPL sentinel.  Live Dired marked-file selection, EPA key selection,
+encrypt/decrypt/sign/verify file operations, prompts, and buffer reversion
+remain deferred.  Adding only =epa-dired.el= to the current default true-load
+segfaults at =start:epa-dired.el=, and the persistent REPL addition segfaults
+before sentinel.
+The current single-file =obsolete/info-edit.el= recheck reaches 12/12
+top-level forms and proves =info-edit= plus =Info-edit=, =Info-cease-edit=,
+and =Info-edit-mode= in isolated true-load/REPL.  A broader variable/property
+proof for =Info-edit-mode-hook=, =Info-edit-mode-map=, mode-class, and disabled
+metadata still fails after =ok:info-edit.el= in true-load and with a failing
+REPL sentinel.  Live Info buffer edit/cease-edit behavior, save prompts,
+derived-mode state, tag-table messaging, and =ibuffer= after-load mutation
+remain deferred.  Adding only =info-edit.el= to the current default true-load
+segfaults at =start:info-edit.el=, and the persistent REPL addition segfaults
+before sentinel.
+The current single-file =editorconfig-conf-mode.el= recheck reaches 7/7
+top-level forms and proves =editorconfig-conf-mode= plus the
+=editorconfig-conf-mode= command in isolated true-load/REPL.  A broader
+syntax/abbrev variable proof still fails after =ok:editorconfig-conf-mode.el=
+in true-load and with a failing REPL sentinel; the =auto-mode-alist= proof is
+not promoted either.  Live mode activation, syntax table semantics,
+font-lock/conf-mode initialization, indentation setup, and auto-mode selection
+remain deferred.  Adding only =editorconfig-conf-mode.el= to the current
+default true-load segfaults at =start:editorconfig-conf-mode.el=, and the
+persistent REPL addition segfaults before sentinel.
+The current single-file =pcmpl-git.el= recheck reaches 7/7 top-level forms and
+proves =pcmpl-git=, =pcomplete/git=, =pcmpl-git--expand-flags=,
+=pcmpl-git--tracked-file-predicate=, and =pcmpl-git--remote-refs= in isolated
+true-load/REPL.  A concrete =pcmpl-git--expand-flags= list smoke is not
+promoted yet: true-load hits the proof-string quoting path, and the persistent
+REPL returns a failing sentinel.  Live Git subprocess completion, tracked-file
+predicate behavior, remote ref discovery, pcomplete state walking, and
+accumulated replay adoption remain deferred.  Adding only =pcmpl-git.el= to
+the current default true-load segfaults at =start:pcmpl-git.el=, and the
+persistent REPL addition segfaults before sentinel.
+The current single-file =pcmpl-linux.el= recheck reaches 15/15 top-level forms
+and proves =pcmpl-linux=, the public =pcomplete/kill=, =pcomplete/umount=,
+=pcomplete/mount=, =pcomplete/systemctl=, =pcomplete/journalctl= commands, the
+internal Linux helper functions, and the two file/path variables in isolated
+true-load/REPL.  Live completion behavior remains deferred because the
+functions probe =/proc=, =/etc/mtab=, =/etc/fstab=, =uname=, =systemctl=,
+=journalctl=, and pcomplete state.  Adding only =pcmpl-linux.el= to the
+current default true-load segfaults at =start:pcmpl-linux.el=, and the
+persistent REPL addition segfaults before sentinel.
+The current single-file =pcmpl-cvs.el= recheck reaches 9/9 top-level forms and
+proves =pcmpl-cvs=, =pcomplete/cvs=, =pcmpl-cvs-commands=,
+=pcmpl-cvs-modules=, =pcmpl-cvs-tags=, and =pcmpl-cvs-entries= in isolated
+true-load/REPL.  Broader dependency/customization proof is not promoted:
+=featurep= for =pcomplete= and =boundp= for =pcmpl-cvs-binary= both fail after
+=ok:pcmpl-cvs.el=.  Live CVS command/module/tag completion, =CVS/Entries=
+file parsing, =cvs status -v= parsing, =cvs -n update= probing, and pcomplete
+state walking remain deferred.  Adding only =pcmpl-cvs.el= to the current
+default true-load segfaults at =start:pcmpl-cvs.el=, and the persistent REPL
+addition segfaults before sentinel.
+The current small Semantic symref adapter proof is isolated-only too.
+=semantic/symref/global.el=, =semantic/symref/idutils.el=, and
+=semantic/symref/cscope.el= complete standalone form-walk and isolated
+true-load/REPL proof for their feature surface.  The batch deliberately avoids
+promoting live GNU Global / ID Utils / CScope subprocess search, EIEIO symref
+tool method behavior, output parsing variants, EDE project-root behavior, and
+accumulated replay adoption.  Adding the three-file batch to default true-load
+segfaults at =start:global.el=, and adding it to default persistent REPL
+segfaults before sentinel.
+The next small Quail input-method table proof is isolated-only too.
+=cham.el=, =Punct.el=, =programmer-dvorak.el=, =QJ-b5.el=, =QJ.el=,
+=tamil-dvorak.el=, and =philippine.el= complete standalone form-walk and
+isolated true-load/REPL load-count proof; only =philippine.el= provides a
+feature marker in this batch.  The batch deliberately avoids promoting
+=quail-package-alist= registration proof, live input-method activation,
+rule lookup, and accumulated replay adoption.  Adding the seven-file batch to
+default true-load segfaults at =start:cham.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The next additional Quail input-method table proof is isolated-only too.
+=Punct-b5.el=, =georgian.el=, =croatian.el=, =welsh.el=, =symbol-ksc.el=,
+=lao.el=, and =uni-input.el= complete standalone form-walk and isolated
+true-load/REPL proof for load-count plus the available function/feature
+surface.  The batch deliberately avoids promoting =quail-package-alist=
+registration proof, live input-method activation/deactivation, rule lookup,
+Lao translation update behavior, Unicode character insertion/help behavior,
+and accumulated replay adoption.  Adding the seven-file batch to default
+true-load segfaults at =start:Punct-b5.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The next small ERC module proof is isolated-only too.
+=erc-replace.el=, =erc-page.el=, =erc-identd.el=,
+=erc-desktop-notifications.el=, =erc-spelling.el=, =erc-menu.el=,
+=erc-xdcc.el=, and =erc-truncate.el= complete standalone form-walk and
+isolated true-load/REPL proof for their feature/function surface.  The batch
+deliberately avoids promoting live ERC module toggling, IRC/CTCP dispatch,
+network identd process behavior, DBus desktop notifications, Flyspell buffer
+integration, menu-bar mutation, XDCC/DCC send behavior, buffer truncation side
+effects, and accumulated replay adoption.  Adding the eight-file batch to
+default true-load segfaults at =start:erc-replace.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The next small ERC integration module proof is isolated-only too.
+=erc-ring.el=, =erc-sound.el=, =erc-imenu.el=, =erc-ezbounce.el=,
+=erc-capab.el=, and =erc-ibuffer.el= complete standalone form-walk and isolated
+true-load/REPL proof for their feature/function surface.  The batch
+deliberately avoids promoting live ERC input-ring navigation, CTCP SOUND
+playback, Imenu buffer indexing, EZBounce NOTICE/session dispatch, CAPAB
+identify server hooks, Ibuffer filter/column rendering, keymap mutation, and
+accumulated replay adoption.  Adding the six-file batch to default true-load
+segfaults at =start:erc-ring.el=, and adding it to default persistent REPL
+segfaults before sentinel.
+The current small EditorConfig core parser proof is isolated-only too.
+=editorconfig-fnmatch.el=, =editorconfig-core-handle.el=, and
+=editorconfig-core.el= complete standalone form-walk and isolated true-load/REPL
+proof for their feature/function surface.  The current single-file
+=editorconfig-fnmatch.el= recheck reaches 11/11 top-level forms and proves the
+feature, =editorconfig-fnmatch-p=, =editorconfig-fnmatch-translate=, and a
+string translation result in isolated true-load/REPL.  It deliberately avoids
+promoting positive live glob matching: =editorconfig-fnmatch-translate= returns
+a regexp string for =*.el=, but the same persistent proof path fails direct
+=string-match= positives such as ="el"= against ="foo.el"=.  The batch also
+avoids promoting live =.editorconfig= file parsing, directory traversal,
+property merge semantics, fnmatch cache/range/brace behavior, the larger
+=editorconfig.el= runtime, and accumulated replay adoption.  Adding only
+=editorconfig-fnmatch.el= to default true-load still segfaults at
+=start:editorconfig-fnmatch.el=, and adding it to default persistent REPL
+segfaults before sentinel.
+The current single-file =editorconfig-core-handle.el= recheck also stays
+isolated-only.  It reaches 13/13 top-level forms and proves the
+=editorconfig-core-handle= feature, =editorconfig-core-handle--cache-hash=,
+the public handle/section constructors and accessors, parser entry points, and
+a symbol-only =cl-defstruct= constructor/accessor smoke in isolated
+true-load/REPL.  It deliberately avoids promoting the dependency feature
+surface for =editorconfig-fnmatch=, because =(featurep 'editorconfig-fnmatch)=
+still fails after =ok:editorconfig-core-handle.el=.  Live =.editorconfig=
+file parsing, mtime/cache behavior, root-string handling, property merge
+semantics, fnmatch integration, and get-properties behavior remain deferred.
+Adding only =editorconfig-core-handle.el= to default true-load segfaults at
+=start:editorconfig-core-handle.el=, and adding it to default persistent REPL
+segfaults before sentinel.
+The current single-file =editorconfig-core.el= recheck completes the same
+isolated-only slice for the top-level property lookup layer.  It reaches 8/8
+top-level forms and proves the =editorconfig-core= feature plus
+=editorconfig-core--get-handles=,
+=editorconfig-core-get-nearest-editorconfig=,
+=editorconfig-core--hash-merge=, and
+=editorconfig-core-get-properties-hash= in isolated true-load/REPL.  It does
+not yet promote the dependency handle feature/function surface: direct
+=editorconfig-core-handle= feature/function proof fails after
+=ok:editorconfig-core.el=.  A concrete hash-table merge smoke also fails after
+the file loads / returns a failing REPL sentinel, so destructive hash merging,
+directory traversal, live =.editorconfig= discovery, handle collection,
+property merge semantics, boolean value downcasing, buffer-file-name fallback,
+and real file IO remain deferred.  Adding only =editorconfig-core.el= to
+default true-load segfaults at =start:editorconfig-core.el=, and adding it to
+default persistent REPL segfaults before sentinel.
+The next small pcomplete helper proof is isolated-only too.
+=pcmpl-linux.el= and =pcmpl-cvs.el= complete standalone form-walk and isolated
+true-load/REPL proof for their feature/function surface.  The current
+single-file rechecks keep both files isolated-only; the earlier batch
+deliberately avoids promoting live Linux command completion, =systemctl= /
+=journalctl= subprocess probing, mount table/filesystem scans, CVS
+command/module/tag/Entries parsing, and accumulated replay adoption.  Adding
+the two-file batch to default true-load segfaults at =start:pcmpl-linux.el=,
+and adding it to default persistent REPL segfaults before sentinel.
+The next small shell/electric history helper proof is isolated-only too.
+=kermit.el= and =echistory.el= complete standalone form-walk and isolated
+true-load/REPL proof for their feature/function surface.  The batch
+deliberately avoids promoting live shell-mode keymap behavior, shell process
+filter mutation, Kermit escape/input behavior, electric command-history UI
+flow, redo/eval behavior, and accumulated replay adoption.  Adding the
+two-file batch to default true-load segfaults at =start:kermit.el=, and adding
+it to default persistent REPL segfaults before sentinel.
+The current single-file =kermit.el= recheck keeps that shell helper isolated.
+It reaches 16/16 top-level forms and proves the =kermit= feature,
+=kermit-esc-char= defcustom binding, and the =kermit-esc=,
+=kermit-send-char=, =kermit-send-input-cr=, =kermit-default-cr=,
+=kermit-default-nl=, =kermit-clean-filter=, =kermit-clean-on=, and
+=kermit-clean-off= functions in isolated true-load/REPL.  Live shell-mode
+keymap mutation, =process-send-string= / =read-char= escape flow,
+=comint-send-input= / =comint-send-string= behavior, process filter mutation,
+and buffer-editing filter effects remain deferred.  Adding only =kermit.el= to
+default true-load segfaults at =start:kermit.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The current single-file =echistory.el= recheck also keeps the electric command
+history helper isolated.  It reaches 11/11 top-level forms and proves the
+=echistory= feature, =Electric-command-history-redo-expression=,
+=electric-command-history=, =Electric-history-undefined=,
+=Electric-history-quit=, =electric-history-map=, and
+=electric-command-history-hook= in isolated true-load/REPL.  Broader
+=electric= / =chistory= dependency feature proof and concrete keymap lookup
+smokes are not promoted because they fail after =ok:echistory.el= / with a
+failing REPL sentinel.  Live =Electric-command-loop= selection,
+=list-command-history= buffer generation, command-history redo/eval behavior,
+window restoration, helper key dispatch, and accumulated adoption remain
+deferred.  Adding only =echistory.el= to default true-load segfaults at
+=start:echistory.el=, and adding it to default persistent REPL segfaults
+before sentinel.
+The current default-adopted =edt-pc.el= recheck covers the small EDT PC keypad
+translation table.  It has no direct require/provide surface and consists of a
+single =*EDT-keys*= defconst.  Standalone form-walk reaches 1/1 form,
+isolated true-load/REPL prove that =*EDT-keys*= is bound, cons-like, and has
+48 entries, and native Emacs confirms representative mappings such as
+=("KP0" . [kp-0])= and =("PF1" . [f1])=.  The file is already in the default
+true-load and persistent REPL lists; strengthened default proofs still pass at
+319/319 and 253/253 with the same =*EDT-keys*= length check.  Live EDT
+emulation/key binding semantics remain outside this table-only proof.
+The current =w32-vars.el= recheck covers the small MS-Windows customization
+variable surface.  Standalone form-walk reaches 7/7 forms, and native Emacs
+loads the =w32-vars= feature with =w32-use-w32-font-dialog= defaulting to =t=,
+=w32-fixed-font-alist= rooted at ="Font menu"=, and the obsolete
+=w32-enable-synthesized-fonts= marker present.  Isolated true-load/REPL prove
+the =w32-vars= feature plus the two stable always-bound customization
+variables.  The file is already in the default true-load and persistent REPL
+lists; default true-load remains a 319/319 count-only pass, and a strengthened
+default persistent REPL proof passes at 253/253 for the same variables.
+Strengthened accumulated true-load proofs that touch those variables currently
+segfault after =ok:font-core.el= during proof evaluation, so detailed
+accumulated true-load variable proof and live Windows customization behavior
+remain deferred.
+The current =novice.el= recheck covers the disabled-command helper surface.
+It has no direct require and reaches 6/6 top-level forms.  Native Emacs loads
+the =novice= feature and confirms the public commands
+=disabled-command-function=, =enable-command=, and =disable-command= are
+defined, with representative built-in disabled-command properties present in
+the native runtime.  Isolated true-load/REPL prove =novice=, the
+=disabled-command-function= variable/function, =en/disable-command=,
+=enable-command=, and =disable-command=.  The file is already in the default
+true-load and persistent REPL lists; default true-load remains a 319/319
+count-only pass, and a strengthened default persistent REPL proof passes at
+253/253 for the same feature/function surface.  Strengthened accumulated
+true-load proofs that touch even =(featurep 'novice)= currently segfault after
+=ok:font-core.el= during proof evaluation, so detailed accumulated true-load
+proof, prompt dispatch, =call-interactively= behavior, disabled-property
+mutation, and init-file editing remain deferred.
+The current =page.el= recheck covers the page command definition surface.  It
+has no direct require and reaches 10/10 top-level forms.  Native Emacs loads
+the =page= feature, confirms =forward-page=, =backward-page=, =mark-page=,
+=narrow-to-page=, =page--count-lines-page=, =count-lines-page=,
+=page--what-page=, and =what-page= are defined, keeps
+=(get 'narrow-to-page 'disabled)= as =t=, and moves across a simple form-feed
+page delimiter in a temporary buffer.  Isolated true-load/REPL prove the same
+feature/function surface plus the disabled property.  The file is already in
+the default true-load and persistent REPL lists; default true-load remains a
+319/319 count-only pass, and a strengthened default persistent REPL proof
+passes at 253/253 for the same surface.  Strengthened accumulated true-load
+proofs that touch even =(featurep 'page)= currently segfault after
+=ok:font-core.el= during proof evaluation, so detailed accumulated true-load
+proof, full page navigation semantics, mark/narrow side effects, line-count
+messages, and restriction behavior remain deferred.
+The current =cl-compat.el= recheck covers the obsolete Common Lisp
+compatibility definition surface.  It directly requires =cl-lib= and reaches
+25/25 top-level forms.  Native Emacs loads =cl-compat= and =cl-lib=, reports
+the keyword/multiple-value/keyword-argument/list-mutation helpers as defined,
+and confirms representative =keyword-of=, =setnth=, =setelt=, and =safe-idiv=
+behavior.  Isolated true-load/REPL prove =cl-compat=, =cl-lib=,
+=*mvalues-values*=, the full stable helper binding surface, and a small
+=keyword-of= / =setnth= smoke.  The same isolated proof does not promote
+=safe-idiv= / old multiple-value runtime behavior because even the standalone
+=(safe-idiv 7 3)= return check currently evaluates false after
+=ok:cl-compat.el=.  The file is already in the default true-load and
+persistent REPL lists; default true-load remains a 319/319 count-only pass, and
+a reduced strengthened default persistent REPL proof passes at 253/253 for
+=cl-compat= plus =keyword-of= and =setnth=.  Accumulated true-load proofs that
+touch even =(featurep 'cl-compat)= segfault after =ok:font-core.el= during
+proof evaluation, and broader accumulated REPL function-surface or runtime
+smokes also segfault, so detailed accumulated proof, old multiple-value
+semantics, keyword argument parsing behavior, and list/sequence mutation
+runtime breadth remain deferred.
+The current =elide-head.el= recheck covers the header-elision helper and
+minor-mode source surface.  It has no direct require and reaches 10/10
+top-level forms.  Native Emacs loads the =elide-head= feature, confirms
+=elide-head-headers-to-hide=, =elide-head-mode=, =elide-head=, and
+=elide-head-show= are present, and verifies a representative temporary-buffer
+overlay smoke: enabling =elide-head-mode= creates an invisible evaporating
+overlay with after-string ="..."=, and disabling it removes the overlay.  In
+NeLisp, isolated true-load/REPL prove =elide-head=,
+=elide-head-headers-to-hide=, =elide-head--delete-overlay=,
+=elide-head--hide=, =elide-head--show=, =elide-head=, and
+=elide-head-show=.  The same single-file checks prove that
+=elide-head-mode= is not currently generated by the standalone
+=define-minor-mode= path, so minor-mode command execution and overlay behavior
+are not promoted.  The file is already in the default true-load and persistent
+REPL lists; default true-load remains a 319/319 count-only pass, a detailed
+accumulated true-load proof that checks even =(featurep 'elide-head)= segfaults
+after =ok:font-core.el= during proof evaluation, and a strengthened default
+persistent REPL proof passes at 253/253 for the same stable helper/wrapper
+surface while preserving the current =elide-head-mode= gap.  Live
+header-elision overlays, =find-file-hook= use, change-major-mode cleanup, and
+minor-mode generated command behavior remain deferred.
+The current =iimage.el= recheck covers the inline-image helper and minor-mode
+source surface.  It has a compile-time =image-file= require, no runtime
+require, and reaches 12/12 top-level forms.  Native Emacs loads =iimage= and
+=image-file=, and confirms the image search/regex variables, keymap, helper
+functions, and generated =iimage-mode= command.  In NeLisp, isolated
+true-load/REPL prove =iimage=, =iimage-mode-image-search-path=,
+=iimage-mode-map=, =iimage-recenter=, =turn-off-iimage-mode=,
+=iimage-modification-hook=, and =iimage-mode-buffer=.  The same single-file
+checks preserve the current gaps for =iimage-mode-image-filename-regex=,
+=iimage-mode-image-regex-alist=, and generated =iimage-mode=.  The file is
+already in the default true-load and persistent REPL lists; default true-load
+remains a 319/319 count-only pass, an accumulated true-load proof that checks
+even =(featurep 'iimage)= segfaults after =ok:font-core.el= during proof
+evaluation, and strengthened default persistent REPL proofs pass at 253/253
+for the stable helper/keymap/search-path surface while preserving the same
+unbound regex/minor-mode boundary.  Live image-file lookup, =create-image=
+display properties, text-property mutation/removal, =C-l= key dispatch,
+recentering, and generated minor-mode command behavior remain deferred.
+The current =emacs-authors-mode.el= recheck covers the AUTHORS viewer
+derived-mode surface.  It requires =subr-x= and reaches 22/22 top-level forms.
+Native Emacs loads =emacs-authors-mode= / =subr-x= and confirms the mode map,
+generated =emacs-authors-mode= command, next/previous author commands, and a
+small forward-navigation smoke that reaches Bob then Carol in a synthetic
+AUTHORS buffer.  In NeLisp, isolated true-load/REPL prove
+=emacs-authors-mode=, =subr-x=, =emacs-authors--author-re=,
+=emacs-authors-mode-font-lock-keywords=,
+=emacs-authors-imenu-generic-expression=, =emacs-authors-mode-map=, generated
+=emacs-authors-mode=, =emacs-authors-next-author=,
+=emacs-authors-prev-author=, and obsolete function aliases
+=etc-authors-next-author=, =etc-authors-prev-author=, and =etc-authors-mode=.
+The same single-file checks prove =etc-authors-mode-map= is not currently
+bound by the obsolete variable alias path.  The file is already in the default
+true-load and persistent REPL lists; default true-load remains a 319/319
+count-only pass, an accumulated true-load proof that checks even
+=(featurep 'emacs-authors-mode)= segfaults after =ok:font-core.el= during
+proof evaluation, and reduced default persistent REPL proofs pass at 253/253
+for the mode/navigation surface, core regex/font-lock/imenu/keymap variables,
+obsolete function aliases, and current unbound =etc-authors-mode-map=
+boundary.  Broader default REPL binding proof segfaults before sentinel, and
+standalone buffer-navigation smoke still evaluates false after
+=ok:emacs-authors-mode.el=, so live AUTHORS buffer navigation, font-lock
+application, imenu/outline setup, special-mode startup,
+=emacs-etc--hide-local-variables= side effects, key dispatch, and face
+rendering remain deferred.
+The current =textsec-check.el= recheck covers the suspicious-text front door
+that lazily requires =textsec= only when checks are enabled.  It reaches 5/5
+top-level forms.  Anvil =file-outline= and =defs-index= still return
+=Transport closed= for this file, so the outline came from local reads and
+standalone diagnostics.  Native Emacs loads =textsec-check= with
+=textsec-check=, =textsec-suspicious=, and =textsec-suspicious-p= visible;
+with =textsec-check=nil=, =textsec-suspicious-p= returns nil and does not load
+=textsec=, while the enabled native path can require =textsec= and return nil
+for a benign URL.  In NeLisp, isolated true-load/REPL prove =textsec-check=,
+=textsec-check=, =textsec-suspicious-p=, the initially absent =textsec=
+feature, and the =textsec-check=nil= no-require/nil-return path.  The file is
+already in the default true-load and persistent REPL lists; default true-load
+remains a 319/319 count-only pass, but accumulated true-load proof that checks
+only =(featurep 'textsec-check)= segfaults after =ok:font-core.el=.  Reduced
+default persistent REPL proofs pass at 253/253 for the =textsec-check= feature,
+variable/function bindings, and the =textsec-check=nil= nil-return path.  An
+accumulated REPL proof that asks about =(featurep 'textsec)= segfaults before
+sentinel, and single-file enabled-check proofs are not promoted yet, so the
+=textsec= implementation, suspicious URL/domain/email classification, face
+rendering, and error behavior for invalid check types remain deferred.
+The current =debug-early.el= recheck covers the early debug/backtrace alias
+surface.  The file has no direct =require= and no =provide=; it consists of
+five top-level =defalias= forms for =debug-early-backtrace=, =debug--early=,
+=debug-early=, =debug-early--handler=, and =debug-early--muted=.  Anvil
+=file-outline= still returns =Transport closed= for this file, so the outline
+came from local reads and standalone diagnostics.  Standalone form-walk reaches
+5/5 top-level forms.  Native Emacs loads the file with all five aliases visible
+and confirms the cheap handler path returns nil when
+=backtrace-on-error-noninteractive=nil=.  In NeLisp, isolated true-load and
+persistent REPL over only =debug-early.el= prove count 1, all five alias
+bindings, and the same no-backtrace handler nil-return path.  The file is
+already in the default true-load and persistent REPL lists, and strengthened
+accumulated proofs pass too: true-load proves the alias surface and handler nil
+path at 319/319, while persistent REPL proves the same surface and handler nil
+path at 253/253.  Actual early backtrace printing, =mapbacktrace= traversal,
+=cl-print= fallback behavior, =debug-early--muted= redisplay trace buffer
+mutation, and delayed warning side effects remain later runtime smokes.
+The current =calc-macs.el= recheck covers the shallow Calc macro and
+predicate helper surface.  The file has no direct runtime =require=, reaches
+36/36 standalone form-walk forms, and native Emacs loads =calc-macs= with the
+wrapper/precision macros and representative =Math-*= predicate helpers
+visible.  Native Emacs also confirms simple integer sign, natnum, rational,
+vector, and complex-number predicate smokes.  In NeLisp, isolated true-load
+and persistent REPL over only =calc-macs.el= prove count 1, =calc-macs=,
+=calc-wrapper= / =calc-slow-wrapper=, the precision/working/trail macros,
+selected =Math-*= bindings, and simple =Math-zerop= / integer sign / natnum /
+rational / vector / number predicate behavior.  The file is already in the
+default true-load and persistent REPL lists; default true-load remains a
+319/319 count-only pass.  Accumulated true-load proofs that touch =calc-macs=
+still segfault after =ok:font-core.el=, while reduced accumulated REPL proofs
+cover only the =calc-macs= feature and =calc-wrapper= /
+=math-with-extra-prec= bindings at 253/253; a broader accumulated REPL
+binding-only proof still fails before the expected sentinel.  Calc body macro
+expansion/execution, =calc-do=, =math-normalize=, =math-compare=, trail
+display behavior, and broader accumulated predicate smokes remain deferred.
+The current =kinsoku.el= recheck covers the small Japanese line-break helper
+surface.  The file has no direct =require=, reaches 7/7 standalone form-walk
+forms, and native Emacs loads =kinsoku= with =kinsoku-limit= set to 4 plus
+=kinsoku=, =kinsoku-longer=, and =kinsoku-shorter= visible.  Native Emacs also
+confirms representative category entries for ASCII =!= as no-BOL and the
+ASCII left parenthesis as no-EOL, and the cheap =enable-kinsoku=nil= call path
+returns nil.  In NeLisp,
+isolated true-load and persistent REPL over only =kinsoku.el= prove count 1,
+=kinsoku=, =kinsoku-limit=, the three function bindings, and the disabled
+nil-return call path.  The file is already in the default true-load and
+persistent REPL lists; default true-load remains a 319/319 count-only pass.
+Accumulated true-load detail that touches =kinsoku= still segfaults after
+=ok:font-core.el=, while accumulated persistent REPL proves the same
+feature/variable/function surface and disabled call path at 253/253.
+Standalone category-entry probes for =char-category-set= are not promoted yet,
+so category table mutation semantics, live =kinsoku-longer= /
+=kinsoku-shorter= movement, fill-column interaction, and real line-break
+adjustment remain deferred.
+The current =latexenc.el= recheck covers the LaTeX inputenc/coding-system
+helper surface.  The file has no direct =require= and reaches 8/8 standalone
+form-walk forms.  Native Emacs loads =latexenc= with
+=latex-inputenc-coding-alist= populated, the three helper functions visible,
+simple =utf8= / =latin1= bidirectional mapping smokes passing, the
+non-insert =latexenc-find-file-coding-system= path returning =undecided=, and
+a small buffer parse of =\\usepackage[utf8]{inputenc}= returning =utf-8=.  In
+NeLisp, isolated true-load and persistent REPL over only =latexenc.el= prove
+count 1, =latexenc=, the bound =latex-inputenc-coding-alist= variable, all
+three function bindings, the current standalone boundary where the alist value
+is nil, and the non-insert =latexenc-find-file-coding-system= =undecided=
+path.  The file is already in the default true-load and persistent REPL lists;
+default true-load remains a 319/319 count-only pass.  Accumulated true-load
+detail that touches =latexenc= still segfaults after =ok:font-core.el=, while
+accumulated persistent REPL proves the same feature/binding/nil-alist boundary
+and non-insert =undecided= path at 253/253.  Populated defcustom value
+materialization, =latexenc-inputenc-to-coding-system= lookup behavior,
+=latexenc-coding-system-to-inputenc= coding-system-base behavior, live
+inputenc buffer parsing in NeLisp, master-file discovery, and
+=find-file-noselect= based coding inference remain deferred.
+The current =reposition.el= recheck covers the small window-reposition helper
+surface.  The file has no direct =require= and reaches 4/4 standalone
+form-walk forms.  Native Emacs loads =reposition= with =reposition-window=,
+=repos-count-screen-lines=, and =repos-count-screen-lines-signed= visible,
+and a small temporary-buffer line-count smoke returns the expected positive
+and signed counts.  In NeLisp, isolated true-load and persistent REPL over
+only =reposition.el= prove count 1, =reposition=, and all three function
+bindings.  The file is already in the default true-load and persistent REPL
+lists; default true-load remains a 319/319 count-only pass.  Accumulated
+true-load detail that touches =reposition= still segfaults after
+=ok:font-core.el=, while accumulated persistent REPL proves the same
+feature/function surface at 253/253.  The standalone temporary-buffer
+=repos-count-screen-lines= execution smoke is not promoted yet: it fails after
+=ok:reposition.el= in isolated true-load and before the REPL ok sentinel in
+isolated persistent REPL.  Live =reposition-window= behavior, real window
+scrolling/recentering, =vertical-motion= screen-line semantics, comment/defun
+visibility toggling, and interactive error reporting remain deferred.
+The current =ansi-osc.el= recheck covers the small OSC escape-sequence helper
+surface.  The file has no direct =require= and reaches 20/20 standalone
+form-walk forms.  Native Emacs loads =ansi-osc= with the control-sequence
+regexp, handler/custom variables, filter/apply functions, OSC 2/7/8 handlers,
+and compilation filter visible; native buffer smokes also show OSC 2 filtering
+removes the control sequence and OSC 2 apply removes it while setting
+=ansi-osc-window-title= to =title=.  In NeLisp, isolated true-load and
+persistent REPL over only =ansi-osc.el= prove count 1, =ansi-osc=, the stable
+variable/function surface, and direct =ansi-osc-window-title-handler=
+assignment.  The file is already in the default true-load and persistent REPL
+lists; default true-load remains a 319/319 count-only pass.  Accumulated
+true-load detail that touches =ansi-osc= still segfaults after
+=ok:font-core.el=, while accumulated persistent REPL proves the same
+feature/variable/function surface plus direct window-title handler smoke at
+253/253.  Standalone buffer-mutation smokes for =ansi-osc-filter-region= and
+=ansi-osc-apply-on-region= are not promoted yet: the filter proof fails after
+=ok:ansi-osc.el= with exit 13 in isolated true-load and false in isolated
+persistent REPL.  Directory tracking, URL parsing/unhexing, OSC 8 text-button
+creation, compilation-filter hook integration, partial-sequence marker state,
+and real process-output collection remain deferred.
+The current =morse.el= recheck covers the small Morse/NATO region conversion
+helper surface.  The file has no direct =require= and reaches 7/7 standalone
+form-walk forms.  Native Emacs loads =morse= with =morse-code=,
+=nato-alphabet=, =morse-region=, =unmorse-region=, =nato-region=, and
+=denato-region= visible; native buffer smokes also show =sos 2= converting to
+=.../---/... ..---= and back, and =az 9= converting to =Alfa-Zulu Niner= and
+back.  In NeLisp, isolated true-load and persistent REPL over only
+=morse.el= prove count 1, =morse=, the two mapping tables, and all four
+region commands.  =morse.el= remains in the default true-load list only:
+default true-load remains a 319/319 count-only pass, while adding it as the
+254th accumulated persistent-REPL file still segfaults before sentinel.  The
+standalone region-conversion buffer smokes are not promoted yet: the combined
+isolated proof fails after =ok:morse.el= with exit 13 in true-load and false
+in isolated persistent REPL.  A smaller =with-temp-buffer= body proof and
+string-construction proof pass, but the =with-temp-buffer= / =insert= /
+=buffer-string= baseline is already false, so the region mutation result is
+kept outside the stable NeLisp proof surface.  Live interactive region
+conversion, marker/end adjustment behavior, case-fold details,
+punctuation/paren ambiguity, and non-ASCII Morse entries remain deferred.
+The current =mh-buffers.el= recheck covers the small MH-E buffer constants
+and log helper surface.  The file has no direct =require= and reaches 15/15
+standalone form-walk forms.  Native Emacs loads =mh-buffers= with the
+ephemeral and user-visible buffer constants, =mh-log-buffer-lines=, and
+=mh-truncate-log-buffer= visible; a native truncation smoke with a 3-line
+limit reduces a five-line log to =c=, =d=, and =e= plus the form-feed
+separator and returns size 9.  In NeLisp, isolated true-load and persistent
+REPL over only =mh-buffers.el= prove count 1, =mh-buffers=, representative
+buffer constants as string values, =mh-log-buffer-lines= value 100, and
+=mh-truncate-log-buffer= binding.  =mh-buffers.el= remains in the default
+true-load list only: default true-load remains a 319/319 count-only pass,
+while adding it as the 254th accumulated persistent-REPL file still segfaults
+before sentinel.  Exact standalone buffer-name string comparisons are not
+promoted yet: a string-code exact proof fails after =ok:mh-buffers.el= in
+true-load and false in isolated persistent REPL.  Direct
+=mh-truncate-log-buffer= execution is also not promoted because it fails after
+=ok:mh-buffers.el= in true-load and false in isolated persistent REPL.  Live
+MH-E log-buffer creation/truncation, form-feed insertion behavior, exact
+buffer-name values, and integration with MH-E cleanup remain deferred.
+The current =ede/make.el= recheck covers the small EDE GNU Make
+command/version helper surface.  The file has no direct =require= and reaches
+5/5 standalone form-walk forms.  Native Emacs loads =ede/make= with
+=ede--find-executable=, =ede-make-min-version= value =3.0=,
+=ede-make-command= selecting =gmake= on this host, and
+=ede-make-check-version= returning true with =noerror=.  In NeLisp, isolated
+true-load and persistent REPL over only =ede/make.el= prove count 1,
+=ede/make=, and =ede-make-check-version=.  Separate isolated probes also prove
+=ede--find-executable= and string-valued =ede-make-min-version= in both
+true-load and REPL, but =ede-make-command= is not promoted yet because its
+=defcustom= value proof fails after =ok:make.el= in true-load and false in
+isolated persistent REPL.  =ede/make.el= remains in the default true-load list
+only: default true-load remains a 319/319 count-only pass, while adding it as
+the 254th accumulated persistent-REPL file still segfaults before sentinel.
+Live GNU Make process execution, exact command selection, and customization
+metadata behavior remain deferred.
+The current =cedet-files.el= recheck covers the small CEDET filename
+conversion and recursive file-list helper surface.  The file has no direct
+=require= and reaches 4/4 standalone form-walk forms.  Native Emacs loads
+=cedet-files= with =cedet-directory-name-to-file-name=,
+=cedet-file-name-to-directory-name=, and =cedet-files-list-recursively= visible;
+a native conversion smoke maps =/tmp/a!b/c= to =!tmp!a!!b!c= and back, and a
+temporary-directory listing smoke returns the expected =a.el= and =c.el=
+matches while ignoring =b.txt=.  In NeLisp, isolated true-load and persistent
+REPL over only =cedet-files.el= prove count 1, =cedet-files=, and all three
+function bindings.  =cedet-files.el= remains in the default true-load list
+only: default true-load remains a 319/319 count-only pass, while adding it as
+the 254th accumulated persistent-REPL file still segfaults before sentinel.
+Standalone runtime conversion/listing is not promoted yet: direct conversion
+proofs do not reach the proof sentinel, and a smaller =string= codepoint
+construction baseline also fails after =ok:cedet-files.el= in true-load and
+false in isolated persistent REPL.  Live filesystem recursion, truename
+normalization, Windows/DOS path cases, exact encoded-string comparisons, and
+standalone string-construction behavior remain deferred.
+The current =epa-hook.el= recheck covers the small EasyPG transparent
+file-encryption hook surface.  The file has no direct =require= and reaches
+17/17 standalone form-walk forms.  Native Emacs loads =epa-hook= with
+=epa-file-name-regexp= as a string, =epa-file-inhibit-auto-save=t=,
+=epa-file-handler=, =epa-file-name-regexp-update=, =epa-file-find-file-hook=,
+=epa-file-name-p=, and =auto-encryption-mode= visible; a native smoke updates
+the handler regexp to =[.]asc$=, verifies =epa-file-name-p= matches
+=secret.asc= but not =secret.gpg=, and confirms the =safe-magic= plus
+=operations= handler properties.  In NeLisp, isolated true-load and persistent
+REPL over only =epa-hook.el= prove count 1, =epa-hook=, =epa-file-handler=,
+=epa-file-name-regexp-update=, and =epa-file-name-p=.  Separate isolated
+proofs also prove =epa-file-name-regexp= is bound, =epa-file-inhibit-auto-save=
+is true, =epa-file-encrypt-to= and =epa-file-auto-mode-alist-entry= are bound,
+and the =epa-file-handler= =safe-magic= / =operations= symbol properties are
+present.  =epa-hook.el= remains in the default true-load list only: default
+true-load remains a 319/319 count-only pass, while adding it as the 254th
+accumulated persistent-REPL file still segfaults before sentinel.  The regexp
+string value, generated =auto-encryption-mode= command binding, live
+=file-name-handler-alist= / =find-file-hook= / =auto-mode-alist= mutation,
+encrypted-file handler dispatch, bookmark hook installation, and real
+auto-save inhibition behavior remain deferred.
+The current =ede/makefile-edit.el= recheck covers the small EDE Makefile
+navigation/list helper surface.  The file has no direct =require= and reaches
+8/8 standalone form-walk forms.  Native Emacs loads =ede/makefile-edit= with
+all seven functions visible, extracts =SRC= from =$(SRC)=, expands a small
+temporary Makefile macro list to =a.c= / =b.h= / =c.el=, and smokes simple
+command beginning/end movement.  In NeLisp, isolated true-load and persistent
+REPL over only =makefile-edit.el= prove count 1, =ede/makefile-edit=, and all
+seven function bindings.  Standalone regexp/value behavior remains deliberately
+narrow: a =plain= non-variable probe returns nil, but the char-code-built
+=$(SRC)= extraction does not produce a usable string under =length= / =aref=,
+and string =equal= is not a trustworthy proof primitive on this path because
+=(equal nil (string ?S ?R ?C))= currently succeeds.  =makefile-edit.el= remains
+in the default true-load list only: default true-load remains a 319/319
+count-only pass, while adding it as the 254th accumulated persistent-REPL file
+still segfaults before sentinel.  Live buffer-scanning macro expansion, exact
+variable-reference regexp behavior, navigation side effects, and Makefile
+editing commands remain deferred.
+The current =isearch-x.el= recheck covers the small internationalized isearch
+input-method/key-coding helper surface.  The file has no direct =require=, no
+=provide=, and reaches 8/8 standalone form-walk forms.  Current Anvil
+=file_outline= and =nelisp_eval= both return =Transport closed=, so the pass
+uses local source scan plus diagnostics: the source defines the three
+input-method toggles, =isearch-minibuffer-local-map=,
+=isearch-exit-recursive-edit=, =isearch-with-keyboard-coding=,
+=isearch-with-input-method=, and
+=isearch-process-search-multibyte-characters=.  Native Emacs with =isearch=
+preloaded sees no =isearch-x= feature, all seven functions, the minibuffer map
+as a keymap, and =[with-keyboard-coding]= / =[with-input-method]= resolving to
+the expected commands.  In NeLisp, isolated true-load and persistent REPL over
+only =isearch-x.el= prove count 1, absence of the =isearch-x= feature, all
+seven function bindings, and the bound minibuffer map variable.  The keymap
+runtime is not promoted: standalone proves the variable is bound but not a
+keymap.  =isearch-x.el= remains in the default true-load list only: default
+true-load remains a 319/319 count-only pass, while adding it as the 254th
+accumulated persistent-REPL file still segfaults before sentinel.  Live
+input-method toggling, transient input-method activation, recursive-edit exit,
+keyboard coding, =read-string= minibuffer flow, and multibyte search-string
+processing remain deferred.
+The current =wyse50.el= recheck covers the small terminal initialization and
+arrow-key map helper surface.  The file has no direct =require= and reaches
+4/4 standalone form-walk forms.  Current Anvil =file_outline= and
+=nelisp_eval= both return =Transport closed=, so the pass uses local source
+scan plus diagnostics: the source defines =wyse50-terminal-map=,
+=terminal-init-wyse50=, =enable-arrow-keys=, and =provide=.  Native Emacs loads
+=term/wyse50= with the map variable as a keymap, both functions visible,
+representative lookups for =C-k= / =C-h= / =ESC K= / =C-a @ RET= resolving to
+=[up]= / =[left]= / =[next]= / =[f1]=, and =enable-arrow-keys= self-disabling
+to nil.  In NeLisp, isolated true-load and persistent REPL over only
+=wyse50.el= prove count 1, =term/wyse50=, the bound map variable,
+=terminal-init-wyse50=, and =enable-arrow-keys=.  The runtime keymap and
+self-disable behavior are not promoted: standalone proves the map variable is
+bound but not a keymap, and =enable-arrow-keys= remains fbound after the call in
+the persistent REPL lane.  =wyse50.el= remains in the default true-load list
+only: default true-load remains a 319/319 count-only pass, while adding it as
+the 254th accumulated persistent-REPL file still segfaults before sentinel.
+Live =input-decode-map= inheritance mutation, =kill-emacs-hook= terminal reset
+hook, exact key sequence decoding, and terminal-side output remain deferred.
+The current small Eshell module/helper proof is isolated-only too.
+=em-banner.el=, =em-xtra.el=, =em-elecslash.el=, =em-tramp.el=, and
+=esh-module.el= complete standalone form-walk and isolated true-load/REPL proof
+for their feature/function surface.  The batch deliberately avoids promoting
+live Eshell mode startup, banner insertion, set/list command argument
+semantics, electric slash editing, TRAMP sudo/su/doas command wrapping, and
+module initialization/unload behavior.  Adding the five-file batch to default
+true-load segfaults at =start:em-banner.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The current small Gnus backend/integration helper proof is isolated-only too.
+=nnregistry.el=, =gnus-dbus.el=, =spam-wash.el=, =gnus-rfc1843.el=,
+=nngateway.el=, =nndir.el=, and =gnus-vm.el= complete standalone form-walk and
+isolated true-load/REPL proof for their feature/function surface.  The batch
+deliberately avoids promoting live Gnus registry backend dispatch, DBus sleep
+signal registration, MIME/article mutation, RFC1843 article decode setup,
+mail-to-news gateway transformation, directory backend state, and VM save
+integration.  Adding the seven-file batch to default true-load segfaults at
+=start:nnregistry.el=, and adding it to default persistent REPL segfaults
+before sentinel.
+The next small Gnus/MIME helper proof is isolated-only too.
+=mm-archive.el=, =score-mode.el=, =gnus-eform.el=, =gnus-bcklg.el=,
+=mm-partial.el=, =gnus-dup.el=, =mm-extern.el=, and =gnus-undo.el= complete
+standalone form-walk and isolated true-load/REPL proof for their
+feature/function surface.  The batch deliberately avoids promoting live MIME
+archive decoding, score/edit-form buffer UI, article backlog replay, partial
+message reassembly, duplicate suppression persistence, external-body
+retrieval, Gnus undo state mutation, and accumulated replay adoption.  Adding
+the eight-file batch to default true-load segfaults at =start:mm-archive.el=,
+and adding it to default persistent REPL segfaults before sentinel.
+The small play/obsolete/UI helper proof is limited to
+feature/function/variable surface.  Real buffer mutation, terminal escape
+side effects, flow-control key translation, and frame/display behavior
+remain follow-up runtime smokes.
+The current small utility/mail/HMAC proof is limited to load and
+feature/function surface.  =mb-depth.el= behaves like the other current
+minor-mode macro files: =minibuffer-depth-setup= and customization
+surface load, but the generated =minibuffer-depth-indicate-mode= command
+is not promoted into the default proof yet.
+The current mode/network/obsolete helper proof is limited to true-load
+count in the accumulated default replay plus isolated true-load/REPL
+feature/function/variable proof for =isearch-toggle-input-method=,
+=isearch-process-search-multibyte-characters=, =term/wyse50=,
+=terminal-init-wyse50=, =enable-arrow-keys=, =gulp=,
+=gulp-create-message=, =ediff-hook=, =menu-bar-ediff-menu=, =ld-script=,
+=ld-script-mode=, =dig=, =dig-invoke=, =rng-pttrn=, =rng-make-ref=,
+=rng-make-datatype=, =sieve-mode=, =bat-mode=, =netrc=, =netrc-parse=,
+and =netrc-machine=.  Adding those markers to the already large legacy
+accumulated default true-load proof segfaulted during proof evaluation, even
+though the files load and the smaller proof partitions pass; the default
+accumulated proof therefore remains exact-count-only at =319/319= for now.  Interactive
+isearch input-method dispatch, terminal setup against a live Wyse terminal,
+GULP mail/request generation against real files, Ediff menu dispatch,
+LD/BAT/Sieve mode font-lock behavior in real buffers, external =dig=
+execution, Relax NG schema integration, and netrc file/service parsing remain
+follow-up runtime smokes.
+The current editing/UI helper proof is limited to true-load count in the
+accumulated default replay plus isolated true-load/REPL
+feature/function/variable proof for =minibuf-eldef-setup-minibuffer=,
+=visual-wrap-prefix-function=, =display-line-numbers-update-width=,
+=mouse-drag-secondary-pasting=, =animate-string=, =gmm-regexp-concat=,
+=ask-user-about-lock=, =rfn-eshadow-setup-minibuffer=, =asm-mode=,
+=bib-mode=, =reveal-post-command=, =emacs-lock-mode=, =linum-update=,
+and =refill-fill-paragraph-at=.  Generated minor-mode commands such as
+=minibuffer-electric-default-mode=, =visual-wrap-prefix-mode=,
+=display-line-numbers-mode=, =file-name-shadow-mode=, =reveal-mode=,
+=global-reveal-mode=, =linum-mode=, and =refill-mode= are not promoted into
+the stable proof because the current standalone minor-mode macro surface does
+not materialize them consistently.  Real minibuffer overlays, visual wrapping,
+line-number display, mouse selection, animation buffers, Gnus menus, file-lock
+prompts, read-file-name shadows, assembler/Bib editing, reveal overlays, locked
+buffer guards, line-number overlays, and refill behavior remain follow-up
+runtime smokes.
+The current miscellaneous helper proof is limited to true-load count in the
+accumulated default replay plus isolated true-load/REPL
+feature/function/variable proof for =nnnil-request-group=,
+=po-find-file-coding-system=, =cedet-version=, =cc-block-intro-offset=,
+=cedet-cscope-search=, =metamail-buffer=, =string-edit-mode=, =flymake-cc=,
+=external-completion-table=, and =yank-media-types=.  Real Gnus back-end
+dispatch, PO coding-system file probes, CEDET menu and cscope subprocess
+behavior, Metamail subprocess execution, string-edit buffer interaction,
+Flymake process execution, external completion callbacks, and live yank-media
+selection handling remain follow-up runtime smokes.
+The current standalone-small helper proof is limited to true-load count in
+the accumulated default replay plus isolated true-load/REPL
+feature/function proof for =cedet-idutils-search=,
+=cedet-idutils-version-check=, =sup-mouse-report=,
+=cedet-gnu-global-search=, =cedet-gnu-global-version-check=,
+=mantemp-make-mantemps=, =mantemp-make-mantemps-region=,
+=ediff-vc-latest-version=, =ediff-delete-version-file=, =gs-load-image=,
+=unrmail=, =batch-unrmail=, =backquote=, =backquote-listify=,
+=dirtrack=, and =dirtrack-debug-message=.  =cyril-jis.el= is a
+Quail input-method table without =provide=, so the stable proof covers
+its standalone load count rather than a feature marker.  =dirtrack-mode=
+is also not promoted into the stable proof because the current standalone
+minor-mode macro surface does not materialize it consistently.  Real Quail
+input-method selection, ID Utils/GNU Global/Ghostscript subprocess calls,
+supdup terminal mouse input, C++ template text transformation, Ediff VC/RCS
+revision dispatch, unrmail conversion, legacy backquote expansion, and
+live shell directory tracking remain follow-up runtime smokes.
+The current helper-foundation proof is limited to true-load count in the
+accumulated default replay plus isolated true-load/REPL feature/function proof
+for =keypad-setup=, =rtree-make= / =rtree-memq=, =executable-set-magic=,
+=executable-make-buffer-file-executable-if-script-p=,
+=load-path-shadows-find=, =list-load-path-shadows=,
+=cl-font-lock-built-in-keywords=, =starttls-negotiate=,
+=starttls-open-stream=, =diff-no-select=, =diff-latest-backup-file=,
+=dos-convert-standard-filename=, =dosified-file-name=,
+=completing-read-multiple=, =crm--collection-fn=, =epg-find-configuration=,
+and =epg-check-configuration=.  Real keypad setup/key translation, range-tree
+mutation beyond the simple membership smoke, executable script file mutation,
+load-path directory scans, Common Lisp font-lock/minor-mode behavior, STARTTLS
+subprocess negotiation, diff process/buffer display, DOS filename/register
+behavior, minibuffer multiple-completion interaction, and live GnuPG/gpgconf
+probing remain follow-up runtime smokes.
+The current =subword.el= proof is limited to true-load count in the
+accumulated default replay plus isolated form-walk and load/REPL
+feature/helper proof for =subword=, =superword=, =cap-words=,
+=subword-forward=, =subword-backward=, and =subword-setup-buffer=.
+The standalone =define-minor-mode= fallback still does not materialize
+=subword-mode=, =superword-mode=, =global-subword-mode=, or
+=global-superword-mode=, and adding =subword.el= to the accumulated default
+persistent REPL currently segfaults.  Real subword/superword motion and
+minor-mode toggling remain follow-up runtime smokes.
+The current =font-core.el= proof is limited to true-load count in the
+accumulated default replay plus isolated form-walk and load/REPL proof for
+=font-core=, =font-lock-change-mode=, =font-lock-defontify=,
+=font-lock-default-function=, =turn-on-font-lock=,
+=turn-on-font-lock-if-desired=, and the core Font Lock variables.  Adding it
+to the accumulated default persistent REPL currently segfaults, so live Font
+Lock toggling remains a follow-up.
+The current small text/Rmail/URL-Dired/terminal mouse helper proof is
+isolated-only too.  =text-mode.el=, =rmailmsc.el=, =url-dired.el=, and
+=t-mouse.el= complete standalone form-walk and isolated true-load/REPL proof
+for their load/function surface.  The batch deliberately avoids promoting live
+Text major-mode activation, context menu mutation, hook/auto-fill behavior,
+paragraph-indent minor-mode materialization, centering edits, Rmail buffer and
+message state, inbox list prompting, URL Dired minor-mode/map behavior, Dired
+filename lookup, mouse events, terminal parameter mutation, GPM startup/stop
+side effects, and accumulated replay adoption.  Adding the four-file batch to
+default true-load segfaults at =start:text-mode.el=, and adding it to default
+persistent REPL segfaults before sentinel.
+The current small Org link integration proof is isolated-only too.
+=ol-eshell.el=, =ol-docview.el=, =ol-eww.el=, and =ol-gnus.el= complete
+standalone form-walk and isolated true-load/REPL proof for their
+feature/function surface.  The batch deliberately avoids promoting live
+Eshell command insertion/sending, DocView file/page navigation, EWW browsing,
+=shr-url= text-property traversal, EWW keymap/hook mutation, Gnus group/article
+lookup, message header mutation, NNTP following, Gnus startup, and accumulated
+replay adoption.  Adding the four-file batch to default true-load segfaults at
+=start:ol-eshell.el=, and adding it to default persistent REPL segfaults before
+sentinel.  =org-element.el= and the wider Org Babel surface remain deferred.
+The current small Calendar DST/solar plus Org numbering proof is isolated-only
+too.  =cal-dst.el=, =solar.el=, and =org-num.el= complete standalone form-walk
+and isolated true-load/REPL proof for their feature/function surface.  The
+batch deliberately avoids promoting live timezone transition probing, DST rule
+cache behavior, location/timezone setup, sunrise/sunset and equinox numeric
+behavior, calendar/diary display commands, generated =org-num-mode=
+materialization, live Org headline overlay numbering, parser/headline mutation
+behavior, and accumulated replay adoption.  Adding the three-file batch to
+default true-load segfaults at =start:cal-dst.el=, and adding it to default
+persistent REPL segfaults before sentinel.  =calendar.el= and =org-element.el=
+remain deferred.
+The current =url-parse.el= proof is isolated-only too.  The file completes
+standalone form-walk across 14 top-level forms, and isolated true-load/REPL
+prove =url-parse= plus =url-generic-parse-url=, =url-recreate-url=,
+=url-path-and-query=, and =url-port=.  The direct =auth-source= dependency is
+still not promoted: a stronger proof shows =auth-source=nil= after the
+implicit require, and adding =url-parse.el= to default true-load segfaults at
+=start:url-parse.el= while adding it to default persistent REPL segfaults
+before sentinel.
+The current =ffap.el= proof is isolated-only too.  The file completes
+standalone form-walk across 156 top-level forms, and isolated true-load/REPL
+prove =ffap=, =url-parse=, =find-file-at-point=, =ffap-url-at-point=,
+=dired-at-point=, =ffap-menu=, =ffap-at-mouse=, =ffap-bindings=, and the
+binding/URL variables.  The stronger proof shows =thingatpt=nil= after the
+implicit require, and live URL/file/Dired/Gnus/Rmail/VM/mouse/global binding
+behavior remains out of scope.  Adding =ffap.el= to default true-load segfaults
+at =start:ffap.el=, and adding it to default persistent REPL segfaults before
+sentinel.
+The current small nXML/network/SQLite/MH/regexp helper proof is isolated-only
+too.  =nxml-ns.el=, =puny.el=, =sqlite-mode.el=, =mh-acros.el=, and
+=regexp-opt.el= complete standalone form-walk and isolated true-load/REPL
+proof for their feature/function surface.  The batch deliberately avoids
+promoting live XML namespace stack mutation, Unicode Punycode round trips,
+glyph composition and script restriction checks, SQLite C primitive/file
+operations, SQLite browser buffer behavior, MH folder/window/event mutation,
+range translation, dependent MH-E macro expansion, runtime regexp
+generation/depth smokes, charset range construction, and accumulated replay
+adoption.  Adding the five-file batch to default true-load segfaults at
+=start:nxml-ns.el=, and adding it to default persistent REPL segfaults before
+sentinel.
+The current Org citation/Babel helper proof is limited to true-load count in
+the accumulated default replay plus isolated true-load/REPL feature/function
+proof for =org-cite-bibtex-export-bibliography=,
+=org-cite-bibtex-export-citation=, =org-babel-eval-error-notify=,
+=org-babel-eval=, =org-babel-eval-read-file=,
+=org-babel--shell-command-on-region=, =org-babel-eval-wipe-error-buffer=,
+and =org-babel--get-shell-file-name=.  Real BibTeX citation export and live
+Org Babel shell command execution remain follow-up runtime smokes; adding
+either file to the accumulated default persistent REPL currently segfaults.
+The current Org citation backend proof is limited to true-load count in the
+accumulated default replay plus isolated true-load/REPL feature/function
+proof for =org-cite-natbib-export-bibliography=,
+=org-cite-natbib-export-citation=, =org-cite-natbib-use-package=,
+=org-cite-biblatex-export-bibliography=,
+=org-cite-biblatex-export-citation=,
+=org-cite-biblatex-prepare-preamble=, and
+=org-cite-biblatex-list-styles=.  Real Natbib/BibLaTeX citation rendering,
+LaTeX preamble injection, bibliography command emission, and export backend
+integration remain follow-up runtime smokes; adding either file to the
+accumulated default persistent REPL currently segfaults.
+The current =oc.el= proof is intentionally limited to load and citation
+processor registry surface; parser/export behavior that reaches
+=org-element= remains deferred.
+Likewise, the current =org-keys.el= proof is limited to keymap/speed
+command load surface, not interactive key dispatch behavior.
+The current =org-cycle.el= proof is likewise limited to load and
+representative cycle/fold command surface; outline visibility behavior
+in a real Org buffer remains a later runtime smoke.
+The current =org-inlinetask.el= proof is limited to load, hook
+registration, and representative inline task command/helper surface;
+editing and visibility behavior in a real Org buffer remains a later
+runtime smoke.
+The current =org-num.el= proof remains isolated-only: standalone form-walk
+and isolated true-load/REPL prove helper functions such as
+=org-num-default-format=, =org-num--clear=, =org-num--number-region=, and
+=org-num--verify=, but =org-num-mode= is not materialized and adding the
+file to the accumulated default true-load/REPL path currently segfaults.
+The current =ol-doi.el= / =ol-info.el= proof is limited to link type load,
+parsing, and export helper surface; browser follow and live Info node
+navigation remain later runtime smokes.
+The current =ol-man.el=, =ol-rmail.el=, =ol-mhe.el=, =ol-w3m.el=, and
+=ol-irc.el= proof is limited to link registration, export, and helper load
+surface; live Man, Rmail, MH-E, w3m, and ERC navigation remains a later
+runtime smoke.
+The current =tempo.el= / =org-tempo.el= proof is limited to template
+registration load surface; actual template expansion in an Org buffer
+remains a later runtime smoke.
+The current =inline.el= proof is limited to define-inline macro/helper
+load surface; compiler-macro expansion behavior remains a later runtime
+smoke.
+The current =easymenu.el= proof is limited to load and menu helper
+definition surface; actual menu/keymap mutation behavior remains a later
+runtime smoke.
+The current =let-alist.el= / =radix-tree.el= proof is limited to load and
+helper API surface; dotted-symbol expansion and radix tree mapping
+runtime behavior remain later smokes.  The current
+=text-property-search.el= proof is likewise limited to load/accessor
+surface, while =thunk.el= proves =thunk-force= / =thunk-evaluated-p=
+without exercising lexical =thunk-delay= expansion.
+The current =version.el= / =help-macro.el= / =env.el= / =fileloop.el=
+proof is limited to load and helper API surface.  Calling
+=emacs-version= and the =setenv= / =substitute-env-vars= runtime smoke
+does not return to the standalone REPL sentinel yet, so those behavior
+checks remain follow-ups.
+The current =rmc.el= / =generate-lisp-file.el= / =obarray.el= /
+=soundex.el= proof is limited to load and helper API surface.
+=cursor-sensor.el=, =indent-aux.el=, and
+=display-fill-column-indicator.el= load, but their generated minor-mode
+entry points are not promoted into the default proof yet.
+The current =thingatpt.el= proof is limited to load and representative
+thing-at-point helper surface; real buffer word/bounds behavior remains a
+later runtime smoke.
+The current =time-date.el= proof is limited to load, representative date
+helper surface, and simple leap-year/month-day checks; date parsing,
+timezone conversion, and string formatting behavior remain later runtime
+smokes.
+The current =iso8601.el= / =parse-time.el= proof is limited to load and
+representative parser function/table surface.  =parse-time-rules= is not
+bound after standalone replay yet, so RFC-style fallback parsing remains
+a follow-up beyond the ISO parser surface.
+The current Unicode case/mirroring data proof is intentionally load-only.
+The seven small generated =uni-*.el= files finish form-walk and default
+true-load/REPL replay, but standalone proof-time =char-code-property-alist=
+and =get-char-code-property= are not yet visible enough to assert runtime
+property lookup.  Larger Unicode property files such as =uni-category.el=,
+=uni-bidi.el=, and =uni-confusable.el= remain deferred because their
+generated tables currently fail or crash standalone form-walk.
+The current =org-macro.el= proof is limited to load and representative
+macro helper function surface.  Full macro initialization still lazily
+requires =org-element=, and actual macro expansion in an Org buffer remains
+a later runtime smoke.
+=emoji-labels.el= now loads from the real vendored source because the
+sibling standalone reader materialises Emacs =#s(hash-table ... data
+(...))= literals directly.  =idna-mapping.el= now reaches =provide=
+because the sibling standalone reader accepts Emacs =#^[...]= / =#^^[...]=
+char-table printer literals and resolves representative BMP IDNA entries
+through =elt=.  Supplementary-plane lookup still needs a dedicated
+standalone char-table representation or a fuller top-level trie expansion.
+The previous internationalization hot-load boundary was persistent REPL
+loading of the vendored CP51932/EUCJP-MS generated tables themselves.
+That forced path now exits cleanly after a sibling standalone-runtime fix:
+GC re-arm values are kept as bump offsets, and the Linux standalone arena
+is mapped as 8 GiB of virtual address space so the generated EUC single
+top-level conversion form does not walk past the old 4 GiB mapping.  The
+default REPL diagnostic still proves the same feature/property surface
+through the local lightweight facades as the lower-pressure daily lane;
+the true-load replay continues to load local =emacs-translation-table.el=
+followed by both vendored generated tables.  The generated REPL bootstrap
+also strips
+standalone-ignored definition docstrings before
+emitting source strings, and avoids host =#'= abbreviation only for
+definition forms whose lambda lists would otherwise be malformed (for
+example =maphash='s =(function table)= arglist), reducing persistent
+evaluator pressure without changing the current standalone macro
+semantics.  The load record forms
+are kept as separate top-level inputs because standalone =load= can leave
+an rc value that aborts the rest of an enclosing =progn= even after the
+file side effects complete.
 Because the current standalone reader does not yet print Lisp errors,
-the host-side runners treat reaching the sentinel exit code as success
-and report crashes or non-sentinel exits as the failing input.  Set
+the host-side file/form runners treat reaching the sentinel exit code as
+success, while the REPL runner uses its marker file; crashes or
+non-sentinel results are reported as the failing input.  Set
 =VENDOR_FORM_WALK_NORMALIZE_FLOATS=t= only for what-if diagnostics
 that need to compare against integer-normalized forms; the default raw
 path preserves the exact vendor form.  The previous raw
@@ -680,8 +3040,8 @@ path preserves the exact vendor form.  The previous raw
 materializing reader floats as real =Sexp::Float= values.  Raw
 standalone form-walk diagnostics now also reach the sentinel across the
 full top-level form sets for =lisp-mode.el=, =isearch.el=,
-=minibuffer.el=, and =project.el=; the true file-load replay for the
-same default set is covered by =diagnose-vendor-load-replay=.
+=minibuffer.el=, and =project.el=; the true file-load and persistent REPL
+replays now cover the proof surfaces above.
 Supported batch/interactive runtime image bakes use
 =NEMACS_RUNTIME_BAKE_TIMEOUT=900s=; source-v1 replay smokes use
 =NEMACS_RUNTIME_REPLAY_TIMEOUT=900s= and longer interactive/vendor
@@ -691,7 +3051,8 @@ platform rejects unlimited process stacks.
 =bin/nemacs= resolves NeLisp in this order: explicit =NELISP_HOME= /
 =NEMACS_NELISP=, =vendor/nelisp=, sibling =../nelisp=, then the legacy
 =~/Notes/dev/nelisp= path.  Within a checkout it uses
-=target/nelisp-standalone-reader=.
+=target/nelisp=, falling back to =target/nelisp-standalone-reader= for
+older checkouts.
 
 =make demo= / =make demo-phase2= prints the demo's observable state
 plist so you can inspect the integration round-trip from the

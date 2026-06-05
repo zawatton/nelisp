@@ -28,8 +28,17 @@
     (let ((load-path (nreverse filtered)))
       (load "help-mode" nil t))))
 
+(defun help-mode--install-standalone-command (public)
+  "Install PUBLIC as a lazy wrapper around `emacs-help'."
+  (unless (fboundp public)
+    (fset public
+          (list 'lambda '(&rest args)
+                '(require 'emacs-help)
+                (list 'apply (list 'quote public) 'args)))))
+
 (if help-mode--standalone-p
-    (require 'emacs-help)
+    (dolist (symbol '(help-mode help-go-back help-go-forward))
+      (help-mode--install-standalone-command symbol))
   (help-mode--host-load-standard))
 
 (provide 'help-mode)

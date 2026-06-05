@@ -42,12 +42,14 @@
   (dolist (sym '(expand-file-name file-name-absolute-p
                  file-name-directory file-name-nondirectory
                  file-name-as-directory
+                 substitute-in-file-name
                  file-name-quoted-p file-name-quote file-name-unquote
                  file-exists-p file-readable-p file-directory-p
                  file-attributes directory-files executable-find
                  delete-file rename-file
                  insert-file-contents write-region
                  buffer-file-name set-visited-file-name
+                 locate-library
                  find-file-noselect find-file
                  save-buffer write-file revert-buffer))
     (should (fboundp sym)))
@@ -57,6 +59,110 @@
   (should (file-name-quoted-p (file-name-quote "/tmp/foo")))
   (should (equal "/tmp/foo" (file-name-unquote (file-name-quote "/tmp/foo"))))
   (should (equal "/:/tmp/foo" (file-name-quote "/:/tmp/foo"))))
+
+(ert-deftest emacs-fileio-builtins-test/expand-file-name-uses-local-splitter ()
+  (should (equal "/tmp/org.el"
+                 (nelisp-ec-expand-file-name "org.el" "/tmp/")))
+  (should (equal '("a" "b" "c")
+                 (nelisp-ec--split-string-char "/a//b/c/" ?/ t)))
+  (let ((file (locate-library "nelisp-emacs-compat-fileio")))
+    (should (and file (file-readable-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward "(nelisp-ec--split-string-char seed ?/ t)" nil t))
+      (goto-char (point-min))
+      (should-not (search-forward "(split-string seed" nil t)))))
+
+(ert-deftest emacs-fileio-builtins-test/substitute-in-file-name-minimal ()
+  (let ((process-environment
+         (cons "NELISP_EMACS_FILEIO_TEST=/tmp/nelisp-fileio"
+               process-environment)))
+    (should (equal "/tmp/nelisp-fileio/a"
+                   (nelisp-ec-substitute-in-file-name
+                    "$NELISP_EMACS_FILEIO_TEST/a")))
+    (should (equal "/tmp/nelisp-fileio/b"
+                   (nelisp-ec-substitute-in-file-name
+                    "${NELISP_EMACS_FILEIO_TEST}/b")))
+    (should (equal "$NELISP_EMACS_FILEIO_MISSING/c"
+                   (nelisp-ec-substitute-in-file-name
+                    "$NELISP_EMACS_FILEIO_MISSING/c")))
+    (should (equal "/shadow"
+                   (nelisp-ec-substitute-in-file-name
+                    "/tmp//shadow")))))
+
+(ert-deftest emacs-fileio-builtins-test/file-readable-p-missing-is-nil ()
+  (let ((missing (emacs-fileio-builtins-test--tmp-path "missing.txt")))
+    (when (file-exists-p missing)
+      (delete-file missing))
+    (should-not (nelisp-ec-file-exists-p missing))
+    (should-not (nelisp-ec-file-readable-p missing))))
+
+(ert-deftest emacs-fileio-builtins-test/locate-library-finds-el-file ()
+  (let* ((dir (emacs-fileio-builtins-test--tmp-path "load-path"))
+         (file (expand-file-name "sample-lib.el" dir))
+         (subdir (expand-file-name "nested" dir))
+         (subfile (expand-file-name "sub-lib.el" subdir)))
+    (unwind-protect
+        (progn
+          (make-directory dir t)
+          (make-directory subdir t)
+          (with-temp-file file
+            (insert "(provide 'sample-lib)\n"))
+          (with-temp-file subfile
+            (insert "(provide 'sub-lib)\n"))
+          (should (equal file
+                         (emacs-fileio-locate-library
+                          "sample-lib" nil (list dir))))
+          (should (equal file
+                         (emacs-fileio-locate-library
+                          "sample-lib.el" nil (list dir))))
+          (should (equal subfile
+                         (emacs-fileio-locate-library
+                          "nested/sub-lib" nil (list dir))))
+          (cl-letf (((symbol-function 'file-readable-p)
+                     (lambda (&rest _)
+                       (error "locate-library must not call file-readable-p")))
+                    ((symbol-function 'file-exists-p)
+                     (lambda (&rest _)
+                       (error "locate-library must not call file-exists-p"))))
+            (should (equal file
+                           (emacs-fileio-locate-library
+                            "sample-lib" nil (list dir))))))
+      (when (file-exists-p subfile)
+        (delete-file subfile))
+      (when (file-directory-p subdir)
+        (delete-directory subdir))
+      (when (file-exists-p file)
+        (delete-file file))
+      (when (file-directory-p dir)
+        (delete-directory dir)))))
+
+(ert-deftest emacs-fileio-builtins-test/locate-library-standalone-without-opendir-is-nil ()
+  (let* ((dir (emacs-fileio-builtins-test--tmp-path "load-path"))
+         (file (expand-file-name "sample-lib.el" dir)))
+    (unwind-protect
+        (progn
+          (make-directory dir t)
+          (with-temp-file file
+            (insert "(provide 'sample-lib)\n"))
+          (cl-letf (((symbol-function 'nl-write-file)
+                     (lambda (&rest _) t))
+                    ((symbol-function 'directory-files)
+                     (lambda (&rest _)
+                       (error "standalone fallback must not call directory-files")))
+                    ((symbol-function 'file-readable-p)
+                     (lambda (&rest _)
+                       (error "standalone fallback must not call file-readable-p")))
+                    ((symbol-function 'file-exists-p)
+                     (lambda (&rest _)
+                       (error "standalone fallback must not call file-exists-p"))))
+            (should-not (emacs-fileio-locate-library
+                         "sample-lib" nil (list dir)))))
+      (when (file-exists-p file)
+        (delete-file file))
+      (when (file-directory-p dir)
+        (delete-directory dir)))))
 
 ;;;; B. Substrate-direct: write + read roundtrip
 

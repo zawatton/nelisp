@@ -38,9 +38,9 @@
 ;;   E. narrowing  (2)
 ;;      narrow-to-region, widen
 ;;
-;;   F. marker  (5)
+;;   F. marker  (7)
 ;;      make-marker, set-marker, marker-position, marker-buffer,
-;;      point-marker
+;;      point-marker, marker-insertion-type, set-marker-insertion-type
 ;;
 ;;   G. search + match-data  (9)
 ;;      search-forward, search-backward, looking-at-p,
@@ -49,10 +49,9 @@
 ;;
 ;; Non-goals (deferred to later phases per spec):
 ;;   - full Emacs regexp compatibility beyond `nelisp-regex' MVP syntax
-;;   - marker insertion-type (advance-on-insert) — markers in MVP are
-;;     "static": they hold a position that does NOT auto-update when
-;;     surrounding text is inserted/deleted.  This keeps the data flow
-;;     simple and matches Doc 33 v2 §4.2a "simple marker" note.
+;;   - automatic marker position updates on insert/delete.  Marker
+;;     insertion-type is stored for API parity, but the text-buffer does
+;;     not yet use it to advance markers.
 ;;   - window / frame / keymap / buffer-local variables / text-properties
 ;;   - undo / coding system
 ;;
@@ -184,6 +183,31 @@ Slots:
   (put 'nelisp-ec-buffer-killed-p 'cl-struct-setter
        'nelisp-ec-buffer-killed-p--setter))
 
+(unless (fboundp 'nelisp-ec-buffer-name--setter)
+  (defun nelisp-ec-buffer-name--setter (obj value)
+    (setf (nelisp-ec-buffer-name obj) value)))
+(unless (fboundp 'nelisp-ec-buffer-text--setter)
+  (defun nelisp-ec-buffer-text--setter (obj value)
+    (setf (nelisp-ec-buffer-text obj) value)))
+(unless (fboundp 'nelisp-ec-buffer-point--setter)
+  (defun nelisp-ec-buffer-point--setter (obj value)
+    (setf (nelisp-ec-buffer-point obj) value)))
+(unless (fboundp 'nelisp-ec-buffer-narrow-start--setter)
+  (defun nelisp-ec-buffer-narrow-start--setter (obj value)
+    (setf (nelisp-ec-buffer-narrow-start obj) value)))
+(unless (fboundp 'nelisp-ec-buffer-narrow-end--setter)
+  (defun nelisp-ec-buffer-narrow-end--setter (obj value)
+    (setf (nelisp-ec-buffer-narrow-end obj) value)))
+(unless (fboundp 'nelisp-ec-buffer-modified-p--setter)
+  (defun nelisp-ec-buffer-modified-p--setter (obj value)
+    (setf (nelisp-ec-buffer-modified-p obj) value)))
+(unless (fboundp 'nelisp-ec-buffer-text-tick--setter)
+  (defun nelisp-ec-buffer-text-tick--setter (obj value)
+    (setf (nelisp-ec-buffer-text-tick obj) value)))
+(unless (fboundp 'nelisp-ec-buffer-killed-p--setter)
+  (defun nelisp-ec-buffer-killed-p--setter (obj value)
+    (setf (nelisp-ec-buffer-killed-p obj) value)))
+
 ;;; defstruct: marker
 
 (cl-defstruct (nelisp-ec-marker
@@ -193,14 +217,15 @@ Slots:
                (:conc-name nelisp-ec-marker--))
   "MVP marker (Phase 9a, Doc 33 v2 §4.2a).
 Holds a (POSITION, BUFFER) pair.  In MVP markers are *static* — they
-do NOT auto-update when surrounding text changes; advance-on-insert
-behavior and insertion-type are deferred to Phase 9b.
+do NOT auto-update when surrounding text changes.  Insertion-type is
+stored for API parity and future text-buffer marker updates.
 
 Note the `:conc-name' is `nelisp-ec-marker--' to leave the public
 function names `nelisp-ec-marker-position' and `nelisp-ec-marker-buffer'
 free for the API surface; access slots only via the `--' accessors."
   (position nil)
-  (buffer   nil))
+  (buffer   nil)
+  (insertion-type nil))
 
 (when (fboundp 'nelisp--write-stdout-bytes)
   (defun nelisp-ec-marker-p (obj)
@@ -232,11 +257,31 @@ free for the API surface; access slots only via the `--' accessors."
           (setcdr cell value)
         (setcdr obj (cons (cons :buffer value) (cdr obj))))
       value))
+  (defun nelisp-ec-marker--insertion-type (obj)
+    (cdr (assoc :insertion-type (cdr obj))))
+  (defun nelisp-ec-marker--insertion-type--setter (obj value)
+    (let ((cell (assoc :insertion-type (cdr obj))))
+      (if cell
+          (setcdr cell value)
+        (setcdr obj (cons (cons :insertion-type value) (cdr obj))))
+      value))
 
   (put 'nelisp-ec-marker--position 'cl-struct-setter
        'nelisp-ec-marker--position--setter)
   (put 'nelisp-ec-marker--buffer 'cl-struct-setter
-       'nelisp-ec-marker--buffer--setter))
+       'nelisp-ec-marker--buffer--setter)
+  (put 'nelisp-ec-marker--insertion-type 'cl-struct-setter
+       'nelisp-ec-marker--insertion-type--setter))
+
+(unless (fboundp 'nelisp-ec-marker--position--setter)
+  (defun nelisp-ec-marker--position--setter (obj value)
+    (setf (nelisp-ec-marker--position obj) value)))
+(unless (fboundp 'nelisp-ec-marker--buffer--setter)
+  (defun nelisp-ec-marker--buffer--setter (obj value)
+    (setf (nelisp-ec-marker--buffer obj) value)))
+(unless (fboundp 'nelisp-ec-marker--insertion-type--setter)
+  (defun nelisp-ec-marker--insertion-type--setter (obj value)
+    (setf (nelisp-ec-marker--insertion-type obj) value)))
 
 (defun nelisp-ec--set-slot-by-accessor (accessor obj value)
   "Set OBJ slot addressed by ACCESSOR to VALUE."
@@ -268,6 +313,10 @@ free for the API surface; access slots only via the `--' accessors."
 
 (defun nelisp-ec--set-marker-buffer (marker value)
   (nelisp-ec--set-slot-by-accessor 'nelisp-ec-marker--buffer marker value))
+
+(defun nelisp-ec--set-marker-insertion-type (marker value)
+  (nelisp-ec--set-slot-by-accessor
+   'nelisp-ec-marker--insertion-type marker value))
 
 (defun nelisp-ec--min2 (a b)
   "Return the smaller of A and B without relying on `min'."
@@ -747,7 +796,7 @@ range.  Returns nil."
     (nelisp-ec--set-buffer-narrow-end buf nil)
     nil))
 
-;;; F. marker  (5 APIs)
+;;; F. marker  (7 APIs)
 
 ;;;###autoload
 (defun nelisp-ec-make-marker ()
@@ -755,8 +804,10 @@ range.  Returns nil."
   (if (fboundp 'nelisp--write-stdout-bytes)
       (list 'nelisp-ec-marker
             (cons :position nil)
-            (cons :buffer nil))
-    (nelisp-ec-marker--make-raw :position nil :buffer nil)))
+            (cons :buffer nil)
+            (cons :insertion-type nil))
+    (nelisp-ec-marker--make-raw :position nil :buffer nil
+                                :insertion-type nil)))
 
 ;;;###autoload
 (defun nelisp-ec-set-marker (marker pos &optional buf)
@@ -797,6 +848,20 @@ affects where you can move POINT, not where a marker may sit."
   (unless (nelisp-ec-marker-p marker)
     (signal 'wrong-type-argument (list 'nelisp-ec-marker-p marker)))
   (nelisp-ec-marker--buffer marker))
+
+;;;###autoload
+(defun nelisp-ec-marker-insertion-type (marker)
+  "Return non-nil when MARKER advances when text is inserted there."
+  (unless (nelisp-ec-marker-p marker)
+    (signal 'wrong-type-argument (list 'nelisp-ec-marker-p marker)))
+  (nelisp-ec-marker--insertion-type marker))
+
+;;;###autoload
+(defun nelisp-ec-set-marker-insertion-type (marker type)
+  "Set MARKER's insertion TYPE flag and return TYPE."
+  (unless (nelisp-ec-marker-p marker)
+    (signal 'wrong-type-argument (list 'nelisp-ec-marker-p marker)))
+  (nelisp-ec--set-marker-insertion-type marker type))
 
 ;;;###autoload
 (defun nelisp-ec-point-marker ()

@@ -114,7 +114,8 @@
 (ert-deftest emacs-keymap-builtins-test/standard-prefix-maps-are-bound ()
   (dolist (sym '(global-map ctl-x-map ctl-x-4-map ctl-x-5-map esc-map help-map))
     (should (boundp sym))
-    (should (keymapp (symbol-value sym)))))
+    (should (keymapp (symbol-value sym))))
+  (should (boundp 'menu-bar-separator)))
 
 ;;;; G. Substrate-direct: where-is-internal returns a list
 

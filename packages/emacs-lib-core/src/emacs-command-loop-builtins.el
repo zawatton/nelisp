@@ -57,7 +57,19 @@
 (defun emacs-command-loop-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   (or (not (boundp 'emacs-version))
+      (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
+
+(defun emacs-command-loop-kill-emacs (&optional exit-code)
+  "Terminate standalone NeLisp through its `exit' primitive.
+
+Host Emacs keeps its native `kill-emacs'.  This helper is installed as
+`kill-emacs' only when the unprefixed name is absent or still points at
+an `emacs-stub-bulk' placeholder."
+  (let ((code (or exit-code 0)))
+    (unless (and (integerp code) (<= 0 code) (<= code 255))
+      (setq code 1))
+    (exit code)))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-event)
   (defalias 'read-event #'emacs-command-loop-read-event))
@@ -136,6 +148,9 @@
 (when (emacs-command-loop-builtins--install-function-p 'exit-recursive-edit)
   (defalias 'exit-recursive-edit
     #'emacs-command-loop-exit-recursive-edit))
+
+(when (emacs-command-loop-builtins--install-function-p 'kill-emacs)
+  (defalias 'kill-emacs #'emacs-command-loop-kill-emacs))
 
 (defvar emacs-command-loop--sigint-handler-installed-p nil
   "Non-nil after the pure-Elisp SIGINT compatibility handler is installed.")

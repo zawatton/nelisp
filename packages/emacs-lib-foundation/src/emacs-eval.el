@@ -18,6 +18,10 @@
 
 ;;; Code:
 
+(unless (boundp 'lexical-binding)
+  (defvar lexical-binding t
+    "Standalone default: evaluated vendor files are treated as lexical."))
+
 ;; `fset' — install FUNCTION as the function-cell of SYMBOL.  NeLisp's
 ;; bootstrap evaluator may not expose this primitive (= function cells
 ;; are settable only via `defun' at evaluation time).  We approximate by
@@ -40,8 +44,7 @@ value cell is unbound but function cell is fine)."
                 (list 'apply (list 'quote function) 'args)))
     function))
 
-(when (or (not (boundp 'emacs-version))
-          (not (fboundp 'defalias)))
+(unless (fboundp 'defalias)
   (defun defalias (symbol definition &optional docstring)
     "Polyfill: alias SYMBOL to DEFINITION.
 DOCSTRING is accepted for arglist parity and currently ignored
@@ -76,6 +79,50 @@ DOCSTRING is accepted for arglist parity and currently ignored
   (defun interactive (&rest _args)
     "Polyfill: no-op for NeLisp standalone (no interactive call surface)."
     nil))
+
+(unless (fboundp 'interactive-form)
+  (defun emacs-eval--lambda-interactive-form (function)
+    "Return FUNCTION's leading `(interactive ...)' form, or nil."
+    (let ((body (cond
+                 ((and (consp function) (eq (car function) 'lambda))
+                  (cdr (cdr function)))
+                 ((and (consp function) (eq (car function) 'closure))
+                  (cdr (cdr (cdr function))))
+                 (t nil))))
+      (when (and body
+                 (stringp (car body)))
+        (setq body (cdr body)))
+      (and (consp (car body))
+           (eq (car (car body)) 'interactive)
+           (car body))))
+
+  (defun interactive-form (function)
+    "Return FUNCTION's interactive spec, or nil.
+This standalone polyfill first checks symbol metadata installed by
+macro fallbacks such as `define-minor-mode', then falls back to
+inspecting a literal lambda / closure body."
+    (cond
+     ((symbolp function)
+      (or (get function 'interactive-form)
+          (and (fboundp function)
+               (interactive-form (symbol-function function)))))
+     ((and (consp function)
+           (eq (car function) 'autoload))
+      (and (car (cdr (cdr (cdr function))))
+           (list 'interactive)))
+     (t
+      (emacs-eval--lambda-interactive-form function)))))
+
+(unless (fboundp 'commandp)
+  (defun commandp (function &optional _for-call-interactively)
+    "Return non-nil when FUNCTION is interactively callable."
+    (cond
+     ((symbolp function)
+      (and (fboundp function)
+           (or (interactive-form function)
+               (commandp (symbol-function function)))))
+     (t
+      (and (interactive-form function) t)))))
 
 ;; `autoload' — Emacs's lazy-loading hint.  NeLisp standalone has no
 ;; autoload mechanism (= every module is loaded eagerly via the
@@ -140,13 +187,66 @@ moment.  Live aliasing of subsequent assignments is Phase 4."
     "Polyfill: defsubst as plain defun (no inline hint)."
     (cons 'defun (cons name (cons arglist body)))))
 
-;; Compile-time eval markers.  Under interpreted Elisp these reduce
-;; to the same body; the byte-compiler distinction does not matter.
+;; Compile-time eval markers.  Under interpreted Elisp these usually
+;; reduce to BODY.  Vendor `let-when-compile' relies on
+;; `macroexpand-all' forcing nested `eval-when-compile' forms while
+;; compile-time variables are temporarily bound, so the standalone path
+;; returns a quoted constant like host Emacs's macroexpansion does.
 (unless (fboundp 'eval-when-compile)
-  (defmacro eval-when-compile (&rest body) (cons 'progn body)))
+  (defmacro eval-when-compile (&rest body)
+    (list 'quote (eval (cons 'progn body) t))))
 
 (unless (fboundp 'eval-and-compile)
   (defmacro eval-and-compile (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'macroexp-progn)
+  (defun macroexp-progn (body)
+    "Return BODY as one expression, preserving side-effect order."
+    (cond
+     ((null body) nil)
+     ((null (cdr body)) (car body))
+     (t (cons 'progn body)))))
+
+(unless (fboundp 'macroexp-parse-body)
+  (defun macroexp-parse-body (body)
+    "Split BODY into declarations and remaining forms.
+Return (DECLARATIONS . BODY-FORMS), matching the shape used by Emacs
+macro helpers such as `iter-defun'.  A leading docstring and any
+following `(declare ...)' forms are treated as declarations."
+    (let ((declarations nil)
+          (cur body))
+      (when (and cur (stringp (car cur)))
+        (setq declarations (cons (car cur) declarations))
+        (setq cur (cdr cur)))
+      (while (and cur (consp (car cur)) (eq (car (car cur)) 'declare))
+        (setq declarations (cons (car cur) declarations))
+        (setq cur (cdr cur)))
+      (cons (nreverse declarations) cur))))
+
+(unless (fboundp 'macroexpand-all)
+  (defun macroexpand-all (form &optional _environment)
+    "Minimal recursive macro expander for standalone load-time forms.
+This handles one macro layer before structural recursion.  That is
+still much smaller than Emacs's full macroexp engine, but it is enough
+for vendored load-time helpers such as generator.el's `cl-macrolet'
+rewrite of `iter-yield'."
+    (cond
+     ((not (consp form)) form)
+     ((eq (car form) 'quote) form)
+     ((eq (car form) 'function) form)
+     ((eq (car form) 'eval-when-compile)
+      (list 'quote (eval (macroexp-progn (cdr form)) t)))
+     (t
+      (let ((expanded (macroexpand-1 form _environment)))
+        (if (not (equal expanded form))
+            (macroexpand-all expanded _environment)
+          (let ((out nil)
+                (cur form))
+            (while cur
+              (setq out (cons (macroexpand-all (car cur) _environment)
+                              out))
+              (setq cur (cdr cur)))
+            (nreverse out))))))))
 
 ;; Misc Emacs metadata declarations that are no-ops at run-time.
 (unless (fboundp 'declare)

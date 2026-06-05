@@ -37,7 +37,7 @@
                  top-level recursive-edit recursion-depth
                  execute-extended-command universal-argument
                  digit-argument negative-argument keyboard-quit
-                 exit-recursive-edit install-sigint-handler
+                 exit-recursive-edit kill-emacs install-sigint-handler
                  _sigint-handler-installed-p set-quit-flag
                  clear-quit-flag quit-flag-pending-p))
     (should (fboundp sym)))
@@ -236,6 +236,7 @@
                      command-loop-1 top-level recursive-edit recursion-depth
                      execute-extended-command universal-argument digit-argument
                      negative-argument keyboard-quit exit-recursive-edit
+                     kill-emacs
                      install-sigint-handler _sigint-handler-installed-p
                      set-quit-flag clear-quit-flag quit-flag-pending-p))
         (goto-char (point-min))
@@ -243,6 +244,25 @@
                  (format "(when (emacs-command-loop-builtins--install-function-p '%s)"
                          sym)
                  nil t))))))
+
+(ert-deftest emacs-command-loop-builtins-test/install-gate-overwrites-bulk-stubs ()
+  (let ((sym 'emacs-command-loop-builtins-test--stubbed))
+    (unwind-protect
+        (progn
+          (fset sym #'ignore)
+          (put sym 'emacs-stub-bulk t)
+          (should (emacs-command-loop-builtins--install-function-p sym)))
+      (put sym 'emacs-stub-bulk nil)
+      (fmakunbound sym))))
+
+(ert-deftest emacs-command-loop-builtins-test/kill-emacs-helper-calls-exit ()
+  (let (calls)
+    (cl-letf (((symbol-function 'exit)
+               (lambda (code) (push code calls) :exited)))
+      (should (eq :exited (emacs-command-loop-kill-emacs)))
+      (should (eq :exited (emacs-command-loop-kill-emacs 42)))
+      (should (eq :exited (emacs-command-loop-kill-emacs 'bad))))
+    (should (equal calls '(1 42 0)))))
 
 ;;;; M. Phase B.2 — read-key-sequence
 

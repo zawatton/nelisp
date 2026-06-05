@@ -116,6 +116,10 @@ the conventional shape expected by `defvar-keymap :suppress'."
   (defvar global-map emacs-keymap-global-map
     "Default global keymap for standalone NeLisp."))
 
+(unless (boundp 'menu-bar-separator)
+  (defvar menu-bar-separator '(menu-item "--")
+    "Standard menu separator item for standalone menu keymaps."))
+
 (unless (boundp 'ctl-x-map)
   (defvar ctl-x-map (emacs-keymap-make-sparse-keymap)
     "Standard C-x prefix keymap for standalone NeLisp."))

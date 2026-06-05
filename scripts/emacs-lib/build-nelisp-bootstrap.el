@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'standalone-source-normalize)
 
 (defvar nelisp-bootstrap-output-file
   (expand-file-name "build/nemacs-bootstrap.el"
@@ -38,6 +39,12 @@ final `.el' suffix with `.repl'.")
     "emacs-redisplay-core.el"
     "emacs-tui-event.el")
   "Local src files that host Emacs may not load but standalone NeLisp needs.")
+
+(defvar nelisp-bootstrap-late-extra-files
+  '("emacs-syntax-table.el"
+    "emacs-font-lock.el"
+    "emacs-font-lock-builtins.el")
+  "Local src files inserted after buffer/face substrates are available.")
 
 (defun nelisp-bootstrap--src-dir ()
   "Return the absolute src directory."
@@ -98,6 +105,14 @@ final `.el' suffix with `.repl'.")
         (when (file-readable-p file)
           (setq out (nelisp-bootstrap--insert-after file anchor out))
           (setq anchor file))))
+    (setq anchor (expand-file-name "emacs-faces-builtins.el" src))
+    (unless (member anchor out)
+      (setq anchor (expand-file-name "emacs-faces.el" src)))
+    (dolist (name nelisp-bootstrap-late-extra-files)
+      (let ((file (expand-file-name name src)))
+        (when (file-readable-p file)
+          (setq out (nelisp-bootstrap--insert-after file anchor out))
+          (setq anchor file))))
     out))
 
 (defun nelisp-bootstrap--write-bundle (files output)
@@ -123,24 +138,79 @@ final `.el' suffix with `.repl'.")
 
 (defun nelisp-bootstrap--read-forms-from-file (file)
   "Return top-level forms read from FILE."
-  (with-temp-buffer
-    (insert-file-contents file)
-    (let ((forms nil))
-      (goto-char (point-min))
-      (condition-case err
-          (while t
-            (push (read (current-buffer)) forms))
-        (end-of-file nil)
-        (error
-         (error "cannot read %s: %S" file err)))
-      (nreverse forms))))
+  (standalone-source-normalize-read-forms-from-file file))
 
 (defun nelisp-bootstrap--one-line-string-literal (string)
   "Return STRING as an Elisp string literal that fits on one line."
-  (let ((literal (prin1-to-string string)))
+  (let ((literal (let ((print-quoted nil))
+                   (prin1-to-string string))))
     (setq literal (replace-regexp-in-string "\n" "\\\\n" literal t t))
     (setq literal (replace-regexp-in-string "\r" "\\\\r" literal t t))
     literal))
+
+(defun nelisp-bootstrap--standalone-repl-form (form)
+  "Return FORM normalized for the standalone-reader REPL bootstrap.
+
+The standalone prelude currently ignores definition docstrings.  Dropping
+those unused arguments keeps generated REPL bootstrap input smaller and
+avoids retaining large docstring literals in the persistent evaluator."
+  (cond
+   ((and (consp form)
+         (memq (car form) '(defun defmacro))
+         (>= (length form) 4)
+         (stringp (nth 3 form)))
+    (append (list (nth 0 form) (nth 1 form) (nth 2 form))
+            (nthcdr 4 form)))
+   ((and (consp form)
+         (memq (car form) '(defvar defconst))
+         (>= (length form) 4)
+         (stringp (nth 3 form)))
+    (list (nth 0 form) (nth 1 form) (nth 2 form)))
+   ((and (consp form)
+         (eq (car form) 'defvar-local)
+         (>= (length form) 4)
+         (stringp (nth 3 form)))
+    (list 'defvar (nth 1 form) (nth 2 form)))
+   ((and (consp form)
+         (eq (car form) 'defcustom)
+         (>= (length form) 4)
+         (stringp (nth 3 form)))
+    (list 'defvar (nth 1 form) (nth 2 form)))
+   (t form)))
+
+(defun nelisp-bootstrap--function-headed-list-p (object)
+  "Return non-nil when OBJECT contains a list headed by symbol `function'."
+  (cond
+   ((consp object)
+    (or (eq (car object) 'function)
+        (nelisp-bootstrap--function-headed-list-p (car object))
+        (nelisp-bootstrap--function-headed-list-p (cdr object))))
+   (t nil)))
+
+(defun nelisp-bootstrap--quoted-defun-lambda-list-risk-p (object)
+  "Return non-nil when OBJECT contains a defun whose arglist prints as `#''."
+  (cond
+   ((and (consp object)
+         (memq (car object) '(defun defmacro))
+         (nelisp-bootstrap--function-headed-list-p (nth 2 object)))
+    t)
+   ((and (consp object)
+         (eq (car object) 'quote))
+    nil)
+   ((consp object)
+    (or (nelisp-bootstrap--quoted-defun-lambda-list-risk-p (car object))
+        (nelisp-bootstrap--quoted-defun-lambda-list-risk-p (cdr object))))
+   (t nil)))
+
+(defun nelisp-bootstrap--repl-form-string (form)
+  "Return FORM printed for `nelisp--eval-source-string'."
+  (let ((print-escape-newlines t)
+        ;; Host `prin1' abbreviates any list headed by `function' as `#'...'.
+        ;; That is correct for quoted function forms, but invalid inside a
+        ;; lambda list such as `(defun maphash (function table) ...)'.
+        (print-quoted
+         (not (nelisp-bootstrap--quoted-defun-lambda-list-risk-p form))))
+    (prin1-to-string form)))
 
 (defun nelisp-bootstrap--write-repl-bundle (files output)
   "Write FILES into OUTPUT as standalone-reader REPL input.
@@ -157,19 +227,18 @@ the live REPL context for immediate redefinition."
     (dolist (file files)
       (let ((rel (file-relative-name file nelisp-bootstrap-repo-root)))
         (insert "\n;;; >>> " rel "\n")
-        (dolist (form (nelisp-bootstrap--read-forms-from-file file))
-          (if (member rel '("src/nelisp-text-buffer.el"
-                            "src/nelisp-emacs-compat.el"))
-              (progn
-                (insert "(progn ")
-                (insert (let ((print-escape-newlines t))
-                          (prin1-to-string form)))
-                (insert " nil)\n"))
-            (insert "(progn (nelisp--eval-source-string ")
-            (insert (nelisp-bootstrap--one-line-string-literal
-                     (let ((print-escape-newlines t))
-                       (prin1-to-string form))))
-            (insert ") nil)\n")))
+        (dolist (source-form (nelisp-bootstrap--read-forms-from-file file))
+          (let ((form (nelisp-bootstrap--standalone-repl-form source-form)))
+            (if (member rel '("src/nelisp-text-buffer.el"
+                              "src/nelisp-emacs-compat.el"))
+                (progn
+                  (insert "(progn ")
+                  (insert (nelisp-bootstrap--repl-form-string form))
+                  (insert " nil)\n"))
+              (insert "(progn (nelisp--eval-source-string ")
+              (insert (nelisp-bootstrap--one-line-string-literal
+                       (nelisp-bootstrap--repl-form-string form)))
+              (insert ") nil)\n"))))
         (insert ";;; <<< " rel "\n")))
     (let ((coding-system-for-write 'utf-8-emacs-unix))
       (write-region (point-min) (point-max) output nil 'silent))))

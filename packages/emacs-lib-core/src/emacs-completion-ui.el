@@ -128,15 +128,15 @@ Keys:
          (entries nil))
     (nelisp-ec-with-current-buffer buf
       (nelisp-ec-erase-buffer)
-      (cl-loop for cand in candidates
-               for idx from 0
-               do
-               (let ((start (nelisp-ec-point))
-                     (cell (format (format "%%-%ds" cell-width) cand)))
-                 (nelisp-ec-insert cell)
-                 (push (list start (nelisp-ec-point) cand) entries)
-                 (when (= (mod (1+ idx) columns) 0)
-                   (nelisp-ec-insert "\n"))))
+      (let ((idx 0))
+        (dolist (cand candidates)
+          (let ((start (nelisp-ec-point))
+                (cell (format (format "%%-%ds" cell-width) cand)))
+            (nelisp-ec-insert cell)
+            (push (list start (nelisp-ec-point) cand) entries)
+            (when (= (mod (1+ idx) columns) 0)
+              (nelisp-ec-insert "\n")))
+          (setq idx (1+ idx))))
       (unless (or (null candidates)
                   (string-suffix-p "\n" (nelisp-ec-buffer-string)))
         (nelisp-ec-insert "\n"))

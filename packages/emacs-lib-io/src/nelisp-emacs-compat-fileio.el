@@ -50,9 +50,10 @@
 ;;     14. file-name-sans-extension  NAME
 ;;     15. file-name-as-directory    NAME
 ;;     16. file-name-absolute-p      NAME
+;;     17. substitute-in-file-name    NAME
 ;;
 ;;   PATH walk
-;;     17. executable-find           COMMAND [REMOTE]
+;;     18. executable-find           COMMAND [REMOTE]
 ;;
 ;; nelisp-coding integration:
 ;;
@@ -123,6 +124,19 @@
   (and (fboundp 'nelisp--syscall-stat)
        (nelisp--syscall-stat file)))
 
+(defun nelisp-ec--safe-stat-ex (file)
+  "Return `nl-syscall-stat-ex' result for FILE, or nil on stat failure."
+  (condition-case nil
+      (and (nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
+           (nl-syscall-stat-ex file))
+    (error nil)))
+
+(defun nelisp-ec--safe-stat-kind (file)
+  "Return coarse standalone stat kind for FILE, or nil on stat failure."
+  (condition-case nil
+      (nelisp-ec--stat-kind file)
+    (error nil)))
+
 ;;; ──────────────────────────────────────────────────────────────────────
 ;;; §1. Pure string-surgery APIs (no host syscall, deterministic)
 ;;; ──────────────────────────────────────────────────────────────────────
@@ -147,6 +161,110 @@ helper does NOT touch the filesystem."
         (setq found i))
       (setq i (1- i)))
     found))
+
+(defun nelisp-ec--split-string-char (string delimiter &optional omit-empty)
+  "Split STRING at character DELIMITER.
+When OMIT-EMPTY is non-nil, empty fields are skipped.  This deliberately
+avoids `split-string' so file-name primitives are available before the
+larger `subr.el' compatibility surface has loaded."
+  (let ((start 0)
+        (i 0)
+        (len (length string))
+        parts)
+    (while (< i len)
+      (when (eq (aref string i) delimiter)
+        (let ((part (substring string start i)))
+          (unless (and omit-empty (= (length part) 0))
+            (setq parts (cons part parts))))
+        (setq start (1+ i)))
+      (setq i (1+ i)))
+    (let ((part (substring string start len)))
+      (unless (and omit-empty (= (length part) 0))
+        (setq parts (cons part parts))))
+    (nreverse parts)))
+
+(defun nelisp-ec--env-name-char-p (char)
+  "Return non-nil if CHAR is valid in a shell-style environment name."
+  (or (and (>= char ?A) (<= char ?Z))
+      (and (>= char ?a) (<= char ?z))
+      (and (>= char ?0) (<= char ?9))
+      (eq char ?_)))
+
+(defun nelisp-ec--substring-index (needle haystack)
+  "Return the first index of NEEDLE in HAYSTACK, or nil."
+  (let ((nlen (length needle))
+        (hlen (length haystack))
+        (i 0)
+        found)
+    (while (and (not found)
+                (<= (+ i nlen) hlen))
+      (when (string-equal needle (substring haystack i (+ i nlen)))
+        (setq found i))
+      (setq i (1+ i)))
+    found))
+
+(defun nelisp-ec--substitute-env-vars (name)
+  "Expand `$VAR' and `${VAR}' in NAME using `getenv'.
+Missing variables are left verbatim, matching Emacs's conservative
+load-time behavior."
+  (let ((i 0)
+        (len (length name))
+        (out ""))
+    (while (< i len)
+      (cond
+       ((not (eq (aref name i) ?$))
+        (setq out (concat out (substring name i (1+ i))))
+        (setq i (1+ i)))
+       ((and (< (1+ i) len)
+             (eq (aref name (1+ i)) ?{))
+        (let ((j (+ i 2))
+              end)
+          (while (and (< j len) (not end))
+            (when (eq (aref name j) ?})
+              (setq end j))
+            (setq j (1+ j)))
+          (if (not end)
+              (progn
+                (setq out (concat out "$"))
+                (setq i (1+ i)))
+            (let* ((var (substring name (+ i 2) end))
+                   (value (getenv var)))
+              (setq out
+                    (concat out
+                            (if value value (substring name i (1+ end)))))
+              (setq i (1+ end))))))
+       ((and (< (1+ i) len)
+             (nelisp-ec--env-name-char-p (aref name (1+ i))))
+        (let ((j (1+ i)))
+          (while (and (< j len)
+                      (nelisp-ec--env-name-char-p (aref name j)))
+            (setq j (1+ j)))
+          (let* ((var (substring name (1+ i) j))
+                 (value (getenv var)))
+            (setq out (concat out (if value value (substring name i j))))
+            (setq i j))))
+       (t
+        (setq out (concat out "$"))
+        (setq i (1+ i)))))
+    out))
+
+(defun nelisp-ec--discard-before-double-slash (name)
+  "Apply `substitute-in-file-name' double-slash shadowing to NAME."
+  (let ((idx (nelisp-ec--substring-index "//" name)))
+    (if idx
+        (concat "/" (substring name (+ idx 2)))
+      name)))
+
+;;;###autoload
+(defun nelisp-ec-substitute-in-file-name (name)
+  "Substitute environment variables and `//' shadows in NAME.
+This is a POSIX-oriented MVP for standalone NeLisp.  It implements the
+parts used by Emacs's `rfn-eshadow.el': `$VAR', `${VAR}', and discarding
+the path prefix before `//'."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (nelisp-ec--discard-before-double-slash
+   (nelisp-ec--substitute-env-vars name)))
 
 ;;;###autoload
 (defun nelisp-ec-file-name-directory (name)
@@ -199,7 +317,7 @@ Returns the simplified list (does NOT touch leading `/')."
   (let ((acc nil))
     (dolist (seg segments)
       (cond
-       ((or (string-empty-p seg) (string-equal seg ".")) nil)
+	       ((or (= (length seg) 0) (string-equal seg ".")) nil)
        ((string-equal seg "..")
         (when acc (pop acc)))
        (t (push seg acc))))
@@ -235,7 +353,7 @@ invoked beyond reading `default-directory' for the seed CWD."
                      (concat home (substring seed 1)))
                     (t seed)))) ;; ~user/ unsupported — leave verbatim
                 (t seed)))
-         (segments (split-string seed "/" t))
+         (segments (nelisp-ec--split-string-char seed ?/ t))
          (collapsed (nelisp-ec--collapse-segments segments))
          (joined (mapconcat #'identity collapsed "/")))
     (concat "/" joined)))
@@ -256,10 +374,10 @@ invoked beyond reading `default-directory' for the seed CWD."
     (signal 'wrong-type-argument (list 'stringp file)))
   (cond
    ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-    (let ((rc (nl-syscall-stat-ex file)))
+    (let ((rc (nelisp-ec--safe-stat-ex file)))
       (and rc (>= (or (plist-get rc :rc) 0) 0))))
    ((fboundp 'nelisp--syscall-stat)
-    (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
+    (and (memq (nelisp-ec--safe-stat-kind file) '(file directory symlink)) t))
    (t (file-exists-p file))))
 
 ;;;###autoload
@@ -267,12 +385,13 @@ invoked beyond reading `default-directory' for the seed CWD."
   "Return non-nil if FILE exists and is readable.  Wraps access(F_OK | R_OK)."
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
-  (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-access)
-    (zerop (nl-syscall-access file 4))) ;; R_OK = 4
-   ((fboundp 'nelisp--syscall-stat)
-    (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
-   (t (file-readable-p file))))
+  (and (nelisp-ec-file-exists-p file)
+       (cond
+        ((nelisp-ec--syscall-available-p 'nl-syscall-access)
+         (zerop (nl-syscall-access file 4))) ;; R_OK = 4
+        ((fboundp 'nelisp--syscall-stat)
+         (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
+        (t (file-readable-p file)))))
 
 ;;;###autoload
 (defun nelisp-ec-file-directory-p (file)
@@ -281,10 +400,10 @@ invoked beyond reading `default-directory' for the seed CWD."
     (signal 'wrong-type-argument (list 'stringp file)))
   (cond
    ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-    (let ((rc (nl-syscall-stat-ex file)))
+    (let ((rc (nelisp-ec--safe-stat-ex file)))
       (and rc (eq (plist-get rc :type) 'directory))))
    ((fboundp 'nelisp--syscall-stat)
-    (eq (nelisp-ec--stat-kind file) 'directory))
+    (eq (nelisp-ec--safe-stat-kind file) 'directory))
    (t (file-directory-p file))))
 
 ;;;###autoload
@@ -297,7 +416,7 @@ forwarded to the underlying call.  Returns nil if FILE does not exist
     (signal 'wrong-type-argument (list 'stringp file)))
   (cond
    ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-    (let ((s (nl-syscall-stat-ex file)))
+    (let ((s (nelisp-ec--safe-stat-ex file)))
       (and s (>= (or (plist-get s :rc) 0) 0)
            ;; Format: (TYPE LINKS UID GID ATIME MTIME CTIME SIZE
            ;;          MODES UNUSED INODE DEVICE).  Match Emacs shape.
@@ -317,7 +436,7 @@ forwarded to the underlying call.  Returns nil if FILE does not exist
                  (plist-get s :inode)
                  (plist-get s :dev)))))
    ((fboundp 'nelisp--syscall-stat)
-    (let ((kind (nelisp-ec--stat-kind file)))
+    (let ((kind (nelisp-ec--safe-stat-kind file)))
       (and (memq kind '(file directory symlink))
            (list (eq kind 'directory)
                  1 nil nil nil nil nil 0 nil nil nil nil))))
@@ -453,7 +572,7 @@ currently a no-op (Phase 9d MVP is local-only)."
     (and (nelisp-ec-file-exists-p command) command))
    (t
     (let* ((path (or (getenv "PATH") ""))
-           (dirs (split-string path ":" t))
+           (dirs (nelisp-ec--split-string-char path ?: t))
            (found nil))
       (catch 'done
         (dolist (d dirs)

@@ -5,10 +5,13 @@
 (require 'cl-lib)
 
 (defvar standalone-bootstrap-profile-reader nil
-  "Path to target/nelisp-standalone-reader.")
+  "Path to target/nelisp or a compatible standalone reader binary.")
 
 (defvar standalone-bootstrap-profile-bundle nil
   "Path to the generated nemacs bootstrap bundle.")
+
+(defvar standalone-bootstrap-profile-prelude nil
+  "Path to the standalone reader stdlib prelude, or nil.")
 
 (defvar standalone-bootstrap-profile-limit nil
   "Optional maximum number of bundle sections to profile.")
@@ -16,6 +19,11 @@
 (defvar standalone-bootstrap-profile-timeout nil
   "Advisory timeout string printed in diagnostics.
 The host runner uses `call-process' directly; Makefile owns any outer timeout.")
+
+(defvar standalone-bootstrap-profile-repo-root
+  (expand-file-name ".." (file-name-directory
+                          (or load-file-name buffer-file-name)))
+  "Repository root.")
 
 (defun standalone-bootstrap-profile--number-or-nil (value)
   "Return numeric VALUE, or nil for nil/empty/non-numeric values."
@@ -53,13 +61,32 @@ Each returned entry is (NAME . TEXT)."
   "Write a standalone-reader program containing SECTIONS through UPTO."
   (with-temp-file output
     (insert ";;; standalone bootstrap profile probe -*- lexical-binding: t; -*-\n")
+    (insert (format "(setq nelisp-emacs-vendor-root %S)\n"
+                    (expand-file-name "vendor"
+                                      standalone-bootstrap-profile-repo-root)))
+    (insert (format "(setq load-path '%S)\n"
+                    (list
+                     (expand-file-name "src"
+                                       standalone-bootstrap-profile-repo-root)
+                     (expand-file-name "scripts"
+                                       standalone-bootstrap-profile-repo-root)
+                     (expand-file-name "vendor/emacs-lisp"
+                                       standalone-bootstrap-profile-repo-root)
+                     (expand-file-name "vendor/emacs-lisp/emacs-lisp"
+                                       standalone-bootstrap-profile-repo-root)
+                     (expand-file-name "vendor/emacs-lisp/vc"
+                                       standalone-bootstrap-profile-repo-root))))
+    (when standalone-bootstrap-profile-prelude
+      (insert (format "(nelisp--eval-source-string %S)\n"
+                      (standalone-bootstrap-profile--read-file
+                       standalone-bootstrap-profile-prelude))))
     (cl-loop for idx from 0 below upto
              for section = (nth idx sections)
              do (insert (cdr section))
              do (insert "\n"))
     ;; The standalone reader currently reports Lisp errors as exit 0.
     ;; A successful probe must therefore reach this explicit sentinel.
-    (insert "\n42\n")))
+    (insert "\n(exit 42)\n")))
 
 (defun standalone-bootstrap-profile--run-one (reader sections index)
   "Run READER with bundle SECTIONS through one-based INDEX."
@@ -69,7 +96,7 @@ Each returned entry is (NAME . TEXT)."
     (unwind-protect
         (progn
           (standalone-bootstrap-profile--write-program sections index tmp)
-          (setq exit (call-process reader nil nil nil tmp))
+          (setq exit (call-process reader nil nil nil "--load" tmp))
           (setq elapsed (- (float-time) start))
           (list exit elapsed))
       (when (file-exists-p tmp)
@@ -85,6 +112,10 @@ Each returned entry is (NAME . TEXT)."
                (file-readable-p standalone-bootstrap-profile-bundle))
     (error "standalone-bootstrap-profile-bundle is not readable: %S"
            standalone-bootstrap-profile-bundle))
+  (when (and standalone-bootstrap-profile-prelude
+             (not (file-readable-p standalone-bootstrap-profile-prelude)))
+    (error "standalone-bootstrap-profile-prelude is not readable: %S"
+           standalone-bootstrap-profile-prelude))
   (let* ((sections (standalone-bootstrap-profile--sections
                     (standalone-bootstrap-profile--read-file
                      standalone-bootstrap-profile-bundle)))
