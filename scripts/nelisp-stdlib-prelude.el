@@ -368,6 +368,16 @@
     (cond ((<= n 1) path)
           ((eq (aref path (1- n)) ?/) (substring path 0 (1- n)))
           (t path))))
+(defun expand-file-name (path &optional base)
+  ;; MVP (from nelisp-stdlib-misc.el): absolute paths pass through; relative
+  ;; paths anchor on BASE or default-directory.  No ~ / . / .. resolution.
+  (cond
+   ((or (null path) (= (length path) 0)) path)
+   ((eq (aref path 0) ?/) path)
+   (t (let ((b (or base (and (boundp 'default-directory) default-directory))))
+        (if (and (stringp b) (> (length b) 0))
+            (concat (file-name-as-directory b) path)
+          path)))))
 
 ;; Doc 143: purecopy (no pure space -> identity), destructive nconc (setcdr),
 ;; princ/terpri (via the wired printer + nelisp--write-stdout-bytes).
