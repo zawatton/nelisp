@@ -490,6 +490,68 @@
     (cdr (nelisp--syscall-readdir dirname)))
    (t nil)))
 
+;; --- file-system predicates / mkdir (standalone has no stat / mkdir syscall) -
+(when (files--install-fallback-function-p 'file-exists-p)
+  (defun file-exists-p (filename)
+    "Approximate existence check for the standalone reader, which exposes no
+stat syscall: a non-empty read counts as existing.  Adequate for the
+key/value store files this substrate serves (they are never legitimately
+empty -- they always hold at least \"{}\")."
+    (let ((s (condition-case nil
+                 (and (fboundp 'rdf) (rdf (expand-file-name filename)))
+               (error nil))))
+      (and (stringp s) (> (length s) 0)))))
+(when (files--install-fallback-function-p 'file-readable-p)
+  (defun file-readable-p (filename) (file-exists-p filename)))
+(when (files--install-fallback-function-p 'file-regular-p)
+  (defun file-regular-p (filename)
+    "No directory detection on the standalone reader, so an existing path is a
+regular file."
+    (file-exists-p filename)))
+(when (files--install-fallback-function-p 'char-before)
+  (defun char-before (&optional pos)
+    "Character before POS (or point) in the fallback current buffer, or nil."
+    (let* ((p (or pos (files--buffer-point-value)))
+           (content (files--buffer-string-value))
+           (idx (- p 2)))
+      (if (and (>= idx 0) (< idx (files--string-length content)))
+          (aref content idx) nil))))
+(when (files--install-fallback-function-p 'char-after)
+  (defun char-after (&optional pos)
+    "Character at POS (or point) in the fallback current buffer, or nil."
+    (let* ((p (or pos (files--buffer-point-value)))
+           (content (files--buffer-string-value))
+           (idx (- p 1)))
+      (if (and (>= idx 0) (< idx (files--string-length content)))
+          (aref content idx) nil))))
+(when (files--install-fallback-function-p 'file-directory-p)
+  (defun file-directory-p (filename)
+    "Heuristic directory test for the standalone reader (no stat syscall): a
+path ending in a slash -- e.g. the result of `file-name-directory' -- is
+treated as an existing directory; a path that exists as a regular file is not."
+    (cond
+     ((not (stringp filename)) nil)
+     ((let ((n (length filename))) (and (> n 0) (eq (aref filename (1- n)) ?/))) t)
+     (t nil))))
+(when (files--install-fallback-function-p 'make-directory)
+  (defun make-directory (_dir &optional _parents)
+    "No-op: the standalone reader has no mkdir syscall; the parent directory is
+assumed to already exist."
+    nil))
+
+;; Bridge the file reader to the standalone reader's `rdf' primitive (the only
+;; file-read entry point baked into target/nelisp).  files--read-file-text
+;; prefers `nelisp--syscall-read-file'; provide it on top of `rdf'.  `rdf'
+;; returns "" for a missing OR empty file, so map empty -> nil to let
+;; insert-file-contents signal `file-error' for a genuinely absent file.
+(when (and (fboundp 'rdf) (fboundp 'nelisp--write-stderr-line))
+  ;; The reader's baked nelisp--syscall-read-file throws uncatchably when
+  ;; called with a path; redefine it on top of rdf (the working file-read
+  ;; primitive).  Gated on the standalone marker so host Emacs is untouched.
+  (defun nelisp--syscall-read-file (filename)
+    (let ((s (rdf (expand-file-name filename))))
+      (and (stringp s) (> (length s) 0) s))))
+
 (provide 'files-standalone-buffer)
 
 ;;; files-standalone-buffer.el ends here
