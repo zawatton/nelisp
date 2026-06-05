@@ -1,6 +1,6 @@
 #+TITLE: Doc 140 - Standalone fully chunked arena
 #+DATE: 2026-06-04
-#+STATUS: SHIPPED (linux x86_64); cross-platform fixed-base removal residual
+#+STATUS: SHIPPED — Stage 2-8 on linux/windows/macos (linux execution-verified; win/mac structure-verified)
 
 * Goal
 
@@ -38,15 +38,17 @@ remaining gap against the Goal).
   turns every former fixed-base metadata immediate into a runtime base load.
   *Verified at runtime*: the built reader's arena base is an mmap address, not
   =0x10000000= (chunk-growth smoke + arena-stats).
-- *Residual*: macOS and Windows still use target-specific fixed bases. The
-  Phase-47 prerequisite is now in place on BOTH: x86_64 =pc32= (Windows) and
-  aarch64 =data-addr= via ADRP+ADD (macOS, R_AARCH64_ADR_PREL_PG_HI21 /
-  ADD_ABS_LO12_NC, shipped 2026-06-05). The remaining work is purely the
-  =standalone-build.el= wiring — extend =chunk-arena-rewrite= + a
-  =VirtualAlloc(NULL)= / =mmap(NULL)= arena-init to those targets so they use a
-  driver-owned =nl_arena_base= like linux. This is structure-verifiable here;
-  execution verification needs a Windows / macOS runtime (absent on the linux
-  dev host).
+- *Windows + macOS Stage 8 SHIPPED 2026-06-05*: the same dynamic-base scheme
+  is now wired on all three targets. =chunk-arena-rewrite= is target-aware;
+  Windows arena-init uses =VirtualAlloc(NULL)= + =nl_arena_base=, macOS uses
+  =mmap(NULL)= + =nl_arena_base=; the driver-owned =nl_arena_base= bss slot
+  unit is appended for linux/windows/macos. NO normal runtime path embeds a
+  platform-specific fixed arena base on any target. The data-addr prereq is in
+  place everywhere (x86_64 =pc32=, aarch64 ADRP+ADD =R_AARCH64_ADR_PREL_PG_HI21=
+  / =ADD_ABS_LO12_NC=). Verified: 41/41 target tests + linux execution smokes
+  (realdr selftest exit 42, chunk-growth). NOTE: Windows/macOS are
+  structure-verified only — execution needs those runtimes (absent on the linux
+  dev host); linux x86_64 (the 1st-class target) is fully execution-verified.
 - Arena pressure is observable through =(nelisp--arena-stats)=.
 
 The current pressure tuple is:
