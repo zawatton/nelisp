@@ -551,6 +551,14 @@ gate5:
 		-l test/nelisp-emacs-artifact-gate5-test.el \
 		-f ert-run-tests-batch-and-exit
 
+vendor-nelc-cache:
+	$(EMACS) -Q -L scripts -L test \
+		-L /home/madblack-21/Cowork/Notes/dev/nelisp/lisp \
+		-L /home/madblack-21/Cowork/Notes/dev/nelisp/src \
+		-l scripts/nemacs-vendor-cache.el \
+		-l test/nemacs-vendor-cache-test.el \
+		-f ert-run-tests-batch-and-exit
+
 test-redisplay-core-smoke:
 	$(EMACS) -L src -L scripts \
 		-l scripts/emacs-redisplay-core-smoke.el \
