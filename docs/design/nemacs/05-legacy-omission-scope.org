@@ -1,0 +1,118 @@
+#+TITLE: nemacs Doc 05 — Legacy / old-environment feature omission scope (was nelisp Doc 144)
+#+DATE: 2026-06-05
+#+STATUS: DRAFT
+
+* Purpose
+
+GNU Emacs carries ~40 years of backward-compatibility and old-environment
+support.  nemacs targets *modern environments only*; porting Emacs's legacy
+surface would multiply the work for users who will never exercise it.  This
+doc defines, per subsystem, what nemacs *OMITS* and what it *KEEPS*, so every
+porting decision has a default answer and the overall schedule shrinks.
+
+*Guiding principle*: when porting any Emacs feature, implement the modern path
+and DROP its backward-compat / old-environment branches.  If a dropped path is
+ever genuinely needed, it can be added later behind a clearly-named shim — but
+it is never the default and never blocks a port.
+
+*Baseline targets KEPT*: 64-bit Linux / macOS / Windows; UTF-8 everywhere;
+lexical-binding elisp; GUI as a future separate framework repo; a terminal/TUI
+only insofar as the substrate already provides it.
+
+* Decision table (OMIT vs KEEP)
+
+** 1. Character encodings / coding systems
+- OMIT: ISO-2022 family, EUC-JP/KR/CN, Shift-JIS, Big5/GBK/GB18030 legacy
+  conversion, HZ, the codepage (cpNNN) tables, EBCDIC, the general
+  charset/coding-priority machinery, `set-language-environment' legacy tables.
+- KEEP: UTF-8 (default in/out), raw-bytes (binary), and ASCII.  Add one or two
+  specific legacy codecs ONLY if a concrete must-run file needs it.
+- Why: Unicode/UTF-8 is universal on modern systems; the coding-system engine
+  is one of Emacs's largest C subsystems.
+
+** 2. Terminals / display backends
+- OMIT: termcap/terminfo for exotic terminals, hpterm/sun/vt100-quirk tables,
+  8-colour approximation, character-terminal-only redisplay special cases,
+  `gpm' mouse, serial-terminal frames, multi-tty legacy.
+- KEEP: a single modern ANSI/UTF-8 terminal contract (whatever the substrate
+  exposes) + the future GUI framework.
+- Why: nemacs' display layer is being rebuilt; it need not reproduce 1980s
+  terminal compatibility.
+
+** 3. Old Emacs-version compatibility shims
+- OMIT: `cl.el` (use `cl-lib' only), pre-lexical-binding dynamic-only code,
+  `(if (fboundp …) … )' version guards targeting Emacs < 29, obsolete
+  function/variable aliases, `make-obsolete' shims (load the modern name only).
+- KEEP: the current modern API surface only.  Vendored packages that probe for
+  old APIs get the modern branch; the old branch is dead code we do not port.
+- Why: nemacs has no "previous version" to be compatible with.
+
+** 4. Legacy platforms
+- OMIT: MS-DOS, MS-Windows 9x, 16/32-bit assumptions, Carbon/old-macOS, NeXTstep
+  legacy, VMS, Cygwin-specific paths, `dos-w32'/`ls-lisp' DOS heuristics,
+  CRLF auto-magic beyond a simple opt-in.
+- KEEP: 64-bit Linux/macOS/Windows POSIX-ish file & process surface (already the
+  basis of the elisp OS layer).
+- Why: only modern 64-bit hosts are targeted.
+
+** 5. Obsolete / heavy application subsystems
+- OMIT (do not port unless explicitly requested): Gnus, Rmail/VM/MH-E, EDE/Semantic,
+  legacy `vc' backends (CVS/RCS/SCCS/Bzr/Mtn — keep Git only), ange-ftp (Tramp
+  supersedes), old `calendar' astronomy tables, `nethack'/games, `artist',
+  `hanoi', `dunnet', `gametree', `ebnf2ps', `ps-print' legacy.
+- KEEP: the editing core + a curated modern package set (project, completion,
+  org subset, eglot-class tooling) as separate onboarding.
+- Why: these are large, self-contained, and rarely on a modern critical path.
+
+** 6. Regexp (already applied — Doc 143 matcher)
+- OMIT: syntax-table-dependent regexp behaviours beyond `\w \W \s \S',
+  obscure `\=' / `\_<' / category classes, non-greedy only where trivial.
+- KEEP: the differential-verified modern subset (literals, `.`, `* + ?`,
+  `[...]`, `^ $`, `\(\)`, `\|`, `\{n,m\}`, `\w \W \s \S`, escapes) — verified
+  67/67 vs GNU Emacs `string-match'.
+- Why: covers the vast majority of real patterns; legacy syntax-class coupling
+  is expensive and seldom used.
+
+** 7. Byte-code / loading legacy
+- OMIT: pre-lexical bytecode quirks, `.elc' format versions other than the one
+  GNU compat gate already targets, dumping/unexec legacy (portable dump only if
+  ever needed), `load-history' fidelity beyond what vendor workflows require.
+- KEEP: the NeLisp `.nelc`/`.neln` artifact cache (Doc 142) + a single `.elc`
+  compatibility lane.
+
+** 8. Input / i18n legacy
+- OMIT: the full Quail input-method library, legacy bidi reordering modes,
+  composition tables for rare scripts, `iso-transl', `kkc', leim mega-tables.
+- KEEP: direct UTF-8 input; add specific input methods only on request.
+
+** 9. Misc obsolete API duplications
+- OMIT: `defadvice' (use `advice-add'), old keymap list formats, `easymenu'
+  legacy, `cl' loop-macro duplicates, timer legacy (`run-with-idle-timer'
+  obscure args), `process-filter' string-vs-buffer legacy corners.
+- KEEP: the one modern form of each.
+
+* How this is applied in practice
+
+1. *Primitive porting* (Doc 143 worklist): when a C primitive has a legacy
+   branch (e.g. coding-system arguments, syntax-table coupling), implement the
+   modern/default behaviour and document the omission in the defun docstring.
+2. *Vendor onboarding*: a package that fails only because it probes an omitted
+   legacy API is handled by providing the modern API it falls back to — never by
+   porting the legacy API.
+3. *Tests*: do not port Emacs tests that exercise omitted legacy behaviour
+   (cf. the Rust-binary test removal precedent).
+
+* Estimated dev-time impact (qualitative)
+
+The coding-system engine, the multi-tty/termcap display legacy, and the
+obsolete application subsystems are individually among the largest parts of the
+Emacs C/Lisp base.  Omitting them removes the majority of the "long tail" of a
+faithful Emacs reimplementation, letting nemacs reach a usable modern editor on
+a pure-elisp runtime far sooner.
+
+* Open questions
+
+- Which 1–2 legacy codecs (if any) are worth keeping for must-run files?
+- Is a minimal Tramp (ssh only) in or out of the initial scope?
+- Does the future GUI framework repo absorb any display-compat decisions, or are
+  they all omitted at the substrate level?
