@@ -308,6 +308,13 @@
 (defun prefix-numeric-value (arg)
   (cond ((null arg) 1) ((eq arg '-) -1) ((consp arg) (car arg)) (t arg)))
 
+;; Doc 143 arithmetic (helper-free, via >/</- which are reader primitives).
+(defun max (x &rest rest)
+  (let ((acc x)) (while rest (if (> (car rest) acc) (setq acc (car rest))) (setq rest (cdr rest))) acc))
+(defun min (x &rest rest)
+  (let ((acc x)) (while rest (if (< (car rest) acc) (setq acc (car rest))) (setq rest (cdr rest))) acc))
+(defun abs (x) (if (< x 0) (- 0 x) x))
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
