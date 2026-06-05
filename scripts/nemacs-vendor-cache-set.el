@@ -9,8 +9,11 @@
 (require 'nemacs-vendor-cache)
 
 (defconst nemacs-vendor-cache-set--org-macs-drop-reason
-  "Dropped from the cached set: `nelisp-artifact-compile-file' fails to read \
-`org-macs.el' with `nelisp-read-error' \"unknown string escape\".")
+  "Dropped from the cached set: org-macs.el now COMPILES to .nelc (the reader \
+string-escape gap was fixed), but loading its module replay raises \
+`nelisp-void-function' for `defalias' — the NeLisp eval runtime is missing \
+`defalias' (and likely further org-fold/cl builtins org-macs needs). Adding \
+those runtime builtins is the next step to make org-macs cacheable end-to-end.")
 
 (defvar nemacs-vendor-cache-set-root-override nil
   "Override root for set-cache artifacts.
@@ -123,9 +126,12 @@ Nil means `build/nelisp-artifacts/vendor-set' under the repo root.")
               :reason nemacs-vendor-cache-set--org-macs-drop-reason)))
 
 (defun nemacs-vendor-cache-set-default-entries ()
-  "Return the chosen cacheable vendor set for this host."
-  ;; `org-macs.el' source-loads, but current NeLisp artifact compilation
-  ;; cannot read it due an unsupported string escape in the file.
+  "Return the chosen cacheable vendor set for this host.
+The reader string-escape gap is now fixed (org-macs.el COMPILES to .nelc),
+but loading its module replay still hits a NeLisp eval-runtime gap —
+`defalias' is void — so org-macs is not yet cacheable end-to-end.
+format-spec + org-version remain the proven cacheable set; see the drop
+reason for the next runtime builtin to add."
   (list (nemacs-vendor-cache-set-format-spec-entry)
         (nemacs-vendor-cache-set-org-version-entry)))
 
