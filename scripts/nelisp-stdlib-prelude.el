@@ -278,6 +278,30 @@
       (setq seq (cdr seq)))
     (nreverse acc)))
 
+;; Doc 143 (WIRE from lisp/nelisp-stdlib-plist-str.el): high-frequency string
+;; primitives that were void in the reader runtime.  Low-dependency forms only.
+(defun string-equal (a b)
+  (let ((sa (cond ((stringp a) a) ((symbolp a) (symbol-name a)) (t a)))
+        (sb (cond ((stringp b) b) ((symbolp b) (symbol-name b)) (t b))))
+    (equal sa sb)))
+
+(defun string= (a b) (string-equal a b))
+
+(defun regexp-quote (s)
+  ;; Build via substring + string concat: the reader's `concat' does not
+  ;; accept a char-list argument, so accumulate 1-char substrings instead.
+  (let ((out "") (i 0) (n (length s)))
+    (while (< i n)
+      (let ((ch (aref s i)) (cs (substring s i (1+ i))))
+        (when (or (eq ch ?.) (eq ch ?*) (eq ch ?+) (eq ch ??)
+                  (eq ch ?\[) (eq ch ?\]) (eq ch ?^) (eq ch ?$)
+                  (eq ch ?\\) (eq ch ?\() (eq ch ?\))
+                  (eq ch ?\{) (eq ch ?\}) (eq ch ?|))
+          (setq out (concat out "\\")))
+        (setq out (concat out cs)))
+      (setq i (1+ i)))
+    out))
+
 (defun nth (n list) (car (nthcdr n list)))
 
 (defun make-list (length object)
