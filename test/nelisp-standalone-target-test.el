@@ -429,22 +429,32 @@
                suffix))
       (should-not (string-match-p "268435464" suffix)))))
 
-(ert-deftest nelisp-standalone-target-windows-arena-uses-virtualalloc ()
-  "Windows arena source replaces Linux mmap with VirtualAlloc."
+(ert-deftest nelisp-standalone-target-windows-arena-init-uses-null-virtualalloc ()
+  "Windows chunk-0 init uses VirtualAlloc(NULL, ...) and stores `nl_arena_base'."
   (let ((nelisp-standalone--target 'windows-x86_64))
-    (should (equal (cadr (cl-find-if
-                          (lambda (form)
-                            (and (consp form)
-                                 (eq (car form) 'defun)
-                                 (eq (cadr form) 'nl_arena_init)))
-                          (cdr (nelisp-standalone--target-arena-source))))
-                   'nl_arena_init))
-    (should (member 'VirtualAlloc
-                    (flatten-tree
-                     (nelisp-standalone--target-arena-source))))))
+    (cl-labels ((tree-member-p
+                 (needle tree)
+                 (cond
+                  ((equal needle tree) t)
+                  ((consp tree)
+                   (or (tree-member-p needle (car tree))
+                       (tree-member-p needle (cdr tree)))))))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p
+                 '(extern-call VirtualAlloc 0 #x4000000 12288 4)
+                 arena))
+        (should (tree-member-p
+                 '(ptr-write-u64 (data-addr nl_arena_base) 0 base)
+                 arena))
+        (should (tree-member-p
+                 '(ptr-write-u64 (+ base 704) 0 (+ base 768))
+                 arena))
+        (should-not (tree-member-p
+                     '(extern-call VirtualAlloc #x70000000 #x4000000 12288 4)
+                     arena))))))
 
 (ert-deftest nelisp-standalone-target-windows-arena-commits-64m ()
-  "Windows arena avoids a large upfront commit in VirtualAlloc."
+  "Windows chunk-0 init keeps the bounded 64 MiB first reservation."
   (let ((nelisp-standalone--target 'windows-x86_64)
         (nelisp-standalone--windows-arena-base #x70000000))
     (cl-labels ((tree-member-p
@@ -456,27 +466,32 @@
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(extern-call VirtualAlloc #x70000000 #x4000000 12288 4)
+                 '(extern-call VirtualAlloc 0 #x4000000 12288 4)
                  arena))
         (should-not (tree-member-p
                      '(extern-call VirtualAlloc 268435456 #x10000000 12288 4)
                      arena))
         (should-not (tree-member-p
-                     '(extern-call VirtualAlloc 268435456 #x40000000 12288 4)
+                     '(extern-call VirtualAlloc 0 #x40000000 12288 4)
                      arena))))))
 
-(ert-deftest nelisp-standalone-target-windows-rebases-arena-slots ()
-  "Windows source rebase moves all fixed arena metadata slots together."
+(ert-deftest nelisp-standalone-target-windows-stage8-rewrites-arena-slots ()
+  "Windows Stage 8 rewrites rebased arena metadata to `nl_arena_base' loads."
   (let ((nelisp-standalone--target 'windows-x86_64)
         (nelisp-standalone--windows-arena-base #x70000000))
     (should (equal
-             (nelisp-standalone--windows-rebase-arena-source
-              '(seq (ptr-write-u64 268435472 0 1)
-                    (atomic-fetch-add 268435544 1)
-                    (ptr-write-u64 4096 0 268435456)))
-             '(seq (ptr-write-u64 #x70000010 0 1)
-                   (atomic-fetch-add #x70000058 1)
-                   (ptr-write-u64 4096 0 #x70000000))))))
+             (nelisp-standalone--chunk-arena-rewrite
+              (nelisp-standalone--rebase-arena-source
+               '(seq (ptr-write-u64 268435472 0 1)
+                     (atomic-fetch-add 268435544 1)
+                     (ptr-write-u64 4096 0 268435456))))
+             '(seq
+               (ptr-write-u64
+                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 16) 0 1)
+               (atomic-fetch-add
+                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 88) 1)
+               (ptr-write-u64
+                4096 0 (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0)))))))
 
 (ert-deftest nelisp-standalone-target-linux-arena-uses-anonymous-mmap ()
   "Doc 140 Stage 8: linux reserves chunk 0 with mmap(NULL) — no fixed base.
@@ -531,19 +546,19 @@ historical 8 GiB — pressure beyond it is handled by chunk growth."
     (let ((nelisp-standalone--target 'windows-x86_64)
           (nelisp-standalone--windows-arena-base #x70000000))
       (should (tree-member-p
-               '(ptr-write-u64 #x700000d8 0 #x4000000)
+               '(ptr-write-u64 (+ base 216) 0 #x4000000)
                (nelisp-standalone--target-arena-source))))
     (let ((nelisp-standalone--target 'macos-aarch64))
       (should (tree-member-p
-               '(ptr-write-u64 #x8000000d8 0 #x20000000)
+               '(ptr-write-u64 (+ base 216) 0 #x20000000)
                (nelisp-standalone--target-arena-source))))))
 
 (ert-deftest nelisp-standalone-target-arena-registers-first-chunk ()
   "Registers chunk 0's descriptor + control slots at init.
 Doc 140 Stage 8 (linux): the writes are relative to the runtime mmap base
 (`(+ base OFF)') instead of a fixed immediate — chunk 0 is no longer pinned at
-0x10000000.  windows/macos keep their fixed-base (rebased) immediates until
-`data-addr' lands for those toolchains."
+0x10000000.  windows/macos now follow the same runtime-base scheme through the
+shared `nl_arena_base' slot."
   (cl-labels ((tree-member-p
                (needle tree)
                (cond
@@ -565,35 +580,75 @@ Doc 140 Stage 8 (linux): the writes are relative to the runtime mmap base
     (let ((nelisp-standalone--target 'windows-x86_64)
           (nelisp-standalone--windows-arena-base #x70000000))
       (let ((arena (nelisp-standalone--target-arena-source)))
-        (should (tree-member-p '(ptr-write-u64 #x700002c0 0 #x70000300) arena))
-        (should (tree-member-p '(ptr-write-u64 #x700002d0 0 1) arena))
-        (should (tree-member-p '(ptr-write-u64 #x700002d8 0 #x4000000) arena))
-        (should (tree-member-p '(ptr-write-u64 #x70000318 0 #x70000400) arena))))
+        (should (tree-member-p '(ptr-write-u64 (+ base 704) 0 (+ base 768)) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 720) 0 1) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 728) 0 #x4000000) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 792) 0 (+ base #x400)) arena))))
     (let ((nelisp-standalone--target 'macos-aarch64))
       (let ((arena (nelisp-standalone--target-arena-source)))
-        (should (tree-member-p '(ptr-write-u64 #x8000002c0 0 #x800000300) arena))
-        (should (tree-member-p '(ptr-write-u64 #x8000002d0 0 1) arena))
-        (should (tree-member-p '(ptr-write-u64 #x8000002d8 0 #x20000000) arena))
-        (should (tree-member-p '(ptr-write-u64 #x800000318 0 #x800000400) arena))))))
+        (should (tree-member-p '(ptr-write-u64 (+ base 704) 0 (+ base 768)) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 720) 0 1) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 728) 0 #x20000000) arena))
+        (should (tree-member-p '(ptr-write-u64 (+ base 792) 0 (+ base #x400)) arena))))))
 
 (ert-deftest nelisp-standalone-target-stage8-arena-base-slot-unit ()
-  "Doc 140 Stage 8 (linux): the driver-owned `nl_arena_base' bss slot unit
-exports an 8-byte bss object the chunked allocator loads the runtime arena
-base from (via the `data-addr' cross-unit reloc)."
-  (let* ((nelisp-standalone--target 'linux-x86_64)
-         (u (nelisp-standalone--arena-base-slot-unit))
-         (syms (plist-get u :symbols))
-         (sym (car syms)))
-    (should (= 1 (length syms)))
-    (should (equal "nl_arena_base" (plist-get sym :name)))
-    (should (eq 'bss (plist-get sym :section)))
-    (should (equal 8 (cdr (assq 'bss (plist-get u :sections)))))))
+  "Doc 140 Stage 8: every chunked native target exports `nl_arena_base'.
+Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
+  (dolist (case '((linux-x86_64 "arena-base.o")
+                  (windows-x86_64 "arena-base.obj")
+                  (macos-aarch64 "arena-base.o")))
+    (pcase-let ((`(,target ,name) case))
+      (let* ((nelisp-standalone--target target)
+             (u (nelisp-standalone--arena-base-slot-unit))
+             (syms (plist-get u :symbols))
+             (sym (car syms)))
+        (should (equal name (plist-get u :name)))
+        (should (= 1 (length syms)))
+        (should (equal "nl_arena_base" (plist-get sym :name)))
+        (should (eq 'bss (plist-get sym :section)))
+        (should (equal 8 (cdr (assq 'bss (plist-get u :sections)))))))))
 
-(ert-deftest nelisp-standalone-target-stage8-chunk-arena-rewrite ()
-  "Doc 140 Stage 8: on linux the chunk-arena rewrite turns a fixed control-slot
-immediate into a runtime load of `nl_arena_base' + offset, and leaves the
-base-establishing `nl_arena_init' (with its SIZE literal + mmap(NULL) call)
-untouched.  Non-linux targets keep their fixed/rebased literals."
+(ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
+  "Doc 140 Stage 8: standalone link units append the `nl_arena_base' slot unit."
+  (dolist (target '(linux-x86_64 windows-x86_64 macos-aarch64))
+    (let ((nelisp-standalone--target target)
+          (nelisp-standalone--manifest '(("probe.o" :helper nil)))
+          captured)
+      (cl-letf (((symbol-function 'nelisp-standalone--unit-for)
+                 (lambda (_entry)
+                   (nelisp-link-unit-make "probe.o" nil nil nil)))
+                ((symbol-function 'nelisp-standalone--arena-base-slot-unit)
+                 (lambda ()
+                   (nelisp-link-unit-make
+                    (nelisp-standalone--target-object-name "arena-base.o")
+                    (list (cons 'bss 8)) nil nil)))
+                ((symbol-function 'nelisp-standalone--output-path)
+                 (lambda (&optional _reader-p) "/tmp/nelisp-target-test"))
+                ((symbol-function 'nelisp-link-units)
+                 (lambda (_out units &rest _)
+                   (setq captured units)))
+                ((symbol-function 'nelisp-link-units-pe32)
+                 (lambda (_out units _entry _imports &optional _opts)
+                   (setq captured units)))
+                ((symbol-function 'nelisp-link-units-macho-exec)
+                 (lambda (_out units _entry _arch)
+                   (setq captured units)))
+                ((symbol-function 'set-file-modes)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'nelisp-standalone--codesign-macos-adhoc)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'message)
+                 (lambda (&rest _) nil)))
+        (nelisp-standalone-build)
+        (should captured)
+        (should (equal
+                 (nelisp-standalone--target-object-name "arena-base.o")
+                 (plist-get (car (last captured)) :name)))))))
+
+(ert-deftest nelisp-standalone-target-stage8-chunk-arena-rewrite-cross-platform ()
+  "Doc 140 Stage 8: chunk-arena rewrite fires for linux, windows, and macOS.
+It leaves the base-establishing `nl_arena_init' untouched while rewriting
+rebased fixed metadata immediates to `nl_arena_base' loads + offsets."
   ;; linux: free-list-head (arena-base + 96) -> runtime base load + 96.
   (let ((nelisp-standalone--target 'linux-x86_64))
     (should (equal
@@ -602,18 +657,31 @@ untouched.  Non-linux targets keep their fixed/rebased literals."
              '(defun f ()
                 (ptr-read-u64
                  (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 96) 0))))
-    ;; nl_arena_init is left untouched (its SIZE literal == arena-base would
-    ;; otherwise be corrupted by a blanket rewrite).
     (should (equal
              (nelisp-standalone--chunk-arena-rewrite
               '(defun nl_arena_init () (nl_os_alloc_chunk 268435456)))
              '(defun nl_arena_init () (nl_os_alloc_chunk 268435456)))))
-  ;; windows: rewrite is a no-op (keeps the rebased fixed-base literals).
-  (let ((nelisp-standalone--target 'windows-x86_64))
-    (should (equal
-             (nelisp-standalone--chunk-arena-rewrite
-              '(defun f () (ptr-read-u64 268435552 0)))
-             '(defun f () (ptr-read-u64 268435552 0))))))
+  ;; windows/macOS: rebase first, then rewrite the target-relative immediates.
+  (dolist (case '((windows-x86_64 #x70000000)
+                  (macos-aarch64 #x800000000)))
+    (pcase-let ((`(,target ,base) case))
+      (let ((nelisp-standalone--target target))
+        (should (equal
+                 (nelisp-standalone--chunk-arena-rewrite
+                  (nelisp-standalone--rebase-arena-source
+                   '(defun f ()
+                      (seq (ptr-read-u64 268435552 0)
+                           (ptr-read-u64 268435456 0)))))
+                 '(defun f ()
+                    (seq
+                     (ptr-read-u64
+                      (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 96) 0)
+                     (ptr-read-u64
+                      (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0) 0)))))
+        (should (equal
+                 (nelisp-standalone--rebase-arena-source
+                  '(defun f () (ptr-read-u64 268435552 0)))
+                 `(defun f () (ptr-read-u64 ,(+ base 96) 0))))))))
 
 (ert-deftest nelisp-standalone-target-stage6-generation-split ()
   "Doc 140 Stage 6: chunk 0 (boot generation) is tagged persistent and the
@@ -629,8 +697,8 @@ scratch chunks have their cursor reset."
     ;; the reclaimer gates the reset on the persistent flag bit.
     (should (tree-member-p '(logand flags 2)
                            nelisp-standalone--reader-boundary-source))
-    ;; chunk-0 init writes desc.flags = (logior 1 persistent) = 3 on both the
-    ;; linux dynamic-base path and the windows/macos fixed-base path.
+    ;; chunk-0 init writes desc.flags = (logior 1 persistent) = 3 on every
+    ;; dynamic-base chunk-0 init path.
     (let ((dyn (nelisp-standalone--arena-init-metadata-forms-dynamic 'base 256)))
       (should (tree-member-p
                (list 'ptr-write-u64
@@ -716,20 +784,25 @@ scratch chunks have their cursor reset."
                (let ((nelisp-standalone--target 'linux-x86_64))
                  (nelisp-standalone--target-arena-source)))))))
 
-(ert-deftest nelisp-standalone-target-macos-rebases-arena-slots ()
-  "macOS source rebase moves fixed metadata above Mach-O __PAGEZERO."
+(ert-deftest nelisp-standalone-target-macos-stage8-rewrites-arena-slots ()
+  "macOS Stage 8 rewrites rebased arena metadata to `nl_arena_base' loads."
   (let ((nelisp-standalone--target 'macos-aarch64))
     (should (equal
-             (nelisp-standalone--rebase-arena-source
-              '(seq (ptr-write-u64 268435472 0 1)
-                    (atomic-fetch-add 268435544 1)
-                    (ptr-write-u64 4096 0 268435456)))
-             '(seq (ptr-write-u64 #x800000010 0 1)
-                   (atomic-fetch-add #x800000058 1)
-                   (ptr-write-u64 4096 0 #x800000000))))))
+             (nelisp-standalone--chunk-arena-rewrite
+              (nelisp-standalone--rebase-arena-source
+               '(seq (ptr-write-u64 268435472 0 1)
+                     (atomic-fetch-add 268435544 1)
+                     (ptr-write-u64 4096 0 268435456))))
+             '(seq
+               (ptr-write-u64
+                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 16) 0 1)
+               (atomic-fetch-add
+                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 88) 1)
+               (ptr-write-u64
+                4096 0 (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0)))))))
 
-(ert-deftest nelisp-standalone-target-macos-arena-uses-bounded-mmap ()
-  "macOS arena avoids an oversized fixed mmap reservation."
+(ert-deftest nelisp-standalone-target-macos-arena-init-uses-null-mmap ()
+  "macOS chunk-0 init uses mmap(NULL, ...) and stores `nl_arena_base'."
   (let ((nelisp-standalone--target 'macos-aarch64))
     (cl-labels ((tree-member-p
                  (needle tree)
@@ -740,13 +813,16 @@ scratch chunks have their cursor reset."
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(syscall-direct 197 #x800000000 #x20000000 3 4114 -1 0)
+                 '(syscall-direct 197 0 #x20000000 3 4098 -1 0)
+                 arena))
+        (should (tree-member-p
+                 '(ptr-write-u64 (data-addr nl_arena_base) 0 base)
                  arena))
         (should-not (tree-member-p
                      '(syscall-direct 197 #x800000000 8589934592 3 4114 -1 0)
                      arena))
         (should-not (tree-member-p
-                     '(syscall-direct 197 #x200000000 8589934592 3 4114 -1 0)
+                     '(syscall-direct 197 #x800000000 #x20000000 3 4114 -1 0)
                      arena))))))
 
 (ert-deftest nelisp-standalone-target-windows-reserves-1g-stack ()

@@ -253,7 +253,7 @@ link-unit names, and build logs."
                             "nelisp-elf-write" "nelisp-cc-runtime")))))
 
 (defconst nelisp-standalone--arena-rebase-span #x1000
-  "Number of arena-base-relative low metadata bytes rebased for Windows.")
+  "Number of low arena-base-relative metadata bytes rewritten per target.")
 
 (defun nelisp-standalone--windows-rebase-arena-source (source)
   "Rebase fixed arena metadata constants in SOURCE for Windows.
@@ -310,27 +310,25 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
 
 (defun nelisp-standalone--chunk-arena-rewrite (source)
   "Doc 140 Stage 8: rewrite fixed-arena-base metadata immediates in SOURCE to
-load the runtime mmap(NULL) base from the driver-owned `nl_arena_base' bss
-slot, so NO normal runtime path embeds a fixed arena base.
+load the runtime chunk-0 base from the driver-owned `nl_arena_base' bss slot,
+so NO normal runtime path embeds a fixed arena base.
 
-Active only for the linux-x86_64 target — the platform whose chunked arena no
-longer uses a fixed reservation.  windows/macos keep their `data-addr'-free
-rebased fixed base until the address-of-data-symbol primitive lands for their
-toolchains (windows shares the x86_64 pc32 reloc; macos-aarch64 needs
-ADRP+ADD), tracked as the Stage 8 follow-up.
+For every chunked native target (linux-x86_64, windows-x86_64,
+macos-aarch64), every integer atom N in [target-base, target-base+span) — the
+compact metadata block plus the chunk-0 descriptor — becomes `(+ (ptr-read-u64
+(data-addr nl_arena_base) 0) OFF)' where OFF = N - target-base.  Because in
+the chunked model that whole range is always arena-base-relative (the chunk-0
+bump cursor at +0, control slots, the chunk-0 descriptor), the rewrite is
+uniform and unambiguous.
 
-Every integer atom N in [arena-base, arena-base+span) — the compact metadata
-block plus the chunk-0 descriptor — becomes `(+ (ptr-read-u64 (data-addr
-nl_arena_base) 0) OFF)' where OFF = N - arena-base.  Because in the chunked
-model that whole range is *always* arena-base-relative (the chunk-0 bump
-cursor at +0, control slots, the chunk-0 descriptor), the rewrite is uniform
-and unambiguous.  The `nl_arena_init' defun is left untouched: it is the one
-site that reserves the chunk via mmap(NULL), seeds the slot from a runtime
-base var, and carries the reservation SIZE literal (= arena-base numerically,
-which would otherwise collide with the base immediate)."
-  (if (not (eq nelisp-standalone--target 'linux-x86_64))
+The `nl_arena_init' defun is left untouched: it is the one site that reserves
+chunk 0 via a NULL-based OS allocation, seeds `nl_arena_base' from the runtime
+return value, and may carry reservation SIZE literals that must never be
+confused with a fixed base immediate."
+  (if (not (memq nelisp-standalone--target
+                 '(linux-x86_64 windows-x86_64 macos-aarch64)))
       source
-    (let ((base nelisp-standalone--arena-base)
+    (let ((base (nelisp-standalone--target-arena-base))
           (span nelisp-standalone--arena-rebase-span))
       (cl-labels
           ((rewrite-int
@@ -353,19 +351,24 @@ which would otherwise collide with the base immediate)."
           (walk source))))))
 
 (defun nelisp-standalone--arena-base-slot-unit ()
-  "Doc 140 Stage 8 (linux x86_64): a tiny driver-owned bss link unit exporting
-`nl_arena_base'.  `nl_arena_init' stores the mmap(NULL) chunk-0 base in this
+  "Doc 140 Stage 8: a tiny driver-owned bss link unit exporting
+`nl_arena_base'.  `nl_arena_init' stores the runtime chunk-0 base in this
 8-byte slot; the chunk-arena rewrite makes every former fixed-arena-base
-metadata access load the slot (via the `data-addr' cross-unit pc32 reloc) +
-offset.  The slot lives in the binary's own bss (linker-assigned VA, present
-in the program headers like any C global), so the ONLY remaining fixed address
-is driver-owned global storage — not an arena reservation."
+metadata access load the slot (via `data-addr') + offset.  The slot lives in
+the binary's own bss (linker-assigned VA, present in the program headers like
+any C global), so the ONLY remaining fixed address is driver-owned global
+storage — not an arena reservation."
   (nelisp-link-unit-make
    (nelisp-standalone--target-object-name "arena-base.o")
    (list (cons 'bss 8))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object))
    nil))
+
+(defun nelisp-standalone--target-uses-dynamic-arena-base-p (&optional target)
+  "Return non-nil when TARGET stores chunk 0's runtime base in `nl_arena_base'."
+  (memq (or target nelisp-standalone--target)
+        '(linux-x86_64 windows-x86_64 macos-aarch64)))
 
 ;; ===================================================================
 ;; my-compile-to-unit — Phase47 source -> in-memory link-unit.
@@ -828,9 +831,10 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
 (defun nelisp-standalone--arena-init-metadata-forms-dynamic (base-sym size)
   "Like `nelisp-standalone--arena-init-metadata-forms' but BASE-SYM names a
 runtime VARIABLE (the chunk-0 base reserved by mmap(NULL) at run time), not a
-fixed compile-time address.  Used by the Doc 140 Stage 8 linux init: the
-arena is no longer mapped at the historical 0x10000000 base, so every metadata
-slot is seeded relative to the runtime base instead of a baked immediate.
+fixed compile-time address.  Used by the Doc 140 Stage 8 chunk-0 init on
+linux/windows/macOS: the arena is no longer mapped at a baked fixed base, so
+every metadata slot is seeded relative to the runtime base instead of a baked
+immediate.
 SIZE is the first-chunk reservation in bytes (a literal — kept inside
 `nl_arena_init', which the chunk-arena rewrite skips, so it never collides
 with the base literal)."
@@ -898,18 +902,18 @@ addressing by a runtime base, never by a fixed reservation."
       (syscall-direct 60 88 0 0 0 0 0))))
 
 (defun nelisp-standalone--windows-arena-init-form ()
-  "Return the Windows `nl_arena_init' form using VirtualAlloc."
+  "Return the Windows `nl_arena_init' form using VirtualAlloc(NULL, ...)."
   `(defun nl_arena_init ()
-     (let ((p (extern-call VirtualAlloc ,nelisp-standalone--windows-arena-base
-                           ,nelisp-standalone--windows-arena-size
-                           12288 4)))
-       (if (= p 0)
+     (let ((base (extern-call VirtualAlloc 0
+                              ,nelisp-standalone--windows-arena-size
+                              12288 4)))
+       (if (= base 0)
            (extern-call ExitProcess 88)
          (seq
-          ,@(nelisp-standalone--arena-init-metadata-forms
-             nelisp-standalone--windows-arena-base
-             nelisp-standalone--windows-arena-size)
-          p)))))
+          (ptr-write-u64 (data-addr nl_arena_base) 0 base)
+          ,@(nelisp-standalone--arena-init-metadata-forms-dynamic
+             'base nelisp-standalone--windows-arena-size)
+          base)))))
 
 (defun nelisp-standalone--windows-alloc-chunk-form ()
   "Return Windows chunk allocation forms using VirtualAlloc(NULL, ...)."
@@ -919,17 +923,18 @@ addressing by a runtime base, never by a fixed reservation."
       (extern-call ExitProcess 88))))
 
 (defun nelisp-standalone--macos-arena-init-form ()
-  "Return the macOS `nl_arena_init' form using Darwin mmap."
+  "Return the macOS `nl_arena_init' form using Darwin mmap(NULL, ...)."
   `(defun nl_arena_init ()
-     (let ((p (syscall-direct 197 ,nelisp-standalone--macos-arena-base
-                              ,nelisp-standalone--macos-arena-size 3 4114 -1 0)))
-       (if (= p ,nelisp-standalone--macos-arena-base)
+     (let ((base (syscall-direct 197 0
+                                 ,nelisp-standalone--macos-arena-size
+                                 3 4098 -1 0)))
+       (if (< base 4096)
+           (syscall-direct 1 88 0 0 0 0 0)
            (seq
-            ,@(nelisp-standalone--arena-init-metadata-forms
-               nelisp-standalone--macos-arena-base
-               nelisp-standalone--macos-arena-size)
-            p)
-         (syscall-direct 1 88 0 0 0 0 0)))))
+            (ptr-write-u64 (data-addr nl_arena_base) 0 base)
+            ,@(nelisp-standalone--arena-init-metadata-forms-dynamic
+               'base nelisp-standalone--macos-arena-size)
+            base)))))
 
 (defun nelisp-standalone--macos-alloc-chunk-form ()
   "Return macOS chunk allocation forms using mmap(NULL, ...)."
@@ -3353,9 +3358,10 @@ units)."
   "Incrementally build the standalone NeLisp eval ELF; return its path."
   (setq nelisp-standalone--recompiled nil)
   (let* ((units (mapcar #'nelisp-standalone--unit-for nelisp-standalone--manifest))
-         ;; Doc 140 Stage 8 (linux): append the driver-owned `nl_arena_base'
-         ;; bss slot unit referenced by the chunk-arena rewrite.
-         (units (if (eq nelisp-standalone--target 'linux-x86_64)
+         ;; Doc 140 Stage 8: append the driver-owned `nl_arena_base' bss slot
+         ;; unit referenced by the chunk-arena rewrite on chunked native
+         ;; targets.
+         (units (if (nelisp-standalone--target-uses-dynamic-arena-base-p)
                     (append units (list (nelisp-standalone--arena-base-slot-unit)))
                   units))
          (out (nelisp-standalone--output-path nil)))
@@ -5419,9 +5425,10 @@ genuine general interpreter for the 11 special forms + installed builtins."
               nelisp-standalone--this-file))
          (arena (nelisp-standalone--unit-for
                  (assoc "arena.o" nelisp-standalone--manifest)))
-         ;; Doc 140 Stage 8 (linux): driver-owned bss slot holding the
-         ;; mmap(NULL) arena base referenced by the chunk-arena rewrite.
-         (arena-base (when (eq nelisp-standalone--target 'linux-x86_64)
+         ;; Doc 140 Stage 8: driver-owned bss slot holding chunk 0's runtime
+         ;; base, referenced by the chunk-arena rewrite on chunked native
+         ;; targets.
+         (arena-base (when (nelisp-standalone--target-uses-dynamic-arena-base-p)
                        (nelisp-standalone--arena-base-slot-unit))))
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
