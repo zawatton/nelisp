@@ -117,8 +117,10 @@
     (should (equal (mapcar (lambda (item) (plist-get item :name))
                            (plist-get cold-proof :dropped-candidates))
                    '(org-macs)))
+    ;; org-macs.el now compiles (reader escape gap fixed); the remaining
+    ;; blocker is the NeLisp eval runtime missing `defalias' at module load.
     (should (string-match-p
-             "unknown string escape"
+             "defalias"
              (plist-get (car (plist-get cold-proof :dropped-candidates)) :reason)))
     (should (equal (plist-get cold-proof :aggregate-proof)
                    '((format-spec (t t "x"))
