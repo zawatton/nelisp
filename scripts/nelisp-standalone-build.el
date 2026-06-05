@@ -3550,7 +3550,10 @@ and the `string-match' family aliases over it."
             "(defun match-end (n) (nlre-match-end n))\n"
             "(defun match-string (n &optional str)\n"
             "  (let ((b (nlre-match-beginning n)) (e (nlre-match-end n)))\n"
-            "    (if (and str b e) (substring str b e) nil)))\n")
+            "    (if (and str b e) (substring str b e) nil)))\n"
+            "(defun split-string (s &optional sep omit trim) (nlre-split-string s sep omit))\n"
+            "(defun replace-regexp-in-string (re rep s &optional fc lit subexp start)\n"
+            "  (nlre-replace-regexp-in-string re rep s))\n")
     (buffer-string)))
 
 (defun nelisp-standalone--reader-repl-prelude-forms (fbuf src cursor result pool

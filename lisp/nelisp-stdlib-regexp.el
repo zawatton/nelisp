@@ -282,5 +282,52 @@ Sets `nlre--match-data' (and host match-data when available via set-match-data).
   (and nlre--last-caps (< n (length nlre--last-caps))
        (let ((c (aref nlre--last-caps n))) (and c (cdr c)))))
 
+;; ---- regexp-dependent string helpers (built on nlre-string-match) ----
+
+(defun nlre-split-string (string &optional separators omit-nulls)
+  "Like `split-string'.  Default SEPARATORS = whitespace run, which also
+implies OMIT-NULLS and leading/trailing trim (matching GNU Emacs)."
+  (let* ((default (null separators))
+         (sep (or separators "[ \f\t\n\r\v]+"))
+         (omit (if default t omit-nulls))
+         (len (length string))
+         (start 0) (parts nil) (cont t))
+    (while (and cont (<= start len) (nlre-string-match sep string start))
+      (let ((mb (nlre-match-beginning 0)) (me (nlre-match-end 0)))
+        (cond
+         ((= me mb)
+          ;; empty separator match: emit one char, advance, to avoid looping
+          (if (>= mb len) (setq cont nil)
+            (setq parts (cons (substring string start (1+ mb)) parts))
+            (setq start (1+ mb))))
+         (t
+          (let ((piece (substring string start mb)))
+            (unless (and omit (= (length piece) 0)) (setq parts (cons piece parts))))
+          (setq start me)))))
+    (let ((tail (substring string (min start len) len)))
+      (unless (and omit (= (length tail) 0)) (setq parts (cons tail parts))))
+    (let ((res (nreverse parts)))
+      ;; whitespace default also trims a leading empty produced by a leading sep
+      (when default
+        (while (and res (= (length (car res)) 0)) (setq res (cdr res))))
+      res)))
+
+(defun nlre-replace-regexp-in-string (regexp rep string)
+  "Subset of `replace-regexp-in-string': REP is a literal string or a
+function of the matched substring.  No \\N backrefs in literal REP (v1)."
+  (let ((out "") (pos 0) (len (length string)) (cont t))
+    (while (and cont (<= pos len) (nlre-string-match regexp string pos))
+      (let* ((mb (nlre-match-beginning 0)) (me (nlre-match-end 0))
+             (matched (substring string mb me))
+             (piece (if (stringp rep) rep (funcall rep matched))))
+        (setq out (concat out (substring string pos mb) piece))
+        (cond
+         ((= me mb)
+          (if (>= mb len) (setq cont nil)
+            (setq out (concat out (substring string mb (1+ mb))))
+            (setq pos (1+ mb))))
+         (t (setq pos me)))))
+    (concat out (substring string (min pos len) len))))
+
 (provide 'nelisp-stdlib-regexp)
 ;;; nelisp-stdlib-regexp.el ends here

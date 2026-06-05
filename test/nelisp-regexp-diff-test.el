@@ -56,5 +56,19 @@
         (should (equal ref-1b mine-1b))
         (should (equal ref-1e mine-1e))))))
 
+(ert-deftest nelisp-regexp-split-string-matches-host ()
+  "nlre-split-string must agree with host `split-string'."
+  (dolist (c '(("a b  c" nil nil) ("a,b,c" "," nil) ("  x y  " nil nil)
+               ("a,,b" "," nil) ("a,,b" "," t) ("" nil nil)
+               ("/a/b/c" "/" nil) ("/a/b/c" "/" t) ("x1y2z" "[0-9]" nil)))
+    (should (equal (split-string (nth 0 c) (nth 1 c) (nth 2 c))
+                   (nlre-split-string (nth 0 c) (nth 1 c) (nth 2 c))))))
+
+(ert-deftest nelisp-regexp-replace-matches-host ()
+  "nlre-replace-regexp-in-string must agree with host on string REP."
+  (dolist (c '(("a" "X" "banana") ("[0-9]+" "#" "a12b345c") ("o" "0" "foobar")))
+    (should (equal (replace-regexp-in-string (nth 0 c) (nth 1 c) (nth 2 c))
+                   (nlre-replace-regexp-in-string (nth 0 c) (nth 1 c) (nth 2 c))))))
+
 (provide 'nelisp-regexp-diff-test)
 ;;; nelisp-regexp-diff-test.el ends here
