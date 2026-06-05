@@ -89,10 +89,21 @@ touching this file."
 
 (defun emacs-process-call-process (program &optional infile destination
                                            display &rest args)
-  "Synchronous program execution.  See `call-process' for semantics."
-  (emacs-process--delegate 'call-process
-                           (cons program (cons infile (cons destination
-                                                            (cons display args))))))
+  "Synchronous program execution.  See `call-process' for semantics.
+
+When no host binding and no standalone primitive exists, degrade
+GRACEFULLY: return a non-zero exit code (1, = \"program failed\")
+instead of signalling `emacs-process-not-implemented'.  Load-time
+feature/tool detection in vendor packages (e.g. org.el probing for
+external tools via `(eq 0 (call-process ...))') then treats the tool
+as unavailable and proceeds, rather than aborting the whole load.
+A real implementation (via the NeLisp OS surface fork/execve) can
+later replace this through `emacs-standalone-register-primitive'."
+  (condition-case nil
+      (emacs-process--delegate 'call-process
+                               (cons program (cons infile (cons destination
+                                                                (cons display args)))))
+    (emacs-process-not-implemented 1)))
 
 (defun emacs-process-call-process-region (start end program &optional
                                                 delete buffer display
