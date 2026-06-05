@@ -202,21 +202,114 @@ a form the VM cannot yet lower, so the caller can fall back to replay."
              (listp (nth 2 form)))
     (let ((name (nth 1 form))
           (arglist (nth 2 form))
-          (body (nthcdr 3 form)))
+          (body (nelisp--lambda-body (nthcdr 3 form))))
       (condition-case nil
-          (let ((bcl (nelisp-bc-run
-                      (nelisp-bc-compile (cons 'lambda (cons arglist body))))))
+          (let* ((src (cons 'lambda (cons arglist body)))
+                 ;; Match the `.elc' lane: macroexpand under host Emacs
+                 ;; so vendor bodies using `when', `pcase', etc. can be
+                 ;; lowered to the bytecode subset before we fall back to
+                 ;; top-level replay.
+                 (expanded (macroexpand-all src))
+                 (wrapper-bcl (nelisp-bc-compile expanded))
+                 (bcl (nelisp-bc-run wrapper-bcl)))
             (and (consp bcl) (eq (car bcl) 'nelisp-bcl)
                  (list :fn name bcl)))
         (error nil)))))
+
+(defun nelisp-artifact--compile-time-eval (form)
+  "Evaluate FORM in the host compiler environment."
+  (eval form t))
+
+(defun nelisp-artifact--host-macro-expander (name)
+  "Return NAME's host macro expander function, or nil."
+  (let ((fn (and (symbolp name) (fboundp name) (symbol-function name))))
+    (when (and (consp fn) (eq (car fn) 'macro))
+      (cdr fn))))
+
+(defun nelisp-artifact--unquote-symbol (form)
+  "Return the symbol encoded by FORM, or nil."
+  (cond
+   ((symbolp form) form)
+   ((and (consp form)
+         (eq (car form) 'quote)
+         (symbolp (nth 1 form)))
+    (nth 1 form))
+   (t nil)))
+
+(defun nelisp-artifact--cl-target-symbol (target)
+  "Return the function symbol affected by a CL TARGET form."
+  (cond
+   ((symbolp target) target)
+   ((and (consp target)
+         (eq (car target) 'setf)
+         (symbolp (nth 1 target)))
+    (nth 1 target))
+   (t nil)))
+
+(defun nelisp-artifact--compile-time-only-form-p (form)
+  "Return non-nil when FORM should run during compilation too."
+  (and (consp form)
+       (memq (car form)
+             '(defmacro defsubst cl-defmacro pcase-defmacro
+               defalias cl-defgeneric cl-defmethod
+               define-obsolete-function-alias
+               define-obsolete-variable-alias
+               make-obsolete make-obsolete-variable
+               eval-after-load with-eval-after-load
+               define-advice))))
 
 (defun nelisp-artifact--compile-top-level-form (form)
   "Lower FORM into a `.nelc' module instruction (Doc 142 §6.1).
 An eligible top-level `defun' becomes a precompiled (:fn NAME BCL)
 install; every other form (and any defun the bytecode VM cannot lower)
 becomes (:eval FORM) replayed through `nelisp-eval' at load."
-  (or (nelisp-artifact--try-compile-defun form)
-      (list :eval form)))
+  (cond
+   ((and (consp form) (eq (car form) 'eval-when-compile))
+    (list (list :const
+                (nelisp-artifact--compile-time-eval
+                 (cons 'progn (cdr form))))))
+   ((and (consp form) (eq (car form) 'eval-and-compile))
+    (nelisp-artifact--compile-time-eval (cons 'progn (cdr form)))
+    (apply #'append
+           (mapcar #'nelisp-artifact--compile-top-level-form (cdr form))))
+   ((and (consp form) (eq (car form) 'pcase-defmacro))
+    ;; NeLisp's pcase expander does not yet consume host
+    ;; `pcase-macroexpander' properties, but compile-time registration is
+    ;; enough for later host `macroexpand-all' during this compile.
+    (list (list :const (nelisp-artifact--compile-time-eval form))))
+   ((and (consp form) (eq (car form) 'cl-defgeneric))
+    (nelisp-artifact--compile-time-eval form)
+    (let ((name (nth 1 form)))
+      (list (list :hostfn name (symbol-function name)))))
+   ((and (consp form) (eq (car form) 'cl-defmethod))
+    (nelisp-artifact--compile-time-eval form)
+    (let ((name (nelisp-artifact--cl-target-symbol (nth 1 form))))
+      (if (and name (fboundp name))
+          (list (list :hostfn name (symbol-function name)))
+        nil)))
+   ((and (consp form) (eq (car form) 'cl-defmacro))
+    (nelisp-artifact--compile-time-eval form)
+    (let ((name (nth 1 form)))
+      (list (list :hostmacro name
+                  (nelisp-artifact--host-macro-expander name)))))
+   ((and (consp form) (eq (car form) 'define-obsolete-function-alias))
+    (nelisp-artifact--compile-time-eval form)
+    (let ((name (nelisp-artifact--unquote-symbol (nth 1 form))))
+      (if (and name (fboundp name))
+          (list (list :hostfn name (symbol-function name)))
+        nil)))
+   ((and (consp form)
+         (memq (car form)
+               '(define-obsolete-variable-alias
+                 make-obsolete make-obsolete-variable
+                 eval-after-load with-eval-after-load
+                 define-advice)))
+    (list (list :const (nelisp-artifact--compile-time-eval form))))
+   (t
+    (when (nelisp-artifact--compile-time-only-form-p form)
+      (nelisp-artifact--compile-time-eval form))
+    (list (or (nelisp-artifact--try-compile-defun form)
+              (list :eval form))))))
 
 (defun nelisp-artifact--extract-provided-feature (form)
   "Return the feature symbol provided by FORM, or nil."
@@ -488,7 +581,10 @@ native object for the standalone runtime, Doc 142 §6.4)."
           (nelisp-load-path (append load-paths nelisp-load-path)))
       (dolist (preload preloads)
         (load preload nil t))
-      (setq module (mapcar #'nelisp-artifact--compile-top-level-form forms)))
+      (dolist (form forms)
+        (setq module
+              (append module
+                      (nelisp-artifact--compile-top-level-form form)))))
     (setq features (nelisp-artifact--collect-features forms))
     (when (and requested-feature (not (memq requested-feature features)))
       (error "compile-elisp-artifact: source did not provide %S" requested-feature))
@@ -674,6 +770,14 @@ replay their bytecode module onto the NeLisp runtime."
             (cond
              ((and (consp item) (eq (car item) :fn))
               (puthash (nth 1 item) (nth 2 item) nelisp--functions)
+              (setq last (nth 1 item)))
+             ((and (consp item) (eq (car item) :const))
+              (setq last (nth 1 item)))
+             ((and (consp item) (eq (car item) :hostfn))
+              (puthash (nth 1 item) (nth 2 item) nelisp--functions)
+              (setq last (nth 1 item)))
+             ((and (consp item) (eq (car item) :hostmacro))
+              (puthash (nth 1 item) (nth 2 item) nelisp--macros)
               (setq last (nth 1 item)))
              ((and (consp item) (eq (car item) :eval))
               (setq last (nelisp-eval (nth 1 item))))
