@@ -378,6 +378,16 @@
         (if (and (stringp b) (> (length b) 0))
             (concat (file-name-as-directory b) path)
           path)))))
+(defun file-name-extension (path &optional _period)
+  (let* ((non (file-name-nondirectory path)) (n (length non)) (idx -1) (i 0))
+    (while (< i n) (when (eq (aref non i) ?.) (setq idx i)) (setq i (1+ i)))
+    (if (or (< idx 0) (= idx 0)) nil (substring non (1+ idx)))))
+(defun file-name-sans-extension (path)
+  (let* ((non (file-name-nondirectory path))
+         (dir-len (- (length path) (length non)))
+         (n (length non)) (idx -1) (i 0))
+    (while (< i n) (when (eq (aref non i) ?.) (setq idx i)) (setq i (1+ i)))
+    (if (or (< idx 0) (= idx 0)) path (substring path 0 (+ dir-len idx)))))
 
 ;; Doc 143: purecopy (no pure space -> identity), destructive nconc (setcdr),
 ;; princ/terpri (via the wired printer + nelisp--write-stdout-bytes).
