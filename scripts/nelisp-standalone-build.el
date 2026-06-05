@@ -811,8 +811,14 @@ virtual reservation in the PE header; committed stack pages grow on demand.")
                      0 0)
       (ptr-write-u64 ,(+ base nelisp-standalone--arena-chunk-alloc-failures-offset)
                      0 0)
+      ;; Doc 140 boundary reclaim DISABLED (was 1): the escape-epoch reset is
+      ;; unsound (see the nelisp-standalone--shim-source preamble + Doc 142
+      ;; root-cause) -- it recycles per-form regions holding values that escaped
+      ;; to globals via function-call returns / refcount-aliasing clones, a
+      ;; use-after-free.  The REPL already toggles it off; this makes --load /
+      ;; eval / FILE consistent.  Re-enable only with a sound tracing-GC reclaim.
       (ptr-write-u64 ,(+ base nelisp-standalone--arena-boundary-reclaim-enabled-offset)
-                     0 1)
+                     0 0)
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-base-offset)
                      0 ,base)
       (ptr-write-u64 ,(+ desc nelisp-standalone--arena-chunk-desc-size-offset)
@@ -862,7 +868,9 @@ with the base literal)."
       (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-bytes-used-offset) 0 0)
       (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-bytes-reclaimed-offset) 0 0)
       (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-chunk-alloc-failures-offset) 0 0)
-      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-boundary-reclaim-enabled-offset) 0 1)
+      ;; Doc 140 boundary reclaim DISABLED (was 1) -- unsound escape-epoch reset
+      ;; (use-after-free on function-call return values escaping to globals).
+      (ptr-write-u64 (+ ,b ,nelisp-standalone--arena-boundary-reclaim-enabled-offset) 0 0)
       (ptr-write-u64 (+ ,b ,d0) 0 ,b)              ; chunk-0 desc.base
       (ptr-write-u64 (+ ,b ,(+ d0 8)) 0 ,size)     ; desc.size
       (ptr-write-u64 (+ ,b ,(+ d0 16)) 0 ,ds)      ; desc.cursor (= data-start)
