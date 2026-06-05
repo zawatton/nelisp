@@ -4772,6 +4772,12 @@ correctly."
          ((= (nl_cli_eval_command_p path) 1)
           (if (= (nl_cli_one_arg_p arg2 arg3) 1)
               (seq
+               ;; Doc 143: run the stdlib prelude before the user EXPR so the
+               ;; same library available in the REPL is available under `eval'
+               ;; (read-from-string, prin1-to-string, the list/string library,
+               ;; etc.).  Without this `eval' saw only the bare builtins.
+               ,@(nelisp-standalone--reader-repl-prelude-forms
+                  'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
                (nl_cli_eval_source arg2 fbuf src)
                (nl_eval_source_all src cursor result pool out ctx builtin_sym)
                (if (= (ptr-read-u64 268435464 0) 0)
