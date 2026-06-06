@@ -1,0 +1,209 @@
+#+TITLE: Doc 146 — 統合設計: 値表現(tagged immediate) + GC正当性 + moving GC（数百MB級の本丸）
+#+AUTHOR: nelisp / nelisp-emacs
+#+DATE: 2026-06-06
+#+STATUS: DESIGN（実装前）。並列サブエージェント3本（値表現 / GC正当性 / moving GC）の調査を統合。
+#+OPTIONS: toc:3 num:t
+
+* §0 要旨
+
+Doc 145（transient scratch arena）は patch にすぎず、根本原因＝「全値が boxed 32B Sexp（per-value boxing）」を
+解かないため peak 不変（実測確認、MVP は健全だが効果無し → revert）。本書は user 指摘の4根本修正を統合する:
+
+| # | 修正 | 効果 | 規模 |
+|---+------+------+------|
+| ① | refcount×tracing → *pure tracing*（rc 廃止） | box -8B/各、hybrid 不整合解消、④③の前提を簡素化 | 中 |
+| ④ | *値表現 = 8B tagged word*（tagged immediate） | Nil/T/Int/cons-output の boxing を*完全に消す* = memory の大半 | 最大 |
+| ② | *root-coverage gap* 閉塞 | CharTable/BoolVector 子 walk + scratch-slot 監査。③ の必須前提 | 中 |
+| ③ | *moving GC*（sliding compaction）+ munmap | fragmentation 根絶、OS へ返却 | 大 |
+
+*推奨順序 = ① → ④ → ② → ③*（§6 で根拠）。各段で 4438 PASS を維持し逐次実装。
+
+* §1 問題（再掲）
+
+- full vendor-load peak 1.80GB（commit fa65d14e）。gdb: live set 極小（mark 後 sample 2.5M 中 reachable=109）、
+  残りは per-eval garbage。
+- *根本原因*: 全値が 32B Sexp（tag@+0/payload@+8、8B header 込み 40B box）。eval ABI が値を *32B slot へのポインタ*で
+  渡す（=nelisp_eval_call(*const Sexp, env, *mut Sexp)=、=lisp/nelisp-cc-sf-setq.el:33=）。Nil/T/Int すら
+  =(alloc-bytes 32 8)= の box になる。Emacs/SBCL/全主要 Lisp は tagged pointer で immediate を word に inline する。
+- munmap 単体は fragmentation（散在 live が全 chunk を pin）で不可（Doc 145 §8.18.6）。
+
+* §2 ① pure tracing（rc 廃止）
+
+** 2.1 現状（調査B）
+- 全 box に末尾 =AtomicUsize rc=: Cons rc@+64(72B), Vector rc@+24(32B), Record rc@+56(64B), Cell rc@+32(40B),
+  Str/MutStr rc@+24(32B), CharTable rc@+120(128B), BoolVector rc@+24(32B)。各 =*-alloc.el= が rc=1 を書き、
+  各 =*-clone.el= が =atomic-fetch-add= で bump（例 =nelisp-cc-nlconsbox-clone.el:98=）。
+- *sweep は mark のみ*（=nl_gc_sweep_one=, =scripts/...:1192-1205=）: mark1=survive / mark0=free / mark2=既 free。
+  *rc は読まない* → rc は死蔵。
+- *refcount-aware sweep は unsound だった*（=scripts/...:710-726=）: free-list reuse で block に前占有者の
+  *stale rc* が残る → 構築子が zero 前提で誤動作。加えて clone bump は AOT 中間 frame で列挙不能 → rc 不整合。
+  = rc を liveness に使うと論理 dead を生かす（false positive）。revert は正しい。tracing が唯一の権威。
+
+** 2.1.1 *実装時の発見（2026-06-06）*: pure-tracing-for-freeing は既に有効
+着手調査で判明: =nl_dealloc_bytes (_p _s _a) 1= = *完全 no-op*（=scripts/...:807=）。各 drop kernel の
+=(dealloc-bytes box SIZE 8)= はこれを呼ぶ → *rc-drop は box を1つも実解放していない*。実 freer は
+=nl_gc_free_block=（GC sweep）のみ。= *「rc が tracing と争って誤 free する」hybrid 不整合は実在しない*
+（rc は free を起こさないため）。①の「pure-tracing 化」は実質完了済み。rc は vestigial（clone/drop が維持するが
+無効果）= 純粋な overhead + 8B フィールド。
+= *残り① = rc 機構と field の除去（box-shrink）のみ*。だが box size 定数は =nelisp-sexp-layout.el=
+（=nlconsbox--size 72= 等 + alist で AOT codegen が消費）に集約され、*④が包括的に再設計する同じ定数群*。
+→ *① の box-shrink は④に折り込むのが正解*（単独実施は throwaway + レイアウト不整合リスク）。
+= 結論: *① 単独ステップは不要、rc 除去を④に内包*。pure-tracing は既得。
+
+** 2.2 設計（④に内包）
+- 各 box struct から末尾 rc を除去（-8B/各）。=*-alloc.el= の rc 書込み削除、=*-clone.el= を identity 化
+  （bump 無し、ptr 返すのみ）、=*-drop.el= は stub（解放は GC sweep が担う、既に no-op dealloc 経由で実質そう）。
+- free-list bucket は =BLOCK_TOTAL= 基準ゆえ自動追従（cons BT 80→72、segregated 範囲内、変更不要）。
+- *④ の box-layout 再設計（=nelisp-sexp-layout.el= 全 size/offset 定数）と一括で実施*し throwaway を回避。
+- =nlrc.rs= の rc offset assert 群を除去。
+- *独立・機械的・低リスク*。4438 PASS で検証。④の新 box layout から rc を排除する前提にもなる。
+
+* §3 ④ 値表現 = 8B tagged word（本丸、調査A 推奨スキーム(c)）
+
+** 3.0 *採用（2026-06-06 user 決定）= immediates-only サブセット*
+full scheme(c) は最終目標だが、まず *Nil/T/Int だけを immediate 化*（heap型 cons/vector/string は現 32B slot 表現を温存）。
+gdb 最大 garbage（Nil 712K + Int 等の per-value slot）を直接除去しつつ、box accessor/GC/clone の heap 経路を温存し
+flag-day の幅を狭める。
+
+*** encoding（low-bit、bit0=1 が immediate）
+- =word & 1 == 0= → *heap slot pointer*（8-align）。指す 32B slot に tag(4-12)@+0 + payload@+8（現状通り）。
+- =word & 3 == 1= → *fixnum(Int)*: value = =(ash word -2)=（i62、算術右シフト）。 Int(n)= =(logior (ash n 2) 1)=。
+- =word & 3 == 3= → *Nil/T*: =(ash word -2)= が 0→Nil(tag0) / 1→T(tag1)。 Nil= =3=、T= =7=。
+- = 中核 helper =nl_val_tag(v)=: =(if (= (logand v 1) 0) (ptr-read-u8 v 0) (if (= (logand v 3) 1) 2 (if (= (ash v -2) 0) 0 1)))=。
+  =nl_val_is_imm(v)= = =(logand v 1)=。 =nl_val_int(v)= = =(ash v -2)=（imm時）。
+
+*** flag-day 性質（per-stage 検証不可）
+値消費サイト全てが「v は imm か slot-ptr か」を扱う必要があるため中間状態は動かない。協調変更→緑化デバッグ。
+*full context の集中セッションで実行*（本セッションは長大で context 要約により不変条件を見失う危険）。
+
+*** 変換手順（順序、最後に一括 build → 4438 緑化）
+1. *foundation（additive、緑）*: =nl_val_tag= / =nl_val_is_imm= / =nl_val_int= / =nl_imm_nil(=3)= / =nl_imm_t(=7)= /
+   =nl_imm_int(n)= を standalone source に追加（誰も使わない → build 緑のまま commit 可）。
+2. *tag 読み一括置換*: 全 =(ptr-read-u64 V 0)=（V が値の tag 読み）を =nl_val_tag(V)= へ。値でない ptr-read と区別が要（grep + 文脈精査、最難関）。
+3. *構築サイト*: Nil/T/Int を生む =(alloc-bytes 32 8)= + tag/payload 書込みを immediate word 返却へ。=nl_logic_write_nil_slot= 系、=sexp-int-make=、=emit-sexp-int-make/unwrap=（AOT codegen）。
+4. *ABI*: =out= を 8B word slot に（callee は word を書く）。=nelisp_eval_call= の out。heap 結果は slot-ptr word を書く。
+5. *GC mark*: =nl_gc_mark_slot= で =nl_val_is_imm= なら skip、else 従来の box mark。
+6. *clone*: =nl_sexp_clone_into= → imm は word copy、heap は slot-ptr copy（rc は§2 で既に vestigial）。
+7. *int payload*: =sexp-int-unwrap= → imm の =(ash v -2)=。算術/比較/index の int を全て imm 経由に。
+8. build → 4438 緑化 → full load peak 実測（Nil/Int slot 消滅で大幅減を期待）。
+
+** 3.1 現状の値渡し ABI（調査A の crux）
+- 全 Sexp は 32B、*ポインタで渡す*。中間値ごとに =(alloc-bytes 32 8)=。AOT codegen は2層を持つ:
+  (1) integer scalar（=imm=/=ref=/=arith= = rax の 64bit 整数）、(2) Sexp-slot（32B memory をポインタ参照）。
+- =emit-sexp-int-make=(=nelisp-aot-compiler.el:12115=) は slot に tag@0+payload@8 を書く。
+  =emit-sexp-int-unwrap=(:12103) は =[rdi+8]= を load。=emit-cons-slot-copy=(:12165) は 32B を movdqu。
+
+** 3.2 推奨スキーム = (c) 8B tagged word
+- *bit 配置*: bits 63..16 = pointer/payload（x86_64 user ptr は 48bit に収まる）、bits 7..0 = *tag byte*
+  （現 tag 0-12 をそのまま保持）。Nil=0x00, T=0x01, Int=(v<<8)|0x02（56bit fixnum）, Float=(box_ptr<<8)|0x03,
+  heap型(6-12)=(box_ptr<<8)|tag。tag 抽出 = =word & 0xFF=、payload = =word>>8=（Int は算術右シフト sign-extend）。
+- *(a)低ビットtagging は tag 0-12 が 3bit に入らず remap 要、(b)NaN-boxing は inline String と衝突し最大コスト*。
+  *(c) は現 tag 値を保持し、AOT の2層を1層（Sexp = rax の u64）へ統合*し、Nil/T/Int の 32B slot を完全消去。
+- *Symbol/Str の構造変更*: 現在 inline String header(cap/ptr/len @+8..+31) を *heap box 化*
+  （=NlSymbolBox{cap,ptr,len}=、tag は word に）。唯一の構造的変更。
+
+** 3.3 変更面（調査A、全層）
+- alloc: =nelisp-cc-evalport-*.el= / =sf-*.el= の =(alloc-bytes 32 8)= 群 → Nil/T/Int は消滅、heap型は box のみ確保。
+- eval ABI: =nelisp_eval_call= の out を =*mut u64=（or rax 直返し）。=nl_logic_write_nil_slot= 等の 4×ptr-write は
+  =mov 0= に。
+- tag/payload: =emit-sexp-tag=(:12042) → =and 0xFF=、=emit-sexp-int-unwrap= → =sar 8=、=emit-sexp-int-make= →
+  =shl 8|2=。全 =(ptr-read-u64 slot 0)= の tag 読みが =word & 0xFF= に。
+- box accessor: =emit-cons-slot-copy=(:12165) → 単一 8B mov（cons car@0/cdr@8、cons 72→24B）、
+  =emit-vector-slot-ptr-core=(:12480) の stride =imul 32= → =imul 8=、=nelisp-sexp--slot-size 32→8=。
+  Symbol/Str の inline 読み（=emit-str-len/bytes/...= :12926-13146）は box ptr 抽出後に読む。
+- GC mark: =nl_gc_mark_slot=(=scripts/...:1071=) は word の tag で分岐、immediate は box 無しで skip、heap は word>>8。
+- clone: =nl_sexp_clone_into= → =nl_word_clone(u64)->u64=（immediate は identity、heap は rc 廃止後ただの copy）。
+- =nelisp_cons_construct= → =nl_cons_make(car_word,cdr_word)->word=（出力 slot 消滅）。
+- =nelisp-sexp-layout.el= の全 offset 定数 + =sexp_abi_assert.rs= 更新。
+
+** 3.4 消える boxing（調査A）
+Nil/T temporaries、Int 中間値、T bool、cons 出力 slot、関数 lookup tmp、signal 構築 tmp（=nl_apply_stash_wta= の
+7×32B）等が *全消滅*。残る確保は genuine heap 構造（cons 本体 24B、vector、record、string）のみ。
+= per-value boxing が消え、count も size も激減 → *peak が数百MB へ*（本丸）。
+
+* §4 ② root-coverage gap 閉塞（③の前提、調査B）
+
+** 4.1 gap（調査B）
+- *Gap1 CharTable(9)*: box は mark するが内部 Sexp（subtype@+0/default_val@+32/entries Vec@+64/parent@+88/
+  extra@+96）を *walk しない*（=scripts/...:1157=）。
+- *Gap2 BoolVector(10)*: box mark のみ、=Vec<bool>= buf(@+8) を mark しない（:1158）。
+- 両者 reader workload では非発生（bool-vector は stdlib で plain Vector）= *latent*。
+- *16MB segfault の正体*: GC が *watermark 確立前（boot 中）*に発火 → root slot 未設定で mark 不完全 → live 解放。
+  64MB floor（boot ~60MB 直上、=:4953=）で回避済。
+- form 境界のみ発火ゆえ scratch slot（exp_slot/invec 等）は *現状安全*だが、*mid-eval/moving GC では root gap*。
+
+** 4.2 設計
+- CharTable/BoolVector の子 walk を追加（=nl_gc_mark_slot= に entries/parent/extra/buf の walk）。
+- moving GC 前提として *scratch-slot 監査*: 全 =alloc-bytes= 結果が root slot か root block に保持される（or GC 点を
+  跨がない）ことを確認。跨ぐものは shadow stack / precise stack map で root 化。
+- watermark + 64MB floor は維持。
+
+* §5 ③ moving GC = sliding compaction + munmap（調査C）
+
+** 5.1 算法（Lisp2 sliding、Cheney でない = 倍メモリ回避。live 極小ゆえ最適）
+1. *mark*（既存 =nl_gc_mark_roots=/=nl_gc_mark_slot= をそのまま）。
+2. *forwarding 計算*: chunk-head を address 順に walk、mark1 かつ =hdr>=watermark= の block に
+   =fwd[obj]=compaction_cursor=（side-table、live ~109 ゆえ数KB）。
+3. *pointer 書換*: 全 root + 各 live box 内部の辺（Sexp の +8、vector/record の data_ptr、Symbol/Str の +16 buf ptr）を
+   =fwd[old]= へ。*rc-aliasing は side-table（old addr key）で全 alias が同一新 addr に解決*され安全。
+4. *payload 移動*: address 順に =memmove(new, obj, BLOCK_TOTAL-8)=。
+5. *free-list 再構築 + chunk cursor 更新*。
+6. *munmap*: 空（cursor==data_start）の非 persistent chunk を unlink + munmap + reserved/chunk-count 減。
+- *root pinning*: root block（ctx/result/out/pool/src/cursor/bsym）は watermark 以下 = permanent gen に置き *動かさない*。
+  中の Sexp payload ptr のみ書換（slot addr 固定ゆえ native call-site 不変）。
+
+** 5.2 依存・リスク（調査C）
+- *硬い前提 = ② root-coverage 閉塞*。compaction は unforgiving: 見落とし root の live box は移動後、非 root の
+  stale ptr が munmap 済領域を指し *確定 UAF*（mark-sweep は latent で済むが compaction は即 crash）。
+- intern region（symbol name、64MB 別 mmap）は chunk 外 = 移動しない（compactor も skip）。
+- ERT 必須: single/aliased(rc>1)/cons-chain/vector+extbuf/record/nested/pin-permanent/empty-munmap の round-trip。
+- effort ~300-500 行 AOT elisp。
+
+** 5.3 ①④ との統合（調査C）
+- ④ tagged immediate → pointer 辺が減る（immediate は box 無し）→ Phase3 の書換が簡素。
+- ① rc 廃止 → box 縮小（移動高速化）。aliasing は残る（rc は counter であって shared-ptr 性は不変）ので forwarding は必要。
+- = ④③ を ① の後に行えば、新 box layout に rc 不在・immediate 非 box で *最も簡素*。
+
+* §6 推奨順序と相互依存
+
+#+begin_example
+  ① pure tracing (rc廃止)         ← 最初。独立・機械的・低リスク。box -8B。④の新layout/③のforwardingを簡素化
+        ↓ (新box layoutにrc不在を前提化)
+  ④ 値表現 8B tagged word          ← 本丸。per-value boxing 根絶 = peak 数百MBへ。最大の変更
+        ↓ (immediate非box化で③のpointer辺が減る)
+  ② root-coverage gap 閉塞         ← ③の硬い前提。CharTable/BoolVector子walk + scratch-slot監査
+        ↓
+  ③ moving GC (compaction+munmap)  ← 最後。残りfragmentを OS返却
+#+end_example
+
+- *なぜ① 最初*: 機械的で単独 4438 検証可。④の box 再設計に rc を持ち込まない／③の forwarding に rc 処理を入れない
+  ための前提。先にやると ④③ が最も素直。
+- *なぜ④ を②③より先*: 最高効果（boxing 根絶 = 数百MB の主因を直接除去）かつ ②③ と概ね独立。④で表現が固まってから
+  ③ を設計すれば *③ を一度で*（新表現向けに）設計できる（逆順だと ③ を④後に再設計）。
+- *なぜ② → ③*: compaction は root 完全性に依存（§5.2）。② が硬い前提。
+- *④だけで数百MB に届く見込み*（boxing が peak の主因）。③ は *OS 返却*の finisher（届かない分 / sustained 低減）。
+
+* §7 effort / risk 一覧
+
+| # | effort | 主リスク | 単独検証 |
+|---+--------+----------+----------|
+| ① | 中（7 box × alloc/clone/drop + assert） | reuse の stale 領域（既に zero-fill 済で緩和） | 4438 + box size 確認 |
+| ④ | *最大*（AOT codegen + 全 accessor + eval ABI + Symbol/Str box 化） | 表現不整合（一部 slot が 32B 一部 8B）→ 段階移行で混在期が危険 | 4438 + eq/let/cons/arith smoke + full load peak |
+| ② | 中（子 walk + scratch 監査） | 監査漏れ（mid-eval root） | 4438 + 16MB trigger 安定 |
+| ③ | 大（compaction 6 phase + forwarding + munmap） | root 見落とし → UAF。aliasing forwarding | §5.2 の round-trip ERT 群 |
+
+* §8 検証計画（共通）
+- =make standalone-reader= build / =(+ 40 2)= / eq・let・let*・cons・arith smoke / =make test-parallel= 4438/0
+  （nelisp-process sentinel は env flake）。
+- full vendor-load peak RSS（=/tmp/measure-load.sh=）+ 反復決定性。
+- gdb（=/tmp/heapwalk2.gdb= mark後 live/garbage 分類、=/tmp/chunklive.gdb= chunk 占有）で各段の効果と健全性を確認。
+- ④ 特有: 表現移行中の混在を避ける（一括切替 or 明確な境界）。box size 縮小を census で確認。
+- ③ 特有: §5.2 の round-trip ERT（rc>1 alias 含む）+ pin 不変 + munmap 後 inaccessible。
+
+* §9 参照
+- Doc 145（transient arena、superseded by ④）。Doc 140（chunked arena）。Doc 08（nelisp-emacs §8.14-8.18.6 診断）。
+- commit fa65d14e（64MB trigger / 16MB segfault 記録）、d6ed05d9（boundary-reclaim unsound）。
+- 並列調査3本（値表現 / GC正当性 / moving GC）2026-06-06。主要 file:line は各 §に埋込。
+- 主要 anchor: =scripts/nelisp-standalone-build.el= GC 1071-1276 / alloc 786- / chunk desc 138-153、
+  =lisp/nelisp-aot-compiler.el= emit-sexp-* 12042-13179 / emit-defun 15423、=lisp/nelisp-sexp-layout.el=、
+  =lisp/nelisp-cc-nl*-{alloc,clone,drop}.el=。

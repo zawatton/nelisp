@@ -1,0 +1,186 @@
+#+TITLE: Doc 145 — 低メモリ化設計: per-form transient scratch arena（数百MB級へ）
+#+AUTHOR: nelisp / nelisp-emacs
+#+DATE: 2026-06-06
+#+STATUS: SUPERSEDED by Doc 146（値表現 tagged immediate が transient arena を包摂）。MVP は健全だが peak 不変で revert。記録として保持。
+#+OPTIONS: toc:3 num:t
+
+* §0 要旨
+
+full 319 vendor-load の peak RSS を、本セッションで *9.88GB → 1.80GB（-82%）* まで削減した
+（parse-pool right-size / symbol-name interning / 8B box header / GC-trigger 64MB、いずれも
+commit 済・4438 PASS）。さらに *数百MB級（実 Emacs 相当）* を目指す本設計書。
+
+gdb live-heap 解析で *真因を確定*: 残り 1.80GB は over-retention ではなく、*live set が極小*
+（GC mark 後の sample 2.5M box 中 reachable=109）で、ほぼ全部が *per-eval の transient ゴミ*。
+これが tracing GC 間（64MB トリガごと）に蓄積する。空チャンク munmap を試みたが、tiny live が
+全チャンクに散在する *fragmentation* で不発（Doc 08 §8.18.6）。
+
+*推奨設計 = per-form transient scratch arena*: 確実に transient な scaffolding 確保を *別 region* へ
+逃がし、top-level form 境界で *wholesale reset*。fragmentation を回避（GC でなく reset）、
+boundary-reclaim の unsound（§3.1）を回避（別 region・非 escape のみ）、transient ゴミを直接消す。
+
+* §1 問題
+
+** 1.1 現在地（commit fa65d14e）
+- full vendor-load peak RSS = *1.80GB*（64MB trigger）。org-cycle.el #43 で停止（memory 天井ではない）。
+- gdb /tmp/heapwalk2.gdb（=nl_gc_sweep= entry = mark 後・sweep 前）: sample 2.5M box 中
+  *LIVE(mark1)=109 / GARBAGE(mark0)=1,660,387*。= live set 極小、残りは回収可能なゴミ。
+
+** 1.2 ゴミの正体（gdb tag 分布 + サブエージェント調査2）
+- GARBAGE BT40 の tag: Nil(0) 712K / Symbol(4) 747K / Cons-ptr(7) 57K / 他。
+- = *lexframe 束縛エントリの scaffolding*: =nl_logic_build_scratch= が let 束縛ごとに
+  11-slot vector + "symentry" symbol box + value clone を作る。加えて eval/apply の各種 scratch slot。
+
+** 1.3 munmap が効かない理由（Doc 08 §8.18.6）
+- tracing GC 後に空チャンクを munmap → だが tiny live が全 growth chunk に散在（各 chunk に数個の
+  live）→ *完全に空の chunk がほぼ生じない* → munmap 不発。non-moving GC の限界（fragmentation）。
+
+* §2 根本原因（サブエージェント調査2 = transient 分類）
+
+bump arena は form 内で一切 free しない。per top-level form の eval が大量の transient を確保し、
+それらは form 完了時にゴミ化するが、次の tracing GC まで arena に滞留する。
+
+** 2.1 TRANSIENT（per-eval、form/scope 完了で即ゴミ、retained から参照されない）
+| 確保 | 場所 | 死ぬ時点 |
+|------+------+----------|
+| 11-slot scratch vector (=nl_alloc_vector 11=) | =lisp/nelisp-cc-evalport-env-leaves-logic.el:4= (=nl_logic_build_scratch=) ほか | =nelisp_env_bind_local= return 直後 |
+| symentry box (=alloc-bytes 32 8= + =alloc-bytes 16 1=) | 同上 (=nl_logic_write_symentry=) | bind 直後（11-slot vector 経由のみ到達） |
+| out_vec_slot (=alloc-bytes 32 8=) | =nl_logic_bind_local= | bind 後 |
+| 7-slot push scratch + 2 sym slot | =nl_logic_frame_push_scratch= 他 | =nelisp_frame_push= return 後 |
+| name 比較 buf (=alloc-bytes 8..32 1= ×多数) | =nl_apply_name_eq_*= / =nl_apply_sym_eq_bytes= | 比較 return 後（1 call で最大18回） |
+| arg-list eval slot (=alloc-bytes 32 8= ×2/arg) | =nl_eval_arg_list_walk= (=scripts/...:3135=) | body 開始後（formals bind 済） |
+| =nl_let_collect_walk= の temp pairs list | =env-leaves-logic.el= | =nl_let_bind_walk= 消費後 |
+- *crux（調査2）*: frame path (depth>0) では =nelisp_env_bind_local= は 11-slot vector を
+  *scratch 引数*としてのみ使い、frame には =NlCell= だけを cons-pair で入れる（=env-bind-local.el:125=）。
+  11-slot vector + symentry box は *どこにも保持されない* → bind 直後にゴミ。
+
+** 2.2 RETAINED（genuine live、別管理）
+| 確保 | 保持元 |
+|------+--------|
+| =NlCell=（束縛の値ラッパ） | frame HT bucket。=nelisp_frame_pop=(=frame-pop.el:68=) で drop |
+| frame record + 16-bucket vector | frames stack。frame-pop で drop |
+| closure capture alist + Cells | closure 本体。closure GC 時まで |
+| mirror symbol-entry record | mirror HT。global に保持 |
+| parsed form cons-tree（defun body） | mirror function cell。global に保持 |
+| 値（eval が計算）/ 文字列 | 上記に clone されて保持 |
+- *値は normal allocator（eval 経路）で確保され retained region に入る*。scaffolding と別。
+
+* §3 検討した3アプローチ（並列調査）
+
+** 3.1 boundary-reclaim 再有効化（調査1）= 不可
+- 既存の *無効化された LIFO 即時回収*: form 境界で per-eval 確保を arena cursor 巻き戻し。
+  gate = reclaim-enabled flag(268436216) ∧ immediate result(tag≤3) ∧ mutation-epoch(268435544)不変
+  ∧ no signal/throw/exit。=nl_boundary_maybe_reclaim=(3818-3829) / =nl_boundary_reclaim=(3802-3817)。
+- *unsound（commit d6ed05d9 で無効化）*:
+  - (A) *refcount-aliasing clone*: 32B shallow copy が mark 上の box を alias。
+  - (B) *in-place macro caching*: =nl_cons_macro_apply_eval=(3020-3058) が展開結果(mark 上に確保)を
+    form box へ *raw ptr-write で上書き* → epoch gate に *不可視* → 巻き戻すと次回 form eval で UAF。
+  - (C) *frame-stack grow*: backing vector を persistent frames-record に install（fib SIGSEGV の正体）。
+- = escape 列挙アプローチは macro 使用コード（=ほぼ全 Elisp）で破綻。*LIFO on main arena は本質的に unsound*。
+  調査1 の結論: 巻き戻しは tracing GC 後の *到達可能性確認* でのみ健全（= §3.3 = 私の munmap、fragmentation で不発）。
+
+** 3.2 per-form transient scratch arena（推奨、§4）
+- §3.1 の健全版: *確実に非 escape な transient* だけを *別 region* へ確保し、form 境界で reset。
+  別 region なので reset は main arena の retained を絶対に触らない（(A)(B)(C) は main arena 側）。
+
+** 3.3 compacting (moving) GC（重い代替、§5）
+- live を少数 chunk へ relocate → 残りを munmap。fragmentation を *根本的に*解消。調査3 が面を mapping。
+
+* §4 推奨設計: per-form transient scratch arena
+
+** 4.1 機構
+1. *transient region*: intern region（Doc 08 §8.16）と同型の *別 mmap 領域*（chunk list 外 = tracing GC
+   非走査）。bump pointer のみ。固定スロットに base / bump を保持（rebase span 内で nl_arena_base 相対化）。
+2. *transient alloc*: =alloc-bytes-transient size align= プリミティブ（or 既存 alloc-bytes に region 引数）。
+   §2.1 の確認済み transient 確保サイトを *これに差し替え*。それ以外（値計算・form 構造・mirror・frame・Cell）は
+   normal =alloc-bytes=（retained region）のまま。
+3. *reset*: top-level form 境界（=nl_eval_source_all= の =nelisp_eval_call= 後、boundary-reclaim と同位置）で
+   transient bump を base へ戻す（=ptr-write base+bump_off = base+table_off=）。wholesale O(1)。
+   *gate*: §3.1 と同じく immediate-result / no-escape は不要 — *別 region ゆえ retained を触らない*ので、
+   *無条件 reset で健全*（後述 §4.3 の invariant が成り立つ限り）。
+
+** 4.2 transient へ回す確保サイト（調査2、要 file:line 精査）
+- =nl_logic_build_scratch= / =nl_frame_build_bind_scratch= の =nl_alloc_vector 11= + sym_slot + buf。
+- =nl_logic_frame_push_scratch= / =nl_apply_build_push_scratch= の 7-slot vector + sym slots。
+- =nl_apply_name_eq_*= / =nl_apply_sym_eq_bytes= の比較 buf + 2 Sexp slot。
+- =nl_eval_arg_list_walk= の eval_slot/rest_slot。
+- =nl_let_collect_walk= の temp pairs。
+- =nl_logic_bind_local= 系の out_vec_slot。
+
+** 4.3 健全性 invariant（最重要）
+*「transient region の box は retained region から参照されない」* を保つこと。
+- 値・form 構造は normal alloc（retained）→ Cell/mirror はそれを参照（retained→retained）。OK。
+- scaffolding（transient）は bind/比較後に死ぬ（調査2 確認）→ retained から参照無し。OK。
+- *危険* = transient box が clone/share で retained へ漏れる場合（特に tag6-12 の clone は rc-bump で
+  box 共有 = retained slot が transient box を指す → reset で dangling）。§4.2 の各サイトが「scaffolding
+  であって値でない」ことを *clone 経路（=nl_sexp_clone_into=）含め検証*する。疑わしいサイトは retained に残す
+  （保守的に）。
+- *=nl_cons_macro_apply_eval= の展開 box は transient サイトでない*（normal eval alloc）→ retained region →
+  reset 安全。frame backing(grow) も retained。= §3.1 の (B)(C) は本設計では問題化しない。
+
+** 4.4 form 内（深い再帰・大ループ）の backstop
+- transient region は top-level form 境界で reset。1 form 内（=(fib 25)= 等）では reset されず増える。
+- *backstop = 既存 tracing GC（64MB trigger）*。form 内で transient region が膨れても、GC は retained region を
+  回収し続ける。さらに transient region 自体に上限（例 256MB）を設け、超えたら form 内でも madvise(DONTNEED)
+  で物理返却 or 緊急 GC、は将来拡張。
+- 通常の vendor-load は *小さい top-level form の連続*ゆえ、各 form で reset → transient は小さく保たれる。
+
+** 4.5 実装ステップ（逐次、各ステップで gdb + 4438 検証）
+1. transient region setup（=nl_intern_region_init= に倣い =nl_transient_region_init=、固定スロット2本、
+   base+offset 衝突回避）。mmap、bump init。
+2. =alloc-bytes-transient= プリミティブ（or region 引数）追加。grammar / dispatch 配線。
+3. §4.2 の確保サイトを 1 グループずつ差し替え → 毎回 4438 + gdb live/garbage census で *retained を誤って
+   transient にしていない*ことを確認（dangling 検出）。
+4. form 境界 reset を =nl_eval_source_all= に追加（boundary-reclaim と同位置、ただし無条件・別 region）。
+5. full load peak 計測（目標 数百MB）。eq smoke / 4438 / 反復安定。
+6. 必要なら transient region の上限 + 物理返却（madvise）。
+
+* §5 代替: compacting (moving) GC（調査3）
+
+fragmentation を根本解消する重い解。本筋の transient-arena で不足な場合（retained region 自体が肥大/断片化）に。
+
+** 5.1 ポインタ辺マップ（移動時に書換が要る辺、9種）
+- Sexp +8（tag6-12 の box ポインタ） / Sexp +16（Symbol/Str の inline String.ptr → char buf）。
+- Cons box: car@+0 / cdr@+32（各 Sexp）/ rc@+64。
+- Vector: data_ptr@+8 → Sexp[] / rc@+24。Record: type_tag@+0 / slots data_ptr@+40 / rc@+56。
+- Cell: value@+0 / rc@+32。MutStr: NlStr@+8(cap/ptr/len) / rc@+24。
+- CharTable(+120 rc) / BoolVector(+24 rc): *現 GC は子を walk しない* → compaction では要 walk（parent ptr@+88 等）。
+- free-list next（freed block の obj+0）: relocation で無効 → compaction 後 *free-list 再構築*。
+
+** 5.2 roots（調査3）
+- =nl_gc_mark_roots=(1257-1267): ctx(mirror@+0 Vector / frames@+32 Record / unbound@+64 / rec_cur/max) +
+  result / out / pool(32768 slot Vector) / src / cursor / bsym。boot watermark 以下は permanent gen。
+
+** 5.3 簡略化要因 / リスク（調査3）
+- *AOT native code は GC 時に native stack へ live Sexp を持たない*（GC は form 境界のみ）→ stack scan 不要（最大の簡略化）。
+- root block を *pin*（移動しない）すれば caller frame の更新不要。
+- *最大リスク = rc-aliasing*: rc=n の box は n 個の Sexp slot が指す → forwarding pointer 表で全 alias 書換。
+- effort 見積: 200-400 行 AOT elisp、medium-high risk。rc>1 box の ERT 必須。
+
+* §6 検証計画（全アプローチ共通）
+- =make standalone-reader= build / =(+ 40 2)= / eq smoke（=(eq 'a 'a)=/=nil=/=(intern x)=共有）。
+- =make test-parallel= = 4438/0（nelisp-process sentinel は env flake、単独/再実行で確認）。
+- full vendor-load peak RSS（measure-load.sh）+ 反復安定（≥4 run 決定的）。
+- gdb /tmp/heapwalk2.gdb（mark 後 live/garbage 分類）で transient reset 後の live が *壊れていない*こと
+  （dangling = retained が transient を指していないか）を確認。
+- transient 設計特有: reset 直後に full mark→sweep を強制し survive box が全て retained region にあること。
+
+* §7 リスクと対策
+- *transient escape（dangling）*: §4.3 invariant 違反。対策 = サイトを 1 グループずつ差し替え + 毎回 4438 +
+  gdb dangling 検査。疑わしきは retained に残す（保守的）。
+- *form 内肥大*: §4.4 backstop（tracing GC + 将来 transient 上限）。
+- *root-coverage gap（Doc 08 §8.13）*: 頻繁 GC で露出（16MB trigger で segfault した件）。transient-arena は
+  GC 頻度を上げないので無関係だが、compaction は mark 健全性に依存 → 先に gap 監査。
+
+* §8 推奨と effort
+- *第一手 = §4 transient scratch arena*。targeted・fragmentation 回避・§3.1 の unsound 回避・直接 garbage 消去。
+  effort = 中（region setup + プリミティブ + サイト差し替え + reset）。数百MB 射程。
+- *不足時 = §5 compacting GC*。robust だが重い（rc-aliasing forwarding）。
+- 並列化: *設計/調査*は本書で完了。*実装*は単一密結合 core 変更ゆえ逐次（gdb 検証付き）。*検証*は多面並列可。
+
+* §9 参照
+- Doc 08（nelisp-emacs）§8.14-8.18.6: 本セッションの全診断（gdb 手法 /tmp/heapwalk*.gdb 含む）。
+- commit: af5cce91 ptr-call / ba311ecd pool / ae450d7e AOT rename / afbb23aa interning /
+  7134b383 8B-header / fa65d14e GC-trigger-64MB。
+- 無効化 commit d6ed05d9（boundary-reclaim unsound）。
+- 並列サブエージェント調査3本（boundary-reclaim 健全性 / transient 分類 / compaction 面）2026-06-06。
