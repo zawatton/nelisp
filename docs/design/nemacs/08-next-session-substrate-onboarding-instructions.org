@@ -265,3 +265,232 @@ char-table 後、org.el は次の blocker で止まる。*実エラーを surfac
   threshold 512MB を下げるのは doc §6 通り thrash するので非推奨。arena 上限引き上げは延命のみ。
 - *診断手順の証跡*: =/tmp/full-prog.el= を保存し =build/nelisp-experiment --load= を直接実行、
   =head -n N= で truncation 二分、=/proc/PID/status VmHWM= で peak RSS 測定（replay の出力捕捉編集は revert 済）。
+
+** 8.7 メモリ blowup の真因と修正設計（2026-06-06 深掘り）
+§8.6 の「累積メモリ枯渇」を reader 内部まで追い、真因と修正方向を確定:
+
+*** 真因1: GC トリガが総使用量を見ていない（FIXED, sound）
+- GC トリガ（=bf_eval_source_string_loop= 等 3 箇所）が =268435456=（*チャンク0 bump、256MiB cap*）を
+  threshold(512MiB) と比較 → Doc 140 のチャンク成長化後、あふれ分は新チャンクへ行き bump は 512MiB に
+  *永久に届かず → tracing GC が一度も発火しない*（=live-after-gc=0= を 12.7GB まで確認）。
+- *修正*: トリガ/threshold-update を =268436184=（*総 chunk-bytes-reserved*）へ。3 箇所。
+  これは sound（=(+ 40 2)= 等 + load-smoke + heavy load で segfault なし）。メモリ 13.9GB→10GB。
+
+*** 真因2: free-list reuse が exact-fit 単一リスト線形スキャン（thrash + reuse 非効率）
+- =nl_freelist_take= は単一リスト(=268435552=)を *exact BLOCK_TOTAL 一致* で線形スキャン。
+  GC sweep が数千の混在サイズブロックを free すると、*可変長 alloc（symbol-name/string、各長さ違い）が
+  固定長 cons/Sexp ブロックを毎回全走査* → O(alloc数 × free-list長) 二次関数。
+  GC を有効化すると load が *~20-30× 遅く*なる（bootstrap だけで >200s）。
+- *さらに reuse 非効率がメモリにも効く疑い*: exact-fit 不一致で可変長 alloc が reuse できず、
+  freed ブロックが free-list に滞留＋*OS 未返却*（チャンクは munmap されない）→ =used=（bump 累積）が成長、
+  RSS=used。つまり 10GB の多くは *「freed-but-not-reused-nor-returned」* で、reachable retention とは限らない。
+  → *正しい segregated free-list で速度とメモリの両方が改善する可能性*（eval-escape より単純）。
+
+*** 修正設計: size-segregated free-list（O(1) exact-fit）
+- BLOCK_TOTAL 別にバケット化。バケット配列は reserved 領域の *空きギャップ base+240..+696*
+  （=268435696..268436152=、grep で未使用確認、mmap-zero なので init 不要）。
+  bucket head = =268435696 + (BT-24)= for BT in [24,480]、BT>480 は fallback 単一リスト(=268435552=)。
+- *重要な落とし穴（私の試作が segfault した原因）*: =nl_gc_bt_ok= は BLOCK_TOTAL>=16 を通すが、
+  bt=16（walker desync 等）で =(+ 268435696 (- 16 24))= = =268435688= = *base+232（使用中スロット）= wild write* → 破損。
+  → *bt<24 も fallback へ落とすガード必須*: =(if (or (< bt 24) (> bt 480)) 268435552 (+ 268435696 (- bt 24)))=。
+  最初の試作はこのガードが無く非決定的 segfault（heavy load 時）。revert 済み。
+- バケット化が正しく入れば load は *fast* になり、その状態で =268435640=（survive）/=268435632=（freed）
+  カウンタや live-after-gc を読めば、残りメモリが reachable retention（eval-escape）か reuse 非効率かを確定できる。
+
+*** 残るかもしれない eval-escape（真因3 候補、未確定）
+- NOTE(2026-06-01) の refcount-aliasing clone / in-place macro caching / mirror-closure sharing。
+  ただし現行 =nl_cons_macro_apply_eval= は *in-place cache せず毎回再展開*（exp_slot は per-call scratch）で、
+  in-place macro caching は現設計に見当たらない。eval-escape が残差として効くかは、
+  segregated free-list で fast 化してから survive/freed 比で測るのが正道。
+
+*** 現在の状態
+- GC-trigger fix（3 箇所、sound）+ user の =ptr-call= が =scripts/nelisp-standalone-build.el= に *未コミット同居*。
+- segregated free-list 試作は *revert 済み*（bt<24 ガード欠落で segfault）。
+- =build/nelisp-experiment= = GC-trigger-fix のみ（sound だが thrash で遅い）。
+- *次の一手*: bt<24 ガード付き segregated free-list を実装 → fast 化 → survive/freed 計測で residue の正体を確定 → 必要なら eval-escape。
+
+** 8.8 最終診断: residue と segfault は同一根本原因 = GC mark の不完全さ（2026-06-06）
+§8.7 で「segregated free-list で reuse を効かせれば memory も下がる」と見積もったが、*実装すると segfault*。
+原因はバケットコードではなく、より深い所にあった:
+
+- *単一リスト exact-fit reuse は実質ほとんど reuse が起きない*（可変長 alloc がサイズ不一致で毎回 bump）。
+  → GC が free した block の多くは *再利用されず放置* = メモリに滞留（これが §8.6/8.7 の「residue ~74%」の正体）。
+- *segregated free-list は reuse を効かせる* → free 済み block を積極的に再配布。
+  ところが *tracing GC の mark が不完全*（eval-escape: aliasing clone / mirror-closure sharing で
+  reachable になった box を mark しきれない）ため、*まだ生きている block を sweep が free している*。
+  単一リストでは「free された生 block」が再利用されず放置されるだけ（UAF にならない、メモリが膨らむだけ）。
+  segregated で再利用すると *use-after-free → segfault*。
+- *結論*: residue（メモリ滞留）と segfault は *同一根本原因の二症状* = GC mark の不完全さ。
+  - GC を走らせない（元の状態）= sound だが 14GB blowup。
+  - GC を走らせる（GC-trigger fix）= truly-unreachable を回収して 14GB→10GB、reuse がほぼ無いので UAF は顕在化せず *実用上 sound*。だが残り 10GB は「mark 漏れで free されたが再利用されない生 block + 真の live」。
+  - GC を走らせ *かつ reuse を効かせる*（segregated）= mark 漏れが UAF として露呈 → 使えない。
+- *安全に memory を下げる前提条件*: *GC mark を sound にする*（escape した box を全て mark = roots と
+  traversal の完備）。これは NOTE(2026-06-01) の「correct fix is tracing mark-sweep GC at the form boundary」
+  の *mark 側の完備* に相当し、eval-escape の本丸。深い eval/GC correctness 課題。
+
+*** 採用した最終状態（sound 優先）
+- *GC-trigger fix のみ採用*（3 箇所、=268436184= 総 reserved でトリガ）。GC 稼働・14GB→10GB・UAF 未顕在。
+  ただし free-list thrash で *遅い*（reuse がほぼ無いので exact-fit scan は短く済むはずだが、
+  GC mark/sweep が毎回全 block を walk するコスト + GC 頻度で遅延）。
+- segregated free-list は *revert*（unsound GC を露呈するため、mark 健全化まで封印）。
+- 次にやるべきは *GC mark の完備*（eval-escape box を漏れなく mark）。それが入って初めて
+  reuse 効率化（segregated free-list）と低メモリが *両立* する。
+
+** 8.9 GC mark 不健全の設計上の根本原因 = refcount × tracing-GC の不整合（2026-06-06 設計調査）
+§8.8 の「GC mark が生 box を free → UAF」を reader 内部まで追い、設計レベルの真因を確定:
+
+*** reader は hybrid: refcount + tracing-GC
+- *box は refcount を持つ*: =nelisp_nlconsbox_clone= = =(atomic-fetch-add (+ box-ptr 64) 1)= →
+  *rc は box+64*。clone は rc を bump、=nl_sexp_clone_into= は "refcount-aware copy"、
+  =nl_vector_set_slot= は "refcount-aware slot write"、NlBox Drop kernel は "if-zero-refcount free"。
+  = eval 機構は box の寿命を *refcount で管理* している。
+- *一方 tracing GC（=nl_gc_sweep_one=）は mark==0 を free / mark==1 を survive — refcount を一切見ない*
+  （=nl_gc_mark_slot= は Cons7/Vec8/Rec12/Cell11/MutStr6/Str5/Sym4 を reachability で mark）。
+
+*** 不整合 = UAF と residue の両方の根本原因
+- clone が作る *refcount-alias*（rc>0、生きている）が GC root から到達不能だと、
+  tracing sweep は mark==0 として *free* → alias-holder が dangling → *use-after-free*。
+  NOTE(2026-06-01) の「refcount-aliasing clones escape the mark」はこれ。
+- 単一リスト exact-fit は reuse がほぼ無く、free された生 box が再利用されず放置 → residue（メモリ滞留）。
+  segregated で reuse を効かせると同 box が再配布され UAF が顕在化 → segfault。
+- = *両症状は refcount×tracing の二重管理不整合* に帰着。S0 "sound GC" は *一度も発火していなかった* ため
+  この不整合が露呈しなかっただけ（§8.7）。
+
+*** 修正設計の選択肢
+1. *refcount-aware sweep*（最小・sound）: =nl_gc_sweep_one= を *mark==0 かつ rc==0 の時だけ free* に。
+   生 box（rc>0）を絶対 free しない → UAF 消失。reuse（segregated）も安全に効く → 低メモリ両立。
+   - 課題: rc offset が box 型ごとに異なる（cons=box+64、Sym/Str は別位置）。sweep は header walk で
+     型を知らないので、*型別 rc-offset の特定* or *全 box 型で rc を統一 offset 化* が必要。
+     rc 漏れ cycle（rc>0 だが到達不能な循環）は free されず leak だが、eval garbage では稀。
+2. *pure tracing GC（refcount 撤廃）*: clone/slot-set/drop を refcount-free な pointer copy に統一し、
+   寿命を tracing GC 単独に。不整合は消えるが、tracing mark の *roots/traversal を完備* する必要があり、
+   refcount ロジック除去は広範。クリーンだが大規模。
+3. *pure refcounting（tracing 撤廃）* + cycle 対策: 元の per-eval reset は escape で unsound だったので非推奨。
+
+*** 推奨と次の一手
+- *推奨 = 選択肢1（refcount-aware sweep）*。sound・小変更・低メモリ/高速/健全の三立に最短。
+  前提作業 = *全 box 型の rc-offset を確定*（cons=+64 は判明。Symbol/Str/Vector/Record/Cell/MutStr の
+  rc 位置を NlBox Drop kernel =lisp/nelisp-cc-alloc-dealloc.el= 等から洗い出す）。統一できれば sweep に
+  =(if (= (ptr-read-u64 (+ obj RC_OFF) 0) 0) free keep)= を 1 行足すだけ。
+- これが入れば segregated free-list（§8.7、bt<24 ガード付き）を安全に再投入でき、メモリ大幅減が見込める。
+
+** 8.10 refcount-aware sweep を実装・検証 → 効かず。本丸は mark traversal の不完全さ（2026-06-06）
+§8.9 の設計（refcount-aware sweep）を実装して検証した結果と、修正された理解:
+
+*** 実装した内容（検証後 revert 済）
+- *rc-offset survey*: clone kernel から各 box 型の rc bump offset を確定 ―
+  cons=+64 / record=+56 / cell=+32 / vector=+24 / boolvector=+24 / str=+24 / chartable=+120。
+  *いずれも =BLOCK_TOTAL-24=（= block の最後 8 バイト = =hdr+BT-8=）に一致*（cons BT=88→64、
+  str BT=48→24、record BT=80→56…）。→ *sweep は型を知らずに rc を一意に読める*。
+- =nl_gc_sweep_one= を *mark==0 かつ rc(=ptr-read hdr+BT-8)==0 の時だけ free* に変更（refcount-aware）。
+  segregated free-list（§8.7、bt<24 ガード）を rc-aware sweep の上に再投入して r-prog を実行。
+
+*** 結果: *まだ segfault*（rc-aware sweep は UAF を解消しない）
+- = 誤って free される生 box は *rc==0*。refcount-alias ではない。
+  → 本丸は *mark の TRAVERSAL が reachable な edge を辿りきれていない*（roots 不足ではなく辿り漏れ）。
+  refcount × tracing の不整合（§8.9）は二次的で、主因ではなかった。
+- correctness（=(+ 40 2)= 等 + load-smoke）は rc-aware/segregated 単体では通るが、
+  heavy load + 効果的 reuse で mark 漏れ box が再配布され UAF。
+
+*** mark traversal の漏れ候補（次の調査対象）
+- =nl_gc_mark_slot= は Cons7/Vec8(slots 0..len)/Record12(slots 0..len)/Cell11/MutStr6/Str5/Sym4 を walk。
+- 漏れ得る edge:
+  - *mirror の bucket chain*: globals_record のバケットが entry を辿る "next" を、mark が walk しない slot
+    （Record の len を超える領域 等）に持つと、bucket 先頭以外の entry とその子が mark 漏れ。
+  - *Record/Vector の len を超えるスロット*（rc やメタを末尾に持つ型で、子 Sexp が len 外にある場合）。
+  - *error/throw stash*（268435480/268435512）は root ではない。
+- = *次の一手 = mark の完備性監査*: 各 box 型の「実際の子 Sexp 位置」と mark_slot の walk 範囲を突合し、
+  辿り漏れている edge を特定して mark_slot/roots に追加する。これが入れば segregated free-list を
+  安全に再投入でき、低メモリ・高速・健全が三立する。
+
+*** 最終状態（このセッション）
+- *採用 = GC-trigger fix のみ*（sound・14GB→10GB・thrash で遅い）+ user の ptr-call（未コミット同居）。
+- segregated free-list / refcount-aware sweep は *検証の結果 revert*（mark 未完備のため封印）。
+- =build/nelisp-experiment= = sound な GC-trigger-fix のみ。
+
+** 8.11 mark 完備性監査の結果（2026-06-06, read-only）
+§8.10 の「mark traversal が辿り漏れ」を監査し、主犯候補を除外:
+
+*** 監査済み = 完全（主犯ではない）
+- *mirror（globals_record）の traversal は完全*。構造（=mirror-bucket-prepend.el= より）:
+  =mirror Record → slot0=HT Record → slot1=buckets Vector → 各 bucket = Cons chain
+  (box.car=(KEY-Str . ENTRY-Record), box.cdr=next cell)=。
+  =nl_gc_mark_cons= は *cdr-spine をループ*で辿る（car を再帰）ので *bucket chain 全体*を mark し、
+  entry Record の value/function/plist/constant を Record walk（slots 0..len）で mark。→ 漏れ無し。
+- *標準 box 型*（Cons7/Vec8/Record12/Cell11/MutStr6/Str5/Sym4）は =nl_gc_mark_slot= が
+  各々の子 Sexp を walk。Record は type_tag(box+0) + slots(data_ptr[0..len]) を mark。→ 漏れ無し。
+- *バケット領域 base+240..+696 は mmap MAP_ANONYMOUS(flags=34) = カーネル zero-fill 保証* →
+  未初期化 garbage ではない（segregated segfault の別仮説も棄却）。
+
+*** 残る容疑（read-only で確定不可、runtime debugging が必要）
+1. *frames(ctx+32) / closure の env キャプチャ*: closure が捕捉した lexical env を、mark が辿らない
+   位置に持つ場合。frame stack の entry レイアウトと mark 範囲の突合が未了。
+2. *error/throw stash(268435480 tag / 268435512 val) が GC root でない*: form の eval が stash を
+   残すと、その box が mark 漏れ。
+3. *segregated free-list 自体の構造バグ*: read-only では nl_freelist_take/free_block の論理は
+   single-list と等価に見えるが、heavy load 時のみ segfault。
+
+*** 次の決定的手段 = runtime poison
+- mark/sweep を一時計装: =nl_gc_free_block= で payload を毒値(例 0xdeadbeef)で埋め、
+  =nl_gc_mark_slot= / box-access で毒値検出 → *実際に UAF する box の型と出所を捕捉*。
+  または GC を mark-only(=268435584=1=)にして free を止め、segregated でも segfault するか切り分け
+  （しなければ free/reuse 起因=UAF 確定、するなら segregated 構造バグ）。
+- これは reader instrumentation（read-only 範囲外）。次セッションで実施し、漏れ box を mark_slot/roots に追加 → 
+  segregated free-list 安全再投入 → 低メモリ達成。
+
+** 8.12 runtime 切り分けの結論: GC mark は健全。segfault は segregated reuse の subtle bug（2026-06-06）
+§8.10/8.11 の「mark traversal が不完全」結論は *誤り*だった。runtime 切り分けで確定:
+
+*** 切り分け手順と結果
+- segregated free_block(PUSH) のみ・take 無効（no reuse）でも segfault → UAF ではない（reuse 無し）。
+- bucket base を base+240 / base+824 に動かしても segfault → reserved 領域の衝突ではない。
+- =let*= を排し helper の param-threading にしても segfault、=(> bt 480)= を =(< 480 bt)= にしても segfault、
+  bucket_head を常に 268435552（single-list 等価）にしても *take 無効だと* segfault。
+- *clean single-list（GC-trigger-fix のみ）を r-prog で 400s 完走テスト → exit=124 timeout、*segfault なし*、
+  RSS ~1GB bounded* = *GC mark/sweep は健全*（mirror traversal 完全も §8.11 で確認済）。
+  → 先の「mark 不完全」「refcount-aliasing」は両方 *棄却*。
+- segregated（reuse 有り）は plain #23（w-prog）を *12s @4GB で完走（exit 55）*するが、r-prog（#23 +
+  後続の arena-stats list 構築）で segfault。take 無効（no reuse）版の segfault は arena 上限到達→null alloc の OOM 系。
+
+*** 確定した結論
+- *GC（mark-sweep）は sound*。GC-trigger fix（§8.7）は正しく、14GB blowup を解消し、reuse 込みで UAF 無し。
+  唯一の欠点は free-list thrash による *遅さ*（exact-fit O(n) scan）。
+- *segfault は segregated free-list の REUSE 経路の subtle bug*（mark でも refcount でも bucket 領域でもない）。
+  read-only / 通常の elisp 計装では特定しきれず、*gdb watchpoint で reuse された block を追う*のが次の手段。
+- = 低メモリ化の前提は「GC mark の健全化」ではなく *「segregated free-list の reuse bug を gdb で特定」*。
+  mark は既に健全なので、その 1 点さえ直せば segregated（O(1) reuse）で *低メモリ・高速・健全が三立*する。
+
+*** 最終状態（このセッション）
+- *採用 = clean single-list + GC-trigger fix*（sound・14GB→bounded ~1-10GB・ただし thrash で遅い）+
+  user の ptr-call（未コミット同居）。segregated / rc-aware sweep は全 revert。
+- =build/nelisp-experiment= = この sound reader。doc 08 §8.4-8.12 に全診断を記録。
+
+** 8.13 訂正: segregated free-list は健全だった。segfault は診断プローブの artifact（2026-06-06）
+§8.12 の「segregated reuse に subtle bug」も *誤り*だった。gdb で追おうとしたが当環境は
+*gdb / valgrind / dmesg / core dump すべて使用不可*。代わりに実ロードで直接検証して確定:
+
+*** 確定事項
+- *segregated free-list は実ロードで SOUND + FAST*。=/tmp/full-prog.el=（full 319 vendor-load）を
+  *3 回とも exit 0・~35s・決定的*（org-cycle #43 停止、segfault 無し）。w-prog(#23) も exit 55。
+  single-list の thrash（400s でも未完）に対し *~10x 高速*。
+- = 私が「segregated bug」と判断した segfault は *診断プローブ r-prog の artifact* だった:
+  =(nelisp--arena-stats)= の後に =(nelisp--repr (list (ptr-read-u64 ...) ...))= を eval する形で、
+  この中間 list が GC root でないスロットに居る間に GC が発火すると、effective reuse が
+  その freed block を再配布 → corruption。*reader の latent な GC root-coverage gap* を
+  segregated の効く reuse が炙り出しただけで、*real vendor load はこのパターンを踏まない*。
+- single-list の near-zero reuse は、freed-but-referenced block を再配布しない（data 温存）ので
+  この gap を *masking* していた（= §8.12 で single-list が r-prog を完走できた理由）。
+
+*** メモリの整理（残課題）
+- segregated でも no-reuse でも full load = *~10GB*（reuse は *速度* を直す、*メモリ* は直さない）。
+  = 10GB は *reachable な live/over-retention*（#23 で genuine box 表現 ~60MB に対し実測 4GB ≈ ~67x）。
+  reuse で回収不能（live だから）。低メモリ化は *eval-escape / over-retention（reachable な多重 clone /
+  macro 展開保持）* の調査が必要 = §8.6/8.9 の residue 課題（深い、別途）。
+
+*** 採用した最終状態
+- *GC-trigger fix + size-segregated free-list を採用*（両方 sound、real load exit 0 @35s、14GB blowup 解消）。
+  + user の ptr-call（未コミット同居）。=build/nelisp-experiment= = この reader。
+- *CAVEAT*: segregated は latent な GC root-coverage gap に「less forgiving」。診断系コード（arena-stats を
+  list/repr する等）は GC root に乗らない中間値で corruption しうる。real load は無問題だが、留意。
+- 低メモリ（10GB→）の本丸 = over-retention（residue ~67x）。gdb 等が使える環境で eval の reachable
+  多重保持を追うのが次。
