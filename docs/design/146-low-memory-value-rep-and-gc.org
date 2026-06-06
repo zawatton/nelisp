@@ -166,10 +166,15 @@ peak=reserved の正体（=bump 高水位）を allocator instrumentation で解
   = *bump 要求より大きい free が存在しない*（free は drain 済 or より小さい BT40 garbage）。allocator は既に良好調整。
 - = 残る bump 34% は *断片化由来の genuine demand*: live(36MB) が garbage に混在 → 各 chunk が pin・free が小さく散在
   → 大 alloc（vector buffer 等 >BT40）が満たせず bump → reserved 成長。*coalescing も live 混在で大 free を作れない*。
-- = *実測で潰した 4 角度*: ① tagged-word 値表現（garbage は reclaim/reuse）② symentry 共有（同上）
-  ③ GC trigger（64MB が floor）④ allocator split（free が demand より小）。*全て peak 1.80GB 不変*。
-  → 残る道は *compaction（live を寄せて大 free を作り munmap）* か *env 再設計（per-binding scaffolding vector を消す）*
-  の二択のみ。allocator/GC-trigger/値表現の調整では原理的に下がらないことが *4 角度の実測で確定*。
+- = *実測で潰した 5 角度*: ① tagged-word 値表現（garbage は reclaim/reuse）② symentry 共有（同上）
+  ③ GC trigger（64MB が floor）④ allocator split（free が demand より小）⑤ *pooled bind scratch*（per-binding
+  の 11-slot BT360 scaffolding vector を 1 個 pool 化、aliasing test + 4438 緑で transient 確認、ただし
+  *元々 BT360 は reuse hit で bump でない*ため peak 不変）。*全て peak 1.80GB（1803-1807MB）で 1MB も動かず*。
+  → 残る道は *compaction（live を寄せて大 free を作り munmap）* 一択。env 再設計も scaffolding が reuse される以上無効。
+- = *結論（5 角度の実測で確定）*: peak の bump 34% は *unique-sized な大 alloc（string/symbol name/docstring 等）が
+  size 多様性で exact-fit を外し、equal-or-larger free が無い*ため。live が garbage に混在し coalescing も大 free を
+  作れない＝*古典的 fragmentation*。garbage 量・allocator・値表現・trigger のいずれの調整でも原理的に下がらず、
+  *live を物理的に寄せて chunk を munmap する moving GC（§5）だけが peak を下げる*。これが 5 角度の実測の終着点。
 
 *** 3.0.3 *正確な残 scope（2026-06-06 訂正）*: consumer 側は未完、producer は 116 site
 着手調査で *consumer 側が sexp-tag だけでは不完全*と判明（earlier の「consumer 完了」を訂正）:
