@@ -3175,6 +3175,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
     ((:lit "nelisp--syscall-path") . (nl_bi_syscall_path args out))
     ((:lit "nelisp--syscall-path2") . (nl_bi_syscall_path2 args out))
+    ((:lit "nelisp--syscall-path-int") . (nl_bi_syscall_path_int args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
@@ -3392,6 +3393,19 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
              (cpath1 (nl_bi_make_cpath p1_sx))
              (cpath2 (nl_bi_make_cpath p2_sx))
              (rc (syscall-direct nr cpath1 cpath2 0 0 0 0)))
+        (wf_write_int out rc)))
+    ;; nelisp--syscall-path-int NR PATH INT: one-path + one-integer syscall.
+    ;; Marshals PATH to a NUL-terminated C string (nl_bi_make_cpath), then
+    ;; issues syscall NR with cpath in rdi and INT in rsi (remaining registers
+    ;; zeroed) -- enough for access(21, path, mode) / chmod(90, path, mode) /
+    ;; truncate(76, path, len) and similar path+scalar syscalls.  Returns the
+    ;; raw kernel result (0 = success, negative = -errno).  Pure elisp, no Rust.
+    (defun nl_bi_syscall_path_int (args out)
+      (let* ((nr (wf_argval args 0))
+             (path_sx (wf_arg_ptr args 1))
+             (iarg (wf_argval args 2))
+             (cpath (nl_bi_make_cpath path_sx))
+             (rc (syscall-direct nr cpath iarg 0 0 0 0)))
         (wf_write_int out rc)))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
@@ -4285,7 +4299,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
-    "nelisp--syscall-path" "nelisp--syscall-path2"
+    "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
     "exit"
