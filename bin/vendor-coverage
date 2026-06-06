@@ -48,9 +48,9 @@ syms="$(awk -F'\t' '{print $3}' "$call" | tr '\n' ' ')"
 # Symbols DEFINED by the nemacs substrate (src/) + nelisp prelude + nelisp stdlib.
 # The bare reader's --eval does not load these, so subtract them: a symbol is
 # only TRULY missing if no source layer defines it.
-grep -rhoE '\((cl-)?(defun|defmacro|defalias|defsubst|define-error|define-minor-mode|define-derived-mode|define-globalized-minor-mode) [A-Za-z0-9+*/<>=_!?:-]+' \
+grep -rhoE "\((cl-)?(defun|defmacro|defalias|defsubst|define-error|define-minor-mode|define-derived-mode|define-globalized-minor-mode) #?'?[A-Za-z0-9+*/<>=_!?:-]+" \
   src/ scripts/nelisp-stdlib-prelude.el vendor/nelisp/lisp vendor/nelisp/src 2>/dev/null \
-  | sed -E 's/^\([A-Za-z0-9-]+ +//' | sort -u > "$defined"
+  | sed -E "s/^\([A-Za-z0-9-]+ +#?'?//" | sort -u > "$defined"
 grep -vxF -f "$defined" "$miss.bare" > "$miss"; rm -f "$miss.bare"
 
 awk -F'\t' -v ss="$SUBSTRATE" '
