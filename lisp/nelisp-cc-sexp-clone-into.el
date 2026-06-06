@@ -107,8 +107,26 @@
     ;; all callers, so every clone wrote the SOURCE slot and read the DEST --
     ;; corrupting e.g. the bootstrap unbound-marker.  (Latent: the eval
     ;; driver never reached runtime before this cutover, so it was untested.)
+    (defun nl_sci_store_imm (word dst)
+      ;; Doc 146 §3.0 step 6: materialise an immediate value WORD as a 32-byte
+      ;; storage Sexp at DST.  (word&3)==1 Int -> tag2 + (sar word 2); word==3
+      ;; Nil(tag0); word==7 T(tag1).
+      (if (= (logand word 3) 1)
+          (seq (ptr-write-u64 dst 0 2) (ptr-write-u64 dst 8 (sar word 2))
+               (ptr-write-u64 dst 16 0) (ptr-write-u64 dst 24 0) dst)
+        (if (= word 3)
+            (seq (ptr-write-u64 dst 0 0) (ptr-write-u64 dst 8 0)
+                 (ptr-write-u64 dst 16 0) (ptr-write-u64 dst 24 0) dst)
+          (seq (ptr-write-u64 dst 0 1) (ptr-write-u64 dst 8 0)
+               (ptr-write-u64 dst 16 0) (ptr-write-u64 dst 24 0) dst))))
     (defun nl_sexp_clone_into (src dst)
-      (nl_sci_dispatch src dst (ptr-read-u8 src 0))))
+      ;; Doc 146 §3.0 step 6: SRC is an immediate value word (low bit 1) or an
+      ;; 8-aligned slot pointer (low bit 0).  Immediates materialise into the
+      ;; 32-byte storage Sexp at DST; slot pointers use the tag dispatch.
+      ;; Behaviour-preserving until immediates are produced (SRC always a slot).
+      (if (= (logand src 1) 0)
+          (nl_sci_dispatch src dst (ptr-read-u8 src 0))
+        (nl_sci_store_imm src dst))))
   "AOT source for nl_sexp_clone_into = ptr::write(dst,(*src).clone()).
 
 Re-provides the deleted Rust `core::ptr::write(dst, (*src).clone())'
