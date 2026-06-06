@@ -816,11 +816,13 @@ or the toolchain is newer than the cached object."
     ;; nl_val_tag:    Sexp tag -- 0=Nil 1=T 2=Int for immediates, else the
     ;;                slot's tag byte at +0.  Nil/T are distinguished by direct
     ;;                compare (Nil=3, T=7) so no shift/div is needed.
-    ;; Only +/*/logand/=/ptr-read-u8 are used (all link-resolved in arena.o;
-    ;; `ash'/`/' are NOT inlinable here).  The Int *decode* (n = (v-1)/4) needs
-    ;; a shift/div and is deferred to the conversion stage (§3.0 step 7) where
-    ;; the arena-resolvable shift is wired; encode is (n<<2)|1 = n*4+1.
+    ;; `ash' is a high-level elisp fn (unresolved in arena.o); the arena
+    ;; primitives are `shl' (logical left) and `sar' (arithmetic right) -- see
+    ;; the AOT `shift' IR (opcode 67).  Int decode = (sar v 2): v=(n<<2)|1, so
+    ;; an arithmetic right-shift by 2 recovers n (sign-preserving, validated for
+    ;; +/- n).  Encode is n*4+1 (no shift needed).  Nil/T use direct compare.
     (defun nl_val_is_imm (v) (logand v 1))
+    (defun nl_val_int (v) (sar v 2))
     (defun nl_imm_int (n) (+ (* n 4) 1))
     (defun nl_imm_nil () 3)
     (defun nl_imm_t () 7)
