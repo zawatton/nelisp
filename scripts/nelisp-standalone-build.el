@@ -1334,7 +1334,8 @@ addressing by a runtime base, never by a fixed reservation."
                                    (nl_gc_mark_block (ptr-read-u64 268436328 0))
                                    (nl_gc_mark_slot (ptr-read-u64 268436328 0))))))))))))))) ; bsym + shared symentry
     ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
-    ;; Behind flag 268435608 (0=off, default).  Forwarding hash side-table base
+    ;; Behind flag 268435608 (1=ON by default, wired at boot init; 0 = mark+sweep
+    ;; escape hatch).  Forwarding hash side-table base
     ;; Compaction cursor @ 268436368.  Phase 2 is NON-DESTRUCTIVE — it only
     ;; populates fwd[] (the move is phase 4) so it is safe to enable for
     ;; validation: with the flag on, mark -> phase2(compute) -> normal sweep.
@@ -5356,7 +5357,13 @@ correctly."
         ;; the old arena-base rearm bug that pushed the trigger past the
         ;; mapped arena.
         ;; The free-list reuse independently bounds long single-form compute.
-        (ptr-write-u64 268435560 0 16777216)
+        (ptr-write-u64 268435560 0 16777216)  ; GC trigger = 16 MiB growth-reserved
+        ;; ---- Doc 146 §5: compacting GC is ON BY DEFAULT (flag 268435608 = 1). ----
+        ;; The moving/compacting collector (phase 2 forward -> 4 move -> 6 munmap)
+        ;; supersedes mark+sweep: full 319-file vendor-load peak 1.80GB -> 850MB
+        ;; (-53%), 20/20 soak runs deterministic at 850MB with zero crashes.  Set
+        ;; this to 0 as an ESCAPE HATCH to fall back to mark+sweep should any
+        ;; workload ever trip a moving-GC root-coverage gap (Doc 146 §2).
         (ptr-write-u64 268435608 0 1)
         ;; BOOT WATERMARK: freeze the absolute address up to which everything
         ;; was allocated during install + driver setup (the mirror, all 60
