@@ -1063,6 +1063,141 @@ when no real redisplay window is available."
     "Stub: no debugger in standalone; no-op."
     (ignore args) nil))
 
+;;;; --- markers (vendor-coverage 2026-06-06 batch) --------------------------
+;; A marker is the vector [marker POSITION BUFFER INSERTION-TYPE].  Standalone
+;; has no gap buffer, so markers do NOT auto-adjust when text is inserted or
+;; deleted; they hold a position+buffer that code can create / set / read /
+;; compare.  `current-buffer' returns a fresh sentinel each call, so
+;; `marker-buffer' is only meaningful as a non-nil "is this marker set" flag.
+
+(unless (fboundp 'make-marker)
+  (defun make-marker ()
+    "Return a new marker that points nowhere."
+    (vector 'marker nil nil nil)))
+
+(unless (fboundp 'markerp)
+  (defun markerp (object)
+    "Return non-nil if OBJECT is a marker created by this substrate."
+    (and (vectorp object) (= (length object) 4) (eq (aref object 0) 'marker))))
+
+(unless (fboundp 'marker-position)
+  (defun marker-position (marker)
+    "Return the position MARKER points to, or nil."
+    (and (markerp marker) (aref marker 1))))
+
+(unless (fboundp 'marker-buffer)
+  (defun marker-buffer (marker)
+    "Return the buffer MARKER points into, or nil."
+    (and (markerp marker) (aref marker 2))))
+
+(unless (fboundp 'marker-insertion-type)
+  (defun marker-insertion-type (marker)
+    "Return MARKER's insertion type."
+    (and (markerp marker) (aref marker 3))))
+
+(unless (fboundp 'set-marker-insertion-type)
+  (defun set-marker-insertion-type (marker type)
+    "Set MARKER's insertion type to TYPE."
+    (when (markerp marker) (aset marker 3 type))
+    type))
+
+(unless (fboundp 'set-marker)
+  (defun set-marker (marker position &optional buffer)
+    "Point MARKER at POSITION in BUFFER (default current).  nil POSITION detaches."
+    (when (markerp marker)
+      (if (null position)
+          (progn (aset marker 1 nil) (aset marker 2 nil))
+        (aset marker 1 (if (markerp position) (marker-position position) position))
+        (aset marker 2 (or buffer (and (fboundp 'current-buffer) (current-buffer))))))
+    marker))
+
+(unless (fboundp 'move-marker)
+  (defalias 'move-marker 'set-marker))
+
+(unless (fboundp 'copy-marker)
+  (defun copy-marker (&optional position type)
+    "Return a new marker at POSITION (integer or marker; default point)."
+    (let ((m (make-marker)))
+      (cond
+       ((markerp position)
+        (set-marker m (marker-position position) (marker-buffer position)))
+       ((null position)
+        (set-marker m (if (fboundp 'point) (point) 1)))
+       (t (set-marker m position)))
+      (when type (set-marker-insertion-type m type))
+      m)))
+
+(unless (fboundp 'point-marker)
+  (defun point-marker ()
+    "Return a new marker at point in the current buffer."
+    (copy-marker (if (fboundp 'point) (point) 1))))
+
+(unless (fboundp 'insert-before-markers)
+  (defun insert-before-markers (&rest args)
+    "Degraded alias for `insert' (markers do not auto-adjust in standalone)."
+    (apply #'insert args)))
+
+;;;; --- file-name + shell helpers (vendor-coverage 2026-06-06 batch) --------
+;; Pure, host-independent helpers that vendor code references at load / macro
+;; time.  All degrade gracefully in standalone (no real filesystem or shell).
+
+(unless (fboundp 'file-name-absolute-p)
+  (defun file-name-absolute-p (filename)
+    "Return non-nil if FILENAME is an absolute file name (starts with / or ~)."
+    (and (stringp filename)
+         (> (length filename) 0)
+         (let ((c (aref filename 0)))
+           (or (eq c ?/) (eq c ?~))))))
+
+(unless (fboundp 'file-relative-name)
+  (defun file-relative-name (filename &optional directory)
+    "Convert FILENAME to be relative to DIRECTORY.
+Standalone: returns FILENAME unchanged (no directory arithmetic)."
+    (ignore directory) filename))
+
+(unless (fboundp 'abbreviate-file-name)
+  (defun abbreviate-file-name (filename)
+    "Return a shortened version of FILENAME.
+Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
+    filename))
+
+(unless (fboundp 'shell-quote-argument)
+  (defun shell-quote-argument (argument)
+    "Quote ARGUMENT for passing to an inferior POSIX shell."
+    (if (equal argument "")
+        "''"
+      (concat "'"
+              (if (fboundp 'string-replace)
+                  (string-replace "'" "'\\''" argument)
+                argument)
+              "'"))))
+
+(unless (fboundp 'executable-find)
+  (defun executable-find (command &optional remote)
+    "Stub: standalone cannot search PATH, so always returns nil."
+    (ignore command remote) nil))
+
+;;;; --- search / interaction helpers (vendor-coverage 2026-06-06 batch) -----
+
+(unless (fboundp 'match-string-no-properties)
+  (defun match-string-no-properties (num &optional string)
+    "Return text matched by the last search for subexpression NUM, no props."
+    (when (fboundp 'match-string)
+      (let ((s (match-string num string)))
+        (if (and s (fboundp 'substring-no-properties))
+            (substring-no-properties s)
+          s)))))
+
+(unless (fboundp 'y-or-n-p)
+  (defun y-or-n-p (prompt)
+    "Stub: non-interactive standalone answers no (nil)."
+    (ignore prompt) nil))
+
+(unless (fboundp 'yes-or-no-p)
+  (defun yes-or-no-p (prompt)
+    "Stub: non-interactive standalone answers no (nil)."
+    (ignore prompt) nil))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here

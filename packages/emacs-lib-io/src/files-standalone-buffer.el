@@ -267,7 +267,11 @@
 (when (files--install-fallback-function-p 'goto-char)
   (defun goto-char (position)
     "Set fallback point to POSITION, clipped to the current buffer."
-    (files--set-buffer-point-value (files--clip-point position))))
+    (files--set-buffer-point-value
+     (files--clip-point
+      (if (and (fboundp 'markerp) (markerp position))
+          (marker-position position)
+        position)))))
 
 (when (files--install-fallback-function-p 'buffer-string)
   (defun buffer-string ()
