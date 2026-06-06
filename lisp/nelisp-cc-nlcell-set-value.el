@@ -9,59 +9,56 @@
 ;;; Commentary:
 
 ;; Replaces the Rust `nl_cell_set_value' body with a AOT-compiled
-;; elisp object.  The function copies the 32-byte Sexp at `val' into the
-;; `value' field of the NlCell pointed to by `cell'.
+;; elisp object.  Doc 147 Phase 1: stores the value at `val' as a single
+;; 8-byte tagged WORD in the `value' field of the NlCell at `cell'.
 ;;
-;; NlCell layout (pinned by `#[repr(C)]' + compile-time asserts):
+;; NlCell layout (Doc 147 Phase 1 — container slot shrink):
 ;;
-;;   value    @ 0   (32 bytes — sizeof(Sexp))
-;;   refcount @ 32  (8 bytes  — AtomicUsize)
-;;   total = 40 bytes, align = 8
+;;   value    @ 0   (8 bytes — tagged WORD: imm or 8-aligned box ptr)
+;;   refcount @ 8   (8 bytes — AtomicUsize)
+;;   total = 16 bytes, align = 8
 ;;
 ;; Confirmed by `nelisp-nlcell--offset-value = 0' and
-;; `nelisp-nlcell--offset-refcount = 32' in `lisp/nelisp-sexp-layout.el',
-;; and by the `layout_asserts{ assert!(offset_of!(NlCell, value) == 0) }'
-;; in the pre-deletion `build-tool/src/eval/mod.rs'.
+;; `nelisp-nlcell--offset-refcount = 8' in `lisp/nelisp-sexp-layout.el'.
 ;;
-;; The value slot occupies bytes 0..31 of the NlCell.  The body copies
-;; four u64 words from val to cell+0:
-;;
-;;   word 0: cell+0  <- val+0
-;;   word 1: cell+8  <- val+8
-;;   word 2: cell+16 <- val+16
-;;   word 3: cell+24 <- val+24
+;; The body delegates to the Doc 147 Phase 0 keystone
+;; `nl_val_clone_into(src_slot, dst_word_ptr)':
+;;   - immediate VAL (low bit 1): writes the 8B word straight to cell+0.
+;;   - boxed/string VAL (low bit 0): deep-clones the child into a FRESH
+;;     32B box and stores its 8-aligned pointer as the word at cell+0
+;;     (never a transient scratch slot).
 ;;
 ;; C-ABI contract (SysV AMD64):
-;;   rdi = *mut NlCell   (= raw cell pointer)
-;;   rsi = *const Sexp   (= pointer to the new value)
-;;   return: void (rax holds 1 sentinel from the last ptr-write-u64)
+;;   rdi = *mut NlCell   (= raw cell pointer; the value-WORD dst)
+;;   rsi = *const Sexp   (= pointer to the new value 32B slot view)
+;;   return: i64 word (the stored value word, from `nl_val_clone_into').
 ;;
-;; NOTE: Raw 4×u64 copy without refcount-safe drop/clone.
-;; Matches the AOT cutover spike scope (same rationale as
-;; `nelisp-cc-nlconsbox-set-car.el').
+;; NOTE: refcount-correct via `nl_val_clone_into' (boxed children are
+;; cloned into fresh 32B boxes; immediates passthrough).  Doc 147
+;; supersedes the prior raw 4-word cutover-spike copy.
 
 ;;; Code:
 
 (defconst nelisp-cc-nlcell-set-value--source
   '(seq
-    ;; Copy 32 bytes (4 × u64) from val into cell+0..+31 (= value slot).
+    ;; Doc 147 Phase 1: store VAL as a single 8-byte tagged WORD @ cell+0
+    ;; (the value field).  `nl_val_clone_into(src_slot, dst_word_ptr)':
+    ;;   - immediate VAL (low bit 1): writes the 8B word straight to cell+0.
+    ;;   - boxed/string VAL (low bit 0): deep-clones the child into a FRESH
+    ;;     32B box and stores its 8-aligned pointer as the word at cell+0.
+    ;; NOT a 4xu64 inline copy — the value field is now 8 bytes.
     (defun nl_cell_set_value (cell val)
-      (if (= (logand val 1) 0)
-          (and (ptr-write-u64 cell 0 (ptr-read-u64 val 0))
-               (ptr-write-u64 cell 8 (ptr-read-u64 val 8))
-               (ptr-write-u64 cell 16 (ptr-read-u64 val 16))
-               (ptr-write-u64 cell 24 (ptr-read-u64 val 24)))
-        (extern-call nl_sci_store_imm val cell))))
+      (extern-call nl_val_clone_into val cell)))
   "AOT source for the `nl_cell_set_value' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
-- `nl_cell_set_value (cell val) -> i64' — copies the 32-byte Sexp
-  at VAL into the value slot (offset 0) of the NlCell at CELL via
-  four `ptr-write-u64' / `ptr-read-u64' word-copy pairs.
+- `nl_cell_set_value (cell val) -> i64' — stores VAL as an 8-byte
+  tagged WORD in the value field (offset 0) of the NlCell at CELL via
+  the Doc 147 `nl_val_clone_into' keystone (immediate direct; boxed
+  child deep-cloned into a fresh 32B box, its 8-aligned ptr stored).
 
 AOT ops consumed:
-  `ptr-read-u64'   — `*(u64*)(val + offset)' load (offsets 0/8/16/24).
-  `ptr-write-u64'  — `*(u64*)(cell + offset) = v' store (same offsets).")
+  `extern-call nl_val_clone_into' — store VAL as a value WORD at CELL+0.")
 
 (provide 'nelisp-cc-nlcell-set-value)
 

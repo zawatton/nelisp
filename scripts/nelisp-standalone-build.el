@@ -833,12 +833,16 @@ or the toolchain is newer than the cached object."
         (if (= (logand v 3) 1)
             2
           (if (= v 3) 0 1))))
-    ;; Doc 146 §3.0 step 3/4: load a 32-byte storage Sexp at SLOT into a passing
+    ;; Doc 146 §3.0 step 3/4: store a 32-byte storage Sexp at SLOT into a passing
     ;; value WORD.  Immediate tags collapse to their word (Int -> (n<<2)|1, Nil
     ;; -> 3, T -> 7); heap tags (Float/Symbol/Str/Cons/Vector/...) keep the slot
     ;; pointer.  This is the storage-Sexp -> word boundary, inverse of
     ;; nl_sci_store_imm.  SLOT is always an 8-aligned storage slot.
-    (defun nl_val_load (slot)
+    ;; Doc 147 Phase 1: RENAMED from `nl_val_load' to `nl_val_store_word' to
+    ;; free the `nl_val_load' name for the Phase 0 keystone (.o, arity 2,
+    ;; word -> 32B-slot view) now linked via the val-load.o unit.  This local
+    ;; producer is the INVERSE direction (storage slot -> word).
+    (defun nl_val_store_word (slot)
       (let ((tg (ptr-read-u8 slot 0)))
         (if (= tg 2) (nl_imm_int (ptr-read-u64 slot 8))
           (if (= tg 0) 3
@@ -1102,7 +1106,7 @@ addressing by a runtime base, never by a fixed reservation."
 ;;                   data_ptr -> separate cap*32 buffer of `len' Sexps.
 ;;   Record (tag 12): box+0 type_tag Sexp, box+32 slots-Vec
 ;;                   (cap@+32,data_ptr@+40,len@+48), box+56 rc.
-;;   Cell   (tag 11): box+0 value Sexp, box+32 rc.
+;;   Cell   (tag 11): value WORD @ box+0, rc @ box+8, size 16 (Doc 147 P1).
 ;;   Str/Symbol (tag 5/4): INLINE String in the Sexp (cap@sp+8, ptr@sp+16,
 ;;                   len@sp+24); ptr -> separate char buffer (no Sexp kids).
 ;;   MutStr (tag 6): sp+8 NlStr* box (cap@+0,ptr@+8,len@+16); ptr -> buf.
@@ -1198,10 +1202,17 @@ addressing by a runtime base, never by a fixed reservation."
                            (nl_gc_mark_buf data_ptr)
                            (nl_gc_mark_vec_slots data_ptr 0 len)))))
               (if (= tag 11)
-                  ;; Cell: value@box+0.
+                  ;; Cell (Doc 147 P1): value WORD @ box+0 (8B tagged),
+                  ;; rc @ box+8, size 16.  Mark the NlCell box, then the
+                  ;; value WORD: immediate (low bit 1) -> no child; else
+                  ;; mark/recurse the 32B child box it points at (mirrors
+                  ;; the Vector/Record pointer-edge handling).
                   (let ((box (ptr-read-u64 sp 8)))
                     (if (= (nl_gc_mark_block box) 0) 0
-                      (nl_gc_mark_slot box)))
+                      (let ((vw (ptr-read-u64 box 0)))
+                        (if (= (logand vw 1) 1) 0
+                          (if (= (nl_gc_mark_block vw) 0) 0
+                            (nl_gc_mark_slot vw))))))
                 (if (= tag 6)
                     ;; MutStr: NlStr*@sp+8 (ptr@box+8).
                     (let ((box (ptr-read-u64 sp 8)))
@@ -1462,9 +1473,22 @@ addressing by a runtime base, never by a fixed reservation."
                            (nl_compact_rw_block data_old)
                            (nl_compact_rw_vec_slots data_old 0 len)))))
               (if (= tag 11)
+                  ;; Cell (Doc 147 P1): value WORD @ box+0 (8B tagged).
+                  ;; rw_edge(old+0) rewrites the box+0 value-word to
+                  ;; fwd[child] and returns the OLD child word (vw).  For an
+                  ;; immediate it is a safe no-op (fwd returns it unchanged,
+                  ;; low bit 1 -> skip).  For a pointer, flip the child
+                  ;; block mark1->mark3 (phase 4 MOVES it) and recurse it on
+                  ;; its OLD pre-move address — the canonical cons/vector
+                  ;; pattern.  (The old code walked box+0 as a 32B slot and
+                  ;; never rewrote the value-word edge, so a shared cell's
+                  ;; value word dangled after the child moved + munmap.)
                   (let ((old (nl_compact_rw_edge (+ sp 8))))
                     (if (= (nl_compact_rw_block old) 0) 0
-                      (nl_compact_rw_slot old)))
+                      (let ((vw (nl_compact_rw_edge (+ old 0))))
+                        (if (= (logand vw 1) 1) 0
+                          (nl_seq2 (nl_compact_rw_block vw)
+                                   (nl_compact_rw_slot vw))))))
                 (if (= tag 6)
                     (let ((old (nl_compact_rw_edge (+ sp 8))))
                       (if (= (nl_compact_rw_block old) 0) 0
@@ -3539,14 +3563,14 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
             (if (< (nl_val_tag car_ptr) 4)
                 (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
                   (if (= rc_rest 0)
-                      (seq (nelisp_cons_construct (nl_val_load car_ptr) (nl_val_load rest_slot) acc_slot) 0)
+                      (seq (nelisp_cons_construct (nl_val_store_word car_ptr) (nl_val_store_word rest_slot) acc_slot) 0)
                     1))
               (let* ((eval_slot (alloc-bytes 32 8))
                      (rc_eval (nelisp_eval_call car_ptr env_ptr eval_slot)))
                 (if (= rc_eval 0)
                     (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
                       (if (= rc_rest 0)
-                          (seq (nelisp_cons_construct (nl_val_load eval_slot) (nl_val_load rest_slot) acc_slot) 0)
+                          (seq (nelisp_cons_construct (nl_val_store_word eval_slot) (nl_val_store_word rest_slot) acc_slot) 0)
                         1))
                   1))))
         (nl_write_nil_slot acc_slot)))
@@ -5502,6 +5526,13 @@ correctly."
     ("sf-cc.o"             nelisp-cc-sf-condition-case            nelisp-cc-sf-condition-case--source)
     ("sf-uwp.o"            nelisp-cc-sf-unwind-protect            nelisp-cc-sf-unwind-protect--source)
     ("env-leaves-simple.o" nelisp-cc-evalport-env-leaves-simple  nelisp-cc-evalport-env-leaves-simple--source)
+    ;; Doc 147 Phase 1: the word<->32B-slot keystone (.o).  Provides
+    ;; `nl_val_clone_into' (used by the shrunk nl_alloc_cell /
+    ;; nl_cell_set_value to store the value as an 8B tagged WORD) and the
+    ;; arity-2 `nl_val_load' keystone.  The local arity-1 storage->word
+    ;; producer was renamed `nl_val_store_word' to avoid the strong-symbol
+    ;; collision Phase 0 deferred here.
+    ("val-load.o"          nelisp-cc-val-load                    nelisp-cc-val-load--source)
     ("nlcell-get-value.o"  nelisp-cc-nlcell-get-value            nelisp-cc-nlcell-get-value--source)
     ("apply-lambda-inner.o" nelisp-cc-apply-lambda-inner         nelisp-cc-apply-lambda-inner--source)
     ("frame-push.o"        nelisp-cc-frame-push                   nelisp-cc-frame-push--source)

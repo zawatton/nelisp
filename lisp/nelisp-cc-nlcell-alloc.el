@@ -14,12 +14,11 @@
 ;; *initial, refcount = 1) using `alloc-bytes', `extern-call
 ;; nl_sexp_clone_into', and `ptr-write-u64' grammar ops.
 ;;
-;; NlCell layout (pinned by `#[repr(C)]' + compile-time asserts
-;; in `build-tool/src/eval/sexp_abi_assert.rs'):
+;; NlCell layout (Doc 147 Phase 1 — container slot shrink):
 ;;
-;;   value    @ 0   (32 bytes — sizeof(Sexp))
-;;   refcount @ 32  (8 bytes  — AtomicUsize)
-;;   total = 40 bytes, align = 8
+;;   value    @ 0   (8 bytes  — tagged WORD: imm or 8-aligned box ptr)
+;;   refcount @ 8   (8 bytes  — AtomicUsize)
+;;   total = 16 bytes, align = 8
 ;;
 ;; The two-function manifest (init helper + public entry) avoids
 ;; needing `let' in a value context (= AOT `let' only supports
@@ -27,16 +26,20 @@
 ;; and `initial' as parameters so the allocated pointer travels as a
 ;; function argument.
 ;;
-;; `extern-call nl_sexp_clone_into initial box-ptr' calls the Rust
-;; `nl_sexp_clone_into(src, dst)' helper which:
-;;   (a) clones *initial (= variant-aware: bumps refcount on box-tagged
-;;       variants, copies pod bits otherwise)
-;;   (b) writes the clone into *box-ptr (= the value field at offset 0)
+;; `extern-call nl_val_clone_into initial box-ptr' calls the Doc 147
+;; Phase 0 keystone helper `nl_val_clone_into(src_slot, dst_word_ptr)'
+;; which:
+;;   (a) immediate *initial (low bit 1): writes the 8B word straight to
+;;       *box-ptr (= the value WORD at offset 0)
+;;   (b) boxed/string *initial (low bit 0): deep-clones the child into a
+;;       FRESH 32B box (rc-bumped per variant) and stores that 8-aligned
+;;       box pointer as the value WORD at offset 0 (never a transient
+;;       scratch slot).
 ;;   The dst is treated as uninitialized — safe here because the box
 ;;   was just allocated by `alloc-bytes'.
 ;;
-;; `ptr-write-u64 box-ptr 32 1' writes the u64 value 1 to the
-;; AtomicUsize refcount trailer at offset 32.  On x86_64 an aligned
+;; `ptr-write-u64 box-ptr 8 1' writes the u64 value 1 to the
+;; AtomicUsize refcount trailer at offset 8.  On x86_64 an aligned
 ;; 8-byte store is inherently atomic at the hardware level; initialising
 ;; an AtomicUsize this way before handing the pointer to any concurrent
 ;; code is safe (matches the `AtomicUsize::new(1)' semantics in the
@@ -66,28 +69,36 @@
     ;; Layout (mirrors `sexp_abi_assert.rs' const_asserts):
     ;;   value    @ 0   (32 bytes — Sexp)
     ;;   refcount @ 32  (8 bytes  — AtomicUsize)
+    ;; Doc 147 Phase 1 layout: value WORD @ box+0 (8 bytes), refcount @
+    ;; box+8 (8 bytes), size 16, align 8.  Store the initial value as a
+    ;; single tagged WORD via `nl_val_clone_into' (immediate stored
+    ;; directly; boxed child deep-cloned into a fresh 32B box and its
+    ;; 8-aligned pointer stored as the word) — NOT a 4xu64 inline copy.
     (defun nl_alloc_cell_init (box-ptr initial)
-      (and (or (extern-call nl_sexp_clone_into initial box-ptr) 1)
-           (ptr-write-u64 box-ptr 32 1)
+      (and (or (extern-call nl_val_clone_into initial box-ptr) 1)
+           (ptr-write-u64 box-ptr 8 1)
            box-ptr))
 
-    ;; Public entry — allocate 40-byte NlCell with alignment 8,
+    ;; Public entry — allocate 16-byte NlCell with alignment 8,
     ;; initialise fields, return raw pointer as i64.
     (defun nl_alloc_cell (initial)
-      (nl_alloc_cell_init (alloc-bytes 40 8) initial)))
+      (nl_alloc_cell_init (alloc-bytes 16 8) initial)))
   "AOT source for the `nl_alloc_cell' allocator swap.
 
 Two-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_cell_init (box-ptr initial) -> box-ptr' — initialises
-  the NlCell's value field (= clone of *initial) and refcount (= 1).
+  the NlCell's value WORD (= `nl_val_clone_into' of *initial) and
+  refcount (= 1).
 - `nl_alloc_cell (initial) -> *mut NlCell' — public entry; calls
-  `alloc-bytes(40, 8)' then delegates to the init helper.
+  `alloc-bytes(16, 8)' then delegates to the init helper.
 
 AOT ops consumed:
   `alloc-bytes'           — 2-arg `nl_alloc_bytes(size, align)';
-                            size=40 / align=8 compile-time immediates.
-  `extern-call nl_sexp_clone_into' — clones *initial into box-ptr+0.
-  `ptr-write-u64'         — writes u64 value 1 to offset 32 (refcount).
+                            size=16 / align=8 compile-time immediates.
+  `extern-call nl_val_clone_into' — stores *initial as a tagged WORD at
+                            box-ptr+0 (immediate direct; boxed child into
+                            a fresh 32B box, its 8-aligned ptr stored).
+  `ptr-write-u64'         — writes u64 value 1 to offset 8 (refcount).
 
 Net Rust delta: deletes the 9-LOC `nl_alloc_cell' body + safety
 comment from `build-tool/src/eval/nlcell.rs', replacing it with a

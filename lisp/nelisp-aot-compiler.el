@@ -12686,41 +12686,50 @@ on box-tagged variants) before writing into the destination."
 ;; copied SLOT, which is the §111.E env_lexframe usage pattern.
 
 (defun nelisp-aot-compiler--emit-cell-value (node buf)
-  "Emit `cell-value' — copy NlCell.value into NODE's caller-owned SLOT.
+  "Emit `cell-value' — materialise NlCell.value into NODE's caller-owned SLOT.
 NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)') and
-`:slot' (= `*mut Sexp').  Strategy:
+`:slot' (= `*mut Sexp').
 
-  1. Evaluate PTR / SLOT and stash both on the stack.
-  2. Load the `NlCell*' from `[ptr + 8]' into r10.
-  3. Copy 32 bytes from `[r10 + 0, r10 + 32)' into `[rsi + 0)' via
-     two 16-byte `movdqu' pairs.
-  4. Return SLOT in rax.
+Doc 147 Phase 1: `NlCell.value' is now an 8-byte tagged WORD @ box+0
+(not a 32B inline Sexp), so the prior inline 32-byte `movdqu' copy is
+unsound.  Delegate to the ABI-stable `nl_cell_get_value(ptr, slot)' .o
+helper, which reads the NlCell* from `[ptr+8]', loads the value WORD at
+box+0, and materialises a refcount-correct 32B-slot view into SLOT via
+`nl_sexp_clone_into' (immediate -> store_imm; box ptr -> deep-clone the
+child).  Return SLOT in rax (matches the prior op's return).
 
-TODO (refcount-aware §111.D.2): when Agent A's `nl_sexp_clone_into'
-extern lands on main, replace the inline `movdqu' pair with a
-`call nl_sexp_clone_into(dst=SLOT, src=NlCell.value_ptr)' to make
-this op symmetric with `cell-set-value' (= no double-free on
-boxed-tagged values).  Tracking the safety constraint here so the
-diff is obvious at swap time."
+Strategy mirrors `cell-set-value's extern-call shape:
+  1. Evaluate PTR / SLOT, stash on the stack.
+  2. Re-push SLOT (return value) + one alignment pad for SysV AMD64.
+  3. rdi = ptr (= the Sexp::Cell pointer), rsi = slot; call the helper.
+  4. Recover SLOT into rax."
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
         (slot (nelisp-aot-compiler--ir-get node :slot)))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; r10 = NlCell* (= payload pointer at offset 8 of the Sexp slot).
-    (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'r10 'rdi nelisp-sexp--offset-payload)
-    ;; value lives at NlCell offset 0 (= nelisp-nlcell--offset-value).
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
-     buf 'xmm0 'r10 nelisp-nlcell--offset-value)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8
-     buf 'xmm0 'r10 (+ nelisp-nlcell--offset-value 16))
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot
+    (nelisp-asm-x86_64-pop buf 'rdi)        ; rdi = ptr (Sexp::Cell ptr)
+    ;; Preserve SLOT (= return value) across the helper call; two extra
+    ;; pushes (= slot + a pad) keep rsp 16-byte aligned at the call site.
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (progn
+          ;; win64: rcx = ptr (arg0), rdx = slot (arg1) + 32B shadow space.
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
+      ;; SysV: rdi = ptr (arg0), rsi = slot (arg1) — already in place.
+      nil)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_cell_get_value" -4 'text)
+    (when (eq nelisp-aot-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
+    (nelisp-asm-x86_64-pop buf 'r11)        ; discard pad
+    (nelisp-asm-x86_64-pop buf 'rax)))      ; rax = slot (return)
 
 (defun nelisp-aot-compiler--emit-cell-set-value (node buf)
   "Emit `cell-set-value' — delegate to `nl_cell_set_value' extern.
@@ -12958,26 +12967,32 @@ See `cons-make' comment for the alignment rationale."
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
 (defun nelisp-aot-compiler--emit-cell-null-p (node buf)
-  "Emit `cell-null-p' — read NlCell.value's tag byte, compare to Nil.
+  "Emit `cell-null-p' — read NlCell.value WORD, compare to Nil immediate.
 NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)').
-Returns 1 in rax iff `NlCell.value.tag == SEXP_TAG_NIL'; else 0.
+Returns 1 in rax iff the cell's value is `Sexp::Nil'; else 0.
 
-Strategy (= inline tag check, no extern call):
+Doc 147 Phase 1: `NlCell.value' is an 8-byte tagged WORD @ box+0.  The
+Nil value is the immediate WORD 3 (low bit 1), NOT a tag-0 byte, so the
+prior `movzx tag byte == 0' test is unsound.  Read the full 8-byte word
+and compare to 3.
+
+Strategy (= inline word check, no extern call):
 
   1. Evaluate PTR into rax, copy to rdi.
   2. rdi = NlCell* via `mov rdi, [rdi + 8]'.
-  3. Load tag byte at `[rdi + 0]' (= NlCell.value tag at offset 0).
-  4. Compare to `SEXP_TAG_NIL', setCC AL, movzx to materialise."
+  3. Load the 8-byte value WORD at `[rdi + 0]' into rax.
+  4. Compare to the Nil immediate WORD (= 3), setCC AL, movzx."
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     ;; rdi = NlCell* via payload load.
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rdi 'rdi nelisp-sexp--offset-payload)
-    ;; Read NlCell.value's tag byte (= offset 0 inside the value Sexp,
-    ;; which is itself at offset 0 inside NlCell).
-    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
-    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-nil)
+    ;; Read the 8-byte value WORD at NlCell offset 0.
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'rax 'rdi nelisp-nlcell--offset-value)
+    ;; Nil immediate WORD = 3 (Nil=3, T=7, Int=(n<<2)|1).
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 3)
     (nelisp-asm-x86_64-setcc-al buf 'sete)
     (nelisp-asm-x86_64-movzx-eax-al buf)))
 
@@ -14373,18 +14388,22 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
 
 (defun nelisp-aot-compiler--emit-cell-value-arm64 (node buf)
-  "Emit `cell-value' for aarch64 — copy NlCell.value into :slot."
+  "Emit `cell-value' for aarch64 — materialise NlCell.value into :slot.
+Doc 147 Phase 1: the value is now an 8-byte tagged WORD @ box+0, so the
+prior inline 32-byte copy is unsound.  Delegate to the ABI-stable
+`nl_cell_get_value(ptr, slot)' .o helper (word load + `nl_sexp_clone_into'
+materialise into SLOT), mirroring the `cell-set-value' arm64 shape.
+Returns SLOT in x0."
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; save ptr
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :slot) buf)
-  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
-  (nelisp-asm-arm64-ldr-imm buf 'x2 'x0 nelisp-sexp--offset-payload)
-  (nelisp-aot-compiler--emit-copy-sexp32-arm64
-   buf 'x2 'x1 nelisp-nlcell--offset-value 0)
-  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; x1 = slot (arg1)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = ptr (arg0)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)           ; preserve slot (return)
+  (nelisp-asm-arm64-bl buf 'nl_cell_get_value)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))         ; x0 = slot (return)
 
 (defun nelisp-aot-compiler--emit-cell-set-value-arm64 (node buf)
   "Emit `cell-set-value' for aarch64 via `nl_cell_set_value'."
@@ -14419,12 +14438,14 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
 
 (defun nelisp-aot-compiler--emit-cell-null-p-arm64 (node buf)
-  "Emit `cell-null-p' for aarch64 — x0 = NlCell.value tag is Nil."
+  "Emit `cell-null-p' for aarch64 — x0 = (NlCell.value WORD == Nil imm).
+Doc 147 Phase 1: the value is an 8-byte tagged WORD @ box+0; Nil is the
+immediate WORD 3, so load the full word (not a tag byte) and compare to 3."
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
-  (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 nelisp-nlcell--offset-value)
-  (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-nil)
+  (nelisp-asm-arm64-ldr-imm buf 'x1 'x0 nelisp-nlcell--offset-value)
+  (nelisp-asm-arm64-cmp-imm buf 'x1 3)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
 (defun nelisp-aot-compiler--emit-sexp-tag-arm64 (node buf)

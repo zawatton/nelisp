@@ -162,13 +162,18 @@ Alias for `nelisp-nlvector--offset-value-vec' kept for emit clarity.")
   "Total size of an NlVector struct in bytes.")
 
 (defconst nelisp-nlcell--offset-value            0
-  "Byte offset of the inline `value' Sexp inside an NlCell.")
+  "Byte offset of the inline `value' WORD @ box+0, rc @ box+8, size 16.
+Doc 147 Phase 1: the NlCell `value' is now an 8-byte tagged WORD (low
+bit 1 = immediate Int/Nil/T; low bit 0 = 8-aligned ptr to a 32B child
+Sexp box), NOT a 32-byte inline Sexp slot.")
 
-(defconst nelisp-nlcell--offset-refcount         32
-  "Byte offset of the `refcount' AtomicUsize inside an NlCell.")
+(defconst nelisp-nlcell--offset-refcount         8
+  "Byte offset of the `refcount' AtomicUsize inside an NlCell.
+Doc 147 Phase 1: immediately after the 8-byte value WORD (was 32).")
 
-(defconst nelisp-nlcell--size                    40
-  "Total size of an NlCell struct in bytes.")
+(defconst nelisp-nlcell--size                    16
+  "Total size of an NlCell struct in bytes.
+Doc 147 Phase 1: 8-byte value WORD + 8-byte refcount (was 40).")
 
 ;; ---------------------------------------------------------------------------
 ;; Self-export — list of (NAME . VALUE) pairs every consumer that

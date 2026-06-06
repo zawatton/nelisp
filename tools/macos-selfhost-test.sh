@@ -686,10 +686,12 @@ build_run boxed '(seq
       (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
   (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
   (defun nl_alloc_cell (valptr)
-    (let ((box (nl_alloc_bytes 40 8)))
+    (let ((box (nl_alloc_bytes 16 8)))
       (seq (nl_sexp_clone_into valptr box) box)))
   (defun nl_cell_set_value (box valptr)
     (nl_sexp_clone_into valptr box))
+  (defun nl_cell_get_value (cellptr out)
+    (nl_sexp_clone_into (ptr-read-u64 (ptr-read-u64 cellptr 8) 0) out))
   (defun nl_alloc_vector (cap)
     (let ((box (nl_alloc_bytes 32 8)))
       (seq

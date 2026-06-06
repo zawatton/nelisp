@@ -225,21 +225,21 @@
 
 ;; ---------------------------------------------------------------------------
 ;; NlCell field offsets and size
-;; Mirrors `offset_of!(NlCell, value) == 0', `refcount == 32',
-;; `size_of::<NlCell>() == 40'.
+;; Doc 147 Phase 1 (container slot shrink): value WORD @ 0 (8B), refcount
+;; @ 8, size 16.  (Was: value Sexp @ 0 (32B), refcount @ 32, size 40.)
 ;; ---------------------------------------------------------------------------
 
 (ert-deftest nelisp-sexp-layout--nlcell-offset-value ()
-  "NlCell::value Sexp is at byte offset 0."
+  "NlCell::value WORD is at byte offset 0."
   (should (= nelisp-nlcell--offset-value 0)))
 
 (ert-deftest nelisp-sexp-layout--nlcell-offset-refcount ()
-  "NlCell::refcount is at byte offset 32 (= one Sexp slot past value)."
-  (should (= nelisp-nlcell--offset-refcount 32)))
+  "NlCell::refcount is at byte offset 8 (Doc 147: one WORD past value)."
+  (should (= nelisp-nlcell--offset-refcount 8)))
 
 (ert-deftest nelisp-sexp-layout--nlcell-size ()
-  "NlCell total size is 40 bytes."
-  (should (= nelisp-nlcell--size 40)))
+  "NlCell total size is 16 bytes (Doc 147 Phase 1: 8B value WORD + 8B rc)."
+  (should (= nelisp-nlcell--size 16)))
 
 ;; ---------------------------------------------------------------------------
 ;; ABI export table completeness check

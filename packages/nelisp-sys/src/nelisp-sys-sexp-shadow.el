@@ -49,9 +49,10 @@
       (cap usize)
       (len usize)
       (refcount u64))
-    ;; NlCell: one Sexp slot + refcount (size 40).
+    ;; NlCell (Doc 147 Phase 1 — container slot shrink): an 8-byte tagged
+    ;; value WORD + refcount (size 16, was: one 32B Sexp slot + rc = 40).
     (sys:defstruct nlcell (:repr c)
-      (value (struct sexp))
+      (value u64)
       (refcount u64))
     ;; NlRecord: type_tag Sexp slot + inline Vec<Sexp> header + refcount.
     (sys:defstruct nlrecord (:repr c)
@@ -75,7 +76,7 @@ machine-checked layout is built from the same field specs by
   '((sexp c ((tag u8) (payload u64) (pad (array u8 16))))
     (nlconsbox c ((car (struct sexp)) (cdr (struct sexp)) (refcount u64)))
     (nlvector c ((ptr usize) (cap usize) (len usize) (refcount u64)))
-    (nlcell c ((value (struct sexp)) (refcount u64)))
+    (nlcell c ((value u64) (refcount u64)))
     (nlrecord c ((type-tag (struct sexp)) (slots-ptr usize)
                  (slots-cap usize) (slots-len usize) (refcount u64)))
     (nlstringheader c ((capacity usize) (ptr usize) (length usize))))

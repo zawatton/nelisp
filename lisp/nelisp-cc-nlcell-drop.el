@@ -14,19 +14,17 @@
 ;;
 ;;   §124.G NlConsBox: REFCOUNT_OFFSET = 64, SIZE = 72, ALIGN = 8
 ;;   §124.H NlVector:  REFCOUNT_OFFSET = 24, SIZE = 32, ALIGN = 8
-;;   §124.I NlCell:    REFCOUNT_OFFSET = 32, SIZE = 40, ALIGN = 8
+;;   §124.I NlCell:    REFCOUNT_OFFSET = 8,  SIZE = 16, ALIGN = 8 (Doc 147)
 ;;
-;; `NlCell' layout (= `build-tool/src/eval/nlcell.rs:56-64',
-;; `#[repr(C)]'):
+;; `NlCell' layout (Doc 147 Phase 1 — container slot shrink):
 ;;
-;;   offset 0:  `value: Sexp'            (= 32 bytes — single tagged slot)
-;;   offset 32: `refcount: AtomicUsize'  (= 8 bytes — i64 slot)
-;;   total = 40 bytes, align = 8
+;;   offset 0:  `value' WORD            (= 8 bytes — tagged: imm or box ptr)
+;;   offset 8:  `refcount: AtomicUsize'  (= 8 bytes — i64 slot)
+;;   total = 16 bytes, align = 8
 ;;
-;; The `offset_of!(NlCell, refcount) == size_of::<Sexp>()' compile-
-;; time assert at `nlcell.rs:288' pins the 32-byte trailer offset;
-;; `size_of::<AtomicUsize>() == 8' assert at `nlcell.rs:291' pins the
-;; 8-byte refcount slot.  Combined: SIZE_OF_NLCELL = 32 + 8 = 40.
+;; Doc 147 Phase 1 shrinks the value field from a 32-byte inline Sexp
+;; to an 8-byte tagged WORD, so the refcount trailer moves to offset 8
+;; and the box size becomes 16 (= 8 value WORD + 8 refcount).
 ;;
 ;; Function contract (mirrors §124.G/H):
 ;;   box-ptr: raw `*mut NlCell' coerced to i64 (= same shape as
@@ -39,8 +37,8 @@
 ;;
 ;; The body is a two-arm `if' on the pre-sub refcount value:
 ;;
-;;   (if (= (atomic-fetch-add (+ box-ptr 32) -1) 1)
-;;       (dealloc-bytes box-ptr 40 8)  ; last ref — free the box
+;;   (if (= (atomic-fetch-add (+ box-ptr 8) -1) 1)
+;;       (dealloc-bytes box-ptr 16 8)  ; last ref — free the box
 ;;     1)                              ; still alive — no-op
 ;;
 ;; Ordering: §122.E `atomic-fetch-add' uses `Ordering::SeqCst' while
@@ -63,9 +61,9 @@
 ;;
 ;;   §124.I's PoC body skips the interior-drop step.  If the box's
 ;;   refcount hits 0:
-;;     - The 40-byte outer `NlCell' allocation is freed.
-;;     - The `value: Sexp' payload (= any nested NlBox handle held in
-;;       the tagged enum) is LEAKED.
+;;     - The 16-byte outer `NlCell' allocation is freed.
+;;     - The `value' WORD payload (= any nested NlBox handle the box
+;;       pointer word references) is LEAKED.
 ;;
 ;;   This is acceptable because:
 ;;
@@ -74,7 +72,7 @@
 ;;         to drive Drop through `nlrc_drop_box!' which does the full
 ;;         recursive walk via `drop_in_place'.
 ;;     (2) The probe in `tests/elisp_cc_nlcell_drop_probe.rs' uses
-;;         a fresh `alloc_bytes(40, 8)' block seeded only at the
+;;         a fresh `alloc_bytes(16, 8)' block seeded only at the
 ;;         refcount-trailer offset (= the value bytes are uninitialized
 ;;         garbage; the kernel never reads them, so the leak is
 ;;         invisible to the probe's invariants).
@@ -115,22 +113,23 @@
 
     ;; Public entry — fetch-sub refcount + branch on pre-sub == 1.
     ;;
-    ;; Layout (mirrors `nlcell.rs:56-64' + `nlcell.rs:283-292' asserts):
-    ;;   value    @ 0   (32 bytes — size_of::<Sexp>)
-    ;;   refcount @ 32  (8 bytes  — AtomicUsize)
-    ;;   total = 40 bytes, align = 8
+    ;; Layout (Doc 147 Phase 1 — container slot shrink):
+    ;;   value    @ 0   (8 bytes — tagged WORD)
+    ;;   refcount @ 8   (8 bytes — AtomicUsize)
+    ;;   total = 16 bytes, align = 8
     ;; Doc 124 §124.L: thread `nl_cell_drop_inner' (= `drop_in_place
      ;; ::<NlCell>') between the fetch-sub and the dealloc-bytes call
-     ;; so the inner `value: Sexp' (= nested NlBox handle) is dropped
-     ;; before the outer 40-byte allocation is freed.  Matches
+     ;; so the inner value WORD child (= nested NlBox handle) is dropped
+     ;; before the outer 16-byte allocation is freed.  Matches
      ;; `nlrc_drop_box!' ordering.
     (defun nelisp_nlcell_drop (box-ptr)
-      (if (= (atomic-fetch-add (+ box-ptr 32) -1) 1)
+      (if (= (atomic-fetch-add (+ box-ptr 8) -1) 1)
           ;; Last ref — pre-sub was 1, new count is 0.  Drop interior
-          ;; `value: Sexp' then free the 40-byte outer allocation.
+          ;; value WORD child then free the 16-byte outer allocation.
+          ;; Doc 147 Phase 1: rc @ box+8, size 16 (was rc@32, size 40).
           (nelisp_nlcell_drop_prog2
            (extern-call nl_cell_drop_inner box-ptr)
-           (dealloc-bytes box-ptr 40 8))
+           (dealloc-bytes box-ptr 16 8))
         ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
         ;; the dealloc-bytes arm's return convention so the caller
         ;; sees a uniform `i64 = 1' on both branches.
@@ -147,10 +146,9 @@ AOT's SysV AMD64 prologue spills the first arg (`box-ptr' =
 raw `*mut NlCell' as i64) into the rbp-relative slot 0.  The
 public body:
 
-  1. Computes `(+ box-ptr 32)' = address of the AtomicUsize
-     refcount trailer per `nlcell.rs:283-292' compile-time
-     asserts (= `offset_of!(NlCell, refcount) == size_of::<Sexp>()
-     = 32').
+  1. Computes `(+ box-ptr 8)' = address of the AtomicUsize
+     refcount trailer (Doc 147 Phase 1: rc @ offset 8, immediately
+     after the 8-byte tagged value WORD).
   2. Calls `atomic-fetch-add' (= §122.E grammar op, lowers to
      `nl_atomic_fetch_add@PLT' = `AtomicI64::fetch_add(-1, SeqCst)')
      with delta = -1 (= fetch-sub semantics, same as §123.B
@@ -159,8 +157,8 @@ public body:
      into a 0/1 i64).
   4. Branches: if pre-sub was 1, the box reached refcount 0 and
      we call `dealloc-bytes' (= §125.A, lowers to
-     `nl_dealloc_bytes(box_ptr, 40, 8)' = `std::alloc::dealloc'
-     with the `Layout::new::<NlCell>()' = size 40, align 8 layout).
+     `nl_dealloc_bytes(box_ptr, 16, 8)' = `std::alloc::dealloc'
+     with the Doc 147 NlCell layout = size 16, align 8).
      Otherwise return 1 sentinel directly (= no-op, the box has more
      handles alive).
 
@@ -175,10 +173,10 @@ atomic op + `cmp + jne' for the branch + `mov + call' for the
 dealloc + `mov eax, 1; ret' at the joined epilogue).  Two PLT
 fixups: `nl_atomic_fetch_add' and `nl_dealloc_bytes'.
 
-Known limitation: interior `value: Sexp' payload Drop is NOT
+Known limitation: interior value WORD payload Drop is NOT
 recursively walked in this PoC.  If the box hits refcount 0 the
-outer 40-byte allocation is freed but any nested NlBox handle in
-the value slot leaks.  Production Rust `impl Drop' (via
+outer 16-byte allocation is freed but any nested NlBox handle the
+value WORD references leaks.  Production Rust `impl Drop' (via
 `nlrc_drop_box!') continues to do the full recursive walk; §124.L
 sweep stage will lift the recursion into elisp once §124.H-K
 sibling kernels SHIP.")
