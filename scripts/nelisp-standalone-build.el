@@ -1332,7 +1332,7 @@ addressing by a runtime base, never by a fixed reservation."
     (defun nl_compact_insert_probe (base idx old new gen)
       (let ((slot (+ base (* idx 24))))
         (if (= (ptr-read-u64 (+ slot 16) 0) gen)
-            (nl_compact_insert_probe base (logand (+ idx 1) 2097151) old new gen)
+            (nl_compact_insert_probe base (logand (+ idx 1) 8388607) old new gen)
           (nl_seq2 (ptr-write-u64 slot 0 old)
             (nl_seq2 (ptr-write-u64 (+ slot 8) 0 new)
                      (ptr-write-u64 (+ slot 16) 0 gen))))))
@@ -1343,7 +1343,7 @@ addressing by a runtime base, never by a fixed reservation."
       (let ((slot (+ base (* idx 24))))
         (if (= (ptr-read-u64 (+ slot 16) 0) gen)
             (if (= (ptr-read-u64 slot 0) old) (ptr-read-u64 (+ slot 8) 0)
-              (nl_compact_lookup_probe base (logand (+ idx 1) 2097151) old gen))
+              (nl_compact_lookup_probe base (logand (+ idx 1) 8388607) old gen))
           0)))
     ;; fwd(old) -> new obj ptr: below-watermark boot is identity; above-watermark
     ;; live resolves to to-space-base (268436384) + stored obj-offset.  0 = not a
@@ -1407,14 +1407,16 @@ addressing by a runtime base, never by a fixed reservation."
                 (if (= (nl_compact_rw_block old) 0) 0
                   (let ((data_old (ptr-read-u64 old 8)) (len (ptr-read-u64 old 16)))
                     (seq (nl_compact_rw_edge (+ old 8))
-                         (nl_compact_rw_vec_slots data_old 0 len)))))
+                         (if (= (nl_compact_rw_block data_old) 0) 0
+                           (nl_compact_rw_vec_slots data_old 0 len))))))
             (if (= tag 12)
                 (let ((old (nl_compact_rw_edge (+ sp 8))))
                   (if (= (nl_compact_rw_block old) 0) 0
                     (let ((data_old (ptr-read-u64 old 40)) (len (ptr-read-u64 old 48)))
                       (seq (nl_compact_rw_slot old)
                            (nl_compact_rw_edge (+ old 40))
-                           (nl_compact_rw_vec_slots data_old 0 len)))))
+                           (if (= (nl_compact_rw_block data_old) 0) 0
+                             (nl_compact_rw_vec_slots data_old 0 len))))))
               (if (= tag 11)
                   (let ((old (nl_compact_rw_edge (+ sp 8))))
                     (if (= (nl_compact_rw_block old) 0) 0
@@ -1422,8 +1424,8 @@ addressing by a runtime base, never by a fixed reservation."
                 (if (= tag 6)
                     (let ((old (nl_compact_rw_edge (+ sp 8))))
                       (if (= (nl_compact_rw_block old) 0) 0
-                        (nl_compact_rw_edge (+ old 8))))
-                  (if (= tag 5) (nl_compact_rw_edge (+ sp 16))
+                        (nl_seq2 (nl_compact_rw_block (nl_compact_rw_edge (+ old 8))) 0)))
+                  (if (= tag 5) (nl_seq2 (nl_compact_rw_block (nl_compact_rw_edge (+ sp 16))) 0)
                     (if (= tag 9) (nl_seq2 (nl_compact_rw_edge (+ sp 8)) 0)
                       (if (= tag 10) (nl_seq2 (nl_compact_rw_edge (+ sp 8)) 0)
                         0))))))))))
@@ -1442,9 +1444,12 @@ addressing by a runtime base, never by a fixed reservation."
     ;; address) + reset marks.  Boot (below watermark) is mark3 from the rewrite
     ;; walk but stays put (just clear its mark).
     (defun nl_compact_copy (src dst n)
-      (if (< n 8) 0
-        (nl_seq2 (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
-                 (nl_compact_copy (+ src 8) (+ dst 8) (- n 8)))))
+      (let ((s src) (d dst) (k n))
+        (while (> k 7)
+          (nl_seq2 (ptr-write-u64 d 0 (ptr-read-u64 s 0))
+            (nl_seq2 (setq s (+ s 8))
+              (nl_seq2 (setq d (+ d 8)) (setq k (- k 8))))))
+        0))
     (defun nl_compact_move_step (hdr end)
       (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0) 0
         (let ((bt (nl_hdr_bt hdr)))
@@ -1452,8 +1457,10 @@ addressing by a runtime base, never by a fixed reservation."
            (if (= (nl_hdr_mark hdr) 3)
                (if (< hdr (ptr-read-u64 268435664 0))
                    (nl_hdr_set_mark hdr 0)
-                 (let ((nh (- (nl_compact_fwd (+ hdr 8)) 8)))
-                   (nl_seq2 (nl_compact_copy hdr nh bt) (nl_hdr_set_mark nh 0))))
+                 (let ((f (nl_compact_fwd (+ hdr 8))))
+                   (if (= f 0)
+                       (nl_hdr_set_mark hdr 0)  ; GUARD: unforwarded -> leave in place
+                     (nl_seq2 (nl_compact_copy hdr (- f 8) bt) (nl_hdr_set_mark (- f 8) 0)))))
              0)
            (+ hdr bt)))))
     (defun nl_compact_move_chunk (chunk)
