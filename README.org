@@ -9,6 +9,16 @@ and technical claims are mine. If something reads oddly, please ask
 and I'll clarify.
 #+end_quote
 
+#+begin_quote
+*Note on source comments:* Comments throughout =lisp/=, =src/=, and
+=scripts/= sometimes reference paths such as
+=build-tool/src/eval/builtins.rs= when documenting what each pure-Elisp
+unit replaced.  These are *historical* provenance for the Rust →
+pure-Elisp migration — the Rust =build-tool/= tree no longer exists in
+this repository.  Read such paths as a record of what was migrated, not
+as live source files.
+#+end_quote
+
 * TL;DR
 
 NeLisp is a from-scratch Emacs Lisp runtime where essentially the
