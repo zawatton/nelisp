@@ -1308,11 +1308,74 @@ addressing by a runtime base, never by a fixed reservation."
                                 ;; mark it so it survives GC (name buf is interned).
                                 (if (= (ptr-read-u64 268436328 0) 0) 0
                                   (nl_gc_mark_block (ptr-read-u64 268436328 0)))))))))))))) ; bsym + shared symentry
+    ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
+    ;; Behind flag 268435608 (0=off, default).  Forwarding hash side-table base
+    ;; ptr @ 268435488 (32MB mmap, 2^21 slots x16B: old@+0, new@+8; 0 old=empty).
+    ;; Compaction cursor @ 268435496.  Phase 2 is NON-DESTRUCTIVE — it only
+    ;; populates fwd[] (the move is phase 4) so it is safe to enable for
+    ;; validation: with the flag on, mark -> phase2(compute) -> normal sweep.
+    ;; Forwarding hash table: 2^21 slots x 24B (old@+0, new@+8, gen@+16) @ base
+    ;; ptr 268435488 (48MB mmap, once).  A generation counter @ 268435504 (bumped
+    ;; each compaction) avoids re-zeroing: a slot is live only when gen==current,
+    ;; so stale entries from prior GCs read as empty.  No direct syscall (mmap is
+    ;; in the platform source; this defconst only links nl_os_alloc_chunk).
+    (defun nl_compact_table_init ()
+      (if (= (ptr-read-u64 268435488 0) 0)
+          (let ((p (nl_os_alloc_chunk 50331648)))
+            (if (= p 0) 0 (ptr-write-u64 268435488 0 p)))
+        0))
+    (defun nl_compact_hash (old) (logand (sar old 4) 2097151))
+    (defun nl_compact_insert_probe (base idx old new gen)
+      (let ((slot (+ base (* idx 24))))
+        (if (= (ptr-read-u64 (+ slot 16) 0) gen)
+            (nl_compact_insert_probe base (logand (+ idx 1) 2097151) old new gen)
+          (nl_seq2 (ptr-write-u64 slot 0 old)
+            (nl_seq2 (ptr-write-u64 (+ slot 8) 0 new)
+                     (ptr-write-u64 (+ slot 16) 0 gen))))))
+    (defun nl_compact_insert (old new)
+      (nl_compact_insert_probe (ptr-read-u64 268435488 0) (nl_compact_hash old)
+                               old new (ptr-read-u64 268435504 0)))
+    (defun nl_compact_lookup_probe (base idx old gen)
+      (let ((slot (+ base (* idx 24))))
+        (if (= (ptr-read-u64 (+ slot 16) 0) gen)
+            (if (= (ptr-read-u64 slot 0) old) (ptr-read-u64 (+ slot 8) 0)
+              (nl_compact_lookup_probe base (logand (+ idx 1) 2097151) old gen))
+          0)))
+    (defun nl_compact_fwd (old)
+      (if (< old (ptr-read-u64 268435664 0)) old
+        (nl_compact_lookup_probe (ptr-read-u64 268435488 0) (nl_compact_hash old)
+                                 old (ptr-read-u64 268435504 0))))
+    (defun nl_compact_fwd_step (hdr end)
+      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0) 0
+        (let ((bt (nl_hdr_bt hdr)))
+          (nl_seq2
+           (if (= (nl_hdr_mark hdr) 1)
+               (if (< hdr (ptr-read-u64 268435664 0)) 0
+                 (let ((cur (ptr-read-u64 268435496 0)))
+                   (nl_seq2 (nl_compact_insert (+ hdr 8) (+ cur 8))
+                            (ptr-write-u64 268435496 0 (+ cur bt)))))
+             0)
+           (+ hdr bt)))))
+    (defun nl_compact_fwd_chunk (chunk)
+      (let ((hdr (ptr-read-u64 (+ chunk 24) 0)) (end (nl_gc_chunk_end chunk)))
+        (while (and (> hdr 0) (< hdr end))
+          (setq hdr (nl_compact_fwd_step hdr end)))
+        0))
+    (defun nl_compact_fwd_chunks (chunk)
+      (if (= chunk 0) 0
+        (nl_seq2 (nl_compact_fwd_chunk chunk)
+                 (nl_compact_fwd_chunks (ptr-read-u64 (+ chunk 48) 0)))))
+    (defun nl_gc_compact ()
+      (seq (nl_compact_table_init)
+           (ptr-write-u64 268435504 0 (+ (ptr-read-u64 268435504 0) 1)) ; bump generation
+           (ptr-write-u64 268435496 0 (ptr-read-u64 268435568 0))
+           (nl_compact_fwd_chunks (ptr-read-u64 268436160 0))))
     (defun nl_gc_collect (ctx result out pool src cursor bsym)
       (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
       (seq
        (if (= (ptr-read-u64 268435592 0) 1) 0   ; DEBUG: skip-mark when slot==1
          (nl_gc_mark_roots ctx result out pool src cursor bsym))
+       (if (= (ptr-read-u64 268435608 0) 1) (nl_gc_compact) 0)  ; Doc146 §5 compaction (phase2)
        (nl_gc_sweep)))))
   "Tracing mark-sweep GC for the headered standalone arena.  See the
 preceding commentary for box layouts, root set, and the soundness
