@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# bin/vendor-coverage - rank vendor Emacs Lisp function usage vs NeLisp reader
+# availability, to drive the "increase vendor elisp coverage" fix loop.
+#
+# Pipeline (memory-safe; no full vendor load):
+#   1. grep vendor/emacs-lisp for `(symbol' call-position heads + frequency
+#   2. host Emacs keeps only REAL callables (func/macro/sform per host Emacs 30),
+#      dropping variable-name noise
+#   3. the vendored standalone reader fboundp-tests each (bare-reader builtin set)
+#   4. build/vendor-coverage-missing.tsv: missing func/macro ranked by call
+#      frequency, tagged substrate (buffer/text/window/...) vs other.
+#
+# Env: EMACS, NEMACS_NELISP, VCOV_TOPN (grep symbols, default 1200),
+#      VCOV_SHOW (rows printed, default 60)
+set -uo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"; cd "$ROOT"
+EMACS="${EMACS:-emacs}"
+BIN="${NEMACS_NELISP:-$ROOT/vendor/nelisp/target/nelisp}"
+TOPN="${VCOV_TOPN:-1200}"; SHOW="${VCOV_SHOW:-60}"
+OUT="$ROOT/build/vendor-coverage-missing.tsv"; mkdir -p "$ROOT/build"
+[ -x "$BIN" ] || { echo "vendor-coverage: no reader at $BIN"; exit 1; }
+
+SUBSTRATE='point|buffer|insert|goto-char|forward-|backward-|line-|-line$|search|looking-at|char-after|char-before|delete-region|delete-char|narrow|widen|region|^mark|window|frame|keymap|define-key|syntax|text-propert|propertize|overlay|current-column|bolp|eobp|bobp|set-buffer|erase-buffer|skip-chars|kill-|yank|recenter|scroll|cursor|selected-|minibuffer|read-string|read-char|completing-read|y-or-n-p|call-interactively|command'
+
+freq="$(mktemp)"; call="$(mktemp)"; miss="$(mktemp)"
+trap 'rm -f "$freq" "$call" "$miss"' EXIT
+
+grep -rhoE '\(([a-z][a-z0-9+*/<>=_!?:-]+)' vendor/emacs-lisp --include='*.el' 2>/dev/null \
+  | sed 's/^(//' | sort | uniq -c | sort -rn | head -"$TOPN" > "$freq"
+
+"$EMACS" -Q --batch \
+  --eval '(progn (require (quote cl-lib)) (dolist (l (quote (subr-x seq map rx))) (ignore-errors (require l))))' \
+  --eval "(with-temp-buffer (insert-file-contents \"$freq\") (goto-char (point-min))
+            (while (re-search-forward \"^ *\\\\([0-9]+\\\\) \\\\(.+\\\\)\$\" nil t)
+              (let* ((c (match-string 1)) (s (intern (match-string 2)))
+                     (cls (cond ((special-form-p s) \"sform\") ((and (fboundp s) (macrop s)) \"macro\")
+                               ((fboundp s) \"func\") (t nil))))
+                (when cls (princ (format \"%s\\t%s\\t%s\\n\" c cls s))))))" \
+  > "$call" 2>/dev/null
+
+syms="$(awk -F'\t' '{print $3}' "$call" | tr '\n' ' ')"
+"$BIN" --eval "(let ((m nil)) (dolist (s (quote ($syms))) (if (fboundp s) nil (setq m (cons s m)))) m)" 2>&1 \
+  | tr -d '()' | tr ' ' '\n' | grep -v '^$' | sort -u > "$miss"
+
+awk -F'\t' -v ss="$SUBSTRATE" '
+  BEGIN{ split("lambda function quote closure", a, " "); for(i in a) f[a[i]]=1 }
+  NR==FNR{ m[$1]=1; next }
+  $2=="sform" || !($3 in m) || ($3 in f){ next }
+  { c=($3 ~ ss)?"substrate":"other"; printf "%s\t%s\t%s\t%s\n",$1,$2,$3,c }
+' "$miss" "$call" | sort -rn > "$OUT.body"
+{ printf 'freq\tclass\tsymbol\tcategory\n'; cat "$OUT.body"; } > "$OUT"; rm -f "$OUT.body"
+
+total=$(($(wc -l < "$OUT")-1))
+subn=$(awk -F'\t' 'NR>1&&$4=="substrate"' "$OUT" | wc -l)
+othn=$(awk -F'\t' 'NR>1&&$4=="other"' "$OUT" | wc -l)
+echo "vendor-coverage: $total missing func/macro  (substrate=$subn  other=$othn)  -> $OUT"
+echo "=== top $SHOW 'other' (addable) missing, by vendor call frequency ==="
+awk -F'\t' 'NR>1&&$4=="other"' "$OUT" | head -"$SHOW" | awk -F'\t' '{printf "%7s %-5s %s\n",$1,$2,$3}'
