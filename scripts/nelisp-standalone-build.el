@@ -1135,6 +1135,21 @@ addressing by a runtime base, never by a fixed reservation."
           (nl_gc_chunk_contains_any (ptr-read-u64 (+ chunk 48) 0) addr))))
     (defun nl_gc_in_arena (addr)
       (nl_gc_chunk_contains_any (ptr-read-u64 268436160 0) addr))
+    ;; BOOT-GENERATION predicate.  The boot image is the prefix of CHUNK 0
+    ;; [chunk0_base, watermark).  The old test was a bare `(< addr watermark)'
+    ;; scalar compare, which is UNSOUND once growth chunks exist: the OS can
+    ;; (and does) place a growth chunk at a VA *numerically below* chunk 0's
+    ;; base, so a runtime object in that growth chunk reads as "below the
+    ;; watermark" and is mis-classified as a permanent boot block.  In moving
+    ;; GC that meant such a block was NOT forwarded / NOT moved (fwd returned
+    ;; identity, phase-4 left it in place) yet its growth chunk WAS munmap'd in
+    ;; phase 6 -> any root edge still pointing at it (e.g. the shared symentry
+    ;; @268436328) dangles -> SIGSEGV.  Correct test: the block must be both
+    ;; AT-OR-ABOVE chunk 0's base AND below the watermark.  chunk0_base =
+    ;; *(*268436160 + 0) (chunk-head desc, base field @ +0).
+    (defun nl_gc_is_boot (addr)
+      (if (< addr (ptr-read-u64 (ptr-read-u64 268436160 0) 0)) 0
+        (if (< addr (ptr-read-u64 268435664 0)) 1 0)))
     ;; Mark a block by OBJECT pointer.  Returns 1 if newly marked (caller
     ;; should recurse into children), 0 if foreign / already marked / free.
     (defun nl_gc_mark_block (obj)
@@ -1206,7 +1221,7 @@ addressing by a runtime base, never by a fixed reservation."
        (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 (ptr-read-u64 head 0))
                 (ptr-write-u64 head 0 (+ hdr 8)))))
     (defun nl_gc_free_block (hdr)
-      (if (< hdr (ptr-read-u64 268435664 0)) 0   ; HARD: never free below the boot watermark
+      (if (= (nl_gc_is_boot hdr) 1) 0   ; HARD: never free a chunk-0 boot block
        (nl_gc_free_block_link hdr
         (if (< (nl_hdr_bt hdr) 16) 268435552
           (if (< 472 (nl_hdr_bt hdr)) 268435552
@@ -1231,7 +1246,7 @@ addressing by a runtime base, never by a fixed reservation."
     ;; this watermark guard is not required for the gates to pass but makes the
     ;; permanent generation explicit and robust.)
     (defun nl_gc_sweep_one (hdr)
-      (if (< hdr (ptr-read-u64 268435664 0))
+      (if (= (nl_gc_is_boot hdr) 1)
           (nl_seq2 (nl_hdr_set_mark hdr 0)                ; boot block: keep live, reset mark
                    (nl_hdr_bt hdr))
       (let ((m (nl_hdr_mark hdr)) (bt (nl_hdr_bt hdr)))
@@ -1307,10 +1322,17 @@ addressing by a runtime base, never by a fixed reservation."
               (nl_seq2 (nl_gc_mark_slot cursor)  ; reader cursor Sexp
                        (nl_seq2 (nl_gc_mark_slot bsym)
                                 ;; Doc 146: shared symentry symbol (268436328) is
-                                ;; a standalone block referenced only by this slot;
-                                ;; mark it so it survives GC (name buf is interned).
+                                ;; a standalone Symbol Sexp block referenced only by
+                                ;; this slot.  Mark the BLOCK (so the 32B slot box
+                                ;; survives) AND walk it as a Symbol SLOT (so its
+                                ;; name buffer @ +16 is marked too) — the name buf
+                                ;; lives in a growth chunk, not the interned region,
+                                ;; so a bare block-mark left it unmarked -> munmap'd
+                                ;; -> mirror name-compare dangles (SIGSEGV).
                                 (if (= (ptr-read-u64 268436328 0) 0) 0
-                                  (nl_gc_mark_block (ptr-read-u64 268436328 0)))))))))))))) ; bsym + shared symentry
+                                  (nl_seq2
+                                   (nl_gc_mark_block (ptr-read-u64 268436328 0))
+                                   (nl_gc_mark_slot (ptr-read-u64 268436328 0))))))))))))))) ; bsym + shared symentry
     ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
     ;; Behind flag 268435608 (0=off, default).  Forwarding hash side-table base
     ;; Compaction cursor @ 268436368.  Phase 2 is NON-DESTRUCTIVE — it only
@@ -1349,16 +1371,30 @@ addressing by a runtime base, never by a fixed reservation."
     ;; live resolves to to-space-base (268436384) + stored obj-offset.  0 = not a
     ;; forwarded live obj (caller leaves the edge unchanged, e.g. interned bufs).
     (defun nl_compact_fwd (old)
-      (if (< old (ptr-read-u64 268435664 0)) old
+      (if (= (nl_gc_is_boot old) 1) old
         (let ((off (nl_compact_lookup_probe (ptr-read-u64 268436360 0) (nl_compact_hash old)
                                             old (ptr-read-u64 268436376 0))))
           (if (= off 0) 0 (+ (ptr-read-u64 268436384 0) off)))))
+    ;; Resync helper: a chunk's block run can begin AFTER the descriptor's
+    ;; nominal data-start (a to-space whose survivors were packed at a >0
+    ;; offset leaves a leading zero-header gap).  A zero header (x==0) is NEVER
+    ;; a real block (even a FREE block keeps a nonzero BT), so on a zero header
+    ;; advance 8 bytes to resync instead of ABORTING the whole-chunk walk —
+    ;; aborting abandoned every post-gap live block (e.g. the mirror's bucket
+    ;; conses) -> they were munmap'd in phase 6 -> dangling -> SIGSEGV in
+    ;; nelisp_mirror_walk_bucket.  A NON-zero malformed header is still a hard
+    ;; desync (genuine corruption) and stops the walk.
+    (defun nl_compact_step_resync (hdr end)
+      (if (= (ptr-read-u64 hdr 0) 0)
+          (if (< (+ hdr 8) end) (+ hdr 8) 0)
+        0))
     (defun nl_compact_fwd_step (hdr end)
-      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0) 0
+      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0)
+          (nl_compact_step_resync hdr end)
         (let ((bt (nl_hdr_bt hdr)))
           (nl_seq2
            (if (= (nl_hdr_mark hdr) 1)
-               (if (< hdr (ptr-read-u64 268435664 0)) 0
+               (if (= (nl_gc_is_boot hdr) 1) 0
                  (let ((cur (ptr-read-u64 268436368 0)))
                    (nl_seq2 (nl_compact_insert (+ hdr 8) (+ cur 8))
                             (ptr-write-u64 268436368 0 (+ cur bt)))))
@@ -1406,17 +1442,24 @@ addressing by a runtime base, never by a fixed reservation."
               (let ((old (nl_compact_rw_edge (+ sp 8))))
                 (if (= (nl_compact_rw_block old) 0) 0
                   (let ((data_old (ptr-read-u64 old 8)) (len (ptr-read-u64 old 16)))
+                    ;; SYMMETRY FIX (= mark walk写し, Doc146 §5.A-2): gate slot
+                    ;; recursion ONLY on the BOX (already flipped above), NOT on
+                    ;; the data buffer.  The old `(if rw_block data_old ...)' guard
+                    ;; SKIPPED all slot-edge rewrites whenever the data buffer was
+                    ;; already mark3 (visited via an aliasing path) -> bucket cons
+                    ;; / vector element edges left dangling after munmap.  Always
+                    ;; rewrite the buffer's own block edge, then walk every slot.
                     (seq (nl_compact_rw_edge (+ old 8))
-                         (if (= (nl_compact_rw_block data_old) 0) 0
-                           (nl_compact_rw_vec_slots data_old 0 len))))))
+                         (nl_compact_rw_block data_old)
+                         (nl_compact_rw_vec_slots data_old 0 len)))))
             (if (= tag 12)
                 (let ((old (nl_compact_rw_edge (+ sp 8))))
                   (if (= (nl_compact_rw_block old) 0) 0
                     (let ((data_old (ptr-read-u64 old 40)) (len (ptr-read-u64 old 48)))
                       (seq (nl_compact_rw_slot old)
                            (nl_compact_rw_edge (+ old 40))
-                           (if (= (nl_compact_rw_block data_old) 0) 0
-                             (nl_compact_rw_vec_slots data_old 0 len))))))
+                           (nl_compact_rw_block data_old)
+                           (nl_compact_rw_vec_slots data_old 0 len)))))
               (if (= tag 11)
                   (let ((old (nl_compact_rw_edge (+ sp 8))))
                     (if (= (nl_compact_rw_block old) 0) 0
@@ -1425,9 +1468,15 @@ addressing by a runtime base, never by a fixed reservation."
                     (let ((old (nl_compact_rw_edge (+ sp 8))))
                       (if (= (nl_compact_rw_block old) 0) 0
                         (nl_seq2 (nl_compact_rw_block (nl_compact_rw_edge (+ old 8))) 0)))
-                  (if (= tag 5) (nl_seq2 (nl_compact_rw_block (nl_compact_rw_edge (+ sp 16))) 0)
-                    (if (= tag 9) (nl_seq2 (nl_compact_rw_edge (+ sp 8)) 0)
-                      (if (= tag 10) (nl_seq2 (nl_compact_rw_edge (+ sp 8)) 0)
+                  ;; tag 5 Str AND tag 4 Symbol share the inline-string layout
+                  ;; (char/name buf ptr @ sp+16).  Both MUST rewrite that edge
+                  ;; and flip the buffer block mark1->mark3 so phase 4 moves it;
+                  ;; omitting tag 4 left symbol name buffers mark1 (never moved,
+                  ;; their from-space chunk munmap'd) -> dangling ptr / SIGSEGV.
+                  (if (if (= tag 5) 1 (= tag 4))
+                      (nl_seq2 (nl_compact_rw_block (nl_compact_rw_edge (+ sp 16))) 0)
+                    (if (= tag 9) (nl_seq2 (nl_compact_rw_block (nl_compact_rw_edge (+ sp 8))) 0)
+                      (if (= tag 10) (nl_seq2 (nl_compact_rw_block (nl_compact_rw_edge (+ sp 8))) 0)
                         0))))))))))
     (defun nl_compact_rw_roots (ctx result out pool src cursor bsym)
       (seq (nl_compact_rw_slot (+ ctx 0))
@@ -1439,8 +1488,16 @@ addressing by a runtime base, never by a fixed reservation."
            (nl_compact_rw_slot src)
            (nl_compact_rw_slot cursor)
            (nl_compact_rw_slot bsym)
+           ;; Shared symentry root (268436328 -> Symbol Sexp block `s').  Rewrite
+           ;; the root edge to fwd(s); flip `s' block 1->3 so phase 4 moves it;
+           ;; AND walk `s' as a Symbol SLOT on the OLD address so its name-buffer
+           ;; edge @ s+16 is rewritten (and that buffer block flipped 1->3 to be
+           ;; moved) BEFORE phase 4 memmoves the slot to to-space.  Without the
+           ;; slot walk the name buffer is never moved -> dangling name ptr.
            (if (= (ptr-read-u64 268436328 0) 0) 0
-             (nl_compact_rw_block (nl_compact_rw_edge 268436328)))))
+             (let ((old (nl_compact_rw_edge 268436328)))
+               (nl_seq2 (nl_compact_rw_block old)
+                        (nl_compact_rw_slot old))))))
     ;; --- Phase 4: move (memmove each rewritten-live block to its to-space
     ;; address) + reset marks.  Boot (below watermark) is mark3 from the rewrite
     ;; walk but stays put (just clear its mark).
@@ -1452,11 +1509,12 @@ addressing by a runtime base, never by a fixed reservation."
               (nl_seq2 (setq d (+ d 8)) (setq k (- k 8))))))
         0))
     (defun nl_compact_move_step (hdr end)
-      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0) 0
+      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0)
+          (nl_compact_step_resync hdr end)   ; skip leading/internal zero gap
         (let ((bt (nl_hdr_bt hdr)))
           (nl_seq2
            (if (= (nl_hdr_mark hdr) 3)
-               (if (< hdr (ptr-read-u64 268435664 0))
+               (if (= (nl_gc_is_boot hdr) 1)
                    (nl_hdr_set_mark hdr 0)
                  (let ((f (nl_compact_fwd (+ hdr 8))))
                    (if (= f 0)
@@ -1490,13 +1548,65 @@ addressing by a runtime base, never by a fixed reservation."
     (defun nl_compact_unpin_src ()
       (let ((b (ptr-read-u64 268436392 0)))
         (if (= b 0) 0 (nl_hdr_set_mark (- b 8) 0))))
+    ;; --- Driver scratch ROOT-BLOCK pinning (Doc146 §2 root-coverage).  The
+    ;; reader/eval driver holds the addresses of its 32B scratch root blocks
+    ;; (ctx/result/out/pool/cursor/bsym) in AOT-compiled LOCALS across the GC
+    ;; call.  Compaction must NOT relocate or munmap those blocks or the locals
+    ;; dangle (SIGSEGV writing `result' in bf_eval_source_string_loop).  We pin
+    ;; them: record up to 7 root-block addresses in a control-region array
+    ;; (268436400..+48), mark each block mark-5 so phase 2/4 skip it (stays in
+    ;; place; rw_roots still rewrites its inner Sexp slots by fixed address),
+    ;; and keep every chunk that contains a pinned address in phase 6.
+    (defun nl_compact_pin_root (i b)
+      (if (= b 0) 0
+        (if (= (nl_gc_in_arena b) 0) 0
+          (nl_seq2 (ptr-write-u64 (+ 268436400 (* i 8)) 0 b)
+            (if (= (nl_hdr_mark (- b 8)) 1) (nl_hdr_set_mark (- b 8) 5) 0)))))
+    (defun nl_compact_pin_roots (ctx result out pool cursor bsym)
+      (seq (ptr-write-u64 268436400 0 0) (ptr-write-u64 268436408 0 0)
+           (ptr-write-u64 268436416 0 0) (ptr-write-u64 268436424 0 0)
+           (ptr-write-u64 268436432 0 0) (ptr-write-u64 268436440 0 0)
+           (nl_compact_pin_root 0 ctx)    (nl_compact_pin_root 1 result)
+           (nl_compact_pin_root 2 out)    (nl_compact_pin_root 3 pool)
+           (nl_compact_pin_root 4 cursor) (nl_compact_pin_root 5 bsym)))
+    (defun nl_compact_unpin_root (i)
+      (let ((b (ptr-read-u64 (+ 268436400 (* i 8)) 0)))
+        (if (= b 0) 0
+          (nl_seq2 (if (= (nl_hdr_mark (- b 8)) 5) (nl_hdr_set_mark (- b 8) 0) 0)
+                   (ptr-write-u64 (+ 268436400 (* i 8)) 0 0)))))
+    (defun nl_compact_unpin_roots ()
+      (seq (nl_compact_unpin_root 0) (nl_compact_unpin_root 1)
+           (nl_compact_unpin_root 2) (nl_compact_unpin_root 3)
+           (nl_compact_unpin_root 4) (nl_compact_unpin_root 5)))
+    ;; Does [base,base+size) contain pinned-root slot I (0..5)?
+    (defun nl_compact_chunk_has_root_pin (base size i)
+      (if (> i 5) 0
+        (let ((b (ptr-read-u64 (+ 268436400 (* i 8)) 0)))
+          (if (= b 0) (nl_compact_chunk_has_root_pin base size (+ i 1))
+            (if (< b base) (nl_compact_chunk_has_root_pin base size (+ i 1))
+              (if (< b (+ base size)) 1
+                (nl_compact_chunk_has_root_pin base size (+ i 1))))))))
+    (defun nl_compact_chunk_pinned (base size)
+      (if (= (nl_compact_chunk_has_pin base size) 1) 1
+        (nl_compact_chunk_has_root_pin base size 0)))
+    ;; Phase 6: munmap each growth chunk that holds NO pinned address; rebuild
+    ;; the survivor chain of pinned chunks (returns its head, 0 if none).  The
+    ;; caller splices [chunk0] -> <pinned chain> -> [to-space].
+    ;; Walk the growth chain (excluding chunk 0), munmap every chunk that holds
+    ;; NO pinned address, and return the head of a freshly-threaded chain of the
+    ;; KEPT (pinned) chunks whose tail links to TOSPACE.  Reaching TOSPACE (or
+    ;; end-of-list) returns TOSPACE so the kept chain terminates there; the
+    ;; caller splices chunk0.next -> <this head>.
     (defun nl_compact_munmap_growth (chunk tospace)
-      (if (= chunk 0) 0
-        (if (= chunk tospace) 0
+      (if (= chunk 0) tospace
+        (if (= chunk tospace) tospace
           (let ((next (ptr-read-u64 (+ chunk 48) 0))
                 (base (ptr-read-u64 chunk 0)) (size (ptr-read-u64 (+ chunk 8) 0)))
-            (if (= (nl_compact_chunk_has_pin base size) 1)
-                (nl_seq2 (nl_compact_munmap_growth next tospace) chunk)
+            (if (= (nl_compact_chunk_pinned base size) 1)
+                ;; keep this chunk: link it ahead of the rest of the kept chain.
+                (nl_seq2 (ptr-write-u64 (+ chunk 48) 0
+                                        (nl_compact_munmap_growth next tospace))
+                         chunk)
               (seq (ptr-write-u64 268436184 0 (- (ptr-read-u64 268436184 0) size))
                    (nl_os_free_chunk base size)
                    (nl_compact_munmap_growth next tospace)))))))
@@ -1509,6 +1619,7 @@ addressing by a runtime base, never by a fixed reservation."
       (seq
        (nl_compact_table_init)
        (nl_compact_pin_src src)
+       (nl_compact_pin_roots ctx result out pool cursor bsym)       ; pin driver scratch
        (ptr-write-u64 268436376 0 (+ (ptr-read-u64 268436376 0) 1)) ; gen++
        (ptr-write-u64 268436368 0 0)                                ; offset cursor = 0
        (nl_compact_fwd_chunks (ptr-read-u64 268436160 0))           ; phase 2
@@ -1520,18 +1631,18 @@ addressing by a runtime base, never by a fixed reservation."
             (nl_compact_rw_roots ctx result out pool src cursor bsym)   ; phase 3
             (nl_compact_move_chunks (ptr-read-u64 268436160 0) tospace) ; phase 4
             (let* ((c0 (ptr-read-u64 268436160 0))                      ; phase 5/6
-                   (pinned (nl_compact_munmap_growth (ptr-read-u64 (+ c0 48) 0) tospace)))
+                   ;; head of the kept (pinned) growth chain; tail links to
+                   ;; tospace (munmap_growth returns tospace when nothing kept).
+                   (kept (nl_compact_munmap_growth (ptr-read-u64 (+ c0 48) 0) tospace)))
               (seq
-               (if (= pinned 0)
-                   (ptr-write-u64 (+ c0 48) 0 tospace)
-                 (nl_seq2 (ptr-write-u64 (+ c0 48) 0 pinned)
-                          (ptr-write-u64 (+ pinned 48) 0 tospace)))
+               (ptr-write-u64 (+ c0 48) 0 kept)
                (ptr-write-u64 (+ tospace 48) 0 0)
                (ptr-write-u64 268436168 0 tospace)
                (ptr-write-u64 268435456 0 (- (ptr-read-u64 268435664 0) (ptr-read-u64 c0 0)))
                (ptr-write-u64 (+ tospace 16) 0 (+ 1024 total))
                (nl_compact_clear_fl 0)
-               (nl_compact_unpin_src))))))))
+               (nl_compact_unpin_src)
+               (nl_compact_unpin_roots))))))))
     (defun nl_gc_collect (ctx result out pool src cursor bsym)
       (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
       (seq
@@ -2599,7 +2710,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                     (let* ((live (nl_gc_collect env result out pool src cursor bsym))
                            (bump (ptr-read-u64 268436184 0))
                            (lo (+ (* live 3) 1048576))
-                           (hi (+ bump 67108864)))
+                           (hi (+ bump 16777216)))
                       (ptr-write-u64 268435560 0
                                      (if (< lo hi) hi lo))))))
              (setq more 0)))))
@@ -2623,7 +2734,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                         (let* ((live (nl_gc_collect env result out pool src cursor bsym))
                                (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
-                               (hi (+ bump 67108864)))
+                               (hi (+ bump 16777216)))
                           (ptr-write-u64 268435560 0
                                          (if (< lo hi) hi lo))))
                     (setq more 2))))
@@ -4133,7 +4244,7 @@ fixed-base immediate until `data-addr' lands for those toolchains."
                         (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
                                (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
-                               (hi (+ bump 67108864)))
+                               (hi (+ bump 16777216)))
                           (ptr-write-u64 268435560 0 (if (< lo hi) hi lo))))
                       (if (= (ptr-read-u64 268435464 0) 0)
                           0
@@ -5230,7 +5341,8 @@ correctly."
         ;; the old arena-base rearm bug that pushed the trigger past the
         ;; mapped arena.
         ;; The free-list reuse independently bounds long single-form compute.
-        (ptr-write-u64 268435560 0 67108864)
+        (ptr-write-u64 268435560 0 16777216)
+        (ptr-write-u64 268435608 0 1)
         ;; BOOT WATERMARK: freeze the absolute address up to which everything
         ;; was allocated during install + driver setup (the mirror, all 60
         ;; builtins, the env/frame records, the fixed driver scratch slots).
