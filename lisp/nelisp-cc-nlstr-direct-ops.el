@@ -386,11 +386,12 @@ expectations.  Both use the global allocator, compatible with
   '(seq
     ;; Tail-recursive byte copier.
     (defun nl_mut_str_finalize_copy_loop (src dst i n)
-      (if (= i n)
-          1
-        (and
-         (ptr-write-u8 dst i (ptr-read-u8 src i))
-         (nl_mut_str_finalize_copy_loop src dst (+ i 1) n))))
+      (let ((k i))
+        (while (<= (+ k 8) n)
+          (and (ptr-write-u64 dst k (ptr-read-u64 src k)) (setq k (+ k 8))))
+        (while (< k n)
+          (and (ptr-write-u8 dst k (ptr-read-u8 src k)) (setq k (+ k 1))))
+        1))
 
     ;; Innermost writer: fills in Sexp::Str fields.
     ;; str-ptr: *const u8 source data, str-len: byte count,

@@ -87,10 +87,10 @@
     ;; i:         i64           — current byte index (0-based).
     ;; n:         i64           — total byte count (= str-len arg).
     (defun nl_jit_sym_copy (arg buf dst-start i n)
-      (if (= i n)
-          1
-        (and (ptr-write-u8 buf (+ dst-start i) (str-byte-at arg i))
-             (nl_jit_sym_copy arg buf dst-start (+ i 1) n))))
+      (let ((k i))
+        (while (< k n)
+          (and (ptr-write-u8 buf (+ dst-start k) (str-byte-at arg k)) (setq k (+ k 1))))
+        1))
 
     ;; ---- hex nibble writer ----------------------------------------------
     ;;

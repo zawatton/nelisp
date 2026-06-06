@@ -1146,9 +1146,9 @@ addressing by a runtime base, never by a fixed reservation."
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
     ;; Mark every Sexp slot of a `len'-element buffer starting at data_ptr.
     (defun nl_gc_mark_vec_slots (data_ptr i len)
-      (if (< i len)
-          (nl_seq2 (nl_gc_mark_slot (+ data_ptr (* i 32)))
-                   (nl_gc_mark_vec_slots data_ptr (+ i 1) len))
+      (let ((k i))
+        (while (< k len)
+          (nl_seq2 (nl_gc_mark_slot (+ data_ptr (* k 32))) (setq k (+ k 1))))
         0))
     ;; Cons cdr-spine walker (tail-recursive: recurse only on car, loop
     ;; on cdr) so list LENGTH does not bound native mark depth.  SP points

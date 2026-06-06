@@ -90,9 +90,9 @@
     ;; passes the return of this function directly to `nl_alloc_vector_build'
     ;; which handles both null and non-null data-ptr correctly.
     (defun nl_alloc_vector_fill (data-ptr i cap)
-      (if (< i cap)
-          (and (sexp-write-nil (+ data-ptr (* i 32)))
-               (nl_alloc_vector_fill data-ptr (+ i 1) cap))
+      (let ((k i))
+        (while (< k cap)
+          (and (sexp-write-nil (+ data-ptr (* k 32))) (setq k (+ k 1))))
         data-ptr))
 
     ;; Write the four words of the NlVector struct and return box-ptr.

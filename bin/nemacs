@@ -1,0 +1,21 @@
+#!/bin/bash
+ND="$HOME/.nemacs.d"
+NELISP="/tmp/nelisp-snap/nelisp"
+WIN="/tmp/nemacs-win.bin"
+CFG=$("$NELISP" --eval "(progn
+$(grep -vE '^[[:space:]]*;;' "$ND/early-init.el")
+$(grep -vE '^[[:space:]]*;;' "$ND/init.el")
+(format \"%d %d %d %d %d %s %s\" nemacs-frame-width nemacs-frame-height nemacs-frame-left nemacs-frame-top nemacs-display-mode nemacs-font nemacs-emacs-theme)
+)" 2>/dev/null | tail -1 | tr -d '"')
+THEME=$(echo "$CFG" | awk '{print $7}')
+COL=$(emacs --batch --eval "(progn (load-theme (intern \"$THEME\") t)
+(defun fc (f a) (let ((r nil)) (dolist (s (get (intern \"$THEME\") 'theme-settings)) (when (and (eq (car s) 'theme-face) (eq (nth 1 s) f)) (dolist (e (nth 3 s)) (let ((p (cadr e))) (when (and (listp p) (plist-member p a)) (setq r (plist-get p a))))))) (if (stringp r) r \"#cccccc\")))
+(princ (format \"%s %s %s %s %s %s\" (fc 'default :background) (fc 'default :foreground) (fc 'mode-line :background) (fc 'font-lock-comment-face :foreground) (fc 'font-lock-keyword-face :foreground) (fc 'font-lock-string-face :foreground))))" 2>/dev/null | grep '#' | tail -1)
+echo "$CFG|$COL" | python3 -c "
+import sys,struct
+line=sys.stdin.read().strip(); cfg,col=line.split('|')
+p=cfg.split(); n=[int(x) for x in p[:5]]; font=p[5]
+cols=[int(c.lstrip('#'),16) if c.startswith('#') else 0xcccccc for c in col.split()]
+open('/tmp/nemacs.cfg','wb').write(struct.pack('<HHHHH',*n)+struct.pack('<IIIIII',*cols)+bytes([len(font)])+font.encode())
+"
+exec "$WIN"
