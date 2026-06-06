@@ -663,6 +663,7 @@ or the toolchain is newer than the cached object."
       (let ((x (ptr-read-u64 hdr 0))) (ptr-write-u64 hdr 0 (+ (- x (logand x 7)) m))))
     (defun nl_arena_init () 0)
     (defun nl_os_alloc_chunk (_size) 0)
+    (defun nl_os_free_chunk (_base _size) 0)  ; stub; platform source overrides w/ munmap
     (defun nl_os_alloc_fail () 0)
     ;; SIZE-SEGREGATED free-list (2026-06-06).  Replaces the old single
     ;; exact-fit O(freelist) linear scan, which -- once the GC-trigger fix
@@ -998,6 +999,8 @@ addressing by a runtime base, never by a fixed reservation."
   '((defun nl_os_alloc_chunk (size)
       (let ((p (syscall-direct 9 0 size 3 34 -1 0)))
         (if (< p 4096) 0 p)))
+    (defun nl_os_free_chunk (base size)
+      (syscall-direct 11 base size 0 0 0 0))  ; munmap(base, size)
     (defun nl_os_alloc_fail ()
       (syscall-direct 60 88 0 0 0 0 0))))
 
@@ -1342,10 +1345,14 @@ addressing by a runtime base, never by a fixed reservation."
             (if (= (ptr-read-u64 slot 0) old) (ptr-read-u64 (+ slot 8) 0)
               (nl_compact_lookup_probe base (logand (+ idx 1) 2097151) old gen))
           0)))
+    ;; fwd(old) -> new obj ptr: below-watermark boot is identity; above-watermark
+    ;; live resolves to to-space-base (268436384) + stored obj-offset.  0 = not a
+    ;; forwarded live obj (caller leaves the edge unchanged, e.g. interned bufs).
     (defun nl_compact_fwd (old)
       (if (< old (ptr-read-u64 268435664 0)) old
-        (nl_compact_lookup_probe (ptr-read-u64 268436360 0) (nl_compact_hash old)
-                                 old (ptr-read-u64 268436376 0))))
+        (let ((off (nl_compact_lookup_probe (ptr-read-u64 268436360 0) (nl_compact_hash old)
+                                            old (ptr-read-u64 268436376 0))))
+          (if (= off 0) 0 (+ (ptr-read-u64 268436384 0) off)))))
     (defun nl_compact_fwd_step (hdr end)
       (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0) 0
         (let ((bt (nl_hdr_bt hdr)))
@@ -1431,18 +1438,78 @@ addressing by a runtime base, never by a fixed reservation."
            (nl_compact_rw_slot cursor)
            (nl_compact_rw_slot bsym)
            (if (= (ptr-read-u64 268436328 0) 0) 0 (nl_compact_rw_edge 268436328))))
-    (defun nl_gc_compact ()
-      (seq (nl_compact_table_init)
-           (ptr-write-u64 268436376 0 (+ (ptr-read-u64 268436376 0) 1)) ; bump generation
-           (ptr-write-u64 268436368 0 (ptr-read-u64 268435568 0))
-           (nl_compact_fwd_chunks (ptr-read-u64 268436160 0))))
+    ;; --- Phase 4: move (memmove each rewritten-live block to its to-space
+    ;; address) + reset marks.  Boot (below watermark) is mark3 from the rewrite
+    ;; walk but stays put (just clear its mark).
+    (defun nl_compact_copy (src dst n)
+      (if (< n 8) 0
+        (nl_seq2 (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+                 (nl_compact_copy (+ src 8) (+ dst 8) (- n 8)))))
+    (defun nl_compact_move_step (hdr end)
+      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0) 0
+        (let ((bt (nl_hdr_bt hdr)))
+          (nl_seq2
+           (if (= (nl_hdr_mark hdr) 3)
+               (if (< hdr (ptr-read-u64 268435664 0))
+                   (nl_hdr_set_mark hdr 0)
+                 (let ((nh (- (nl_compact_fwd (+ hdr 8)) 8)))
+                   (nl_seq2 (nl_compact_copy hdr nh bt) (nl_hdr_set_mark nh 0))))
+             0)
+           (+ hdr bt)))))
+    (defun nl_compact_move_chunk (chunk)
+      (let ((hdr (ptr-read-u64 (+ chunk 24) 0)) (end (nl_gc_chunk_end chunk)))
+        (while (and (> hdr 0) (< hdr end))
+          (setq hdr (nl_compact_move_step hdr end)))
+        0))
+    (defun nl_compact_move_chunks (chunk tospace)
+      (if (= chunk 0) 0
+        (if (= chunk tospace) 0
+          (nl_seq2 (nl_compact_move_chunk chunk)
+                   (nl_compact_move_chunks (ptr-read-u64 (+ chunk 48) 0) tospace)))))
+    ;; --- Phase 6: munmap each old growth chunk (between chunk-0 and to-space).
+    (defun nl_compact_munmap_growth (chunk tospace)
+      (if (= chunk 0) 0
+        (if (= chunk tospace) 0
+          (let ((next (ptr-read-u64 (+ chunk 48) 0))
+                (base (ptr-read-u64 chunk 0)) (size (ptr-read-u64 (+ chunk 8) 0)))
+            (seq (ptr-write-u64 268436184 0 (- (ptr-read-u64 268436184 0) size))
+                 (nl_os_free_chunk base size)
+                 (nl_compact_munmap_growth next tospace))))))
+    (defun nl_compact_clear_fl (n)
+      (if (> n 57) (ptr-write-u64 268435552 0 0)
+        (nl_seq2 (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
+                 (nl_compact_clear_fl (+ n 1)))))
+    ;; Orchestrate phases 2-6.  Takes the 7 roots (for phase 3 rewrite).
+    (defun nl_gc_compact (ctx result out pool src cursor bsym)
+      (seq
+       (nl_compact_table_init)
+       (ptr-write-u64 268436376 0 (+ (ptr-read-u64 268436376 0) 1)) ; gen++
+       (ptr-write-u64 268436368 0 0)                                ; offset cursor = 0
+       (nl_compact_fwd_chunks (ptr-read-u64 268436160 0))           ; phase 2
+       (let* ((total (ptr-read-u64 268436368 0))
+              (tospace (nl_chunk_alloc_new (+ total 1048576))))     ; to-space chunk
+         (if (= tospace 0) 0
+           (seq
+            (ptr-write-u64 268436384 0 (ptr-read-u64 (+ tospace 24) 0)) ; T = data-start
+            (nl_compact_rw_roots ctx result out pool src cursor bsym)   ; phase 3
+            (nl_compact_move_chunks (ptr-read-u64 268436160 0) tospace) ; phase 4
+            (let ((c0 (ptr-read-u64 268436160 0)))                      ; phase 5/6
+              (seq
+               (nl_compact_munmap_growth (ptr-read-u64 (+ c0 48) 0) tospace)
+               (ptr-write-u64 (+ c0 48) 0 tospace)
+               (ptr-write-u64 (+ tospace 48) 0 0)
+               (ptr-write-u64 268436168 0 tospace)
+               (ptr-write-u64 268435456 0 (- (ptr-read-u64 268435664 0) (ptr-read-u64 c0 0)))
+               (ptr-write-u64 (+ tospace 16) 0 (+ 1024 total))
+               (nl_compact_clear_fl 0))))))))
     (defun nl_gc_collect (ctx result out pool src cursor bsym)
       (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
       (seq
        (if (= (ptr-read-u64 268435592 0) 1) 0   ; DEBUG: skip-mark when slot==1
          (nl_gc_mark_roots ctx result out pool src cursor bsym))
-       (if (= (ptr-read-u64 268435608 0) 1) (nl_gc_compact) 0)  ; Doc146 §5 compaction (phase2)
-       (nl_gc_sweep)))))
+       (if (= (ptr-read-u64 268435608 0) 1)    ; Doc146 §5: compact (incl. reclaim, no sweep)
+           (nl_gc_compact ctx result out pool src cursor bsym)
+         (nl_gc_sweep))))))
   "Tracing mark-sweep GC for the headered standalone arena.  See the
 preceding commentary for box layouts, root set, and the soundness
 argument (reachability + in-arena bounds checks).")
