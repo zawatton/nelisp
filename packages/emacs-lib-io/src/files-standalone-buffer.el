@@ -528,6 +528,14 @@ regular file."
            (idx (- p 1)))
       (if (and (>= idx 0) (< idx (files--string-length content)))
           (aref content idx) nil))))
+(when (files--install-fallback-function-p 'following-char)
+  (defun following-char ()
+    "Character after point as a number, or 0 at end of the fallback buffer."
+    (or (char-after) 0)))
+(when (files--install-fallback-function-p 'preceding-char)
+  (defun preceding-char ()
+    "Character before point as a number, or 0 at start of the fallback buffer."
+    (or (char-before) 0)))
 (when (files--install-fallback-function-p 'file-directory-p)
   (defun file-directory-p (filename)
     "Heuristic directory test for the standalone reader (no stat syscall): a

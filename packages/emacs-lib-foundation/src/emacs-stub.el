@@ -1198,6 +1198,43 @@ Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
     "Stub: non-interactive standalone answers no (nil)."
     (ignore prompt) nil))
 
+;;;; --- file / property / terminal helpers (vendor-coverage 2026-06-06 batch2)
+
+(unless (fboundp 'file-remote-p)
+  (defun file-remote-p (file &optional identification connected)
+    "Stub: the standalone reader only sees local files, so always nil."
+    (ignore file identification connected) nil))
+
+(unless (fboundp 'file-attribute-modification-time)
+  (defun file-attribute-modification-time (attributes)
+    "Return the modification time from a `file-attributes' list (element 5)."
+    (nth 5 attributes)))
+
+(unless (fboundp 'get-char-property)
+  (defun get-char-property (position prop &optional object)
+    "Stub: standalone tracks no text properties / overlays, so always nil."
+    (ignore position prop object) nil))
+
+(unless (fboundp 'next-single-property-change)
+  (defun next-single-property-change (position prop &optional object limit)
+    "Stub: no text properties in standalone; report no change (LIMIT or nil)."
+    (ignore position prop object) limit))
+
+(unless (fboundp 'string-width)
+  (defun string-width (string &optional from to)
+    "Degraded width: count characters (wide chars not doubled) in STRING."
+    (length (if (or from to) (substring string (or from 0) to) string))))
+
+(unless (fboundp 'ding)
+  (defun ding (&optional arg)
+    "Stub: no terminal bell in the standalone reader."
+    (ignore arg) nil))
+
+(unless (fboundp 'beep)
+  (defun beep (&optional arg)
+    "Stub: no terminal bell in the standalone reader."
+    (ignore arg) nil))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
