@@ -653,6 +653,39 @@ treated as an existing directory; a path that exists as a regular file is not."
 assumed to already exist."
     nil))
 
+;; --- file / directory removal via the reader's `nelisp--syscall-path' -------
+;; Linux x86_64 syscall numbers (the standalone reader's only target).
+(defconst files--syscall-unlink 87 "Linux x86_64 unlink(2) syscall number.")
+(defconst files--syscall-rmdir 84 "Linux x86_64 rmdir(2) syscall number.")
+
+(when (files--install-fallback-function-p 'delete-file)
+  (defun delete-file (filename &optional _trash)
+    "Delete FILENAME via the reader's `nelisp--syscall-path' unlink(2).
+Signals `file-error' on kernel failure (rc < 0).  TRASH is ignored."
+    (if (fboundp 'nelisp--syscall-path)
+        (let ((rc (nelisp--syscall-path files--syscall-unlink
+                                        (files--expand-file-name filename))))
+          (when (< rc 0)
+            (signal 'file-error (list "Removing old name" filename rc))))
+      (signal 'file-error
+              (list "delete-file unavailable (no nelisp--syscall-path)" filename)))
+    nil))
+
+(when (files--install-fallback-function-p 'delete-directory)
+  (defun delete-directory (directory &optional _recursive _trash)
+    "Delete the empty DIRECTORY via the reader's `nelisp--syscall-path' rmdir(2).
+Signals `file-error' on kernel failure (rc < 0).  RECURSIVE and TRASH are
+ignored -- only an empty directory can be removed."
+    (if (fboundp 'nelisp--syscall-path)
+        (let ((rc (nelisp--syscall-path files--syscall-rmdir
+                                        (files--expand-file-name directory))))
+          (when (< rc 0)
+            (signal 'file-error (list "Removing directory" directory rc))))
+      (signal 'file-error
+              (list "delete-directory unavailable (no nelisp--syscall-path)"
+                    directory)))
+    nil))
+
 ;; Bridge the file reader to the standalone reader's `rdf' primitive (the only
 ;; file-read entry point baked into target/nelisp).  files--read-file-text
 ;; prefers `nelisp--syscall-read-file'; provide it on top of `rdf'.  `rdf'
