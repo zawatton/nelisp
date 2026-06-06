@@ -29,7 +29,19 @@
      ;; needed refcount bumps on the Rust side.  The raw 32-byte copies
      ;; here do not call `nl_rc_inc'; a future §101.D.2 stage can make
      ;; the copies refcount-aware if profiling justifies the extra cost.
-     (cons-make arg0 arg1 result-slot))
+     ;; Doc 146 §3.0: build via the immediate-aware set-car/set-cdr ops so that
+     ;; ARG0/ARG1 may be value WORDS (immediate) as well as slot pointers.  For
+     ;; slot pointers set-car/cdr do the byte-identical raw copy (= the old
+     ;; cons-make), so this is behaviour-preserving; for immediate words they
+     ;; materialise the storage Sexp.  Replaces (cons-make arg0 arg1 result-slot).
+     (let ((box (extern-call nl_alloc_consbox)))
+       (seq (extern-call nl_consbox_set_car box arg0)
+            (extern-call nl_consbox_set_cdr box arg1)
+            (ptr-write-u64 result-slot 0 7)
+            (ptr-write-u64 (+ result-slot 8) 0 box)
+            (ptr-write-u64 (+ result-slot 16) 0 0)
+            (ptr-write-u64 (+ result-slot 24) 0 0)
+            result-slot)))
   "AOT source for the Doc 101 §101.D cons constructor swap.")
 
 (provide 'nelisp-cc-cons-construct)
