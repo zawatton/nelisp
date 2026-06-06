@@ -494,24 +494,56 @@
     (cdr (nelisp--syscall-readdir dirname)))
    (t nil)))
 
-;; --- file-system predicates / mkdir (standalone has no stat / mkdir syscall) -
+;; --- file-system predicates -------------------------------------------------
+;; The reader exposes `nelisp--syscall-stat' (path -> absent/file/directory)
+;; and access(2) via `nelisp--syscall-path-int'; these predicates use them when
+;; present and fall back to a read-based approximation otherwise.
+(defconst files--syscall-access 21 "Linux x86_64 access(2) syscall number.")
+(defconst files--ok-exist 0 "access(2) F_OK: test for existence.")
+(defconst files--ok-exec 1 "access(2) X_OK: test for execute/search permission.")
+(defconst files--ok-write 2 "access(2) W_OK: test for write permission.")
+(defconst files--ok-read 4 "access(2) R_OK: test for read permission.")
+
+(defun files--rdf-nonempty-p (filename)
+  "Fallback existence check: a non-empty `rdf' read counts as existing."
+  (let ((s (condition-case nil
+               (and (fboundp 'rdf) (rdf (files--expand-file-name filename)))
+             (error nil))))
+    (and (stringp s) (> (length s) 0))))
+
+(defun files--access-ok-p (filename mode)
+  "Return non-nil when access(2) on FILENAME with MODE succeeds (rc 0).
+Falls back to a read-based existence check when the reader exposes no
+`nelisp--syscall-path-int'."
+  (if (fboundp 'nelisp--syscall-path-int)
+      (= 0 (nelisp--syscall-path-int files--syscall-access
+                                     (files--expand-file-name filename) mode))
+    (files--rdf-nonempty-p filename)))
+
 (when (files--install-fallback-function-p 'file-exists-p)
   (defun file-exists-p (filename)
-    "Approximate existence check for the standalone reader, which exposes no
-stat syscall: a non-empty read counts as existing.  Adequate for the
-key/value store files this substrate serves (they are never legitimately
-empty -- they always hold at least \"{}\")."
-    (let ((s (condition-case nil
-                 (and (fboundp 'rdf) (rdf (expand-file-name filename)))
-               (error nil))))
-      (and (stringp s) (> (length s) 0)))))
+    "Return non-nil if FILENAME exists, via access(2) F_OK when available."
+    (files--access-ok-p filename files--ok-exist)))
 (when (files--install-fallback-function-p 'file-readable-p)
-  (defun file-readable-p (filename) (file-exists-p filename)))
+  (defun file-readable-p (filename)
+    "Return non-nil if FILENAME is readable, via access(2) R_OK."
+    (files--access-ok-p filename files--ok-read)))
+(when (files--install-fallback-function-p 'file-writable-p)
+  (defun file-writable-p (filename)
+    "Return non-nil if FILENAME is writable, via access(2) W_OK."
+    (files--access-ok-p filename files--ok-write)))
+(when (files--install-fallback-function-p 'file-executable-p)
+  (defun file-executable-p (filename)
+    "Return non-nil if FILENAME is executable/searchable, via access(2) X_OK."
+    (files--access-ok-p filename files--ok-exec)))
+(when (files--install-fallback-function-p 'file-accessible-directory-p)
+  (defun file-accessible-directory-p (filename)
+    "Return non-nil if FILENAME is a directory that can be searched."
+    (and (file-directory-p filename) (file-executable-p filename))))
 (when (files--install-fallback-function-p 'file-regular-p)
   (defun file-regular-p (filename)
-    "No directory detection on the standalone reader, so an existing path is a
-regular file."
-    (file-exists-p filename)))
+    "Return non-nil if FILENAME exists and is not a directory."
+    (and (file-exists-p filename) (not (file-directory-p filename)))))
 (when (files--install-fallback-function-p 'char-before)
   (defun char-before (&optional pos)
     "Character before POS (or point) in the fallback current buffer, or nil."
@@ -640,11 +672,17 @@ Return the column reached."
 
 (when (files--install-fallback-function-p 'file-directory-p)
   (defun file-directory-p (filename)
-    "Heuristic directory test for the standalone reader (no stat syscall): a
-path ending in a slash -- e.g. the result of `file-name-directory' -- is
-treated as an existing directory; a path that exists as a regular file is not."
+    "Return non-nil if FILENAME is an existing directory.
+Detected with access(2) on FILENAME with a `.' component appended -- only a
+directory has a `.' entry -- and falls back to the trailing-slash heuristic
+when access(2) is unavailable."
     (cond
      ((not (stringp filename)) nil)
+     ((fboundp 'nelisp--syscall-path-int)
+      (let* ((d (files--expand-file-name filename))
+             (n (length d))
+             (probe (concat d (if (and (> n 0) (eq (aref d (1- n)) ?/)) "." "/."))))
+        (= 0 (nelisp--syscall-path-int files--syscall-access probe files--ok-exist))))
      ((let ((n (length filename))) (and (> n 0) (eq (aref filename (1- n)) ?/))) t)
      (t nil))))
 (when (files--install-fallback-function-p 'make-directory)
