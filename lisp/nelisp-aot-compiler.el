@@ -12130,16 +12130,31 @@ and for future f64-class composition with `--emit-f64-leaf-into'."
        buf 'rax 'rdi nelisp-sexp--offset-payload))))
 
 (defun nelisp-aot-compiler--emit-sexp-int-unwrap (node buf)
-  "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr into rdi.
-Result: the i64 payload of a `Sexp::Int(n)' value, read from offset
-`nelisp-sexp--offset-int-payload' (= 8).  No tag check — caller
-must ensure :ptr points at a `Sexp::Int' variant.  See
-`docs/arch/sexp-abi.md' §5.2."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
-    (nelisp-aot-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
+  "Emit an immediate-aware Int payload read (Doc 146 §3.0 step 7).
+NODE's :ptr computes a value word V into rax.  If V's low bit is 0 it is
+an 8-aligned slot pointer and the payload is `[V+8]' (= the old read).
+If low bit 1 it is a low-bit-tagged immediate Int and the value is
+`(sar V 2)' (V = (n<<2)|1).  Behaviour-preserving until immediates are
+produced (V is always a slot pointer today).  Labels uniquified by the
+buffer byte-offset."
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (id (aref buf 1))
+         (slot-lbl (intern (format "siu%d_slot" id)))
+         (done-lbl (intern (format "siu%d_done" id))))
+    (nelisp-aot-compiler--emit-value ptr buf)            ; rax = V
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)        ; rdi = V
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)        ; rax = V & 1 (ZF if 0)
+    (nelisp-asm-x86_64-jz-rel32 buf slot-lbl)            ; low bit 0 -> slot
+    ;; immediate Int: value = arithmetic-shift-right V by 2
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)        ; rax = V
+    (nelisp-asm-x86_64-mov-imm32 buf 'rcx 2)             ; cl = 2
+    (nelisp-asm-x86_64-sar-rax-cl buf)                   ; rax = V >> 2 (arith)
+    (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
+    (nelisp-asm-x86_64-define-label buf slot-lbl)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'rax 'rdi nelisp-sexp--offset-int-payload)))
+     buf 'rax 'rdi nelisp-sexp--offset-int-payload)      ; rax = [V+8]
+    (nelisp-asm-x86_64-define-label buf done-lbl)))
 
 (defun nelisp-aot-compiler--emit-sexp-int-make (node buf)
   "Emit the 3-instruction `Sexp::Int' constructor sequence into a caller slot.

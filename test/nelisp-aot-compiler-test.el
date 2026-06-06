@@ -2164,8 +2164,10 @@ are present rather than the old contiguous 7-byte tail."
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-aot-compiler/sexp-int-unwrap-emit-bytes ()
-  "Doc 100 §100.B: (sexp-int-unwrap PTR) emits `mov rdi,rax + mov rax,[rdi+8]'.
-Expected tail: `48 89 C7 48 8B 47 08'."
+  "Doc 146 §3.0: (sexp-int-unwrap PTR) emits an immediate-aware payload read.
+The slot path still does `mov rdi,rax' (48 89 C7) + `mov rax,[rdi+8]'
+(48 8B 47 08), but they are no longer adjacent (the low-bit immediate
+dispatch + arithmetic-shift path sits between).  Verify both byte groups."
   (let* ((sexp '(seq (defun probe (p) (sexp-int-unwrap p))))
          (path (make-temp-file "nelisp-doc100-sexp-unwrap-" nil ".o")))
     (unwind-protect
@@ -2175,9 +2177,10 @@ Expected tail: `48 89 C7 48 8B 47 08'."
                           (set-buffer-multibyte nil)
                           (insert-file-contents-literally path)
                           (buffer-string)))
-                 (needle (unibyte-string #x48 #x89 #xC7
-                                         #x48 #x8B #x47 #x08)))
-            (should (string-search needle bytes))))
+                 (mov-rdi (unibyte-string #x48 #x89 #xC7))
+                 (mov-pay (unibyte-string #x48 #x8B #x47 #x08)))
+            (should (string-search mov-rdi bytes))
+            (should (string-search mov-pay bytes))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-aot-compiler/sexp-int-make-emit-bytes ()
