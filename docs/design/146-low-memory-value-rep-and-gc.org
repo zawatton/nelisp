@@ -87,6 +87,34 @@ flag-day の幅を狭める。
 7. *int payload*: =sexp-int-unwrap= → imm の =(ash v -2)=。算術/比較/index の int を全て imm 経由に。
 8. build → 4438 緑化 → full load peak 実測（Nil/Int slot 消滅で大幅減を期待）。
 
+*** 3.0.1 実装進捗 + 設計精緻化（2026-06-06）
+*完了（緑・commit）*:
+- step 1 foundation: helper 6個（=nl_val_is_imm/nl_val_int(sar)/nl_val_tag/nl_imm_int/nl_imm_nil/nl_imm_t=、
+  commit bec00593/4e975325）。=ash= は arena.o で unresolved、=shl=/=sar= が AOT shift IR(opcode 67) の primitive。
+- *step 2 完了（commit 9404ffff）*: =emit-sexp-tag= を *inline で immediate 対応*（198サイト一括）。
+  rax/rdi のみ使用（clobber 無し）、label は buf offset で一意化。*desugar→extern-call nl_val_tag は不可*
+  （standalone smoke が arena.o を link せず unresolved → macos-selfhost fail）ので inline。後方互換（immediate 未産出ゆえ
+  常に slot path）。4438 緑（process flake のみ）、=sexp-tag-emit-bytes= test 更新済。
+
+*設計精緻化 = two-form model（実装中に判明）*:
+- *値は 2 形態*: (A) *passing form = word*（register/transient。immediate は inline、heap は 32B Sexp slot への
+  8-align ポインタ）、(B) *storage form = 32B Sexp*（box の car/cdr/vector slot/root slot。tag@0+payload@8、現状不変）。
+- *immediate word が現れるのは「構築された値」*（eval が産む Nil/T/Int 結果）。*box から load した値は slot-ポインタの
+  まま*（=nl_cons_car_ptr= が返す box+0 等。=sexp-tag= が slot path で正しく読む）。= step 2 はこの両方を扱える。
+- *境界変換*: =clone_into(word, box_slot)= で *store 時に word→32B Sexp 変換*（imm は tag+payload 書込み、heap は
+  32B copy）。GC は box storage = 32B Sexp を見る（不変）。*root slot* が word を持つ場合のみ GC root marking が
+  imm-aware 必要。
+
+*残り（3-7 = ABI 背骨に密結合、要 two-form 境界実装）*:
+- step 4 *eval ABI = 値を word で返す*（=nelisp_eval_call= の out-slot 廃止 → register 返却）が *背骨*。
+  これが per-value 透過 slot（gdb 最大 garbage = val_slot/out 等）を消す本体だが、*全 eval caller を変更する pervasive 変更*。
+- step 3 構築（=emit-sexp-int-make=/=nl_logic_write_nil_slot= 系）→ word 返却。
+- step 6 =nl_sci_dispatch= clone: imm word → storage Sexp 変換。 step 7 =emit-sexp-int-unwrap= imm-aware（=sar=）。
+- step 5 GC root marking: root が word を持つなら imm skip。box children は Sexp のまま不変。
+- = *ABI(step 4) は eval の値返却規約 + 全 caller の coupled 変更*。step 2(read)・helper は緑で着地済、
+  *次セッションは step 4 の ABI 設計（word 返却 + error channel = signal flag 既存）から*。
+  worst-of: eval の i64 戻りは error code。word 返却には error を signal flag(268435472) 経由にする要。
+
 ** 3.1 現状の値渡し ABI（調査A の crux）
 - 全 Sexp は 32B、*ポインタで渡す*。中間値ごとに =(alloc-bytes 32 8)=。AOT codegen は2層を持つ:
   (1) integer scalar（=imm=/=ref=/=arith= = rax の 64bit 整数）、(2) Sexp-slot（32B memory をポインタ参照）。
