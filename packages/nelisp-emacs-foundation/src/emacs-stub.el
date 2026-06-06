@@ -1235,6 +1235,33 @@ Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
     "Stub: no terminal bell in the standalone reader."
     (ignore arg) nil))
 
+;;;; --- character / arithmetic helpers (vendor-coverage 2026-06-07 batch3) ---
+;; Re-provided in the substrate because the current standalone reader no longer
+;; bakes them in; `unless fboundp' keeps them inert when the reader does.
+
+(unless (fboundp 'characterp)
+  (defun characterp (object)
+    "Return non-nil if OBJECT is a valid character code point (0..#x3FFFFF)."
+    (and (integerp object) (>= object 0) (<= object #x3FFFFF))))
+
+(unless (fboundp 'expt)
+  (defun expt (base exponent)
+    "Return BASE raised to EXPONENT.
+Standalone supports an integer EXPONENT (the common case, e.g.
+\(expt 2 N)) by repeated multiplication; a negative integer EXPONENT
+yields a float reciprocal.  A non-integer EXPONENT is unsupported and
+degrades to 1 (no pow primitive in the standalone reader)."
+    (cond
+     ((and (integerp exponent) (>= exponent 0))
+      (let ((acc 1) (i 0))
+        (while (< i exponent) (setq acc (* acc base)) (setq i (1+ i)))
+        acc))
+     ((integerp exponent)
+      (let ((acc 1) (i 0) (n (- exponent)))
+        (while (< i n) (setq acc (* acc base)) (setq i (1+ i)))
+        (/ 1.0 acc)))
+     (t 1))))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
