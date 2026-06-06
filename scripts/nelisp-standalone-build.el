@@ -1068,7 +1068,7 @@ addressing by a runtime base, never by a fixed reservation."
                          (if (and (consp form)
                                   (eq (car form) 'defun)
                                   (memq (cadr form)
-                                        '(nl_os_alloc_chunk nl_os_alloc_fail)))
+                                        '(nl_os_alloc_chunk nl_os_free_chunk nl_os_alloc_fail)))
                              (cl-find-if (lambda (chunk-form)
                                            (eq (cadr chunk-form) (cadr form)))
                                          chunk-forms)
