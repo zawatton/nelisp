@@ -115,6 +115,33 @@ flag-day の幅を狭める。
   *次セッションは step 4 の ABI 設計（word 返却 + error channel = signal flag 既存）から*。
   worst-of: eval の i64 戻りは error code。word 返却には error を signal flag(268435472) 経由にする要。
 
+*** 3.0.2 consumer 側完了 + producer cut 計画（2026-06-06 続き）
+*consumer 側 = 全て immediate 対応・緑・commit 済*:
+- step 2 =emit-sexp-tag=（9404ffff、198 tag-read）。
+- step 6 =nl_sexp_clone_into=（893beef0、word→storage-Sexp 変換 =nl_sci_store_imm=）。
+- step 7 =emit-sexp-int-unwrap=（21108e63、imm は =(sar V 2)=、=sar-rax-cl= 使用）。
+- = *値が word でも slot-ptr でも全 consumer が low-bit dispatch で正しく扱う*。
+- *鍵の洞察 = mixed representation 可*: consumer が両対応ゆえ、producer を *一度に全部でなく段階的に* flip 可能
+  （word を産む constructor と slot を産む constructor が共存できる）。残り cut のリスクを大幅に下げる。
+
+*producer cut（残り step 3/4/5/8）の正確な手順*:
+- *難所 = slot-side-effect vs return-value*: =sexp-int-make(slot n)= は slot 書込み(side effect)＋slot 返却。
+  caller は両方を使う。word 返却に変えると slot を使う caller が壊れる。→ *新 form =(sexp-int-imm N)= を追加*
+  （=mov rax,(N<<2)|1=、slot 無し）し、*return-value を使う site だけ*段階変換 + その scratch alloc 除去。
+- *Nil/T も同様*: =nl_logic_write_nil_slot= 等は return 0 で slot side-effect → 直接 flip 不可。
+  新 =(sexp-nil-imm)=/=(sexp-t-imm)= form 追加 + sub-expression site を変換。
+- *本丸の win = eval ABI*: 支配的 garbage（gdb: Nil 712K / Symbol 747K の transient val_slot/out）は eval が
+  結果を out-slot へ書く規約由来。これを消すには =nelisp_eval_call= が *値を word で返す*（out-slot 廃止）必要。
+  だが eval は再帰的（内部 sub-evaluator が全て out-slot 書込み）→ *pervasive な core 再帰変更*。
+  error は signal flag(268435472) 経由へ。これが step 4 の本体で最大の難所。
+- *GC root（step 5）*: out 等 root が word を持つようになったら root marking を imm-aware に（=nl_val_is_imm= で skip）。
+  box children は storage-Sexp のまま不変（clone が word→Sexp 変換するため）。
+- *step 8 measure*: Nil immediate（eval ABI）が入って初めて大幅減。int-only/部分 cut は gdb 上 Nil/Symbol 支配ゆえ
+  peak への効果は小さい見込み。
+- = *安全な進め方*: (1) =sexp-{int,nil,t}-imm= form 追加（additive 緑）→ (2) return-value site を段階変換（mixed 可）→
+  (3) eval ABI を word 返却に（最難・専用集中）→ (4) GC root imm-aware → (5) measure。
+  *本セッションは consumer 側 + helper（step 1,2,6,7）を全緑で着地*。producer cut は eval core の集中作業。
+
 ** 3.1 現状の値渡し ABI（調査A の crux）
 - 全 Sexp は 32B、*ポインタで渡す*。中間値ごとに =(alloc-bytes 32 8)=。AOT codegen は2層を持つ:
   (1) integer scalar（=imm=/=ref=/=arith= = rax の 64bit 整数）、(2) Sexp-slot（32B memory をポインタ参照）。
