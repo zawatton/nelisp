@@ -3173,19 +3173,25 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
     (defun nl_eval_arg_list_walk (cur_ptr env_ptr acc_slot)
       (if (= (ptr-read-u64 cur_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr cur_ptr)) (cdr_ptr (nl_cons_cdr_ptr cur_ptr))
-                 (eval_slot (alloc-bytes 32 8)) (rest_slot (alloc-bytes 32 8)))
-            (let* ((rc_eval (nelisp_eval_call car_ptr env_ptr eval_slot)))
-              (if (= rc_eval 0)
-                  (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
-                    (if (= rc_rest 0)
-                        ;; Doc 146 §3.0 step 3: load the evaluated arg + rest
-                        ;; into value WORDS (immediate for Nil/Int results) and
-                        ;; build the cons element from words; cons_construct is
-                        ;; immediate-aware.  Heap results load back to their slot
-                        ;; pointer, so this is behaviour-preserving for them.
-                        (seq (nelisp_cons_construct (nl_val_load eval_slot) (nl_val_load rest_slot) acc_slot) 0)
-                      1))
-                1)))
+                 (rest_slot (alloc-bytes 32 8)))
+            ;; Doc 146 §3.0 step 4: a self-eval immediate literal arg (tag<4:
+            ;; Nil/T/Int/Float) needs NO eval and NO 32-byte eval_slot -- load it
+            ;; straight to a value word.  This eliminates the per-literal-arg slot
+            ;; (the producer-side memory win on the hottest path).  Non-literal
+            ;; args keep the eval-into-slot + rc check unchanged.
+            (if (< (nl_val_tag car_ptr) 4)
+                (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
+                  (if (= rc_rest 0)
+                      (seq (nelisp_cons_construct (nl_val_load car_ptr) (nl_val_load rest_slot) acc_slot) 0)
+                    1))
+              (let* ((eval_slot (alloc-bytes 32 8))
+                     (rc_eval (nelisp_eval_call car_ptr env_ptr eval_slot)))
+                (if (= rc_eval 0)
+                    (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
+                      (if (= rc_rest 0)
+                          (seq (nelisp_cons_construct (nl_val_load eval_slot) (nl_val_load rest_slot) acc_slot) 0)
+                        1))
+                  1))))
         (nl_write_nil_slot acc_slot)))
     (defun nl_eval_arg_list (args_ptr env out_list_slot)
       (let* ((env_ptr env)) (nl_eval_arg_list_walk args_ptr env_ptr out_list_slot)))))
