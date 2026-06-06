@@ -536,6 +536,108 @@ regular file."
   (defun preceding-char ()
     "Character before point as a number, or 0 at start of the fallback buffer."
     (or (char-before) 0)))
+
+;; --- column / line geometry on the fallback buffer (vendor-coverage batch3) --
+;; Self-contained on the buffer content string + point (no dependency on the
+;; other line-builtins layers), honouring tab stops.
+
+(defun files--tab-width ()
+  "Effective tab width for column math (default 8)."
+  (if (and (boundp 'tab-width) (integerp tab-width) (> tab-width 0))
+      tab-width
+    8))
+
+(defun files--bol-position (&optional pos)
+  "Return the 1-indexed beginning-of-line position for POS (or point)."
+  (let* ((content (files--buffer-string-value))
+         (p (files--clip-point (or pos (files--buffer-point-value))))
+         (i (1- p)))                    ; 0-indexed char at/after point
+    (while (and (> i 0) (not (eq (aref content (1- i)) ?\n)))
+      (setq i (1- i)))
+    (1+ i)))
+
+(defun files--column-at (pos)
+  "Return the zero-based display column of POS honouring tab stops."
+  (let* ((content (files--buffer-string-value))
+         (bol (1- (files--bol-position pos)))   ; 0-indexed BOL
+         (end (1- (files--clip-point pos)))     ; 0-indexed target
+         (tw (files--tab-width))
+         (col 0)
+         (i bol))
+    (while (< i end)
+      (setq col (if (eq (aref content i) ?\t)
+                    (* (1+ (/ col tw)) tw)
+                  (1+ col)))
+      (setq i (1+ i)))
+    col))
+
+(when (files--install-fallback-function-p 'current-indentation)
+  (defun current-indentation ()
+    "Return the indentation column of the current line (leading whitespace)."
+    (let* ((content (files--buffer-string-value))
+           (len (files--string-length content))
+           (tw (files--tab-width))
+           (i (1- (files--bol-position)))       ; 0-indexed BOL
+           (col 0))
+      (while (and (< i len)
+                  (let ((ch (aref content i))) (or (eq ch ?\s) (eq ch ?\t))))
+        (setq col (if (eq (aref content i) ?\t)
+                      (* (1+ (/ col tw)) tw)
+                    (1+ col)))
+        (setq i (1+ i)))
+      col)))
+
+(when (files--install-fallback-function-p 'move-to-column)
+  (defun move-to-column (column &optional force)
+    "Move point to COLUMN on the current line; return the column reached.
+With FORCE t, pad a too-short line with spaces to reach COLUMN."
+    (let* ((content (files--buffer-string-value))
+           (len (files--string-length content))
+           (tw (files--tab-width))
+           (pos (1- (files--bol-position)))      ; 0-indexed scan cursor
+           (col 0))
+      (while (and (< pos len)
+                  (< col column)
+                  (not (eq (aref content pos) ?\n)))
+        (setq col (if (eq (aref content pos) ?\t)
+                      (* (1+ (/ col tw)) tw)
+                    (1+ col)))
+        (setq pos (1+ pos)))
+      (files--set-buffer-point-value (1+ pos))
+      (when (and (eq force t) (< col column))
+        (let ((n (- column col)))
+          (when (> n 0)
+            (insert (make-string n ?\s))
+            (setq col column))))
+      col)))
+
+(when (files--install-fallback-function-p 'indent-to)
+  (defun indent-to (column &optional minimum)
+    "Indent from point to COLUMN with spaces, at least MINIMUM (default 0).
+Return the column reached."
+    (let* ((cur (files--column-at (files--buffer-point-value)))
+           (target (max column (+ cur (max 0 (or minimum 0)))))
+           (n (- target cur)))
+      (when (> n 0)
+        (insert (make-string n ?\s)))
+      target)))
+
+(when (files--install-fallback-function-p 'count-lines)
+  (defun count-lines (start end)
+    "Return the number of lines between START and END (Emacs semantics)."
+    (let* ((content (files--buffer-string-value))
+           (len (files--string-length content))
+           (lo (max 0 (1- (min start end))))     ; 0-indexed first char
+           (hi (min len (1- (max start end))))   ; 0-indexed end (exclusive)
+           (n 0)
+           (i lo))
+      (while (< i hi)
+        (when (eq (aref content i) ?\n) (setq n (1+ n)))
+        (setq i (1+ i)))
+      (if (and (/= start end) (> hi lo) (not (eq (aref content (1- hi)) ?\n)))
+          (1+ n)
+        n))))
+
 (when (files--install-fallback-function-p 'file-directory-p)
   (defun file-directory-p (filename)
     "Heuristic directory test for the standalone reader (no stat syscall): a
