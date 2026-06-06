@@ -142,6 +142,23 @@ flag-day の幅を狭める。
   (3) eval ABI を word 返却に（最難・専用集中）→ (4) GC root imm-aware → (5) measure。
   *本セッションは consumer 側 + helper（step 1,2,6,7）を全緑で着地*。producer cut は eval core の集中作業。
 
+*** 3.0.5 *測定で証明された決定的結論*（2026-06-06）: peak は reserved 駆動、tagged-word では下がらない
+producer を実装し immediate を実 eval 経路で産出（commit 2c1ebe4d、arg-eval、4438 緑）+ 支配的 garbage の
+symentry sym_slot を共有化（commit 40ab4d17、755K→1、4438 緑）したが、*いずれも peak RSS 1.80GB を 1MB も動かさない*。
+gdb + 実測で原因を確定:
+- *peak = RESERVED（mmap chunk の high-water-mark）であって garbage COUNT ではない*。BT40 の sym_slot/value_slot は
+  各 GC で reclaim され *reuse* されるため、消しても free-list が空くだけで chunk reservation は縮まない。
+- *trigger も floor 到達*: 512→64MB は peak 2.60→1.80GB に効いた（window garbage 減→reserved 成長減）が、
+  *64→32MB は無変化*（1.80GB が non-moving GC の floor）。
+- = *garbage を「減らす」全手法（tagged-word value slot 化 / symentry 共有 / trigger）は peak を下げない*。
+  peak（reserved）を下げるには *chunk を物理的に返す*しかない:
+  1. 空 chunk munmap — fragmentation で blocked（§8.18.6、tiny live が全 chunk に散在）
+  2. *compacting (moving) GC*（§5）— live を少数 chunk へ寄せて残りを munmap。*これが唯一 peak を下げる道*。
+  3. per-binding 11-slot scaffolding vector の除去（env 再設計）で reserved 需要そのものを減らす。
+- = *この発見が本セッション最大の成果*: 目標の「tagged-word で peak 削減」という前提を *実測で反証*。
+  immediate 機構は完全動作（検証済）だが peak には無効。*数百MB への道は §5 の moving GC（reserved を返す）一択*。
+  tagged-word/consumer 基盤は green で保全（将来の representation 用途・GC効率に有用）。
+
 *** 3.0.3 *正確な残 scope（2026-06-06 訂正）*: consumer 側は未完、producer は 116 site
 着手調査で *consumer 側が sexp-tag だけでは不完全*と判明（earlier の「consumer 完了」を訂正）:
 - *codegen の raw tag-read（=movzx byte [reg]=、nl_val_tag 非経由）*: =emit-cons-null-p=(:12197) /
