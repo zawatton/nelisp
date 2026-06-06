@@ -494,3 +494,358 @@ char-table 後、org.el は次の blocker で止まる。*実エラーを surfac
   list/repr する等）は GC root に乗らない中間値で corruption しうる。real load は無問題だが、留意。
 - 低メモリ（10GB→）の本丸 = over-retention（residue ~67x）。gdb 等が使える環境で eval の reachable
   多重保持を追うのが次。
+
+** 8.14 計測による精緻化: items 1+2 は同一問題 / exit 機構 / item 3 の真機構（2026-06-06, read-only 計測）
+§8.13 の三残課題（10GB over-retention / org-cycle #43 / segregated caveat）を、reader を *一切改変せず*
+（=build/nelisp-experiment= の既存ビルトイン =nelisp--arena-stats= 計測のみ）追い込んだ結果。
+
+*** baseline 再現（§8.13 と一致）
+- =build/nelisp-experiment --load /tmp/full-prog.el=（full 319 vendor-load）= *rc=0・34s・peak 9.88GB*、
+  status=*start:org-cycle.el*、stdout 末尾 = =org-cycle-optimize-window-after-visibility-change=（org-cycle.el の
+  最後から2番目の defun、=provide= は 4 フォーム後）。
+
+*** 確定1: org-cycle #43 停止は「メモリ天井」= item 1 と item 2 は *同一問題*
+- 当環境は *メモリ制限なし*（=ulimit -v unlimited=、cgroup memory.max 無し、MemTotal 64GB / *MemAvailable 49GB*、
+  overcommit heuristic）。それでも *9.88GB で rc=0 終了*（OOM kill なら rc=137、segfault なら 139 のはず）。
+- exit 機構を特定: =nl_os_alloc_fail=（Linux, build script 937-938 行）は =(syscall-direct 60 88 ...)= = *exit(88)*。
+  もし chunk mmap 失敗なら rc=88 のはず。だが実測 *rc=0* → *mmap/chunk-alloc 失敗ではない*。
+- 真機構: =bf_load_eval_loop=（build script 2218-2238 行）は =nelisp_reader_parse_one= が prc≠1 を返すと
+  =(setq more 0)= で *クリーンに 0 終了*。= *~9.88GB で次フォームのパーサ確保が滞り、ローダが EOF とみなして
+  exit 0*。49GB 空きでも mmap せず止まる = arena が *reachable live* で詰まって次の確保に行き詰まる地点。
+- 検証: =head -38988 + sentinel tail= で sentinel "REACHED-TAIL" は書けた（38988 全フォーム load 成功・9.88GB
+  到達）が、直後の =(nelisp--arena-stats)= の 12 回 =alloc-bytes= で rc=0 終了（census 未書込・=(exit 7)= 未到達）。
+  = full load の form 38989 も同じ ~9.88GB の確保で詰まる。停止は *特定フォーム依存でなく天井依存*（§8.6 と整合）。
+- *結論*: org-cycle #43 を越えるには *over-retention を下げて天井に届かなくする*しかない。新 primitive 不足ではない。
+
+*** 確定2: census 3 点（=nelisp--arena-stats=、reuse-safe）
+| checkpoint | used | live-after-gc | collect-disabled | reuse-disabled | chunks | reserved |
+|------------+------+---------------+------------------+----------------+--------+----------|
+| head -32100 (emoji 前) | 3.68GB | 0 | *0* | 0 | 53 | 3.5GiB |
+| head -35000 | 5.80GB | 0 | *0* | 0 | 85 | 5.5GiB |
+| head -37595 (org 直前) | 8.70GB | 0 | *0* | 0 | 128 | 8.19GiB |
+- *GC は有効*（collect-disabled=0）かつ free-list-head 非ゼロ（GC が per-form ゴミを解放 → reuse → §8.13 の
+  「segregated は速い」理由）。だが *used ≈ reserved ≈ フォーム数に線形*に単調増加 = *保持された定義群（live）は
+  回収不能*。live-after-gc=0 は telemetry 未配線（実回収は survive/freed @268435640/268435632 が担う）。
+- = 10GB は *reachable over-retention* で確定（§8.13 を計測で裏付け）。GC は transient garbage を回収して reuse
+  で速度を稼ぐが、*retained definitions* には触れない。
+
+*** 確定3: over-retention の主因 = no-interning（+ data-file は char-table 表現）
+- reader は *シンボル interning 無し*: =bf_eq2=（build script 2303-2306 行）= シンボル等価を *名前比較*
+  （"no interning so name == identity"）。=intern= / =make-symbol=（2484 行）は共に =nl_alloc_symbol= で
+  *毎回新規 Symbol box + name を割当*（obarray 無し）。
+- load 時は *defun body は評価されない*（fset で格納されるのみ）ので in-place macro-cache（§8.7 訂正: 実際は
+  2927-2943 行で in-place 上書きする）は *主に top-level マクロ*にしか効かず、retention の主役ではない。
+  retained の主役 = *格納された定義群の、un-interned で重複したシンボル*。
+- 内訳は *混在*（型別 census 未実施のため定量は次の課題）:
+  - core libs（0..32100、3.68GB / genuine 推定 ~30MB ≈ *~120x*）= シンボル/構造の重複（no-interning 主因、
+    interning が最も効く）。
+  - data files（emoji-labels.el / idna-mapping.el、+5GB）= *char-table 表現*（nemacs substrate の tagged vector
+    + 疎 alist）が実 Emacs の密 char-table より非コンパクト。interning だけでは下がらない。
+
+*** 確定4: item 3 CAVEAT の *真機構*（§8.13 の "less forgiving" を具体化）
+- corruption は「reuse がブロックを再配布」ではなく、*sweep が off-root 中間値のブロックを free する際に
+  =nl_gc_free_block_link=（1137-1140 行）が free-list next ポインタを =hdr+16=（= obj+0 = payload 先頭）に
+  *上書き*する*こと。= reuse OFF でも起きる。正しい安全弁は *reuse-disable ではなく collect-disable*
+  （=268435616=1=）。
+- 再現: 大きいヒープ（>3GB）で「list を組んで repr する」程度の診断を追加フォームとして評価すると、フォーム境界
+  GC が発火し off-root の中間 list を sweep → segfault（reuse/collect 無効化の有無に依らず、collect 有効なら）。
+  full vendor load は *各フォームが単一の =nelisp--eval-source-string= で、フォーム境界に live 中間値が無い*ため
+  踏まない（§8.13 "real load は無問題" の機構的説明）。
+- *診断作法（確定版）*: census/arena 計測コードは (a) =268435616=1= で collect を切る か (b) 中間値を root に
+  載せる。=nelisp--arena-stats= 単体は *1 フォーム内完結*でフォーム境界 GC を挟まないので安全。
+
+*** 副産物バグ: インタプリタ経路の =ptr-read-u64= / =ptr-write-u64= が segfault
+- =build/nelisp-experiment --eval "(ptr-read-u64 268435456 0)"= = *rc=139*（番地に依らず）。
+  Doc 08 §2 の「interpreter で直接呼べる FFI prim」は *compile-time grammar 経路*の話で、=--eval= /
+  =nelisp--eval-source-string= の解釈実行では未配線（wf_argval 経路の不整合の疑い）。
+- = 計測は raw ptr-read を避け *=nelisp--arena-stats= ビルトイン経由*で行うこと（本節の census は全てこれ）。
+
+*** 環境メモ（§8.13 から変化）
+- *valgrind 3.24.0 は利用可*（gdb / perf / strace は不可、ptrace_scope=0、core dump 可）。
+  item 1 の "gdb 等が使える環境" の代替として =valgrind massif --pages-as-heap= で arena ページを profile 可能
+  （ただし box 型単位の attribution は不可 = reader-internal walker が必要）。
+
+*** 次の一手（優先順、いずれも reader 改変 = dev/nelisp、要 user 判断）
+1. *型別 box census*: =nl_gc_sweep_chunks=（1206-1212 行）を雛形に、tag(box+0 の u8)別に BLOCK_TOTAL を集計する
+   =bf_box_census= ビルトインを追加 → collect 無効で checkpoint 実行 → symbol/cons/string/vector/char-table の
+   内訳を確定（interning が効く範囲を定量）。可逆（backup =/tmp/nelisp-standalone-build.ADOPTED.el= から復元、
+   =git checkout= 禁止 = uncommitted な user の ptr-call を消すため）。
+2. *symbol interning（obarray）*: =nl_alloc_symbol= の前段に name→Symbol のハッシュ表 lookup を入れ、同名は
+   単一 box を共有。=bf_eq2= は名前比較のままで可（pointer-eq へ移行も可）。core-lib 重複の本丸。eq 意味論に
+   影響するため慎重に（ERT 全 green + load-replay 前進で検証）。
+3. *char-table 表現のコンパクト化*: data-file（emoji/idna）の substrate 表現を密構造へ（item 1 の data 側）。
+4. （補助）live-after-gc telemetry 配線 + arena-stats に freed/survive を追加 + インタプリタ ptr-read-u64 修正。
+- backup: =git diff scripts/nelisp-standalone-build.el= の唯一の uncommitted は *user の ptr-call*（GC-trigger fix +
+  segregated は commit =8a530d5e= 済）。診断 revert は *必ず backup 復元*（=git checkout= は ptr-call を消す）。
+
+** 8.15 サイズ別 census の結果: 本丸は *per-form parse pool*（2026-06-06、interning にあらず）
+§8.14 の「型別 census」を実施（=bf_size_census= ビルトインを追加 = BLOCK_TOTAL ヒストグラム。box は型タグ非保持
+のため bottom-up walk はサイズ別が限界。reversible 診断、backup から復元前提）。*結論は interning 仮説を覆した*。
+
+*** census 機構
+- =nl_gc_sweep_chunks= を雛形に全 chunk を header walk し、BLOCK_TOTAL をサイズ帯別に集計する =bf_size_census=
+  （=scripts/nelisp-standalone-build.el= の bf_arena_stats 直後）を追加。アキュムレータは alloc-bytes の 64B block
+  （固定番地を避け §8.7 wild-write 回避）。dispatch + name list(3580) に =nelisp--size-census= 登録。
+- 空アリーナで total-nonfree が =nelisp--arena-stats= の used と一致（cross-validate OK）。
+
+*** 計測結果（checkpoint 別、単位 GB、割合は total-nonfree 比）
+| 帯 | head -32100 | head -37595 |
+|----+-------------+-------------|
+| total-nonfree | 3.48 | 8.55 |
+| free | 0.20 | 0.15 |
+| cons (BT=88) | 0.069 *2%* | 0.102 *1%* |
+| le256 | 1.46 *42%* | 2.49 *29%* |
+| 257..4K | 0.058 | 0.088 |
+| 4K..256K | 0.001 | 0.003 |
+| *256K..2M* | *1.89 (54%)* | *5.86 (68%)* |
+| >2M | 0.008 | 0.008 |
+- 256K..2M 帯のブロックは *正確に 1,048,592 B*（boot の 1 個と一致）= =(vector-make 32768 pool)= の parse pool。
+  37595 で 5.86GB / 1.048MB ≈ *~5587 個の 1MB プールが retained*。
+
+*** 確定した真因（cons でも symbol でもない）
+- =bf_eval_source_string=（build script 2358-2364 行）が *=nelisp--eval-source-string= 呼出ごと*に
+  =(vector-make 32768 pool)= = *32768 slot ≈ 1MB の parse pool* を確保。
+- pool は GC ルート（1238 行「slot-pool vector」）。=nelisp_reader_parse_one=（nelisp core 側定義、本 script 外）は
+  *パースしたフォームのノードを pool スロットに確保*する（cons(BT=88) が僅か 1-2% なのはこのため = フォームの
+  cons は個別 box でなく pool 内）。
+- defun/defvar が body/value を fset/格納 → *pool 全体（1MB、大半は空）が到達可能で残る*。
+  free=0.15GB（GC は走るが解放できない = 参照されている）が裏付け。
+- = *典型的な小フォームが丸ごと ~1MB プールを pin* し、これが 54-68%（最大 5.86GB）。
+  *interning が効くのは le256 帯（~2.5GB、symbol 名バッファ等）で副次的*。本丸は parse pool。
+
+*** 修正方向（parse 経路を触る = 要慎重設計）
+1. *pool right-size*: =(vector-make 32768 pool)= を form ごとに縮小。ただし *ノード数はソース長に単純比例しない*
+   （密な単文字アトムのリストは node > char）。emoji/idna の dense table を壊さない上界が必要 = parse_one の
+   slot/char 比の確認が前提。安易な =min(32768, k*srclen)= は dense form で parse 失敗のリスク。
+2. *parse 後 compact / copy-out*: フォームを pool から right-sized heap へ deep-copy してから格納 → pool を
+   transient 化（GC 回収可）。cons(BT=88) は増えるが 1MB→数KB/form で純減。fset/格納の意味論変更に注意。
+3. *grow-on-demand pool*: parse_one を「溢れたら拡張」に。core(parse_one) 改変。
+- いずれも =nelisp_reader_parse_one=（dev/nelisp/lisp 側、本 script 外）の pool スロット確保規約の把握が前提。
+- 効果見積: 256K..2M 帯（5.86GB@37595）を form 実使用量（典型 数十KB）まで縮めれば *全体 8.55GB → ~3GB 以下*が
+  見込め、org-cycle #43 の天井（~9.9GB）を大きく下回り *load 前進*が期待できる。
+
+*** 診断コード（再現用、現在 build/nelisp-experiment に同梱中。restore 時は backup から）
+- =bf_size_census= 一式（block/step/chunk/chunks/entry）+ dispatch =((:lit "nelisp--size-census") . (bf_size_census out))=
+  + name list へ =nelisp--size-census= 追加。呼出: =--load= 末尾に
+  =(nl-write-file "/tmp/sc.txt" (nelisp--repr (nelisp--size-census)))= =(exit 7)=（単一フォームで境界 GC を挟まず安全）。
+- *restore*: =cp /tmp/nelisp-standalone-build.ADOPTED.el scripts/nelisp-standalone-build.el= → =make standalone-reader=
+  → =cp target/nelisp ../nelisp-emacs/build/nelisp-experiment=（=git checkout= は user の ptr-call を消すので不可）。
+
+** 8.16 検証: parse pool right-size を実装 → 9.88GB→3.4GB / 3x 高速（2026-06-06、SHIPPED prototype）
+§8.15 の修正方向1（pool right-size）を実装・検証。*予測通りの大勝利*。次の本丸 = symbol interning も特定。
+
+*** 実装（dev/nelisp、uncommitted prototype）
+- =bf_eval_source_string=（scripts/nelisp-standalone-build.el）の =(vector-make 32768 pool)= を
+  =(vector-make (let ((n (* 4 (str-len src)))) (if (< n 256) 256 (if (> n 32768) 32768 n))) pool)= へ。
+  = parse pool を *ソース長 ×4*（node 数の安全上界、各 node ≥1 char + slot overhead 余裕）に right-size。
+  *上限 32768 据置 → 既存で通る form は必ず通る（parse 退行なし）*。floor 256。
+- =bf_size_census= 診断ビルトインは同梱のまま（§8.15）。
+
+*** 検証結果（full 319 vendor-load = /tmp/full-prog.el）
+| 指標 | 修正前 | *4x* | 8x | 2x |
+|------+--------+------+----+----|
+| full load peak RSS | 9.88GB | *3.41GB* | 3.80GB | 3.27GB |
+| 所要 | 34s | *11s* | 11s | 11s |
+| 停止点 | org-cycle (38988) | *同左* | 同左 | 同左 |
+- 全倍率で停止点不変（=org-cycle-optimize=、form 38988）= *parse 退行ゼロ*。head -38988 + sentinel = REACHED-TAIL
+  （1-38988 全 load 成功）。4x→2x は +0.14GB のみ（pool 無駄はもう小さい）。*4x 採用*（安全マージン）。
+- census@37595: total 8.55GB→2.45GB。*b256k-2m（1MB pool 帯）5.86GB→0.053GB（-99%）*。
+  b4k-256k 0.003→0.20GB（right-sized pool がここへ）。
+
+*** 重要な更新: org-cycle #43 は memory ではなく *form 38989 の真の blocker* だった
+- 修正後も *3.41GB（天井ではない）で form 38989（=org-cycle-show-empty-lines= defun）停止*。
+  head -38988 は通り、head -38989 で止まる（bisect 確定）。= §8.6/§8.13 の「org-cycle = 累積メモリ枯渇」は
+  *誤り*で、9.88GB は pool 肥大の偶発値。停止は常に form 38989 の実 blocker（parse/eval、要 §4 法で特定）。
+- = *item 1（memory）と item 2（org-cycle）は別問題*に分離した（§8.14 の「同一」結論を訂正）。
+  item 2 は memory が天井でなくなった今、§4 reader-patch で実エラーを surface して特定するのが次。
+
+*** 次の本丸 = symbol-name interning（残り le256 = 2.0GB を数百MB級へ）
+- census@37595(4x): *le256 = 2.04GB（total の 83%）が支配的*。これは =nl_alloc_symbol=
+  （core =lisp/nelisp-cc-nlstr-direct-ops.el:205-212=）が *シンボル出現ごとに name char-buf を新規 alloc* する重複
+  （~6400万バッファ規模）。
+- *eq 安全*: =bf_eq2=（2374 行）は symbol を *名前比較*（=symbol-eq=）。= name buffer を共有しても eq 不変 →
+  interning は純粋なメモリ最適化。
+- 実装案: =nl_alloc_symbol_pos= に *name→buf のグローバル intern 表*（open-addressing hash）を入れ、hit なら既存
+  buf を指す Sexp を書く（alloc 無し）、miss なら alloc + 挿入。
+  - 制約: core unit は *AOT no-let*（alloc/ptr-read 値を let 束縛不可、line 39）→ hash 探索は
+    =nl_alloc_str_copy_loop= 同様の *tail-recursive helper* で書く。表は boot 期に 1 回 alloc（watermark 下 =
+    permanent generation、GC 非回収）。hot path なので衝突処理を単純に。
+  - 見積: le256 2.04GB → unique symbol（~数万）× ~32B ≈ *数十MB* → total ~0.5-1GB。さらに pool compaction
+    （form を pool から right-sized heap へ copy-out → pool 完全 transient 化）+ free(0.2GB)回収で *数百MB 級*（実 Emacs 相当）射程。
+- リスク: core / hot path / no-let hash = 慎重実装（segfault 注意、backup から可逆、load-smoke + full load + eq smoke で検証）。
+
+*** 現在の build/nelisp-experiment
+- = GC-trigger-fix + segregated（commit 8a530d5e）+ user ptr-call（uncommitted）+ *pool right-size 4x*（uncommitted prototype）
+  + bf_size_census（診断、uncommitted）。full load 3.41GB / 11s / form 38989 停止。
+
+** 8.17 symbol-name interning 実装 → 3.41GB→2.86GB。残りは genuine AST(数百MBは表現変更が必要)
+§8.16 の「le256 = symbol 名」仮説を実装で検証 → *部分的に正しく、本体は別*と判明。interning は SHIPPED。
+
+*** 実装（dev/nelisp commit afbb23aa、eq安全・4438 PASS）
+- =nl_alloc_symbol_pos=（core =lisp/nelisp-cc-nlstr-direct-ops.el=）に name→buf の open-addressing
+  intern 表（2^20 slot）。hit なら既存 buf 共有（alloc 無）、miss なら alloc+挿入。tail-recursive
+  hash/probe/eq helper（AOT no-let 準拠）。
+- 表+buffer は *別 64MiB mmap 領域*（=nl_intern_region_init= が nl_arena_init で setup、base@控制slot +832/
+  bump@+840 = rebase span 内ゆえ nl_arena_base 相対化）。*chunk ではない → GC 非走査*、interned buf は永続・
+  mark/sweep 不可視。GC 変更ゼロ。
+- *eq 安全*: =bf_eq2= は名前比較ゆえ buf 共有で eq 不変。検証: =(eq 'a 'a)=t / =(eq 'a 'b)=nil /
+  =(eq (intern "x")(intern "x"))=t / =(eq 'abc (intern "abc"))=t（パーサも intern 経路）。
+
+*** 結果（fine census @37595）
+- full vendor-load peak: *3.41GB → 2.86GB*。le256 2.04GB→1.74GB（重複名 ~300MB 削減）。
+  *unique 名は僅か ~1MB*（intern-region-used 17MB = 表16MB+buf1MB）。
+- *重要*: le256 の本体は名前ではなく *bt33-64 = 1.44GB*（=alloc-bytes 32 → BT48 の *32バイト Sexp ノード箱*）。
+  = *genuine な parsed AST*（各 defun body の全ノード）で over-retention ではない。
+  §8.13 の「genuine ~60MB」推定は *誤り*（実 AST は重い表現で ~1.44GB）。
+
+*** 数百MB級（実 Emacs 相当）への道 = 表現変更（深い、別途）
+- 現状 2.86GB の内訳: bt33-64(AST ノード) 1.44GB / le32 0.25GB / cons88 85MB / pools(b4k-256k+b256k-2m) 0.25GB / free 17MB / 他。
+- NeLisp の 1 ノード = 48バイト heap box（16B header + 32B Sexp）、cons = 88B。実 Emacs の cons は 16B = *約3-5倍重い*。
+  数百MB に届くには (1) *コンパクト node 表現*（Sexp packing / 16B cons / 構造共有）= core 表現の大手術、または
+  (2) *byte-compile*（source AST を保持せず compact bytecode へ）= Emacs と同方式。いずれも大規模。
+- = pool(over-retention) と interning(重複) は解決済。残りは「genuine だが重い表現」で、本質的に別レイヤの課題。
+
+*** 現在の build/nelisp-experiment / commits
+- dev/nelisp: af5cce91 ptr-call / ba311ecd pool+census / ae450d7e AOT rename / *afbb23aa interning*。
+- full load 2.86GB / 10s / form 38989(org-cycle-show-empty-lines, 真の blocker, memory非依存) 停止。
+
+** 8.18 数百MB級への本丸 = node 表現のコンパクト化（精密診断済、深い core 変更）
+ユーザー要望(数百MB=実Emacs相当)で「①表現変更に着手」を選択。残り 2.86GB を census で精密分解し、
+*ターゲットを確定*。実装は深い core 表現変更のため、本節に設計と現実的計画を記録。
+
+*** 残メモリの精密分解(@37595、census で確定)
+- total-nonfree 2.16GB の内訳:
+  - *BT48 箱 ~28M個 = ~1.37GB(63%)*：32B Sexp + 16B GC header の bare box。tag census で tag0-3(immediate
+    int/nil/t/float) と tag4(symbol) が大半。= *loaded code/data の各 atom/node を個別の 48B heap box で保持*。
+  - le32(≤32B) 0.25GB / cons(BT88) 85MB / pools(b4k-256k) 0.20GB / Vector box(BT48 ptr付) ~3.3M / free 17MB。
+  - BT56(Cell) は 3MB のみ = *closure env capture は主因でない*（仮説棄却）。
+- = 残りは *over-retention でなく genuine な loaded 構造*。だが NeLisp の *1 node = 48B*（16B header + 32B Sexp）、
+  *cons = 88B* で、実 Emacs（tagged value 8B / cons 16B）の *約 3-5 倍重い表現*。§8.13 の「genuine ~60MB」は誤り。
+
+*** 数百MB級への道（深い core 変更、いずれも多段・要慎重）
+1. *GC header 削減*（最も isolated、~480MB 見込み）: 各 box の 16B header(BLOCK_TOTAL u64 + mark u64) を 8B へ
+   （mark を BLOCK_TOTAL の低ビットへ pack、or 別 bitmap）。28M box × 8B = ~230MB 減。allocator+GC の全 box
+   アクセスを触るが論理は局所。*第一歩として最有力*（validate しやすい）。
+2. *immediate の inline tagged 化*: int/nil/t を 32B Sexp box でなく tagged value(8B)に。Sexp 表現の再設計 = 広範。
+3. *Sexp packing / 16B cons*: cons を car/cdr の 32B inline Sexp(72B) から tagged-pointer pair(16B)へ。最大効果だが
+   表現全体の作り直し（reader/eval/GC/clone 全経路）。
+4. *byte-compile*: source AST を保持せず compact bytecode へ（実 Emacs 方式）。最も Emacs 的だが別サブシステム。
+- 推奨順: まず (1) GC header 削減で ~230MB を validate（リスク中、4438 で回帰確認）→ 効果と手応えを見て (2)/(3)/(4)
+  の本格再設計へ。pool(over-retention) と interning(重複) は完了済、残りは「genuine だが重い表現」の本質課題。
+
+*** 計測ツール（再現用）
+- =nelisp--size-census=（commit afbb23aa）で BLOCK_TOTAL ヒストグラム。tag/exact-BT/obj+8 別の細分は
+  census exploration として実施・revert 済（byte 累積に bug 出たが COUNT は信頼可、28M BT48 を確定）。
+  再診断時は bf_size_census_block を一時改造（backup から復元、git checkout 可 = 既に全 commit 済）。
+
+*** このセッションの到達点
+- *メモリ 9.88GB → 2.86GB（-71%）*、全て eq 安全・4438 PASS で validate・commit 済
+  （af5cce91 ptr-call / ba311ecd pool / ae450d7e AOT rename / afbb23aa interning）。
+- 数百MB級は *node 表現のコンパクト化*（上記 1-4）が本丸 = 深い core 表現変更で、pool/interning とは桁違いの
+  多段プロジェクト。第一歩 = GC header 削減を推奨。
+
+*** 8.18.1 GC header 16B→8B = SHIPPED（commit 7134b383、2.86GB→2.60GB、4438 PASS）
+(1) GC header 削減を実装・着地。バグ 2 つを潰して完成:
+- *設計*: box header を BLOCK_TOTAL(8-aligned 高ビット) + mark(低 3 ビット) の単一 u64 に。obj = hdr+8（was +16）。
+  ヘルパ =nl_hdr_bt/nl_hdr_mark/nl_hdr_set_mark=（低 3 ビット mask、負数 logand 回避で減算抽出）。
+- *変更サイト（全て standalone-build.el の allocator/GC に局所、外部ユニットは obj 相対で不変）*:
+  nl_block_total(8), nl_chunk_try_alloc(obj=old+8 / BT@obj-8 / mark 別書込削除), nl_freelist_take/scan(sentinel
+  クリア + BT@cur-8 masked), nl_gc_mark_block(mark 低ビット), nl_gc_free_block(_link)(mark=2 / next@hdr+8),
+  nl_gc_sweep_one/step(mark/BT masked), nl_alloc_zero_fill 呼出 (- want 16)→(- want 8)。
+- *バグ1*: =nl_alloc_zero_fill= の reuse ゼロ埋めが旧 payload=want-16 前提 → 末尾 8 バイト stale。→ want-8 へ。
+- *バグ2（hang の主因）*: 8B 化で全 BT が −8 シフト（最小 BT 24→16）したのに、segregated free-list の bucket が
+  依然 =BT-24= / 範囲 [24,480] のまま → 小ブロック(BT16-23)が *線形 fallback list に落ち O(n²) thrash* し、
+  dired.el(#, line 31159) の GC で stuck（hang に見えた）。→ bucket を *[16,472] / index BT-16* に再校正
+  （nl_freelist_take + nl_gc_free_block）。これで小ブロックが bucket に戻り解消。
+  *特定法*: gdb 不要だった = 「BT シフトで bucket 校正がズレた」と reasoning で当て、再校正して完走で確認。
+  （gdb は安全網としてインストール済 = 万一 reasoning が外れたら attach→backtrace の予定だった。）
+- *結果*: full vendor-load *2.86GB→2.60GB(-260MB)*、~11s、hang 無し、org-cycle 停止（天井は不変）。
+  =make test-parallel= *4438/0 unexpected*（nelisp-process sentinel は並列負荷の env flake、単独 47/47）。eq 正常。
+- *次の表現変更（数百MB へ続く）*: §8.18 の (2)immediate inline tagged / (3)16B cons / (4)byte-compile。
+  残り 2.60GB の主因は依然 ~28M の Sexp ノード箱（now 40B each: 8B header+32B Sexp）。32B Sexp 自体の圧縮
+  （immediate を tagged 8B 値へ）が次の大物。
+
+*** 8.18.2 gdb 調査メモ（バイナリは not stripped・887 sym、backtrace 動作可）
+- gdb は使える: =gdb -batch -nx -ex "break FN" -ex "run --load F" -ex "bt"=。frame info あり（AOT 出力に prologue
+  あり）。=ptrace_scope=0= で自プロセス attach 可。nl_alloc_bytes/nl_alloc_vector/nl_alloc_consbox/
+  nelisp_cons_construct 等が symbol で見える。
+- *確保元の backtrace（確保レート上位＝transient scratch が大半）*:
+  - cons(BT80, ~1M, 保持=AST spine): =nelisp_reader_p_list_dispatch= ← parse_list_step（パーサ）。
+  - vector(BT40 box): =nl_logic_build_scratch=（=nl_alloc_vector 11=、let束縛ごとの 11-slot frame entry）←
+    nl_logic_bind_local ← nl_let_star_walk。これは BT360 data 付なので 28M本体ではない（churn）。
+  - bare Sexp(alloc-bytes 32): =nl_apply_sym_eq_bytes=（builtin 名比較）← apply_builtin ← eval_inner_cons。eval の
+    一時 scratch。
+- *教訓*: 確保レートサンプリング（gdb bt）は *頻出 transient scratch* を拾い、*retained 28M* は拾えない
+  （alloc-rate ≠ retention）。retained 28M bare Sexp（census: obj+8 小値）の正体特定には *live-heap 解析*が要る:
+  - 案: nelisp--size-census を拡張し BT40 boxes の obj+0 tag / obj+8(ptr-like vs 小) を *正しく* 集計（前回 byte
+    累積 bug、count は信頼可で 28.6M bare-Sexp + 3.3M vector を確認済）。さらに gdb で load を ~5s 中断 → arena を
+    nl_arena_base から walk → BT40 box を sample して「誰が参照するか」を辿る。
+  - 仮説: 28M bare Sexp は (a) emoji-labels/charprop/idna 等 *データ表*を nemacs char-table substrate（疎 alist+
+    vector）で保持した中身、(b) eval が値を inline でなく別 box で保持する経路、のいずれか。実 Emacs は dense
+    char-table（C 構造）でこれを ~数MB に収める。
+- *本丸 = Sexp 圧縮（8B tagged 値）*: immediate(int/nil/t)を 32B Sexp box でなく 8B tagged word へ、cons car/cdr を
+  8B×2 に。reader/eval/GC/clone/parser 全経路の作り直し = 多段・高リスク。gdb watchpoint で段階検証しながら進める。
+
+*** 8.18.3 gdb live-heap walk で 28M 箱の正体確定 = lexframe 束縛エントリ（over-retention 疑い）
+gdb python で深い GC 地点（reserved=1.07GB）の arena を walk（=/tmp/heapwalk.gdb=、nl_gc_collect で break →
+nl_arena_base(0x54b000) から chunk/block walk、BT40 live box を 2.5M block 分 sample）:
+- *BT40-live*: bare Sexp(obj+8 小値) *1,503,447* / vector(obj+8 ptr) 157,049 → *bare Sexp が 90%*。
+- *tag 分布*: Nil(0) 713K + Symbol(4) 747K + Cons-ptr(7) 57K + T(1) 40K + 他。
+- *決定的サンプル*: =(tag4, cap12, ptr0x531599, len12)= が *同一 name ptr で 40 中 ~15 回反復*（~37%）=
+  同じ 12 文字シンボルを *別々の Sexp box で大量保持*。これは =nl_logic_write_symentry=
+  （=lisp/nelisp-cc-evalport-env-leaves-logic.el=）が各 let 束縛で書く *symentry シンボル*。=(Nil,0,0,0)= の
+  standalone Nil box も多数。
+- = *28M 箱の正体 = lexframe の束縛エントリ構造*: =nl_logic_bind_local= → =nl_logic_build_scratch= が束縛ごとに
+  11-slot vector + symentry シンボル box(sym_slot) + value/unbound clone を作る。symentry box が *3M+* 個 =
+  グローバル ~50K を遥かに超える → *局所(let\*)束縛のエントリが解放されず累積する over-retention の疑いが濃厚*
+  （genuine AST ではない）。pool 肥大と同型の「transient のはずが保持」パターン。
+- *次の一手（pool 修正級にトラクタブルな可能性）*: =nl_logic_bind_local= / frame push-pop / =nelisp_frame_pop= が
+  束縛エントリ(11-slot vector + sym_slot box)を *scope 退出時に解放しているか* を確認。していない（or GC root から
+  到達可能なまま）なら、それが over-retention の主因。gdb watchpoint を sym_slot box に置き「pop 後も到達可能か」
+  を追えば確定。修正できれば full Sexp rewrite なしで大幅減の見込み。
+- *gdb walk 手法（再利用可）*: =/tmp/heapwalk.gdb= = nl_gc_collect break + reserved 閾値 + read_memory walk +
+  block CAP。retained box の正体特定に有効（alloc-rate サンプリングと違い *生存中*の box を見る）。
+
+*** 8.18.4 *真の発見*: 「over-retention」ではなく GC 間のゴミ蓄積。live set は極小（commit fa65d14e）
+=/tmp/heapwalk2.gdb=（=nl_gc_sweep= entry = mark 後・sweep 前で break、BT40 を mark 別に分類）で確定:
+- *2.5M sample 中 BT40: LIVE(mark1)=109 のみ / GARBAGE(mark0)=1,660,387*。= 先に「保持」と見えた symentry/Nil/
+  Symbol 箱は *全て回収可能なゴミ*（この GC で sweep される）。*live set は極小*（数十MB 程度）。
+- = 2.6GB の peak は *over-retention でなく per-eval ゴミの GC 間蓄積*。トリガが reserved+512MB 再arm ゆえ、
+  各 GC 前に ~0.5GB のゴミが溜まる。lexframe 束縛エントリ（11-slot vector + symentry box + value clone）が
+  per-binding に生成され、scope 退出後ゴミ化するが、次の tracing GC まで回収されない（per-eval LIFO reclaimer は
+  §8.x で unsound として無効）。
+- *修正 = GC トリガ 512MB → 64MB*（init + re-arm 3 = 4 site、=536870912→67108864=）。mark は live 極小で安価ゆえ
+  8x 頻発でも +3s（11→14s）。*full load peak 2.60GB → 1.80GB（決定的・4 run 安定）*。64MB は boot(~60MB)直上で
+  GC-during-boot 回避（16MB は boot 中 GC で segfault、32MB は boot 天井未満ゆえ不可）。4438/0、eq 正常。
+  *注*: =536870912= は trigger 専用で衝突無し。=67108864=(64MB) は chunk-size/intern-region でも既出だが別用途。
+  =16777216=(intern table size) / =33554432= 等を sed 一括置換すると intern region を壊す（segfault）— 個別に。
+
+*** 8.18.5 数百MB級への残りの道（live 極小ゆえ射程内）
+peak 1.80GB の内訳: *live 極小 + GC 間ゴミ(~64MB window) + 解放済だが munmap されない reserved chunk の累積*。
+reserved(mmap chunk) は *縮まない*（munmap しない）ので peak = 到達した最大 reserved。さらに下げる手:
+1. *空チャンクの munmap*（最有力・live 極小ゆえ効く）: sweep で全 free になった chunk を OS へ返す。per-chunk
+   free-count 追跡 + free-list から該当 block を外す + chunk list から unlink + munmap。中規模 GC 変更。live が
+   数十MB に集中するなら peak が *数百MB* まで落ちる見込み。
+2. *boundary-reclaim 健全化*: per-eval LIFO reclaimer を sound に再実装し、束縛エントリ等を form 境界で即回収
+   （ゴミが arena に積まれる前に）。eval-escape correctness 課題（§8.9）と絡む、深い。
+3. トリガ更に下げる: root-coverage gap（§8.13）露出で 16MB segfault。gap 健全化が前提。
+- *推奨 = (1) 空チャンク munmap*。live 極小という今回の発見が効く。gdb で sweep 後の chunk 占有率を見て設計。
+
+*** 8.18.6 空チャンク munmap を試行 → fragmentation で不発（revert、compaction が必要）
+(1) 空チャンク munmap を実装・試行（実装後 revert 済、fa65d14e が HEAD）:
+- *実装*: nl_gc_sweep を「free-list clear → 各 chunk で livecount → 空(live=0)かつ非persistent かつ非current
+  なら munmap(syscall 11)+unlink+reserved/chunk-count 減、それ以外は dead を free-list 再構築」へ。clear-first で
+  munmap chunk の block は再追加しない（dangling 無し）。build/sanity/full-load(rc=0) OK。
+- *結果*: *peak RSS 不変(1.76GB)・遅い(14→20s)* = 効果無し。原因 = *fragmentation*。
+  live set は極小(~109 BT40)だが *全 growth chunk に散在*（各 chunk に数個の live ブロック）→ *完全に空の chunk が
+  ほぼ生じない* → munmap がほとんど発火しない。加えて VmHWM(peak) は historical max ゆえ、仮に current RSS を
+  下げても peak metric は不変。
+- *壁 = 非moving GC の限界*: 散在 live が全 chunk を pin。chunk-0(256MB persistent) + pin された growth chunk で
+  peak ~1.76GB。
+- *数百MB への真の道（いずれも大規模）*:
+  1. *compacting(moving) GC*: live を少数 chunk へ relocate → 残り chunk を空にして munmap。全ポインタ(cons car/cdr,
+     vector slot, mirror, frame)の更新が必要 = 大手術。live 極小ゆえ relocate コストは小さいはずだが実装は重い。
+  2. *generational / live-vs-transient 分離 alloc*: retained と per-eval transient を別 region へ。transient region は
+     form 境界で一括 reset(boundary-reclaim 健全版)。fragmentation 回避。
+  3. *sound boundary-reclaim*(§8.9 eval-escape): per-eval garbage を form 境界で即回収 → arena を汚さない。深い。
+- = munmap 単体は不可。*compaction か transient 分離*が前提。1.80GB(64MB trigger) が non-moving GC の実用的下限。

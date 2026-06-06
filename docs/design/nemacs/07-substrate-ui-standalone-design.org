@@ -22,7 +22,7 @@ nemacs の editor substrate / UI を構築する**ための設計書である。
 ** 0.2 何が変わったか（2026-06-05 時点の前提変更）
 
 - **Rust binary / test / delegate を完全撤廃**。substrate も全て elisp（標準ランタイム
-  は pure-elisp standalone reader = Phase-47 ELF、Rust ゼロ）。
+  は pure-elisp standalone reader = AOT ELF、Rust ゼロ）。
 - **#1 blocker(vendor-load segfault) を解消**（commit `d6ed05d9`、unsound
   boundary-reclaim 無効化）。vendor-load-standalone が file5→file45+ へ前進。
 - → 旧 01-architecture の「Rust delegate に逃がす」前提は失効。substrate/UI は
@@ -44,7 +44,7 @@ nemacs の editor substrate / UI を構築する**ための設計書である。
   │                                              │     command-loop / minibuffer
   ├─────────────────────────────────────────────┤
   │ NeLisp 言語ランタイム (~85%)                  │  ← cons/eval/string/regexp/seq/
-  │  standalone reader (Phase-47 ELF, Rust 0)    │     reader/printer/~70 primitive
+  │  standalone reader (AOT ELF, Rust 0)    │     reader/printer/~70 primitive
   └─────────────────────────────────────────────┘
 #+end_example
 

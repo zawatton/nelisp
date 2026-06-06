@@ -1,0 +1,104 @@
+#+TITLE: Doc 08 — 純elisp UI: 実証された3トラック (TTY / X11-GUI / FFI)
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-05/06
+#+STATUS: PROVEN (spike level) — 実機検証済、production 化は roadmap 参照
+
+* §0 要旨
+
+dev/nelisp-emacs の UI を **純elisp** で実装する目標 (別 repo `nelisp-gtk` の Rust 実装を
+純elisp化) に対し、2026-06-05/06 に **3つの独立トラックを実機で実証**した。いずれも
+NeLisp standalone interpreter (`dev/nelisp/target/nelisp`) 上で、**ライブラリ・動的リンカ・
+libffi・libc・Rust-FFI を一切使わず**、3つの interpreter primitive のみで動く:
+
+| primitive | 役割 |
+|-----------+------|
+| =syscall-direct= | Linux x86_64 raw syscall (openat/mmap/mprotect/read/write/socket/connect/...) |
+| =ptr-read-u64= / =ptr-write-u64= | 生メモリ read/write (ELF parse、protocol buffer 組立) |
+| =ptr-call= (**本作業で追加**) | 任意 i64 アドレスへの forward 間接 call (最大6引数, SysV ABI) |
+
+Doc 02 (nelisp-gtk の Rust-shim closure 前提の GTK B0 spike) は本トラック群に置き換えられる。
+
+* §1 実証された3トラック
+
+** 1.1 TTY トラック (syscall write のみ)
+
+- 機構: glyph を ANSI escape にして =write(1)= syscall で端末に出す。FFI 不要。
+- 成果物:
+  - =dev/nelisp-ffi/spike-tty.el= — レンダラ (枠/タイトル/バッファ/モードライン/カーソル)
+  - =dev/nelisp-ffi/spike-tty-edit.el= — key→buffer編集→redisplay loop (self-insert/移動/削除)
+- 検証: *scratch* 風フレーム描画、スクリプトキー列で編集動作 (ed-line 正確に変化)。
+- 残: read(0) + termios raw mode (ioctl TCSETS) で実端末の対話入力。
+
+** 1.2 X11-GUI トラック (unix socket + ワイヤプロトコル)
+
+- 機構: =/tmp/.X11-unix/X0= に =socket(AF_UNIX)= + =connect= し、**X11 ワイヤプロトコルを
+  直接 byte で喋る**。TTY が ANSI を喋るのと同型。**ライブラリも動的リンカも ptr-call も不要**。
+- 成果物:
+  - =dev/nelisp-ffi/spike-x11.el= — ウィンドウ生成 + 色矩形パネル (Obsidian 風)
+  - =dev/nelisp-ffi/spike-x11-text.el= — OpenFont "fixed" + ImageText8 で実テキスト描画
+  - =dev/nelisp-ffi/spike-x11-editor.el= — GetKeyboardMapping で keysym 解読 + 対話編集
+- 検証:
+  - handshake: setup reply byte0=1 (success, no-auth)、proto-major=11、rid-base=0x2000000
+  - CreateWindow+MapWindow → GetGeometry 往復で生成寸法 (480/760 x 320/460) 一致
+  - 色パネル: user 視認 OK (表示→正常終了)
+  - keysym: keycode 38→97('a')/65('A')、36→65293(Return)、kspp=7 解読確認
+- 重要な学び (request-length): X11 request-length は 4-byte words 単位。ChangeGC base=3 words
+  + value 数。**1 value→4、2 value→5**。x-fill で 1 value なのに 5 と誤指定し protocol desync
+  → 背景以降の描画が全崩壊。GetGeometry 往復 (Expose 後に reply, type=1, w 一致) で sync を検証。
+- 残: 対話エディタの実機表示確認 (spike-x11-editor.el が exit する件の調査)、PolyText/フォント、
+  scroll、複数ウィンドウ。
+
+** 1.3 FFI トラック (ptr-call + 純elisp .so ローダ)
+
+- 機構: 純elispで .so を mmap → ELF を歩いて symbol 解決 (dlopen/dlsym 相当) → =ptr-call= で呼出。
+- =ptr-call= は interpreter builtin として追加 (=scripts/nelisp-standalone-build.el=、既存
+  =call-ptr= grammar op を使うので **新規 Rust ゼロ**、=make standalone-reader= で再ビルド)。
+- 成果物:
+  - =dev/nelisp-ffi/nelisp-ffi-pure.el= — =nlffi-dlsym PATH NAME= / =nlffi-call PATH NAME ARGS=
+  - =dev/nelisp-ffi/spike-loader.el= — dlsym 単体 (libm cos → 0x5d010, readelf 一致)
+- 検証:
+  - =ptr-call=: RWX page に機械語 (=mov rax,rdi;add rax,rsi;ret=) を書き (40,2)→42
+  - 実 .so: leaf 関数 add2/mul3/meaning を純elispで load→dlsym→call、全て 42
+- 制約と残: 現状 **leaf 関数のみ** (flat R+X map)。実 libc/SDL は PT_LOAD 個別 map +
+  relocation (RELATIVE/GLOB_DAT/JUMP_SLOT) + IFUNC resolver + DT_NEEDED 依存連鎖が必要
+  (= pure-elisp 動的リンカ)。→ §3 roadmap。
+
+* §2 開発ループ (NeLisp standalone interpreter)
+
+- 実行: =./target/nelisp --eval "(progn $(grep -vE '^[[:space:]]*;;' FILE))"=
+  - =--load= は標準ライブラリ未ロードで =defun= / =nth= / =nreverse= / =and= / =when= 等が壊れる。
+  - =--eval "(progn ...)"= は 1 引数なので複数行 OK・full semantics (defun/nth/macro 動く)。
+  - =$(cat FILE)= 供給は一部の =;;= コメント行で reader が壊れる → =;;= 行を grep -v で除去。
+- interpreter で直接呼べる FFI prim: =syscall-direct= / =ptr-read-u64= / =ptr-write-u64= /
+  =ptr-call=。=ptr-read-u8= / =f64-call= / =addr-of= は compile-time grammar 専用 (interpreter 非搭載)。
+- 詳細: memory =feedback_nelisp_standalone_interpreter_load_recipe=。
+
+* §3 roadmap
+
+| 段階 | 内容 | 依存 |
+|------+------+------|
+| A | TTY 対話化 (read+termios) — daily-driver TTY エディタ | §1.1 |
+| B | X11 対話エディタの実機完成 (exit 件調査 + scroll + フォント) | §1.2 |
+| C | 既存 =nemacs-gtk-frontend.el= (6854行・純elisp フル UI) を X11 backend に載せ替え | §1.2 |
+| D | 完全 .so ローダ (relocation/IFUNC/DT_NEEDED) → SDL / WebKitGTK bind | §1.3 |
+| E | rich/web 表示 (LaTeX 即時・YouTube 埋込) = WebKit を D 経由で合成、または X11 上に自前 | D |
+| F | multi-platform: Wayland protocol (Linux) / Windows (LoadLibrary+Win64 ABI) へ同手法展開 | §1 全 |
+
+- 北極星 (user): Obsidian 的 web 表示、最終的に純elisp web ブラウザ、Windows/macOS 対応。
+- 二段構え: 「syscall-only UI (TTY/X11/Wayland) を即」+「FFI 経路 (ptr-call+完全ローダ) で
+  SDL/WebKit のリッチ表示を後日合流」。
+
+* §4 成果物一覧 (dev/nelisp-ffi/)
+
+| file | track | 内容 |
+|------+-------+------|
+| =nelisp-ffi-pure.el= | FFI | 純elisp dlopen/dlsym/call API (nlffi-dlsym / nlffi-call) |
+| =spike-loader.el= | FFI | .so → ELF → dynsym 解決 (dlsym 実証) |
+| =spike-tty.el= | TTY | レンダラ |
+| =spike-tty-edit.el= | TTY | 編集 loop |
+| =spike-x11.el= | X11 | ウィンドウ + 色パネル |
+| =spike-x11-text.el= | X11 | テキスト描画 |
+| =spike-x11-editor.el= | X11 | 対話エディタ |
+
+interpreter 改変: =dev/nelisp/scripts/nelisp-standalone-build.el= に =ptr-call= builtin 追加
+(backup = =dev/nelisp/target/nelisp.bak=)。
