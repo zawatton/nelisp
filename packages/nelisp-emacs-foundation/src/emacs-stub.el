@@ -999,6 +999,70 @@ when no real redisplay window is available."
 ;; time, breaking `(require 'json)' / cl-lib / friends.
 (require 'emacs-stub-bulk)
 
+;;;; --- load-time machinery + misc (vendor-coverage 2026-06-06 batch) -------
+;; Surfaced by bin/vendor-coverage as truly-missing top-level / load-time
+;; callers across vendor/emacs-lisp.  No-ops / minimal degraded impls.
+
+(unless (fboundp 'register-definition-prefixes)
+  (defun register-definition-prefixes (file prefixes)
+    "Stub: loaddefs prefix registration is unused in standalone."
+    (ignore file prefixes) nil))
+
+(unless (fboundp 'custom--add-custom-loads)
+  (defun custom--add-custom-loads (symbol loads)
+    "Stub: no-op custom-load registration."
+    (ignore symbol loads) nil))
+
+(unless (fboundp 'custom-autoload)
+  (defun custom-autoload (symbol load &optional noset)
+    "Stub: no-op custom autoload."
+    (ignore symbol load noset) nil))
+
+(unless (fboundp 'setq-local)
+  (defmacro setq-local (&rest pairs)
+    "Stub: degrade to global `setq' (standalone has no buffer-local cells)."
+    (cons 'setq pairs)))
+
+(unless (fboundp 'default-value)
+  (defun default-value (symbol)
+    "Stub: standalone has no buffer-local cells; return the global value."
+    (symbol-value symbol)))
+
+(unless (fboundp 'set-default)
+  (defun set-default (symbol value)
+    "Stub: degrade to global `set'."
+    (set symbol value)))
+
+(unless (fboundp 'format-prompt)
+  (defun format-prompt (prompt default &rest format-args)
+    "Stub: minimal `format-prompt' — PROMPT plus an optional default hint."
+    (concat (if format-args (apply #'format prompt format-args) prompt)
+            (if (and default (not (equal default "")))
+                (format " (default %s)"
+                        (if (consp default) (car default) default))
+              "")
+            ": ")))
+
+(unless (fboundp 'derived-mode-p)
+  (defun derived-mode-p (&rest modes)
+    "Stub: standalone has no major-mode hierarchy; always nil."
+    (ignore modes) nil))
+
+(unless (fboundp 'widget-get)
+  (defun widget-get (widget property)
+    "Stub: no widget subsystem; always nil."
+    (ignore widget property) nil))
+
+(unless (fboundp 'widget-put)
+  (defun widget-put (widget property value)
+    "Stub: no-op; return WIDGET."
+    (ignore property value) widget))
+
+(unless (fboundp 'debug)
+  (defun debug (&rest args)
+    "Stub: no debugger in standalone; no-op."
+    (ignore args) nil))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
