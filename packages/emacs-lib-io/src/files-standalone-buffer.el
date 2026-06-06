@@ -657,6 +657,7 @@ assumed to already exist."
 ;; Linux x86_64 syscall numbers (the standalone reader's only target).
 (defconst files--syscall-unlink 87 "Linux x86_64 unlink(2) syscall number.")
 (defconst files--syscall-rmdir 84 "Linux x86_64 rmdir(2) syscall number.")
+(defconst files--syscall-rename 82 "Linux x86_64 rename(2) syscall number.")
 
 (when (files--install-fallback-function-p 'delete-file)
   (defun delete-file (filename &optional _trash)
@@ -684,6 +685,22 @@ ignored -- only an empty directory can be removed."
       (signal 'file-error
               (list "delete-directory unavailable (no nelisp--syscall-path)"
                     directory)))
+    nil))
+
+(when (files--install-fallback-function-p 'rename-file)
+  (defun rename-file (file newname &optional _ok-if-already-exists)
+    "Rename FILE to NEWNAME via the reader's `nelisp--syscall-path2' rename(2).
+Signals `file-error' on kernel failure (rc < 0).  OK-IF-ALREADY-EXISTS is
+ignored -- rename(2) overwrites an existing NEWNAME (unless it is a
+non-empty directory)."
+    (if (fboundp 'nelisp--syscall-path2)
+        (let ((rc (nelisp--syscall-path2 files--syscall-rename
+                                         (files--expand-file-name file)
+                                         (files--expand-file-name newname))))
+          (when (< rc 0)
+            (signal 'file-error (list "Renaming" file newname rc))))
+      (signal 'file-error
+              (list "rename-file unavailable (no nelisp--syscall-path2)" file)))
     nil))
 
 ;; Bridge the file reader to the standalone reader's `rdf' primitive (the only
