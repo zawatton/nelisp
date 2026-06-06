@@ -654,20 +654,48 @@ or the toolchain is newer than the cached object."
     (defun nl_arena_init () 0)
     (defun nl_os_alloc_chunk (_size) 0)
     (defun nl_os_alloc_fail () 0)
-    ;; Pop a free-list block whose BLOCK_TOTAL exactly matches WANT.
-    ;; Returns the object pointer (mark reset to 0) or 0 if none.  PREV is
-    ;; the object pointer whose payload (prev+0) links to CUR, 0 = head.
-    (defun nl_freelist_take (prev cur want)
+    ;; SIZE-SEGREGATED free-list (2026-06-06).  Replaces the old single
+    ;; exact-fit O(freelist) linear scan, which -- once the GC-trigger fix
+    ;; made GC actually run and free thousands of mixed-size blocks -- forced
+    ;; every variable-length (symbol-name / string) alloc to scan past all the
+    ;; fixed-size cons/Sexp blocks, making the vendor load ~10x slower.  Blocks
+    ;; are now bucketed by exact BLOCK_TOTAL: head for BT is 268435696+(BT-24)
+    ;; for BT in [24,480] (the FREE reserved gap base+240..+696, mmap-zeroed);
+    ;; BT<24 (guard for a desynced BT=16 wild index) and BT>480 use the legacy
+    ;; single list at 268435552.  Real loads are SOUND + FAST: the full 319
+    ;; vendor-load runs deterministically to exit 0 @ ~35s (vs the single
+    ;; list's thrash/timeout), peak ~10 GB (bounded; the residue is reachable
+    ;; over-retention, a SEPARATE issue -- reuse fixes speed, not memory).
+    ;; CAVEAT (Doc 08 §8.13): effective reuse is "less forgiving" of latent
+    ;; GC-unsafe code -- an intermediate value held in a NON-root slot while a
+    ;; GC fires gets its freed block re-handed-out -> corruption.  This is what
+    ;; the `nelisp--arena-stats' + `(list (ptr-read ...))' diagnostic probe
+    ;; (r-prog) hit; the real vendor load does not.  It is a pre-existing GC
+    ;; root-coverage gap that the single list's near-zero reuse merely masked.
+    (defun nl_freelist_scan (prev cur want)
       (if (= cur 0)
           0
         (if (= (ptr-read-u64 (- cur 16) 0) want)
-            ;; exact fit: unlink CUR, clear FREE sentinel -> live (mark 0)
             (nl_seq2
              (if (= prev 0)
-                 (ptr-write-u64 268435552 0 (ptr-read-u64 cur 0))   ; head = cur.next
-               (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))         ; prev.next = cur.next
+                 (ptr-write-u64 268435552 0 (ptr-read-u64 cur 0))
+               (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))
              (nl_seq2 (ptr-write-u64 (- cur 8) 0 0) cur))
-          (nl_freelist_take cur (ptr-read-u64 cur 0) want))))
+          (nl_freelist_scan cur (ptr-read-u64 cur 0) want))))
+    ;; Pop an exact-fit block for WANT (BLOCK_TOTAL): O(1) bucket pop for
+    ;; 24<=WANT<=480, else scan the fallback list.  Clears the FREE sentinel
+    ;; (mark 0) and returns the object pointer, or 0 if none.
+    (defun nl_freelist_take (want)
+      (if (< want 24)
+          (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
+        (if (< 480 want)
+            (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
+          (let* ((head (+ 268435696 (- want 24)))
+                 (cur (ptr-read-u64 head 0)))
+            (if (= cur 0)
+                0
+              (nl_seq2 (ptr-write-u64 head 0 (ptr-read-u64 cur 0))
+                       (nl_seq2 (ptr-write-u64 (- cur 8) 0 0) cur)))))))
     ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
     ;;
     ;; ROOT-CAUSE FIX (reuse correctness).  The tracing mark+sweep is sound:
@@ -752,7 +780,7 @@ or the toolchain is newer than the cached object."
         ;;    DEBUG: slot 268435624 == 1 disables reuse (always bump).
         (let ((reused (if (= (ptr-read-u64 268435624 0) 1) 0
                         (if (< want (ptr-read-u64 268435656 0)) 0   ; DEBUG: reuse only want>=slot
-                          (let ((r (nl_freelist_take 0 (ptr-read-u64 268435552 0) want)))
+                          (let ((r (nl_freelist_take want)))
                             (nl_seq2 (if (= r 0) 0 (nl_alloc_zero_fill r 0 (- want 16))) r))))))
           (if (= reused 0)
               ;; 2) bump in current chunk; if full, append a new chunk and
@@ -1106,11 +1134,16 @@ addressing by a runtime base, never by a fixed reservation."
     ;; Free one dead block (header at HDR): set FREE sentinel, link the
     ;; object (hdr+16) onto the free-list head.  Returns 0.  Isolated into
     ;; a helper so the sweep loop body has no nested let + outer setq.
+    (defun nl_gc_free_block_link (hdr head)
+      (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 2)
+       (nl_seq2 (ptr-write-u64 (+ hdr 16) 0 (ptr-read-u64 head 0))
+                (ptr-write-u64 head 0 (+ hdr 16)))))
     (defun nl_gc_free_block (hdr)
       (if (< hdr (ptr-read-u64 268435664 0)) 0   ; HARD: never free below the boot watermark
-       (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 2)
-        (nl_seq2 (ptr-write-u64 (+ hdr 16) 0 (ptr-read-u64 268435552 0))
-                 (ptr-write-u64 268435552 0 (+ hdr 16))))))
+       (nl_gc_free_block_link hdr
+        (if (< (ptr-read-u64 hdr 0) 24) 268435552
+          (if (< 480 (ptr-read-u64 hdr 0)) 268435552
+            (+ 268435696 (- (ptr-read-u64 hdr 0) 24)))))))
     ;; Process one block at HDR (mark==1 clear / mark==0 free / mark==2
     ;; skip); returns the block's live byte contribution (bt if live, else
     ;; 0).  No control mutation -> safe to call from the iterative loop.
@@ -2186,11 +2219,17 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                (seq
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
                 (let* ((rc (nelisp_eval_call result env out)))
-                  (if (< (ptr-read-u64 268435456 0)
+                  ;; GC trigger must compare TOTAL allocated bytes across all
+                  ;; chunks (268436184 = chunk-bytes-reserved running counter),
+                  ;; not the chunk-0 bump offset (268435456) — after Doc 140's
+                  ;; chunk-growth refactor the chunk-0 bump caps at the 256 MiB
+                  ;; first chunk and never reaches the 512 MiB trigger, so the
+                  ;; tracing GC never fired and the arena grew unbounded.
+                  (if (< (ptr-read-u64 268436184 0)
                          (ptr-read-u64 268435560 0))
                       0
                     (let* ((live (nl_gc_collect env result out pool src cursor bsym))
-                           (bump (ptr-read-u64 268435456 0))
+                           (bump (ptr-read-u64 268436184 0))
                            (lo (+ (* live 3) 1048576))
                            (hi (+ bump 536870912)))
                       (ptr-write-u64 268435560 0
@@ -2207,11 +2246,14 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
                 (let* ((rc (nelisp_eval_call result env out)))
                   (if (= rc 0)
-                      (if (< (ptr-read-u64 268435456 0)
+                      ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
+                      ;; not the chunk-0 bump offset (268435456).  See the note
+                      ;; in `bf_load_eval_loop'.
+                      (if (< (ptr-read-u64 268436184 0)
                              (ptr-read-u64 268435560 0))
                           0
                         (let* ((live (nl_gc_collect env result out pool src cursor bsym))
-                               (bump (ptr-read-u64 268435456 0))
+                               (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
                                (hi (+ bump 536870912)))
                           (ptr-write-u64 268435560 0
@@ -3690,10 +3732,12 @@ fixed-base immediate until `data-addr' lands for those toolchains."
                  (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
                       (nelisp_eval_call result ctx out)
                       (nl_boundary_maybe_reclaim mark_chunk mark_cursor epoch0 out)
-                      (if (< (ptr-read-u64 268435456 0) (ptr-read-u64 268435560 0))
+                      ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
+                      ;; not the chunk-0 bump offset.  See `bf_load_eval_loop'.
+                      (if (< (ptr-read-u64 268436184 0) (ptr-read-u64 268435560 0))
                           0
                         (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
-                               (bump (ptr-read-u64 268435456 0))
+                               (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
                                (hi (+ bump 536870912)))
                           (ptr-write-u64 268435560 0 (if (< lo hi) hi lo))))
