@@ -649,8 +649,18 @@ or the toolchain is newer than the cached object."
     ;; free-list `next' link (written at obj+0 on free) always lands inside
     ;; THIS block and never clobbers the next block's header (a size-0 alloc
     ;; would otherwise have obj+0 == the next header).
+    ;; Doc 08 §8.18: 8-byte box header.  Single u64 at the block start:
+    ;; BLOCK_TOTAL (8-aligned) high bits, GC mark (0 live/1 marked/2 free) in
+    ;; the low 3 bits.  Object ptr = hdr + 8 (was hdr + 16).  Segregated
+    ;; free-list buckets are re-based to the new minimum BT=16 (range [16,472],
+    ;; index BT-16) so small blocks stay bucketed instead of thrashing the
+    ;; linear fallback list.
     (defun nl_block_total (size)
-      (let ((p (nl_align_up size 8))) (+ 16 (if (< p 8) 8 p))))
+      (let ((p (nl_align_up size 8))) (+ 8 (if (< p 8) 8 p))))
+    (defun nl_hdr_bt (hdr) (let ((x (ptr-read-u64 hdr 0))) (- x (logand x 7))))
+    (defun nl_hdr_mark (hdr) (logand (ptr-read-u64 hdr 0) 7))
+    (defun nl_hdr_set_mark (hdr m)
+      (let ((x (ptr-read-u64 hdr 0))) (ptr-write-u64 hdr 0 (+ (- x (logand x 7)) m))))
     (defun nl_arena_init () 0)
     (defun nl_os_alloc_chunk (_size) 0)
     (defun nl_os_alloc_fail () 0)
@@ -675,27 +685,27 @@ or the toolchain is newer than the cached object."
     (defun nl_freelist_scan (prev cur want)
       (if (= cur 0)
           0
-        (if (= (ptr-read-u64 (- cur 16) 0) want)
+        (if (= (nl_hdr_bt (- cur 8)) want)
             (nl_seq2
              (if (= prev 0)
                  (ptr-write-u64 268435552 0 (ptr-read-u64 cur 0))
                (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))
-             (nl_seq2 (ptr-write-u64 (- cur 8) 0 0) cur))
+             (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur))
           (nl_freelist_scan cur (ptr-read-u64 cur 0) want))))
     ;; Pop an exact-fit block for WANT (BLOCK_TOTAL): O(1) bucket pop for
     ;; 24<=WANT<=480, else scan the fallback list.  Clears the FREE sentinel
     ;; (mark 0) and returns the object pointer, or 0 if none.
     (defun nl_freelist_take (want)
-      (if (< want 24)
+      (if (< want 16)
           (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
-        (if (< 480 want)
+        (if (< 472 want)
             (nl_freelist_scan 0 (ptr-read-u64 268435552 0) want)
-          (let* ((head (+ 268435696 (- want 24)))
+          (let* ((head (+ 268435696 (- want 16)))
                  (cur (ptr-read-u64 head 0)))
             (if (= cur 0)
                 0
               (nl_seq2 (ptr-write-u64 head 0 (ptr-read-u64 cur 0))
-                       (nl_seq2 (ptr-write-u64 (- cur 8) 0 0) cur)))))))
+                       (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur)))))))
     ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
     ;;
     ;; ROOT-CAUSE FIX (reuse correctness).  The tracing mark+sweep is sound:
@@ -768,9 +778,8 @@ or the toolchain is newer than the cached object."
                  (setq done 1)
                (if (= (atomic-compare-exchange cursor_addr old new) 1)
                    (seq
-                    (setq obj (+ base (+ old 16)))
-                    (ptr-write-u64 (- obj 16) 0 want)
-                    (ptr-write-u64 (- obj 8) 0 0)
+                    (setq obj (+ base (+ old 8)))
+                    (ptr-write-u64 (- obj 8) 0 want)  ; BT @ hdr; low bits 0 = mark 0
                     (setq done 1))
                  0))))
          obj)))
@@ -781,7 +790,7 @@ or the toolchain is newer than the cached object."
         (let ((reused (if (= (ptr-read-u64 268435624 0) 1) 0
                         (if (< want (ptr-read-u64 268435656 0)) 0   ; DEBUG: reuse only want>=slot
                           (let ((r (nl_freelist_take want)))
-                            (nl_seq2 (if (= r 0) 0 (nl_alloc_zero_fill r 0 (- want 16))) r))))))
+                            (nl_seq2 (if (= r 0) 0 (nl_alloc_zero_fill r 0 (- want 8))) r))))))
           (if (= reused 0)
               ;; 2) bump in current chunk; if full, append a new chunk and
               ;; retry there.  CAS reserves a disjoint [old,new) cursor range
@@ -1089,8 +1098,8 @@ addressing by a runtime base, never by a fixed reservation."
     ;; should recurse into children), 0 if foreign / already marked / free.
     (defun nl_gc_mark_block (obj)
       (if (= (nl_gc_in_arena obj) 0) 0
-        (if (= (ptr-read-u64 (- obj 8) 0) 0)
-            (nl_seq2 (ptr-write-u64 (- obj 8) 0 1) 1)
+        (if (= (nl_hdr_mark (- obj 8)) 0)
+            (nl_seq2 (nl_hdr_set_mark (- obj 8) 1) 1)
           0)))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
@@ -1152,15 +1161,15 @@ addressing by a runtime base, never by a fixed reservation."
     ;; object (hdr+16) onto the free-list head.  Returns 0.  Isolated into
     ;; a helper so the sweep loop body has no nested let + outer setq.
     (defun nl_gc_free_block_link (hdr head)
-      (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 2)
-       (nl_seq2 (ptr-write-u64 (+ hdr 16) 0 (ptr-read-u64 head 0))
-                (ptr-write-u64 head 0 (+ hdr 16)))))
+      (nl_seq2 (nl_hdr_set_mark hdr 2)
+       (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 (ptr-read-u64 head 0))
+                (ptr-write-u64 head 0 (+ hdr 8)))))
     (defun nl_gc_free_block (hdr)
       (if (< hdr (ptr-read-u64 268435664 0)) 0   ; HARD: never free below the boot watermark
        (nl_gc_free_block_link hdr
-        (if (< (ptr-read-u64 hdr 0) 24) 268435552
-          (if (< 480 (ptr-read-u64 hdr 0)) 268435552
-            (+ 268435696 (- (ptr-read-u64 hdr 0) 24)))))))
+        (if (< (nl_hdr_bt hdr) 16) 268435552
+          (if (< 472 (nl_hdr_bt hdr)) 268435552
+            (+ 268435696 (- (nl_hdr_bt hdr) 16)))))))
     ;; Process one block at HDR (mark==1 clear / mark==0 free / mark==2
     ;; skip); returns the block's live byte contribution (bt if live, else
     ;; 0).  No control mutation -> safe to call from the iterative loop.
@@ -1182,11 +1191,11 @@ addressing by a runtime base, never by a fixed reservation."
     ;; permanent generation explicit and robust.)
     (defun nl_gc_sweep_one (hdr)
       (if (< hdr (ptr-read-u64 268435664 0))
-          (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 0)          ; boot block: keep live, reset mark
-                   (ptr-read-u64 hdr 0))
-      (let ((m (ptr-read-u64 (+ hdr 8) 0)) (bt (ptr-read-u64 hdr 0)))
+          (nl_seq2 (nl_hdr_set_mark hdr 0)                ; boot block: keep live, reset mark
+                   (nl_hdr_bt hdr))
+      (let ((m (nl_hdr_mark hdr)) (bt (nl_hdr_bt hdr)))
         (if (= m 1)
-            (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 0)        ; survive: clear mark
+            (nl_seq2 (nl_hdr_set_mark hdr 0)              ; survive: clear mark
              (nl_seq2 (ptr-write-u64 268435640 0 (+ (ptr-read-u64 268435640 0) 1)) bt))
           (if (= m 0)
               (if (= (ptr-read-u64 268435584 0) 1)
@@ -1211,9 +1220,9 @@ addressing by a runtime base, never by a fixed reservation."
     ;; setqs stay at its own scope (avoids the AOT nested-let+outer-setq
     ;; pitfall that silently drops the mutation).
     (defun nl_gc_sweep_step (hdr end)
-      (if (= (nl_gc_bt_ok hdr (ptr-read-u64 hdr 0) end) 0)
+      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0)
           0
-        (nl_seq2 (nl_gc_sweep_one hdr) (+ hdr (ptr-read-u64 hdr 0)))))
+        (nl_seq2 (nl_gc_sweep_one hdr) (+ hdr (nl_hdr_bt hdr)))))
     (defun nl_gc_sweep_chunk (chunk)
       (let ((hdr (ptr-read-u64 (+ chunk 24) 0))
             (end (nl_gc_chunk_end chunk)))
@@ -1628,8 +1637,8 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
     ;;   +0 total-nonfree  +8 free  +16 cons(BT=88)  +24 le256  +32 b257-4k
     ;;   +40 b4k-256k  +48 b256k-2m (~1MB parse pool lands here)  +56 b>2m
     (defun bf_size_census_block (hdr acc)
-      (let ((bt (ptr-read-u64 hdr 0))
-            (mark (ptr-read-u64 (+ hdr 8) 0)))
+      (let ((bt (nl_hdr_bt hdr))
+            (mark (nl_hdr_mark hdr)))
         ;; le256 sub-buckets: +24 le32-bytes +32 le32-COUNT +40 bt33-64 +48 bt65-256
         (if (= mark 2)
             (ptr-write-u64 (+ acc 8) 0 (+ (ptr-read-u64 (+ acc 8) 0) bt))
@@ -1646,9 +1655,9 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                      (ptr-write-u64 (+ acc 48) 0 (+ (ptr-read-u64 (+ acc 48) 0) bt))
                    0))))))))
     (defun bf_size_census_step (hdr end acc)
-      (if (= (nl_gc_bt_ok hdr (ptr-read-u64 hdr 0) end) 0)
+      (if (= (nl_gc_bt_ok hdr (nl_hdr_bt hdr) end) 0)
           0
-        (nl_seq2 (bf_size_census_block hdr acc) (+ hdr (ptr-read-u64 hdr 0)))))
+        (nl_seq2 (bf_size_census_block hdr acc) (+ hdr (nl_hdr_bt hdr)))))
     (defun bf_size_census_chunk (chunk acc)
       (let ((hdr (ptr-read-u64 (+ chunk 24) 0))
             (end (nl_gc_chunk_end chunk)))
