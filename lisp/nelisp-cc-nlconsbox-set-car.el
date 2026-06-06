@@ -61,10 +61,12 @@
     ;; chain never short-circuits.  The final store's 1-sentinel becomes
     ;; the function return in rax (void from the caller's perspective).
     (defun nl_consbox_set_car (box val)
-      (and (ptr-write-u64 box 0 (ptr-read-u64 val 0))
-           (ptr-write-u64 box 8 (ptr-read-u64 val 8))
-           (ptr-write-u64 box 16 (ptr-read-u64 val 16))
-           (ptr-write-u64 box 24 (ptr-read-u64 val 24)))))
+      (if (= (logand val 1) 0)
+          (and (ptr-write-u64 box 0 (ptr-read-u64 val 0))
+               (ptr-write-u64 box 8 (ptr-read-u64 val 8))
+               (ptr-write-u64 box 16 (ptr-read-u64 val 16))
+               (ptr-write-u64 box 24 (ptr-read-u64 val 24)))
+        (extern-call nl_sci_store_imm val box))))
   "AOT source for the `nl_consbox_set_car' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

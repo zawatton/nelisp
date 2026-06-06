@@ -46,10 +46,12 @@
   '(seq
     ;; Copy 32 bytes (4 × u64) from val into cell+0..+31 (= value slot).
     (defun nl_cell_set_value (cell val)
-      (and (ptr-write-u64 cell 0 (ptr-read-u64 val 0))
-           (ptr-write-u64 cell 8 (ptr-read-u64 val 8))
-           (ptr-write-u64 cell 16 (ptr-read-u64 val 16))
-           (ptr-write-u64 cell 24 (ptr-read-u64 val 24)))))
+      (if (= (logand val 1) 0)
+          (and (ptr-write-u64 cell 0 (ptr-read-u64 val 0))
+               (ptr-write-u64 cell 8 (ptr-read-u64 val 8))
+               (ptr-write-u64 cell 16 (ptr-read-u64 val 16))
+               (ptr-write-u64 cell 24 (ptr-read-u64 val 24)))
+        (extern-call nl_sci_store_imm val cell))))
   "AOT source for the `nl_cell_set_value' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

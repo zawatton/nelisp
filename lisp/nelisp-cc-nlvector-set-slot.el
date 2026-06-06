@@ -68,10 +68,12 @@
     ;; 4 × u64 words from val into that slot.
     (defun nl_vector_set_slot (vec-ptr n val)
       (let ((dst (+ (ptr-read-u64 vec-ptr 8) (shl n 5))))
-        (and (ptr-write-u64 dst 0 (ptr-read-u64 val 0))
-             (ptr-write-u64 dst 8 (ptr-read-u64 val 8))
-             (ptr-write-u64 dst 16 (ptr-read-u64 val 16))
-             (ptr-write-u64 dst 24 (ptr-read-u64 val 24))))))
+        (if (= (logand val 1) 0)
+            (and (ptr-write-u64 dst 0 (ptr-read-u64 val 0))
+                 (ptr-write-u64 dst 8 (ptr-read-u64 val 8))
+                 (ptr-write-u64 dst 16 (ptr-read-u64 val 16))
+                 (ptr-write-u64 dst 24 (ptr-read-u64 val 24)))
+          (extern-call nl_sci_store_imm val dst)))))
   "AOT source for the `nl_vector_set_slot' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:

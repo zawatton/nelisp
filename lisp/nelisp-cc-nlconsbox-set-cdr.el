@@ -48,10 +48,12 @@
   '(seq
     ;; Copy 32 bytes (4 × u64) from val into box+32..+63 (= cdr slot).
     (defun nl_consbox_set_cdr (box val)
-      (and (ptr-write-u64 box 32 (ptr-read-u64 val 0))
-           (ptr-write-u64 box 40 (ptr-read-u64 val 8))
-           (ptr-write-u64 box 48 (ptr-read-u64 val 16))
-           (ptr-write-u64 box 56 (ptr-read-u64 val 24)))))
+      (if (= (logand val 1) 0)
+          (and (ptr-write-u64 box 32 (ptr-read-u64 val 0))
+               (ptr-write-u64 box 40 (ptr-read-u64 val 8))
+               (ptr-write-u64 box 48 (ptr-read-u64 val 16))
+               (ptr-write-u64 box 56 (ptr-read-u64 val 24)))
+        (extern-call nl_sci_store_imm val (+ box 32)))))
   "AOT source for the `nl_consbox_set_cdr' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
