@@ -158,6 +158,26 @@ flag-day の幅を狭める。
 - *step 8 baseline 実測*: consumer 変更後も peak 1.80GB（退行なし、immediate 未産出ゆえ memory 中立）。
   *win は producer ABI で Nil(712K)/Symbol(747K) の transient slot が消えて初めて出る*。
 
+*** 3.0.4 *consumer 側 完全完了*（2026-06-06、並列化）。残 = native recursive eval
+*並列サブエージェント＋codex で consumer 側を全網羅・全緑・コミット*:
+- tag読み: =emit-sexp-tag=(9404ffff,198) + =emit-cons-null-p= + *kernel raw read 57箇所→=(sexp-tag V)=*
+  (f0d3524f、2 parallel agent、combiner-apply 27/env-leaves-logic 19/cons 5/frame 3/bind 2/arglist 1)。
+- payload: =emit-sexp-int-unwrap=(21108e63) / =nl_sexp_clone_into=(893beef0、word→Sexp) /
+  *store ops imm-aware*(8941c76a、set-car/cdr/value/slot を =nl_sci_store_imm= 経由、parallel agent)。
+- *safe 確認（変更不要）*: =cell-null-p=(Cell は常に heap slot、value は storage-Sexp)、=payload-ptr=/=str-byte-at=/
+  =symbol-eq=(heap-only post-tag-check)、reader-parser(parser は Sexp 構築、eval immediate 非到達)。
+- = *値が immediate word でも全 consumer（tag読み/payload/clone/store/述語）が正しく扱う*。immediate 産出の準備完了。
+
+*残り = producer = native recursive eval（win の本体、core 書き換え）*:
+- 現 =nelisp_eval_call(form,env,out)= は結果を *out-slot(32B Sexp)* へ書く。*win = eval が値を word で産み出す*
+  （Nil/Int 結果が slot を確保しない）。だが「out-slot→word返却」は値 identity を変え、*116 call site + eval core の
+  全 sub-evaluator(symbol/call/cell/self-eval) + nl_apply_* + 全 special form を同時変更*する all-or-nothing 再帰 core。
+- =_w(form,env)->word= wrapper は: self-eval immediate literal(tag<4)は =nl_val_load(form)= で *slot 無し word 直返し*（=win=）、
+  非 literal は tmp+eval+load(=tmp が val_slot を置換、win 無し)。= literal のみの部分 win では Nil(712K、大半は *eval 結果*で
+  literal 非由来)に効かない。*完全 win = nl_apply_* 含む全経路が word を返す native 化*が必須。
+- = consumer 側は完了。*producer の native recursive eval が残りの focused core 作業*（eval architecture 書換）。
+  helper 追加済: =nl_imm_int=/=nl_imm_nil(3)=/=nl_imm_t(7)=/=nl_val_int(sar)=。要追加: =nl_val_load(slot)->word=。
+
 ** 3.1 現状の値渡し ABI（調査A の crux）
 - 全 Sexp は 32B、*ポインタで渡す*。中間値ごとに =(alloc-bytes 32 8)=。AOT codegen は2層を持つ:
   (1) integer scalar（=imm=/=ref=/=arith= = rax の 64bit 整数）、(2) Sexp-slot（32B memory をポインタ参照）。
