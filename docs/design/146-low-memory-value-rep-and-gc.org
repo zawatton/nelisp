@@ -289,6 +289,33 @@ Nil/T temporaries、Int 中間値、T bool、cons 出力 slot、関数 lookup tm
 - ① rc 廃止 → box 縮小（移動高速化）。aliasing は残る（rc は counter であって shared-ptr 性は不変）ので forwarding は必要。
 - = ④③ を ① の後に行えば、新 box layout に rc 不在・immediate 非 box で *最も簡素*。
 
+** 5.A 実装手順 + テスト機構（2026-06-06、5角度 campaign 後の確定計画）
+*前提の更新（実測）*:
+- *live サイズ補正*: §5.1 の「live ~109」は BT40 のみの誤読。livebytes census（=/tmp/livebytes.gdb=）で
+  *全サイズ mark1 = 479K blocks / ~36MB（sample）、garbage ~549MB*。live は依然極小ゆえ compaction は高効率
+  （寄せれば残り ~28 chunk が空 → munmap → peak 1.80GB → boot 256MB + survivor ≒ 数百MB）。
+- *mark coverage は実証済*: 64MB trigger で full load 中 ~28 回 GC 発火・=make test-parallel= 4438 緑。
+  = =nl_gc_mark_slot/nl_gc_mark_roots= の到達網羅は健全（§4 の 16MB segfault は *boot 中発火の timing*で、
+  coverage gap ではない。64MB init floor で回避済）。*∴ moving GC は既存 mark traversal をそのまま rewrite walk に流用可*。
+*テスト機構（§5.2 ERT を full load 無しで回す）*:
+- =scripts/nelisp-standalone-build.el= の re-arm 3 site（=(+ bump 67108864)= @2376/2400/3910）を *小値（例 4MB
+  =4194304=）に*、init（=(ptr-write-u64 268435560 0 67108864)= @5007）は *64MB 維持*（boot-safe）。
+  → 小プログラムでも GC 高頻度発火 → 各 box 型の round-trip を単独 ERT で検証可。本番前に必ず元へ戻す。
+*実装順（§5.1 phase 2-6 を一括 = all-or-nothing、混在不可）*:
+1. *forwarding side-table*: 専用 mmap（old_obj → new_obj、479K entry ~8MB で十分）。chunk-head address 順 walk で
+   mark1 かつ =hdr>=watermark= の block に =fwd[obj]=cursor=（cursor は最低位 growth chunk 先頭から BLOCK_TOTAL 加算）。
+2. *rewrite walk = =nl_gc_mark_slot= の写し*（mark でなく辺書換）: root + 全 live box の各辺
+   （Sexp payload@+8 が heap ptr の時 / vector・record の data_ptr / Symbol・Str の buf ptr@+16）を =fwd[target]= に。
+   boot(chunk-0) も root 領域として walk（mirror→上 watermark live への辺を書換）。*intern region は skip*（不動）。
+3. *memmove*: address 順に =memmove(fwd[obj]-8, obj-8, BLOCK_TOTAL)=（header 込み、低位へ滑らせるので overlap 安全）。
+4. *free-list 全 bucket クリア + chunk cursor 更新*（compaction 後の cursor = 最後の new_obj 末尾）。
+5. *munmap*: cursor==data_start の非 persistent・非 current chunk を unlink + =munmap= + reserved/chunk-count 減。
+   =/tmp/chunklive2.gdb= で「全 chunk pin」が compaction 後「大半 empty」へ変わることを確認。
+*検証ゲート*: §5.2 ERT 群（低 trigger build）→ =make standalone-reader= → =(+ 40 2)=/eq/let/cons/arith smoke →
+=make test-parallel= 4438/0 → =/tmp/measure-load.sh= peak（*ここで初めて 1.80GB→数百MB が出る*）→ 反復決定性。
+*絶対則*: phase 2 の辺を 1 つでも漏らせば munmap 済領域への dangling = 確定 crash。低 trigger ERT で box 型ごとに
+潰してから full load へ。blind 一発実装は禁止（5角度 campaign で緑に保全した consumer 基盤を破壊する）。
+
 * §6 推奨順序と相互依存
 
 #+begin_example
