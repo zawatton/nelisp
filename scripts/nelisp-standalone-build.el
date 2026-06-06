@@ -796,6 +796,22 @@ or the toolchain is newer than the cached object."
                   obj))
             reused))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
+    ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
+    ;; chunk -> GC never walks it; interned buffers are permanent + invisible
+    ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
+    ;; disabled), +840 (268436296) = buffer bump.  Layout: [base, base+16MiB)
+    ;; = open-addressing table (2^20 * 16 B), [base+16MiB, base+64MiB) = name
+    ;; buffer bump arena.  Both slots are in the rebase span so the chunk-arena
+    ;; rewrite makes them nl_arena_base-relative; the 64MiB / 16MiB size
+    ;; literals are < arena base so they stay literal.  Called from
+    ;; `nl_arena_init' AFTER nl_arena_base is seeded.
+    (defun nl_intern_region_init ()
+      (let ((rbase (syscall-direct 9 0 67108864 3 34 -1 0)))
+        (if (< rbase 4096)
+            0
+          (seq
+           (ptr-write-u64 268436288 0 rbase)
+           (ptr-write-u64 268436296 0 (+ rbase 16777216))))))
     (defun nl_quit_flag_ptr () 268435464)))
 
 (defconst nelisp-standalone--windows-stack-reserve #x40000000
@@ -927,6 +943,7 @@ addressing by a runtime base, never by a fixed reservation."
            (seq
             (ptr-write-u64 (data-addr nl_arena_base) 0 base)
             ,@(nelisp-standalone--arena-init-metadata-forms-dynamic 'base size)
+            (nl_intern_region_init)
             base))))))
 
 (defun nelisp-standalone--linux-alloc-chunk-form ()
@@ -1613,21 +1630,21 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
     (defun bf_size_census_block (hdr acc)
       (let ((bt (ptr-read-u64 hdr 0))
             (mark (ptr-read-u64 (+ hdr 8) 0)))
+        ;; le256 sub-buckets: +24 le32-bytes +32 le32-COUNT +40 bt33-64 +48 bt65-256
         (if (= mark 2)
             (ptr-write-u64 (+ acc 8) 0 (+ (ptr-read-u64 (+ acc 8) 0) bt))
           (seq
            (ptr-write-u64 acc 0 (+ (ptr-read-u64 acc 0) bt))
            (if (= bt 88)
                (ptr-write-u64 (+ acc 16) 0 (+ (ptr-read-u64 (+ acc 16) 0) bt))
-             (if (< bt 257)
-                 (ptr-write-u64 (+ acc 24) 0 (+ (ptr-read-u64 (+ acc 24) 0) bt))
-               (if (< bt 4097)
-                   (ptr-write-u64 (+ acc 32) 0 (+ (ptr-read-u64 (+ acc 32) 0) bt))
-                 (if (< bt 262145)
-                     (ptr-write-u64 (+ acc 40) 0 (+ (ptr-read-u64 (+ acc 40) 0) bt))
-                   (if (< bt 2097153)
-                       (ptr-write-u64 (+ acc 48) 0 (+ (ptr-read-u64 (+ acc 48) 0) bt))
-                     (ptr-write-u64 (+ acc 56) 0 (+ (ptr-read-u64 (+ acc 56) 0) bt)))))))))))
+             (if (< bt 33)
+                 (seq (ptr-write-u64 (+ acc 24) 0 (+ (ptr-read-u64 (+ acc 24) 0) bt))
+                      (ptr-write-u64 (+ acc 32) 0 (+ (ptr-read-u64 (+ acc 32) 0) 1)))
+               (if (< bt 65)
+                   (ptr-write-u64 (+ acc 40) 0 (+ (ptr-read-u64 (+ acc 40) 0) bt))
+                 (if (< bt 257)
+                     (ptr-write-u64 (+ acc 48) 0 (+ (ptr-read-u64 (+ acc 48) 0) bt))
+                   0))))))))
     (defun bf_size_census_step (hdr end acc)
       (if (= (nl_gc_bt_ok hdr (ptr-read-u64 hdr 0) end) 0)
           0
@@ -1660,7 +1677,9 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (ptr-write-u64 (+ acc 48) 0 0) (ptr-write-u64 (+ acc 56) 0 0)
          (bf_size_census_chunks (ptr-read-u64 268436160 0) acc)
          (wf_write_nil nil-slot)
-         (wf_cons_int (ptr-read-u64 (+ acc 56) 0) nil-slot s7)
+         (wf_cons_int (if (= (ptr-read-u64 268436288 0) 0) 0
+                        (- (ptr-read-u64 268436296 0) (ptr-read-u64 268436288 0)))
+                      nil-slot s7)
          (wf_cons_int (ptr-read-u64 (+ acc 48) 0) s7 s6)
          (wf_cons_int (ptr-read-u64 (+ acc 40) 0) s6 s5)
          (wf_cons_int (ptr-read-u64 (+ acc 32) 0) s5 s4)

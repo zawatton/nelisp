@@ -201,11 +201,70 @@ lifetime of a Sexp value.  No `let' binding needed.")
        (ptr-write-u64 result-slot 24 n)
        result-slot))
 
-    ;; Alloc + write with n >= 0.
+    ;; ---- symbol-name interning (Doc 08 §8.16) ----
+    ;; Dedup the immutable name buffer across all occurrences of a symbol.
+    ;; eq-safe: `bf_eq2' compares Symbols by NAME (symbol-eq), so a shared
+    ;; buffer never changes eq.  The table + buffers live in a separate mmap
+    ;; region (set up by `nl_intern_region_init'; base @ slot +832, bump @
+    ;; +840) that the GC never walks (not a chunk) -> interned buffers are
+    ;; permanent and invisible to mark/sweep.  Open-addressing table of 2^20
+    ;; slots, each (len+1 @+0, buf @+8); 0 @+0 = empty.  When the region is not
+    ;; set up (base 0) `nl_alloc_symbol_pos' falls back to the plain allocator.
+    ;; No-let style (AOT alloc/ptr-read values can't be `let'-bound): values
+    ;; thread through tail-recursive helper args, like the copy loop.
+    (defun nl_intern_hash (p i n h)
+      (if (< i n)
+          (nl_intern_hash p (+ i 1) n
+                          (logand (* (logxor h (ptr-read-u8 p i)) 16777619) 4294967295))
+        h))
+    (defun nl_intern_eq (a b i n)
+      (if (= i n)
+          1
+        (if (= (ptr-read-u8 a i) (ptr-read-u8 b i))
+            (nl_intern_eq a b (+ i 1) n)
+          0)))
+    (defun nl_intern_slotmatch (slot p n)
+      (if (= (ptr-read-u64 slot 0) (+ n 1))
+          (nl_intern_eq p (ptr-read-u64 slot 8) 0 n)
+        0))
+    (defun nl_intern_probe (table idx p n)
+      (if (= (ptr-read-u64 (+ table (* idx 16)) 0) 0)
+          (+ table (* idx 16))
+        (if (= (nl_intern_slotmatch (+ table (* idx 16)) p n) 1)
+            (+ table (* idx 16))
+          (nl_intern_probe table (logand (+ idx 1) 1048575) p n))))
+    (defun nl_intern_bump (n)
+      (and (ptr-write-u64 268436296 0
+                          (+ (ptr-read-u64 268436296 0) (if (= n 0) 1 n)))
+           (- (ptr-read-u64 268436296 0) (if (= n 0) 1 n))))
+    (defun nl_intern_write_sexp (result-slot buf n)
+      (and (ptr-write-u8  result-slot 0  4)
+           (ptr-write-u64 result-slot 8  (if (= n 0) 1 n))
+           (ptr-write-u64 result-slot 16 buf)
+           (ptr-write-u64 result-slot 24 n)
+           result-slot))
+    (defun nl_intern_insert (slot p n result-slot buf)
+      (and (nl_alloc_str_copy_loop p buf 0 n)
+           (ptr-write-u64 slot 0 (+ n 1))
+           (ptr-write-u64 slot 8 buf)
+           (nl_intern_write_sexp result-slot buf n)))
+    (defun nl_intern_finish (slot p n result-slot)
+      (if (= (ptr-read-u64 slot 0) 0)
+          (nl_intern_insert slot p n result-slot (nl_intern_bump n))
+        (nl_intern_write_sexp result-slot (ptr-read-u64 slot 8) n)))
+
+    ;; Alloc + write with n >= 0.  Intern via the region when set up (+832 !=
+    ;; 0); otherwise fall back to a fresh per-occurrence buffer.
     (defun nl_alloc_symbol_pos (bytes-ptr n result-slot)
-      (nl_alloc_symbol_write
-       bytes-ptr n (if (= n 0) 1 n) result-slot
-       (alloc-bytes (if (= n 0) 1 n) 1)))
+      (if (= (ptr-read-u64 268436288 0) 0)
+          (nl_alloc_symbol_write
+           bytes-ptr n (if (= n 0) 1 n) result-slot
+           (alloc-bytes (if (= n 0) 1 n) 1))
+        (nl_intern_finish
+         (nl_intern_probe (ptr-read-u64 268436288 0)
+                          (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
+                          bytes-ptr n)
+         bytes-ptr n result-slot)))
 
     ;; Public entry: nl_alloc_symbol(bytes_ptr, len, result_slot).
     (defun nl_alloc_symbol (bytes-ptr len result-slot)
