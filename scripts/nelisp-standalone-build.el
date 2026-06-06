@@ -3001,6 +3001,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--eval-source-string") . (bf_eval_source_string args env out))
     ((:lit "nelisp--syscall-read-file") . (nl_bi_read_file args out))
     ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
+    ((:lit "nelisp--syscall-path") . (nl_bi_syscall_path args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
@@ -3192,6 +3193,19 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
          (nl_os_write_stderr nl 1)
          (wf_write_nil out)
          0)))
+    ;; nelisp--syscall-path NR PATH: generic path-string syscall.  Marshals
+    ;; PATH to a NUL-terminated C string (nl_bi_make_cpath), then issues
+    ;; syscall NR with the path pointer in rdi and the remaining arg registers
+    ;; zeroed -- enough for unlink(87) / rmdir(84) / access(21) and similar
+    ;; one-path syscalls.  Returns the raw kernel result (0 = success,
+    ;; negative = -errno) as an Int Sexp.  Pure elisp: same helpers as the
+    ;; nl-write-file impl plus the `syscall-direct' grammar op (no new Rust).
+    (defun nl_bi_syscall_path (args out)
+      (let* ((nr (wf_argval args 0))
+             (path_sx (wf_arg_ptr args 1))
+             (cpath (nl_bi_make_cpath path_sx))
+             (rc (syscall-direct nr cpath 0 0 0 0 0)))
+        (wf_write_int out rc)))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
@@ -4080,6 +4094,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
+    "nelisp--syscall-path"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
     "exit"
