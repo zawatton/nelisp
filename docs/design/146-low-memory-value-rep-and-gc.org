@@ -142,6 +142,22 @@ flag-day の幅を狭める。
   (3) eval ABI を word 返却に（最難・専用集中）→ (4) GC root imm-aware → (5) measure。
   *本セッションは consumer 側 + helper（step 1,2,6,7）を全緑で着地*。producer cut は eval core の集中作業。
 
+*** 3.0.3 *正確な残 scope（2026-06-06 訂正）*: consumer 側は未完、producer は 116 site
+着手調査で *consumer 側が sexp-tag だけでは不完全*と判明（earlier の「consumer 完了」を訂正）:
+- *codegen の raw tag-read（=movzx byte [reg]=、nl_val_tag 非経由）*: =emit-cons-null-p=(:12197) /
+  =emit-cell-null-p=(:12944) は *任意の値*の tag を raw read → immediate word で segfault。imm-aware 化要
+  （=emit-sexp-tag= と同型: imm なら値判定、slot なら raw）。=emit-sexp-payload-ptr=/=str-byte-at=/=symbol-eq= は
+  *heap 確定後にのみ呼ばれる*なら immediate 非到達で安全だが要確認。
+- *kernel の raw =(ptr-read-u64 V 0)= 値 tag-read ~77 箇所*（=nelisp-cc-*.el=）: sexp-tag 非経由の手書き。
+  値 tag-read を =nl_val_tag= へ置換要（struct field/control slot 読みと区別する手作業、最難関の残り）。
+- *producer = eval ABI*: =nelisp_eval_call= の call site *116 箇所 / 15 ファイル* + eval core の全 sub-evaluator
+  + 全 special form。値 identity「slot ptr→word」変更ゆえ *all-or-nothing*（incremental-green 不可）の再帰 core 変更。
+- = *完全な immediates 変換 = (codegen predicate 残) + (kernel raw read 77) + (producer 116 site ABI)* の
+  大規模 multi-piece flag-day。consumer 主要 codegen（sexp-tag/int-unwrap/clone）と helper は緑で着地済だが、
+  *残りは consumer の述語+raw read 全網羅 → producer 116-site ABI* の専用集中作業。
+- *step 8 baseline 実測*: consumer 変更後も peak 1.80GB（退行なし、immediate 未産出ゆえ memory 中立）。
+  *win は producer ABI で Nil(712K)/Symbol(747K) の transient slot が消えて初めて出る*。
+
 ** 3.1 現状の値渡し ABI（調査A の crux）
 - 全 Sexp は 32B、*ポインタで渡す*。中間値ごとに =(alloc-bytes 32 8)=。AOT codegen は2層を持つ:
   (1) integer scalar（=imm=/=ref=/=arith= = rax の 64bit 整数）、(2) Sexp-slot（32B memory をポインタ参照）。
