@@ -474,6 +474,15 @@ NELISP_LOAD_PATH = -L $(NELISP_ROOT)/src \
 	$(foreach d,$(wildcard $(NELISP_ROOT)/packages/*/src),-L $(d))
 SRC_FILES = $(wildcard src/*.el)
 TEST_FILES = $(wildcard test/*.el)
+# Heavy integration ERTs spawn subprocesses and need NEMACS_NELISP_ROOT + a
+# built reader; they have dedicated targets (gate5/gate6/vendor-nelc-cache[-set])
+# and must stay out of the umbrella `make test'.
+TEST_INTEGRATION_FILES = \
+	test/nelisp-emacs-artifact-gate5-test.el \
+	test/nelisp-emacs-artifact-gate6-test.el \
+	test/nemacs-vendor-cache-test.el \
+	test/nemacs-vendor-cache-set-test.el
+TEST_UNIT_FILES = $(filter-out $(TEST_INTEGRATION_FILES),$(TEST_FILES))
 
 .PHONY: compile test gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-repl-replay-fast verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
@@ -540,8 +549,8 @@ compile:
 		-f batch-byte-compile $(SRC_FILES)
 
 test:
-	$(EMACS) -L src -L test -L demo $(NELISP_LOAD_PATH) \
-		$(foreach t,$(TEST_FILES),-l $(t)) \
+	$(EMACS) -L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
+		$(foreach t,$(TEST_UNIT_FILES),-l $(t)) \
 		-f ert-run-tests-batch-and-exit
 
 gate5:
