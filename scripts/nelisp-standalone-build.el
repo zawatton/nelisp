@@ -1302,7 +1302,12 @@ addressing by a runtime base, never by a fixed reservation."
             (nl_seq2 (nl_gc_mark_slot pool)      ; slot-pool vector
              (nl_seq2 (nl_gc_mark_slot src)      ; source string
               (nl_seq2 (nl_gc_mark_slot cursor)  ; reader cursor Sexp
-                       (nl_gc_mark_slot bsym))))))))))) ; builtin symbol slot
+                       (nl_seq2 (nl_gc_mark_slot bsym)
+                                ;; Doc 146: shared symentry symbol (268436328) is
+                                ;; a standalone block referenced only by this slot;
+                                ;; mark it so it survives GC (name buf is interned).
+                                (if (= (ptr-read-u64 268436328 0) 0) 0
+                                  (nl_gc_mark_block (ptr-read-u64 268436328 0)))))))))))))) ; bsym + shared symentry
     (defun nl_gc_collect (ctx result out pool src cursor bsym)
       (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
       (seq
