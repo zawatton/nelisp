@@ -832,6 +832,17 @@ or the toolchain is newer than the cached object."
         (if (= (logand v 3) 1)
             2
           (if (= v 3) 0 1))))
+    ;; Doc 146 §3.0 step 3/4: load a 32-byte storage Sexp at SLOT into a passing
+    ;; value WORD.  Immediate tags collapse to their word (Int -> (n<<2)|1, Nil
+    ;; -> 3, T -> 7); heap tags (Float/Symbol/Str/Cons/Vector/...) keep the slot
+    ;; pointer.  This is the storage-Sexp -> word boundary, inverse of
+    ;; nl_sci_store_imm.  SLOT is always an 8-aligned storage slot.
+    (defun nl_val_load (slot)
+      (let ((tg (ptr-read-u8 slot 0)))
+        (if (= tg 2) (nl_imm_int (ptr-read-u64 slot 8))
+          (if (= tg 0) 3
+            (if (= tg 1) 7
+              slot)))))
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
