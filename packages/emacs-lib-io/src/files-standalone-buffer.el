@@ -658,6 +658,8 @@ assumed to already exist."
 (defconst files--syscall-unlink 87 "Linux x86_64 unlink(2) syscall number.")
 (defconst files--syscall-rmdir 84 "Linux x86_64 rmdir(2) syscall number.")
 (defconst files--syscall-rename 82 "Linux x86_64 rename(2) syscall number.")
+(defconst files--syscall-link 86 "Linux x86_64 link(2) syscall number.")
+(defconst files--syscall-symlink 88 "Linux x86_64 symlink(2) syscall number.")
 
 (when (files--install-fallback-function-p 'delete-file)
   (defun delete-file (filename &optional _trash)
@@ -701,6 +703,40 @@ non-empty directory)."
             (signal 'file-error (list "Renaming" file newname rc))))
       (signal 'file-error
               (list "rename-file unavailable (no nelisp--syscall-path2)" file)))
+    nil))
+
+(when (files--install-fallback-function-p 'add-name-to-file)
+  (defun add-name-to-file (oldname newname &optional _ok-if-already-exists)
+    "Make a hard link NEWNAME to OLDNAME via the reader's `nelisp--syscall-path2'
+link(2).  Signals `file-error' on kernel failure (rc < 0).
+OK-IF-ALREADY-EXISTS is ignored."
+    (if (fboundp 'nelisp--syscall-path2)
+        (let ((rc (nelisp--syscall-path2 files--syscall-link
+                                         (files--expand-file-name oldname)
+                                         (files--expand-file-name newname))))
+          (when (< rc 0)
+            (signal 'file-error (list "Adding new name" oldname newname rc))))
+      (signal 'file-error
+              (list "add-name-to-file unavailable (no nelisp--syscall-path2)"
+                    oldname)))
+    nil))
+
+(when (files--install-fallback-function-p 'make-symbolic-link)
+  (defun make-symbolic-link (target linkname &optional _ok-if-already-exists)
+    "Make a symbolic link LINKNAME pointing at TARGET via the reader's
+`nelisp--syscall-path2' symlink(2).  TARGET is stored verbatim (not
+expanded -- a symlink target may legitimately be relative); LINKNAME is
+the path where the link is created.  Signals `file-error' on kernel
+failure (rc < 0).  OK-IF-ALREADY-EXISTS is ignored."
+    (if (fboundp 'nelisp--syscall-path2)
+        (let ((rc (nelisp--syscall-path2 files--syscall-symlink
+                                         target
+                                         (files--expand-file-name linkname))))
+          (when (< rc 0)
+            (signal 'file-error (list "Making symbolic link" target linkname rc))))
+      (signal 'file-error
+              (list "make-symbolic-link unavailable (no nelisp--syscall-path2)"
+                    linkname)))
     nil))
 
 ;; Bridge the file reader to the standalone reader's `rdf' primitive (the only
