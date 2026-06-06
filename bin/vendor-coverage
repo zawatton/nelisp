@@ -6,9 +6,12 @@
 #   1. grep vendor/emacs-lisp for `(symbol' call-position heads + frequency
 #   2. host Emacs keeps only REAL callables (func/macro/sform per host Emacs 30),
 #      dropping variable-name noise
-#   3. the vendored standalone reader fboundp-tests each (bare-reader builtin set)
-#   4. build/vendor-coverage-missing.tsv: missing func/macro ranked by call
-#      frequency, tagged substrate (buffer/text/window/...) vs other.
+#   3. the standalone reader fboundp-tests each, then SUBTRACT every symbol the
+#      nemacs substrate (src/*.el) + nelisp prelude/stdlib already define -- a
+#      symbol is TRULY missing only if no source layer defines it (the bare
+#      reader does not load the substrate, so this avoids false positives)
+#   4. build/vendor-coverage-missing.tsv: truly-missing func/macro ranked by
+#      call frequency, tagged substrate (buffer/text/window/...) vs other.
 #
 # Env: EMACS, NEMACS_NELISP, VCOV_TOPN (grep symbols, default 1200),
 #      VCOV_SHOW (rows printed, default 60)
@@ -22,8 +25,8 @@ OUT="$ROOT/build/vendor-coverage-missing.tsv"; mkdir -p "$ROOT/build"
 
 SUBSTRATE='point|buffer|insert|goto-char|forward-|backward-|line-|-line$|search|looking-at|char-after|char-before|delete-region|delete-char|narrow|widen|region|^mark|window|frame|keymap|define-key|syntax|text-propert|propertize|overlay|current-column|bolp|eobp|bobp|set-buffer|erase-buffer|skip-chars|kill-|yank|recenter|scroll|cursor|selected-|minibuffer|read-string|read-char|completing-read|y-or-n-p|call-interactively|command'
 
-freq="$(mktemp)"; call="$(mktemp)"; miss="$(mktemp)"
-trap 'rm -f "$freq" "$call" "$miss"' EXIT
+freq="$(mktemp)"; call="$(mktemp)"; miss="$(mktemp)"; defined="$(mktemp)"
+trap 'rm -f "$freq" "$call" "$miss" "$defined"' EXIT
 
 grep -rhoE '\(([a-z][a-z0-9+*/<>=_!?:-]+)' vendor/emacs-lisp --include='*.el' 2>/dev/null \
   | sed 's/^(//' | sort | uniq -c | sort -rn | head -"$TOPN" > "$freq"
@@ -40,7 +43,15 @@ grep -rhoE '\(([a-z][a-z0-9+*/<>=_!?:-]+)' vendor/emacs-lisp --include='*.el' 2>
 
 syms="$(awk -F'\t' '{print $3}' "$call" | tr '\n' ' ')"
 "$BIN" --eval "(let ((m nil)) (dolist (s (quote ($syms))) (if (fboundp s) nil (setq m (cons s m)))) m)" 2>&1 \
-  | tr -d '()' | tr ' ' '\n' | grep -v '^$' | sort -u > "$miss"
+  | tr -d '()' | tr ' ' '\n' | grep -v '^$' | sort -u > "$miss.bare"
+
+# Symbols DEFINED by the nemacs substrate (src/) + nelisp prelude + nelisp stdlib.
+# The bare reader's --eval does not load these, so subtract them: a symbol is
+# only TRULY missing if no source layer defines it.
+grep -rhoE '\((cl-)?(defun|defmacro|defalias|defsubst|define-error|define-minor-mode|define-derived-mode|define-globalized-minor-mode) [A-Za-z0-9+*/<>=_!?:-]+' \
+  src/ scripts/nelisp-stdlib-prelude.el vendor/nelisp/lisp vendor/nelisp/src 2>/dev/null \
+  | sed -E 's/^\([A-Za-z0-9-]+ +//' | sort -u > "$defined"
+grep -vxF -f "$defined" "$miss.bare" > "$miss"; rm -f "$miss.bare"
 
 awk -F'\t' -v ss="$SUBSTRATE" '
   BEGIN{ split("lambda function quote closure", a, " "); for(i in a) f[a[i]]=1 }
