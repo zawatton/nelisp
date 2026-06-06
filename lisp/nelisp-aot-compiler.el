@@ -12040,15 +12040,44 @@ the compile-elisp-objects manifest."
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
 
 (defun nelisp-aot-compiler--emit-sexp-tag (node buf)
-  "Emit `movzx rax, byte ptr [rdi]' after computing NODE's :ptr into rdi.
-Result: the tag byte at offset `nelisp-sexp--offset-tag' (= 0)
-zero-extended to a 64-bit value in rax.  See `docs/arch/sexp-abi.md'
-§5.1."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
-    ;; Compute :ptr into rax, then move into rdi as the base register.
-    (nelisp-aot-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)))
+  "Emit an immediate-aware tag read (Doc 146 §3.0 step 2).
+NODE's :ptr computes a value word V into rax.  If V's low bit is 0 it
+is an 8-aligned slot pointer and the tag is the byte at [V] (= the old
+`movzx rax, byte [rdi]').  If low bit 1 it is a low-bit-tagged
+immediate: (V&3)==1 -> Int(2); V==3 -> Nil(0); V==7 -> T(1).  Uses only
+rax/rdi (no extra register clobber vs the old emit).  Until immediates
+are actually produced (later steps) every value is a slot pointer, so
+this is behaviour-preserving.  Labels are uniquified by the buffer
+byte-offset (unique per emit site within a function buffer)."
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (id (aref buf 1))
+         (slot-lbl (intern (format "stag%d_slot" id)))
+         (int-lbl  (intern (format "stag%d_int" id)))
+         (nil-lbl  (intern (format "stag%d_nil" id)))
+         (done-lbl (intern (format "stag%d_done" id))))
+    (nelisp-aot-compiler--emit-value ptr buf)          ; rax = value word V
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)      ; rdi = V (preserved)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)      ; rax = V & 1 (ZF set if 0)
+    (nelisp-asm-x86_64-jz-rel32 buf slot-lbl)          ; low bit 0 -> slot ptr
+    ;; immediate: rdi = V
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 3)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)      ; rax = V & 3
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-jz-rel32 buf int-lbl)           ; (V&3)==1 -> Int
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rdi 3)
+    (nelisp-asm-x86_64-jz-rel32 buf nil-lbl)           ; V==3 -> Nil
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)           ; else V==7 -> T
+    (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
+    (nelisp-asm-x86_64-define-label buf nil-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)           ; Nil
+    (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
+    (nelisp-asm-x86_64-define-label buf int-lbl)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 2)           ; Int
+    (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
+    (nelisp-asm-x86_64-define-label buf slot-lbl)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi) ; tag byte at [V]
+    (nelisp-asm-x86_64-define-label buf done-lbl)))
 
 (defun nelisp-aot-compiler--emit-f64-to-i64-trunc (node buf)
   "Emit `CVTTSD2SI rax, xmm0' after computing NODE's :f64-expr into xmm0.

@@ -2139,10 +2139,12 @@ correctly."
          (should (eq (car (cdr err)) expected-tag)))))))
 
 (ert-deftest nelisp-aot-compiler/sexp-tag-emit-bytes ()
-  "Doc 100 §100.B: (sexp-tag PTR) emits the documented byte sequence.
-The expected tail of the .text body is `48 89 C7 48 0F B6 07' (=
-mov rdi, rax + movzx rax, byte ptr [rdi]) — what `--emit-sexp-tag'
-appends after the `:ptr' sub-expression has computed into rax."
+  "Doc 146 §3.0: (sexp-tag PTR) emits an immediate-aware tag read.
+emit-sexp-tag now dispatches on the value word's low bit, so the
+slot-path `mov rdi, rax' (48 89 C7) and `movzx rax, byte ptr [rdi]'
+(48 0F B6 07) are both still emitted but are no longer adjacent (the
+low-bit immediate dispatch sits between them).  Verify both byte groups
+are present rather than the old contiguous 7-byte tail."
   (let* ((sexp '(seq (defun probe (p) (sexp-tag p))))
          (path (make-temp-file "nelisp-doc100-sexp-tag-" nil ".o")))
     (unwind-protect
@@ -2152,11 +2154,13 @@ appends after the `:ptr' sub-expression has computed into rax."
                           (set-buffer-multibyte nil)
                           (insert-file-contents-literally path)
                           (buffer-string)))
-                 ;; The 7-byte tail before the `ret' (= 0xC3) and any
-                 ;; ELF trailer.  Match the substring anywhere in .text.
-                 (needle (unibyte-string #x48 #x89 #xC7
-                                         #x48 #x0F #xB6 #x07)))
-            (should (string-search needle bytes))))
+                 ;; Doc 146 §3.0: immediate-aware emit keeps both the
+                 ;; `mov rdi, rax' (48 89 C7) and the slot-path `movzx rax,
+                 ;; byte [rdi]' (48 0F B6 07), just no longer adjacent.
+                 (mov-rdi (unibyte-string #x48 #x89 #xC7))
+                 (movzx   (unibyte-string #x48 #x0F #xB6 #x07)))
+            (should (string-search mov-rdi bytes))
+            (should (string-search movzx bytes))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-aot-compiler/sexp-int-unwrap-emit-bytes ()
