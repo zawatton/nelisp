@@ -1516,6 +1516,19 @@
      :source-var nelisp-cc-sexp-clone-into--source
      :output "nl_sexp_clone_into.o"
      :requires-arch x86_64)
+    ;; Doc 147 Phase 0 — the word<->32B-slot keystone helpers.
+    ;; `nl_val_load(word, scratch32)' returns a 32B-slot VIEW (slot
+    ;; words pass through; immediates materialise into SCRATCH32 via
+    ;; `nl_sci_store_imm').  `nl_val_clone_into(src_slot, dst_word_ptr)'
+    ;; turns a 32B-slot SRC into an 8B tagged WORD stored at DST
+    ;; (immediate passthrough; boxed/string clone into a FRESH 32B box
+    ;; via `nl_sexp_clone_into', never a transient scratch slot).
+    ;; Four-entry seq: nl_vl_prog2 / nl_val_load / nl_vci_box /
+    ;; nl_val_clone_into.  Linux-x86_64 only.
+    (nelisp-cc-val-load
+     :source-var nelisp-cc-val-load--source
+     :output "nl_val_load.o"
+     :requires-arch x86_64)
     ;; Doc 135 Stage 135.C — eval-port env-leaf wiring (7 entries).
     ;; Lowered from packages/nelisp-sys/eval-port/*.nl via nelisp-sys-backend.
     ;; Resolves the env-leaf + non-env undefined link symbols introduced when

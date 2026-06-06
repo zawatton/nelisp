@@ -1,0 +1,114 @@
+#+TITLE: Doc 147 — Container-slot representation shrink (32B Sexp → 8B tagged-word)
+#+STARTUP: overview
+
+* Motivation (measured 2026-06-06)
+
+Standalone-reader full-vendor-load (319 files, /tmp/full-prog.el) peak RSS with
+the working compacting GC (Doc 146 §5) = *850MB*. Empirically:
+
+| experiment                           | peak              |
+|--------------------------------------+-------------------|
+| baseline                             | 1.80GB            |
+| str-copy iterative (147c6ed6)        | 1.06GB            |
+| compacting GC on (84593f81)          | 850MB             |
+| chunk-0 256MB -> 96MB                 | 850MB (no effect) |
+| GC trigger 16MB -> 1MB                | 850MB (no effect) |
+| remove top-20 large data defconsts   | 434MB (-416MB)    |
+
+So ~416MB of the peak is *live big-data structures* (idna-mapping-table,
+org-entities, emoji--labels, auto-mode-alist, cl-font-lock-built-in--functions,
+unicode char-tables, big alists) bloated by the fat representation. chunk-0 size
+and the GC trigger are irrelevant; the lever is the *representation*.
+
+* Current layout (verified)
+
+Source of truth: =lisp/nelisp-sexp-layout.el= (no Rust side; build-tool/ removed).
+- Sexp slot = 32B: tag u8 @0, payload @8.
+- *NlConsBox 72B*: car 32B-Sexp @0, cdr 32B-Sexp @32, refcount @64.
+- NlVector: header (cap@0,data_ptr@8,len@16,rc@24); data buffer = cap*32B slots.
+- NlRecord 64B: type_tag 32B-Sexp@0, slots (cap@32,ptr@40,len@48), rc@56; buffer n*32B.
+- NlCell 40B: value 32B-Sexp@0, rc@32.
+
+Accessors: ~302 textual uses of =nl_cons_car_ptr= / =nl_cons_cdr_ptr=. Both return
+a *const Sexp pointer to a 32B slot; every consumer then does sexp-tag /
+nelisp_eval_call / nl_sexp_clone_into / recurse. car_ptr = (sexp-payload-ptr arg)
+(box ptr, car@0); cdr_ptr = (+ box 32).
+
+GC walks (scripts/nelisp-standalone-build.el): nl_gc_mark_slot/_cons/_vec_slots,
+nl_compact_rw_slot/_cons/_vec_slots, nl_compact_move_step. *No immediate-skip
+anywhere* — safe today because containers are 32B and never hold a tagged word.
+
+Partial tagged-word scheme already present: nl_sci_store_imm, nl_sexp_clone_into
+(branches on (logand src 1)), nl_consbox_set_car/_cdr + nl_vector_set_slot accept
+an immediate word, --emit-sexp-tag is immediate-aware. *Missing*: nl_val_load
+(word->32B-slot view), immediate-aware --emit-sexp-payload-ptr, eval-ABI word
+return (producer side essentially un-started).
+
+* Target layout
+
+Word encoding (formalize the existing immediate set): low bit 1 = immediate
+(Int=(n<<2)|1, Nil=3, T=7); low bit 0 = 8-aligned pointer to a 32B Sexp box.
+Float stays a low-bit-0 pointer (no NaN-boxing). *Only container slots shrink to
+8B; the child Sexp boxes stay 32B.*
+
+- NlConsBox 72B -> *24B*: car word@0, cdr word@8, rc@16.
+- NlVector data buffer: cap*32B -> *cap*8B*.
+- NlRecord slots buffer: n*32B -> *n*8B* (type_tag may stay inline 32B@0, or shrink
+  to word@0 as an optional sub-phase re-packing the Vec header).
+- NlCell 40B -> *16B*: value word@0, rc@8.
+
+* The keystone: collapse the 302-site surface to ~2 functions
+
+Add =nl_val_load(word, scratch32) -> *const Sexp= (new lisp/nelisp-cc-val-load.el):
+low-bit-0 -> return word; low-bit-1 -> nl_sci_store_imm(word, scratch32) -> scratch32.
+
+Add word-returning wrappers =nl_cons_car= / =nl_cons_cdr= that load the 8B word at
+box+0 / box+8, nl_val_load it into a scratch 32B slot, and return that slot ptr.
+Make =nl_cons_car_ptr= / =nl_cons_cdr_ptr= forward to the wrappers. Then *the ~302
+consumer sites need NO per-site edits* — they still get a 32B-slot view. For
+construction, add =nl_val_clone_into(src_slot, dst_word_ptr) -> word= (immediate
+passthrough, else clone the boxed/string child into a fresh 32B box and store its
+pointer-word — never store a pointer to a transient scratch slot).
+
+* Phased migration (each phase = an atomic layout flip behind the abstraction)
+
+- *Phase 0* — abstraction, NO layout change, stays green @850MB: nl_val_load,
+  nl_val_clone_into, nl_cons_car/_cdr wrappers, build-manifest registration,
+  immediate-aware --emit-sexp-payload-ptr. The safe anchor; keep permanently.
+- *Phase 1* — Cell shrink (smallest blast radius, proves the pattern).
+- *Phase 2* — Vector + Record data buffers (stride 32->8, buffer n*8). *Bulk of the
+  win* (char-tables, vectors, alists-of-vectors). GC vec arms: stride 8 +
+  per-slot immediate-skip.
+- *Phase 3* — Cons box 72->24B (car@0/cdr@8/rc@16). Highest care: cons-make-with-
+  clone must nl_val_clone_into children; cdr offset 32->8 EVERYWHERE (esp. the 86
+  sites in nelisp-standalone-build.el + --emit-cons-cdr-raw); GC cons arms read
+  word@0/@8, immediate-skip, cdr tail-loop on the cdr word.
+- *Phase 4* — tighten sexp-payload-ptr, cleanup, re-baseline.
+
+* Parallelization (serialize the contract, parallelize the impl)
+
+Agent-0 solo lands Phase 0 + publishes frozen signatures. Then split by container
+(disjoint files): Agent-A Cell, Agent-B Vector, Agent-C Record, Agent-D Cons.
+Shared files (nelisp-aot-compiler.el, scripts/nelisp-standalone-build.el) resolved
+by section ownership (each agent edits only its container's emit fns + GC arms,
+disjoint defuns; merge order A->B->C->D). The 302 consumer sites are verify-only.
+Every emit fn has an *ARM64 twin* — edit both.
+
+* Verification (every phase boundary)
+
+- =make standalone-reader= links; =make test-parallel= green (4438; known flakes:
+  process-sentinel + emit-sexp-float-unwrap stale assertion).
+- GC stress: the 20x vendor-load soak (deterministic 850MB pre-change) + gc-bench.
+- Peak: =bash /tmp/measure-load.sh /tmp/full-prog.el= (baseline 850MB -> target
+  ~434MB + overhead).
+
+* Risks
+
+1. Dangling: cons-make-with-clone / vector-fill storing a pointer to a recycled
+   scratch slot -> must nl_val_clone_into into a fresh 32B box.
+2. GC immediate-skip omissions -> use-after-free only under GC (soak each phase).
+3. Hidden box+32 cdr reads (86 sites in standalone-build + --emit-cons-cdr-raw).
+4. Refcount discipline: keep clone-vs-raw split, at word granularity.
+5. ARM64 twins.
+
+Rollback: each phase independently revertable behind the Phase-0 anchor.
