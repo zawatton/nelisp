@@ -112,3 +112,53 @@ Every emit fn has an *ARM64 twin* — edit both.
 5. ARM64 twins.
 
 Rollback: each phase independently revertable behind the Phase-0 anchor.
+
+* Phase 2 blocker (found 2026-06-07) — interior-pointer write surface
+
+Phase 0 (keystone) and Phase 1 (Cell shrink + GC tag-11 word-awareness) SHIPPED on
+feat/doc147-box-shrink (49b77056, 42010489): full-prog rc=0, 20x soak clean, peak
+860MB (cells are a small fraction; no win expected, pattern proven).
+
+Phase 2 (Vector/Record buffer shrink) is BLOCKED as specced. Cell had NO interior-
+pointer accessor (cell-value always materializes a 32B view into a caller OUT slot),
+which is why the 8B flip was transparent. Vector/Record expose =vector-ref-ptr= /
+=record-slot-ref-ptr= grammar ops that return a RAW INTERIOR POINTER into the data
+buffer, and ~257 sites (190 + 67) treat it as a 32B Sexp slot they READ *and WRITE*.
+Shrinking the buffer to cap*8 makes a 32B write through =(vector-ref-ptr v N)= stomp
+slots N+1..N+3 -> heap corruption under GC soak. Read consumers can be fixed by
+having --emit-vector/record-slot-ptr-core materialize the 8B word into a 32B scratch
+via nl_val_load (return a 32B-slot view); WRITE consumers cannot (a view is not
+write-through).
+
+Key WRITE consumers: the reader PARSE POOL (lisp/nelisp-cc-reader-parser.el writes
+32B parse results into (vector-ref-ptr pool N)); the AOT =nelisp-aot-compiler--
+scratch-slot= idiom (= (vector-ref-ptr scratch i), used by literal materialization);
+the symbol MIRROR buckets; frame/env records; wf_copy32 sites in standalone-build.
+
+** Required prerequisite stage (Phase 1.5) before the buffer can shrink
+
+1. Migrate the internal 32B-scratch pools (parse pool, --scratch-slot, wf_copy32
+   destinations) off the tagged-word Vector type onto raw =alloc-bytes (* n 32) 8=
+   32B-slot buffers (internal scratch, not user Lisp vectors, so they need not be
+   GC-managed tagged-word Vectors).
+2. Make every remaining =vector-ref-ptr= / =record-slot-ref-ptr= READ go through a
+   word-load + 32B-view materialization, and every WRITE go through *-set-slot (which
+   clones a word) — no site keeps a raw write-through interior pointer.
+3. THEN flip the buffer stride to 8B + the GC walkers (nl_gc_mark_vec_slots /
+   nl_compact_rw_vec_slots at scripts/nelisp-standalone-build.el:1166/1429) to
+   stride-8 + per-slot immediate-skip (the GC change is specced/ready and mirrors the
+   Phase-1 tag-11 pattern verbatim; coupled to the buffer layout, must not ship before
+   the consumers migrate).
+
+** Phase 2 notes (verified, ready once 1.5 lands)
+
+- char-tables (#^[...] / #^^[...], the ~416MB lever) read as plain Vectors (tag 8) in
+  the standalone reader -> they shrink FOR FREE with the Vector buffer. bool-vectors
+  (tag 10) hold raw u8, never Sexp slots -> untouched.
+- Record type_tag stays inline 32B@0 (header offsets unchanged); only the slots buffer
+  shrinks. Use a NEW stride constant (container-word-size 8) for the 4 slot-ptr-core
+  emitters only — do NOT repurpose nelisp-sexp--slot-size (still the 32B child size).
+- Stride sites to flip (verified inventory): GC 1166/1429; nlvector-set-slot:70
+  (shl 5->3), nlvector-alloc:95 fill + :130 buffer; nlrecord-set-slot:80,
+  nlrecord-alloc:73 fill + :110 buffer; aot --emit-vector/record-slot-ptr-core
+  12547/12364 + ARM64 twins 14281/14208.
