@@ -159,11 +159,15 @@ lifetime of a Sexp value.  No `let' binding needed.")
   '(seq
     ;; Tail-recursive byte copier: copies N bytes from SRC to DST.
     (defun nl_alloc_str_copy_loop (src dst i n)
-      (if (= i n)
-          1
-        (and
-         (ptr-write-u8 dst i (ptr-read-u8 src i))
-         (nl_alloc_str_copy_loop src dst (+ i 1) n))))
+      ;; ITERATIVE 8-byte bulk + byte tail.  The old per-byte tail recursion
+      ;; recursed once per byte, so a large string drove the native stack to
+      ;; ~768MB -- the dominant peak-RSS contributor + deep-stack SIGSEGV source.
+      (let ((k i))
+        (while (<= (+ k 8) n)
+          (and (ptr-write-u64 dst k (ptr-read-u64 src k)) (setq k (+ k 8))))
+        (while (< k n)
+          (and (ptr-write-u8 dst k (ptr-read-u8 src k)) (setq k (+ k 1))))
+        1))
 
     ;; Inner Sexp::Str writer.
     ;; bytes-ptr: source, n: logical length, alloc-n: allocated cap,
