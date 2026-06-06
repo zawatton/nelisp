@@ -3178,7 +3178,12 @@ patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
               (if (= rc_eval 0)
                   (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
                     (if (= rc_rest 0)
-                        (seq (nelisp_cons_construct eval_slot rest_slot acc_slot) 0)
+                        ;; Doc 146 §3.0 step 3: load the evaluated arg + rest
+                        ;; into value WORDS (immediate for Nil/Int results) and
+                        ;; build the cons element from words; cons_construct is
+                        ;; immediate-aware.  Heap results load back to their slot
+                        ;; pointer, so this is behaviour-preserving for them.
+                        (seq (nelisp_cons_construct (nl_val_load eval_slot) (nl_val_load rest_slot) acc_slot) 0)
                       1))
                 1)))
         (nl_write_nil_slot acc_slot)))
