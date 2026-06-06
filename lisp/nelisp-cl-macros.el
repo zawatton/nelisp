@@ -651,7 +651,7 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 ;; Doc 49 Wave 7 follow-up (2026-05-22): minimal cl-lib subset wired into
 ;; the same module so `(require 'cl-lib)' resolves via featurep without
 ;; needing a separate `lisp/cl-lib.el' bake entry.  Coverage = what
-;; `nelisp-phase47-compiler.el' and `scripts/compile-elisp-objects.el'
+;; `nelisp-aot-compiler.el' and `scripts/compile-elisp-objects.el'
 ;; need to run end-to-end under `nelisp --batch'.
 ;;
 ;; Already provided elsewhere (kept here for reference):
@@ -704,7 +704,7 @@ Returns SEQ (= first sequence) like Emacs `cl-mapc'."
 
 (defun cl-subseq (seq start &optional end)
   "Return the subsequence of SEQ from START up to END (default end of SEQ).
-Supports proper lists only (= what `nelisp-phase47-compiler.el' uses)."
+Supports proper lists only (= what `nelisp-aot-compiler.el' uses)."
   (let ((tail (nthcdr start seq))
         (n (if end (- end start) nil))
         (acc nil))
@@ -732,7 +732,7 @@ Linear, allocates a fresh list; preserves order."
 BINDINGS = ((NAME (ARGS...) BODY...) ...).  Expands to a `let'-bound
 funarg + `flet'-style cl-flet substitution so each binding can call
 itself by NAME.  This is the minimal shape used by
-`nelisp-phase47-compiler.el' (single-binding walk-helper recursion);
+`nelisp-aot-compiler.el' (single-binding walk-helper recursion);
 sibling cross-calls within a single `cl-labels' block are NOT
 supported (= would need a forward-declared placeholder set, deferred)."
   (let ((let-bindings nil)

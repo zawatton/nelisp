@@ -1,4 +1,4 @@
-;;; nelisp-cc-tty-read-byte.el --- nl_tty_read_byte Phase 47 swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-tty-read-byte.el --- nl_tty_read_byte AOT swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -22,14 +22,14 @@
 ;;       if n == 1 { b[0] as i64 } else { -1 }
 ;;   }
 ;;
-;; Phase 47 implementation:
+;; AOT implementation:
 ;;
 ;;   * No-arg C-ABI entry, returns i64.
-;;   * Buffer strategy: heap (`alloc-bytes 1 1') — Phase 47 has no
+;;   * Buffer strategy: heap (`alloc-bytes 1 1') — AOT has no
 ;;     `alloca' / stack-local-array primitive, so we fall back to a
 ;;     1-byte heap allocation.  A global static would require a Rust
 ;;     `#[no_mangle]' pointer-getter (= Rust LOC addition, rejected).
-;;     `alloc-bytes' + `dealloc-bytes' are the canonical Phase 47
+;;     `alloc-bytes' + `dealloc-bytes' are the canonical AOT
 ;;     heap primitives (§125.A); the allocation is freed before every
 ;;     return path, so there is NO leak.
 ;;   * `extern-call read' issues `call libc::read@PLT' (= SysV AMD64:
@@ -49,7 +49,7 @@
 ;;     — branches on the `read' return count: n==1 → free + return
 ;;       byte; else → free + return -1.
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   §125.A  `alloc-bytes' / `dealloc-bytes' — 1-byte heap buf.
 ;;   §100.A  `extern-call'                   — libc `read(0, buf, 1)'.
 ;;   §101.C  `ptr-read-u8'                   — byte extraction.
@@ -88,7 +88,7 @@
         ;; EOF / error — free the buffer and return -1.
         ;; The -1 literal is in the else-branch; its type is inferred
         ;; from the then-branch (i64 from ptr-read-u8), so no sys:cast
-        ;; is needed here (Phase 47 propagates the then-type to else).
+        ;; is needed here (AOT propagates the then-type to else).
         (nl_tty_rb_prog1 -1 (dealloc-bytes buf 1 1))))
 
     ;; ------------------------------------------------------------------
@@ -103,7 +103,7 @@
     (defun nl_tty_read_byte ()
       (let ((buf (alloc-bytes 1 1)))
         (nl_tty_rb_dispatch buf (extern-call read 0 buf 1)))))
-  "Phase 47 source for the `nl_tty_read_byte' Doc 133 cutover.
+  "AOT source for the `nl_tty_read_byte' Doc 133 cutover.
 
 Three-entry `(seq DEFUN ...)' manifest:
 - `nl_tty_rb_prog1 (val _eff) -> val' — prog1 sequencer; returns
@@ -116,11 +116,11 @@ Three-entry `(seq DEFUN ...)' manifest:
   `extern-call read 0 buf 1', dispatches via nl_tty_rb_dispatch.
 
 Buffer strategy: heap (alloc-bytes 1 1 / dealloc-bytes 1 1).
-Phase 47 has no stack-alloca primitive; a Rust static-pointer getter
+AOT has no stack-alloca primitive; a Rust static-pointer getter
 would add Rust LOC (rejected per hard rule).  The 1-byte allocation
 is freed before every return path — NO persistent leak.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `alloc-bytes 1 1'   — allocate 1 byte, align 1.
   `extern-call read'  — call libc read(0, buf, 1).
   `ptr-read-u8 buf 0' — extract the received byte.

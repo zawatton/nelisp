@@ -5,9 +5,9 @@
 ;;
 ;;   nelisp_aot_builtin_call1(mirror, frames, name, arg, out, scratch) -> out
 ;;
-;; The Phase 47 compiler lowers a 1-arg env-INDEPENDENT builtin call
+;; The AOT compiler lowers a 1-arg env-INDEPENDENT builtin call
 ;; (car/cdr/symbolp/length/symbol-name/... — the
-;; `nelisp-phase47-compiler--aot-builtin1-delegation-symbols' set) that appears
+;; `nelisp-aot-compiler--aot-builtin1-delegation-symbols' set) that appears
 ;; inside the elisp combiner (nl_eval / nl_apply_do_fset) into an extern-call
 ;; against this symbol.  Doc 129 only ever shipped an in-Emacs-process bridge
 ;; (nelisp-cc-runtime-aot-builtin-call1, src/nelisp-cc-runtime.el); it never

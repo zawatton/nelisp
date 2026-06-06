@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-secure-hash-ext.el --- Phase 47 SHA256/SHA224/SHA512/SHA384/MD5  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-secure-hash-ext.el --- AOT SHA256/SHA224/SHA512/SHA384/MD5  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 migration of the non-SHA1 arm of `nl_jit_secure_hash_non_sha1'
+;; AOT migration of the non-SHA1 arm of `nl_jit_secure_hash_non_sha1'
 ;; from `build-tool/src/jit/hash.rs' (sha2 + md5 crates).
 ;;
 ;; Provides:
@@ -468,7 +468,7 @@
     ;; SHA512 / SHA384
     ;; ============================================================
 
-    ;; 64-bit mask: Phase 47 i64 is already 64-bit signed,
+    ;; 64-bit mask: AOT i64 is already 64-bit signed,
     ;; but we mask to ensure logical (not arithmetic) behavior.
     ;; mask64 = all bits set = -1 in two's complement.
     ;; We use (logand x -1) which is identity — just use x directly.
@@ -481,7 +481,7 @@
     ;; Use: lsr64(x, n) = (logand (sar x n) lsr_mask(n))
     ;; where lsr_mask(n) = all bits except the top n = -1 >> n (logical)
     ;; We can compute: lsr_mask(n) = (- (shl 1 (- 64 n)) 1) ... only works for n<63
-    ;; Actually for 64-bit: Phase 47 i64 is signed, sar is arithmetic (sign-extends).
+    ;; Actually for 64-bit: AOT i64 is signed, sar is arithmetic (sign-extends).
     ;; Logical right shift of 64-bit: (logand (sar x n) (sar -1 n))
     ;; Because sar(-1, n) fills with 1s in the top: 0xFFFF...FFFF >> n = 0x00...0111...1
     ;; Wait: sar(-1, n) = -1 (all ones) for any n (arithmetic shift of all-ones is all-ones).
@@ -501,7 +501,7 @@
     ;; For n=6:  mask = 2^58 - 1 = (- (shl 1 58) 1)  -- fits in i64
     ;; For n=7:  mask = 2^57 - 1 = (- (shl 1 57) 1)
     ;; For n=8:  mask = 2^56 - 1
-    ;; We define generic versions using the Phase 47 shl/sar:
+    ;; We define generic versions using the AOT shl/sar:
 
     ;; Generic lsr64 for n <= 62:
     (defun nl_h64_lsr (x n)
@@ -513,12 +513,12 @@
 
     ;; rotr64(x, n) = lsr(x, n) | shl(x, 64-n)
     ;; But shl by 64-n: if 64-n > 63 that's invalid; for rotr64(x,1), shift left by 63.
-    ;; Phase 47 shl of negative values: (shl x 63) shifts the LSB to position 63.
+    ;; AOT shl of negative values: (shl x 63) shifts the LSB to position 63.
     ;; We need to handle the upper bits wrapping around.
     ;; For rotr64(x, n):
     ;;   right part: lsr64(x, n)  -- zeros in top n bits
     ;;   left part:  (shl x (- 64 n))  -- takes bottom (64-n) bits and puts them at top
-    ;; But (shl x k) for k < 64 just shifts left; Phase 47 uses i64 so top bits overflow.
+    ;; But (shl x k) for k < 64 just shifts left; AOT uses i64 so top bits overflow.
     ;; Actually for the left part: only the bottom (64-n) bits of x contribute,
     ;; and we need them at positions n..63.
     ;; (shl x (- 64 n)) puts bit 0 at position (64-n), bit 1 at (65-n), etc.
@@ -526,7 +526,7 @@
     ;; The top n bits of x after shl(x, 64-n) have overflowed. That's fine — those
     ;; are the bits we're rotating into the low positions via lsr. The OR combines them.
     ;; This is correct because i64 arithmetic truncates at 64 bits on overflow.
-    ;; Phase 47 shl is 64-bit (mod 2^64 behavior? Let's verify by checking SHA1 uses 32-bit).
+    ;; AOT shl is 64-bit (mod 2^64 behavior? Let's verify by checking SHA1 uses 32-bit).
     ;; For safety, mask x to 64 bits before shl: x & 0xFFFF... = x (already 64-bit).
     ;; So: rotr64(x, n) = lsr64(x, n) | shl(x, 64-n)
 
@@ -1433,7 +1433,7 @@
                         1)))
                 1)))))))
 
-  "Phase 47 source for SHA256/SHA224/SHA512/SHA384/MD5 arms.
+  "AOT source for SHA256/SHA224/SHA512/SHA384/MD5 arms.
 
 Replaces `nl_jit_secure_hash_non_sha1' Rust function (~70 LOC) plus
 sha2 and md5 crate dependencies from `build-tool/Cargo.toml'.

@@ -1,4 +1,4 @@
-;;; nelisp-cc-bi-emit-value.el --- Wave A33.N emit-value leaf-arm Phase 47 kernels  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bi-emit-value.el --- Wave A33.N emit-value leaf-arm AOT kernels  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 
-;; Wave A33.N (Phase 47 self-application — emit-value hot-arm native,
-;; 回避策 A / "emit-only").  Phase 47-compiles the two *leaf* hot arms
-;; of `nelisp-phase47-compiler--emit-value' (= the integer-tag dispatch
+;; Wave A33.N (AOT self-application — emit-value hot-arm native,
+;; 回避策 A / "emit-only").  AOT-compiles the two *leaf* hot arms
+;; of `nelisp-aot-compiler--emit-value' (= the integer-tag dispatch
 ;; introduced in A33.3 over the A33.4 flat key-value IR vectors) so the
 ;; standalone NeLisp self-host can emit the `imm' and `ref' (GP class)
 ;; machine-code arms without re-entering the elisp interpreter for the
@@ -90,7 +90,7 @@
 ;; arm's `mov-imm32' would signal there too); the kernel assumes a
 ;; pre-validated 32-bit-fitting value.
 ;;
-;; Substrate composition (= existing Phase 47 grammar only, no new
+;; Substrate composition (= existing AOT grammar only, no new
 ;; opcode, no Rust extern added — net Rust LOC delta = 0):
 ;;
 ;;   §111.C  `vector-ref-ptr' / `vector-slot-set' — borrow the IR node's
@@ -178,7 +178,7 @@
           out-vec 1 139
           (nelisp_emit_value_put_byte out-vec 0 72 0))))
        (sexp-int-make result-slot 4))))
-  "Phase 47 source for the Wave A33.N emit-value leaf-arm kernels.
+  "AOT source for the Wave A33.N emit-value leaf-arm kernels.
 
 Four-entry `(seq DEFUN ...)' manifest:
 
@@ -233,7 +233,7 @@ Caller-side preparation (elisp wrapper in `--emit-value'):
   computation crosses the bridge.  Output bytes equal the legacy arm's
   bytes, so the produced `.o' objects are byte-identical.
 
-Composes only existing Phase 47 grammar — no new opcode, no new Rust
+Composes only existing AOT grammar — no new opcode, no new Rust
 extern:
 
 - §111.C `vector-ref-ptr' / `vector-slot-set' — IR payload borrow +

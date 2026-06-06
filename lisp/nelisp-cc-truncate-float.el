@@ -30,7 +30,7 @@
 ;; the `sexp-float-unwrap' + `bits-to-f64' chain entirely within the
 ;; body.
 ;;
-;; Phase 47 grammar ops consumed:
+;; AOT grammar ops consumed:
 ;;   G4 `sexp-float-unwrap' — read f64 bits as i64 from Sexp::Float
 ;;   G5 `bits-to-f64'       — i64 bit-pattern → f64-leaf (MOVQ xmm0, rax)
 ;;   G5 `f64-to-i64-trunc'  — CVTTSD2SI rax, xmm0 (truncate toward zero)
@@ -46,7 +46,7 @@
        (f64-to-i64-trunc
          (bits-to-f64
            (sexp-float-unwrap arg0)))))
-  "Phase 47 source for the Doc 119 §119.A `bi_truncate' Float arm swap.
+  "AOT source for the Doc 119 §119.A `bi_truncate' Float arm swap.
 
 Two-argument function — SysV AMD64 prologue spills arg0 (* const
 Sexp pointing at a Sexp::Float) into rbp-relative slot 0 and

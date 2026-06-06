@@ -1,4 +1,4 @@
-;;; nelisp-cc-eval-inner.el --- Phase 47 nl_eval_inner swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-eval-inner.el --- AOT nl_eval_inner swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for `eval_inner' + `apply_combiner' cluster in
+;; AOT replacement for `eval_inner' + `apply_combiner' cluster in
 ;; `build-tool/src/eval/mod.rs'.
 ;;
 ;; Rust bodies deleted from eval/mod.rs (~124 LOC):
@@ -31,7 +31,7 @@
 ;; Alignment rule: every `(extern-call ...)' appears as argument 0 at its
 ;; call site → rsp ≡ 0 mod 16 when CALL executes ✓.
 ;; All defun arities are even ≤ 6 ✓.
-;; No `let*' with runtime values (Phase 47 let = compile-time constants only).
+;; No `let*' with runtime values (AOT let = compile-time constants only).
 ;;
 ;; Sexp tag constants:
 ;;   4=Symbol  7=Cons  11=Cell  (others = self-evaluating)
@@ -72,7 +72,7 @@
 
     )
 
-  "Phase 47 source for `nl_eval_inner'.
+  "AOT source for `nl_eval_inner'.
 Five defuns.  sexp-tag dispatch; Cons path delegates to nl_eval_inner_cons Rust extern.
 Every extern-call is first arg ✓.  All arities even ≤ 6 ✓.")
 

@@ -40,7 +40,7 @@ ABI) and =/tmp/nl_add.o.abi= (the ABI summary).  Link it from C:
 cc main.c /tmp/nl_add.o -o main   # main.c: long nl_add(long,long);
 #+end_src
 
-=-L lisp= is required only for codegen (it brings in the Phase 47 backend);
+=-L lisp= is required only for codegen (it brings in the AOT backend);
 analysis-only use needs just =-L packages/nelisp-sys/src=.
 
 * Targets

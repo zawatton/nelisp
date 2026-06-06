@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.A — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.A — AOT-compiled replacement for the Rust
 ;; `nl_jit_predicate_eq' trampoline in `build-tool/src/jit/predicate.rs'.
 ;; Same `(*const Sexp, *const Sexp) -> i64' contract:
 ;;
@@ -20,7 +20,7 @@
 ;;   4. `nl_sexp_eq' slow path (= variant-specific equality through the
 ;;      `#[no_mangle] extern "C"' wrapper in `special_forms.rs').
 ;;
-;; Phase 47 grammar pieces used:
+;; AOT grammar pieces used:
 ;;   `(= a b)'          — i64 / ptr equality via `cmp + sete + movzx'.
 ;;   `(sexp-tag PTR)'   — read tag byte at offset 0 via `movzx'.
 ;;   `(sexp-int-unwrap PTR)' — read i64 payload at offset 8.
@@ -29,7 +29,7 @@
 ;; The slow-path `nl_sexp_eq' itself ports the rest of `sexp_eq's
 ;; variant-specific arms (Symbol-by-name via `nelisp_eq_symbol' /
 ;; Cons-by-Rc-ptr-eq / Str-by-content / Float-by-bits / ...); the
-;; Phase 47 grammar does not yet expose `Rc::ptr_eq' for boxed
+;; AOT grammar does not yet expose `Rc::ptr_eq' for boxed
 ;; variants so the slow path stays in Rust for now.
 ;;
 ;; Build wiring: `scripts/compile-elisp-objects.el' manifest entry +
@@ -53,7 +53,7 @@
                (if (= (sexp-int-unwrap a) (sexp-int-unwrap b)) 1 0)
              (extern-call nl_sexp_eq a b))
          0)))
-  "Phase 47 source for the §120.A `nl_jit_predicate_eq' swap.
+  "AOT source for the §120.A `nl_jit_predicate_eq' swap.
 
 Three fast paths (= same-ref short-circuit / tag-byte mismatch / Int
 payload compare) inline; the slow variant-specific equality reaches

@@ -33,13 +33,13 @@ stacks.  Leaf = outermost call; top-of-list = innermost.")
 
 (defvar nelisp-gc--active-aot-frames nil
   "Stack of AOT frame-local root vectors currently executing.
-Phase 47 compiled functions can expose their live Sexp spill slots as
+AOT compiled functions can expose their live Sexp spill slots as
 a vector and push it here while the native frame is active.  Each
 entry is treated as one `aot-frame' root by `nelisp-gc-root-set'.")
 
 (defvar nelisp-gc--aot-pinned-root-vectors nil
   "Module-lifetime AOT root vectors pinned outside active native frames.
-Phase 47 loader/runtime bridges use this for heap objects that are
+AOT loader/runtime bridges use this for heap objects that are
 owned by native module metadata rather than one dynamic stack frame.")
 
 (defun nelisp-gc--globals-root ()
@@ -63,7 +63,7 @@ bcl-run and JIT-marker bcl, though JIT stacks never push onto
 
 (defun nelisp-gc--aot-frames-root ()
   "Return each live AOT root vector as its own root entry.
-Empty list when no Phase 47 compiled function has registered a
+Empty list when no AOT compiled function has registered a
 frame-local root vector."
   (mapcar (lambda (frame) (list :kind 'aot-frame :value frame))
           nelisp-gc--active-aot-frames))
@@ -84,8 +84,8 @@ Root categories (Phase 3c.1):
   `nelisp--macros'      — defmacro cells
   `nelisp--specials'    — dynamic-scope marker table
   `vm-stack'            — each active bytecode-VM state vector
-  `aot-frame'           — each active Phase 47 frame-local root vector
-  `aot-pinned-root'     — each module-lifetime Phase 47 root vector
+  `aot-frame'           — each active AOT frame-local root vector
+  `aot-pinned-root'     — each module-lifetime AOT root vector
 
 specpdl is deliberately NOT a top-level root — it lives inside each
 VM state vector (slot 8) and is already reached via `vm-stack'.  JIT
@@ -109,7 +109,7 @@ via bytecode.el to keep that file's external surface unchanged."
 (defmacro nelisp-gc--with-active-aot-frame (roots &rest body)
   "Execute BODY with ROOTS pushed onto `nelisp-gc--active-aot-frames'.
 ROOTS is normally a vector containing the live Sexp spill slots for
-one Phase 47 compiled frame.  Dynamic binding pops the frame on both
+one AOT compiled frame.  Dynamic binding pops the frame on both
 normal and non-local exit."
   (declare (indent 1))
   `(let ((nelisp-gc--active-aot-frames

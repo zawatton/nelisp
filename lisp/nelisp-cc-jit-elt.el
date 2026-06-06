@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.D — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.D — AOT-compiled replacement for the Rust
 ;; `nl_jit_access_elt' trampoline in `build-tool/src/jit/access.rs'.
 ;; Same `(*const Sexp, i64, *mut Sexp) -> i64' contract:
 ;;
@@ -61,7 +61,7 @@
            (sexp-payload-ptr arg)
            idx
            out)))))
-  "Phase 47 source for the §120.D `nl_jit_access_elt' swap.
+  "AOT source for the §120.D `nl_jit_access_elt' swap.
 
 Vector arm shares `aref's bounds-checked `vector-ref' shape.
 Cons arm uses a recursive walker that consumes the cons list one

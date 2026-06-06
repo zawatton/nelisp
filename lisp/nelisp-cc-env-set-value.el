@@ -1,4 +1,4 @@
-;;; nelisp-cc-env-set-value.el --- Wave a-2: Env::set_value Phase 47 .o  -*- lexical-binding: t; -*-
+;;; nelisp-cc-env-set-value.el --- Wave a-2: Env::set_value AOT .o  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Wave a-2 — `Env::set_value' body migrated to Phase 47 elisp .o.
+;; Wave a-2 — `Env::set_value' body migrated to AOT elisp .o.
 ;; Replaces the 10-LOC Rust body in
 ;; `build-tool/src/eval/env_helpers.rs::Env::set_value'.
 ;;
@@ -120,7 +120,7 @@
               (nelisp_env_setv_mirror mirror-ptr name-ptr scratch-ptr 0)
             ;; Frame hit: overwrite lexical cell (refcount-safe).
             (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))
-  "Phase 47 source for Wave a-2 `Env::set_value' body.
+  "AOT source for Wave a-2 `Env::set_value' body.
 
 R11a (Doc 49 Wave 9): `let-rt' CSE hoist on the `frame_stack_find'
 result.  Frame-hit path now pays 1 FNV-1a hash + 1 stack walk

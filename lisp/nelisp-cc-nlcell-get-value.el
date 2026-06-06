@@ -1,4 +1,4 @@
-;;; nelisp-cc-nlcell-get-value.el --- nl_cell_get_value Phase 47 swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-nlcell-get-value.el --- nl_cell_get_value AOT swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Replaces the Rust `nl_cell_get_value' body with a Phase 47-compiled
+;; Replaces the Rust `nl_cell_get_value' body with a AOT-compiled
 ;; elisp object.
 ;;
 ;; Rust signature:
@@ -18,7 +18,7 @@
 ;;   ) -> i64                     // rax — 0 = success, 1 = type mismatch
 ;;
 ;; The Rust body pattern-matches on Sexp::Cell(c) and clones c.value
-;; into *out.  In the Phase 47 spike scope we perform a raw 4×u64 copy
+;; into *out.  In the AOT spike scope we perform a raw 4×u64 copy
 ;; (no refcount-safe clone) using the two-hop pointer indirection:
 ;;
 ;; Step 1: Read the NlCell* from the Sexp payload.
@@ -49,7 +49,7 @@
 ;;   return: i64 = 0 (success)
 ;;
 ;; NOTE: Raw 4×u64 copy without refcount-safe clone.
-;; Matches the Phase 47 cutover spike scope.
+;; Matches the AOT cutover spike scope.
 
 ;;; Code:
 
@@ -65,14 +65,14 @@
              (ptr-write-u64 out 16 (ptr-read-u64 nlcell-ptr 16))
              (ptr-write-u64 out 24 (ptr-read-u64 nlcell-ptr 24)))
         0)))
-  "Phase 47 source for the `nl_cell_get_value' cutover spike.
+  "AOT source for the `nl_cell_get_value' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
 - `nl_cell_get_value (cell-ptr out) -> i64' — extracts the NlCell*
   from the Sexp::Cell payload at CELL-PTR+8, copies the 32-byte value
   field (offset 0) into OUT via four word-copy pairs, returns 0.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `ptr-read-u64'   — two-hop: sexp payload load + NlCell.value load.
   `ptr-write-u64'  — four word stores into OUT.
   `let'            — bind the intermediate NlCell pointer.

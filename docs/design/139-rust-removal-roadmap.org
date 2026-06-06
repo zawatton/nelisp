@@ -84,7 +84,7 @@ relocs against them):
 | `nl_f64_bits_append_to_mut_str` | `lisp/nelisp-cc-sexp-fmt.el`                      |
 
 ~6–8 KB of Rust.  These (tty raw-mode statics, atomic counters, a float
-helper, two MutStr formatters) need pure-elisp Phase-47 replacements before
+helper, two MutStr formatters) need pure-elisp AOT replacements before
 build-tool can be deleted.  They are exactly the targets of Doc 117
 (builtins sweep) / Doc 123-124 (rc + MutStr/float) / Doc 134 (re-provision).
 
@@ -99,7 +99,7 @@ and whether elisp stubs already cover them.
 - `make standalone-reader` / `standalone-eval` / `standalone-selfhost-*` /
   `standalone-parallel-compile-test`: all `emacs --batch -l
   nelisp-standalone-build`, *no cargo*.  `scripts/compile-elisp-objects.el`
-  (the Phase-47 object compiler) is pure elisp and is the *output* of
+  (the AOT object compiler) is pure elisp and is the *output* of
   decoupling, not a blocker.  Nothing to do.
 
 ** (2) VERIFY / CI — effort S
@@ -134,13 +134,13 @@ and whether elisp stubs already cover them.
 
 * Substrate crates — coverage vs gaps (Stage 4/5 work)
 
-| crate / function group                | elisp Phase-47 covered?                         | action                              |
+| crate / function group                | elisp AOT covered?                         | action                              |
 |---------------------------------------+-------------------------------------------------+-------------------------------------|
 | read/write/open/close/stat/mmap/exit  | YES — `nelisp-os--libc-call` in stdlib-os.el    | delete after callers re-pointed     |
 | fork/execve/wait/kill/dup2/pipe (process crate) | YES — `nelisp--syscall` JIT `syscall-direct` *bypasses* the Rust symbols entirely (already orphaned) | delete crate                        |
-| mmap_jit / clear_icache / jit_write_protect | NO — JIT primitives, no libc-call yet      | Phase-47 elisp (Doc 117/133 Ph6)    |
+| mmap_jit / clear_icache / jit_write_protect | NO — JIT primitives, no libc-call yet      | AOT elisp (Doc 117/133 Ph6)    |
 | `nelisp_seed_load_and_run` (442 LOC image loader) | NO — Doc 126 retires via pure-elisp boot | finish Doc 126                      |
-| opendir/readdir/closedir/rename/access (fileio) | PARTIAL — stat/mkdir done; dir-enum not | Phase-47 elisp or drop if unused    |
+| opendir/readdir/closedir/rename/access (fileio) | PARTIAL — stat/mkdir done; dir-enum not | AOT elisp or drop if unused    |
 | inotify (filenotify)                  | PARTIAL — parallel libc-call path exists        | finish or drop (Optional)           |
 | SQLite FFI (sqlite-rs)                | NO — no elisp SQLite path; `packages/nelisp-sqlite/` routes through it | keep Optional, or port FFI, or drop |
 
@@ -172,7 +172,7 @@ Two ways to reach zero-Rust; both end identically, differ in path:
   then delete.  Preserves the cross-impl test oracle longest.  Slower.
 - *Path B — aggressive decouple-then-delete*: stop maintaining the Rust
   build; decouple verify/release/CI/ABI onto the standalone+ERT path
-  (Stages 1–3), Phase-47-replace only the ~10 load-bearing symbols + the
+  (Stages 1–3), AOT-replace only the ~10 load-bearing symbols + the
   substrate gaps actually used (Stage 4), then delete all crates (Stage 6).
   Faster, aligned with "Emacs builds it"; cost = lose the Rust oracle, so
   ERT/probe coverage must be re-homed onto the elisp impl first.
@@ -208,7 +208,7 @@ since that elisp work is already in flight.*
 - *Stage 4 — Replace load-bearing substrate in elisp* (L, = Docs 117/123/124/
   125/126/134/135):
   - Port the ~10 `#[no_mangle]` helpers (tty statics, counters, f64/MutStr)
-    to Phase-47 `.o`.
+    to AOT `.o`.
   - Port mmap_jit/clear_icache/jit_write_protect + seed loader (Doc 126).
   - *Gate*: standalone-eval links with no Rust-provided symbols.
 

@@ -1,4 +1,4 @@
-;;; nelisp-cc-nlcell-alloc.el --- nl_alloc_cell Phase 47 migration  -*- lexical-binding: t; -*-
+;;; nelisp-cc-nlcell-alloc.el --- nl_alloc_cell AOT migration  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Replaces the Rust `nl_alloc_cell' body in
-;; `build-tool/src/eval/nlcell.rs' with a Phase 47-compiled elisp
+;; `build-tool/src/eval/nlcell.rs' with a AOT-compiled elisp
 ;; object.  The function allocates a fresh `NlCell' (value = clone of
 ;; *initial, refcount = 1) using `alloc-bytes', `extern-call
 ;; nl_sexp_clone_into', and `ptr-write-u64' grammar ops.
@@ -22,7 +22,7 @@
 ;;   total = 40 bytes, align = 8
 ;;
 ;; The two-function manifest (init helper + public entry) avoids
-;; needing `let' in a value context (= Phase 47 `let' only supports
+;; needing `let' in a value context (= AOT `let' only supports
 ;; compile-time constant bindings).  The helper takes both `box-ptr'
 ;; and `initial' as parameters so the allocated pointer travels as a
 ;; function argument.
@@ -75,7 +75,7 @@
     ;; initialise fields, return raw pointer as i64.
     (defun nl_alloc_cell (initial)
       (nl_alloc_cell_init (alloc-bytes 40 8) initial)))
-  "Phase 47 source for the `nl_alloc_cell' allocator swap.
+  "AOT source for the `nl_alloc_cell' allocator swap.
 
 Two-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_cell_init (box-ptr initial) -> box-ptr' — initialises
@@ -83,7 +83,7 @@ Two-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_cell (initial) -> *mut NlCell' — public entry; calls
   `alloc-bytes(40, 8)' then delegates to the init helper.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `alloc-bytes'           — 2-arg `nl_alloc_bytes(size, align)';
                             size=40 / align=8 compile-time immediates.
   `extern-call nl_sexp_clone_into' — clones *initial into box-ptr+0.

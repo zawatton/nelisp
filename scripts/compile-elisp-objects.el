@@ -15,7 +15,7 @@
 ;;         -f compile-elisp-objects-emit-all
 ;;
 ;; The function walks a hard-coded manifest of (elisp-source-feature .
-;; output-object) pairs, runs `nelisp-phase47-compile-to-object' on the
+;; output-object) pairs, runs `nelisp-aot-compile-to-object' on the
 ;; canonical source from each feature, and writes the resulting ET_REL
 ;; .o files under `target/elisp-objects/'.
 ;;
@@ -39,7 +39,7 @@
   (when (and lisp-dir (file-directory-p lisp-dir))
     (add-to-list 'load-path lisp-dir)))
 
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
 (defconst compile-elisp-objects-manifest
   '((nelisp-cc-spike-noop
@@ -118,7 +118,7 @@
      :requires-arch x86_64)
     ;; Doc 117 §117.B / Doc 122 §122.H — first I/O syscall swap.
     ;; Algorithmic body of `(nelisp--write-stderr-line STR)' moves
-    ;; into Phase 47 elisp via the new §122.H `str-bytes-ptr' grammar
+    ;; into AOT elisp via the new §122.H `str-bytes-ptr' grammar
     ;; op (= Rust `nl_str_bytes_ptr' extern that returns the data
     ;; pointer of any string-y Sexp variant safely).  The Rust shim
     ;; keeps arity + tag dispatch + trailing-newline + flush; the
@@ -136,7 +136,7 @@
      :requires-arch x86_64)
     ;; `(read-stdin-bytes LIMIT)' — the libc `read(0, buf, limit)'
     ;; syscall lifted into elisp.  Buffer alloc + UTF-8 lossy wrap
-    ;; stay in Rust (= `from_utf8_lossy' has no Phase 47 grammar
+    ;; stay in Rust (= `from_utf8_lossy' has no AOT grammar
     ;; equivalent; future §122.X `sexp-write-str-lossy' would let the
     ;; full body migrate).  Elisp body returns the i64 byte count.
     (nelisp-cc-bi-read-stdin-bytes
@@ -144,7 +144,7 @@
      :output "nelisp_bi_read_stdin_bytes.o"
      :requires-arch x86_64)
     ;; Doc 111 §111.D — Cell read+write op probes (= no user-visible
-    ;; swap, used only by `tests/phase47_cell.rs').  Four entries, one
+    ;; swap, used only by `tests/aot_cell.rs').  Four entries, one
     ;; per grammar op (`cell-value' / `cell-set-value' / `cell-make' /
     ;; `cell-null-p').  Linux-x86_64 only — same gate `nelisp-cc-recordp'
     ;; uses; aarch64 emit ships in a follow-up.
@@ -164,7 +164,7 @@
      :source-var nelisp-cc-cell-ops--null-p-source
      :output "nelisp_cell_null_p.o"
      :requires-arch x86_64)
-    ;; Doc 111 §111.E #1 — `mirror_lookup_entry' Phase 47 rewrite
+    ;; Doc 111 §111.E #1 — `mirror_lookup_entry' AOT rewrite
     ;; (= Group A foundation helper for env_mirror.rs).  Linux-x86_64
     ;; only for the same reason as `nelisp-cc-recordp' (= aarch64
     ;; record/vector-ref-ptr emit ships in a follow-up).
@@ -198,10 +198,10 @@
      :source-var nelisp-cc-mirror-is-constant--source
      :output "nelisp_mirror_is_constant.o"
      :requires-arch x86_64)
-    ;; Doc 111 §111.E #19-#26 Group E — env_lexframe.rs Phase 47
+    ;; Doc 111 §111.E #19-#26 Group E — env_lexframe.rs AOT
     ;; rewrites.  Each entry wraps a Rust shim that mirrors the
     ;; corresponding `Env::frame_*' method (= `nl_frame_*' externs in
-    ;; `build-tool/src/eval/env_lexframe_phase47_shims.rs').  Linux-
+    ;; `build-tool/src/eval/env_lexframe_aot_shims.rs').  Linux-
     ;; x86_64 only for the same `extern-call' + record/vector ABI
     ;; reasons; aarch64 emit ships in a follow-up.
     (nelisp-cc-frame-stack-view
@@ -228,7 +228,7 @@
      :source-var nelisp-cc-frame-stack-find--source
      :output "nelisp_frame_stack_find.o"
      :requires-arch x86_64)
-    ;; Wave i — frame_stack_install_sexp body → Phase 47 .o.
+    ;; Wave i — frame_stack_install_sexp body → AOT .o.
     (nelisp-cc-frame-stack-install
      :source-var nelisp-cc-frame-stack-install--source
      :output "nelisp_frame_stack_install.o"
@@ -247,7 +247,7 @@
      :output "nelisp_fnv1a.o"
      :requires-arch x86_64)
     ;; Doc 111 §111.E Group B (#7-#12) — env_mirror.rs write path
-    ;; Phase 47 rewrites.  Each helper composes `mirror_lookup_entry'
+    ;; AOT rewrites.  Each helper composes `mirror_lookup_entry'
     ;; (= #1) via `extern-call' + a §111.B `record-slot-set' write to
     ;; the matched entry's slot N.  Linux-x86_64 only for the same
     ;; reason as `nelisp-cc-mirror-lookup-entry'.
@@ -436,7 +436,7 @@
     ;; Doc 120 §120.A — `jit/predicate.rs' partial swap.
     ;; `nl_jit_predicate_eq' (`(eq A B)' trampoline) and
     ;; `nl_jit_ref_eq' (`(nelisp--ref-eq A B)' trampoline) move to
-    ;; Phase 47 elisp.  Both compose the slow path through a fresh
+    ;; AOT elisp.  Both compose the slow path through a fresh
     ;; `nl_sexp_eq' Rust extern in `eval/special_forms.rs' (= thin
     ;; `#[no_mangle]' wrapper around the existing `sexp_eq' free
     ;; fn).  `nl_jit_sxhash' + `nl_jit_type_of' stay Rust — see the
@@ -477,10 +477,10 @@
      :requires-arch x86_64)
     ;; Doc 122 §122.A — `sexp-write-str' / `sexp-write-symbol' grammar
     ;; ops.  Two entries, one per op, packaged as standalone
-    ;; Phase 47-compiled `defun's so `tests/elisp_cc_sexp_write_str_
+    ;; AOT-compiled `defun's so `tests/elisp_cc_sexp_write_str_
     ;; probe.rs' can drive each round-trip independently.  Same
     ;; Linux-x86_64 gate as `nelisp-cc-cell-ops' (aarch64 emit lands in
-    ;; the same future doc that covers §115.1+ Phase 47 emit ops).
+    ;; the same future doc that covers §115.1+ AOT emit ops).
     (nelisp-cc-sexp-write-str
      :source-var nelisp-cc-sexp-write-str--str-source
      :output "nelisp_sexp_write_str.o"
@@ -511,7 +511,7 @@
     ;; `condition-case' dispatches to `nelisp--mut-str-len'); the
     ;; BoolVector arms of `aref' / `aset' delegate to narrow Rust
     ;; externs (`nl_jit_access_{aref,aset}_bool_vector_inner') via
-    ;; `extern-call' — now provided by Phase-47 elisp objects below
+    ;; `extern-call' — now provided by AOT elisp objects below
     ;; (= §120.D BoolVector sub-arm swap, Rust bodies deleted).
     (nelisp-cc-jit-length
      :source-var nelisp-cc-jit-length--source
@@ -529,7 +529,7 @@
      :source-var nelisp-cc-jit-elt--source
      :output "nelisp_jit_elt.o"
      :requires-arch x86_64)
-    ;; Doc 120 §120.D sub-arm helpers — Phase-47 elisp replacements for
+    ;; Doc 120 §120.D sub-arm helpers — AOT elisp replacements for
     ;; the two narrow Rust `#[no_mangle]' externs in `jit/access.rs'
     ;; that the BoolVector arms of `aref' / `aset' call via `extern-call'.
     ;; Deleted from Rust; provided by these two objects.
@@ -569,7 +569,7 @@
      :source-var nelisp-cc-jit-cons-make--source
      :output "nelisp_jit_cons_make.o"
      :requires-arch x86_64)
-    ;; Doc 117.D — bi_syscall name→nr resolver Phase 47 swap.  25-entry
+    ;; Doc 117.D — bi_syscall name→nr resolver AOT swap.  25-entry
     ;; (symbol-name-eq) chain replaces the inline `match' arm in the
     ;; Linux x86_64 `bi_syscall' body, letting the Rust shim shrink to
     ;; arity-check + Int passthrough + extern dispatch.
@@ -579,7 +579,7 @@
      :requires-arch x86_64)
     ;; Doc 118 — `nelisp--f64-trunc' mode-dispatch + div + truncate swap.
     ;; Rust shim keeps arity check + WrongType guard; computation moves
-    ;; to Phase 47 elisp via `nl_bi_f64_trunc_div_bits' Rust helper.
+    ;; to AOT elisp via `nl_bi_f64_trunc_div_bits' Rust helper.
     ;; Linux-x86_64 only (f64-to-i64-trunc / bits-to-f64 MVP scope).
     (nelisp-cc-bi-f64-trunc
      :source-var nelisp-cc-bi-f64-trunc--source
@@ -600,11 +600,11 @@
      :output "nelisp_nl_cons_cdr_ptr.o"
      :requires-arch x86_64)
     ;; Doc 122 §122.B — Mutable string builder grammar ops.  Five
-    ;; entries, one per op, packaged as standalone Phase 47-compiled
+    ;; entries, one per op, packaged as standalone AOT-compiled
     ;; `defun's so `tests/elisp_cc_mut_str_probe.rs' can drive each
     ;; round-trip independently.  Same Linux-x86_64 gate as
     ;; `nelisp-cc-sexp-write-str' (§122.A); aarch64 emit lands with
-    ;; the rest of the Phase 47 aarch64 sweep.
+    ;; the rest of the AOT aarch64 sweep.
     (nelisp-cc-mut-str
      :source-var nelisp-cc-mut-str--make-empty-source
      :output "nelisp_mut_str_make_empty.o"
@@ -634,10 +634,10 @@
      :output "nl_jit_mut_str_len.o"
      :requires-arch x86_64)
     ;; Doc 122 §122.D — UTF-8 helper grammar ops.  Three entries,
-    ;; one per op, packaged as standalone Phase 47-compiled `defun's
+    ;; one per op, packaged as standalone AOT-compiled `defun's
     ;; so `tests/elisp_cc_utf8_probe.rs' can drive each round-trip
     ;; independently.  Same Linux-x86_64 gate as `nelisp-cc-mut-str'
-    ;; (§122.B); aarch64 emit lands with the rest of the Phase 47
+    ;; (§122.B); aarch64 emit lands with the rest of the AOT
     ;; aarch64 sweep.
     (nelisp-cc-utf8
      :source-var nelisp-cc-utf8--char-count-source
@@ -652,12 +652,12 @@
      :output "nelisp_str_is_alphanumeric_at.o"
      :requires-arch x86_64)
     ;; Doc 122 §122.E — Atomic + raw memory primitives.  Six entries,
-    ;; one per op, packaged as standalone Phase 47-compiled `defun's
+    ;; one per op, packaged as standalone AOT-compiled `defun's
     ;; so `tests/elisp_cc_atomic_raw_mem_probe.rs' can drive each
     ;; round-trip independently.  Substrate gate for Doc 123-128
     ;; (= refcount elisp化, nl*.rs::Clone/Drop elisp化, alloc /
     ;; dealloc handlers).  Same Linux-x86_64 gate as the §122.A/B
-    ;; siblings; aarch64 emit lands with the rest of the Phase 47
+    ;; siblings; aarch64 emit lands with the rest of the AOT
     ;; aarch64 sweep.
     (nelisp-cc-atomic-raw-mem
      :source-var nelisp-cc-atomic-raw-mem--fetch-add-source
@@ -685,7 +685,7 @@
      :requires-arch x86_64)
     ;; Doc 125 §125.B — mmap-backed `nl_alloc_bytes' / `nl_dealloc_bytes'
     ;; implementations.  These replace the `std::alloc'-based Rust bodies
-    ;; in `build-tool/src/eval/raw_mem.rs' with Phase 47-compiled elisp
+    ;; in `build-tool/src/eval/raw_mem.rs' with AOT-compiled elisp
     ;; that emits inline SYSCALL via the new `syscall-direct' grammar op.
     ;; Must precede the §125.A alloc-dealloc entries below so the PLT
     ;; calls from `nelisp_alloc_bytes.o' / `nelisp_dealloc_bytes.o'
@@ -699,13 +699,13 @@
      :output "nl_dealloc_bytes_mmap.o"
      :requires-arch x86_64)
     ;; Doc 125 §125.A — alloc / dealloc primitive grammar ops.  Two
-    ;; entries, one per op, packaged as standalone Phase 47-compiled
+    ;; entries, one per op, packaged as standalone AOT-compiled
     ;; `defun's so `tests/elisp_cc_alloc_dealloc_probe.rs' can drive
     ;; each round-trip independently.  Substrate gate for Doc 124.G-K
     ;; (= NlBox Drop kernels' if-zero-refcount free branch) +
     ;; Doc 126-128 (= bridge GC arena allocator).  Same Linux-x86_64
     ;; gate as the §122.E siblings (= raw_mem.rs is the shared Rust
-    ;; module); aarch64 emit lands with the rest of the Phase 47
+    ;; module); aarch64 emit lands with the rest of the AOT
     ;; aarch64 sweep.
     (nelisp-cc-alloc-dealloc
      :source-var nelisp-cc-alloc-dealloc--alloc-bytes-source
@@ -719,13 +719,13 @@
     ;; DEFUN ...)' manifest exposing `nelisp_cstr_from_sexp(str-ptr)
     ;; -> *mut u8' + `nelisp_cstr_drop(buf-ptr, size) -> 1' + the
     ;; internal `_copy_loop' / `_inner' / `_prog2' helpers.  Composes
-    ;; only existing Phase 47 grammar (§101.C str-len/byte-at, §122.E
+    ;; only existing AOT grammar (§101.C str-len/byte-at, §122.E
     ;; ptr-write-u8, §125.A alloc-bytes/dealloc-bytes) — no new opcode.
     ;; Same Linux-x86_64 gate as the §125.A parent (= the underlying
     ;; alloc-bytes / ptr-write-u8 emit paths are x86_64-only today).
     ;; Unlocks Doc 117 §117.D.gaps.3 Tier C (= bi_open / bi_stat /
     ;; bi_mkdir / ~12 file-I/O handlers can materialise libc
-    ;; `const char *path' arguments in pure Phase 47 elisp).
+    ;; `const char *path' arguments in pure AOT elisp).
     (nelisp-cc-cstr-helpers
      :source-var nelisp-cc-cstr-helpers--source
      :output "nelisp_cstr_helpers.o"
@@ -754,12 +754,12 @@
      :source-var nelisp-cc-bi-nl-write-file--source
      :output "nelisp_bi_nl_write_file.o"
      :requires-arch x86_64)
-    ;; Wave A25.1-min — Phase 47 self-application foundation (getenv +
+    ;; Wave A25.1-min — AOT self-application foundation (getenv +
     ;; stat-mtime only).  `locate-file' deferred — its `_branch' helper
-    ;; needs an arity-≤6 split to fit Phase 47 SysV AMD64's 6 GP regs.
-    ;; Both shipped helpers compose only existing Phase 47 grammar; they
+    ;; needs an arity-≤6 split to fit AOT SysV AMD64's 6 GP regs.
+    ;; Both shipped helpers compose only existing AOT grammar; they
     ;; are consumed by the future A25.2 driver rewrite of
-    ;; `compile-elisp-objects.el' as Phase 47 native main entry.
+    ;; `compile-elisp-objects.el' as AOT native main entry.
     ;; Linux-x86_64 only (same gate as parents).
     (nelisp-cc-bi-getenv
      :source-var nelisp-cc-bi-getenv--source
@@ -769,18 +769,18 @@
      :source-var nelisp-cc-bi-syscall-stat-mtime--source
      :output "nelisp_bi_syscall_stat_mtime.o"
      :requires-arch x86_64)
-    ;; Wave A25.2 — Phase 47 self-application driver kernel (PoC).
+    ;; Wave A25.2 — AOT self-application driver kernel (PoC).
     ;; `nelisp_meta_should_rebuild' composes two `nelisp_bi_syscall_stat_mtime'
     ;; calls + a pure-arithmetic decision (= src missing / out missing /
     ;; out_mtime < src_mtime).  Foundation for the future A25.3 standalone
     ;; bootstrap of the meta-driver iteration loop.  Composes only existing
-    ;; Phase 47 grammar — no new opcode.  Linux-x86_64 only (= same gate as
+    ;; AOT grammar — no new opcode.  Linux-x86_64 only (= same gate as
     ;; the A25.1-min parents).
     (nelisp-cc-meta-driver
      :source-var nelisp-cc-meta-driver--source
      :output "nelisp_meta_should_rebuild.o"
      :requires-arch x86_64)
-    ;; Wave A26 — Phase 47 manifest walker kernel.  `nelisp_meta_walk'
+    ;; Wave A26 — AOT manifest walker kernel.  `nelisp_meta_walk'
     ;; batch-evaluates the per-entry up-to-date check by chaining
     ;; `extern-call' calls into the A25.2 `nelisp_meta_should_rebuild'
     ;; kernel for every (src, out) pair in the input vector pair, then
@@ -788,20 +788,20 @@
     ;; the caller's result slot.  Collapses N elisp -> native bridge
     ;; calls into 1 bridge call; the elisp driver only walks the
     ;; returned bitmask to dispatch the (heavy) emit step.  Composes
-    ;; only existing Phase 47 grammar — no new opcode.  Linux-x86_64
+    ;; only existing AOT grammar — no new opcode.  Linux-x86_64
     ;; only (= same gate as the A25.2 parent).
     (nelisp-cc-bi-meta-walk
      :source-var nelisp-cc-bi-meta-walk--source
      :output "nelisp_meta_walk.o"
      :requires-arch x86_64)
-    ;; Wave A30 — Phase 47 per-entry dispatch loop kernel.
+    ;; Wave A30 — AOT per-entry dispatch loop kernel.
     ;; `nelisp_meta_dispatch_loop' collapses the 212-iter elisp dispatch
     ;; loop in `compile-elisp-objects-meta--walk' (= the final cached-path
-    ;; bottleneck after A26-A29 walker chain) into a single Phase 47
+    ;; bottleneck after A26-A29 walker chain) into a single AOT
     ;; native call.  Per-chunk walker computes `(dirty AND NOT arch-skip)'
     ;; emit-needed bitmasks via `vector-slot-set' into a pre-allocated
     ;; result vector, and accumulates popcount of `(NOT arch-skip)' into
-    ;; the caller-owned result slot.  Composes only existing Phase 47
+    ;; the caller-owned result slot.  Composes only existing AOT
     ;; grammar (= §111.C vector ops + §125.A alloc-bytes + §100.D logand/
     ;; logxor + §100 sexp-int) — no new opcode, no Rust extern added.
     ;; Linux-x86_64 only (= same gate as the A25.2 / A26 parents).
@@ -885,7 +885,7 @@
      :source-var nelisp-cc-nlconsbox-drop--source
      :output "nelisp_nlconsbox_drop.o"
      :requires-arch x86_64)
-    ;; nl_consbox_set_car Phase 47 cutover spike — copies the 32-byte
+    ;; nl_consbox_set_car AOT cutover spike — copies the 32-byte
     ;; Sexp at VAL into the car slot (offset 0) of the NlConsBox at BOX
     ;; via four ptr-write-u64 / ptr-read-u64 word-copy pairs.  Resolves
     ;; the PLT reloc emitted by the `cons-set-car' grammar op and the
@@ -933,20 +933,20 @@
     ;; (car=Nil, cdr=Nil, refcount=1) using alloc-bytes + sexp-write-nil
     ;; + ptr-write-u64.  Replaces the Rust `nl_alloc_consbox' body in
     ;; `build-tool/src/eval/nlconsbox.rs'.  Output symbol name matches
-    ;; the PLT reloc target emitted by the Phase 47 cons-make /
+    ;; the PLT reloc target emitted by the AOT cons-make /
     ;; cons-make-with-clone emitters.
     (nelisp-cc-nlconsbox-alloc
      :source-var nelisp-cc-nlconsbox-alloc--source
      :output "nl_alloc_consbox.o"
      :requires-arch x86_64)
-    ;; nl_alloc_cell — Phase 47 migration of `nl_alloc_cell' from
+    ;; nl_alloc_cell — AOT migration of `nl_alloc_cell' from
     ;; `build-tool/src/eval/nlcell.rs'.  Allocates a 40-byte NlCell
     ;; (value = clone of *initial via nl_sexp_clone_into, refcount = 1).
     (nelisp-cc-nlcell-alloc
      :source-var nelisp-cc-nlcell-alloc--source
      :output "nl_alloc_cell.o"
      :requires-arch x86_64)
-    ;; nl_alloc_vector — Phase 47 migration of `nl_alloc_vector' from
+    ;; nl_alloc_vector — AOT migration of `nl_alloc_vector' from
     ;; `build-tool/src/eval/nlvector.rs'.  Allocates a 32-byte NlVector
     ;; with a cap*32-byte Nil-filled element buffer (Vec.capacity, ptr,
     ;; len = cap; refcount = 1).
@@ -954,7 +954,7 @@
      :source-var nelisp-cc-nlvector-alloc--source
      :output "nl_alloc_vector.o"
      :requires-arch x86_64)
-    ;; nl_alloc_record — Phase 47 migration of `nl_alloc_record' from
+    ;; nl_alloc_record — AOT migration of `nl_alloc_record' from
     ;; `build-tool/src/eval/nlrecord.rs'.  Allocates a 64-byte NlRecord
     ;; with type_tag clone + n*32-byte Nil-filled slots buffer (refcount = 1).
     (nelisp-cc-nlrecord-alloc
@@ -1028,10 +1028,10 @@
      :source-var nelisp-cc-nlstr-clone--source
      :output "nelisp_nlstr_clone.o"
      :requires-arch x86_64)
-    ;; Doc 128 §128.A — nlstr.rs direct-symbol Phase 47 migrations.
+    ;; Doc 128 §128.A — nlstr.rs direct-symbol AOT migrations.
     ;; Each entry exports the original `nl_*' C-linkage symbol, replacing
     ;; the Rust `#[no_mangle]' body.  Grammar-op PLT stubs that called the
-    ;; Rust externs now resolve to these Phase 47 implementations.
+    ;; Rust externs now resolve to these AOT implementations.
     ;;
     ;;   nl_mut_str_len    — ptr-read-u64 two-hop (sexp→NlStr*→len@16).
     ;;   nl_str_bytes_ptr  — tag-dispatch: MutStr→[NlStr*+8]; Str/Sym→[sexp+16].
@@ -1097,7 +1097,7 @@
     ;; mutually-recursive tail-call helpers and one public entry
     ;; `nelisp_reader_lex_one'.  Linux-x86_64 only (= same gate
     ;; as `nelisp-cc-mut-str' / `nelisp-cc-utf8'; aarch64 emit
-    ;; will land with the rest of the Phase 47 aarch64 sweep when
+    ;; will land with the rest of the AOT aarch64 sweep when
     ;; the `extern-call' ABI's aarch64 path is complete).
     (nelisp-cc-reader-lexer
      :source-var nelisp-cc-reader-lexer--source
@@ -1133,7 +1133,7 @@
     ;; Doc 122 §122.A + §122.E — `jit/strings.rs' `nl_jit_make_symbol'
     ;; trampoline swap.  Per-process counter (surfaced by the Rust
     ;; `nl_make_symbol_counter_ptr' getter) + name-copy loop + 20-byte
-    ;; literal suffix + 16-nibble hex formatter, all in Phase 47 elisp.
+    ;; literal suffix + 16-nibble hex formatter, all in AOT elisp.
     ;; Seven-entry `(seq DEFUN ...)' manifest: prog2 + copy + hex + suffix
     ;; + write + inner + public entry.  Rust body deleted;
     ;; `MAKE_SYMBOL_COUNTER: AtomicI64' static + getter remain in Rust.
@@ -1147,7 +1147,7 @@
      :output "nl_jit_type_of.o"
      :requires-arch x86_64)
     ;; Doc 122 §122.A — `jit/strings.rs' `nl_jit_symbol_name' Rust body
-    ;; deleted; Phase-47-compiled elisp `.o' replaces it.  Symbol(4)/Str(5)
+    ;; deleted; AOT-compiled elisp `.o' replaces it.  Symbol(4)/Str(5)
     ;; copy content via str-bytes-ptr + str-len; Nil(0) → "nil"; T(1) → "t".
     ;; bridge.rs anchor entry added; alias("nelisp_jit_symbol_name") unchanged.
     (nelisp-cc-jit-symbol-name
@@ -1159,7 +1159,7 @@
      :output "nl_jit_sxhash.o"
      :requires-arch x86_64)
     ;; db33abdd (2026-05-19) — `jit/box_accessor.rs' `nl_record_type_tag_ptr'
-    ;; Rust body deleted; Phase-47-compiled elisp `.o' replaces it.
+    ;; Rust body deleted; AOT-compiled elisp `.o' replaces it.
     ;; NlRecord::type_tag is at offset 0, so sexp-payload-ptr gives *const Sexp
     ;; directly.  bridge.rs anchor re-added (was reverted at bf670ee4).
     (nelisp-cc-jit-record-type-tag-ptr
@@ -1167,7 +1167,7 @@
      :output "nl_record_type_tag_ptr.o"
      :requires-arch x86_64)
     ;; Doc 86 §86.1.e.2 (2026-05-19) — `jit/strings.rs' `nl_jit_concat_ints'
-    ;; Rust body deleted; Phase-47-compiled elisp `.o' replaces it.
+    ;; Rust body deleted; AOT-compiled elisp `.o' replaces it.
     ;; Uses `mut-str-make-empty' / `mut-str-push-codepoint' / `mut-str-finalize'
     ;; (§122.B grammar ops) to build the result Sexp::Str incrementally.
     ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' (count 49→51) anchors `nl_jit_concat_ints'.
@@ -1176,14 +1176,14 @@
      :output "nl_jit_concat_ints.o"
      :requires-arch x86_64)
     ;; Doc 86 §86.2 (2026-05-19) — `sf_quote' Rust body deleted from
-    ;; `build-tool/src/eval/special_forms.rs'; Phase-47-compiled elisp
+    ;; `build-tool/src/eval/special_forms.rs'; AOT-compiled elisp
     ;; `.o' replaces it.  Thin Rust shell in `sf_quote' calls
     ;; `crate::elisp_cc_spike::sf_quote_call(args, &mut out)'.
     (nelisp-cc-sf-quote
      :source-var nelisp-cc-sf-quote--source
      :output "nl_sf_quote.o"
      :requires-arch x86_64)
-    ;; Phase 47 elisp migration — `nl_jit_downcase' trampoline swap.
+    ;; AOT elisp migration — `nl_jit_downcase' trampoline swap.
     ;; ASCII A-Z fold (bytes 65-90 → +32); non-ASCII bytes pass
     ;; through unchanged.  Rust body deleted from `jit/strings.rs'.
     ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors `nl_jit_downcase'.
@@ -1191,7 +1191,7 @@
      :source-var nelisp-cc-jit-downcase--source
      :output "nl_jit_downcase.o"
      :requires-arch x86_64)
-    ;; Phase 47 elisp migration — `nl_jit_upcase' trampoline swap.
+    ;; AOT elisp migration — `nl_jit_upcase' trampoline swap.
     ;; ASCII a-z fold (bytes 97-122 → -32); non-ASCII bytes pass
     ;; through unchanged.  Rust body deleted from `jit/strings.rs'.
     ;; `bridge.rs::_ELISP_ARCHIVE_ANCHOR' anchors `nl_jit_upcase'.
@@ -1199,7 +1199,7 @@
      :source-var nelisp-cc-jit-upcase--source
      :output "nl_jit_upcase.o"
      :requires-arch x86_64)
-    ;; Phase 47 elisp migration — `nl_jit_split_by_non_alnum' trampoline
+    ;; AOT elisp migration — `nl_jit_split_by_non_alnum' trampoline
     ;; swap.  Splits STR-ARG at non-alphanumeric bytes (ASCII [0-9A-Za-z]
     ;; + bytes>=128 as word-continuation); builds a reversed cons list of
     ;; Sexp::Str parts in *OUT via `sexp-write-str' + `cons-make' +
@@ -1211,7 +1211,7 @@
      :source-var nelisp-cc-jit-split-by-non-alnum--source
      :output "nl_jit_split_by_non_alnum.o"
      :requires-arch x86_64)
-    ;; Phase 47 Tier-1 special forms elisp化.
+    ;; AOT Tier-1 special forms elisp化.
     ;; `nl_sf_progn' replaces the `sf_progn' Rust body in
     ;; `eval/special_forms.rs'.
     (nelisp-cc-sf-progn
@@ -1233,7 +1233,7 @@
      :source-var nelisp-cc-sf-while--source
      :output "nl_sf_while.o"
      :requires-arch x86_64)
-    ;; Phase 47 Tier-1 special forms elisp化 — let / let*.
+    ;; AOT Tier-1 special forms elisp化 — let / let*.
     ;; `nl_sf_let' replaces the `sf_let' Rust body.  Uses the new
     ;; `nl_let_setup(bindings, env, sequential=0)' + `nl_env_pop_frame(env)'
     ;; externs to delegate frame-push + bind to Rust, keeping the
@@ -1257,7 +1257,7 @@
      :source-var nelisp-cc-sf-function--source
      :output "nl_sf_function.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `nl_sf_condition_case' replaces `sf_condition_case' +
+    ;; AOT — `nl_sf_condition_case' replaces `sf_condition_case' +
     ;; `clause_matches' + `eval_handler' Rust bodies via the new
     ;; `nl_cc_match_and_bind' + existing `nelisp_eval_call_with_err' +
     ;; `nl_env_pop_frame' externs in `eval/special_forms.rs' / `eval/mod.rs'.
@@ -1265,7 +1265,7 @@
      :source-var nelisp-cc-sf-condition-case--source
      :output "nl_sf_condition_case.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `apply_lambda_inner' body deleted from `eval/mod.rs'.
+    ;; AOT — `apply_lambda_inner' body deleted from `eval/mod.rs'.
     ;; `nl_apply_lambda_inner' orchestrates frame-push + formals-bind +
     ;; body-eval + frame-pop in elisp.  Actual formals-binding delegated
     ;; to `nl_push_and_bind' Rust extern in `eval/special_forms.rs'.
@@ -1273,7 +1273,7 @@
      :source-var nelisp-cc-apply-lambda-inner--source
      :output "nl_apply_lambda_inner.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `nl_bf_formal_tag' formal-parameter tag classifier.
+    ;; AOT — `nl_bf_formal_tag' formal-parameter tag classifier.
     ;; Replaces the 9-LOC Rust extern in `special_forms.rs'.
     ;; Returns 1=&optional, 2=&rest, 0=other-symbol, -1=non-symbol.
     ;; Called from `nl_bind_formals_impl.o' via extern-call.
@@ -1281,7 +1281,7 @@
      :source-var nelisp-cc-bf-formal-tag--source
      :output "nl_bf_formal_tag.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `nl_bf_args_nth_ptr' cons-list indexed fetch.
+    ;; AOT — `nl_bf_args_nth_ptr' cons-list indexed fetch.
     ;; Replaces the 11-LOC Rust extern in `special_forms.rs'.
     ;; Returns *const Sexp of args[idx].car, or 0 when idx >= len.
     ;; `nl_bf_args_nth_step' is the private recursive walker helper.
@@ -1290,7 +1290,7 @@
      :source-var nelisp-cc-bf-args-nth-ptr--source
      :output "nl_bf_args_nth_ptr.o"
      :requires-arch x86_64)
-    ;; Wave j — `nl_bf_precompute' Rust body (19 LOC) → Phase 47 elisp.
+    ;; Wave j — `nl_bf_precompute' Rust body (19 LOC) → AOT elisp.
     ;; CPS chain: counts required formals (stopping at &optional/&rest),
     ;; counts total args, packs as (req << 36) | (args_len << 20).
     ;; Uses nl_bf_formal_tag extern.  Called from nl_bind_formals_impl.o.
@@ -1298,7 +1298,7 @@
      :source-var nelisp-cc-bf-precompute--source
      :output "nl_bf_precompute.o"
      :requires-arch x86_64)
-    ;; Phase 47 Tier-C — `bind_formals_impl' Stage 1 parallel implementation.
+    ;; AOT Tier-C — `bind_formals_impl' Stage 1 parallel implementation.
     ;; `nl_bind_formals_impl' implements the full Required/Optional/Rest state
     ;; machine in elisp.  Stage 2 will rewire `nl_bind_formals' / `nl_push_and_bind'
     ;; to delegate to this elisp entry.  New externs: nl_bf_precompute,
@@ -1312,7 +1312,7 @@
     ;; Doc 122 §122.J — `sexp.rs' formatter chain elisp化.  Replaces
     ;; `write_quoted_string' / `write_sexp' / `write_reader_macro' /
     ;; `list_tag_and_arg' / `write_list_body' (~155 LOC) with a single
-    ;; Phase 47-compiled `.o' that calls two new Rust helpers
+    ;; AOT-compiled `.o' that calls two new Rust helpers
     ;; (`nl_i64_append_to_mut_str' / `nl_f64_bits_append_to_mut_str')
     ;; in `nlstr.rs' for int/float formatting.  The Rust `fmt_sexp'
     ;; entry point becomes a thin `cc_wrap' call to `nelisp_fmt_sexp'.
@@ -1321,19 +1321,19 @@
      :source-var nelisp-cc-sexp-fmt--source
      :output "nelisp_fmt_sexp.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `nl_cons_prepend_clone' Rust body deleted from
-    ;; `build-tool/src/eval/special_forms.rs'; Phase-47-compiled elisp
+    ;; AOT — `nl_cons_prepend_clone' Rust body deleted from
+    ;; `build-tool/src/eval/special_forms.rs'; AOT-compiled elisp
     ;; `.o' replaces it.  Single defun using the Doc 120.E fused
     ;; `cons-make-with-clone' grammar op (= nl_alloc_consbox + two
     ;; nl_sexp_clone_into calls + tag/payload write into *out).  Alias-safe
     ;; when out = one of the source pointers.  Linux-x86_64 only — same
-    ;; arch gate as the other Phase 47 cons-family migrations.
+    ;; arch gate as the other AOT cons-family migrations.
     (nelisp-cc-cons-prepend-clone
      :source-var nelisp-cc-cons-prepend-clone--source
      :output "nl_cons_prepend_clone.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `sf_unwind_protect' Rust body deleted from
-    ;; `build-tool/src/eval/special_forms.rs'; Phase-47-compiled elisp
+    ;; AOT — `sf_unwind_protect' Rust body deleted from
+    ;; `build-tool/src/eval/special_forms.rs'; AOT-compiled elisp
     ;; `.o' replaces it.  8 defuns (seq form) walk `(BODYFORM CLEANUP...)'
     ;; args: eval body via `nelisp_eval_call', then eval each cleanup form
     ;; via `nl_eval_is_truthy' (errors silently discarded — does NOT touch
@@ -1344,40 +1344,40 @@
      :source-var nelisp-cc-sf-unwind-protect--source
      :output "nl_sf_unwind_protect.o"
      :requires-arch x86_64)
-    ;; Phase 47 swap — `nl_sexp_eq': tag-dispatch equality test replacing
+    ;; AOT swap — `nl_sexp_eq': tag-dispatch equality test replacing
     ;; the `#[no_mangle] extern "C" fn nl_sexp_eq' in special_forms.rs.
     ;; Callers using `extern-call nl_sexp_eq' resolve to this .o unchanged.
     (nelisp-cc-sexp-eq
      :source-var nelisp-cc-sexp-eq--source
      :output "nl_sexp_eq.o")
-    ;; Phase 47 swap — `nl_symbol_is_lambda': single `symbol-name-eq' op
+    ;; AOT swap — `nl_symbol_is_lambda': single `symbol-name-eq' op
     ;; replacing the `#[no_mangle] extern "C" fn nl_symbol_is_lambda' in
     ;; special_forms.rs.  Callers using `extern-call nl_symbol_is_lambda'
     ;; resolve to this .o unchanged.
     (nelisp-cc-symbol-is-lambda
      :source-var nelisp-cc-symbol-is-lambda--source
      :output "nl_symbol_is_lambda.o")
-    ;; Phase 47 swap — `nl_jit_secure_hash' SHA1 arm migration from
+    ;; AOT swap — `nl_jit_secure_hash' SHA1 arm migration from
     ;; `build-tool/src/jit/hash.rs'.  SHA1 is implemented in pure
-    ;; Phase 47 bitwise arithmetic; sha224/256/384/512/md5 are now also
-    ;; implemented in Phase 47 via nl_jit_secure_hash_non_sha1_ext.
+    ;; AOT bitwise arithmetic; sha224/256/384/512/md5 are now also
+    ;; implemented in AOT via nl_jit_secure_hash_non_sha1_ext.
     (nelisp-cc-jit-secure-hash
      :source-var nelisp-cc-jit-secure-hash--source
      :output "nl_jit_secure_hash.o")
-    ;; Phase 47 swap — sha224/256/384/512/md5 ext arm.
+    ;; AOT swap — sha224/256/384/512/md5 ext arm.
     ;; Replaces `nl_jit_secure_hash_non_sha1' Rust function in
     ;; `build-tool/src/jit/hash.rs' (-69 LOC, sha2+md5 crates removed).
     (nelisp-cc-jit-secure-hash-ext
      :source-var nelisp-cc-jit-secure-hash-ext--source
      :output "nl_jit_secure_hash_ext.o")
-    ;; Phase 47 swap — `nl_jit_string_match_p' literal/anchored fast-path
+    ;; AOT swap — `nl_jit_string_match_p' literal/anchored fast-path
     ;; migration from `build-tool/src/jit/regex.rs'.  Implements the 7
     ;; hard-coded pattern branches and the fallback literal match in pure
-    ;; Phase 47 byte-level ops.  Rust `regex.rs' body deleted (-71 LOC).
+    ;; AOT byte-level ops.  Rust `regex.rs' body deleted (-71 LOC).
     (nelisp-cc-jit-regex
      :source-var nelisp-cc-jit-regex--source
      :output "nl_jit_string_match_p.o")
-    ;; Doc 120 alias — `nl_jit_alias' Phase 47 swap: maps user-facing
+    ;; Doc 120 alias — `nl_jit_alias' AOT swap: maps user-facing
     ;; JIT names (e.g. `nelisp_jit_car') to canonical dlsym names
     ;; (e.g. `nelisp_jit_cons_car'), replacing the 18-LOC Rust `alias'
     ;; fn in `build-tool/src/jit/bridge.rs'.  Uses the new `sexp-name-eq'
@@ -1386,7 +1386,7 @@
      :source-var nelisp-cc-jit-alias--source
      :output "nl_jit_alias.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `eval_inner' body + `apply_combiner' cluster (~141 LOC)
+    ;; AOT — `eval_inner' body + `apply_combiner' cluster (~141 LOC)
     ;; deleted from `build-tool/src/eval/mod.rs'.
     ;; `nl_eval_inner' dispatches on sexp-tag: self-eval / symbol / cons / cell.
     ;; Symbol and Cons paths delegate to new Rust extern helpers
@@ -1398,7 +1398,7 @@
      :source-var nelisp-cc-eval-inner--source
      :output "nl_eval_inner.o"
      :requires-arch x86_64)
-    ;; Phase 47 — `nl_jit_syscall_call' + `nl_jit_syscall_supported_p'
+    ;; AOT — `nl_jit_syscall_call' + `nl_jit_syscall_supported_p'
     ;; Rust bodies deleted from `build-tool/src/jit/syscall.rs' (full
     ;; file delete, -57 LOC).  Uses the new `syscall-direct' grammar op
     ;; that emits the Linux raw SYSCALL instruction directly.
@@ -1424,7 +1424,7 @@
      :source-var nelisp-cc-jit-mut-str-set-codepoint--source
      :output "nl_jit_mut_str_set_codepoint.o"
      :requires-arch x86_64)
-    ;; Wave a-2 — Env::{lookup_value,set_value,lookup_function} Phase 47 .o.
+    ;; Wave a-2 — Env::{lookup_value,set_value,lookup_function} AOT .o.
     ;; lookup_value: frame-first (nl_cell_get_value = refcount-safe clone)
     ;;   then mirror check.  Fixes Wave a double-free SIGABRT.
     ;; set_value: constant guard → frame write (cell-set-value) → mirror vivify.
@@ -1441,21 +1441,21 @@
      :source-var nelisp-cc-env-lookup-function--source
      :output "nelisp_env_lookup_function.o"
      :requires-arch x86_64)
-    ;; Wave b — Env::bind_local Phase 47 .o.
+    ;; Wave b — Env::bind_local AOT .o.
     ;; depth check → frame path (cell-make + nelisp_frame_bind)
     ;;           or mirror path (nelisp_mirror_set_value_or_insert).
     (nelisp-cc-env-bind-local
      :source-var nelisp-cc-env-bind-local--source
      :output "nelisp_env_bind_local.o"
      :requires-arch x86_64)
-    ;; Wave h — install empty globals mirror + frame stack Phase 47 .o.
+    ;; Wave h — install empty globals mirror + frame stack AOT .o.
     ;; Allocates nelisp-env record (fast-hash-table with 1024 buckets)
     ;; and nelisp-lexframe-stack record (8-element backing vector).
     (nelisp-cc-env-install-empty
      :source-var nelisp-cc-env-install-empty--source
      :output "nelisp_env_install_empty_globals_frames.o"
      :requires-arch x86_64)
-    ;; Wave k — tty raw-mode / winsize / jobctrl Phase 47 .o.
+    ;; Wave k — tty raw-mode / winsize / jobctrl AOT .o.
     ;; Moves tcgetattr/cfmakeraw/tcsetattr/poll/read/ioctl syscall bodies from
     ;; build-tool/src/eval/builtins.rs tty_raw / tty_winsize / tty_jobctrl
     ;; inline modules (~160 LOC) into elisp .o.  Rust shim keeps signal
@@ -1464,8 +1464,8 @@
      :source-var nelisp-cc-bi-tty-raw--source
      :output "nelisp_tty_raw.o"
      :requires-arch x86_64)
-    ;; Wave A33.N — emit-value leaf-arm Phase 47 kernels (回避策 A).
-    ;; `nelisp_emit_value_imm' + `nelisp_emit_value_ref_gp' Phase 47-
+    ;; Wave A33.N — emit-value leaf-arm AOT kernels (回避策 A).
+    ;; `nelisp_emit_value_imm' + `nelisp_emit_value_ref_gp' AOT-
     ;; compile the two *leaf* hot arms of `--emit-value' (= the A33.3
     ;; integer-tag dispatch over A33.4 flat IR vectors) so the standalone
     ;; self-host emits the `imm' (= `mov rax, imm32') and GP-class `ref'
@@ -1474,7 +1474,7 @@
     ;; via `vector-ref-ptr' + `sexp-int-unwrap', writes the fixed-layout
     ;; opcode + imm/disp bytes into a caller-preallocated out-vec via
     ;; `vector-slot-set', and writes the byte count into the caller-owned
-    ;; result slot.  Composes only existing Phase 47 grammar (= §111.C
+    ;; result slot.  Composes only existing AOT grammar (= §111.C
     ;; vector ops + §100 sexp-int + §100.D logand/sar/arith + §125.A
     ;; alloc-bytes) — no new opcode, no Rust extern added.  Linux-x86_64
     ;; only (= same gate as the A26 / A30 parents).
@@ -1504,7 +1504,7 @@
      :source-var nelisp-cc-eval-is-truthy--source
      :output "nl_eval_is_truthy.o"
      :requires-arch x86_64)
-    ;; Phase 47 swap — `nl_sexp_clone_into(src, dst)' re-provides the
+    ;; AOT swap — `nl_sexp_clone_into(src, dst)' re-provides the
     ;; deleted Rust `core::ptr::write(dst, (*src).clone())' from sexp.rs.
     ;; 3-way tag dispatch: inline atoms (tags 0..3) → 4×u64 bit-copy;
     ;; Str(5)/Symbol(4) → deep String copy via nl_alloc_str/symbol;
@@ -1647,25 +1647,25 @@ stale artifacts across feature combinations)."
         (expand-file-name "target/elisp-objects" repo-root))))
 
 (defun compile-elisp-objects--target-arch ()
-  "Return the Phase 47 target arch symbol for this batch run.
-Defaults to `x86_64' when `NELISP_PHASE47_TARGET_ARCH' is unset.
+  "Return the AOT target arch symbol for this batch run.
+Defaults to `x86_64' when `NELISP_AOT_TARGET_ARCH' is unset.
 Signals a clear error on unsupported values."
-  (pcase (or (getenv "NELISP_PHASE47_TARGET_ARCH") "x86_64")
+  (pcase (or (getenv "NELISP_AOT_TARGET_ARCH") "x86_64")
     ("x86_64" 'x86_64)
     ("aarch64" 'aarch64)
     (other
      (error
-      "compile-elisp-objects: unsupported NELISP_PHASE47_TARGET_ARCH %S (expected x86_64 or aarch64)"
+      "compile-elisp-objects: unsupported NELISP_AOT_TARGET_ARCH %S (expected x86_64 or aarch64)"
       other))))
 
 (defun compile-elisp-objects--target-format ()
-  "Return the Phase 47 output format symbol for this batch run.
-Looks at `NELISP_PHASE47_TARGET_OS' (forwarded by `build.rs')
+  "Return the AOT output format symbol for this batch run.
+Looks at `NELISP_AOT_TARGET_OS' (forwarded by `build.rs')
 and picks `'mach-o' for macOS, `'coff' for Windows (= mingw / msvc
 targets), `'elf' otherwise (= linux + the default).
   Doc 100 §100.D Stage 3 added Mach-O for macos-aarch64.
   Doc 101 §101.A adds COFF for windows-x86_64."
-  (pcase (or (getenv "NELISP_PHASE47_TARGET_OS") "linux")
+  (pcase (or (getenv "NELISP_AOT_TARGET_OS") "linux")
     ("macos"   'mach-o)
     ("windows" 'coff)
     (_         'elf)))
@@ -1690,12 +1690,12 @@ manifest entry's .o, the entry rebuilds even when its own .el is older.")
 (defun compile-elisp-objects--compiler-mtime ()
   "Return the latest mtime among core compiler/layout files (memoized).
 Returns nil if files can't be located.  Used as a coarse cache-invalidator:
-when phase47-compiler.el / sexp-layout.el / asm-* change, EVERY .o needs
+when aot-compiler.el / sexp-layout.el / asm-* change, EVERY .o needs
 to be rebuilt because the emitted code may shift."
   (or compile-elisp-objects--compiler-deps
       (setq compile-elisp-objects--compiler-deps
             (let ((latest nil))
-              (dolist (basename '("nelisp-phase47-compiler.el"
+              (dolist (basename '("nelisp-aot-compiler.el"
                                   "nelisp-sexp-layout.el"
                                   "nelisp-asm-x86_64.el"
                                   "nelisp-asm-arm64.el"
@@ -1771,7 +1771,7 @@ AND the compiler core files are skipped (= up-to-date)."
           (let ((sexp (symbol-value src-var)))
             (message "[compile-elisp-objects] %s -> %s"
                      feature out-path)
-            (nelisp-phase47-compile-to-object sexp out-path
+            (nelisp-aot-compile-to-object sexp out-path
                                               :arch arch :format format)
             (push out-path written))))))
     (when (> skipped 0)
@@ -1825,7 +1825,7 @@ same out-dir, same :arch/:format)."
             (let ((sexp (symbol-value src-var)))
               (message "[compile-elisp-objects] [%d/%d) %s -> %s"
                        idx end feature out-path)
-              (nelisp-phase47-compile-to-object sexp out-path
+              (nelisp-aot-compile-to-object sexp out-path
                                                 :arch arch :format format)
               (push out-path written))))))
       (setq idx (1+ idx)))

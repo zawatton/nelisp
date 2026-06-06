@@ -1,4 +1,4 @@
-;;; nelisp-cc-bf-precompute.el --- Phase 47 nl_bf_precompute swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bf-precompute.el --- AOT nl_bf_precompute swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `nl_bf_precompute' Rust extern in
+;; AOT replacement for the `nl_bf_precompute' Rust extern in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was (~19 LOC):
 ;;
 ;;   #[no_mangle]
@@ -131,7 +131,7 @@
 
     )
 
-  "Phase 47 source for `nl_bf_precompute' (special_forms.rs → elisp).
+  "AOT source for `nl_bf_precompute' (special_forms.rs → elisp).
 
 Five defuns.  CPS chain: req-walk → args-walk → bit-pack.
 Counts required formals (stopping at &optional/&rest) and total args,

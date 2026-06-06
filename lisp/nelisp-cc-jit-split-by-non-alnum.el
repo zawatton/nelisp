@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-split-by-non-alnum.el --- Phase 47 body for nl_jit_split_by_non_alnum  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-split-by-non-alnum.el --- AOT body for nl_jit_split_by_non_alnum  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 elisp migration of `nl_jit_split_by_non_alnum' from
+;; AOT elisp migration of `nl_jit_split_by_non_alnum' from
 ;; `build-tool/src/jit/strings.rs'.
 ;;
 ;; Trampoline signature: `(*const Sexp, *const Sexp, *mut Sexp) -> i64'
@@ -63,7 +63,7 @@
 ;;
 ;; Walker arity (6, even) — str-len + str-bytes-ptr computed inside
 ;;   each walker call from str-arg rather than pre-cached, keeping the
-;;   arity within the Phase 47 GP register limit of 6.
+;;   arity within the AOT GP register limit of 6.
 ;;
 ;; Tag constants (pinned by §62.5 ABI assert tests):
 ;;   SEXP_TAG_NIL    = 0
@@ -77,7 +77,7 @@
 ;;   §101.D  `cons-make'
 ;;   §122.E  `ptr-write-u8'
 ;;   §125.A  `alloc-bytes', `dealloc-bytes'
-;;   Phase 47 arith: `+', `-', `>=', `<=', `>', `=', `if', `or', `and'
+;;   AOT arith: `+', `-', `>=', `<=', `>', `=', `if', `or', `and'
 ;;
 ;; Build wiring:
 ;;   `scripts/compile-elisp-objects.el' manifest: one entry →
@@ -213,7 +213,7 @@
                               (if (= (sexp-tag omit-arg) 0) 0 1)
                               out)
         1)))
-  "Phase 47 source for the `nl_jit_split_by_non_alnum' trampoline.
+  "AOT source for the `nl_jit_split_by_non_alnum' trampoline.
 
 Five-entry `(seq DEFUN ...)' manifest:
   `nl_jit_split_is_alnum (b)'                       — byte predicate.

@@ -1,11 +1,11 @@
-#+TITLE: nelisp-sys → Phase 47 surface cheat-sheet (Doc 133 eval-kernel)
+#+TITLE: nelisp-sys → AOT surface cheat-sheet (Doc 133 eval-kernel)
 #+OPTIONS: toc:2
 
 * Why this file exists
 Doc 133 builds the NeLisp evaluator in nelisp-sys and verifies it by
 emitting standalone native binaries (no Rust runtime).  Each increment
 re-derives the same facts: which surface forms exist, what they lower to
-in Phase 47, what types they yield, and which Phase 47 limitations bite.
+in AOT, what types they yield, and which AOT limitations bite.
 This is the lookup table so that future increments (reader, eval
 dispatch, bootstrap) do not re-grep =nelisp-sys-frontend.el= /
 =nelisp-sys-backend.el= / =nelisp-sys-check.el= every session.
@@ -16,12 +16,12 @@ dispatch, bootstrap) do not re-grep =nelisp-sys-frontend.el= /
 - result types + rules: =src/nelisp-sys-check.el= (=nelisp-sys-check--infer=)
 - worked examples: =test/nelisp-sys-eval-kernel-test.el=, =examples/*.nl=
 
-* Function table — surface form → result type → Phase 47 lowered form
+* Function table — surface form → result type → AOT lowered form
 Address arithmetic note: =(+ ptr N)= and =(sys:ptr-add ptr N)= both lower
 to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
 =usize= address use plain =(+ p N)=.
 
-| surface form                         | result type | Phase 47 lowered form                  |
+| surface form                         | result type | AOT lowered form                  |
 |--------------------------------------+-------------+----------------------------------------|
 | /literal/ =42=                       | i32¹        | =42=                                   |
 | =(+ - * / mod a b)=                  | operand²    | =(+ a b)= …                            |
@@ -71,7 +71,7 @@ to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
   PROT_READ|WRITE=3, MAP_PRIVATE|ANON=34, -1, 0)=.
 ⁵ More than 6 args exceeds the GP-arg registers and is rejected.
 
-* Phase 47 limitations that bite (ranked by how often)
+* AOT limitations that bite (ranked by how often)
 1. *if / cond are TAIL-ONLY value forms.*  They may be a function body,
    a branch of another tail if/cond, or a cond-clause body — but they
    CANNOT nest as a =setq= value or a call argument.  Both of these are
@@ -103,7 +103,7 @@ to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
 6. *A mutable local with a foldable (constant) init, assigned only
    inside a loop, is constant-folded — not given a runtime slot.*  The
    in-loop =set!= is then rejected (=:not-value-expr=), because the slot
-   the assignment targets was never allocated.  Phase 47 decides
+   the assignment targets was never allocated.  AOT decides
    slot-vs-fold from the binding's INIT (=--int-foldable-p=) plus a
    top-level =setq= scan that does NOT see writes nested in a loop body.
    Fixes, cleanest first:
@@ -118,7 +118,7 @@ to =(+ ptr N)=.  =sys:ptr-add= REQUIRES a typed =(ptr T)=; for a bare
 7. *Arithmetic value-ops =+= =-= =*= =/= =mod= all emit* (=/= and =mod=
    need dedicated idiv emit — =/= keeps the quotient in rax, =mod= the
    remainder in rdx).  Historical note: =/= used to raise
-   =:not-value-expr= in the Phase 47 *value* emitter (it lowered fine but
+   =:not-value-expr= in the AOT *value* emitter (it lowered fine but
    would not compile natively); Doc 133 added the quotient emit, so on
    current builds =/= works as a cond-branch / return value.  If you hit
    =:not-value-expr= on =/= against an older compiler, that is the cause.
@@ -164,9 +164,9 @@ A new =sys:= primitive touches exactly four files, then a lowering test:
 1. =frontend= — parse the form to an AST node (=nelisp-sys-ast-make=).
 2. =ast= — register the node's children for traversal.
 3. =check= — infer/validate its type in =nelisp-sys-check--infer=.
-4. =backend= — lower it to a Phase 47 form in =nelisp-sys-backend--lower=.
+4. =backend= — lower it to a AOT form in =nelisp-sys-backend--lower=.
 5. add a lowering =should equal= + (if it runs) a native e2e.
-*Confirm Phase 47 already has the target op before adding the surface.*
+*Confirm AOT already has the target op before adding the surface.*
 env + apply needed NO new primitives — they compose existing
 =while/if/cond/set!/peek/poke/syscall/call-ptr/addr-of=.
 

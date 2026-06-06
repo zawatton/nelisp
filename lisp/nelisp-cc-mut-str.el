@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 122 §122.B introduces five new Phase 47 grammar ops for the
+;; Doc 122 §122.B introduces five new AOT grammar ops for the
 ;; mutable string builder (= incremental byte/codepoint append +
 ;; finalize-to-immutable):
 ;;
@@ -35,7 +35,7 @@
 ;;       `Sexp::Str(s)' and write to SLOT.  The source remains live +
 ;;       push-able (= clone semantics, not move).  Returns SLOT.
 ;;
-;; This file packages each op as a standalone Phase 47-compiled
+;; This file packages each op as a standalone AOT-compiled
 ;; `defun' so the `tests/elisp_cc_mut_str_probe.rs' integration test
 ;; can probe each round-trip independently.  Pattern mirrors
 ;; `nelisp-cc-sexp-write-str.el' (Doc 122 §122.A) for the sibling
@@ -59,7 +59,7 @@
      ;; allocates `NlStrRef::new(String::with_capacity(cap))' and
      ;; writes `Sexp::MutStr(rc)' into `*slot'.  Returns SLOT in rax.
      (mut-str-make-empty slot cap))
-  "Phase 47 source for the Doc 122 §122.B `mut-str-make-empty' op probe.")
+  "AOT source for the Doc 122 §122.B `mut-str-make-empty' op probe.")
 
 (defconst nelisp-cc-mut-str--push-byte-source
   '(defun nelisp_mut_str_push_byte (ptr byte)
@@ -72,7 +72,7 @@
      ;; inner `String' via `Vec::push'.  Returns rax = 1 sentinel
      ;; (the extern's return is `void').
      (mut-str-push-byte ptr byte))
-  "Phase 47 source for the Doc 122 §122.B `mut-str-push-byte' op probe.")
+  "AOT source for the Doc 122 §122.B `mut-str-push-byte' op probe.")
 
 (defconst nelisp-cc-mut-str--push-codepoint-source
   '(defun nelisp_mut_str_push_codepoint (ptr cp)
@@ -84,7 +84,7 @@
      ;; codepoint as 1-4 UTF-8 bytes and appends to the inner
      ;; `String'.  Returns rax = 1 sentinel.
      (mut-str-push-codepoint ptr cp))
-  "Phase 47 source for the Doc 122 §122.B `mut-str-push-codepoint' op probe.")
+  "AOT source for the Doc 122 §122.B `mut-str-push-codepoint' op probe.")
 
 (defconst nelisp-cc-mut-str--len-source
   '(defun nelisp_mut_str_len (ptr)
@@ -93,7 +93,7 @@
      ;; Calls `nl_mut_str_len(ptr) -> i64' which reads the box
      ;; pointer and returns the inner `String::len' (= byte count).
      (mut-str-len ptr))
-  "Phase 47 source for the Doc 122 §122.B `mut-str-len' op probe.")
+  "AOT source for the Doc 122 §122.B `mut-str-len' op probe.")
 
 (defconst nelisp-cc-mut-str--finalize-source
   '(defun nelisp_mut_str_finalize (ptr slot)
@@ -106,7 +106,7 @@
      ;; (= clone semantics, not move) so the Reader lexer can take
      ;; intermediate token snapshots.  Returns SLOT in rax.
      (mut-str-finalize ptr slot))
-  "Phase 47 source for the Doc 122 §122.B `mut-str-finalize' op probe.")
+  "AOT source for the Doc 122 §122.B `mut-str-finalize' op probe.")
 
 (defconst nelisp-cc-jit-make-mut-str--source
   '(seq
@@ -145,7 +145,7 @@
                 1)
             1)
         1)))
-  "Phase 47 source for the `nl_jit_make_mut_str' trampoline.
+  "AOT source for the `nl_jit_make_mut_str' trampoline.
 
 Builds the result directly in `out' via `mut-str-make-empty' +
 recursive `mut-str-push-codepoint'.  Preserves the Rust contract:
@@ -159,7 +159,7 @@ LEN must be a non-negative Int; CP must be an Int in-range
      (if (= (sexp-tag arg) 6)
          (and (sexp-int-make out (str-char-count arg)) 0)
        1))
-  "Phase 47 source for the `nl_jit_mut_str_len' trampoline.
+  "AOT source for the `nl_jit_mut_str_len' trampoline.
 
 Uses the Doc 122 §122.D `str-char-count' op so the trampoline
 returns Unicode codepoint count, matching the former Rust body

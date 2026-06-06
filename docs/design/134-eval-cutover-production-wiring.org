@@ -11,7 +11,7 @@
   self-sufficient with ~0 Rust".
 - *Consumes*: the nelisp-sys surface shipped this session — char-table /
   mut-str / f64 grammar (commit =5370d963=), the C-ABI relocatable
-  =.o= emit (=nelisp-phase47-compile-to-object= + the manifest/build.rs
+  =.o= emit (=nelisp-aot-compile-to-object= + the manifest/build.rs
   wiring proven in =be2f9a0a= / =c6d2105b= / =2cd2d578=).
 - *Hard rule binding*: every step MUST be net-negative-or-zero on Rust LOC
   (=feedback_nelisp_rust_loc_never_increase=).  build.rs manifest plumbing
@@ -141,7 +141,7 @@ exceptions* — there are no Rust tradeoffs to weigh.  Consequences:
    for SAVED_TERMIOS — no Rust static.
 3. *=nl_str_to_float=*: implement in nelisp-sys via the f64 grammar
    (commit 5370d963); if the f64 cross-ABI gate (Doc 110) blocks the =.o=
-   path, close that gate in elisp/Phase-47 (claude's own lisp work, 0
+   path, close that gate in elisp/AOT (claude's own lisp work, 0
    Rust) rather than taking a Rust exception.
 4. *Self-host evaluator*: keep maturing it — it is the path-3 standalone
    kernel seed, and zero-Rust to grow.

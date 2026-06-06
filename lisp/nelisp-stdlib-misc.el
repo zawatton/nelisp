@@ -525,7 +525,7 @@ or signals `error' otherwise.  Replaces the deleted Rust `bi_require'."
 
 ;; Wave 10.1d self-host follow-up (2026-05-23): coding-system stubs.
 ;; NeLisp standalone has no encode-coding-system infrastructure but
-;; Phase 47 / elf-write / pe-write / mach-o-write helpers use
+;; AOT / elf-write / pe-write / mach-o-write helpers use
 ;; (encode-coding-string s 'utf-8 t) to convert to UTF-8 bytes.
 ;; NeLisp strings are internally UTF-8 multibyte (verified via
 ;; (string-bytes "あ") = 3), so for 'utf-8 the encode is identity.
@@ -551,7 +551,7 @@ Only `utf-8' CODING is supported; others signal `error'."
     str))
 
 ;; NeLisp standalone has no buffer object, only string I/O.
-;; Phase 47 helpers (= elf-write etc.) call bufferp for defensive
+;; AOT helpers (= elf-write etc.) call bufferp for defensive
 ;; type checks; stub returns nil (= no Sexp is a buffer).
 (unless (fboundp 'bufferp)
   (defun bufferp (_obj) "NeLisp stub: no buffer Sexp exists." nil))
@@ -616,7 +616,7 @@ Only `utf-8' CODING is supported; others signal `error'."
 ;;   VISIT / LOCKNAME / MUSTBENEW = ignored
 ;;
 ;; Delegates the actual three-syscall chain (open + write + close)
-;; to `nl-write-file', which is the Phase 47 elisp object swap of
+;; to `nl-write-file', which is the AOT elisp object swap of
 ;; the same syscall body (Doc 117 §117.D.gaps.3 /
 ;; lisp/nelisp-cc-bi-nl-write-file.el).  `nl-write-file' uses
 ;; str-bytes-ptr / str-len so it is binary-safe; raw byte

@@ -30,7 +30,7 @@
        (if (= entry 0)
            (sexp-write-nil result-slot)
          (record-slot-ref entry 1 result-slot))))
-  "Phase 47 source for Doc 111 §111.E #3 `mirror_lookup_function'.
+  "AOT source for Doc 111 §111.E #3 `mirror_lookup_function'.
 
 Identical to `mirror_lookup_value' (#2) except it reads slot 1 (=
 symbol-entry function cell) instead of slot 0 (= value cell).  The

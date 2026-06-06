@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 92 §92.a — freestanding pure-elisp x86_64 macro assembler for
-;; the Phase 47 AOT compile chain.
+;; the AOT AOT compile chain.
 ;;
 ;; This is intentionally separate from `src/nelisp-cc-x86_64.el' (=
 ;; the Phase 7.x JIT backend with cl-defstruct + reversed-list byte
@@ -908,7 +908,7 @@ DST is the ModR/M.rm operand, SRC is the ModR/M.reg operand."
 
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access ops ----
 ;;
-;; Four memory-access primitives the Phase 47 compiler uses when it
+;; Four memory-access primitives the AOT compiler uses when it
 ;; emits direct loads / stores against a Sexp value held in a caller-
 ;; provided register pointer.  Each maps to a single x86_64 instruction
 ;; against `[base]' or `[base + imm8]'.  No SIB byte: `rsp' / `r12' as
@@ -1101,7 +1101,7 @@ not modelled here)."
 ;; The §110.A.1 set covers the asm-layer encodings only; the Phase
 ;; 47 compiler's `(f64 ...)' parse and emit dispatch land in §110.B
 ;; once these primitives have ert byte coverage.  No callsite from
-;; `nelisp-phase47-compiler.el' uses these helpers yet.
+;; `nelisp-aot-compiler.el' uses these helpers yet.
 
 (defun nelisp-asm-x86_64--emit-sse2-rr (buf prefix opcode dst src)
   "Internal: emit `PREFIX [REX?] 0F OPCODE ModR/M' SSE2 xmm-xmm op.
@@ -1477,7 +1477,7 @@ holds SRC, rm holds DST per Intel SDM `AND r/m8, r8'."
 ;; that gates on PF.  §110.A asm layer surfaces the primitive
 ;; SETcc opcodes; the NaN-aware sequencing happens at the §110.C
 ;; compiler emit stage (= one ert in the future
-;; `phase47-compiler-f64-cmp' family per cmp variant covers the
+;; `aot-compiler-f64-cmp' family per cmp variant covers the
 ;; pairwise emit decision).
 
 (defun nelisp-asm-x86_64-ucomisd-reg-reg (buf dst src)
@@ -1513,7 +1513,7 @@ cc result so Rust's `(NaN OP x) == false' semantics are matched."
 ;; opcode byte in the MR form, all 3 bytes total with REX.W.
 ;; Shifts are special — x86_64 SHL/SAR by register require the count
 ;; in CL, so the helpers fix RAX as the destination and CL as the
-;; (implicit) count source.  Phase 47 wires the count into RCX via
+;; (implicit) count source.  AOT wires the count into RCX via
 ;; an existing `mov-reg-reg' before calling these.
 
 (defun nelisp-asm-x86_64-or-reg-reg (buf dst src)
@@ -1778,7 +1778,7 @@ Doc 97.c comparison emitters."
 
 ;; ---- Doc 131 §131.A — atomic + raw-memory inline asm helpers ----
 ;;
-;; These helpers replace the PLT-call pattern used by the Phase 47
+;; These helpers replace the PLT-call pattern used by the AOT
 ;; grammar ops `atomic-fetch-add', `atomic-compare-exchange',
 ;; `ptr-read-u{8,16,32,64}', and `ptr-write-u{8,16,32,64}'.  Each
 ;; emits a single inline x86_64 instruction (or minimal prefix+opcode

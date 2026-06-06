@@ -17,12 +17,12 @@
 "5 declare_X_inline 全部 DSL 化、predicate / access / cons / arith / syscall, -600 LOC Rust") と b.6 ("旧 declare/lowered のうち未削除分 cleanup, -100〜200 LOC") は *Doc 28 §3.6 (Phase 7.1.6 cluster takeover) + §3.7.c (Phase 7.1.7.b dsl deletion)* で別ルート完了済と確定:
 
 - =declare_X_inline= パターンを生成していた DSL interpreter (=jit::dsl=) は Phase 7.1.7.b で物理削除済 (= =jit/mod.rs= line 6-8 ヘッダー).
-- =arith.rs= / =float.rs= / =math.rs= は Doc 100 §100.D + Doc 110 §110.E + §110.F の Phase 47 swap で物理削除済 (= 4 cluster of 5 deleted).
+- =arith.rs= / =float.rs= / =math.rs= は Doc 100 §100.D + Doc 110 §110.E + §110.F の AOT swap で物理削除済 (= 4 cluster of 5 deleted).
 - 残 =predicate.rs= / =access.rs= / =cons.rs= / =syscall.rs= は Phase 7.1.6 takeover 後 *Cranelift IR builder ではなく =#[no_mangle] extern "C"= trampoline* に変身済.  declare_X_inline 形式は存在せず、DSL 化対象なし.
 
 結果として b.3 の -600 LOC 削減目標は別 doc 経由で既に上回って達成済 (Doc 28 §3.6 で Cranelift IR builder 全削除 + Doc 100/110 で 4 trampoline cluster 削除).  b.6 (= cleanup) も同様に Doc 28 + 100 + 110 の sweep で吸収済.
 
-本 Doc は SHIPPED 部分 (b.1 / b.2 / b.2.5 / b.4 / b.5) の record として archival 保存、新規 work item は無し.  残 trampoline cluster (= =predicate= / =access= / =cons= / =syscall= / =strings= / =box_accessor= / =regex= / =hash= / =time= / =bridge=) の更なる削減は別 doc (= 仮称 Doc 111+: Phase 47 ABI 拡張 = ptr→i64 out-param / syscall 7-arg) で扱う.
+本 Doc は SHIPPED 部分 (b.1 / b.2 / b.2.5 / b.4 / b.5) の record として archival 保存、新規 work item は無し.  残 trampoline cluster (= =predicate= / =access= / =cons= / =syscall= / =strings= / =box_accessor= / =regex= / =hash= / =time= / =bridge=) の更なる削減は別 doc (= 仮称 Doc 111+: AOT ABI 拡張 = ptr→i64 out-param / syscall 7-arg) で扱う.
 
 * §0 TL;DR
 

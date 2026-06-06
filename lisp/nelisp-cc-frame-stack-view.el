@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group E helper #19 — `frame_stack_view'.  Phase 47
+;; Doc 111 §111.E Group E helper #19 — `frame_stack_view'.  AOT
 ;; reimplementation of the layout walker that currently lives in Rust
 ;; at `build-tool/src/eval/env_lexframe.rs::Env::frame_stack_view'.
 ;;
@@ -50,7 +50,7 @@
      ;; that may see `Sexp::Nil' route through Rust until the §111.E
      ;; cumulative ship rewires the dispatcher.
      (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)))
-  "Phase 47 source for Doc 111 §111.E #19 `frame_stack_view' depth read.")
+  "AOT source for Doc 111 §111.E #19 `frame_stack_view' depth read.")
 
 (provide 'nelisp-cc-frame-stack-view)
 

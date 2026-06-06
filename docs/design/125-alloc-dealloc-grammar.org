@@ -20,7 +20,7 @@
     `Box::new(NlT { … })' + matching `Box::from_raw' on the error
     path) can move their alloc side to elisp once §125 ships.
 - *Scope*: Generic byte-level `(alloc-bytes SIZE ALIGN)` +
-  `(dealloc-bytes PTR SIZE ALIGN)` Phase 47 grammar primitives wrapping
+  `(dealloc-bytes PTR SIZE ALIGN)` AOT grammar primitives wrapping
   `std::alloc::alloc` / `std::alloc::dealloc` via `Layout::from_size_
   align(_unchecked)`.  Plus 5 per-type extern wrappers (§125.B-F) that
   bake the type-specific `Layout::new::<NlT>()` so the elisp caller
@@ -33,7 +33,7 @@
 ** §0.1 Why this doc exists
 
 Doc 124 §5 names a single gap: the NlBox Drop elisp kernels cannot
-express the *if-zero-refcount free* branch because Phase 47 grammar
+express the *if-zero-refcount free* branch because AOT grammar
 has *no `dealloc` op*.  The existing `nlrc_drop_box!` Rust macro
 relies on `Layout::for_value()` / `Layout::new::<T>()` resolved at
 Rust *compile time*, so a pure-elisp body that wants to free a heap
@@ -52,7 +52,7 @@ This doc adds *both* paths:
   `alloc::dealloc(ptr, Layout::new::<NlT>())` so the Doc 124.G-K
   Drop kernels can call a single-arg helper.
 
-The Phase 47 grammar surface (= §125.A) lands first; §125.B-F are
+The AOT grammar surface (= §125.A) lands first; §125.B-F are
 trivial 3-LOC Rust externs gated on each §124.G-K stage shipping
 its own probe.
 
@@ -117,7 +117,7 @@ deletes the macro once §124.G-K all use `nl_dealloc_<T>(ptr)`.
 
 ** §2.A — Generic byte-level `alloc-bytes` / `dealloc-bytes` grammar
 
-Adds two Phase 47 grammar ops:
+Adds two AOT grammar ops:
 
 - `(alloc-bytes SIZE ALIGN)` → i64 (= raw `*mut u8` re-cast to i64,
   0 on `from_size_align` failure or OOM).  Substrate gate for the
@@ -154,7 +154,7 @@ Files touched (= mirrors §122.E / §123.A pattern):
 1. `build-tool/src/eval/raw_mem.rs` — append `nl_alloc_bytes` +
    `nl_dealloc_bytes` (= same module as the §122.E primitives since
    alloc/dealloc is the next layer of raw memory access).
-2. `lisp/nelisp-phase47-compiler.el` — add 2 parse-value clauses +
+2. `lisp/nelisp-aot-compiler.el` — add 2 parse-value clauses +
    2 dispatch arms (`'alloc-bytes` / `'dealloc-bytes`) + 2 emit
    functions following the §122.E `--emit-atomic-fetch-add` /
    `--emit-ptr-write` shape (= 2-arg / 3-arg extern-call lowerings
@@ -178,7 +178,7 @@ LOC budget (= per Doc 124 §0.2 pattern):
 |---------------------------------------------------+-------------|
 | docs/design/125-alloc-dealloc-grammar.org         | ~150        |
 | build-tool/src/eval/raw_mem.rs                    | ~55         |
-| lisp/nelisp-phase47-compiler.el                   | ~70         |
+| lisp/nelisp-aot-compiler.el                   | ~70         |
 | lisp/nelisp-cc-alloc-dealloc.el                   | ~40         |
 | scripts/compile-elisp-objects.el                  | ~15         |
 | build-tool/build.rs                               | ~3          |
@@ -193,9 +193,9 @@ rule (= dev/nelisp/CLAUDE.md):
 
 - Rust delta: +88 LOC (= 2 externs in `raw_mem.rs` + 4 extern decls
   + 2 safe wrappers in `lib.rs::elisp_cc_spike`).  Per the CLAUDE.md
-  exception list this is a thin extern wrapper layer + Phase 47
+  exception list this is a thin extern wrapper layer + AOT
   grammar bridge — i.e. exception (b) "thin wrapper" and (c)
-  "Phase 47 grammar 拡張までの繋ぎ" combined.
+  "AOT grammar 拡張までの繋ぎ" combined.
 - Downstream Rust delta after §125.B-F + Doc 124.G-L sweep: ~ -2,500
   Rust LOC (= the 5 `impl Drop` bodies + `nlrc_drop_box!` macro
   per Doc 124 §0.2 forecast).  Net trajectory after all consumers
@@ -250,7 +250,7 @@ ALIGN)` adds a third arg for rdx and matches the §122.E `(ptr-write-
 u64 PTR OFFSET VAL)` emit shape exactly (= 3 pushes, pops to rdi/rsi/
 rdx, extern-call, restore stack, `mov rax, 1` sentinel).
 
-Current Phase-47 aarch64 emit wires both ops as normal GP helper-call
+Current AOT aarch64 emit wires both ops as normal GP helper-call
 paths, so macOS arm64 builds compile them directly instead of routing
 through `--emit-aarch64-unsupported`.
 
@@ -297,15 +297,15 @@ All cases run through the public wrapper in
 
 Per §2.A summary: ~473 LOC added in this commit, of which ~88 LOC is
 Rust.  Per CLAUDE.md exception list (= "extern "C" 1-3 行の thin
-wrapper" + "Phase 47 grammar 拡張までの繋ぎ"), this Rust addition is
+wrapper" + "AOT grammar 拡張までの繋ぎ"), this Rust addition is
 permissible because:
 
 - `nl_alloc_bytes` / `nl_dealloc_bytes` (= ~30 LOC including doc
-  comments) are *the* Phase 47 alloc/dealloc surface.  Without them
+  comments) are *the* AOT alloc/dealloc surface.  Without them
   the grammar op cannot lower to a `call` instruction.
 - The 4 extern decls + 2 safe wrappers in `lib.rs::elisp_cc_spike`
   (= ~30 LOC including doc comments) are mandatory plumbing — every
-  Phase 47-compiled `.o` consumed by Rust needs this layer.
+  AOT-compiled `.o` consumed by Rust needs this layer.
 - The downstream Rust delta is the actual evaluation target:
 
   - §125.B-F per-type externs: +15 LOC Rust (= 5 × 3-line extern).
@@ -334,7 +334,7 @@ type already has a dedicated `nl_alloc_<T>()` extern shipped earlier:
 
 Shipping `alloc-bytes` in §125.A is *foundational*:
 
-- Symmetry with `dealloc-bytes` — Phase 47 grammar should not have
+- Symmetry with `dealloc-bytes` — AOT grammar should not have
   a free op without an alloc counterpart (= teaches confusion).
 - Doc 126-128 bridge GC (= concatenated leaf slabs, hash table
   bucket arrays, weak-ref tombstones) needs arena-style fresh
@@ -388,7 +388,7 @@ critical path.
 Realloc would be useful for the GC arena resize path (= bump
 allocator running out of slab room).  *Decision*: defer to a future
 Doc 125.G stage when a real caller materialises.  Avoid speculative
-surface area — Phase 47 grammar ops are easier to add than retract.
+surface area — AOT grammar ops are easier to add than retract.
 
 ** §6.4 Alignment of `Layout::new::<NlT>()` vs runtime alignment
 
@@ -411,7 +411,7 @@ as Rust's `alloc::dealloc` — caller responsibility.
 Ships:
 - `docs/design/125-alloc-dealloc-grammar.org` — this DRAFT.
 - `build-tool/src/eval/raw_mem.rs` — `nl_alloc_bytes' / `nl_dealloc_bytes'.
-- `lisp/nelisp-phase47-compiler.el` — `(alloc-bytes SIZE ALIGN)' / `(dealloc-bytes PTR SIZE ALIGN)' parse + emit.
+- `lisp/nelisp-aot-compiler.el` — `(alloc-bytes SIZE ALIGN)' / `(dealloc-bytes PTR SIZE ALIGN)' parse + emit.
 - `lisp/nelisp-cc-alloc-dealloc.el` — defconst sources.
 - `scripts/compile-elisp-objects.el` — 2 manifest entries.
 - `build-tool/build.rs` — 1 manifest_sources entry.
@@ -443,7 +443,7 @@ Unlocks Doc 124.G-L (= NlBox Drop elisp化) + Doc 117 Tier C partial.
   alloc counterpart at line 113.
 - =build-tool/src/eval/nlrc.rs= — `nlrc_drop_box!' macro that
   Doc 124.L deletes.
-- =lisp/nelisp-phase47-compiler.el= — Phase 47 grammar parse + emit
+- =lisp/nelisp-aot-compiler.el= — AOT grammar parse + emit
   surface that §125.A extends.
 - =lisp/nelisp-cc-atomic-raw-mem.el= — §122.E elisp source precedent.
 

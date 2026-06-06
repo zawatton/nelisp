@@ -9,18 +9,18 @@
 ;;; Commentary:
 
 ;; Doc 99 §99.B spike — minimum elisp source that compiles to a
-;; C-callable function via the Phase 47 chain.  The function returns
+;; C-callable function via the AOT chain.  The function returns
 ;; the integer 42 unconditionally so the Rust probe (= `cargo test')
 ;; can prove the end-to-end build pipeline:
 ;;
 ;;   1. `scripts/compile-elisp-objects.el' invokes
-;;      `nelisp-phase47-compile-to-object' on this source → ET_REL .o.
+;;      `nelisp-aot-compile-to-object' on this source → ET_REL .o.
 ;;   2. `build-tool/build.rs' bundles the .o into a static archive
 ;;      and tells cargo to link the final `nelisp' binary against it.
 ;;   3. Rust declares `extern "C" fn nelisp_spike_noop() -> i64;'
 ;;      and a probe test asserts the return value is 42.
 ;;
-;; The Phase 47 v1 grammar does not accept docstrings or multi-form
+;; The AOT v1 grammar does not accept docstrings or multi-form
 ;; bodies (= Doc 97 §1), so the source below is a single Elisp-style
 ;; `(defun NAME () BODY)' form.  The symbol name uses underscores so
 ;; the resulting STT_FUNC entry is byte-compatible with the C name

@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 
-;; Doc 128 §128.A — Phase 47 elisp migrations that replace Rust
+;; Doc 128 §128.A — AOT elisp migrations that replace Rust
 ;; `#[no_mangle]' bodies in `build-tool/src/eval/nlstr.rs' by
-;; exporting the SAME C-linkage symbol names from Phase 47 `.o' files.
+;; exporting the SAME C-linkage symbol names from AOT `.o' files.
 ;;
 ;; Unlike the §122.B / §122.D probe defconsts (which export
 ;; `nelisp_*' symbols that call the grammar ops and thus call the Rust
@@ -21,7 +21,7 @@
 ;; — the linker routes all callers (grammar-op PLT stubs, other Phase
 ;; 47 `.o' PLT stubs) directly to the new elisp implementation.
 ;;
-;; Migrated symbols (Phase 47 source → Rust LOC deleted):
+;; Migrated symbols (AOT source → Rust LOC deleted):
 ;;
 ;;   nl_mut_str_len    — MutStr byte length via ptr-read-u64 chain.
 ;;                       NlStr* = [sexp+8], String::len = [NlStr*+16].
@@ -34,7 +34,7 @@
 ;;                       write NlStr header, write Sexp::MutStr fields.
 ;;   nl_mut_str_finalize — clone MutStr's String to a fresh Sexp::Str.
 ;;
-;; Phase 47 `let' constraint: the `let' grammar form is COMPILE-TIME
+;; AOT `let' constraint: the `let' grammar form is COMPILE-TIME
 ;; only (= constant-folding of integer literals).  Runtime pointer
 ;; values from `alloc-bytes' or `ptr-read-u64' cannot be bound in `let'.
 ;; The standard pattern is to thread runtime values as extra function
@@ -63,7 +63,7 @@
 ;; is freed via `nl_str_drop_inner' + `dealloc-bytes(box, 32, 8)'
 ;; the interior `drop_in_place::<NlStr>' call frees the char buf via
 ;; `std::alloc::dealloc(char_buf, Layout::from_size_align(cap, 1))'
-;; which matches the `alloc-bytes(cap, 1)' Phase 47 allocation.
+;; which matches the `alloc-bytes(cap, 1)' AOT allocation.
 ;;
 ;; `build_string' private helper in nlstr.rs is used only by
 ;; `nl_alloc_str' and `nl_alloc_symbol'; once both are migrated the
@@ -89,7 +89,7 @@
      ;;
      ;; Returns: i64 byte length.
      (ptr-read-u64 (ptr-read-u64 ptr 8) 16))
-  "Phase 47 direct-symbol source for `nl_mut_str_len'.
+  "AOT direct-symbol source for `nl_mut_str_len'.
 
 Replaces the Rust `#[no_mangle] pub unsafe extern \"C\" fn nl_mut_str_len'
 body in `build-tool/src/eval/nlstr.rs' (lines 147-150, 4 LOC).
@@ -124,7 +124,7 @@ value form using the `ptr-read-u64' grammar op in nested position.")
          (if (= (sexp-tag sexp) 4)
              (ptr-read-u64 sexp 16)
            0))))
-  "Phase 47 direct-symbol source for `nl_str_bytes_ptr'.
+  "AOT direct-symbol source for `nl_str_bytes_ptr'.
 
 Replaces the Rust `#[no_mangle] pub unsafe extern \"C\" fn nl_str_bytes_ptr'
 body in `build-tool/src/eval/nlstr.rs' (lines 218-225, 8 LOC).
@@ -139,7 +139,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
 ;; nl_alloc_str / nl_alloc_symbol — allocate immutable string/symbol Sexp
 ;; ---------------------------------------------------------------------------
 ;;
-;; The Phase 47 `let' form only supports compile-time constant folding.
+;; The AOT `let' form only supports compile-time constant folding.
 ;; To thread the runtime `alloc-bytes' result (= the char-buf pointer)
 ;; through the write sequence, we use a helper function pattern:
 ;;
@@ -210,7 +210,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; Public entry: nl_alloc_symbol(bytes_ptr, len, result_slot).
     (defun nl_alloc_symbol (bytes-ptr len result-slot)
       (nl_alloc_symbol_pos bytes-ptr (if (< len 0) 0 len) result-slot)))
-  "Phase 47 direct-symbol source for `nl_alloc_str' + `nl_alloc_symbol'.
+  "AOT direct-symbol source for `nl_alloc_str' + `nl_alloc_symbol'.
 
 Single `(seq DEFUN ...)' manifest exporting seven symbols:
 - `nl_alloc_str_copy_loop'  — private tail-recursive byte copier.
@@ -226,7 +226,7 @@ Replaces the Rust `#[no_mangle]' bodies for both `nl_alloc_str' and
 the private `build_string' helper (lines 79-87, 9 LOC) which had no
 other callers.  Net Rust reduction: ~26 LOC.
 
-The helper-chain pattern avoids Phase 47's `let' restriction (= `let'
+The helper-chain pattern avoids AOT's `let' restriction (= `let'
 is compile-time constant folding only).  `alloc-bytes' returns its
 pointer in rax; passing it as the final argument to a 5-param write
 helper threads the runtime value through without any `let' binding.")
@@ -282,7 +282,7 @@ helper threads the runtime value through without any `let' binding.")
     ;; Returns result-slot.
     (defun nl_alloc_mut_str (cap result-slot)
       (nl_alloc_mut_str_pos (if (< cap 0) 0 cap) result-slot)))
-  "Phase 47 direct-symbol source for `nl_alloc_mut_str'.
+  "AOT direct-symbol source for `nl_alloc_mut_str'.
 
 Single `(seq DEFUN ...)' manifest exporting four symbols:
 - `nl_alloc_mut_str_write'  — innermost writer (all fields).
@@ -369,7 +369,7 @@ expectations.  Both use the global allocator, compatible with
       (nl_mut_str_finalize_nlstr
        ptr result-slot
        (ptr-read-u64 ptr 8))))               ; nlstr = NlStr* at [sexp+8]
-  "Phase 47 direct-symbol source for `nl_mut_str_finalize'.
+  "AOT direct-symbol source for `nl_mut_str_finalize'.
 
 Six-entry `(seq DEFUN ...)' manifest:
 - `nl_mut_str_finalize_copy_loop'  — tail-recursive byte copier.
@@ -388,7 +388,7 @@ callers and is deleted.  Net Rust reduction: ~11 LOC (8 + 3).
 The five-level helper chain threads the three runtime pointer values
 (`nlstr' from ptr-read-u64(ptr,8), `str-len' from ptr-read-u64(nlstr,16),
 `new-buf' from alloc-bytes) without any `let' bindings, respecting
-Phase 47's compile-time-only `let' restriction.")
+AOT's compile-time-only `let' restriction.")
 
 (provide 'nelisp-cc-nlstr-direct-ops)
 

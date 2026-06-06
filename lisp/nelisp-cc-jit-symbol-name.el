@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-symbol-name.el --- Phase 47 body for nl_jit_symbol_name  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-symbol-name.el --- AOT body for nl_jit_symbol_name  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 122 §122.A — Phase 47 elisp migration of `nl_jit_symbol_name'
+;; Doc 122 §122.A — AOT elisp migration of `nl_jit_symbol_name'
 ;; from `build-tool/src/jit/strings.rs'.
 ;;
 ;; Trampoline signature: `(*const Sexp, *mut Sexp) -> i64'
@@ -34,7 +34,7 @@
 ;;     and writes it into *out.
 ;;
 ;; Algorithm for Nil/T literals:
-;;   Two-level fill+write helper pair (= Phase 47 `let'-is-compile-time
+;;   Two-level fill+write helper pair (= AOT `let'-is-compile-time
 ;;   constraint forces runtime values through function parameters):
 ;;     nl_sym_name_fill_nil (out buf)   — write 3 bytes "nil", then free.
 ;;     nl_sym_name_write_nil (out)      — alloc 3 bytes, thread to fill.
@@ -49,7 +49,7 @@
 ;;   `alloc-bytes'      — §125.A: heap allocate raw byte buffer.
 ;;   `ptr-write-u8'     — §125.A: write one byte at offset.
 ;;   `dealloc-bytes'    — §125.A: free raw byte buffer.
-;;   Phase 47 arith: `=', `or', `if', `and'
+;;   AOT arith: `=', `or', `if', `and'
 ;;
 ;; Tag constants (§62.5 ABI assert tests in `tests/sexp_repr.rs'):
 ;;   SEXP_TAG_NIL    = 0
@@ -73,7 +73,7 @@
   '(seq
     ;; ---- Nil → "nil" literal writer ------------------------------------
     ;;
-    ;; Two-level pattern (required by Phase 47's compile-time-only `let'):
+    ;; Two-level pattern (required by AOT's compile-time-only `let'):
     ;;   fill: receives the pre-allocated 3-byte buffer, fills "nil", writes
     ;;         to *out via sexp-write-str, frees the buffer, returns 0.
     ;;   write: allocates the buffer and threads it into fill.
@@ -119,7 +119,7 @@
           (if (= (sexp-tag arg) 1)
               (nl_sym_name_write_t out)
             1)))))
-  "Phase 47 source for the `nl_jit_symbol_name' trampoline.
+  "AOT source for the `nl_jit_symbol_name' trampoline.
 
 Five-entry `(seq DEFUN ...)' manifest:
   `nl_sym_name_fill_nil (out buf)' — fill 3-byte buffer with \"nil\" + write.

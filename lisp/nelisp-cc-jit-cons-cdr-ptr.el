@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-cons-cdr-ptr.el --- Phase 47 nl_cons_cdr_ptr swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-cons-cdr-ptr.el --- AOT nl_cons_cdr_ptr swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `nl_cons_cdr_ptr' Rust extern in
+;; AOT replacement for the `nl_cons_cdr_ptr' Rust extern in
 ;; `build-tool/src/jit/cons.rs'.  The Rust body was:
 ;;
 ;;   match &*arg {
@@ -22,7 +22,7 @@
 ;;   cdr:      Sexp  @ offset 32  (= sizeof::<Sexp>() = 32)
 ;;   refcount: usize @ offset 64
 ;;
-;; So `&cdr as *const Sexp' = box_ptr + 32.  Phase 47 computes this
+;; So `&cdr as *const Sexp' = box_ptr + 32.  AOT computes this
 ;; as `(+ (sexp-payload-ptr arg) 32)'.
 ;;
 ;; ABI constants used (§100.B frozen):
@@ -43,7 +43,7 @@
      (if (= (sexp-tag arg) 7)
          (+ (sexp-payload-ptr arg) 32)
        0))
-  "Phase 47 source for `nl_cons_cdr_ptr' (jit/cons.rs → elisp).
+  "AOT source for `nl_cons_cdr_ptr' (jit/cons.rs → elisp).
 
 Returns (box_ptr + 32) as *const Sexp — the address of the cdr
 field inside the NlConsBox — when arg is Sexp::Cons (tag 7), else

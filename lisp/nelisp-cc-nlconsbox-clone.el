@@ -28,7 +28,7 @@
 ;; The body is a single composed value form using the `prog2'
 ;; side-effect sequencer pattern from §116.A's reader lexer (=
 ;; `nelisp_reader_prog2 E V' evaluates both args left-to-right and
-;; returns V).  Phase 47's `seq' grammar is statement-only; defun
+;; returns V).  AOT's `seq' grammar is statement-only; defun
 ;; bodies are value-producing expressions, so to combine "do side
 ;; effect E, then return V" we wrap them in a helper that returns
 ;; its second arg:
@@ -97,14 +97,14 @@
       (nelisp_nlconsbox_clone_prog2
        (atomic-fetch-add (+ box-ptr 64) 1)
        box-ptr)))
-  "Phase 47 source for the Doc 124 §124.A NlConsBox Clone kernel.
+  "AOT source for the Doc 124 §124.A NlConsBox Clone kernel.
 
 Two-entry `(seq DEFUN ...)' manifest:
 - `nelisp_nlconsbox_clone_prog2 (_eff val) -> val' — side-effect
   sequencer, identical pattern to §116.A `nelisp_reader_prog2'.
 - `nelisp_nlconsbox_clone (box-ptr) -> box-ptr' — public entry.
 
-Phase 47's SysV AMD64 prologue spills the first arg (`box-ptr' =
+AOT's SysV AMD64 prologue spills the first arg (`box-ptr' =
 raw `NlConsBox*' as i64) into the rbp-relative slot 0.  The
 public body marshals (1) the result of `(atomic-fetch-add (+
 box-ptr 64) 1)' (= the refcount bump, identical to Doc 123 §123.A

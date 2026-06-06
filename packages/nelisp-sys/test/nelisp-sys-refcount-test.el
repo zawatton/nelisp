@@ -8,10 +8,10 @@
 ;; expressed in nelisp-sys, composing Phase 0 atomics (sys:atomic-add!/
 ;; sub!/cas) with Phase 1 struct layout (sys:offsetof on the shadow
 ;; boxes) + raw pointer arithmetic (sys:ptr-add).  These lower to the
-;; Phase 47 atomic ops the existing Doc 122.E / 124 grammar already
+;; AOT atomic ops the existing Doc 122.E / 124 grammar already
 ;; emits to native code.  This test pins the *lowering* (parse -> check
-;; -> Phase 47 form); the native codegen for atomic-fetch-add /
-;; atomic-compare-exchange is already shipped + tested at the Phase 47
+;; -> AOT form); the native codegen for atomic-fetch-add /
+;; atomic-compare-exchange is already shipped + tested at the AOT
 ;; layer.  Full standalone-binary e2e lands once nelisp-sys freestanding
 ;; entry ships (Doc 133 Phase 7).
 
@@ -71,7 +71,7 @@ caller frees when it observes 1.  rc-dec(p) -> (atomic-fetch-add (+ p 64) (- 0 1
 
 (ert-deftest nelisp-sys-refcount-peek-poke-lower ()
   "Doc 133 P2: raw u64 box-field read/write (sys:peek-u64 / sys:poke-u64)
-on a usize address lower to the Phase 47 ptr-read-u64 / ptr-write-u64
+on a usize address lower to the AOT ptr-read-u64 / ptr-write-u64
 ops, composing with the usize field-offset arithmetic."
   (should (equal '(defun rd (p) (ptr-read-u64 (+ p 64) 0))
                  (nelisp-sys-refcount-test--lower

@@ -1,4 +1,4 @@
-;;; nelisp-cc-eval-is-truthy.el --- nl_eval_is_truthy Phase 47 swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-eval-is-truthy.el --- nl_eval_is_truthy AOT swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 134 Stage 134.A re-provision of `nl_eval_is_truthy' as a
-;; Phase 47-compiled elisp .o after commit fa8932eb deleted its Rust
+;; AOT-compiled elisp .o after commit fa8932eb deleted its Rust
 ;; `#[no_mangle]' body from `build-tool/src/eval/mod.rs'.
 ;;
 ;; Recovered signature (from fa8932eb^:build-tool/src/eval/mod.rs):
@@ -59,7 +59,7 @@
 ;; site.  In `nl_eit_with_scratch' the `(extern-call nelisp_eval_call
 ;; form env scratch)' is argument 0 of `nl_eit_rc_check', so rsp is
 ;; aligned to 16 when CALL executes ✓.  `alloc-bytes' and `sexp-tag'
-;; are Phase 47 native ops, not extern-calls, so they have no
+;; are AOT native ops, not extern-calls, so they have no
 ;; alignment constraint.
 ;;
 ;; Linux-x86_64 only — same `:requires-arch x86_64' gate as sibling
@@ -87,7 +87,7 @@
 ;;   nl_eit_with_scratch (scratch form env) -> i64
 ;;     Calls `nelisp_eval_call' (extern-call FIRST ✓), passes result
 ;;     and scratch to `nl_eit_rc_check'.
-;;     Arity 3 (odd) — Phase 47 emits the rsp alignment pad via the
+;;     Arity 3 (odd) — AOT emits the rsp alignment pad via the
 ;;     `--needs-align' branch (same as `nelisp_meta_walk' arity 3).
 ;;
 ;;   nl_eval_is_truthy (form env) -> i64
@@ -140,7 +140,7 @@
     ;; scratch: *mut Sexp — 32-byte heap slot (owned by this call chain).
     ;; form:    *const Sexp — unevaluated form pointer.
     ;; env:     *mut c_void — Env pointer.
-    ;; Arity 3 (odd) — Phase 47 emits rsp alignment pad ✓.
+    ;; Arity 3 (odd) — AOT emits rsp alignment pad ✓.
     (defun nl_eit_with_scratch (scratch form env)
       (nl_eit_rc_check
        (extern-call nelisp_eval_call form env scratch)
@@ -151,7 +151,7 @@
     ;; form: *const Sexp — unevaluated form to test.
     ;; env:  *mut c_void — Env pointer.
     ;; Returns 0 (nil), 1 (truthy), or -1 (eval error).
-    ;; alloc-bytes is a Phase 47 native op (not extern-call): no
+    ;; alloc-bytes is a AOT native op (not extern-call): no
     ;; alignment constraint.  The scratch slot is passed to
     ;; nl_eit_with_scratch which frees it on all paths.
     ;; Arity 2 (even) ✓.
@@ -159,7 +159,7 @@
       (nl_eit_with_scratch (alloc-bytes 32 8) form env))
 
     )
-  "Doc 134 Stage 134.A Phase 47 source for `nl_eval_is_truthy'.
+  "Doc 134 Stage 134.A AOT source for `nl_eval_is_truthy'.
 
 Five-entry `(seq DEFUN ...)' manifest.
 
@@ -176,7 +176,7 @@ Arity alignment: nl_eval_is_truthy arity 2, nl_eit_with_scratch arity 3
 (odd → --needs-align), nl_eit_rc_check/nl_eit_tag_check/nl_eit_prog1
 arity 2.  extern-call nelisp_eval_call is arg-0 of nl_eit_rc_check ✓.
 
-Phase 47 ops:
+AOT ops:
   alloc-bytes 32 8 / dealloc-bytes 32 8  — scratch Sexp slot.
   extern-call nelisp_eval_call           — evaluate form.
   sexp-tag                               — read Sexp::Nil discriminant.

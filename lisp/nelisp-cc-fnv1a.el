@@ -11,7 +11,7 @@
 ;; Doc 115 §115.7 — pure-elisp 32-bit FNV-1a hash, replacing the Rust
 ;; `mirror_fnv1a' free fn + `nl_mirror_fnv1a_sexp' extern wrapper
 ;; in `build-tool/src/eval/env_helpers.rs'.  This is the last
-;; Rust intermediary in the env_mirror / env_lexframe Phase 47
+;; Rust intermediary in the env_mirror / env_lexframe AOT
 ;; dispatch chain; after §115.7 ships, every hash-related call
 ;; site (= the `mirror_lookup_entry' / `frame_bind' / `frame_stack_
 ;; find' helpers' inner `(logand H (- COUNT 1))' index mask) lands
@@ -31,7 +31,7 @@
 ;;
 ;; The Rust impl iterates `s.chars()' (= Unicode codepoints).  This
 ;; elisp transcription iterates *bytes* via `str-byte-at' (= the only
-;; primitive the Phase 47 grammar exposes for indexed string access).
+;; primitive the AOT grammar exposes for indexed string access).
 ;; For the nelisp symbol table the distinction is invisible because
 ;; every elisp identifier is ASCII (= a Rust `char' and a UTF-8 byte
 ;; coincide for codepoints below 0x80) and the env mirror only stores
@@ -146,7 +146,7 @@
       ;; 2166136261) per the algorithm's seed value.
       ;;
       ;; Seed materialisation: the literal 2166136261 (= 0x811C9DC5)
-      ;; sits between 2^31 and 2^32, so the Phase 47 `MOV r/m64,
+      ;; sits between 2^31 and 2^32, so the AOT `MOV r/m64,
       ;; imm32' opcode would sign-extend its bit-31 to all high bits
       ;; (= `0xFFFFFFFF_811C9DC5'), polluting the output on the empty-
       ;; string path that never reaches the per-step `logand' mask.
@@ -165,13 +165,13 @@
       (nelisp_fnv1a_step4 (+ (shl 1 31) 18652613)
                           str-ptr 0 (str-len str-ptr)
                           (- (shl 1 32) 1))))
-  "Phase 47 source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
+  "AOT source for Doc 115 §115.7 `mirror_fnv1a' pure-elisp
 replacement.
 
 Implements the 32-bit FNV-1a hash via tail-recursive byte iteration
 over a Sexp::Str / Sexp::Symbol payload.  Composes `str-len' /
 `str-byte-at' (§101.C) + `logxor' / `logand' (§115.0) + `*' (§100.D)
-through plain Phase 47 grammar — no `extern-call'.
+through plain AOT grammar — no `extern-call'.
 
 R11b Wave 9: split the inner loop into a 4-byte unrolled main path
 (`nelisp_fnv1a_step4') + a 1-byte tail path (`nelisp_fnv1a_step') and

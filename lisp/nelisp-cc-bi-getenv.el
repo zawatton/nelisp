@@ -1,4 +1,4 @@
-;;; nelisp-cc-bi-getenv.el --- Wave A25.1 getenv() Phase 47 helper  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bi-getenv.el --- Wave A25.1 getenv() AOT helper  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Wave A25.1 (Phase 47 self-application foundation) — pure-elisp
+;; Wave A25.1 (AOT self-application foundation) — pure-elisp
 ;; `(nelisp_bi_getenv NAME)' helper that calls libc `getenv(3)' against
 ;; a Sexp::Str / Sexp::Symbol argument and returns either Sexp::Str of
 ;; the environment value or Sexp::Nil if the variable is unset.
@@ -20,7 +20,7 @@
 ;;   §101.C  `str-len'                — for the dealloc size arg.
 ;;   §100.A  `extern-call'            — libc `getenv' call.
 ;;   §122.E  `ptr-read-u8'            — walk getenv result bytes to
-;;                                       compute strlen (no Phase 47
+;;                                       compute strlen (no AOT
 ;;                                       `strlen' grammar today).
 ;;   §122.A  `sexp-write-str'         — allocate fresh Sexp::Str(value).
 ;;   §122.A  `sexp-write-nil'         — Sexp::Nil for missing variables.
@@ -29,7 +29,7 @@
 ;;   * Returns *const c_char (NUL-terminated value) on hit, or NULL when
 ;;     the environment variable is not set.
 ;;   * Returned pointer is borrowed (= points into the process's
-;;     `environ' array).  Caller MUST NOT free it.  Phase 47 elisp
+;;     `environ' array).  Caller MUST NOT free it.  AOT elisp
 ;;     copies the bytes into a fresh Sexp::Str owned by NeLisp's
 ;;     allocator (= `sexp-write-str' internally `alloc-bytes' + copies).
 ;;
@@ -43,7 +43,7 @@
 ;;
 ;; Linux-x86_64 only — same arch gate as the §122.I parent + the
 ;; existing libc-syscall siblings (`nelisp_bi_syscall_stat' etc.).
-;; Composes only existing Phase 47 grammar — no new opcode.
+;; Composes only existing AOT grammar — no new opcode.
 
 ;;; Code:
 
@@ -120,14 +120,14 @@
        (+ (str-len name-ptr) 1)
        result-slot
        0)))
-  "Phase 47 source for the Wave A25.1 `(nelisp_bi_getenv NAME
+  "AOT source for the Wave A25.1 `(nelisp_bi_getenv NAME
 RESULT-SLOT)' helper.
 
 Six-entry `(seq DEFUN ...)' manifest:
 - `nelisp_bi_getenv_prog3 (val _e1 _e2) -> val' — 3-arg side-effect
   sequencer (= result + dealloc effect + pad).
 - `nelisp_bi_getenv_cstrlen (ptr i) -> n' — tail-recursive byte walker
-  for libc C-string length computation (Phase 47 has no `strlen'
+  for libc C-string length computation (AOT has no `strlen'
   grammar op).
 - `nelisp_bi_getenv_with_value (val-ptr cstr size result-slot) ->
   result-slot' — non-NULL branch: copy libc bytes into fresh Sexp::Str
@@ -139,7 +139,7 @@ Six-entry `(seq DEFUN ...)' manifest:
 - `nelisp_bi_getenv (name-ptr result-slot) -> result-slot' — public
   2-arg entry; allocates name CString + dispatches to inner.
 
-Composes only existing Phase 47 grammar — no new opcode:
+Composes only existing AOT grammar — no new opcode:
 - §122.I `nelisp_cstr_from_sexp' — NAME CString construction.
 - §125.A `dealloc-bytes' — NAME CString lifecycle.
 - §101.C `str-len' — byte count for dealloc size.
@@ -149,7 +149,7 @@ Composes only existing Phase 47 grammar — no new opcode:
 - §122.A `sexp-write-nil' — Sexp::Nil for unset variables.
 
 Linux-x86_64 only — same arch gate as the §122.I parent.  libc
-`getenv(3)' is portable but the Phase 47 grammar substrate is
+`getenv(3)' is portable but the AOT grammar substrate is
 x86_64-only until the rest of the aarch64 sweep ships.")
 
 (provide 'nelisp-cc-bi-getenv)

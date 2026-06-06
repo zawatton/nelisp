@@ -34,7 +34,7 @@
                       (:abi c :export "nl_add") (+ a b)))))))
 
 (ert-deftest nelisp-sys-backend-lower-call-ptr ()
-  ;; Doc 133 P0: (sys:call-ptr p x) -> Phase 47 (call-ptr p x).
+  ;; Doc 133 P0: (sys:call-ptr p x) -> AOT (call-ptr p x).
   (should (equal '(defun via (p x) (call-ptr p x))
                  (nelisp-sys-backend-test--lower
                   '((sys:defun via ((p i64) (x i64)) i64 ()
@@ -50,7 +50,7 @@
                       (sys:call-ptr (sys:addr-of tgt) x)))))))
 
 (ert-deftest nelisp-sys-backend-lower-atomics ()
-  ;; Doc 133 P0: atomic sugar -> Phase 47 atomic ops.
+  ;; Doc 133 P0: atomic sugar -> AOT atomic ops.
   (should (equal '(defun inc (p) (atomic-fetch-add p 1))
                  (nelisp-sys-backend-test--lower
                   '((sys:defun inc ((p i64)) i64 () (sys:atomic-add! p 1))))))
@@ -63,7 +63,7 @@
                       (sys:cas p e n)))))))
 
 (ert-deftest nelisp-sys-backend-lower-alloc-dealloc ()
-  ;; Doc 133 P2/P3: sys:alloc/sys:dealloc -> Phase 47 alloc-bytes/dealloc-bytes.
+  ;; Doc 133 P2/P3: sys:alloc/sys:dealloc -> AOT alloc-bytes/dealloc-bytes.
   (should (equal '(defun mk () (alloc-bytes 72 8))
                  (nelisp-sys-backend-test--lower
                   '((sys:defun mk () usize () (sys:alloc 72 8))))))
@@ -196,7 +196,7 @@ sign-extending `ptr-read-sN' read."
 ;;; char-table get/set lowering (Doc 120.B residual surface).
 
 (ert-deftest nelisp-sys-backend-lower-char-table-get ()
-  "(sys:char-table-get TBL IDX OUT) lowers to the Phase 47 extern-call that
+  "(sys:char-table-get TBL IDX OUT) lowers to the AOT extern-call that
 the `nl_jit_char_table_aref' swap delegates to."
   (should (equal '(defun ctg (tbl idx out)
                     (extern-call nl_char_table_get_raw tbl idx out))
@@ -235,7 +235,7 @@ the `nl_jit_char_table_aref' swap delegates to."
                   '((sys:defun fin ((p usize) (slot usize)) usize ()
                       (sys:mut-str-finalize p slot)))))))
 
-;;; Floating-point lowering (Phase 47 f64 SSE grammar).
+;;; Floating-point lowering (AOT f64 SSE grammar).
 
 (ert-deftest nelisp-sys-backend-lower-f64-arith ()
   (should (equal '(defun fa (a b) (f64-add a b))

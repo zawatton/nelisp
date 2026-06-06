@@ -1,11 +1,11 @@
-#+TITLE: Doc 100 v2 — Phase 47 Sexp::Int ABI MVP (= elisp-side Sexp layout)
+#+TITLE: Doc 100 v2 — AOT Sexp::Int ABI MVP (= elisp-side Sexp layout)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-12
 
 * Status
 
-- *State*: SHIPPED v2 2026-05-12 — §100.A (=cab01038=) + §100.B (= =docs/arch/sexp-abi.md= + =lisp/nelisp-sexp-layout.el= + =build-tool/src/eval/sexp_abi_assert.rs= + =Makefile sexp-abi-check= + =bin/sexp-abi-emit=) + §100.C (= =bi_truncate= Int arm now routes through Phase 47-compiled =nelisp_truncate_int.o=, see =build-tool/src/eval/builtins.rs:1229= + =lisp/nelisp-cc-truncate-int.el=) all SHIPPED.  Doc 100 v2 chain functionally complete; status header re-synced 2026-05-17 (= Doc 101 implementation kickoff audit).
-- *Parent*: Doc 99 (= Phase 47 → eval loop wiring master plan, §99.A-C
+- *State*: SHIPPED v2 2026-05-12 — §100.A (=cab01038=) + §100.B (= =docs/arch/sexp-abi.md= + =lisp/nelisp-sexp-layout.el= + =build-tool/src/eval/sexp_abi_assert.rs= + =Makefile sexp-abi-check= + =bin/sexp-abi-emit=) + §100.C (= =bi_truncate= Int arm now routes through AOT-compiled =nelisp_truncate_int.o=, see =build-tool/src/eval/builtins.rs:1229= + =lisp/nelisp-cc-truncate-int.el=) all SHIPPED.  Doc 100 v2 chain functionally complete; status header re-synced 2026-05-17 (= Doc 101 implementation kickoff audit).
+- *Parent*: Doc 99 (= AOT → eval loop wiring master plan, §99.A-C
   SHIPPED 2026-05-11; §99.D rollout queue opens here)
 - *Sibling*: Doc 90 §3.1-§3.3 (= D1/D2/D3 deferrals)
 - *Dependents (future)*:
@@ -25,13 +25,13 @@ under Option C would have *added* Rust LOC instead of reducing it.
 
 v2 reverts to Doc 99 §2.2 *Option B* (= elisp `.o' files read the
 production `Sexp' enum's `#[repr(C, u8)]' layout directly via byte-
-offset memory access).  Phase 47 gains Sexp-layout-aware grammar
+offset memory access).  AOT gains Sexp-layout-aware grammar
 forms that compile to direct memory reads; the layout knowledge lives
-inside the Phase 47 compiler (= elisp source under `lisp/'), not as
+inside the AOT compiler (= elisp source under `lisp/'), not as
 Rust helpers.  No new Rust modules are introduced.  Every swap reduces
 Rust LOC monotonically.
 
-The §100.A commit (cab01038, Phase 47 `extern-call' grammar + ELF
+The §100.A commit (cab01038, AOT `extern-call' grammar + ELF
 SHN_UNDEF / PLT32 wire-up) is *kept* — `extern-call' remains useful
 for elisp `.o' ↔ elisp `.o' cross-unit calls.  Only v1's §100.B (Rust
 helper crate) and §100.C (Rust shim swap) were discarded; v2 redesigns
@@ -84,8 +84,8 @@ lands.
 
 | Stage    | Scope                                                                          | Effect |
 |----------+--------------------------------------------------------------------------------+--------|
-| §100.A   | (SHIPPED cab01038, 2026-05-11) Phase 47 `extern-call' grammar + ELF SHN_UNDEF / PLT32 | unblock |
-| §100.B   | (SHIPPED 2026-05-12) Sexp-layout document + Phase 47 grammar ops (= `sexp-tag', `sexp-int-unwrap', `sexp-int-make') that compile to direct memory access + CI drift gate | spike  |
+| §100.A   | (SHIPPED cab01038, 2026-05-11) AOT `extern-call' grammar + ELF SHN_UNDEF / PLT32 | unblock |
+| §100.B   | (SHIPPED 2026-05-12) Sexp-layout document + AOT grammar ops (= `sexp-tag', `sexp-int-unwrap', `sexp-int-make') that compile to direct memory access + CI drift gate | spike  |
 | §100.C   | (SHIPPED 2026-05-12) First real swap: =bi_truncate= Int branch via pure-elisp `.o', net Rust LOC negative | proof  |
 | §100.D   | (= handed off to Doc 101) Sexp::Cons / Symbol / Str layout ops + first list-walking swap | extend |
 
@@ -119,7 +119,7 @@ the elisp `.o' must:
 3. Extract the i64 payload.
 4. Construct a fresh `Sexp::Int(n)' for the return.
 
-Option B realizes this in elisp by Phase 47 emitting code that:
+Option B realizes this in elisp by AOT emitting code that:
 - Reads `Sexp''s tag byte at offset 0 to check `Int' tag (= 2 per
   the Sexp enum's `#[repr(C, u8)]' declaration ordering).
 - Reads the i64 payload at the variant's body offset.
@@ -127,11 +127,11 @@ Option B realizes this in elisp by Phase 47 emitting code that:
   into a caller-provided 32-byte slot.
 
 No Rust helpers are involved.  The Sexp layout becomes a *frozen
-contract* between Rust and Phase 47, enforced by:
+contract* between Rust and AOT, enforced by:
 - =docs/arch/sexp-abi.md= — canonical byte-offset spec
 - Rust-side `const _: () = assert!(std::mem::offset_of!(...) == N);'
   on every Sexp field offset / variant tag
-- Phase 47 compiler reads the same offsets via `defconst' in elisp
+- AOT compiler reads the same offsets via `defconst' in elisp
 
 ** §1.2 The Sexp memory layout
 
@@ -177,7 +177,7 @@ v2's response: *make the layout a versioned, CI-enforced contract*.
 - Rust side: `const _: () = assert!(std::mem::offset_of!(...) == N);'
   in =build-tool/src/eval/sexp_abi_assert.rs= test module + tag-value
   constants re-exported as `pub const SEXP_TAG_INT: u8 = 2;'.
-- Phase 47 side: =lisp/nelisp-sexp-layout.el= holds the same offsets
+- AOT side: =lisp/nelisp-sexp-layout.el= holds the same offsets
   as `defconst nelisp-sexp--tag-int 2' / `defconst nelisp-sexp--offset-int-payload 8'.
 - CI gate: a `make sexp-abi-check' target runs `cargo run --bin
   sexp-abi-emit' that prints the Rust-computed offsets, diffs against
@@ -221,7 +221,7 @@ The Rust shim becomes:
       require_arity("truncate", args, 1, Some(1))?;
       match &args[0] {
           Sexp::Int(_) => {
-              // §100.C: route through Phase 47-compiled elisp .o.
+              // §100.C: route through AOT-compiled elisp .o.
               // Stack-local result slot; elisp body writes into it.
               let mut result_slot: Sexp = Sexp::Nil;
               unsafe {
@@ -243,7 +243,7 @@ nonsense).  The only Rust code added is a 3-LOC `extern "C"'
 declaration and a thin wrapper inside `elisp_cc_spike' module — no
 new module file, no symbol-retention scaffolding.
 
-** §2.2 The Phase 47 grammar extension
+** §2.2 The AOT grammar extension
 
 Three new value-producing forms, all compiling to direct memory access:
 
@@ -288,7 +288,7 @@ set.
 #+end_src
 
 The function body is one composed expression.  No `let' / `progn' /
-control flow is needed.  Phase 47 v1 grammar already handles this
+control flow is needed.  AOT v1 grammar already handles this
 shape; §100.B's three new ops (`sexp-tag', `sexp-int-unwrap',
 `sexp-int-make') slot in as new value-producing forms in `parse-value'.
 
@@ -320,7 +320,7 @@ The elisp `.o' produced by §100.C contains:
 
 * §3 Stage breakdown
 
-** §3.A Stage 100.A — Phase 47 extern-call grammar (SHIPPED cab01038)
+** §3.A Stage 100.A — AOT extern-call grammar (SHIPPED cab01038)
 
 Already shipped 2026-05-11.  Doc 100 v2 retains this commit unchanged.
 The grammar form is unused by §100.B-C but remains available for
@@ -344,7 +344,7 @@ future inter-`.o' calls.
      (defconst nelisp-sexp--offset-int-payload 8)
      (defconst nelisp-sexp--slot-size         32)
    #+end_src
-3. Add 3 new value forms to =lisp/nelisp-phase47-compiler.el='s
+3. Add 3 new value forms to =lisp/nelisp-aot-compiler.el='s
    `parse-value' dispatch:
    - `(sexp-tag H)' → IR `(:kind sexp-tag :ptr IR)' → emit
      `movzx rax, byte [rdi]'.
@@ -354,7 +354,7 @@ future inter-`.o' calls.
      → emit `mov byte [rdi], 2; mov [rdi+8], rsi; mov rax, rdi'.
 4. Add Rust-side CI assertion: =build-tool/src/eval/sexp_abi_assert.rs=
    containing `const _: () = assert!(std::mem::offset_of!(...))' for
-   every offset Phase 47 depends on, plus `pub const SEXP_TAG_INT: u8 = 2;'
+   every offset AOT depends on, plus `pub const SEXP_TAG_INT: u8 = 2;'
    etc. that the assertion references.
 5. Add `make sexp-abi-check' target running a small Rust binary that
    diffs Rust-computed offsets against the elisp `defconst' values.
@@ -362,7 +362,7 @@ future inter-`.o' calls.
 *LOC delta*:
 - =docs/arch/sexp-abi.md=                     : +100 (new, markdown)
 - =lisp/nelisp-sexp-layout.el=                : +50 (new)
-- =lisp/nelisp-phase47-compiler.el=           : +120 (3 new emit ops + IR + parse)
+- =lisp/nelisp-aot-compiler.el=           : +120 (3 new emit ops + IR + parse)
 - =build-tool/src/eval/sexp_abi_assert.rs=    : +40 (new const_assert! block)
 - =Makefile=                                  : +5 (sexp-abi-check target)
 
@@ -373,10 +373,10 @@ work is elisp.
 
 - `make sexp-abi-check' green (= layout offsets match between Rust
   and elisp).
-- New ert `nelisp-phase47-compiler/sexp-int-unwrap-smoke' — emit a
+- New ert `nelisp-aot-compiler/sexp-int-unwrap-smoke' — emit a
   function that reads a Sexp::Int's payload, link via host.o that
   embeds a Sexp::Int(42) at a known address, exec → EXIT=42.
-- New ert `nelisp-phase47-compiler/sexp-int-make-smoke' — emit a
+- New ert `nelisp-aot-compiler/sexp-int-make-smoke' — emit a
   function that writes Sexp::Int(99) into a caller slot, verify tag
   byte + payload via post-call memory inspection in a Rust test.
 
@@ -421,7 +421,7 @@ pattern).
 Crucially: *no new Rust helper crate, no `elisp_abi.rs', no opaque-handle
 helpers*.  The elisp `.o' is fully self-contained — it reads Sexp tag
 byte + i64 payload directly via `mov [rdi]' / `mov [rdi+8]' instructions
-Phase 47 emits from the layout constants in =lisp/nelisp-sexp-layout.el=.
+AOT emits from the layout constants in =lisp/nelisp-sexp-layout.el=.
 
 *Verification gate*:
 
@@ -450,7 +450,7 @@ After §100.C:
 3. =cargo build --release= clean.
 4. =bi_truncate= Int branch is the first production builtin path whose
    algorithm lives only in elisp source (= `nelisp-cc-truncate-int.el')
-   and runs as Phase 47-emitted machine code with NO Rust helper crate
+   and runs as AOT-emitted machine code with NO Rust helper crate
    on the call path.
 5. Per-swap Rust LOC delta is *negative for algorithm-bearing code*
    (= the original Rust body is gone, only a thin extern wrapper
@@ -459,7 +459,7 @@ After §100.C:
 
 * §5 Risks / unknowns
 
-** §5.1 Sexp layout drift between Rust and Phase 47
+** §5.1 Sexp layout drift between Rust and AOT
 
 *The* load-bearing risk.  If `Sexp''s variant order or payload size
 changes without updating =lisp/nelisp-sexp-layout.el= + recompiling
@@ -471,11 +471,11 @@ before every release / merge to main.  Implementation: a tiny Rust
 binary prints the `offset_of!' values, the Makefile diffs against the
 elisp constants.  CI failure on drift is loud + immediate.
 
-** §5.2 Phase 47 grammar growth pressure
+** §5.2 AOT grammar growth pressure
 
 Each new Sexp variant we cover (= Cons in Doc 101, Symbol/Str in
 Doc 102) adds 3-5 new grammar forms (= tag-check + accessor + constructor
-+ predicate).  By the time Doc 102 ships, Phase 47 grammar will have
++ predicate).  By the time Doc 102 ships, AOT grammar will have
 ~30+ Sexp-specific forms.
 
 *Mitigation*: this is intentional — the grammar growth replaces Rust
@@ -504,7 +504,7 @@ to elisp, expects the elisp body to write into it.  If the elisp body
 writes past the 32-byte slot (= a buggy grammar emit), it corrupts
 the Rust stack.
 
-*Mitigation*: Phase 47's grammar ops emit fixed-size writes (= 1-byte
+*Mitigation*: AOT's grammar ops emit fixed-size writes (= 1-byte
 tag + 8-byte payload = 9 bytes total, well under 32-byte slot).  An
 ert test verifies the emit's max write offset matches the documented
 Sexp variant's footprint.
@@ -517,7 +517,7 @@ Sexp variant's footprint.
   picked here), §3.D (= unlock rollout), §5.1 (= layout fragility CI
   gate planned)
 - =docs/design/97-phase-47-sexp-to-asm-compiler.org= §97.b/c (= current
-  Phase 47 grammar)
+  AOT grammar)
 - =docs/design/90-phase-2-postship-audit.org= §3.1-§3.3 (= D1/D2/D3
   deferrals unlocked progressively by Doc 100/101/102)
 
@@ -530,7 +530,7 @@ Sexp variant's footprint.
 ** §6.3 Code references
 
 - =build-tool/src/eval/sexp.rs:54-58= — `Sexp' enum + `#[repr(C, u8)]'
-- =lisp/nelisp-phase47-compiler.el:1155= — comment that §100.A
+- =lisp/nelisp-aot-compiler.el:1155= — comment that §100.A
   resolved ("v1 has none" → §100.A enabled PLT32 emission)
 - =lisp/nelisp-elf-write.el:105-108= — relocation type constants
   (= used by §100.A; §100.B doesn't add new types)
@@ -539,4 +539,4 @@ Sexp variant's footprint.
 
 - §100.A — cab01038 (SHIPPED 2026-05-11)
 - §100.B — SHIPPED 2026-05-12 (= layout doc + elisp constants + Rust assertion + Makefile + sexp-abi-emit binary; status re-synced 2026-05-17)
-- §100.C — SHIPPED 2026-05-12 (= bi_truncate Int arm routes through Phase 47-compiled nelisp_truncate_int.o; status re-synced 2026-05-17)
+- §100.C — SHIPPED 2026-05-12 (= bi_truncate Int arm routes through AOT-compiled nelisp_truncate_int.o; status re-synced 2026-05-17)

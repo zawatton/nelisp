@@ -1,4 +1,4 @@
-;;; nelisp-cc-symbol-is-lambda.el --- Phase 47 nl_symbol_is_lambda elisp .o  -*- lexical-binding: t; -*-
+;;; nelisp-cc-symbol-is-lambda.el --- AOT nl_symbol_is_lambda elisp .o  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Moves the `#[no_mangle] extern "C" fn nl_symbol_is_lambda' body from
-;; `build-tool/src/eval/special_forms.rs' into a Phase 47 elisp `.o'.
+;; `build-tool/src/eval/special_forms.rs' into a AOT elisp `.o'.
 ;;
 ;; Contract: `(nl_symbol_is_lambda SYM)' — `*const Sexp' — returns i64:
 ;;   1 if SYM is `Sexp::Symbol("lambda")', 0 otherwise.
@@ -33,7 +33,7 @@
      ;; sym: *const Sexp (rdi).
      ;; Returns i64: 1 if Symbol("lambda"), 0 otherwise.
      (symbol-name-eq sym "lambda"))
-  "Phase 47 source for `nl_symbol_is_lambda'.
+  "AOT source for `nl_symbol_is_lambda'.
 
 Replaces the Rust `#[no_mangle] extern \"C\" fn nl_symbol_is_lambda'
 in `build-tool/src/eval/special_forms.rs'.  Single inline

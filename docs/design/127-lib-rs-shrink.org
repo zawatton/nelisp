@@ -8,14 +8,14 @@
 
 - ~30 LOC: crate-level docs + `pub mod` decls + `compile_error!` guard
 - ~1980 LOC: =elisp_cc_spike= module — 114 `extern "C"` decls + 114
-  safe wrapper functions, one per Phase 47-compiled symbol.
+  safe wrapper functions, one per AOT-compiled symbol.
 
 Endpoint target: lib.rs ~30 LOC.  So this doc covers the path to
 −1980 LOC.
 
 * §127.2 Why so much lib.rs
 
-Every Phase 47-compiled elisp helper exposes an =extern "C"=
+Every AOT-compiled elisp helper exposes an =extern "C"=
 trampoline named =nelisp_*= / =nl_jit_*=.  Rust callers don't call
 those directly — they go through a safe wrapper in
 =elisp_cc_spike::FOO= that:
@@ -105,5 +105,5 @@ Cumulative: lib.rs 2019 → ~30 LOC after all three stages.
 
 * §127.7 References
 
-- Doc 114 (x86_64-linux pivot, Phase 47 helpers single-platform)
+- Doc 114 (x86_64-linux pivot, AOT helpers single-platform)
 - Doc 122 §122.C (varargs extern-call)

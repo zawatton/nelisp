@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-record-type-tag-ptr.el --- Phase 47 nl_record_type_tag_ptr swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-record-type-tag-ptr.el --- AOT nl_record_type_tag_ptr swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `nl_record_type_tag_ptr' Rust extern in
+;; AOT replacement for the `nl_record_type_tag_ptr' Rust extern in
 ;; `build-tool/src/jit/box_accessor.rs'.  The Rust body was:
 ;;
 ;;   match &*arg {
@@ -58,7 +58,7 @@
      (if (= (sexp-tag arg) 12)
          (sexp-payload-ptr-record arg)
        0)))
-  "Phase 47 source for nl_record_type_tag_ptr (jit/box_accessor.rs to elisp).
+  "AOT source for nl_record_type_tag_ptr (jit/box_accessor.rs to elisp).
 
 Returns the NlRecord* (= &type_tag as *const Sexp, NlRecord offset 0)
 when arg is Sexp::Record (tag 12), else 0 (null).")

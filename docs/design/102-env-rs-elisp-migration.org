@@ -28,7 +28,7 @@
   - Phase 6 — *SHIPPED (option a) 2026-05-17*: production's sole =extern_builtin= entry (= =nelisp--env-globals-op=) promoted to a regular =builtins::dispatch= match arm.  =install_env_shim_primitives= now sets just the function-cell sentinel; the =register_extern_builtin= call is removed.  The =extern_builtins: HashMap<...>= field stays as a *host-crate / test-only extension surface* (= 4 test callsites + the public API contract for crates that depend on =nelisp-build-tool=).  Production binary no longer reads from =extern_builtins= at all.
   - Phase 7 — *PARTIAL SHIPPED 2026-05-17*: production binary surface shrink via cfg-gating.  =Env::empty=, =Env::new_global_no_stdlib=, =Env::mirror_snapshot_globals=, =Env::mirror_diff_view=, =Env::mirror_iter_entries=, =image::decode_v3= all gated behind =#[cfg(any(test, feature = "image-baker"))]=.  =Env::extern_builtins= field, =ExternBuiltin= type, =Env::register_extern_builtin= method, and the =builtins::dispatch= fall-through gated behind =#[cfg(test)]=.  Production binary no longer carries these symbols.  The original §3 Phase 7 target of "env.rs ≈ 200 LOC" turned out to be structurally off — the mirror_* + frame_* Rust-direct helpers (~600 LOC) are required by production reads/writes; they can't be moved out without Phase 8's env.rs split.  Remaining shrinks (= mirror_* / frame_* relocation into a separate `eval/mirror.rs`) become Phase 8 prerequisite work.
   - Phase 8 — *SHIPPED partial (= 3-file split) 2026-05-17*: =eval/env.rs= split into =eval/env.rs= (Env struct + ctors + public API + install glue, 789 LOC) + =eval/env_mirror.rs= (= globals mirror helpers, 447 LOC) + =eval/env_lexframe.rs= (= lexical frame stack helpers, 267 LOC).  env.rs went 1456 → 789 LOC (= -46%).
-  - Phase 8.b *unblock progress 2026-05-17*: condition (a) "Phase 47 native compilation matures" is now ~85% delivered.  Doc 100 (Sexp::Int) + Doc 101 (Cons/Symbol/Str, all 4 stages SHIPPED including construction) + Doc 111 §111.A (NlRecord/NlVector/NlCell layout) + §111.B (Record read+write + recordp swap) all SHIPPED.  §111.C (Vector read + aref swap) + §111.D (Cell read+write ops) in flight via parallel codex dispatch as of this commit.  After §111.C/D land, §111.E (= 22-helper env_mirror/lexframe rewrite via Phase 47-compiled elisp) is unblocked.  Doc 101 §0.3 also identified that Phase 47 dispatch BYPASSES apply_lambda_inner (= goes through extern "C" boundary), so condition (b) (= apply-arg-frame separation) may not be required at all for env.rs deletion — only Doc 101 + Doc 111 cumulative ABI is needed.
+  - Phase 8.b *unblock progress 2026-05-17*: condition (a) "AOT native compilation matures" is now ~85% delivered.  Doc 100 (Sexp::Int) + Doc 101 (Cons/Symbol/Str, all 4 stages SHIPPED including construction) + Doc 111 §111.A (NlRecord/NlVector/NlCell layout) + §111.B (Record read+write + recordp swap) all SHIPPED.  §111.C (Vector read + aref swap) + §111.D (Cell read+write ops) in flight via parallel codex dispatch as of this commit.  After §111.C/D land, §111.E (= 22-helper env_mirror/lexframe rewrite via AOT-compiled elisp) is unblocked.  Doc 101 §0.3 also identified that AOT dispatch BYPASSES apply_lambda_inner (= goes through extern "C" boundary), so condition (b) (= apply-arg-frame separation) may not be required at all for env.rs deletion — only Doc 101 + Doc 111 cumulative ABI is needed.
 
 ** Why this DRAFT exists (= roadmap context)
 
@@ -81,9 +81,9 @@ table.
 
 Three architectural directions, in increasing migration cost:
 
-*Option A (compile env.rs to Phase 47)*: emit env.rs as a single
-Phase-47-compiled `.o' on every supported target.  Requires
-Phase 47 to grow:
+*Option A (compile env.rs to AOT)*: emit env.rs as a single
+AOT-compiled `.o' on every supported target.  Requires
+AOT to grow:
 - String pool / intern table support (= currently unsupported)
 - `HashMap<String, T>' equivalent grammar form
 - =NlCellRef= shared-mutable cell ABI
@@ -91,7 +91,7 @@ Phase 47 to grow:
 - ExternBuiltin dispatch (= function-pointer registry)
 That's 4-6 new ABI layers; way too much for a single doc.
 
-*Option B (elisp-owned storage via Phase 47 grammar form)*: env.rs
+*Option B (elisp-owned storage via AOT grammar form)*: env.rs
 storage moves to elisp data structures (=
 =Sexp::Record= -based SymbolEntry + a bucket-array hashtable).
 Rust-side env.rs reduces to slim ABI plumbing that calls into
@@ -113,7 +113,7 @@ This DRAFT establishes the foundations for Option B:
    plist / constant).
 2. *Fast hashtable* (§2.2) — design a bucket-array elisp
    hashtable that achieves O(1) avg lookup with O(N) worst-case
-   in pathological collision scenarios.  No new Phase 47 grammar
+   in pathological collision scenarios.  No new AOT grammar
    required — pure elisp using existing =aref= / =aset= +
    chained linear scan within each bucket.
 3. *Migration mapping* (§3) — Phase 2 through Phase 8 outline,
@@ -256,10 +256,10 @@ Hash function (= elisp):
 #+begin_src elisp
   (defun nelisp--fast-hash--hash (str bucket-count)
     "FNV-1a 32-bit hash of STR mod BUCKET-COUNT.
-  Plain elisp arithmetic — no Phase 47 grammar form needed for
+  Plain elisp arithmetic — no AOT grammar form needed for
   Phase 1.  When the env.rs port reaches the hot path and the
   elisp eval cost dominates, consider promoting this hash loop
-  to a Phase 47-compiled `.o' (= Doc 103+ optimisation)."
+  to a AOT-compiled `.o' (= Doc 103+ optimisation)."
     (let ((h #x811C9DC5)  ; FNV offset basis
           (i 0)
           (len (length str)))
@@ -326,8 +326,8 @@ Performance characteristics:
 With 1024 buckets and 2k entries: avg ≈ 2 compares per lookup =
 ~100x faster than the existing =nelisp-stdlib-hash.el= alist.
 
-No Phase 47 grammar form needed in Phase 1.  The hot path runs
-through =aref= / =aset= which Phase 47 already supports for
+No AOT grammar form needed in Phase 1.  The hot path runs
+through =aref= / =aset= which AOT already supports for
 =Sexp::Vector=.
 
 ** §2.3 Bucket count rationale
@@ -344,17 +344,17 @@ Resize to 2048 / 4096 if the global table grows past 4k entries
 (= triggered by load factor > 3.0).  Resize implementation in
 Phase 2.
 
-** §2.4 Why no Phase 47 grammar form for Phase 1
+** §2.4 Why no AOT grammar form for Phase 1
 
-The roadmap memory (Phase 1 = "Phase 47 grammar form 4-6 件")
+The roadmap memory (Phase 1 = "AOT grammar form 4-6 件")
 overestimated.  Inspection reveals:
 
 - The fast hashtable ops fit cleanly in existing elisp
   primitives (=aref / aset / cons / car / cdr / string= /
   logand / mod / logxor / *).
-- Phase 47 compiler integration is *optional* — if the bucket-
+- AOT compiler integration is *optional* — if the bucket-
   array lookup ends up dominating eval time, we can promote the
-  inner loop to a Phase 47-compiled `.o' as a Phase 3+
+  inner loop to a AOT-compiled `.o' as a Phase 3+
   optimization.  But Phase 1 doesn't need it.
 
 This is honest LOC accounting: Phase 1 ships *0 Rust LOC change*
@@ -604,7 +604,7 @@ sibling modules:
 =env.rs= went 1456 → 789 LOC (= -46%).
 
 *Phase 8.b future unlock path*: once
-1. Phase 47 native compilation matures (Doc 100 / 110 ABI
+1. AOT native compilation matures (Doc 100 / 110 ABI
    extensions) and reaches the record-walking primitives, elisp
    helpers approach Rust-equivalent perf.
 2. =apply_lambda_inner= argument-frame contamination is resolved
@@ -745,12 +745,12 @@ discipline.
 
 * §6 Out of scope
 
-** §6.1 Phase 47 grammar additions
+** §6.1 AOT grammar additions
 
 Originally projected by the memory roadmap.  This DRAFT
-*explicitly omits* Phase 47 grammar additions for Phase 1.  If
+*explicitly omits* AOT grammar additions for Phase 1.  If
 hot-path elisp env ops dominate eval time after Phase 2+, the
-fast-hash inner loops can be promoted to Phase-47-compiled `.o'
+fast-hash inner loops can be promoted to AOT-compiled `.o'
 files in a Doc 103+ optimization phase.
 
 ** §6.2 Symbol identity / intern table

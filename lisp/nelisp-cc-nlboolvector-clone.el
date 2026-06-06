@@ -55,7 +55,7 @@
       (nelisp_nlboolvector_clone_prog2
        (atomic-fetch-add (+ box-ptr 24) 1)
        box-ptr)))
-  "Phase 47 source for the Doc 124 §124.M NlBoolVector Clone kernel.
+  "AOT source for the Doc 124 §124.M NlBoolVector Clone kernel.
 
 Mechanical port of §124.B (NlVector) modulo the type name.
 REFCOUNT_OFFSET = 24 for `NlBoolVector' because `Vec<bool>' has the

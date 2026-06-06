@@ -9,14 +9,14 @@
 ;;; Commentary:
 
 ;; Doc 100 v2 §100.B frozen byte-layout constants for the Rust `Sexp'
-;; enum.  The Phase 47 compiler reads these when emitting direct-access
+;; enum.  The AOT compiler reads these when emitting direct-access
 ;; instructions against Sexp values held in caller-provided register
 ;; pointers.
 ;;
 ;; The canonical spec lives in `docs/arch/sexp-abi.md'.  Rust-side
 ;; assertions in `build-tool/src/eval/sexp_abi_assert.rs' fail
 ;; compilation on drift; `make sexp-abi-check' diffs the two sides at
-;; CI time.  Phase 47 is the ABI's third consumer — keep these
+;; CI time.  AOT is the ABI's third consumer — keep these
 ;; constants in lockstep with both the doc and the assertion module.
 
 ;;; Code:
@@ -48,7 +48,7 @@
 
 (defconst nelisp-sexp--offset-payload     8
   "Byte offset of the variant payload inside a Sexp slot.
-Mirrors `SEXP_PAYLOAD_OFFSET' on the Rust side.  Phase 47 emits
+Mirrors `SEXP_PAYLOAD_OFFSET' on the Rust side.  AOT emits
 `mov rax, [rdi + 8]' / `mov [rdi + 8], rsi' using this offset.")
 
 (defconst nelisp-sexp--offset-int-payload 8

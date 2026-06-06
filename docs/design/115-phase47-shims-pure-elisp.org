@@ -1,4 +1,4 @@
-#+TITLE: Doc 115 — env_lexframe_phase47_shims pure elisp化 (= the last Rust intermediary)
+#+TITLE: Doc 115 — env_lexframe_aot_shims pure elisp化 (= the last Rust intermediary)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-17
 
@@ -9,8 +9,8 @@
 - *Parent*: Doc 114 (= x86_64-linux pivot, SHIPPED main =2e32f16b=).
   Doc 102 Phase 8.b condition (a) literally satisfied (env_mirror.rs /
   env_lexframe.rs deleted), but the 500 LOC of
-  `env_lexframe_phase47_shims.rs` remains as the last Rust
-  intermediary in the lexframe Phase 47 dispatch chain.
+  `env_lexframe_aot_shims.rs` remains as the last Rust
+  intermediary in the lexframe AOT dispatch chain.
 - *Dependents*: this is the final step before "真の純 elisp 化"
   (per user 2026-05-17 directive).  After Doc 115 SHIPPED, no Rust
   code participates in env_lexframe / lexical-frame management at
@@ -19,8 +19,8 @@
   `nl_frame_stack_ensure_capacity', `nl_frame_push', `nl_frame_pop',
   `nl_frame_bind', `nl_frame_stack_find', `nl_wrap_alist_cells', plus
   the depth read `nl_frame_stack_depth' which is already trivial =
-  one `sexp-int-unwrap') with pure-elisp Phase 47 implementations.
-  *Additionally extends Phase 47 grammar with `int-logxor' + `int-logand'
+  one `sexp-int-unwrap') with pure-elisp AOT implementations.
+  *Additionally extends AOT grammar with `int-logxor' + `int-logand'
   ops* so the last hash-related Rust shim (`mirror_fnv1a' +
   `nl_mirror_fnv1a_sexp' extern) can also be elisp-ified inside Doc 115.
   Delete the shim file outright + delete `mirror_fnv1a' from
@@ -36,9 +36,9 @@ After Doc 114 Step 5 (main =2e32f16b=), the lexframe dispatch chain is:
 #+begin_src
 caller (eval::env::Env method)
    ↓
-Phase 47-compiled .o (lisp/nelisp-cc-frame-*.el)
+AOT-compiled .o (lisp/nelisp-cc-frame-*.el)
    ↓
-nl_frame_* extern (env_lexframe_phase47_shims.rs)  ← still Rust
+nl_frame_* extern (env_lexframe_aot_shims.rs)  ← still Rust
    ↓
 NlRecord / NlVector primitive ops (Rust)
 #+end_src
@@ -55,15 +55,15 @@ elisp, the shim file is deleted, the dispatch chain becomes:
 #+begin_src
 caller (eval::env::Env method)
    ↓
-Phase 47-compiled .o (lisp/nelisp-cc-frame-*.el)  ← does the actual work
+AOT-compiled .o (lisp/nelisp-cc-frame-*.el)  ← does the actual work
    ↓
 NlRecord / NlVector / NlCell / NlConsBox primitive ops (extern "C",
-shared with all other Phase 47 callers)
+shared with all other AOT callers)
 #+end_src
 
 ** §0.2 Why this is feasible now
 
-Most required Phase 47 grammar ops + ABI helpers are already SHIPPED
+Most required AOT grammar ops + ABI helpers are already SHIPPED
 on main =2e32f16b=:
 
 | Op needed                          | Source     | Status   |
@@ -79,12 +79,12 @@ on main =2e32f16b=:
 | sexp-tag / -write-{nil,t}         | Doc 101 §101.C | SHIPPED |
 | str-eq / symbol-eq                | Doc 101 §101.C | SHIPPED |
 | str-len / str-byte-at             | Doc 101 §101.C | SHIPPED |
-| while / cond / logic              | Phase 47 core  | SHIPPED |
+| while / cond / logic              | AOT core  | SHIPPED |
 | arith (add/sub/mul/logior/logand/logxor) | Doc 100 §100.D | SHIPPED |
 
 **Audit finding (2026-05-17, post-DRAFT)**: §115.0 was redundant.
-The Phase 47 grammar already accepts `(logxor A B)' / `(logand A B)'
-via Doc 100 §100.D's `arith' op set (= `lisp/nelisp-phase47-compiler.el'
+The AOT grammar already accepts `(logxor A B)' / `(logand A B)'
+via Doc 100 §100.D's `arith' op set (= `lisp/nelisp-aot-compiler.el'
 line 265: `(memq (car sexp) '(+ - * logior logand logxor))').  Both
 are MR-form lowerings to `xor rax, r10' / `and rax, r10' (= 3 bytes
 each).  The asm helpers `nelisp-asm-x86_64-xor-reg-reg' /
@@ -100,7 +100,7 @@ shim ports, §115.7 FNV pure-elisp, §115.8 file deletion).
 
 * §115.0 [DELETED — already SHIPPED via Doc 100 §100.D]
 
-The 2026-05-17 audit confirmed `(logxor)' / `(logand)' Phase 47
+The 2026-05-17 audit confirmed `(logxor)' / `(logand)' AOT
 grammar surface is already shipped via the `arith' op set.  Asm
 helpers `nelisp-asm-x86_64-{xor,and}-reg-reg' also exist.  §115.0
 removed from Doc 115 scope.  See §0.2 for the corrected table.
@@ -122,42 +122,42 @@ fn mirror_fnv1a(s: &str) -> u32 {
     let mut h: u32 = 2166136261;     // OFFSET_BASIS
     for b in s.bytes() {
         h ^= b as u32;               // <-- needs `int-logxor'
-        h = h.wrapping_mul(16777619); // already in Phase 47 arith
+        h = h.wrapping_mul(16777619); // already in AOT arith
     }
     h & 0xFFFFFFFF                   // <-- needs `int-logand'
 }
 #+end_src
 
-Three primitives missing from Phase 47 grammar:
+Three primitives missing from AOT grammar:
 - *`int-logxor'* — i64 XOR, lowered to `xor rax, rdi' (3 bytes).
 - *`int-logand'* — i64 AND, lowered to `and rax, rdi' (3 bytes).
 - 32-bit truncation can be done via `int-logand' with `0xFFFFFFFF'.
 
-Multiplication wrapping is already correct (Phase 47 `arith mul' uses
+Multiplication wrapping is already correct (AOT `arith mul' uses
 `imul rax, rdi' which is 64-bit two's-complement, matching
 Rust's `wrapping_mul' semantics for u32 promoted to i64).
 
 ** §115.0.2 Grammar surface
 
-Add to `lisp/nelisp-phase47-compiler.el' parse-value clause + emit
+Add to `lisp/nelisp-aot-compiler.el' parse-value clause + emit
 dispatch (= same shape as existing `arith' / `shift'):
 
 #+begin_src elisp
 ;; (int-logxor A B) — i64 bitwise XOR.
 ((and (consp sexp) (eq (car sexp) 'int-logxor))
  (unless (= (length sexp) 3)
-   (signal 'nelisp-phase47-compiler-error
+   (signal 'nelisp-aot-compiler-error
            (list :int-logxor-arity sexp)))
  (list :kind 'int-logxor
-       :a (nelisp-phase47-compiler--parse-value
+       :a (nelisp-aot-compiler--parse-value
            (nth 1 sexp) env fenv defuns)
-       :b (nelisp-phase47-compiler--parse-value
+       :b (nelisp-aot-compiler--parse-value
            (nth 2 sexp) env fenv defuns)))
 
 ;; (int-logand A B) — i64 bitwise AND.
 ((and (consp sexp) (eq (car sexp) 'int-logand))
  (unless (= (length sexp) 3)
-   (signal 'nelisp-phase47-compiler-error
+   (signal 'nelisp-aot-compiler-error
            (list :int-logand-arity sexp)))
  (list :kind 'int-logand
        :a ...
@@ -167,16 +167,16 @@ dispatch (= same shape as existing `arith' / `shift'):
 Emit (= ~15 LOC each):
 
 #+begin_src elisp
-(defun nelisp-phase47-compiler--emit-int-logxor (node buf)
+(defun nelisp-aot-compiler--emit-int-logxor (node buf)
   "Emit `int-logxor' — i64 bitwise XOR, result in rax."
-  (nelisp-phase47-compiler--emit-value (plist-get node :a) buf)
+  (nelisp-aot-compiler--emit-value (plist-get node :a) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (plist-get node :b) buf)
+  (nelisp-aot-compiler--emit-value (plist-get node :b) buf)
   (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
   (nelisp-asm-x86_64-pop buf 'rax)
   (nelisp-asm-x86_64-xor-reg-reg buf 'rax 'rdi))
 
-(defun nelisp-phase47-compiler--emit-int-logand (node buf)
+(defun nelisp-aot-compiler--emit-int-logand (node buf)
   "Emit `int-logand' — i64 bitwise AND, result in rax."
   ;; ... same shape, `and rax, rdi' instead of `xor rax, rdi'.
   )
@@ -190,7 +190,7 @@ Each helper is ~10 LOC of elisp emitting 3 bytes.
 
 ** §115.0.3 Verification
 
-Probe test = ERT in `lisp/nelisp-phase47-compiler.el' (or a new
+Probe test = ERT in `lisp/nelisp-aot-compiler.el' (or a new
 `elisp_cc_int_logxor_probe.rs' integration test):
 
 | Case             | Expected            |
@@ -221,7 +221,7 @@ Estimated LOC delta for §115.0: +60 elisp (grammar + emit + helper),
 
 ** §1.1 The 7 shims
 
-Source-of-truth: =build-tool/src/eval/env_lexframe_phase47_shims.rs=
+Source-of-truth: =build-tool/src/eval/env_lexframe_aot_shims.rs=
 @ main =2e32f16b= (501 LOC).
 
 *** nl_frame_stack_ensure_capacity (= shim #20, ~50 LOC Rust)
@@ -230,7 +230,7 @@ Source-of-truth: =build-tool/src/eval/env_lexframe_phase47_shims.rs=
 least `needed' slots.  Returns the resulting capacity, or 0 on
 unbuilt mirror.
 
-*Phase 47 ops needed*: =record-slot-ref-ptr=, =vector-len=,
+*AOT ops needed*: =record-slot-ref-ptr=, =vector-len=,
 =vector-slot-set= (= `nl_vector_set_slot'), =nl_alloc_vector=.
 
 *Algorithm*:
@@ -250,7 +250,7 @@ LOC estimate: ~60 elisp + 0 new Rust.
 *Behavior*: push a fresh empty `nelisp-lexframe' record onto the
 stack.  Returns 1 on push, 0 on unbuilt mirror.
 
-*Phase 47 ops needed*: ensure_capacity (= #20, call sibling helper
+*AOT ops needed*: ensure_capacity (= #20, call sibling helper
 via extern-call), =record-slot-ref=, =vector-slot-set=,
 =record-slot-set= (for depth increment), =nl_alloc_record=,
 =sexp-int-unwrap/make=.
@@ -274,7 +274,7 @@ LOC estimate: ~80 elisp.
 *Behavior*: pop the innermost frame (= write Nil into slot
 [depth-1], decrement depth).  Returns 1 on pop, 0 on empty stack.
 
-*Phase 47 ops needed*: =record-slot-ref-ptr= for backing,
+*AOT ops needed*: =record-slot-ref-ptr= for backing,
 =sexp-int-unwrap/make= for depth, =vector-slot-set=,
 =record-slot-set=, =sexp-write-nil=.
 
@@ -292,7 +292,7 @@ LOC estimate: ~30 elisp.
 *Behavior*: bind NAME → CELL in the innermost frame's hash table.
 Returns 1 on bind, 0 on no-op.
 
-*Phase 47 ops needed*: =record-slot-ref-ptr= (frame stack), =vector-ref-ptr=
+*AOT ops needed*: =record-slot-ref-ptr= (frame stack), =vector-ref-ptr=
 (active frame), =record-slot-ref= (hash-table inner record), =vector-ref-ptr=
 (bucket vector), *pure-elisp FNV-1a* (= §115.7 helper, no extern),
 =cons-make=, =cons-car/-cdr=, =vector-slot-set= (= overwrite bucket head).
@@ -314,7 +314,7 @@ LOC estimate: ~60 elisp (longest shim).
 *Behavior*: walk the lexframe stack innermost-first, return pointer
 to the matching pair's CDR (= cell slot), or 0 on miss.
 
-*Phase 47 ops needed*: depth read, =vector-ref-ptr=, *pure-elisp
+*AOT ops needed*: depth read, =vector-ref-ptr=, *pure-elisp
 FNV-1a* (= §115.7 helper, no extern), frame internal walk (= same
 hash-table lookup as `nl_frame_bind' minus the cons-prepend).
 
@@ -335,7 +335,7 @@ LOC estimate: ~50 elisp.
 construct a new alist of `(symbol . NlCell(value))', return Sexp
 result via output slot.  Returns 1 on success, 0 on malformed input.
 
-*Phase 47 ops needed*: =cons-walk= (= proper-list iteration),
+*AOT ops needed*: =cons-walk= (= proper-list iteration),
 =cons-car=, =cons-cdr=, =cell-make=, =cons-make=.
 
 *Algorithm*: standard list-rebuild fold — for each pair (sym . val)
@@ -361,7 +361,7 @@ by all helpers that need bucket-index resolution
 (`mirror_lookup_entry', `mirror_install_entry', plus future
 §115.5 / §115.6 if FNV stayed extern).
 
-*Phase 47 ops needed* (= §115.0 newly added + existing):
+*AOT ops needed* (= §115.0 newly added + existing):
 - =int-logxor= (§115.0)
 - =int-logand= (§115.0, for the 0xFFFFFFFF truncation)
 - =arith mul= (existing, for wrapping multiplication)
@@ -374,7 +374,7 @@ by all helpers that need bucket-index resolution
 ;; lisp/nelisp-cc-fnv1a.el (new source file).
 (defun nelisp-fnv1a (str-ptr)
   "Compute 32-bit FNV-1a hash of STR-PTR's bytes.
-Returns i64 (= the u32 hash zero-extended).  Phase 47 grammar:
+Returns i64 (= the u32 hash zero-extended).  AOT grammar:
 no extern call, pure elisp + Doc 100/101 + §115.0 ops."
   (let ((h 2166136261)
         (n (str-len str-ptr))
@@ -425,7 +425,7 @@ For each of the 7 shims (Doc 115 §1.1's ordering):
    `lisp/nelisp-cc-frame-XXX.el' to drop the `extern-call' to
    `nl_frame_XXX' and inline (or delegate to) the new impl source.
 5. *Delete the Rust shim function* from
-   `env_lexframe_phase47_shims.rs'.
+   `env_lexframe_aot_shims.rs'.
 6. *Add probe test*: extend or add
    `build-tool/tests/elisp_cc_frame_XXX_probe.rs' to verify the
    new pure-elisp path round-trips correctly.
@@ -437,11 +437,11 @@ Repeat per shim; one commit per shim with message:
 #+begin_src
 feat(doc-115): §115.N — elisp化 nl_frame_XXX shim
 
-Replaces the ~XXX LOC Rust shim with a Phase 47-compiled elisp
+Replaces the ~XXX LOC Rust shim with a AOT-compiled elisp
 implementation.  ABI ops: <list>.  Probe coverage: <count> cases
 including <key invariant>.
 
-Rust deletion: -XX LOC from env_lexframe_phase47_shims.rs.
+Rust deletion: -XX LOC from env_lexframe_aot_shims.rs.
 
 Co-Authored-By: ...
 EOF
@@ -473,7 +473,7 @@ Commit message:
 #+begin_src
 feat(doc-115): §115.7 — pure-elisp FNV-1a, delete mirror_fnv1a
 
-The last Rust intermediary in the env_mirror / env_lexframe Phase 47
+The last Rust intermediary in the env_mirror / env_lexframe AOT
 dispatch chain is gone.  All hash-related callsites now dispatch
 through the elisp-compiled `nelisp_fnv1a' .o.
 
@@ -487,25 +487,25 @@ Co-Authored-By: ...
 
 After all 7 shims + FNV-1a are elisp-ified:
 
-- `env_lexframe_phase47_shims.rs' contains only the file header
+- `env_lexframe_aot_shims.rs' contains only the file header
   doc-comment + `use' statements + the `frame_stack_view_from_ptr'
   private helper.
 - Inline `frame_stack_view_from_ptr' usages into env_helpers.rs (=
   it's only used internally by the shims).
-- `git rm build-tool/src/eval/env_lexframe_phase47_shims.rs'.
-- Remove `pub mod env_lexframe_phase47_shims;' from `eval/mod.rs'.
+- `git rm build-tool/src/eval/env_lexframe_aot_shims.rs'.
+- Remove `pub mod env_lexframe_aot_shims;' from `eval/mod.rs'.
 
 Final commit message:
 
 #+begin_src
-feat(doc-115): SHIPPED — delete env_lexframe_phase47_shims.rs
+feat(doc-115): SHIPPED — delete env_lexframe_aot_shims.rs
 
-All 7 nl_frame_* shims + mirror_fnv1a are now pure elisp.  Phase 47
+All 7 nl_frame_* shims + mirror_fnv1a are now pure elisp.  AOT
 grammar gained `int-logxor' / `int-logand' (§115.0) to enable the
 FNV-1a transcription.
 
 完全 elisp 化 milestone achieved:
-- caller → Phase 47 `.o` → primitive extern (alloc-only)
+- caller → AOT `.o` → primitive extern (alloc-only)
 - *zero Rust logic* participates in lexframe / env_mirror runtime
   dispatch at this layer
 - only memory primitives (= `nl_alloc_*`, `nl_*_set_slot`,
@@ -531,7 +531,7 @@ Co-Authored-By: ...
 - Integration test suite all green (911+)
 
 ** Cumulative (post-Doc-115 SHIPPED)
-- `env_lexframe_phase47_shims.rs` does not exist
+- `env_lexframe_aot_shims.rs` does not exist
 - `grep -rn "nl_frame_" build-tool/src/` returns ZERO hits
 - `grep -rn "extern \"C\" fn nl_frame" build-tool/` returns ZERO hits
 - `grep -rn "fn mirror_fnv1a\|nl_mirror_fnv1a_sexp" build-tool/src/`
@@ -539,7 +539,7 @@ Co-Authored-By: ...
 - Rust LOC delta: net −536 LOC (= -501 shim file + -35 FNV in
   env_helpers.rs)
 - Elisp LOC delta: net +340 to +420 LOC (= +320-400 shims +20 FNV)
-- New Phase 47 grammar surface: *none* (= `(logxor)' / `(logand)'
+- New AOT grammar surface: *none* (= `(logxor)' / `(logand)'
   audit-confirmed already shipped via Doc 100 §100.D)
 - *Net total LOC*: ≈ −116 to −196 LOC
 - Doc 102 Phase 8.b condition (a) was satisfied by Doc 114; Doc 115
@@ -550,7 +550,7 @@ Co-Authored-By: ...
 
 ** §4.1 FNV-1a hash performance after elisp化
 
-After §115.7, FNV-1a runs as Phase 47-compiled `.o' (= native x86_64
+After §115.7, FNV-1a runs as AOT-compiled `.o' (= native x86_64
 code).  The inner loop is:
 
 #+begin_src text
@@ -564,7 +564,7 @@ inc i, jmp loop                     ; add rsi, 1 / jmp
 Performance is *identical or better* than the Rust version, because
 the Rust loop is also lowered to this exact sequence by =rustc=.
 The only divergence is the function-call boundary: the Rust path
-has Rust ABI call overhead, the elisp path has the Phase 47 extern-call
+has Rust ABI call overhead, the elisp path has the AOT extern-call
 overhead (= ~3-5 cycles for cdecl prologue).  Both are negligible vs.
 the loop body.
 
@@ -624,7 +624,7 @@ refcounts explicitly — that's already encapsulated.
 - *§115.7* (= pure-elisp FNV-1a + delete mirror_fnv1a + rewire
   §115.5/6 to elisp FNV).  Depends on §115.0 grammar.
 - §115.8 (= file deletion + final cleanup, = delete
-  env_lexframe_phase47_shims.rs).
+  env_lexframe_aot_shims.rs).
 
 *8 commits total* (= §115.1-6 shim ports + §115.7 FNV cutover +
 §115.8 file deletion).  Per-shim Agent dispatch is fine because
@@ -640,9 +640,9 @@ parallel-dispatch (= 6 concurrent Agents).
 - =docs/design/114-x86_64-linux-pivot.org= — Doc 114 SHIPPED main
   =2e32f16b=.
 - =docs/design/111-phase-47-sexp-record-vector-cell-abi.org= — Doc
-  111 §111.E (= 18 Phase 47 helpers, all SHIPPED).  Group C/D
+  111 §111.E (= 18 AOT helpers, all SHIPPED).  Group C/D
   classification grounds the §4.1 keep-FNV-extern decision.
-- =build-tool/src/eval/env_lexframe_phase47_shims.rs= @ main
+- =build-tool/src/eval/env_lexframe_aot_shims.rs= @ main
   =2e32f16b= — the 501 LOC target file.
 - =build-tool/src/eval/env_helpers.rs= — current home of FNV-1a +
   primitive helpers Doc 115 reuses (= retained per Group C/D).
@@ -660,4 +660,4 @@ Memory cross-refs:
   extern stays Layer 2.
 - =project_anvil_runtime_phase_b_complete= — precedent: anvil-runtime
   crate deleted when elisp equivalent was sufficient.  Doc 115
-  applies the same pattern to env_lexframe_phase47_shims.
+  applies the same pattern to env_lexframe_aot_shims.

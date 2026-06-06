@@ -10,7 +10,7 @@
 
 ;; Doc 117 §117.D.gaps.3 — moves the syscall body of `(nelisp--
 ;; syscall-read-file PATH)' (= `build-tool/src/eval/builtins.rs::
-;; bi_syscall_read_file') into a Phase 47 elisp object.  Fifth handler
+;; bi_syscall_read_file') into a AOT elisp object.  Fifth handler
 ;; in the Doc 122 §122.I CString helper sweep (after stat / canonicalize
 ;; / nl-write-file / nl-make-directory).
 ;;
@@ -32,7 +32,7 @@
 ;;   4. dealloc-bytes(cstr, size_plus_one, 1) — free path CString.
 ;;
 ;; Why the buffer size is a separate Rust-side stat instead of an
-;; in-elisp `fstat': the Phase 47 grammar has no `i64'-class first-arg
+;; in-elisp `fstat': the AOT grammar has no `i64'-class first-arg
 ;; conversion for `struct stat *' (= 144 bytes), so caller-side
 ;; allocation is the simpler split.  A future §122.X stat-via-fd
 ;; grammar would let the size determination migrate too.
@@ -144,7 +144,7 @@
 
     ;; Public 3-arg entry — builds the path CString and dispatches
     ;; to the 4-arg inner.  Arity 3 (odd); the single internal
-    ;; call lands through Phase 47's standard prologue which keeps
+    ;; call lands through AOT's standard prologue which keeps
     ;; `rsp % 16 == 0' at the call boundary (same pattern as
     ;; `nelisp_bi_syscall_stat' which is also 2-arg + 1-arg
     ;; mixture in its `(seq ...)' chain).
@@ -154,7 +154,7 @@
        (+ (str-len path-ptr) 1)
        buf-ptr
        read-size)))
-  "Phase 47 source for the Doc 117 §117.D.gaps.3 `(nelisp--syscall-
+  "AOT source for the Doc 117 §117.D.gaps.3 `(nelisp--syscall-
 read-file PATH)' libc syscall body swap.
 
 Five-entry `(seq DEFUN ...)' manifest — symmetric mirror of
@@ -169,7 +169,7 @@ Five-entry `(seq DEFUN ...)' manifest — symmetric mirror of
 - `nelisp_bi_syscall_read_file (path-ptr buf-ptr read-size)' — 3-arg
   public entry.
 
-Composes existing Phase 47 grammar (no new opcode):
+Composes existing AOT grammar (no new opcode):
 - §122.I `nelisp_cstr_from_sexp' — path CString construction.
 - §125.A `dealloc-bytes' — CString free.
 - §101.C `str-len' — path byte count.

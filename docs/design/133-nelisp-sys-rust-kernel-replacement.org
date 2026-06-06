@@ -16,11 +16,11 @@
   binary is a nelisp-sys-compiled native object with ~0 Rust", staged so that
   every stage is net-negative on Rust LOC (the repo's sole evaluation axis).
 - *Non-goal*: rewriting the already-elisp logic (special forms, reader,
-  builtins, env mirror/lexframe are already Phase-47 =.o=).  This doc targets
+  builtins, env mirror/lexframe are already AOT =.o=).  This doc targets
   only the *remaining Rust* (the kernel + its FFI plumbing + the entry point).
 - *Hard rule binding*: every stage MUST be net-negative on Rust LOC
   (=feedback_nelisp_rust_loc_never_increase=).  nelisp-sys is the vehicle that
-  makes this achievable where the per-builtin Phase-47-swap approach hit the
+  makes this achievable where the per-builtin AOT-swap approach hit the
   net-positive wall (each swap needed Rust extern wrappers).
 
 * TL;DR
@@ -38,7 +38,7 @@ The thesis of this doc:
 #+begin_quote
 Rewrite the remaining Rust kernel as =nelisp-sys= source.  nelisp-sys
 compiles it to native =.o= through the existing *Elisp* codegen
-(=nelisp-phase47-compiler.el= + =nelisp-asm-*= + =nelisp-elf-write= +
+(=nelisp-aot-compiler.el= + =nelisp-asm-*= + =nelisp-elf-write= +
 =crt0= + =static-linker=).  Because that codegen is Elisp, every component
 moved deletes Rust (the component *and* its FFI wrappers) and adds Elisp
 (nelisp-sys source, plus any one-time codegen extension).  When the whole
@@ -126,7 +126,7 @@ Today the dependency is one-directional with a hard boundary:
   Elisp .o objects (special forms, reader, builtins, env mirror/lexframe)
 #+end_src
 
-Every Phase-47 swap so far *added* to Cat 6 (a wrapper per swapped builtin) —
+Every AOT swap so far *added* to Cat 6 (a wrapper per swapped builtin) —
 which is why mid-size swaps trend net-positive once you count the wrapper.
 
 Once the *kernel itself* is nelisp-sys =.o=, both sides are the same kind of
@@ -271,7 +271,7 @@ Build-time vs run-time are distinct:
 
 - *Build time*: the HOST (the current =nelisp= binary, or Emacs running the
   Elisp codegen) compiles the nelisp-sys kernel source → =kernel.o= → link →
-  the *new* =nelisp= binary.  This is exactly today's Phase-47 =.o= flow,
+  the *new* =nelisp= binary.  This is exactly today's AOT =.o= flow,
   scaled from "leaves only" to "leaves + kernel + entry".
 - *Run time*: the new binary is pure native code; it does not invoke Emacs or
   any Rust.
@@ -298,7 +298,7 @@ Doc 122.E (atomic + raw-mem), Doc 124 (NlBox clone/drop), Doc 125 (alloc/
 dealloc) are the *low-level grammar* for heap + refcount.  This doc is the
 *umbrella* that consumes them: Phase 2 here is the net-negative realisation of
 Doc 124/125's goal, achieved by writing the clone/drop/alloc kernel as
-nelisp-sys (Elisp source) rather than as raw Phase-47 grammar plus Rust
+nelisp-sys (Elisp source) rather than as raw AOT grammar plus Rust
 extern helpers.  Where Doc 125 §125.A currently shows "+~100 LOC Rust
 investment", the nelisp-sys framing removes that investment: the alloc kernel
 *is* the Elisp =.o=, with no Rust side.

@@ -9,13 +9,13 @@
 ;;; Commentary:
 
 ;; Doc 117 §117.A.2 — moves the byte-length computation of the
-;; `(string-bytes STR)' builtin into a Phase 47 elisp object linked
+;; `(string-bytes STR)' builtin into a AOT elisp object linked
 ;; into the `nelisp' binary.  The Rust side keeps only the arity check,
 ;; the `Sexp::Str' / `Sexp::MutStr' tag dispatch, and the caller-owned
 ;; out-slot setup; the actual `len() -> Sexp::Int' step lives only in
 ;; the source below.
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   §101.C  `str-len'        — read `String::len' (= byte count) at
 ;;                              offset 24 from a `Sexp::Str' /
 ;;                              `Sexp::Symbol' slot.
@@ -51,9 +51,9 @@
 (defconst nelisp-cc-bi-string-bytes--source
   '(defun nelisp_bi_string_bytes (arg0 result-slot)
      (sexp-int-make result-slot (str-len arg0)))
-  "Phase 47 source for the Doc 117 §117.A.2 `(string-bytes STR)' swap.
+  "AOT source for the Doc 117 §117.A.2 `(string-bytes STR)' swap.
 
-Two-argument function — Phase 47's SysV AMD64 prologue spills the
+Two-argument function — AOT's SysV AMD64 prologue spills the
 first arg (`arg0' = `*const Sexp' to a `Sexp::Str' / `Sexp::Symbol')
 into the rbp-relative slot 0 and the second arg (`result-slot' =
 `*mut Sexp') into slot 1.  The body is one composed value form:
@@ -67,7 +67,7 @@ pointer (= the `&mut' into a stack-local `Sexp::Nil'), so the
 returned value is discarded.
 
 No allocation, no Rust helpers — every memory access is a single
-`disp8' load / store emitted by Phase 47's `str-len' + `sexp-int-
+`disp8' load / store emitted by AOT's `str-len' + `sexp-int-
 make' grammar forms.  The emitted `.text' contains no relocations.
 
 Cross-checks against the pre-swap Rust body (deleted from
@@ -79,7 +79,7 @@ Cross-checks against the pre-swap Rust body (deleted from
     `*const Sexp' contract.
   * Non-string inputs signal `WrongType' with `expected = \"string\"'
     — kept in the Rust shim (= type discrimination cannot be expressed
-    in Phase 47's current grammar without a `sexp-tag' branch, and
+    in AOT's current grammar without a `sexp-tag' branch, and
     Doc 117 §4.3 forbids any behaviour change in this swap).")
 
 (provide 'nelisp-cc-bi-string-bytes)

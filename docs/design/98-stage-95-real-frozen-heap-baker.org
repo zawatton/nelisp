@@ -17,7 +17,7 @@
   Cumulative: -2,500〜-3,500 Rust LOC across multi-stage ship.
 - *OOS for THIS doc*: implementation (= each Stage 98.x ships its own
   sub-stage); Phase 3 D-B Cranelift replacement (= Doc 77c, separate);
-  Phase 47 native self-compile of nelisp itself (= separate, future).
+  AOT native self-compile of nelisp itself (= separate, future).
 
 * §0 TL;DR
 

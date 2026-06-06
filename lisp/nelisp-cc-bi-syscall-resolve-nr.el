@@ -1,4 +1,4 @@
-;;; nelisp-cc-bi-syscall-resolve-nr.el --- Doc 117.D bi_syscall name->nr Phase 47 swap -*- lexical-binding: t; -*-
+;;; nelisp-cc-bi-syscall-resolve-nr.el --- Doc 117.D bi_syscall name->nr AOT swap -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -11,7 +11,7 @@
 ;; Doc 117.D — moves the 25-entry symbol-name → SYS_X table
 ;; dispatch out of `build-tool/src/eval/builtins.rs::bi_syscall'
 ;; (the Linux-x86_64 dispatcher's biggest chunk, ~16 LOC of inline
-;; `match arm => libc::SYS_X' pairs) and into a Phase 47 elisp
+;; `match arm => libc::SYS_X' pairs) and into a AOT elisp
 ;; object.  Unlocks Rust net-negative for the `nelisp--syscall'
 ;; primitive: after this shim ships, `bi_syscall' becomes a thin
 ;; arity-check + `nl_jit_syscall_call' invocation that delegates
@@ -25,7 +25,7 @@
 ;;   returns  i64 = Linux x86_64 syscall number on a hit, -1 sentinel
 ;;            on miss (= caller signals UserError "unknown syscall").
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   `(symbol-name-eq SYM_PTR "literal")' — G1 op (= tag-byte check +
 ;;        length-byte check + inline byte loop against compile-time
 ;;        bytes).  Returns 0 / 1.
@@ -96,9 +96,9 @@ Terminator returns -1 = `unknown syscall' sentinel."
   `(defun nelisp_bi_syscall_resolve_nr (sym-ptr)
      ,(nelisp-cc-bi-syscall-resolve-nr--build-chain
        nelisp-cc-bi-syscall-resolve-nr--linux-x86_64-table))
-  "Phase 47 source for the Doc 117.D `bi_syscall' symbol→nr swap.
+  "AOT source for the Doc 117.D `bi_syscall' symbol→nr swap.
 
-One-argument function — Phase 47's SysV AMD64 prologue spills
+One-argument function — AOT's SysV AMD64 prologue spills
 `sym-ptr' (= `*const Sexp' Sexp::Symbol) into rbp-relative slot 0.
 The body is a 25-deep nested `if' chain; each arm calls G1's
 `(symbol-name-eq sym-ptr LITERAL)' (= tag-byte / len-byte guard

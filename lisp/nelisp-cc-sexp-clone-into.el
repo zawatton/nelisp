@@ -1,4 +1,4 @@
-;;; nelisp-cc-sexp-clone-into.el --- Phase 47 nl_sexp_clone_into swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sexp-clone-into.el --- AOT nl_sexp_clone_into swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for `nl_sexp_clone_into(src, dst)' which
+;; AOT replacement for `nl_sexp_clone_into(src, dst)' which
 ;; reproduced the deleted Rust `core::ptr::write(dst, (*src).clone())'.
 ;;
 ;; `Sexp' is a 32-byte `#[repr(C, u8)]' slot:
@@ -36,7 +36,7 @@
 ;;   Sexp offset 24: String.len  (u64)
 ;; (Confirmed by `nl_alloc_str' writer in nelisp-cc-nlstr-direct-ops.el.)
 ;;
-;; Phase 47 `let' is FOLD-ONLY (cannot bind a runtime value). The tag is
+;; AOT `let' is FOLD-ONLY (cannot bind a runtime value). The tag is
 ;; threaded as a function parameter via a helper chain to avoid `let'.
 ;;
 ;; Helper structure:
@@ -51,7 +51,7 @@
 ;; in its manifest; `build-tool/build.rs' compiles the source into
 ;; `nl_sexp_clone_into.o' and archives it into `libnelisp_elisp_spike.a'
 ;; which the linker resolves against the `nl_sexp_clone_into' PLT
-;; reference emitted by the Phase 47 grammar ops and callers.
+;; reference emitted by the AOT grammar ops and callers.
 
 ;;; Code:
 
@@ -90,7 +90,7 @@
        (nl_sci_bump tag (ptr-read-u64 src 8))
        (nl_sci_copy src dst)))
 
-    ;; Dispatch on tag (threaded as a param to avoid Phase-47 `let').
+    ;; Dispatch on tag (threaded as a param to avoid AOT `let').
     ;; tag 5 Str / 4 Symbol = deep String copy via nl_alloc_str/symbol
     ;; (read buffer ptr@16 + len@24 from src, alloc+copy into dst).
     ;; tag < 4 (0..3) = inline atom, plain copy. else (6..12) = boxed.
@@ -109,7 +109,7 @@
     ;; driver never reached runtime before this cutover, so it was untested.)
     (defun nl_sexp_clone_into (src dst)
       (nl_sci_dispatch src dst (ptr-read-u8 src 0))))
-  "Phase 47 source for nl_sexp_clone_into = ptr::write(dst,(*src).clone()).
+  "AOT source for nl_sexp_clone_into = ptr::write(dst,(*src).clone()).
 
 Re-provides the deleted Rust `core::ptr::write(dst, (*src).clone())'
 from `build-tool/src/eval/sexp.rs'.  Sexp is a 32-byte #[repr(C,u8)]
@@ -122,7 +122,7 @@ slot; the tag byte at offset 0 drives a 3-way dispatch:
              refcount bump via the per-type nelisp_nl*_clone helper,
              then plain 32-byte bit-copy.
 
-Phase 47 `let' is compile-time only; the tag is threaded as an
+AOT `let' is compile-time only; the tag is threaded as an
 extra function parameter (nl_sci_dispatch/nl_sci_rc/nl_sci_bump)
 to avoid any runtime binding.
 

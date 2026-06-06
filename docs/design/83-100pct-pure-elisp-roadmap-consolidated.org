@@ -437,7 +437,7 @@ Doc 77c §3.4 articulated 最終形:
 | (= Cranelift C shim は Phase 1 で完全消失)     | 0        |
 | *合計*                                          | *~810*    |
 
-更に深掘り (= Phase 47 phase 6 C-runtime 自前化、別 Doc 必要):
+更に深掘り (= AOT phase 6 C-runtime 自前化、別 Doc 必要):
 - =nelisp-runtime/= の libffi 経由 syscall を inline asm に置換 (= 追加 -300)
 - =bin/= driver を elisp で書き直し (= 追加 -200)
 - 究極着地 *~300-500 LOC*.

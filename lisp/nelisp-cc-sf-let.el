@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-let.el --- Phase 47 nl_sf_let swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-let.el --- AOT nl_sf_let swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_let' Rust body in
+;; AOT replacement for the `sf_let' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_let_common(args, env, "let", sequential=false):
@@ -152,7 +152,7 @@
          (extern-call nl_cons_car_ptr args)
          args env out))))
 
-  "Phase 47 source for `nl_sf_let' (eval/special_forms.rs sf_let → elisp).
+  "AOT source for `nl_sf_let' (eval/special_forms.rs sf_let → elisp).
 
 Nine defuns (seq form).  CPS chain decomposed into frame-setup +
 body-eval + frame-pop phases.

@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-progn.el --- Phase 47 nl_sf_progn swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-progn.el --- AOT nl_sf_progn swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_progn' Rust body in
+;; AOT replacement for the `sf_progn' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -103,7 +103,7 @@
         (nl_sf_progn_get_cdr
          (extern-call nl_cons_cdr_ptr args)
          args env out))))
-  "Phase 47 source for `nl_sf_progn' (eval/special_forms.rs sf_progn → elisp).
+  "AOT source for `nl_sf_progn' (eval/special_forms.rs sf_progn → elisp).
 
 Five defuns (seq form):
   `nl_sf_progn_eval_step (eval-rc cdr-ptr env out)' — arity-4 continuation

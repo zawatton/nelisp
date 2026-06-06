@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.D introduces four Phase 47 grammar ops on
+;; Doc 111 §111.D introduces four AOT grammar ops on
 ;; `Sexp::Cell(_)' / `NlCell':
 ;;
 ;;   (cell-value H SLOT)     — copy NlCell.value into caller-owned SLOT.
@@ -20,8 +20,8 @@
 ;;   (cell-null-p H)         — predicate: 1 iff NlCell.value's tag is
 ;;                             `Sexp::Nil', else 0.
 ;;
-;; This file packages each op as a standalone Phase 47-compiled
-;; `defun' so the `tests/phase47_cell.rs' integration test can probe
+;; This file packages each op as a standalone AOT-compiled
+;; `defun' so the `tests/aot_cell.rs' integration test can probe
 ;; the round-trip end-to-end without any user-visible swap (Doc 111
 ;; §3.D explicitly defers swap targets to §111.E env_lexframe).
 ;;
@@ -41,7 +41,7 @@
      ;; refcounts on nested boxed payloads.  Safe for the §111.E
      ;; env_lexframe use case where the cell outlives the SLOT.
      (cell-value arg0 result-slot))
-  "Phase 47 source for the Doc 111 §111.D `cell-value' op.")
+  "AOT source for the Doc 111 §111.D `cell-value' op.")
 
 (defconst nelisp-cc-cell-ops--set-value-source
   '(defun nelisp_cell_set_value (arg0 val-ptr)
@@ -52,7 +52,7 @@
      ;; `NlCellRef::set_value' (drop-then-write with refcount-aware
      ;; semantics via `Sexp::Drop' + `Sexp::Clone').
      (cell-set-value arg0 val-ptr))
-  "Phase 47 source for the Doc 111 §111.D `cell-set-value' op.")
+  "AOT source for the Doc 111 §111.D `cell-set-value' op.")
 
 (defconst nelisp-cc-cell-ops--make-source
   '(defun nelisp_cell_make (val-ptr result-slot)
@@ -63,7 +63,7 @@
      ;; clones `*val-ptr' into a new `NlCell { value, refcount = 1 }'
      ;; and returns the raw `*mut NlCell'.
      (cell-make val-ptr result-slot))
-  "Phase 47 source for the Doc 111 §111.D `cell-make' op.")
+  "AOT source for the Doc 111 §111.D `cell-make' op.")
 
 (defconst nelisp-cc-cell-ops--null-p-source
   '(defun nelisp_cell_null_p (arg0)
@@ -71,7 +71,7 @@
      ;; Returns i64 1 iff the cell's `value' field currently holds
      ;; `Sexp::Nil', else 0.
      (cell-null-p arg0))
-  "Phase 47 source for the Doc 111 §111.D `cell-null-p' op.")
+  "AOT source for the Doc 111 §111.D `cell-null-p' op.")
 
 (provide 'nelisp-cc-cell-ops)
 

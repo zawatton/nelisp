@@ -6,7 +6,7 @@
 
 ;; Stage 130.3 / 132.3: the MVP native code generator.  It lowers the
 ;; validated typed AST into the plain integer-subset s-expression form the
-;; existing Phase 47 compiler accepts, then drives object emission through
+;; existing AOT compiler accepts, then drives object emission through
 ;; the adapter (the only module allowed to touch the private backend).
 ;;
 ;; Scope of the codegen: C-ABI integer/word functions — fixed-width
@@ -14,11 +14,11 @@
 ;; set!, calls, compile-time sizeof/alignof/offsetof folding, (Stage
 ;; 130.4) struct-field + raw-pointer load/store through a pointer/ref
 ;; place, and slice-len/ref/set! over a {data,len} header -- all lowered to
-;; the Phase 47 `ptr-read-uN'/`ptr-write-uN' primitives.
+;; the AOT `ptr-read-uN'/`ptr-write-uN' primitives.
 ;; Still deferred (clear `nelisp-sys-backend-error', never a silent
 ;; miscompile): borrows, field/slice access through a non-var place, and
 ;; `sys:exit' (freestanding).  Signed scalar field/slice reads sign-extend
-;; via the Phase 47 `ptr-read-sN' primitive; slice access has no runtime
+;; via the AOT `ptr-read-sN' primitive; slice access has no runtime
 ;; bounds check yet.
 ;;
 ;; All integer values are 64-bit words in registers (SysV AMD64 / AAPCS64);
@@ -64,7 +64,7 @@ Exported functions use their :export-name; others use their name."
                 :form (nelisp-sys-ast-prop node :form))))
 
 (defun nelisp-sys-backend--lower-body (ctx body)
-  "Lower a BODY (list of nodes) to a single Phase 47 expression.
+  "Lower a BODY (list of nodes) to a single AOT expression.
 A single node lowers directly; multiple are wrapped in `seq'."
   (let ((forms (mapcar (lambda (n) (nelisp-sys-backend--lower ctx n)) body)))
     (cond ((null forms) 0)
@@ -72,7 +72,7 @@ A single node lowers directly; multiple are wrapped in `seq'."
           (t (cons 'seq forms)))))
 
 (defun nelisp-sys-backend--lower (ctx node)
-  "Lower a typed AST NODE to a plain Phase 47 integer-subset form."
+  "Lower a typed AST NODE to a plain AOT integer-subset form."
   (cl-case (nelisp-sys-ast-kind node)
     (int (nelisp-sys-ast-prop node :value))
     (bool (if (nelisp-sys-ast-prop node :value) 1 0))
@@ -221,7 +221,7 @@ A single node lowers directly; multiple are wrapped in `seq'."
      (t (cons op args)))))
 
 (defun nelisp-sys-backend--lower-f64-arith (ctx node)
-  "Lower an f64 arith NODE to the Phase 47 `f64-add'/`-sub'/`-mul'/`-div' op."
+  "Lower an f64 arith NODE to the AOT `f64-add'/`-sub'/`-mul'/`-div' op."
   (let ((op (cl-case (nelisp-sys-ast-prop node :op)
               (sys:f64+ 'f64-add)
               (sys:f64- 'f64-sub)
@@ -233,7 +233,7 @@ A single node lowers directly; multiple are wrapped in `seq'."
     (cons op args)))
 
 (defun nelisp-sys-backend--lower-f64-cmp (ctx node)
-  "Lower an f64 comparison NODE to its Phase 47 `f64-lt'/`-le'/... op."
+  "Lower an f64 comparison NODE to its AOT `f64-lt'/`-le'/... op."
   (let ((op (cl-case (nelisp-sys-ast-prop node :op)
               (sys:f64<  'f64-lt)
               (sys:f64<= 'f64-le)
@@ -252,8 +252,8 @@ earlier binding, e.g. `(let ((p ..) (q (peek p))) ..)').  So each init is
 lowered with the PRIOR siblings already in `nelisp-sys-backend--locals'
 (otherwise a sibling reference resolves to nothing and the `var' lowering
 emits a bare symbol literal — the Doc 135 reader crash), and the result is
-emitted as Phase 47 `let*' (not `let', which is PARALLEL and would leave
-inter-binding references unbound at the Phase 47 layer too)."
+emitted as AOT `let*' (not `let', which is PARALLEL and would leave
+inter-binding references unbound at the AOT layer too)."
   (let* ((binds (nelisp-sys-ast-prop node :bindings))
          (nelisp-sys-backend--locals nelisp-sys-backend--locals)
          (emitted '()))
@@ -282,7 +282,7 @@ MVP: only a bare `var' place is resolved (against the dynamic locals)."
            (nelisp-sys-type-struct-name el)))))
 
 (defun nelisp-sys-backend--mem-op (kind type ctx node)
-  "Return the Phase 47 `ptr-KIND-{u,s}N' symbol for value TYPE.
+  "Return the AOT `ptr-KIND-{u,s}N' symbol for value TYPE.
 N follows sizeof(TYPE) in {1,2,4,8}; other sizes are unsupported.  A read of
 a signed integer scalar uses the sign-extending `ptr-read-sN'; writes and
 unsigned/pointer/float reads use the `uN' form."
@@ -437,9 +437,9 @@ Same addressing as `nelisp-sys-backend--lower-slice-ref'."
     (cons sym args)))
 
 (defun nelisp-sys-backend--lower-call-ptr (ctx node)
-  "Lower (sys:call-ptr FN ARG...) to the Phase 47 (call-ptr FN ARG...)
+  "Lower (sys:call-ptr FN ARG...) to the AOT (call-ptr FN ARG...)
 form (Doc 133 Phase 0).  FN lowers to the code-address expression; the
-Phase 47 backend emits the indirect CALL through a scratch register."
+AOT backend emits the indirect CALL through a scratch register."
   (cons 'call-ptr
         (cons (nelisp-sys-backend--lower
                ctx (nelisp-sys-ast-prop node :fn-expr))
@@ -447,7 +447,7 @@ Phase 47 backend emits the indirect CALL through a scratch register."
                       (nelisp-sys-ast-prop node :args)))))
 
 (defun nelisp-sys-backend--lower-defun (ctx item)
-  "Lower defun ITEM to a plain Phase 47 (defun SYM (PARAMS) BODY)."
+  "Lower defun ITEM to a plain AOT (defun SYM (PARAMS) BODY)."
   (when (> (length (nelisp-sys-ast-prop item :params)) 6)
     (signal 'nelisp-sys-backend-error
             (list (format "function %S has >6 params; MVP C-ABI codegen \
@@ -475,7 +475,7 @@ supports register args only" (nelisp-sys-ast-prop item :name))
      :names names)))
 
 (defun nelisp-sys-backend-lower-module (module target)
-  "Lower all defuns of MODULE to a Phase 47 program form for TARGET.
+  "Lower all defuns of MODULE to a AOT program form for TARGET.
 Returns a single `defun' form, or a `seq' of them for multiple defuns."
   (let* ((ctx (nelisp-sys-backend--build-ctx module target))
          (defuns (delq nil
@@ -490,7 +490,7 @@ Returns a single `defun' form, or a `seq' of them for multiple defuns."
 
 (defun nelisp-sys-backend-emit-object (module output-path target)
   "Compile MODULE to a native object at OUTPUT-PATH for TARGET.
-Lowers the typed AST to the Phase 47 integer subset, emits the object
+Lowers the typed AST to the AOT integer subset, emits the object
 through the adapter, and writes an ABI-summary sidecar at
 OUTPUT-PATH.abi.  Returns OUTPUT-PATH."
   (let* ((tg (nelisp-sys-target-get target))

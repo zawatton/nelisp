@@ -20,7 +20,7 @@
 ;; ── Key findings from source audit ──────────────────────────────────────────
 ;;
 ;; nl_eval_inner / nl_eval_inner_cons  (archive status, confirmed):
-;;   The Phase 47 eval chain works in two hops:
+;;   The AOT eval chain works in two hops:
 ;;     Rust eval() calls nl_eval_inner via crate::elisp_cc_spike::eval_inner_call.
 ;;     nl_eval_inner (shipped elisp .o) dispatches to nl_eval_inner_cons for Cons
 ;;     forms (symbol/self-eval handled there), delegating via extern nl_eval_inner_cons.
@@ -118,7 +118,7 @@
 
 ;; nl_eval_inner(form_ptr, env_ptr, out_ptr, _pad) -> i64
 ;; T 0x0019 in libnelisp_elisp_spike.a
-;; Phase 47 elisp replacement for eval_inner: dispatches Symbol/Cons/Cell/self-eval.
+;; AOT elisp replacement for eval_inner: dispatches Symbol/Cons/Cell/self-eval.
 ;; _pad=0 keeps arity even (4-arg, rsp ≡ 0 mod 16).
 (sys:extern nl_eval_inner
   (:symbol "nl_eval_inner" :abi c :unsafe t)
@@ -419,7 +419,7 @@
                 (nl_entry_stash_max_depth env)
               ;; Increment rec_cur
               (sys:unsafe (sys:poke-u64 rec_cur_addr (sys:cast u64 (+ rec_cur 1))))
-              ;; Delegate to nl_eval_inner (Phase 47 elisp .o: Symbol/Cons/Cell dispatch)
+              ;; Delegate to nl_eval_inner (AOT elisp .o: Symbol/Cons/Cell dispatch)
               (let ((rc i64 (sys:unsafe (nl_eval_inner form_ptr env_ptr out 0))))
                 ;; Decrement rec_cur
                 (sys:unsafe (sys:poke-u64 rec_cur_addr (sys:cast u64 rec_cur)))

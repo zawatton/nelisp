@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 125 §125.B — mmap-based allocator proof-of-concept using the new
-;; `syscall-direct' Phase 47 grammar op.
+;; `syscall-direct' AOT grammar op.
 ;;
 ;; STATUS (2026-05-20): PoC shipping under DIFFERENT symbol names
 ;; (`nl_mmap_alloc' / `nl_mmap_dealloc') rather than replacing
@@ -37,7 +37,7 @@
 ;;   explicitly chooses the mmap-backed path.
 ;;
 ;; `syscall-direct NR A0 A1 A2 A3 A4 A5':
-;;   New Phase 47 grammar op (Doc 125 §125.B) emitting inline SYSCALL
+;;   New AOT grammar op (Doc 125 §125.B) emitting inline SYSCALL
 ;;   instruction.  rax=NR rdi=A0 rsi=A1 rdx=A2 r10=A3 r8=A4 r9=A5.
 ;;   Returns kernel return value in rax.
 ;;
@@ -87,7 +87,7 @@
                (= (logand align (- align 1)) 0))
           (nl_mmap_alloc_do size)
         0)))
-  "Phase 47 source for mmap-based `nl_mmap_alloc'.
+  "AOT source for mmap-based `nl_mmap_alloc'.
 
 Three-entry `(seq DEFUN ...)' manifest:
 - `nl_mmap_alloc_check (raw)' — validates mmap return value.
@@ -95,7 +95,7 @@ Three-entry `(seq DEFUN ...)' manifest:
 - `nl_mmap_alloc (size align)' — public entry; validates layout,
   delegates to mmap helper.
 
-Phase 47 ops: `syscall-direct' (SYS_mmap=9), `cmp' (< > =),
+AOT ops: `syscall-direct' (SYS_mmap=9), `cmp' (< > =),
   `arith' (- logand), `logic' (and), `if'.
 
 Note: `nl_alloc_bytes' (Rust `std::alloc') is NOT replaced by this
@@ -111,7 +111,7 @@ op and mmap plumbing without disrupting existing code paths.")
     ;; Sink: discards the munmap return value, returns 1 sentinel.
     ;; Necessary because `and' short-circuits on 0, and munmap returns
     ;; 0 on success.  A helper that ignores the argument is the
-    ;; cleanest way to discard a void-return in Phase 47.
+    ;; cleanest way to discard a void-return in AOT.
     (defun nl_mmap_dealloc_ignore (_raw)
       1)
 
@@ -132,7 +132,7 @@ op and mmap plumbing without disrupting existing code paths.")
                (= (logand align (- align 1)) 0))
           (nl_mmap_dealloc_do ptr size)
         1)))
-  "Phase 47 source for munmap-based `nl_mmap_dealloc'.
+  "AOT source for munmap-based `nl_mmap_dealloc'.
 
 Three-entry `(seq DEFUN ...)' manifest:
 - `nl_mmap_dealloc_ignore (_raw)' — discards munmap rc, returns 1.

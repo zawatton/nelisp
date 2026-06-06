@@ -207,7 +207,7 @@ audits its own file.
 
 * §5 Dependency on Doc 125 (alloc/dealloc grammar)
 
-Doc 125 §125.A must define a Phase 47 grammar op that lowers to
+Doc 125 §125.A must define a AOT grammar op that lowers to
 `std::alloc::dealloc(ptr, Layout::new::<T>())' via a typed extern
 shim.  Without it, the Drop kernel cannot express the "if-zero
 free the box" branch — the existing `nlrc_drop_box!' macro relies

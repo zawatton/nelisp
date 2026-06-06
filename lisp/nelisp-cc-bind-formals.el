@@ -1,4 +1,4 @@
-;;; nelisp-cc-bind-formals.el --- Phase 47 nl_bind_formals_impl swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bind-formals.el --- AOT nl_bind_formals_impl swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 parallel implementation of `bind_formals_impl' in
+;; AOT parallel implementation of `bind_formals_impl' in
 ;; `build-tool/src/eval/special_forms.rs' (~70 LOC Rust).
 ;;
 ;; The original Rust body:
@@ -54,7 +54,7 @@
 ;;     Stashes WrongType for bare &rest without following symbol, returns 1.
 ;;   nl_cons_car_ptr / nl_cons_cdr_ptr — standard cons walkers.
 ;;
-;; NOTE on Phase 47 shift syntax: `ash' is NOT a value-expr in Phase 47.
+;; NOTE on AOT shift syntax: `ash' is NOT a value-expr in AOT.
 ;; Use `(sar x n)' for arithmetic right shift (= shift right by positive n)
 ;; and `(shl x n)' for left shift.  Negative shift amounts not allowed.
 ;;
@@ -302,7 +302,7 @@
        (extern-call nl_bf_precompute formals args)
        formals args env)))
 
-  "Phase 47 source for `nl_bind_formals_impl' (Stage 1 parallel
+  "AOT source for `nl_bind_formals_impl' (Stage 1 parallel
 implementation of `bind_formals_impl' in special_forms.rs, ~70 LOC).
 
 15 defuns (seq form) — CPS chain for the Required/Optional/Rest
@@ -316,8 +316,8 @@ State word (packed i64):
   bits 20-35: args-len (16 bits, from nl_bf_precompute)
   bits 36+:   required (16 bits, for arity error messages)
 
-Phase 47 shift ops: `sar' (signed right shift) / `shl' (left shift).
-`ash' is not a Phase 47 value-expr; all shifts are translated:
+AOT shift ops: `sar' (signed right shift) / `shl' (left shift).
+`ash' is not a AOT value-expr; all shifts are translated:
   (ash x -n) → (sar x n), (ash x n) → (shl x n) for n > 0.
 
 New ABI externs in build-tool/src/eval/special_forms.rs:

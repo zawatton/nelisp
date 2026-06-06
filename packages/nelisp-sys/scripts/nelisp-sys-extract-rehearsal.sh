@@ -29,7 +29,7 @@ echo "Copied packages/nelisp-sys/ -> target/nelisp-sys-extract/"
 # private NeLisp backend symbols (Doc 130 extraction criterion 6).
 # ---------------------------------------------------------------------------
 PRIVATE_PREFIXES=(
-    "nelisp-phase47-"
+    "nelisp-aot-"
     "nelisp-asm-"
     "nelisp-elf-"
     "nelisp-mach-o-"

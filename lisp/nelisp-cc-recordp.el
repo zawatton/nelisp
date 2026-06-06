@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.B swaps `(recordp X)' to a Phase 47-compiled elisp
+;; Doc 111 §111.B swaps `(recordp X)' to a AOT-compiled elisp
 ;; object.  The body checks only the Sexp tag byte and writes `t' /
 ;; `nil' into a caller-owned result slot.
 

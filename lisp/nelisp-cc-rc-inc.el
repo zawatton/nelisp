@@ -31,7 +31,7 @@
 ;; `2 * 32`, the byte offset of the `AtomicUsize refcount' field
 ;; inside an `NlConsBox' (= layout-pinned by `#[repr(C)]' per
 ;; `build-tool/src/eval/nlconsbox.rs:56' + the compile-time assert at
-;; `build-tool/src/eval/nlrc.rs:292').  The Phase 47 emitter compiles
+;; `build-tool/src/eval/nlrc.rs:292').  The AOT emitter compiles
 ;; the literal as an `add rax, 64' instruction with no relocation.
 ;;
 ;; Ordering: §122.E `atomic-fetch-add' uses `Ordering::SeqCst' while
@@ -61,9 +61,9 @@
 (defconst nelisp-cc-rc-inc--source
   '(defun nelisp_rc_inc (box-ptr)
      (atomic-fetch-add (+ box-ptr 64) 1))
-  "Phase 47 source for the Doc 123 §123.A refcount-inc kernel.
+  "AOT source for the Doc 123 §123.A refcount-inc kernel.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills the
+Single-arg function — AOT's SysV AMD64 prologue spills the
 first arg (`box-ptr' = raw `NlConsBox*' as i64) into the rbp-
 relative slot 0.  The body is one composed value form: add 64
 (= REFCOUNT_OFFSET, the byte distance from the NlConsBox base to

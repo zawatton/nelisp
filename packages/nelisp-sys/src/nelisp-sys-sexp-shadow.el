@@ -12,7 +12,7 @@
 ;; layout.el' / `make sexp-abi-check') byte-for-byte, so that when the
 ;; refcount / allocator / dispatch kernel is rewritten in nelisp-sys
 ;; (Phases 2-8) it shares the exact same memory layout the existing
-;; Phase-47 `.o' corpus depends on.
+;; AOT `.o' corpus depends on.
 ;;
 ;; Key fact: Rust's `String' / `Vec' are NOT `#[repr(C)]' — their field
 ;; order is toolchain-pinned, not formally frozen.  The frozen constants

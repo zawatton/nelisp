@@ -1,4 +1,4 @@
-;;; nelisp-cc-sexp-eq.el --- Phase 47 nl_sexp_eq elisp .o  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sexp-eq.el --- AOT nl_sexp_eq elisp .o  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Moves the `#[no_mangle] extern "C" fn nl_sexp_eq' body from
-;; `build-tool/src/eval/special_forms.rs' into a Phase 47 elisp `.o'.
+;; `build-tool/src/eval/special_forms.rs' into a AOT elisp `.o'.
 ;;
 ;; Contract: `(nl_sexp_eq A B)' — both `*const Sexp' — returns i64:
 ;;   1 if the two Sexp values are `eq', 0 otherwise.
@@ -74,7 +74,7 @@
                        0)))))))
        ;; Tags differ → not eq.
        0))
-  "Phase 47 source for `nl_sexp_eq'.
+  "AOT source for `nl_sexp_eq'.
 
 Replaces the Rust `#[no_mangle] extern \"C\" fn nl_sexp_eq' in
 `build-tool/src/eval/special_forms.rs'.  Tag dispatch with inline

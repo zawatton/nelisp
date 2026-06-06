@@ -1,4 +1,4 @@
-;;; nelisp-cc-evalport-env-leaves-simple.el --- Phase 47 env-leaf simple ctx-accessors  -*- lexical-binding: t; -*-
+;;; nelisp-cc-evalport-env-leaves-simple.el --- AOT env-leaf simple ctx-accessors  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -35,7 +35,7 @@
       (let ((frames_ptr (+ env 32))
             (scratch_slot (alloc-bytes 32 8)))
         (nelisp_frame_pop frames_ptr scratch_slot))))
-  "Doc 135 Stage 135.C Phase 47 source for simple env-leaf ctx-accessors.
+  "Doc 135 Stage 135.C AOT source for simple env-leaf ctx-accessors.
 
 Two-entry `(seq DEFUN ...)' manifest.
 

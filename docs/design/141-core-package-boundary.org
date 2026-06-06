@@ -366,7 +366,7 @@ This should happen separately from package extraction to keep diffs readable.
 
 The renamed =toolchain/= should own:
 
-- Phase-47 compiler
+- AOT compiler
 - assemblers
 - object writers/linker support
 - standalone native runtime units
@@ -376,7 +376,7 @@ The renamed =toolchain/= should own:
 
 - Do not move files in the same change that defines this design.
 - Do not make =nelisp-emacs= the owner of every editor-adjacent library.
-- Do not move Phase-47 compiler or standalone runtime units into packages.
+- Do not move AOT compiler or standalone runtime units into packages.
 - Do not make the core depend on packages to start a REPL or run =--eval=.
 - Do not require a package manager before the core can self-host.
 

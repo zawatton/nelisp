@@ -1,4 +1,4 @@
-#+TITLE: Doc 93 — Phase 47 component: static linker in elisp
+#+TITLE: Doc 93 — AOT component: static linker in elisp
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-11
 
@@ -7,7 +7,7 @@
 - *State*: §93.a + §93.b SHIPPED (2026-05-11, branch
   =agent-doc-93b-impl= built on =agent-doc-93a-impl=) + DRAFT (= spike,
   implementation-ready 化のための design doc。Doc 85 §X recommendation
-  で「Phase 47 着手なら Doc 91-95 を起こす」とした 5 component の 3
+  で「AOT 着手なら Doc 91-95 を起こす」とした 5 component の 3
   本目)
 - *§93.a SHIPPED*: =lisp/nelisp-static-linker.el= (~90 elisp LOC) +
   =test/nelisp-static-linker-test.el= (21 ert) — relocation core =
@@ -49,7 +49,7 @@
   sections, computes layout, runs §93.b 2-pass, exports the symtab,
   then calls =nelisp-elf-write-binary= with =:relocs= intentionally
   omitted (= relocs already fully resolved into the bytes).  The
-  Phase 47 critical gate is the e2e exec test
+  AOT critical gate is the e2e exec test
   =nelisp-link-e2e-multi-unit-exec-exit-0=: 2 hand-emitted x86_64
   compile units (= main.o calls helper.o which sets =rdi=0= then
   RETs into main's =exit= syscall), linked, written, exec'd,
@@ -68,7 +68,7 @@
   emit する形を取る、ELF writer の API surface が pin されている前提)、
   Doc 92 assembler の relocation entry 形式 fix が必要 (= macro
   assembler が emit する =:relocs= field の shape が本 doc の input)
-- *Unlocks*: Phase 47 critical path 上の M3 (= "elisp が static link
+- *Unlocks*: AOT critical path 上の M3 (= "elisp が static link
   済 ELF binary を生成できる、libc / system linker (= rustc + ld)
   不要")。Doc 92 assembler の output (= 1 unit = 1 =.o= 相当) を **複数
   結合** し、symbol resolution と relocation 適用を済ませた状態の
@@ -77,7 +77,7 @@
 - *OOS for THIS doc*:
   - 実装作業 (= elisp / Rust file 編集なし、grep + read + design 構築のみ)
   - PIE / PIC = position-independent code は §6.1 risk として articulate
-    のみ。Phase 47 scope は ET_EXEC + 固定 vaddr (= =0x400000= 起点)
+    のみ。AOT scope は ET_EXEC + 固定 vaddr (= =0x400000= 起点)
   - Dynamic library linking = =.dynamic= / =.dynsym= / PLT/GOT machinery
     一切なし (= static link only、Doc 91 §7.4 と同 stance)
   - DWARF debug info の linker-side merge = §6.3 risk のみ
@@ -154,7 +154,7 @@ articulate するが correctness 上の障害なし。
 =cargo build= が出力する =./nelisp= binary 自体の「Rust extern fn の
 解決」は **system linker (rustc → ld → -rdynamic flag)** が行う。
 
-Phase 47 = 0 Rust runtime 完遂時:
+AOT = 0 Rust runtime 完遂時:
 
 - =./nelisp= は **elisp toolchain によって生成** される
 - system linker (= rustc + ld) は invoke できない (= Cargo workspace
@@ -163,7 +163,7 @@ Phase 47 = 0 Rust runtime 完遂時:
   stream を出力** する役目を担う = 本 doc の static linker
 
 代替なし: elisp が複数 unit を結合して 1 binary にする手段は (a) ld、
-(b) lld、(c) gold、(d) 自前 emit の 4 択。(a)-(c) は Phase 47 の "0
+(b) lld、(c) gold、(d) 自前 emit の 4 択。(a)-(c) は AOT の "0
 Rust / toolchain 不要" goal を否定。よって (d) elisp 自前 emit が唯一
 の path。
 
@@ -178,7 +178,7 @@ Doc 85 §0 TL;DR table row 3 "static linker + syscall inline ~300 elisp /
 94 へ分離したので本 doc 単独 ROI = 0.36:1 (LOC 比悪化、ただし strategic
 = system linker dependency 削除が真の不可欠)。
 
-** §0.5 Phase 47 chain 上の位置
+** §0.5 AOT chain 上の位置
 
 #+begin_src text
 [Phase 1-3 完遂]
@@ -199,7 +199,7 @@ Doc 85 §0 TL;DR table row 3 "static linker + syscall inline ~300 elisp /
             [Doc 94 crt0 elisp + syscall inline]
                      |
                      v
-            [Phase 47 完遂 = 0 Rust]
+            [AOT 完遂 = 0 Rust]
 #+end_src
 
 並列度: Doc 91 / 92 / 93 は API contract 同期さえ取れれば 3 並列開発
@@ -225,14 +225,14 @@ build-tool/src/jit/cons.rs:6:          //! `-rdynamic' link flag in
 
 ** §1.2 既存「Rust linker-equivalent」の anchor 一覧
 
-Phase 47 時点で elisp linker が **置換** すべき Rust + system linker
+AOT 時点で elisp linker が **置換** すべき Rust + system linker
 依存の anchor:
 
 | Rust 領域                              | total LOC | linker 寄与 LOC | 削減 path                   |
 |----------------------------------------+-----------+-----------------+-----------------------------|
 | =build-tool/src/eval/dlsym_bridge.rs= | 83        | ~83 (= 全部)    | 本 doc の linker で AOT 解決に shift |
-| =src/nelisp-cc-runtime.el= resolve-symbol path (Stage 81.4) | ~207 (lines 1596-1802) | ~207 | Phase 47 では runtime dlsym 不要、AOT 化で elisp 内 fixup table → relocation table へ |
-| =.cargo/config.toml= =-rdynamic= flag  | 1 line    | (= system linker config) | Phase 47 で rustc/ld 廃止 = 自動消滅 |
+| =src/nelisp-cc-runtime.el= resolve-symbol path (Stage 81.4) | ~207 (lines 1596-1802) | ~207 | AOT では runtime dlsym 不要、AOT 化で elisp 内 fixup table → relocation table へ |
+| =.cargo/config.toml= =-rdynamic= flag  | 1 line    | (= system linker config) | AOT で rustc/ld 廃止 = 自動消滅 |
 | =build-tool/Cargo.toml= deps           | n/a       | 0               | rustc 廃止 = 全 deps tree 削除 |
 | =target/release/build/= (cargo 内部 link script) | n/a | (= cargo run-time) | rustc 廃止 = 自動消滅 |
 
@@ -244,12 +244,12 @@ Phase 47 時点で elisp linker が **置換** すべき Rust + system linker
 | =build-tool/src/eval/mod.rs= dlsym_bridge 登録 | ~5   | =pub mod dlsym_bridge;= 1 行 + entry |
 | =src/nelisp-cc-runtime.el= Stage 81.4 ブロック (line 1596-1802) | ~207 elisp | line 範囲確認済 (= 機能は新 linker に吸収、削減ではなく再構成) |
 | =.cargo/config.toml= =-rdynamic=           | 1        | line 28 確認済      |
-| *合計 Rust LOC 削減*                       | *~89*    | + Phase 47 全体で system linker (= rustc / ld / libc) 全消滅という *strategic* 削減 |
+| *合計 Rust LOC 削減*                       | *~89*    | + AOT 全体で system linker (= rustc / ld / libc) 全消滅という *strategic* 削減 |
 | 別途 elisp 再構成                          | -207 + 250 = +43 elisp net | |
 
 注: Doc 85 §0 TL;DR table row 3 の "-360 Rust 削減" は syscall inline
 (= ffi.rs 内 ~280 LOC) を含む数字。本 doc は linker 責務に絞ったので
-Rust LOC 削減 ~89 と小さく見えるが、Phase 47 全体で =cargo workspace=
+Rust LOC 削減 ~89 と小さく見えるが、AOT 全体で =cargo workspace=
 全体 (~3,000+ LOC) を消すのが目的。
 
 ** §1.4 「writer 不在」「linker 不在」の現状 articulate
@@ -400,7 +400,7 @@ passes: insert DEFINED, verify EXTERN."
 責務: 各 unit の =:relocs= entry を走査、patch target byte 位置を結合
 後 section 内 offset に翻訳、symbol vaddr で計算、target bytes を mutate。
 
-支援 R-TYPE 最小 set (= Phase 47 scope、=S= = symbol vaddr / =A= =
+支援 R-TYPE 最小 set (= AOT scope、=S= = symbol vaddr / =A= =
 addend / =P= = patch site の絶対 vaddr):
 
 | keyword  | ELF code (r_info)   | computes      | patch size |
@@ -509,7 +509,7 @@ offset in LAYOUT.  Returns plist (:text BV :rodata BV :data BV :bss-size N)."
 
 * §3 Relocation type coverage
 
-** §3.1 Phase 47 必須 set (= 本 doc scope)
+** §3.1 AOT 必須 set (= 本 doc scope)
 
 | ELF type            | code | computes      | size | use case              |
 |---------------------+------+---------------+------+-----------------------|
@@ -517,7 +517,7 @@ offset in LAYOUT.  Returns plist (:text BV :rodata BV :data BV :bss-size N)."
 | =R_X86_64_64=       |    1 | =S + A=       |    8 | =MOV imm64= / pointer in =.data= |
 | =R_X86_64_PLT32=    |    4 | =S + A - P=   |    4 | static link で =:pc32= 同等扱い、PLT 不要 |
 
-** §3.2 Phase 47 後続 (= scope 外)
+** §3.2 AOT 後続 (= scope 外)
 
 | ELF type            | code | use case               |
 |---------------------+------+------------------------|
@@ -528,10 +528,10 @@ offset in LAYOUT.  Returns plist (:text BV :rodata BV :data BV :bss-size N)."
 | =R_X86_64_COPY=     |    5 | shared lib (= dynamic linker) |
 
 これらは GOT/PLT/TLS/dynamic linking machinery が必要 = static link
-only の Phase 47 では発生しない。本 doc は **発生時に明示 error** を
+only の AOT では発生しない。本 doc は **発生時に明示 error** を
 投げる方針 (= silent skip しない、§2.6 last clause)。
 
-** §3.3 aarch64 reloc table (= Phase 47 scope 外)
+** §3.3 aarch64 reloc table (= AOT scope 外)
 
 | ELF type                     | code | computes      |
 |------------------------------+------+---------------|
@@ -541,7 +541,7 @@ only の Phase 47 では発生しない。本 doc は **発生時に明示 error
 | =R_AARCH64_ADR_PREL_PG_HI21= |  275 | (= page address) |
 | =R_AARCH64_ADD_ABS_LO12_NC=  |  277 | (= page offset) |
 
-Phase 47 scope 外 = Doc 92 assembler が aarch64 instruction を emit する
+AOT scope 外 = Doc 92 assembler が aarch64 instruction を emit する
 時に reloc table も同時拡張する design (= 本 doc は x86_64 only、reloc
 type を keyword (=:pc32= 等) で抽象化済なので将来拡張時 dispatcher 追加
 だけで済む)。
@@ -560,7 +560,7 @@ type を keyword (=:pc32= 等) で抽象化済なので将来拡張時 dispatche
 
 =R_X86_64_PC32= は **signed 32-bit displacement** = =[-2^31, 2^31)= 範囲。
 範囲外は **error** (= ld の =relocation truncated to fit= に相当、§2.6
-=--check-rel32-range=)。Phase 47 scope の binary は ~10 MB 想定なので
+=--check-rel32-range=)。AOT scope の binary は ~10 MB 想定なので
 PC32 範囲は十分、巨大 =.bss= が PC32 範囲を越える pathology は monitor
 要 (= §6.5)。
 
@@ -670,7 +670,7 @@ libloading 不要、system linker (rustc + ld) 廃止可能"。直接の Rust LO
 - libc dynamic link 完全廃止 (= musl static or pure syscall binary、Doc
   94 syscall inline と整合)
 
-** §5.3 Phase 47 unblocking
+** §5.3 AOT unblocking
 
 本 doc shipped = 以下が unlock:
 
@@ -687,7 +687,7 @@ libloading 不要、system linker (rustc + ld) 廃止可能"。直接の Rust LO
    した buffer は本 doc の section combiner で =.rodata= 末尾に追加され、
    その vaddr で trampoline 経由 deref 可能
 
-すなわち本 doc = Phase 47 chain の **convergence point** = Doc 91/92/95
+すなわち本 doc = AOT chain の **convergence point** = Doc 91/92/95
 の output を統合して Doc 94 へ繋ぐ位置。
 
 * §6 Risk / unknowns
@@ -700,14 +700,14 @@ distro は ASLR enabled = ET_DYN (PIE) + GOT/PLT machinery を要求する場合
 真解決 + =R_X86_64_RELATIVE= dynamic reloc emit (= load 時に dynamic
 linker が patch、本 doc scope 外) + =PT_DYNAMIC= segment emit。
 
-緩和: Phase 47 = ET_EXEC 維持、modern distro でも ET_EXEC は exec 可能
+緩和: AOT = ET_EXEC 維持、modern distro でも ET_EXEC は exec 可能
 (= ASLR 無視されるが exec 自体は OK)。PIE 化は Phase 48+ 候補。判断:
 medium risk、将来 PIE 要件発生で linker LOC ~+200 増加可能性。
 
 ** §6.2 Dynamic library linking
 
 libc / libm / libpthread を dynamic link する path は本 doc で **完全
-廃止**。Phase 47 方針 = pure syscall binary (Doc 94 inline syscall scope)。
+廃止**。AOT 方針 = pure syscall binary (Doc 94 inline syscall scope)。
 libm の =strtod= / =sin= / =cos= 等は elisp 実装で置換、=malloc= /
 =free= は elisp GC 経由、threading は elisp single-thread。判断: Phase
 47 全体で解決済前提、本 doc は static link only に絞れば risk なし。
@@ -723,7 +723,7 @@ risk、scope 外。
 ** §6.4 LTO / dead-code elimination
 
 本 doc は section 全体保持 = unused function も全部 binary 内。LTO は
-inter-unit call graph + 到達性 + section GC が必要。Phase 47 完遂後の
+inter-unit call graph + 到達性 + section GC が必要。AOT 完遂後の
 最適化 phase で対応、minimum viable は size 度外視で OK。判断: low risk、
 scope 明示で済。
 
@@ -732,7 +732,7 @@ scope 明示で済。
 =R_X86_64_PC32= = signed 32-bit displacement (±2 GB)。=.bss= / =.rodata=
 肥大時 hit 可能性。§3.5 で range check + error throw articulated、越えた
 場合 =R_X86_64_64= fallback だが instruction encoding 変更要 (= Doc 92
-concern)。判断: monitor 要、Phase 47 binary < 10 MB 想定で当面 OK。
+concern)。判断: monitor 要、AOT binary < 10 MB 想定で当面 OK。
 
 ** §6.6 Symbol mangling collision / weak symbol semantics
 
@@ -745,7 +745,7 @@ strong wins、WEAK + WEAK は first wins (§2.5)。GNU ld と LLVM lld の微差
 
 100 unit × 各 100 reloc = 10,000 reloc walk + patch ≈ 10 sec オーダー
 (= ~1 ms / reloc)。緩和 = =gethash= 多用 + byte vector pre-alloc +
-=aset= mutate + 必要なら C =reloc-patch-many= escape hatch。Phase 47
+=aset= mutate + 必要なら C =reloc-patch-many= escape hatch。AOT
 binary 数 (~50 unit 想定) では問題なし、肥大時 optimization 要。判断:
 medium risk。
 
@@ -753,8 +753,8 @@ medium risk。
 
 | risk                              | severity | mitigation                                  |
 |-----------------------------------+----------+---------------------------------------------|
-| §6.1 PIE / PIC                    | medium   | Phase 47 ET_EXEC 維持、PIE は Phase 48+    |
-| §6.2 dynamic lib linking          | low      | Phase 47 全体方針で解決済                  |
+| §6.1 PIE / PIC                    | medium   | AOT ET_EXEC 維持、PIE は Phase 48+    |
+| §6.2 dynamic lib linking          | low      | AOT 全体方針で解決済                  |
 | §6.3 DWARF debug info             | low-med  | scope 外、後続 doc                          |
 | §6.4 LTO / DCE                    | low      | scope 外、後続 doc                          |
 | §6.5 PC32 range overflow          | medium   | range check + R_X86_64_64 fallback         |
@@ -763,10 +763,10 @@ medium risk。
 
 *top 2 risks for implementer*:
 
-1. *§6.1 PIE / PIC* = modern distro で hardened kernel 強制時に Phase 47
+1. *§6.1 PIE / PIC* = modern distro で hardened kernel 強制時に AOT
    binary が exec 不能になる 1 アーキ越境問題、ET_EXEC 維持で当面 OK
    だが distro 監視要
-2. *§6.7 elisp 性能* = 10,000 reloc で 10 sec オーダ、Phase 47 build
+2. *§6.7 elisp 性能* = 10,000 reloc で 10 sec オーダ、AOT build
    time 全体で許容範囲かは benchmark 要
 
 * §7 Implementation phases
@@ -843,7 +843,7 @@ acceptance:
 | §93.c   |  90 |   4 | (after both)                |
 | *合計*  | 250 |  10 | (or 7 with 2 parallel devs) |
 
-*7-10 work-day = 2 calendar week* (= 1-2 dev、weekend 抜き)。Phase 47
+*7-10 work-day = 2 calendar week* (= 1-2 dev、weekend 抜き)。AOT
 chain 上 Doc 91 / Doc 92 と並列開発可能。§93.c は Doc 91 ELF writer の
 skeleton (= §91.a shipped) を要するので Doc 91 進捗に従属。
 
@@ -896,8 +896,8 @@ skeleton (= §91.a shipped) を要するので Doc 91 進捗に従属。
 - =src/nelisp-cc-runtime.el= line 1596-1802 = Stage 81.4 ブロック ~207
   elisp = 本 doc の linker に責務移管で削除
 - =.cargo/config.toml= line 28 = =rustflags = ["-C",
-  "link-arg=-rdynamic"]= = Phase 47 完遂で消滅
-- =build-tool/Cargo.toml= = entire workspace = Phase 47 完遂で消滅
+  "link-arg=-rdynamic"]= = AOT 完遂で消滅
+- =build-tool/Cargo.toml= = entire workspace = AOT 完遂で消滅
 
 ** §8.3 関連 memory
 
@@ -931,7 +931,7 @@ skeleton (= §91.a shipped) を要するので Doc 91 進捗に従属。
 - *Plan 9 mk =8l= linker* = 簡素 ELF writer + linker (= ~2,000 C LOC) =
   Doc 91 と共有 reference
 
-** §8.5 Phase 47 chain 上の dispatch order
+** §8.5 AOT chain 上の dispatch order
 
 並列性:
 - §93.a (reloc core) と §93.b (section + symtab) は data structure
@@ -944,7 +944,7 @@ skeleton (= §91.a shipped) を要するので Doc 91 進捗に従属。
   entry symbol address pin が必要)
 
 最終 ROI は Doc 91-95 全体で -2,000 LOC Rust + 全 system linker
-dependency 削除、本 doc 単体は LOC 比 0.36:1 (§5.1) だが Phase 47
+dependency 削除、本 doc 単体は LOC 比 0.36:1 (§5.1) だが AOT
 strategic 価値は段違いに大きい (= rustc / cargo / ld 全廃)。
 
 ----

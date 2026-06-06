@@ -1,4 +1,4 @@
-#+TITLE: Doc 91 — Phase 47 component: ELF writer in elisp
+#+TITLE: Doc 91 — AOT component: ELF writer in elisp
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-10
 
@@ -28,7 +28,7 @@
 - *Pre-condition*: Phase 1-3 完遂 (= Doc 84 + Doc 86-89 SHIPPED)、本 doc
   は実装着手 gate ではなく「着手時にすぐ dispatch 可能な形まで articulate
   しておく」ための準備
-- *Unlocks*: Phase 47 critical path 上の M1 (= "elisp が ELF binary を
+- *Unlocks*: AOT critical path 上の M1 (= "elisp が ELF binary を
   生成できる")。Doc 92 assembler の output file format consumer、Doc 95
   Sexp DSL の lower target になる
 - *OOS for THIS doc*: Mach-O / PE COFF (= macOS / Windows、本 doc は
@@ -77,7 +77,7 @@ correctness 上の障害なし。
 生成している。これは Rust toolchain (= =rustc= + =ld= + =cargo=) を
 **毎回の build で必要** とする。
 
-Phase 47 = 0 Rust runtime 完遂時:
+AOT = 0 Rust runtime 完遂時:
 - =./nelisp= は **elisp toolchain によって生成** される必要
 - 既存 =./nelisp= が source elisp を read → assembler が x86_64 機械語
   emit → linker が symbol resolve → **ELF writer が disk 上の ELF
@@ -85,7 +85,7 @@ Phase 47 = 0 Rust runtime 完遂時:
 - このループの最終 stage が本 doc が articulate する component
 
 代替なし: ELF binary を出力する手段は (a) Rust ld、(b) GNU binutils ld、
-(c) 自前 emit の 3 択。(a)(b) を保留すると Phase 47 の "0 Rust" /
+(c) 自前 emit の 3 択。(a)(b) を保留すると AOT の "0 Rust" /
 "toolchain 不要" goal が崩壊する。よって (c) elisp 自前 emit が唯一の
 path。
 
@@ -103,7 +103,7 @@ $ grep -rn "Elf64\|e_phoff\|e_shoff\|EM_X86_64\|ET_EXEC" \
 =cargo build= が呼び出す =rustc= → =ld= (= GNU binutils またはplatform
 linker) に完全 delegate されている。
 
-** §1.2 では「Phase 47 で削減対象の Rust LOC」とは何か
+** §1.2 では「AOT で削減対象の Rust LOC」とは何か
 
 Doc 85 §3.1 が "ELF writer ~150 Rust LOC 削減" としたのは misleading。
 正確には:
@@ -540,18 +540,18 @@ Doc 85 §0 試算 "0.5:1" より悪い。
 
 ** §6.2 戦略価値で評価し直す
 
-Phase 47 critical path 上 = ELF writer 不在 → assembler / Sexp DSL
-全部 blocked。本 doc が Phase 47 の M1 milestone unlocker。
+AOT critical path 上 = ELF writer 不在 → assembler / Sexp DSL
+全部 blocked。本 doc が AOT の M1 milestone unlocker。
 
 ROI 計算には以下も計上すべき:
-- Phase 47 完遂時に Rust toolchain 全削除可能 (= =cargo build= 不要、
+- AOT 完遂時に Rust toolchain 全削除可能 (= =cargo build= 不要、
   Rust ecosystem 依存 0)
 - 直接の Rust 削減 -150 だけでなく **間接削減** = =cargo workspace= +
   =Cargo.lock= + =Cargo.toml= × 8 crate + 全 Rust dependency tree (=
   =serde= / =libc= / =libffi= 等) の archaeology が許容される
 - 「self-host 達成」の戦略価値 = 数値化困難だが Doc 85 §5.3 が articulate
 
-** §6.3 Phase 47 unblocking
+** §6.3 AOT unblocking
 
 本 doc shipped = M1 達成 = 以下が unlock される:
 
@@ -562,8 +562,8 @@ ROI 計算には以下も計上すべき:
 3. *Doc 94 (crt0)*: =_start= label の elisp emit 結果を ELF =.text= の
    開始位置に置ける (= entry point 制御)
 
-すなわち本 doc = Phase 47 の **hub** であり、ROI 0.32:1 という単独 LOC
-換算は Phase 47 全体の ROI 評価 (= Doc 85 §5.1 の "1.5:1") 内に組み入れ
+すなわち本 doc = AOT の **hub** であり、ROI 0.32:1 という単独 LOC
+換算は AOT 全体の ROI 評価 (= Doc 85 §5.1 の "1.5:1") 内に組み入れ
 て解釈すべき。
 
 * §7 Risk / unknowns
@@ -611,7 +611,7 @@ ELF64 は 64-bit address / offset を要求 → fixnum 越えする entry が
 
 aarch64-linux は **本 doc の小幅拡張で対応可** (= EM 値 + reloc type
 table の差し替え)。Mach-O / PE は完全別実装、Doc 91-extension として
-Phase 47 完遂 *後* に着手。
+AOT 完遂 *後* に着手。
 
 ** §7.4 dynamic linking 不要前提の制約
 
@@ -621,7 +621,7 @@ Phase 47 完遂 *後* に着手。
 - libc 動的 link は非対応
 
 対応方針: musl static or pure syscall binary (= libc 内蔵) のみ
-generate。Phase 47 全体の方向性 (= Doc 93 syscall inline) と整合。
+generate。AOT 全体の方向性 (= Doc 93 syscall inline) と整合。
 
 ** §7.5 DWARF debug info
 
@@ -699,7 +699,7 @@ acceptance: 現実的 elisp source size (= ~2 MB AOT image) で実用速度
 - *Doc 89 §6* (= phase-2-env-scope-chain-migration.org §6.1-§6.4) — Tier
   0 minimal Rust env の bootstrap chain。本 doc の elisp ELF writer も
   Tier 0 stage では Rust path に依存し、shipped 後に self-bootstrap path
-  に switch する **chicken-and-egg pattern が同型**。Phase 47 着手時、
+  に switch する **chicken-and-egg pattern が同型**。AOT 着手時、
   本 doc の writer は最初は Rust =./nelisp= に動かされ、shipped 後は
   自身が emit した binary を次世代の writer 動作の基盤にする (=
   bootstrap loop closes)
@@ -714,11 +714,11 @@ acceptance: 現実的 elisp source size (= ~2 MB AOT image) で実用速度
 
 ** §9.2 NeLisp 既存資産
 
-- =build-tool/src/image.rs= — NELIMG v3 image format (= Phase 47 とは別
+- =build-tool/src/image.rs= — NELIMG v3 image format (= AOT とは別
   layer の "elisp が読める内部 binary 形式"、ELF とは独立)。但し
   =to_le_bytes= / =from_le_bytes= 経由 byte serialization の **pattern
   reference** として参照可
-- =nelisp-runtime/src/seed.rs= — NLSEED format (= Phase 47 で deprecate
+- =nelisp-runtime/src/seed.rs= — NLSEED format (= AOT で deprecate
   対象)、本 doc shipped 後に消去する Rust LOC の主要部分。reference
   for "header + segment + relocation" pattern
 - =lisp/nelisp-stdlib-prn.el= 等の既存 nelisp-* module — naming

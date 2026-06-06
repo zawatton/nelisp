@@ -4,7 +4,7 @@
 * What it is
 
 =nelisp-sys= is a typed, statically checked systems-programming subset
-hosted on the NeLisp Phase 47 toolchain.  It is designed to replace C for
+hosted on the NeLisp AOT toolchain.  It is designed to replace C for
 selected low-level components while remaining extractable into its own
 repository later.
 
@@ -35,7 +35,7 @@ packages/nelisp-sys/
 * Boundary rule
 
 Only =src/nelisp-sys-adapter-nelisp.el= may call private NeLisp internals
-(=nelisp-phase47-*=, =nelisp-asm-*=, =nelisp-elf-write-*=, =nelisp-link-*=,
+(=nelisp-aot-*=, =nelisp-asm-*=, =nelisp-elf-write-*=, =nelisp-link-*=,
 Sexp layout).  Every other module uses the named adapter contract.  This is
 extraction criterion 6 from Doc 130.
 
@@ -77,7 +77,7 @@ emacs --batch -Q -L src -L lisp \
 - Types are explicit in MVP (no integer-width inference yet); strict from
   the first stage.
 - The backend is a *separate typed IR* lowered by the adapter, not a direct
-  raw Phase 47 frontend dependency.
+  raw AOT frontend dependency.
 - Borrow checking uses explicit =sys:with-borrow= / =sys:with-borrow-mut=
   forms in MVP for predictable diagnostics.
 - Hosted C-ABI object generation comes before freestanding mode.

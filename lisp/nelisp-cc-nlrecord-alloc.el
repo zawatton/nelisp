@@ -1,4 +1,4 @@
-;;; nelisp-cc-nlrecord-alloc.el --- nl_alloc_record Phase 47 migration  -*- lexical-binding: t; -*-
+;;; nelisp-cc-nlrecord-alloc.el --- nl_alloc_record AOT migration  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Replaces the Rust `nl_alloc_record' body in
-;; `build-tool/src/eval/nlrecord.rs' with a Phase 47-compiled elisp
+;; `build-tool/src/eval/nlrecord.rs' with a AOT-compiled elisp
 ;; object.  Mechanical sibling of `nelisp-cc-nlvector-alloc.el' with
 ;; an additional type_tag Sexp clone step.
 ;;
@@ -26,7 +26,7 @@
 ;; Vec field order is `(capacity, data_ptr, len)' — same convention
 ;; as NlVector.  `nelisp-nlrecord--offset-slots-capacity = 40' is the
 ;; data pointer field (named from a pre-merge `(ptr, cap, len)'
-;; assumption; the Phase 47 compiler comment in
+;; assumption; the AOT compiler comment in
 ;; `--emit-record-slot-ptr-core' documents the corrected layout).
 ;;
 ;; Three-helper + public entry structure mirrors `nelisp-cc-nlvector-alloc.el':
@@ -110,7 +110,7 @@
        (alloc-bytes (* (if (< slot-count 0) 0 slot-count) 32) 8)
        type-tag-ptr
        (if (< slot-count 0) 0 slot-count))))
-  "Phase 47 source for the `nl_alloc_record' allocator swap.
+  "AOT source for the `nl_alloc_record' allocator swap.
 
 Four-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_record_fill (data-ptr i n) -> data-ptr' — recursive
@@ -122,7 +122,7 @@ Four-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_record (type-tag-ptr slot-count) -> *mut NlRecord' —
   public entry.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `alloc-bytes'                    — 64B struct + n*32B slot buffer.
   `extern-call nl_sexp_clone_into' — clones type_tag into box-ptr+0.
   `sexp-write-nil'                 — tags each slot with SEXP_TAG_NIL.

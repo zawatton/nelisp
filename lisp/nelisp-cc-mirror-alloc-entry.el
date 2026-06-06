@@ -76,7 +76,7 @@
       (record-slot-set result-slot 1 function-ptr)
       (record-slot-set result-slot 2 plist-ptr)
       (record-slot-set result-slot 3 constant-ptr)))
-  "Phase 47 source for Doc 119 §119.A `mirror_alloc_entry'.
+  "AOT source for Doc 119 §119.A `mirror_alloc_entry'.
 
 Allocates a fresh `symbol-entry' Record via `record-make' (§115.3)
 + four refcount-safe `record-slot-set' (§111.B) installs.  Replaces

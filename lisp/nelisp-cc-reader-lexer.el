@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 116 §116.A — pure-elisp Phase 47 implementation of the
+;; Doc 116 §116.A — pure-elisp AOT implementation of the
 ;; tokenizer state machine in `build-tool/src/reader/lexer.rs'
 ;; (~885 LOC Rust → ~400 LOC elisp source).  The classical Lisp
 ;; self-host milestone: NeLisp's boot path is the pure-elisp
@@ -81,12 +81,12 @@
 ;;     the Rust legacy path in §116.C).
 ;;
 ;; Side-effect sequencing pattern (= no `(seq ...)' in value form):
-;;   The Phase 47 grammar's `seq' is statement-only; defun bodies
+;;   The AOT grammar's `seq' is statement-only; defun bodies
 ;;   are value-producing expressions.  To compose "do side effect
 ;;   E, then return value V" we use the `nelisp_reader_prog2 E V'
 ;;   helper which evaluates both args left-to-right (= argument
 ;;   evaluation order is fixed by the SysV ABI marshalling phase)
-;;   and returns its second arg.  Phase 47's `mut-str-push-byte' /
+;;   and returns its second arg.  AOT's `mut-str-push-byte' /
 ;;   `sexp-int-make' / `mut-str-finalize' all return a value (i64
 ;;   sentinel or slot pointer); we ignore it via `prog2'.
 ;;
@@ -111,7 +111,7 @@
     ;; throughout the lexer to thread `mut-str-push-byte' /
     ;; `sexp-int-make' / `mut-str-finalize' side effects through
     ;; value-producing recursive tail calls without needing a
-    ;; `seq' statement form (= Phase 47 reserves `seq' for
+    ;; `seq' statement form (= AOT reserves `seq' for
     ;; top-level / statement context only).
     ;; ===========================================================
 
@@ -795,7 +795,7 @@
           (nelisp_reader_emit_eof cursor-out-slot cursor)
         ;; First byte at CURSOR drives the dispatch.  Re-read at
         ;; each arm via `str-byte-at' rather than passing as a
-        ;; 7th arg (= would exceed Phase 47's 6-reg ABI).
+        ;; 7th arg (= would exceed AOT's 6-reg ABI).
         (cond
          ((= (str-byte-at str-ptr cursor) 40)
           (nelisp_reader_emit_single cursor-out-slot cursor 1))
@@ -837,7 +837,7 @@
        (str-len str-ptr)
        payload-slot cursor-out-slot scratch)))
 
-  "Phase 47 source for Doc 116 §116.A pure-elisp Reader lexer.
+  "AOT source for Doc 116 §116.A pure-elisp Reader lexer.
 
 Implements the tokenizer state machine in `reader/lexer.rs' as a
 collection of tail-recursive defuns sharing the SCRATCH MutStr and

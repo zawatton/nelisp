@@ -7,9 +7,9 @@
 :PARENT: Doc 77c (= 100% 純 elisp commitment) / Doc 80 (= pre-stdlib substrate、§7 で 15 fns を permanent OOS と articulate) / Doc 28 (= Phase 7.1 Cranelift 削除 path)
 :UNLOCKS: =build-tool/src/jit/strategy.rs= 全消滅 (= -156 Rust LOC SHIPPED) + UnifiedJit 跡地完全 cleanup (= predicate / syscall trampoline 整理)
 :USER_DIRECTIVE: 2026-05-10 — "elisp化するには何が必要ですか？" → "ではこれを実施するために design doc を作成しましょう"
-:RELATED: Doc 80 §7 (= permanent OOS 宣言、本 Doc が「permanent」を「未着手」に格下げ → §7 で 0 件に縮小済) / Doc 81 (= primitive trampoline ABI、本 Doc が同 pattern を 3 family に拡張) / Doc 85 (= Phase 47 elisp self-hosting toolchain feasibility spike、次 OOS frontier)
+:RELATED: Doc 80 §7 (= permanent OOS 宣言、本 Doc が「permanent」を「未着手」に格下げ → §7 で 0 件に縮小済) / Doc 81 (= primitive trampoline ABI、本 Doc が同 pattern を 3 family に拡張) / Doc 85 (= AOT elisp self-hosting toolchain feasibility spike、次 OOS frontier)
 :DEPENDS_ON: Phase A.5 layout pin (=NlFloat= / =NlMutStr= / =NlBoolVector= / =NlCharTable= 既 SHIPPED)
-:NEXT: Doc 85 = Phase 47 feasibility spike (= ~810 LOC 次 OOS target = =Sexp= 型 / =ffi.rs= / boot loader)
+:NEXT: Doc 85 = AOT feasibility spike (= ~810 LOC 次 OOS target = =Sexp= 型 / =ffi.rs= / boot loader)
 :SHIPPED_COMMITS: 84.1 = =887b08e2= / 84.2 = =5098d777= / 84.3 = =c4efa646= / 84.4 = (= 本コミット、agent-doc-84-stage-4 branch)
 
 * §0 TL;DR

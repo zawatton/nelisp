@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-downcase.el --- Phase 47 body for nl_jit_downcase  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-downcase.el --- AOT body for nl_jit_downcase  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 elisp migration of `nl_jit_downcase' from
+;; AOT elisp migration of `nl_jit_downcase' from
 ;; `build-tool/src/jit/strings.rs'.
 ;;
 ;; Trampoline signature: `(*const Sexp, *mut Sexp) -> i64'
@@ -104,7 +104,7 @@
                0)
             ;; Any other tag → ERR
             1)))))
-  "Phase 47 source for the `nl_jit_downcase' trampoline.
+  "AOT source for the `nl_jit_downcase' trampoline.
 
 Two-entry `(seq DEFUN ...)' manifest:
   `nl_jit_downcase_walk (src_ptr src_len out idx)' — byte walker.

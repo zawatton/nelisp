@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-condition-case.el --- Phase 47 nl_sf_condition_case swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-condition-case.el --- AOT nl_sf_condition_case swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_condition_case' Rust body in
+;; AOT replacement for the `sf_condition_case' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_condition_case(args, env):
@@ -207,7 +207,7 @@
            args env out s1 0)
         1)))
 
-  "Phase 47 source for `nl_sf_condition_case'.
+  "AOT source for `nl_sf_condition_case'.
 
 13 defuns (seq form) — CPS chain implementing args destructuring,
 protected-form eval with err interception, clause matching with var

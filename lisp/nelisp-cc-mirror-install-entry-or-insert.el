@@ -60,7 +60,7 @@
       (nelisp_mirror_install_entry_or_insert_dispatch
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        mirror-ptr sym-ptr scratch-vec-ptr 0 0)))
-  "Phase 47 source for Doc 119 §119.A `mirror_install_entry_or_insert'.
+  "AOT source for Doc 119 §119.A `mirror_install_entry_or_insert'.
 
 Full 4-slot install variant of `mirror_set_value_or_insert'.")
 

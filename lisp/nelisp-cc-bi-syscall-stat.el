@@ -10,7 +10,7 @@
 
 ;; Doc 117 §117.D.gaps.3 — moves the syscall body of
 ;; `(nelisp--syscall-stat PATH)' (= `build-tool/src/eval/builtins.rs::
-;; bi_syscall_stat') into a Phase 47 elisp object.  First file-I/O
+;; bi_syscall_stat') into a AOT elisp object.  First file-I/O
 ;; sweep enabled by the Doc 122 §122.I `nelisp_cstr_from_sexp' helper.
 ;;
 ;; The Rust shim keeps:
@@ -85,10 +85,10 @@
        (extern-call nelisp_cstr_from_sexp path-ptr)
        statbuf
        (+ (str-len path-ptr) 1))))
-  "Phase 47 source for the Doc 117 §117.D.gaps.3 `(nelisp--syscall-
+  "AOT source for the Doc 117 §117.D.gaps.3 `(nelisp--syscall-
 stat PATH)' libc syscall body swap.
 
-Composes only existing Phase 47 grammar:
+Composes only existing AOT grammar:
 - §122.I `nelisp_cstr_from_sexp' (cross-`.o' `extern-call') — path
   CString construction.
 - §125.A `dealloc-bytes' — CString free after the libc consumer
@@ -108,7 +108,7 @@ Three-entry `(seq DEFUN ...)' manifest mirrors §122.I's shape:
   2-arg entry.
 
 Linux-x86_64 only — `nelisp_cstr_from_sexp' substrate (§122.I) is
-x86_64-gated today; aarch64 lands with the Phase 47 aarch64 sweep.")
+x86_64-gated today; aarch64 lands with the AOT aarch64 sweep.")
 
 (provide 'nelisp-cc-bi-syscall-stat)
 

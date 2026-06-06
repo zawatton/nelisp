@@ -1,4 +1,4 @@
-;;; nelisp-cc-env-shim-op.el --- Doc 86 §86.4 env-shim OP dispatcher Phase 47  -*- lexical-binding: t; -*-
+;;; nelisp-cc-env-shim-op.el --- Doc 86 §86.4 env-shim OP dispatcher AOT  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,11 +8,11 @@
 
 ;;; Commentary:
 
-;; Doc 86 §86.4 — Phase 47 reimplementation of the
+;; Doc 86 §86.4 — AOT reimplementation of the
 ;; `nelisp--env-globals-op' read/clear/predicate dispatch arms.
 ;; Replaces 7 of the 10 macro arms in
 ;; `build-tool/src/eval/env_shim.rs::bi_globals_op', letting the Rust
-;; body shrink to a thin arg-check + Phase-47 call + error-mapping.
+;; body shrink to a thin arg-check + AOT call + error-mapping.
 ;;
 ;; Handled OPs (returns i64 result code + writes Sexp into result-slot):
 ;;   get-value     → 0 = unbound variable, 1 = hit (value in result-slot)
@@ -185,7 +185,7 @@
                     ;; Anything else (set-*, capture-lexical): Rust handles.
                     -2))))))))
     )
-  "Phase 47 source for Doc 86 §86.4 `nelisp_env_shim_op'.
+  "AOT source for Doc 86 §86.4 `nelisp_env_shim_op'.
 
 CPS-dispatch over 7 of the 10 `nelisp--env-globals-op' arms.
 The 3 remaining arms (set-value / set-function / set-constant)

@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-secure-hash.el --- Phase 47 nl_jit_secure_hash (SHA1 arm)  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-secure-hash.el --- AOT nl_jit_secure_hash (SHA1 arm)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,10 +8,10 @@
 
 ;;; Commentary:
 
-;; Phase 47 migration of the SHA1 arm of `nl_jit_secure_hash' from
+;; AOT migration of the SHA1 arm of `nl_jit_secure_hash' from
 ;; `build-tool/src/jit/hash.rs'.  The sha224/sha256/sha384/sha512/md5
 ;; arms are now handled by `nl_jit_secure_hash_non_sha1_ext' from
-;; `nelisp-cc-jit-secure-hash-ext.el' (Phase 47 elisp, not Rust).
+;; `nelisp-cc-jit-secure-hash-ext.el' (AOT elisp, not Rust).
 ;; This object provides the `nl_jit_secure_hash' trampoline that
 ;; intercepts sha1 calls and delegates everything else to the ext object.
 ;;
@@ -44,7 +44,7 @@
 ;;   buf[736]: used by nl_sha1_full_blocks outer loop only
 ;;   buf[744]: used by nl_sha1_scratch_fill zeroing + second-padding-block loop
 ;;
-;; while-in-and fix: Phase 47 `(while ...)' always returns 0.  Every
+;; while-in-and fix: AOT `(while ...)' always returns 0.  Every
 ;; `while' that appears in an `and' chain with more code after it is
 ;; wrapped as `(or (while ...) 1)' so the `and' chain continues.
 ;;
@@ -62,7 +62,7 @@
 ;;   `build-tool/build.rs' manifest_sources: `"nelisp-cc-jit-secure-hash.el"'
 ;;   `build-tool/src/jit/bridge.rs': extern nl_jit_secure_hash + anchor entry
 ;;   `build-tool/src/jit/hash.rs': DELETED (Wave 18t-W+ext: full migration)
-;;   `nelisp-cc-jit-secure-hash-ext.el': sha224/256/384/512/md5 Phase 47 impl
+;;   `nelisp-cc-jit-secure-hash-ext.el': sha224/256/384/512/md5 AOT impl
 
 ;;; Code:
 
@@ -374,7 +374,7 @@
 
     ;; ---- Stack-alignment trampoline for non-SHA1 elisp-call ----------------
     ;;
-    ;; Phase 47 calling convention (see `a440f4af' / `1cdc2d9c'):
+    ;; AOT calling convention (see `a440f4af' / `1cdc2d9c'):
     ;;   - An odd-arity (1, 3, 5) GP defun has a `sub $8, rsp' in its
     ;;     prologue so body-entry rsp ≡ 0 mod 16 when called with the
     ;;     CORRECT SysV entry alignment (entry rsp ≡ 8 mod 16).
@@ -395,7 +395,7 @@
     ;;   3 arg pushes (-24 → 0), 3 pops (+24 → 8), sub $8 (-8 → 0)
     ;;   call → nl_jit_secure_hash_non_sha1_ext entry rsp ≡ 8 ✓
     ;;
-    ;; nl_jit_secure_hash_non_sha1_ext is the Phase 47 elisp object
+    ;; nl_jit_secure_hash_non_sha1_ext is the AOT elisp object
     ;; from nelisp-cc-jit-secure-hash-ext.el (sha256/sha224/sha512/sha384/md5).
     (defun nl_sha1_call_non_sha1 (algo-ptr str-ptr out)
       (extern-call nl_jit_secure_hash_non_sha1_ext algo-ptr str-ptr out))
@@ -451,7 +451,7 @@
          (dealloc-bytes hex-buf 40 1)
          (dealloc-bytes buf 816 8)
          0))))
-  "Phase 47 source for `nl_jit_secure_hash' (SHA1 arm + non-SHA1 fallback).
+  "AOT source for `nl_jit_secure_hash' (SHA1 arm + non-SHA1 fallback).
 
 The SHA1 implementation follows FIPS 180-4 with full multi-block
 support.  The workspace buffer (816 bytes) stores the 80-word message

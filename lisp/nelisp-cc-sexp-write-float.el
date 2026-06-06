@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 122 §122.G introduces the `sexp-write-float' Phase 47 grammar
+;; Doc 122 §122.G introduces the `sexp-write-float' AOT grammar
 ;; op:
 ;;
 ;;   (sexp-write-float SLOT VALUE)
@@ -18,15 +18,15 @@
 ;;       returns SLOT in rax.  VALUE is an f64-class flat-leaf
 ;;       ref (= parameter with `:type f64' annotation).
 ;;
-;; This file packages the op as a single Phase 47-compiled `defun'
+;; This file packages the op as a single AOT-compiled `defun'
 ;; so the `tests/elisp_cc_sexp_write_float_probe.rs' integration
 ;; test can probe the round-trip end-to-end.  Pattern mirrors
 ;; `nelisp-cc-sexp-write-str.el' for §122.A's sibling allocator ops
-;; with one twist: the Phase 47 MVP requires uniform param classes
+;; with one twist: the AOT MVP requires uniform param classes
 ;; per defun, so both SLOT and VAL are declared `(:type f64)' and
 ;; the test harness bit-casts the slot pointer via
 ;; `f64::from_bits(ptr as u64)' before invocation.  The emit code
-;; in `nelisp-phase47-compiler--emit-sexp-write-float' tolerates
+;; in `nelisp-aot-compiler--emit-sexp-write-float' tolerates
 ;; either class and moves the f64-class bit pattern back into rdi
 ;; before the call instruction.
 
@@ -40,14 +40,14 @@
      ;; The grammar op lowers SLOT back to GP rdi via MOVQ before
      ;; calling `nl_sexp_write_float'.
      ;;
-     ;; The Phase 47 MVP forbids mixed-class params in a single
+     ;; The AOT MVP forbids mixed-class params in a single
      ;; defun, so the test harness emulates the would-be `(slot val
      ;; :type f64)' shape by bit-casting the pointer through xmm0;
      ;; the bit pattern survives unchanged through the spill round
      ;; trip and ends up in rdi as a valid `*mut Sexp' on entry to
      ;; the helper.
      (sexp-write-float slot val))
-  "Phase 47 source for the Doc 122 §122.G `sexp-write-float' grammar
+  "AOT source for the Doc 122 §122.G `sexp-write-float' grammar
 op probe.  Receives the slot pointer as a bit-cast f64 in xmm0 and
 the value as an f64 in xmm1; lowers to `nl_sexp_write_float(rdi:
 slot, xmm0: val)' and returns the slot pointer in rax.")

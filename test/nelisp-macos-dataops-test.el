@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Host-side (Linux/CI) regression guard for the aarch64 / Darwin
-;; Phase-47 emit of the "data op" batch: width-specific pointer
+;; AOT emit of the "data op" batch: width-specific pointer
 ;; load/store (`ptr-{read,write}-u{8,16,32}'), `dealloc-bytes',
 ;; `cons-set-car' / `cons-set-cdr', `cond', and `and'/`or' logic.
 ;;
@@ -31,7 +31,7 @@
     (add-to-list 'load-path (expand-file-name d here))))
 
 (require 'nelisp-macos-build)
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
 ;; ---- helpers ----
 
@@ -464,7 +464,7 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
   (let ((path (make-temp-file "nelisp-aarch64-extern-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (x)
               (extern-call ext_add x 2))
            path :arch 'aarch64 :format 'elf)

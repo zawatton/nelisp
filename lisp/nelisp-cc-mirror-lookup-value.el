@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group A helper #2 — `mirror_lookup_value'.  Phase 47
+;; Doc 111 §111.E Group A helper #2 — `mirror_lookup_value'.  AOT
 ;; composition of #1 (`mirror_lookup_entry') + `record-slot-ref' over
 ;; slot 0 (= the symbol-entry's value cell).  Replaces the
 ;; `Env::mirror_lookup_value' Rust impl at
@@ -25,7 +25,7 @@
 ;;
 ;; Sentinel-return semantics: the Rust impl returns
 ;; `self.unbound_marker.clone()` on miss (= a `Sexp::Symbol("nelisp--unbound-marker")');
-;; this Phase 47 helper returns `Sexp::Nil' instead so the dispatcher
+;; this AOT helper returns `Sexp::Nil' instead so the dispatcher
 ;; (= the eventual extern-wrapper in env_mirror.rs) re-introduces the
 ;; sentinel.  Doc 111 §3.E "Group A helpers all compose on #1, minimal
 ;; new logic" gate — we deliberately do not bake the unbound marker
@@ -49,7 +49,7 @@
        (if (= entry 0)
            (sexp-write-nil result-slot)
          (record-slot-ref entry 0 result-slot))))
-  "Phase 47 source for Doc 111 §111.E #2 `mirror_lookup_value'.
+  "AOT source for Doc 111 §111.E #2 `mirror_lookup_value'.
 
 Composes §111.E #1 `mirror_lookup_entry' (via `extern-call' into
 `nelisp_mirror_lookup_entry') with §111.B `record-slot-ref' to read

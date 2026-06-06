@@ -267,7 +267,7 @@ snapshot.  apply_lambda_inner pushes its argument frame at depth
 MAX-DEPTH during the dispatch, so capping the walk at MAX-DEPTH-1
 skips that contamination.
 
-Doc 49 Wave 10.1d-retry — Phase 47 native fast path: dispatches
+Doc 49 Wave 10.1d-retry — AOT native fast path: dispatches
 to `nl_capture_descend_native' (co-located in
 `nelisp-cc-frame-stack-find.o') via `nl-jit-call-out-1', eliding
 the elisp interpretation cost of the original R11b
@@ -279,7 +279,7 @@ innermost-first + prepends — see the dedup-via-consumer note above
 for the correctness argument."
   ;; scratch[0] = stack record (passed through)
   ;; scratch[1] = max-depth Sexp::Int (passed through)
-  ;; scratch[2] = pair-slot scratch (Sexp::Nil — Phase 47 helper
+  ;; scratch[2] = pair-slot scratch (Sexp::Nil — AOT helper
   ;;              reuses this as the destination for each inner
   ;;              (NAME . CELL) cons cell; refcount-safe per the
   ;;              `cons-make-with-clone' alias-safety contract).

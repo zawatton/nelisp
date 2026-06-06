@@ -8,7 +8,7 @@
 binary frozen-heap format used to ship STDLIB pre-evaluated into the
 production binary.  Decode bypasses the reader + eval-loop.
 
-After Doc 116 (= elisp reader shipped) + Doc 122 (Phase 47 alloc /
+After Doc 116 (= elisp reader shipped) + Doc 122 (AOT alloc /
 string / vector / record grammar), the eval-loop can decode source
 forms at startup nearly as fast as binary blob deserialization, while
 deleting *all of image.rs* (= −1636 LOC) plus its baker glue (=
@@ -49,7 +49,7 @@ for (name, source) in STDLIB_SOURCES {
 }
 #+end_src
 
-The elisp reader is already Phase 47-compiled (Doc 116.C); the
+The elisp reader is already AOT-compiled (Doc 116.C); the
 eval-loop is the production hot path.  Startup time becomes
 (parse + eval) instead of (decode_v3); empirically the difference is
 in the 100ms-range for ~10K STDLIB lines (= acceptable for a build-
@@ -267,5 +267,5 @@ the lexer patch lands and eval-boot is validated as default.
 - Doc 75 (NELIMG v3 origin)
 - Doc 98 §98.3 (form-shim retirement)
 - Doc 116 (elisp reader)
-- Doc 122 (Phase 47 alloc grammar)
+- Doc 122 (AOT alloc grammar)
 - Doc 95 §95.e (cross-impl gate, kept)

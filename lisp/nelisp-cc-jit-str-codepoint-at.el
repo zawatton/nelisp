@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 122 §122.D / Doc 120 §120.B — Phase-47-compiled replacement for
+;; Doc 122 §122.D / Doc 120 §120.B — AOT-compiled replacement for
 ;; the Rust `nl_jit_str_codepoint_at' trampoline in
 ;; `build-tool/src/jit/box_accessor.rs'.  Same
 ;; `(*const Sexp, i64, *mut Sexp) -> i64' contract:
@@ -93,7 +93,7 @@
         (if (or (= (sexp-tag arg) 5) (= (sexp-tag arg) 6))
             (nl_jit_str_codepoint_at_walk arg 0 idx out)
           1))))
-  "Phase 47 source for the §120.B `nl_jit_str_codepoint_at' swap.
+  "AOT source for the §120.B `nl_jit_str_codepoint_at' swap.
 
 Two-entry `(seq DEFUN ...)' manifest:
 

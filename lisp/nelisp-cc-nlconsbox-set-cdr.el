@@ -1,4 +1,4 @@
-;;; nelisp-cc-nlconsbox-set-cdr.el --- nl_consbox_set_cdr Phase 47 swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-nlconsbox-set-cdr.el --- nl_consbox_set_cdr AOT swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Replaces the Rust `nl_consbox_set_cdr' body with a Phase 47-compiled
+;; Replaces the Rust `nl_consbox_set_cdr' body with a AOT-compiled
 ;; elisp object.  The function copies the 32-byte Sexp at `val' (rsi)
 ;; into the cdr slot of the NlConsBox pointed to by `box' (rdi).
 ;;
@@ -39,7 +39,7 @@
 ;;   return: void (rax holds 1 sentinel from the last ptr-write-u64)
 ;;
 ;; NOTE: Raw 4×u64 copy without refcount-safe drop of the previous cdr
-;; value.  Matches the Phase 47 cutover spike scope (same rationale as
+;; value.  Matches the AOT cutover spike scope (same rationale as
 ;; `nelisp-cc-nlconsbox-set-car.el').
 
 ;;; Code:
@@ -52,14 +52,14 @@
            (ptr-write-u64 box 40 (ptr-read-u64 val 8))
            (ptr-write-u64 box 48 (ptr-read-u64 val 16))
            (ptr-write-u64 box 56 (ptr-read-u64 val 24)))))
-  "Phase 47 source for the `nl_consbox_set_cdr' cutover spike.
+  "AOT source for the `nl_consbox_set_cdr' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
 - `nl_consbox_set_cdr (box val) -> i64' — copies the 32-byte Sexp
   at VAL into the cdr slot (offset 32) of the NlConsBox at BOX via
   four `ptr-write-u64' / `ptr-read-u64' word-copy pairs.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `ptr-read-u64'   — `*(u64*)(val + offset)' load (offsets 0/8/16/24).
   `ptr-write-u64'  — `*(u64*)(box + offset) = v' store (offsets 32/40/48/56).")
 

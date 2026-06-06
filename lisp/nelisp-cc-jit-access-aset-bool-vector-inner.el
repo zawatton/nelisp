@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.D — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.D — AOT-compiled replacement for the Rust
 ;; `nl_jit_access_aset_bool_vector_inner' narrow helper in
 ;; `build-tool/src/jit/access.rs'.
 ;;
@@ -46,7 +46,7 @@
 ;;   offset 24: refcount AtomicUsize
 ;;
 ;; The inner helper factoring avoids a double `sexp-payload-ptr' call
-;; — Phase 47 `let' supports compile-time constants only.
+;; — AOT `let' supports compile-time constants only.
 
 ;;; Code:
 
@@ -73,7 +73,7 @@
       (if (< idx 0)
           1
         (nl_jit_access_aset_bv_do (sexp-payload-ptr arg) idx val out))))
-  "Phase 47 source for the §120.D `nl_jit_access_aset_bool_vector_inner' swap.
+  "AOT source for the §120.D `nl_jit_access_aset_bool_vector_inner' swap.
 
 Two-function package (= `seq' form):
 

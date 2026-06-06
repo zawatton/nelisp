@@ -1,4 +1,4 @@
-;;; compile-elisp-objects-meta.el --- Wave A25.2 Phase 47-friendly driver rewrite  -*- lexical-binding: t; -*-
+;;; compile-elisp-objects-meta.el --- Wave A25.2 AOT-friendly driver rewrite  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,10 +8,10 @@
 
 ;;; Commentary:
 
-;; Wave A25.2 — Phase 47-friendly rewrite of the
+;; Wave A25.2 — AOT-friendly rewrite of the
 ;; `scripts/compile-elisp-objects.el' driver.  Proof of concept that
 ;; the iteration + dispatch logic can be expressed without any of the
-;; host-Emacs primitives that block Phase 47 self-application:
+;; host-Emacs primitives that block AOT self-application:
 ;;
 ;;   * No `(require feature)' — source defconst values are looked up
 ;;     via a static manifest vector built once at load time, mirroring
@@ -29,7 +29,7 @@
 ;;
 ;;   * No `locate-file' / `file-attribute-modification-time' /
 ;;     `time-less-p' chain — the per-entry up-to-date check is delegated
-;;     to a single helper that the future Phase 47 self-application
+;;     to a single helper that the future AOT self-application
 ;;     will reach as `nelisp_meta_should_rebuild' (= the kernel in
 ;;     `lisp/nelisp-cc-meta-driver.el', which composes the A25.1-min
 ;;     `nelisp_bi_syscall_stat_mtime' helper).
@@ -64,7 +64,7 @@
 ;;
 ;;   `compile-elisp-objects-meta--walk'
 ;;     — tail-recursive iteration kernel that mirrors the future
-;;       Phase 47-compiled walker's shape (= 4-arg, even arity, single
+;;       AOT-compiled walker's shape (= 4-arg, even arity, single
 ;;       `if' dispatch on each entry).
 
 ;;; Code:
@@ -93,7 +93,7 @@
   (when (and lisp-dir (file-directory-p lisp-dir))
     (add-to-list 'load-path lisp-dir)))
 
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 (require 'nelisp-cc-meta-driver)
 
 ;; Pull the production manifest in for the source-var defconst lookup.
@@ -124,12 +124,12 @@
     nelisp-cc-cons-construct)
   "Five-entry PoC subset of the production manifest.
 Chosen because each entry has no `:requires-arch' constraint (=
-they compile on every Phase 47 backend), so the PoC runs across
+they compile on every AOT backend), so the PoC runs across
 both x86_64 and aarch64 hosts.  The full 208-entry walk lands in
 Wave A27 via `compile-elisp-objects-meta-emit-all' (= production
 cutover, chunked walker dispatch).")
 
-;; Wave A27 — production cutover chunk size.  The Phase 47 walker packs
+;; Wave A27 — production cutover chunk size.  The AOT walker packs
 ;; per-entry rebuild decisions into a single `Sexp::Int(bitmask)' i64
 ;; return slot.  i64 holds 64 distinct bit positions, so the elisp
 ;; driver slices the full 208-entry manifest into 4 chunks of ≤ 64
@@ -165,9 +165,9 @@ time; the static manifest captures the source by value).
 
 In Wave A25.3 the same vector layout will be emitted as a read-only
 data section in the standalone binary, with SEXP slots holding the
-Phase 47 rodata-baked source forms.  This host-Emacs build is the
+AOT rodata-baked source forms.  This host-Emacs build is the
 control: same shape, same iteration order, runs through the legacy
-`nelisp-phase47-compile-to-object'."
+`nelisp-aot-compile-to-object'."
   (let ((subset (compile-elisp-objects-meta--filter-subset
                  compile-elisp-objects-manifest))
         (acc nil))
@@ -243,7 +243,7 @@ construction wall-clock for production-sized inputs."
 (defun compile-elisp-objects-meta--chunk-count (total)
   "Return the number of walker chunks needed for TOTAL entries.
 Each chunk packs up to `compile-elisp-objects-meta--chunk-size' (=
-64) entries into a single Phase 47 walker call's i64 bitmask
+64) entries into a single AOT walker call's i64 bitmask
 return slot.  TOTAL = 0 returns 0; positive TOTAL returns the
 ceiling division `ceil(TOTAL / 64)'."
   (if (<= total 0)
@@ -255,7 +255,7 @@ ceiling division `ceil(TOTAL / 64)'."
   "Return non-nil when ARCH satisfies REQUIRES-ARCH.
 Mirrors the production driver's `:requires-arch' dispatch (nil =
 any arch, symbol = exact match, list = membership) but in a flat
-form that fits the future Phase 47 walker's single-`if' shape."
+form that fits the future AOT walker's single-`if' shape."
   (cond ((null requires-arch) t)
         ((symbolp requires-arch) (eq requires-arch arch))
         ((listp requires-arch) (memq arch requires-arch))
@@ -269,7 +269,7 @@ Returns 0 when up-to-date.
 Wave A25.6 — extern-call swap.  When the standalone NeLisp
 interpreter's `nl-jit-call-out-2' bridge is bound (= standalone
 runtime with the A25.2 `nelisp_meta_should_rebuild' kernel linked
-into the binary's `+whole-archive' Phase 47 helper set), this
+into the binary's `+whole-archive' AOT helper set), this
 function dispatches directly into the compiled `.o' kernel:
 
   (nl-jit-call-out-2 \"nelisp_meta_should_rebuild\" SRC OUT)
@@ -277,7 +277,7 @@ function dispatches directly into the compiled `.o' kernel:
 The bridge marshals SRC / OUT as `*const Sexp', allocates a Rust-
 local `Sexp::Nil' result slot, casts `dlsym(\"nelisp_meta_should_
 rebuild\")' to `extern \"C\" fn(*const Sexp, *const Sexp, *mut Sexp)
--> i64', invokes it (= the Phase 47 kernel writes `Sexp::Int(0|1)'
+-> i64', invokes it (= the AOT kernel writes `Sexp::Int(0|1)'
 into the result slot, returns TRAMPOLINE_OK), and surfaces the slot
 contents as the call's `Sexp::Int' return.  `eq'-comparing the
 return against the integer 0 yields the 0/1 decision the caller
@@ -295,7 +295,7 @@ extern-call swap is byte-identity-safe by construction."
    ((not (file-exists-p out-path)) 1)
    ((not (and src-path (file-exists-p src-path))) 1)
    ((fboundp 'nl-jit-call-out-2)
-    ;; Standalone NeLisp path — dispatch into the Phase 47 .o.  The
+    ;; Standalone NeLisp path — dispatch into the AOT .o.  The
     ;; bridge returns `Sexp::Int(0|1)' via the result slot; comparing
     ;; against the integer 0 yields the 0/1 decision shape this
     ;; predicate's callers expect.  `condition-case' is intentional:
@@ -320,11 +320,11 @@ ENTRY is the 4-slot vector `[FEATURE SEXP OUTPUT REQUIRES-ARCH]'.
 Returns the absolute path written, nil if the entry is skipped (=
 arch mismatch or up-to-date).
 
-This is the per-iteration body of the future Phase 47 walker.  The
-host-Emacs form keeps the call to `nelisp-phase47-compile-to-object'
+This is the per-iteration body of the future AOT walker.  The
+host-Emacs form keeps the call to `nelisp-aot-compile-to-object'
 interpreted (= the kernel itself does not need to ship as a Phase
 47 .o; it stays Rust-free elisp running in the build host).  Only
-the iteration + decision shell will be Phase 47-compiled in A25.3."
+the iteration + decision shell will be AOT-compiled in A25.3."
   (let* ((feature       (aref entry 0))
          (sexp          (aref entry 1))
          (output        (aref entry 2))
@@ -341,7 +341,7 @@ the iteration + decision shell will be Phase 47-compiled in A25.3."
      (t
       (message "[compile-elisp-objects-meta] %s -> %s"
                feature out-path)
-      (nelisp-phase47-compile-to-object sexp out-path
+      (nelisp-aot-compile-to-object sexp out-path
                                         :arch arch :format format)
       out-path))))
 
@@ -438,12 +438,12 @@ preserves the chunked layout so the emit pass can index decisions
 by `(chunk-idx, bit-pos)' without overflowing any single i64.
 
 On standalone NeLisp (= `nl-jit-call-out-2' bound), each chunk
-dispatches the Phase 47-compiled `nelisp_meta_walk' kernel once
+dispatches the AOT-compiled `nelisp_meta_walk' kernel once
 with the sliced inputs:
 
   (nl-jit-call-out-2 \"nelisp_meta_walk\" CHUNK-SRCS CHUNK-OUTS)
 
-The walker iterates internally via Phase 47-native tail recursion,
+The walker iterates internally via AOT-native tail recursion,
 calling `nelisp_meta_should_rebuild' for each (src, out) pair in
 the chunk, and packs the 0/1 decisions into a single
 `Sexp::Int(chunk-bitmask)' return.  This collapses N elisp ->
@@ -474,7 +474,7 @@ a time so the byte-identity reference path stays untouched."
         (aset result chunk-idx
               (cond
                ((fboundp 'nl-jit-call-out-2)
-                ;; Standalone NeLisp path — bridge call into the Phase 47
+                ;; Standalone NeLisp path — bridge call into the AOT
                 ;; walker for this chunk's slice.  Slice srcs/outs into
                 ;; chunk-local vectors so the walker's `vector-len' read
                 ;; returns the chunk length and bit positions are
@@ -535,7 +535,7 @@ the chunk overflow is handled correctly."
 (defun compile-elisp-objects-meta--spillover-mask (n chunk-idx chunk-count chunk-size)
   "Return the spillover-bit mask to OR into arch-skip[CHUNK-IDX].
 For the final possibly-short chunk, bit positions ≥ chunk-len must
-be treated as accept-masked-out so the Phase 47 kernel's `(NOT
+be treated as accept-masked-out so the AOT kernel's `(NOT
 arch-skip)' popcount stays bounded by the real entry count.  For
 non-final chunks, returns 0 (= no spillover).  For an exact
 multiple chunk length (= TOTAL mod CHUNK-SIZE = 0) the final chunk
@@ -546,7 +546,7 @@ is full and the function also returns 0.
   CHUNK-COUNT  — number of chunks (= ceil(N / CHUNK-SIZE)).
   CHUNK-SIZE   — entries per chunk (= 64 for the i64 bitmask).
 
-Wave A30 — applied to the final chunk only by the Phase 47 dispatch
+Wave A30 — applied to the final chunk only by the AOT dispatch
 loop wrapper before calling `nelisp_meta_dispatch_loop'."
   (if (not (= chunk-idx (1- chunk-count)))
       0
@@ -562,7 +562,7 @@ loop wrapper before calling `nelisp_meta_dispatch_loop'."
   "Wrap each i64 element of CHUNKS (= vector of integers) as Sexp::Int.
 Returns a fresh vector with each slot holding the same integer
 value — under standalone NeLisp the integers are Sexp::Int values
-that the Phase 47 kernel can read via `sexp-int-unwrap'.  Used by
+that the AOT kernel can read via `sexp-int-unwrap'.  Used by
 the Wave A30 wrapper before packing chunk vectors into the
 `nl-jit-call-out-2' bridge's input vector."
   (let* ((n (length chunks))
@@ -576,13 +576,13 @@ the Wave A30 wrapper before packing chunk vectors into the
 (defun compile-elisp-objects-meta--dispatch-loop-host
     (entries outs arch-skip-chunks bitmask-chunks chunk-size arch format)
   "Host-Emacs reference path for the per-entry dispatch loop.
-Pure elisp; called when the Phase 47 `nelisp_meta_dispatch_loop'
+Pure elisp; called when the AOT `nelisp_meta_dispatch_loop'
 kernel is not reachable (= host Emacs / batch / ERT).  Same shape
 as the pre-A30 inline dispatch loop — for each entry in [0, N) it
 consults the per-chunk dirty + arch-skip masks, dispatches the
 emit step on dirty entries, and accumulates out-paths into the
 return list for length-correct acc parity with the standalone
-NeLisp Phase 47 path."
+NeLisp AOT path."
   (let ((n (length entries))
         (acc nil)
         (i 0))
@@ -605,7 +605,7 @@ NeLisp Phase 47 path."
          (t
           (message "[compile-elisp-objects-meta] %s -> %s"
                    feature out-path)
-          (nelisp-phase47-compile-to-object sexp out-path
+          (nelisp-aot-compile-to-object sexp out-path
                                             :arch arch :format format)
           (push out-path acc))))
       (setq i (1+ i)))
@@ -614,7 +614,7 @@ NeLisp Phase 47 path."
 (defun compile-elisp-objects-meta--dispatch-loop-native
     (entries outs arch-skip-chunks bitmask-chunks chunk-size arch format)
   "Wave A30 standalone-NeLisp path for the per-entry dispatch loop.
-Collapses the 212-iter elisp loop into a single Phase 47
+Collapses the 212-iter elisp loop into a single AOT
 `nelisp_meta_dispatch_loop' call.  The kernel:
 
   - Reads per-chunk dirty + arch-skip i64 masks via vector-ref-ptr
@@ -674,7 +674,7 @@ out-path slot so the list is fully populated."
           (compile-elisp-objects-meta--dispatch-loop-host
            entries outs arch-skip-chunks bitmask-chunks chunk-size
            arch format)
-        ;; Phase 47 kernel succeeded.  Emit chunks now hold the
+        ;; AOT kernel succeeded.  Emit chunks now hold the
         ;; per-chunk emit-mask Sexp::Int values; iterate ONLY the
         ;; chunk vector (= 4 chunks, not 212 entries) to extract set
         ;; bits and dispatch the emit step.  Build the return acc as
@@ -706,7 +706,7 @@ out-path slot so the list is fully populated."
                          (out-path (aref outs abs-idx)))
                     (message "[compile-elisp-objects-meta] %s -> %s"
                              feature out-path)
-                    (nelisp-phase47-compile-to-object
+                    (nelisp-aot-compile-to-object
                      sexp out-path :arch arch :format format))
                   (setq m (logand m (- m 1)))))
               (setq cc (1+ cc))))
@@ -720,7 +720,7 @@ out-path slot so the list is fully populated."
           ;;
           ;; This collapses the post-dispatch acc-build elisp loop (=
           ;; pre-A30 final N iters, the residual bottleneck after the
-          ;; dispatch decision was moved to Phase 47) into a single
+          ;; dispatch decision was moved to AOT) into a single
           ;; `make-vector' allocation, completing the Wave A30 goal
           ;; of eliminating the 212-iter elisp dispatch loop end-to-
           ;; end on the cached path.
@@ -744,17 +744,17 @@ out-path slot so the list is fully populated."
           acc)))))
 
 (defun compile-elisp-objects-meta--walk (manifest _idx _end out-dir arch format)
-  "Wave A30 manifest walker (chunked + Phase 47 dispatch loop).
-Drives the per-entry up-to-date decision through the Phase 47-
+  "Wave A30 manifest walker (chunked + AOT dispatch loop).
+Drives the per-entry up-to-date decision through the AOT-
 compiled `nelisp_meta_walk' kernel (= ceil(N/64) bridge calls, each
 returning an i64 chunk bitmask of dirty-bit decisions), then
-dispatches the per-entry emit step through the Wave A30 Phase 47-
+dispatches the per-entry emit step through the Wave A30 AOT-
 compiled `nelisp_meta_dispatch_loop' kernel (= 1 bridge call that
 collapses N elisp iters into a single native call).
 
 Wave A30 — the elisp dispatch loop that previously iterated all N
 entries to compute arch-skip / dirty / emit decisions is gone in
-the standalone NeLisp path; the new Phase 47 kernel walks chunks
+the standalone NeLisp path; the new AOT kernel walks chunks
 0..ceil(N/64) computing emit-mask = (dirty AND NOT arch-skip) and
 popcount(NOT arch-skip) in one bridge call.  The elisp wrapper
 then iterates only chunks (= 4 for the 212-entry production
@@ -783,7 +783,7 @@ unchanged."
          (bitmask-chunks
           (compile-elisp-objects-meta--compute-bitmask-chunks srcs outs)))
     (cond
-     ;; Standalone NeLisp + Phase 47 dispatch loop kernel reachable.
+     ;; Standalone NeLisp + AOT dispatch loop kernel reachable.
      ((fboundp 'nl-jit-call-out-2)
       (compile-elisp-objects-meta--dispatch-loop-native
        entries outs arch-skip-chunks bitmask-chunks chunk-size
@@ -819,7 +819,7 @@ exposed via `compile-elisp-objects-meta-emit-all' (Wave A27)."
   "Compile the FULL production manifest via the chunked static-manifest walker.
 Returns the list of absolute paths written.  Wave A27 production
 cutover entry point — drives the entire 212-entry
-`compile-elisp-objects-manifest' through the Phase 47-compiled
+`compile-elisp-objects-manifest' through the AOT-compiled
 `nelisp_meta_walk' kernel (ceil(N/64) = 4 chunks, each ≤ 64
 entries) under standalone NeLisp, or through the byte-identity
 host-Emacs per-entry shim under `emacs --batch'.

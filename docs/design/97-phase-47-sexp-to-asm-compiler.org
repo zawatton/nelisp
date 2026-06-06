@@ -1,15 +1,15 @@
-#+TITLE: Doc 97 — Phase 47 Sexp → asm compiler (production engagement entry)
+#+TITLE: Doc 97 — AOT Sexp → asm compiler (production engagement entry)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-11
 
 * Status
 
 - *State*: DRAFT → SHIPPED on agent-doc-97-impl branch.  Doc 97 is the
-  /production engagement entry point/ for the Phase 47 chain: the
+  /production engagement entry point/ for the AOT chain: the
   first piece of code that consumes a Sexp source program and emits a
   runnable Linux ELF binary with no hand-crafted asm bytes in the
   caller.
-- *Parent*: Doc 85 (= Phase 47 feasibility spike VALIDATED 2026-05-11)
+- *Parent*: Doc 85 (= AOT feasibility spike VALIDATED 2026-05-11)
   / Doc 96 (= chain demonstrator that ships three hand-crafted demos).
 - *Sister docs*:
   - Doc 91 — pure-elisp ELF writer (=lisp/nelisp-elf-write.el=, 1152 LOC)
@@ -19,13 +19,13 @@
     630 LOC)
   - Doc 94 — pure-elisp crt0 (=lisp/nelisp-crt0.el=, 510 LOC)
   - Doc 95 — Sexp layout DSL (=lisp/nelisp-sexp-dsl.el=, 1450 LOC)
-  - Doc 96 — Phase 47 build orchestrator (=lisp/nelisp-phase47-build.el=,
+  - Doc 96 — AOT build orchestrator (=lisp/nelisp-aot-build.el=,
     245 LOC; three hand-crafted demos)
 - *Unlocks*: With Doc 97 live, an end-user can write
   =(seq (write "hello\n") (exit 0))= as input data — not as elisp
   function body — and receive a runnable Linux binary back.  This is
-  the *qualitative* transition from "Phase 47 components exist" to
-  "Phase 47 is a compiler you can use".
+  the *qualitative* transition from "AOT components exist" to
+  "AOT is a compiler you can use".
 - *OOS for THIS doc* (= deferred to Doc 97.b / 97.c / 97.d / 97.e):
   - Function definitions, calls, return values (Doc 97.b).
   - Control flow forms =if= / =while= / =cond= (Doc 97.c).
@@ -43,7 +43,7 @@
 
 ** §0.1 What Doc 97 ships
 
-=lisp/nelisp-phase47-compiler.el= — a /frontend/ that consumes a
+=lisp/nelisp-aot-compiler.el= — a /frontend/ that consumes a
 Sexp program (= an elisp form like
 =(seq (write "hello\n") (exit 0))=, treated as *data* not *code*) and
 emits a static-linked ELF executable via the existing Doc 91-94 chain.
@@ -51,7 +51,7 @@ emits a static-linked ELF executable via the existing Doc 91-94 chain.
 Public entry point:
 
 #+begin_src elisp
-  (nelisp-phase47-compile-sexp
+  (nelisp-aot-compile-sexp
    '(seq (write "hello\n") (exit 0))
    "/tmp/my-binary")
   ;; => "/tmp/my-binary"  (= executable file written, +x mode set)
@@ -63,10 +63,10 @@ entire compile chain lives in elisp.
 
 ** §0.2 Why this matters (= the production engagement gap)
 
-Doc 96 demonstrates the Phase 47 chain works by shipping three demos
+Doc 96 demonstrates the AOT chain works by shipping three demos
 whose =.text= bytes are written *by hand* in elisp (= 37 bytes for
 hello-world, 12 bytes for exit-with-status, 108 bytes for argc-
-printer).  Each demo lives in =nelisp-phase47-build.el= as a fixed-
+printer).  Each demo lives in =nelisp-aot-build.el= as a fixed-
 shape function — the *source language* is "elisp helper that returns
 a unibyte string".
 
@@ -100,10 +100,10 @@ input — a qualitative transition.
   maps symbols to integer constants, not to live registers or stack
   slots).
 - *Does not* register itself in =nelisp-baker= STDLIB_FILES.  Like the
-  rest of the Phase 47 spike chain, Doc 97 is freestanding; baker
-  integration arrives with the Phase 47 production landing slice.
+  rest of the AOT spike chain, Doc 97 is freestanding; baker
+  integration arrives with the AOT production landing slice.
 - *Does not* touch =lisp/nelisp-*.el= existing files.  The compiler is
-  a *new* module (=nelisp-phase47-compiler.el=) that delegates to the
+  a *new* module (=nelisp-aot-compiler.el=) that delegates to the
   existing chain via published entry points (= no internal symbol
   reach-through).
 
@@ -112,7 +112,7 @@ input — a qualitative transition.
 Doc 97 v1 accepts a /minimal/ Sexp source language — just enough to
 exercise the full chain end-to-end on a Linux kernel.  The forms below
 are the complete v1 grammar; anything else signals
-=nelisp-phase47-compiler-error= at parse time.
+=nelisp-aot-compiler-error= at parse time.
 
 ** §1.1 Top-level
 
@@ -189,7 +189,7 @@ to the 64-bit signed range by =mov-imm64='s encoder).
 *** §1.2.7 Symbol references
 
 A bare symbol resolves via the enclosing =let= environment.  Free
-symbols (= not bound) signal =nelisp-phase47-compiler-error=.
+symbols (= not bound) signal =nelisp-aot-compiler-error=.
 
 ** §1.3 Not in v1 (= what the parser rejects)
 
@@ -206,7 +206,7 @@ symbols (= not bound) signal =nelisp-phase47-compiler-error=.
 #+begin_src
    ┌─────────────────────────────────────────────────────────────┐
    │ User                                                         │
-   │   (nelisp-phase47-compile-sexp '(seq (write "hi") (exit 0))  │
+   │   (nelisp-aot-compile-sexp '(seq (write "hi") (exit 0))  │
    │                                "/tmp/binary")                │
    └────────────────────────┬─────────────────────────────────────┘
                             │
@@ -280,7 +280,7 @@ so even a 1000-form program takes < 1ms to size.
 
 The invariant =(eq (length pass-1-bytes) (length pass-2-bytes))= is
 asserted at compile time; any drift signals
-=nelisp-phase47-compiler-error= immediately (= shields against future
+=nelisp-aot-compiler-error= immediately (= shields against future
 emitter additions that violate fixed-length encoding).
 
 ** §2.2 Register allocation = trivial in v1
@@ -322,10 +322,10 @@ and =write(2)= is byte-aligned).
 
 * §3 Public API
 
-** §3.1 =nelisp-phase47-compile-sexp= (entry point)
+** §3.1 =nelisp-aot-compile-sexp= (entry point)
 
 #+begin_src elisp
-  (cl-defun nelisp-phase47-compile-sexp
+  (cl-defun nelisp-aot-compile-sexp
       (sexp file-path &key (arch 'x86_64) (entry-sym "_start"))
     "Compile SEXP to a static-linked ELF executable at FILE-PATH.
 
@@ -336,7 +336,7 @@ and =write(2)= is byte-aligned).
   (= +x bit set) by `nelisp-elf-write-binary`.
 
   ARCH defaults to `x86_64`.  `aarch64` is reserved for Doc 97.b but
-  v1 signals `nelisp-phase47-compiler-error` for any non-x86_64 ARCH.
+  v1 signals `nelisp-aot-compiler-error` for any non-x86_64 ARCH.
 
   ENTRY-SYM defaults to `_start` (= the kernel-recognised entry name).
 
@@ -348,7 +348,7 @@ and =write(2)= is byte-aligned).
 
 ** §3.2 Error condition
 
-A single =define-error= = =nelisp-phase47-compiler-error= covers parse
+A single =define-error= = =nelisp-aot-compiler-error= covers parse
 errors, free-symbol references, out-of-range arithmetic, and emit
 invariants.  The error data is a list whose first element is a tag
 keyword (= e.g. =:unknown-form=, =:free-symbol=, =:status-out-of-
@@ -359,12 +359,12 @@ range=, =:pass-length-mismatch=) followed by debug context.
 These are *not* part of the public API but are documented for §97.b
 implementers who will extend the IR:
 
-- =nelisp-phase47-compiler--parse SEXP &optional ENV= → IR plist
+- =nelisp-aot-compiler--parse SEXP &optional ENV= → IR plist
   - Recursive descent parser.  ENV is the lexical environment used for
     symbol resolution during constant folding.
-- =nelisp-phase47-compiler--ir-strings IR= → list of unique strings
+- =nelisp-aot-compiler--ir-strings IR= → list of unique strings
   - Walks the IR collecting =:str= values from =write= nodes.
-- =nelisp-phase47-compiler--emit IR BUF STR-OFFSETS RODATA-VADDR=
+- =nelisp-aot-compiler--emit IR BUF STR-OFFSETS RODATA-VADDR=
   - Recursive emit pass.  =STR-OFFSETS= maps string → byte offset
     within =.rodata=.  =RODATA-VADDR= is the absolute vaddr of byte 0
     of =.rodata= (or any number during pass-1).
@@ -409,7 +409,7 @@ revisiting the choice is appropriate.
 - Each form individually round-trips Sexp → IR.
 - Arithmetic constant folding produces the expected integer.
 - =let=-bound symbol lookup resolves through nested =let=.
-- Free symbol signals =nelisp-phase47-compiler-error=.
+- Free symbol signals =nelisp-aot-compiler-error=.
 - Unknown form signals.
 
 ** §5.2 Emit-level (= bytes pattern)
@@ -438,7 +438,7 @@ revisiting the choice is appropriate.
   "hi there\n", exit code = 0.
 
 Each e2e test:
-1. Calls =nelisp-phase47-compile-sexp= writing to a unique
+1. Calls =nelisp-aot-compile-sexp= writing to a unique
    =/tmp/nelisp-doc97-…= path.
 2. Shells out =chmod +x= (= already done by =nelisp-elf-write-binary=,
    but ert tests assert it).
@@ -452,7 +452,7 @@ hosts (= macOS / Windows) skip with =ert-skip=.
 
 At least 12 =ert-deftest= cases covering §5.1-§5.3.  The e2e cases
 double as the production engagement smoke gate — if they pass, the
-Phase 47 thesis ("pure-elisp Sexp → executable Linux binary") is
+AOT thesis ("pure-elisp Sexp → executable Linux binary") is
 demonstrably true.
 
 * §6 Limitations + Doc 97 follow-ups
@@ -544,7 +544,7 @@ Encoding additions in =lisp/nelisp-asm-x86_64.el=:
 - =setcc-al BUF CC= (= =0F XX C0= for setl/setg/setle/setge/sete/setne).
 - =movzx-eax-al BUF= (= =0F B6 C0=, zero-extends AL into RAX).
 
-Compiler-side additions in =lisp/nelisp-phase47-compiler.el=:
+Compiler-side additions in =lisp/nelisp-aot-compiler.el=:
 - New IR kinds: =:kind cmp / if / while / cond / logic= (= and/or).
 - Parse-time =--label-counter= ensures every control-flow node gets a
   unique label id; both passes see identical names, preserving the
@@ -590,7 +590,7 @@ This is the gate to retiring =gcc= from the NeLisp build chain.
 
 * §7 References
 
-- Doc 85 — Phase 47 feasibility spike (= chain origin) — SHIPPED
+- Doc 85 — AOT feasibility spike (= chain origin) — SHIPPED
   2026-05-11.
 - Doc 91 — Pure-elisp ELF writer — SHIPPED.
 - Doc 92 — Pure-elisp macro assembler (= x86_64) — SHIPPED.
@@ -600,8 +600,8 @@ This is the gate to retiring =gcc= from the NeLisp build chain.
 - Doc 96 — Build orchestrator (= chain demonstrator) — SHIPPED.
 
 Implementation files:
-- =lisp/nelisp-phase47-compiler.el= — frontend + emit walker.
-- =test/nelisp-phase47-compiler-test.el= — ert unit + e2e smoke.
+- =lisp/nelisp-aot-compiler.el= — frontend + emit walker.
+- =test/nelisp-aot-compiler-test.el= — ert unit + e2e smoke.
 
 Status flow:
 - DRAFT 2026-05-11: Doc written, implementation in flight on

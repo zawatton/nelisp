@@ -1,4 +1,4 @@
-#+TITLE: Doc 95 — Phase 47 component: Sexp layout DSL + compiler lower (elisp)
+#+TITLE: Doc 95 — AOT component: Sexp layout DSL + compiler lower (elisp)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-10
 
@@ -8,7 +8,7 @@
   candidate identified by Doc 85 §3.5 / §X from "concept" to
   "implementation-ready spec".  Read-only doc, no Rust / elisp file
   changes.)
-- *Parent*: Doc 85 (= Phase 47 feasibility spike, =docs/design/85-
+- *Parent*: Doc 85 (= AOT feasibility spike, =docs/design/85-
   phase-47-feasibility-spike.org=) — §3.5 / §5.1 sized this component
   at ~150-300 elisp LOC vs 300 Rust LOC削減 (= 0.5:1 net 投資 ratio
   with partial-asset 流用; Doc 85 §0 TL;DR table row 5 quoted ROI 0.6:1
@@ -18,16 +18,16 @@
   inline, ~300 elisp), Doc 94 (= crt0 + boot loader elisp, ~150
   elisp).  本 doc は Doc 91-94 の出力 channel に Sexp 値を流し込む
   data-format 層を articulate する。
-- *Unlocks*: 本 doc が articulate する Sexp DSL は Phase 47 master
+- *Unlocks*: 本 doc が articulate する Sexp DSL は AOT master
   chain (Doc 91-94) すべての *precondition* — JIT trampoline は現状
   =*const Sexp / *mut Sexp= を Rust 側から alloc されたものとして deref
   する。elisp 側で同 layout を emit できないと Doc 92 macro assembler
-  / Doc 91 ELF writer の出力に Sexp 値を埋められず、Phase 47 完遂は
+  / Doc 91 ELF writer の出力に Sexp 値を埋められず、AOT 完遂は
   blocked。
 - *OOS for THIS doc*:
   - 実装作業 (= elisp / Rust file 編集なし、grep + read + design 構築のみ)
   - Sexp の =impl= 領域 (= ~600 LOC、Doc 85 §2.1.2 で Phase 2 移管予定
-    と articulate 済) は Phase 47 対象外、本 doc も対象外
+    と articulate 済) は AOT 対象外、本 doc も対象外
   - x86_64 以外の arch (= aarch64 layout は §3.6 で軽く触れるが詳細
     は Doc 92 assembler 候補に委譲)
   - 既存 Sexp 型を「elisp で作り直す」のではなく「elisp が Sexp を
@@ -55,7 +55,7 @@ internal handle も「pointer = u64 = 8 byte」が canonical bit pattern
 なので elisp の =make-bool-vector / make-string / make-vector= で
 byte-buffer を組めば代替可能。
 
-** §0.3 なぜ Phase 47 が本 DSL を要するか
+** §0.3 なぜ AOT が本 DSL を要するか
 
 JIT trampoline (= =build-tool/src/jit/=) は現状以下のように呼び出される:
 
@@ -68,7 +68,7 @@ caller (Rust)         JIT trampoline (asm)        callee (Rust)
     |<---- *const Sexp --------|<---- *const Sexp --------|
 #+end_src
 
-すべての Sexp 値が「Rust 側で alloc された box」前提。Phase 47 で
+すべての Sexp 値が「Rust 側で alloc された box」前提。AOT で
 elisp が trampoline を「emit する側」になる時、elisp が Sexp 値を
 alloc する経路がないと caller arm が組めない。本 doc の DSL がその
 経路を提供する。
@@ -85,7 +85,7 @@ optimistic estimate.  本 doc が grep で検証した結果 (§1) =実
 §0 TL;DR table の row 5 の "150 elisp + -300 Rust = 0.5:1" は変わらず、
 本 doc で見積もり精度を上げただけ。
 
-** §0.5 Phase 47 chain 上の位置
+** §0.5 AOT chain 上の位置
 
 #+begin_src text
 [Phase 1-3 完遂]
@@ -105,7 +105,7 @@ optimistic estimate.  本 doc が grep で検証した結果 (§1) =実
               [Doc 94 crt0 elisp]
                        |
                        v
-              [Phase 47 完遂 = 0 Rust]
+              [AOT 完遂 = 0 Rust]
 #+end_src
 
 * §1 Current Rust =Sexp= definition inventory
@@ -114,7 +114,7 @@ optimistic estimate.  本 doc が grep で検証した結果 (§1) =実
 
 - Path: =build-tool/src/eval/sexp.rs= 979 LOC (verified 2026-05-10
   via =wc -l=)
-- Phase 47 削減 target は型定義部分のみ:
+- AOT 削減 target は型定義部分のみ:
   - =enum Sexp= 本体 (= line 56-199 = 144 LOC)
   - =SEXP_TAG_*= constants (= line 217-229 = 13 LOC)
   - =variant_tag= + =SEXP_PAYLOAD_OFFSET= + ABI direct-access helpers
@@ -123,7 +123,7 @@ optimistic estimate.  本 doc が grep で検証した結果 (§1) =実
   - layout assert =const _: ()= block (= line 352-362 = 11 LOC)
   - 計 *~305 LOC*  (= Doc 85 §0 TL;DR table row 5 の "300 Rust 削減"
     の根拠)
-- Phase 47 対象外 (= Phase 2 / 別 doc 移管):
+- AOT 対象外 (= Phase 2 / 別 doc 移管):
   - =impl Sexp= の constructor / accessor (line 396-523 = ~127 LOC、=
     50 helper fn のうち 14 個)
   - printer (= =fmt_sexp= / =write_sexp= / =write_reader_macro= /
@@ -238,15 +238,15 @@ box variant 7 個の各 box の Rust LOC (Phase A.4.x で layout pinned):
 | *合計*                                        | *2,880* | |
 
 これらは「Sexp 型定義 ~300」とは別 = box の中身 (= alloc /
-refcount / set-car / set-cdr の semantics).  Phase 47 = box 内身も
+refcount / set-car / set-cdr の semantics).  AOT = box 内身も
 elisp 側で持つ場合は更に -2,880 LOC 削減可能だが、本 doc scope は
 *Sexp の layout DSL のみ* (= =NonNull<NlConsBox>= の 8-byte pointer
 を elisp が emit できれば良く、=NlConsBox= 自体の生成 / refcount
-mgmt は Phase 47 の別 component に委譲).
+mgmt は AOT の別 component に委譲).
 
 注: Sexp DSL は box の "中身" を作らず、box の "pointer" を 8-byte
 slot として emit するに留まる.  実体 box の生成は (a) Rust 側に残置
-継続 / (b) Phase 47 別 doc で elisp 化 のいずれか — 本 doc は (a)
+継続 / (b) AOT 別 doc で elisp 化 のいずれか — 本 doc は (a)
 前提.
 
 * §2 elisp Sexp DSL 設計 (=nelisp-sexp-dsl.el=)
@@ -288,7 +288,7 @@ box variant の場 payload は **=(:box-ptr POINTER-AS-INT :box-kind
 KIND :inner INNER-VEC)= の plist** とする.  =POINTER-AS-INT= は ELF
 emit 時の relocation target で、生成段階では placeholder (= 0)、linker
 が patch (Doc 93).  =:inner= は box 中身を elisp 値として hold (= box
-allocation を Rust に push する場合の hint、Phase 47 で実体 box も
+allocation を Rust に push する場合の hint、AOT で実体 box も
 elisp 化する path への forward-compat).
 
 ** §2.3 constructors 一覧 (= 13 variant ctor)
@@ -331,7 +331,7 @@ variant の =:inner= から =car/cdr=、=-aref/-aset= は vector variant
 
 mutator (=-aset/-cell-set-value=) は **placeholder edit** = =:box-ptr=
 0 の段階での mutation は内部 list を編集するだけ、実 box alloc
-後 (= linker patch 後) の mutation は別 path (= Phase 47 内で box
+後 (= linker patch 後) の mutation は別 path (= AOT 内で box
 ownership は Rust 側に残るため、本 DSL の mutator は bake time にのみ
 有効).
 
@@ -414,11 +414,11 @@ unit test =sexp_layout_alignment_and_size_sane= (sexp.rs line 844)
   本 DSL は **=Symbol/Str= variant の serialize は heap pointer ではなく
   別途 raw bytes を rodata section に emit する** path を採る (= §3.5).
 
-** §3.3 box variant の pointer 値 (= Phase 47 relocation target)
+** §3.3 box variant の pointer 値 (= AOT relocation target)
 
 box variant 7 個 (MutStr/Cons/Vector/CharTable/BoolVector/Cell/Record)
 は payload @ offset 8 が =NonNull<NlXxx>= = u64 pointer.  この 8-byte
-slot が Phase 47 で linker (Doc 93) が patch する target:
+slot が AOT で linker (Doc 93) が patch する target:
 
 #+begin_src text
 generation time              link time              run time
@@ -441,7 +441,7 @@ pattern を emit するのは not safe.  解決 choice: (a) =NonNull<u8>=
 (rodata pointer) + =u64 len= の 16 byte 新 layout に migrate、(b)
 MutStr と同じく =NonNull<NlStr>= refcounted box 統一案 (= layout
 breaking change).  本 doc 暫定 assumption: *(b) box variant 統一* で
-全 13 variant payload を 16 byte に揃える.  Phase 47 master spec 側で
+全 13 variant payload を 16 byte に揃える.  AOT master spec 側で
 spec freeze 時 final 選択.
 
 ** §3.5 sanity table (= round-trip property per variant)
@@ -463,7 +463,7 @@ spec freeze 時 final 選択.
 
 x86_64 LE assumption.  aarch64 も LE (Linux+macOS は default LE)
 なので =Int= / =Float= / pointer の byte order は同じ.  big-endian
-(= s390x, ppc64be) は scope 外 — Phase 47 master が x86_64 + aarch64
+(= s390x, ppc64be) は scope 外 — AOT master が x86_64 + aarch64
 LE only と articulate 済 (Doc 85 §7.1 multi-arch contingency).
 
 * §4 mapping to JIT trampoline ABI
@@ -483,7 +483,7 @@ callee (Rust) receives Sexp                     ← *const Sexp
 trampoline は Sexp の **layout** (tag at 0, payload at 8) のみ
 信頼、ownership / lifetime は Rust 側に任せる (= raw pointer).
 
-** §4.2 Phase 47 (elisp emits, Rust JIT trampoline reads)
+** §4.2 AOT (elisp emits, Rust JIT trampoline reads)
 
 elisp DSL の生成物が JIT trampoline に流れる経路:
 
@@ -533,7 +533,7 @@ relocation で済み新 mechanism 不要.
 | cold path   | elisp DSL ctor → tagged vec → write-bytes → buffer    | elisp byte manipulation = slow  |
 | hot path    | JIT trampoline reads buffer's raw bytes via =mov=     | as fast as native Rust deref   |
 
-「cold path = elisp 経由」が Phase 47 perf concern だが、これは bake
+「cold path = elisp 経由」が AOT perf concern だが、これは bake
 time にのみ走り、run time の hot path は trampoline から見える raw
 bytes = native speed.
 
@@ -592,7 +592,7 @@ procedure:
 2. elisp toolchain (= 本 DSL + Doc 91-94) で同 stdlib を bake
 3. =cmp -l= で byte 差分なし
 
-これが green になれば Phase 47 全 chain が work している証拠 = Phase
+これが green になれば AOT 全 chain が work している証拠 = Phase
 47 ship gate criterion.
 
 ** §5.5 test LOC accounting
@@ -655,7 +655,7 @@ ratio: *1.35 elisp 投資 per 1 Rust 削減* = Doc 85 §0 TL;DR table row 5
 の "0.5:1" よりやや劣る (= test を含めたため).  test 抜きの core core
 比較なら 401 / 444 = *0.90:1* (= Doc 85 articulated 値とほぼ一致).
 
-** §6.4 Phase 47 unblocking value
+** §6.4 AOT unblocking value
 
 LOC 比だけ見ると魅力薄だが、実 value は **chain unlock**:
 
@@ -667,7 +667,7 @@ LOC 比だけ見ると魅力薄だが、実 value は **chain unlock**:
 - Doc 94 crt0 elisp は image load 時に Sexp 値を deref するため layout
   必須
 
-= 本 DSL なしでは Doc 91-94 のいずれも完成不可。Phase 47 の **gate
+= 本 DSL なしでは Doc 91-94 のいずれも完成不可。AOT の **gate
 component**.
 
 ** §6.5 partial asset 流用
@@ -708,7 +708,7 @@ issue:
 - =cl-loop= unroll
 - 並列化は elisp single-thread のため不可
 
-判断: bake time +10s は許容、Phase 47 acceptance に影響しない.  hot
+判断: bake time +10s は許容、AOT acceptance に影響しない.  hot
 path (= JIT) は影響なし (§4.5).
 
 ** §7.2 Rust =Sexp= layout drift
@@ -731,14 +731,14 @@ risk: =rustc= 版で =#[repr(C, u8)]= の挙動が変わる:
 
 ** §7.3 bootstrap chicken-and-egg
 
-問題: 本 DSL は Phase 47 で稼働するが、**本 DSL を生成する elisp
+問題: 本 DSL は AOT で稼働するが、**本 DSL を生成する elisp
 code 自体** は既存 Rust nelisp で実行される.
 
 = 既存 Rust nelisp が elisp code を実行 → 本 DSL (= elisp 値 of
 Sexp) を bake → output bytes を Doc 91 writer に渡す → ELF binary 生成
 → 新 elisp-only nelisp が boot.
 
-Phase 47 master spec 側 (= Doc 85 §7.4 articulated と整合) で
+AOT master spec 側 (= Doc 85 §7.4 articulated と整合) で
 chicken-and-egg は handled = 既存 Rust nelisp は **archaeology** とし
 て残し、新 binary を生成するための bootstrap stage 0 として永久 pin.
 
@@ -755,21 +755,21 @@ choice:
 2. *raw rodata pointer + length* = =(u64 ptr, u64 len)= 16 byte
 3. *current 維持* = String layout を assume、rustc 版 pin
 
-本 doc 暫定 = (1).  Phase 47 master (= Doc 85 update) で確定要.
+本 doc 暫定 = (1).  AOT master (= Doc 85 update) で確定要.
 
-判断: medium risk.  Phase 47 master 側で choice すれば本 DSL は
+判断: medium risk.  AOT master 側で choice すれば本 DSL は
 追従するだけ.
 
 ** §7.5 box 実体 alloc の locus
 
 §1.4 で articulated = 本 DSL は box の "pointer" を emit するに
-留まり、box 実体は Rust 側に残置.  Phase 47 完遂後も =NlConsBox= /
+留まり、box 実体は Rust 側に残置.  AOT 完遂後も =NlConsBox= /
 =NlVector= 等の box impl Rust = ~2,880 LOC が残る.
 
-= "Phase 47 完遂 = 0 Rust" の宣伝は **enum Sexp の 305 LOC のみ
+= "AOT 完遂 = 0 Rust" の宣伝は **enum Sexp の 305 LOC のみ
 削減**、box 実体は別 phase で elisp 化要 (= future Phase 48? 別 doc).
 
-判断: Phase 47 scope は本 doc 範囲で正しく、Doc 85 §0 TL;DR table の
+判断: AOT scope は本 doc 範囲で正しく、Doc 85 §0 TL;DR table の
 "300 Rust 削減 / Sexp DSL row" は本 doc で正確に articulated.  box
 実体 elisp 化は scope 外と明示する.
 
@@ -799,7 +799,7 @@ vs typical 10 LOC).  §2.6 LOC 計算済.
 
 ** §7.8 multi-arch (aarch64) layout
 
-Doc 85 §7.1 multi-arch contingency = "Linux x86_64 のみで Phase 47
+Doc 85 §7.1 multi-arch contingency = "Linux x86_64 のみで AOT
 完遂、他 platform は後続".
 
 aarch64 への extend:
@@ -820,18 +820,18 @@ aarch64 への extend:
 |-----------------------------------+----------+---------------------------------------------|
 | §7.1 elisp byte perf              | low      | bake time +10s 許容                         |
 | §7.2 Rust layout drift            | low      | CI snapshot + MSRV                          |
-| §7.3 bootstrap chicken-and-egg    | low      | Phase 47 master 共通 issue                 |
-| §7.4 Symbol/Str layout choice     | medium   | Phase 47 master 側で選択                    |
-| §7.5 box impl 残置 scope          | medium   | Phase 47 scope 明示、Phase 48? に push     |
+| §7.3 bootstrap chicken-and-egg    | low      | AOT master 共通 issue                 |
+| §7.4 Symbol/Str layout choice     | medium   | AOT master 側で選択                    |
+| §7.5 box impl 残置 scope          | medium   | AOT scope 明示、Phase 48? に push     |
 | §7.6 i64 vs elisp fixnum          | low      | bignum support assume                       |
 | §7.7 char-table recurse           | low      | code already articulated                    |
 | §7.8 multi-arch                   | n/a      | DSL arch-independent                        |
 
 *top 3 risks for implementer*:
 
-1. *§7.4 Symbol/Str layout choice* = Phase 47 master と整合させて
+1. *§7.4 Symbol/Str layout choice* = AOT master と整合させて
    選ぶ必要、本 DSL の serializer 分岐数に直結
-2. *§7.5 box impl scope* = Phase 47 完遂後も Rust box impl ~2,880 LOC
+2. *§7.5 box impl scope* = AOT 完遂後も Rust box impl ~2,880 LOC
    残置と articulated、user 期待値 management 要
 3. *§7.2 Rust layout drift* = =cargo expand= snapshot を CI に組み
    込まないと rustc upgrade で silent breakage 危険
@@ -916,7 +916,7 @@ acceptance:
 *15 work-day = 3 calendar week* (= 1 dev、weekend 抜き).  並列性なし
 (= 各 stage 直前 stage に依存).  Doc 91 / Doc 92 / Doc 93 / Doc 94 と
 の chain では §95.d が Doc 91 ELF writer を参照、§95.e が Doc 91-94
-の足回りを参照 = Phase 47 chain の最終段近く.
+の足回りを参照 = AOT chain の最終段近く.
 
 * §9 References
 
@@ -963,7 +963,7 @@ acceptance:
   - line 396-523: =impl Sexp= constructors / accessors (= 14 method)
 - =build-tool/src/eval/{nlconsbox,nlcell,nlstr,nlvector,nlboolvector,
   nlrecord,nlchartable}.rs= = box 実体 (= 2,880 LOC、本 DSL scope 外)
-- =build-tool/src/eval/ffi.rs= 820 LOC = Phase 47 ffi.rs 削減 (Doc 93)
+- =build-tool/src/eval/ffi.rs= 820 LOC = AOT ffi.rs 削減 (Doc 93)
 - =build-tool/src/jit/= = JIT trampoline (= Doc 81 anchor)
 
 ** §9.3 関連 memory
@@ -974,7 +974,7 @@ acceptance:
   本 DSL の elisp byte manipulation も elisp interpreter と異なり
   native cc target)
 - =feedback_nelisp_announcement_standalone_gate= = public announce
-  gate (= Phase 47 が完遂しないと standalone 化未完)
+  gate (= AOT が完遂しないと standalone 化未完)
 
 ** §9.4 external prior art
 
@@ -987,7 +987,7 @@ acceptance:
 - *V8 / SpiderMonkey* — =HeapObject= layout C++ fixed、JS 自身は
   deserialize しない (= 本 DSL は逆方向).
 
-** §9.5 Phase 47 chain 上の dispatch order
+** §9.5 AOT chain 上の dispatch order
 
 並列性: §95.a-c は Doc 91 / 92 と完全並列開発可能 (= layout +
 in-elisp behavior のみ).  §95.d 以降は Doc 91 ELF writer の skeleton
@@ -1184,7 +1184,7 @@ Deferred to §95.e (= bake-images integration):
 
 Cross-platform layout assumption (= x86_64 + aarch64 LE only) is
 documented in §3.6 and Doc 85 §7.1.  Big-endian arches (s390x,
-ppc64be) remain out of scope per Phase 47 master.
+ppc64be) remain out of scope per AOT master.
 
 Rust layout assumption verification: the =#[repr(C, u8)]= on enum
 =Sexp= (sexp.rs line 57) places the discriminant byte at offset 0

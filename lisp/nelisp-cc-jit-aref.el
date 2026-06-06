@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.D — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.D — AOT-compiled replacement for the Rust
 ;; `nl_jit_access_aref' trampoline in `build-tool/src/jit/access.rs'.
 ;; Same `(*const Sexp, i64, *mut Sexp) -> i64' contract:
 ;;
@@ -22,7 +22,7 @@
 ;;   3. BoolVector arm: delegate to the narrow Rust extern
 ;;      `nl_jit_access_aref_bool_vector_inner' which performs the
 ;;      single-bit read + `Sexp::T' / `Sexp::Nil' tag-byte write.
-;;      Phase 47 has no bool-vector grammar primitives yet (see
+;;      AOT has no bool-vector grammar primitives yet (see
 ;;      Doc 122 §122.B `bool-vector-{len,bit,set-bit}' blocker
 ;;      cluster), so the extern is the minimum viable swap path.
 ;;   4. Anything else: ERR → strategy.el's `condition-case'
@@ -46,7 +46,7 @@
          (if (= (sexp-tag arg) 10)
              (extern-call nl_jit_access_aref_bool_vector_inner arg idx out)
            1))))
-  "Phase 47 source for the §120.D `nl_jit_access_aref' swap.
+  "AOT source for the §120.D `nl_jit_access_aref' swap.
 
 Three guard arms: (1) `idx >= 0' lower bound, (2) Vector tag-byte
 check + inline `vector-len' bounds check + refcount-aware

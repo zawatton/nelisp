@@ -148,7 +148,7 @@ that differs between the two encodings).")
 (defvar nelisp-cc-runtime--aot-custom-table (make-hash-table :test 'eq)
   "NAME symbol -> AOT defcustom metadata descriptor.
 Doc 129.3J uses this as the runtime-side customization metadata store
-for Phase 47 AOT modules.  It intentionally stores metadata only, not
+for AOT AOT modules.  It intentionally stores metadata only, not
 native call-boundary context pointers.")
 
 (defvar nelisp-cc-runtime--aot-handler-stack nil
@@ -1509,7 +1509,7 @@ bridge-only via the `nl-jit-call-format-float' primitive in
 (defun nelisp-cc-runtime-aot-root-vector-from-slots (frame-values root-slots)
   "Build an AOT root vector from FRAME-VALUES at ROOT-SLOTS.
 FRAME-VALUES is the boundary-visible frame vector for a compiled
-function invocation.  ROOT-SLOTS is the `:slots' list from a Phase 47
+function invocation.  ROOT-SLOTS is the `:slots' list from a AOT
 GC root descriptor.  The returned vector is suitable for
 `nelisp-cc-runtime-call-with-aot-roots'."
   (unless (vectorp frame-values)
@@ -1709,7 +1709,7 @@ MIRROR, FRAMES, ROOTS, OUT, and SCRATCH mirror the native ABI:
   nelisp_aot_push_roots(mirror, frames, roots, out, scratch)
 
 ROOTS must be a vector containing the live Sexp roots for one native
-Phase 47 frame.  The bridge pushes ROOTS onto the active AOT root stack,
+AOT frame.  The bridge pushes ROOTS onto the active AOT root stack,
 writes ROOTS to OUT[0], and returns OUT.
 
 DISPATCHER, when non-nil, is called as `(DISPATCHER ROOTS CONTEXT)'."
@@ -2171,7 +2171,7 @@ MIRROR, FRAMES, FN, ARG0, ARG1, and OUT mirror the native ABI order:
   nelisp_aot_funcall2(mirror, frames, fn, arg0, arg1, out)
 
 This fixed-arity bridge deliberately omits SCRATCH so it stays inside
-the current six-GP-argument Phase 47 extern-call budget.  OUT is an
+the current six-GP-argument AOT extern-call budget.  OUT is an
 Emacs-side caller-owned vector with at least one slot; the dispatch
 result is written to `(aref OUT 0)' and OUT is returned.
 
@@ -3104,7 +3104,7 @@ writes it to OUT[0], and returns OUT."
      :fixed-argc 5 :rest t
      :args (mirror frames argc out scratch args...)))
   "Doc 129 AOT extern C ABI descriptors known to the elisp runtime.
-Each descriptor maps the symbol emitted by Phase 47 object output to
+Each descriptor maps the symbol emitted by AOT object output to
 the Emacs-side bridge function that simulates the same boundary.  The
 table is metadata only: real address resolution still goes through
 `nelisp-cc-runtime-resolve-symbol' and the standalone runtime's dlsym
@@ -3343,13 +3343,13 @@ simulator inspection; standalone/native loader callers leave it nil."
 
 (defun nelisp-cc-runtime-aot-module-init-plan
     (init-helpers &optional custom-metadata root-descriptors closure-descriptors)
-  "Build the Doc 99 module-init plan for a Phase 47 AOT module.
+  "Build the Doc 99 module-init plan for a AOT AOT module.
 INIT-HELPERS is the ordered list from
-`nelisp-phase47-compiler--init-helper-descriptors'.  CUSTOM-METADATA
-is the list from `nelisp-phase47-compiler--custom-metadata-descriptors'.
+`nelisp-aot-compiler--init-helper-descriptors'.  CUSTOM-METADATA
+is the list from `nelisp-aot-compiler--custom-metadata-descriptors'.
 ROOT-DESCRIPTORS is the list from
-`nelisp-phase47-compiler--gc-root-descriptors'.  CLOSURE-DESCRIPTORS
-is the list from `nelisp-phase47-compiler--closure-descriptors'.
+`nelisp-aot-compiler--gc-root-descriptors'.  CLOSURE-DESCRIPTORS
+is the list from `nelisp-aot-compiler--closure-descriptors'.
 
 The returned plist is pure metadata; it does not call native code.
 Doc 99's loader/dispatcher consumes `:helper-order' to run generated

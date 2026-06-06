@@ -33,7 +33,7 @@
   "Absolute path to the nelisp-sys src/ directory, resolved at load time.")
 
 (defconst nelisp-sys-extraction-test--private-prefixes
-  '("nelisp-phase47-"
+  '("nelisp-aot-"
     "nelisp-asm-"
     "nelisp-elf-"
     "nelisp-mach-o-"

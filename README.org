@@ -25,7 +25,7 @@ and eventually self-host.  The OS-facing pieces are moving the same
 way: standalone file I/O, stdout/stderr, process exit, raw memory,
 =mmap=-backed allocation, atomics, =clone(2)=, =fork(2)=, and the
 syscall surface used by the standalone reader are expressed from Elisp
-via Phase-47 codegen and =syscall-direct=.
+via AOT codegen and =syscall-direct=.
 
 v2.0 (2026-05-22) ships:
 - *Pure-Elisp runtime implementation* — evaluator, reader, special
@@ -38,7 +38,7 @@ v2.0 (2026-05-22) ships:
   AArch64 AAPCS).
 
 2026-06 adds a *standalone self-hosting binary*:
-- *Self-host + parallel build* — a pure-elisp Phase-47-AOT binary
+- *Self-host + parallel build* — a pure-elisp AOT-AOT binary
   (=target/nelisp=, pure Elisp) loads its own
   compiler and compiles Elisp source → native ELF *with no Emacs in
   the loop*, including recursion (=(fact 5)= → exit 120),
@@ -69,7 +69,7 @@ driver, and development REPL in Lisp source so the system can inspect
 and modify itself while it is running.
 
 Current source is centered in =lisp/=, =src/=, =packages/=, and
-=scripts/=, with the Phase-47 compiler emitting native object code from
+=scripts/=, with the AOT compiler emitting native object code from
 Elisp forms.
 
 ** Elisp — the language runtime (v1.0 snapshot: 45 files, 54,511 LoC)
@@ -114,7 +114,7 @@ targets are also pure Elisp.
 
 * Standalone self-host & parallel build (2026-06)
 
-The pure-Elisp Phase-47 AOT toolchain now produces a *standalone
+The pure-Elisp AOT AOT toolchain now produces a *standalone
 interpreter binary* — =target/nelisp=, built by =make
 standalone-reader= — that runs with *no Emacs in the loop
 at all*: it starts a REPL when launched with no arguments, loads an
@@ -137,7 +137,7 @@ stdout/stderr, exiting, allocating memory, spawning OS threads, and
 forking compile workers all flow through Elisp-generated native code
 and raw syscall forms.
 
-Fed its own compiler toolchain as source (=nelisp-phase47-compiler= +
+Fed its own compiler toolchain as source (=nelisp-aot-compiler= +
 =nelisp-asm-x86_64= + =nelisp-elf-write= + =nelisp-static-linker=,
 ~20k lines of Elisp), this binary *self-hosts*: it compiles Elisp
 source to a native x86_64 ELF executable, with no Emacs anywhere.  The
@@ -158,7 +158,7 @@ Emacs and pure elisp only.
 ** REPL-driven runtime development
 
 The standalone reader is also the development REPL for NeLisp itself.
-The REPL runs in the Phase-47 standalone interpreter and evaluates forms
+The REPL runs in the AOT standalone interpreter and evaluates forms
 through the same reader, evaluator, builtin dispatcher, environment, and
 GC path used by normal file execution.
 
@@ -201,7 +201,7 @@ source-string evaluation mutates that same environment.
 
 ** Two concurrency paths, exposed to interpreted code
 
-Both are built only from existing Phase-47 grammar ops
+Both are built only from existing AOT grammar ops
 (=syscall-direct= / =atomic-fetch-add= / raw memory access).
 
 - =(thread-spawn 'FORM)= / =(thread-join ADDR N)= — true multi-threaded
@@ -227,7 +227,7 @@ sits above an OS bridge; the OS bridge itself is now part of the Elisp
 runtime surface for the standalone path.
 
 This is the third rung of the self-host ladder, end to end and with no
-Emacs: =text → (the standalone interpreter running the Phase-47
+Emacs: =text → (the standalone interpreter running the AOT
 compiler) → native ELF=, scaled to *concurrent multi-unit compilation*.
 
 * Pure-Elisp Substrate (v2.0, 2026-05-22)
@@ -238,9 +238,9 @@ parsed, evaluated, compiled, linked, and used to drive OS interaction
 through Elisp-generated native code.
 
 ** Shipped substrate
-- *Phase 47 self-emission* (Doc 85 / 91–97):  ~7,550+ LoC of Elisp for
+- *AOT self-emission* (Doc 85 / 91–97):  ~7,550+ LoC of Elisp for
   the x86_64 + arm64 assemblers, ELF + Mach-O + PE/COFF writers,
-  static linker, =crt0=, the Sexp DSL, and the Phase 47 compiler.
+  static linker, =crt0=, the Sexp DSL, and the AOT compiler.
   600+ ERT.  =(fact 5)= compiles end-to-end to a native =.o=, links,
   and runs.
 - *Cross-platform native emit* (May 2026 — see =Cross-Platform Support=
@@ -249,7 +249,7 @@ through Elisp-generated native code.
   collector at =lisp/nelisp-stdlib-gc.el= ( *806 LoC* ).
 - All special forms, builtins, env / mirror / frame ops, NlBox
   Clone/Drop, reader (lexer + parser), JIT trampolines, syscall
-  handlers — now live in elisp via Phase 47 .o.
+  handlers — now live in elisp via AOT .o.
 
 ** Test gate
 - ERT coverage for elisp .o emission: 600+ tests including
@@ -276,7 +276,7 @@ NeLisp v2.0 builds and runs across 5 OS × architecture targets, with
 | windows/x86_64 | =nelisp-pe-write.el= | =nelisp-asm-x86_64.el= | Microsoft x64 | ✓ |
 
 The PE/COFF writer (=nelisp-pe-write.el=, 765 LoC) and the
-Windows-specific codegen path (Phase 47 compiler =--abi 'win64= mode
+Windows-specific codegen path (AOT compiler =--abi 'win64= mode
 with shadow space allocation + RCX/RDX/R8/R9 arg-reg remapping +
 RBP/RBX/RDI/RSI/R12-R15 callee-save) are pure elisp.
 
@@ -292,7 +292,7 @@ emit across 5 OS×arch targets.
 2. *Runtime development REPL* — =target/nelisp=
    keeps a live evaluator environment for immediate redefinition.
 3. *Standalone self-host + parallel build* (2026-06) — the pure-elisp
-   Phase-47 AOT toolchain loads its own compiler and compiles Elisp
+   AOT AOT toolchain loads its own compiler and compiles Elisp
    source → native ELF *with no Emacs in the loop*: recursion
    (=(fact 5)= → exit 120), multi-threaded native programs (=clone(2)=
    + atomics), and *N units compiled concurrently* via =fork(2)= workers.
@@ -305,7 +305,7 @@ Two paths.
 *** Prerequisites by platform
 
 The standalone-reader build is driven by host Emacs and the pure-Elisp
-Phase-47 toolchain.  Install a normal native build environment for your
+AOT toolchain.  Install a normal native build environment for your
 platform, then run =make standalone-reader=.
 
 Tier guarantees (v2.0):
@@ -488,7 +488,7 @@ or =bin/nelisp.exe=.
   |   reader / evaluator / macro / compiler / loader |
   |   REPL / persistent eval / runtime-image replay  |
   +--------------------------------------------------+
-  | Phase-47 Elisp substrate                         |
+  | AOT Elisp substrate                         |
   |   allocator / GC / builtins / syscall-direct     |
   |   asm encoders / object writers / static linker  |
   +--------------------------------------------------+
@@ -557,10 +557,10 @@ Said plainly so expectations are calibrated:
 - *Standalone self-host gates* (2026-06, all green, zero-Emacs):
   =standalone-{reader,eval,reader-prelude,selfhost,selfhost-mt,parallel-compile}-test=
   — the standalone =target/nelisp= binary self-hosts
-  the Phase-47 compiler (recursion → native ELF → 120) and compiles N
+  the AOT compiler (recursion → native ELF → 120) and compiles N
   units concurrently via =fork(2)= workers (4-/5-way verified 100%).
 - The previous 2026-04-29 baseline was 2452 / 2409 / 0 unexpected.  The
-  ~1.5× growth in test count reflects the new sub-systems: Phase 47
+  ~1.5× growth in test count reflects the new sub-systems: AOT
   self-emission (600+ ERT), Doc 79 v7 GC, Doc 102 mirror, Doc 100/110
   ABI / arithmetic, Doc 81 cons cluster, Doc 86/87 Tier 1+2 builtins.
 - Cross-platform standalone gates (Linux x86_64 / macOS M1 arm64 /
@@ -580,11 +580,11 @@ Said plainly so expectations are calibrated:
 | 76     | Phase 7 elisp-side OS surface migration          | IN PROGRESS          |
 | 79 v7  | Pure-elisp GC (Bacon-Rajan cycle collector)      | Phase C Stage 5.3 SHIPPED |
 | 81     | nelisp-cc primitive trampoline extension         | Stage 81.2 SHIPPED   |
-| 85     | Phase 47 feasibility spike                       | VALIDATED            |
-| 91-97  | Phase 47 ELF writer / asm / linker / DSL / build | SHIPPED              |
+| 85     | AOT feasibility spike                       | VALIDATED            |
+| 91-97  | AOT ELF writer / asm / linker / DSL / build | SHIPPED              |
 | 100    | Runtime artifact contract                        | §B/C SHIPPED         |
 | 102    | Environment model migration to Elisp             | Phase 8 Sprint A SHIPPED, Sprint B/C deferred |
-| 110    | Phase 47 f64 ABI + float/math migration to Elisp | SHIPPED              |
+| 110    | AOT f64 ABI + float/math migration to Elisp | SHIPPED              |
 
 * Earlier status (Phase 0 — 2026-04-22) — preserved for reference
 

@@ -53,7 +53,7 @@
       (nelisp_mirror_set_function_or_insert_dispatch
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        mirror-ptr sym-ptr scratch-vec-ptr 0 0)))
-  "Phase 47 source for Doc 119 §119.A `mirror_set_function_or_insert'.
+  "AOT source for Doc 119 §119.A `mirror_set_function_or_insert'.
 
 Slot-1 (function) variant of `mirror_set_value_or_insert'.")
 

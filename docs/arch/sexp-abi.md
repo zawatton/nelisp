@@ -4,7 +4,7 @@
 **Scope**: byte-precise layout of `Sexp` and its `Sexp::Int` (Doc 100), `Sexp::Cons` / `Sexp::Symbol` / `Sexp::Str` (Doc 101), `NlRecord` / `NlVector` / `NlCell` boxed layouts (Doc 111) — sufficient for Doc 100 §100.C plus Doc 101 §101.B-D and Doc 111 §111.B-E swaps.
 
 This document is the **single source of truth** for the byte layout of
-`Sexp` values that Phase 47-compiled elisp `.o` objects read or write
+`Sexp` values that AOT-compiled elisp `.o` objects read or write
 directly.  Three artifacts encode the same numbers:
 
 1. This file — human-readable spec.
@@ -108,9 +108,9 @@ leaving them uninitialized is sound.
 
 ## 5. Direct-access instruction templates
 
-For x86_64 Linux (SysV AMD64), the Phase 47 compiler emits the
+For x86_64 Linux (SysV AMD64), the AOT compiler emits the
 following instruction templates when handling the §100.B grammar
-forms.  Phase 47's macro-asm layer encodes these into `.text`
+forms.  AOT's macro-asm layer encodes these into `.text`
 bytes; the linker resolves no relocations because all addressing
 is register-indirect with an immediate `imm8` displacement.
 
@@ -176,14 +176,14 @@ value:    07 <pad>  <NonNull<NlConsBox> ptr>      <unused>
           tag = 7   8-byte pointer to NlConsBox
 ```
 
-Phase 47 emit reads / writes through this layout:
+AOT emit reads / writes through this layout:
 
 - Read box pointer: `mov rax, qword ptr [rdi + 8]` (= 4 bytes encoded).
 - Read car (= 32-byte Sexp): two 16-byte SIMD loads from `[box + 0]` + `[box + 16]`, store into caller slot.
 - Read cdr: two 16-byte SIMD loads from `[box + 32]` + `[box + 48]`.
 - Read raw box pointer for next-cell chain (= `cons-cdr-raw`): tag-check `[box + 32]` == `SEXP_TAG_CONS`, then `mov rax, [box + 32 + 8]` for the next NlConsBox pointer (or NULL if not Cons).
 
-Box allocation requires `nl_alloc_consbox` Rust helper (Doc 101 §101.D) — Phase 47 emits `call nl_alloc_consbox` via the §100.A `extern-call` grammar.
+Box allocation requires `nl_alloc_consbox` Rust helper (Doc 101 §101.D) — AOT emits `call nl_alloc_consbox` via the §100.A `extern-call` grammar.
 
 ## 7. `Sexp::Symbol(String)` / `Sexp::Str(String)` payload (Doc 101 §101.A)
 
@@ -206,7 +206,7 @@ value:    04 <pad>  <ptr to UTF-8 bytes>  <cap>   <len>
           tag = 4   24-byte String header (ptr/cap/len)
 ```
 
-Phase 47 emit:
+AOT emit:
 
 - Read byte length: `mov rax, qword ptr [rdi + 24]` (= length field at offset 24 of Sexp slot).
 - Read byte pointer: `mov rax, qword ptr [rdi + 8]` (= ptr field at offset 8 of Sexp slot).
@@ -248,7 +248,7 @@ NlRecord:
   [56, 64)   refcount        (AtomicUsize)
 ```
 
-Phase 47 emit examples for read ops:
+AOT emit examples for read ops:
 
 - Read `type_tag`: load record pointer from `[rdi + 8]`, then copy 32 bytes from `[record + 0]` into the caller slot with two 16-byte SIMD loads/stores.
 - Read slot count: `mov rax, qword ptr [rsi + 48]` after loading `rsi = [rdi + 8]`.
@@ -282,7 +282,7 @@ NlVector:
   [24, 32)   refcount        (AtomicUsize)
 ```
 
-Phase 47 emit examples for read ops:
+AOT emit examples for read ops:
 
 - Read vector length: load vector pointer from `[rdi + 8]`, then `mov rax, qword ptr [rsi + 16]`.
 - Read element base pointer: `mov rax, qword ptr [rsi + 0]` after loading `rsi = [rdi + 8]`; callers add `N * 32` to form `&vec[N]`.
@@ -306,7 +306,7 @@ NlCell:
   [32, 40)   refcount        (AtomicUsize)
 ```
 
-Phase 47 emit examples for read ops:
+AOT emit examples for read ops:
 
 - Read cell value: load cell pointer from `[rdi + 8]`, then copy 32 bytes from `[cell + 0]` into the caller slot with two 16-byte SIMD loads/stores.
 - Read raw value tag for dispatch: `movzx rax, byte ptr [rsi + 0]` after loading `rsi = [rdi + 8]`.
@@ -317,7 +317,7 @@ Phase 47 emit examples for read ops:
 The numbers in §2 (tag bytes) and §3 (offsets) are frozen at the
 Doc 100 / 101 / 111 ship dates (2026-05-12, 2026-05-17, 2026-05-17).  Changing any of them:
 
-- breaks every Phase 47-compiled `.o` linked into `bin/nelisp`,
+- breaks every AOT-compiled `.o` linked into `bin/nelisp`,
 - requires updating this doc + the Rust assertion + the elisp
   constant,
 - requires a rebuild of every elisp `.o` listed in

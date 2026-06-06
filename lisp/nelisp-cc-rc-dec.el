@@ -33,7 +33,7 @@
 ;; The constant `64' = REFCOUNT_OFFSET = `2 * size_of::<Sexp>()` (=
 ;; the byte offset of the `AtomicUsize refcount' field inside
 ;; `NlConsBox' per `#[repr(C)]' + `build-tool/src/eval/nlrc.rs:292'
-;; compile-time assert).  Phase 47 emits this as `add rax, 64' with
+;; compile-time assert).  AOT emits this as `add rax, 64' with
 ;; no relocation, identical to §123.A's pattern with the only
 ;; difference being the `delta = -1' literal that lowers to the
 ;; second extern-call arg slot.
@@ -74,9 +74,9 @@
 (defconst nelisp-cc-rc-dec--source
   '(defun nelisp_rc_dec (box-ptr)
      (atomic-fetch-add (+ box-ptr 64) -1))
-  "Phase 47 source for the Doc 123 §123.B refcount-dec kernel.
+  "AOT source for the Doc 123 §123.B refcount-dec kernel.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills the
+Single-arg function — AOT's SysV AMD64 prologue spills the
 first arg (`box-ptr' = raw `NlConsBox*' as i64) into the rbp-
 relative slot 0.  The body is one composed value form: add 64
 (= REFCOUNT_OFFSET, the byte distance from the NlConsBox base to

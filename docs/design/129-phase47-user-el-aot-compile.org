@@ -1,4 +1,4 @@
-#+TITLE: Doc 129 — Phase 47 grammar expansion for user/application .el AOT compile (native-comp endgame)
+#+TITLE: Doc 129 — AOT grammar expansion for user/application .el AOT compile (native-comp endgame)
 #+DATE: 2026-05-25
 #+STATUS: ACTIVE
 
@@ -185,7 +185,7 @@
   129.8BG protected-body lexical =let= tail non-local route, and Stage
   129.8BH cleanup-local lexical =let= tail non-local route, and Stage
   129.8BI empty lexical =let= non-local route have
-  implementations in =nelisp-phase47-compiler.el= / =nelisp-gc.el= /
+  implementations in =nelisp-aot-compiler.el= / =nelisp-gc.el= /
   =nelisp-cc-runtime.el=.
   Stage 129.4B additionally tracks top-level =defvar= / =defconst= /
   =defcustom= names as special declarations so =let= lowering can
@@ -207,7 +207,7 @@
   =:not-value-expr=, =:defun-sexp-int-unsupported=, and
   =:aot-builtin1-boundary-missing=; this doc is not yet complete.
   Supported in this first cut: host macro expansion in value/call
-  positions without rewriting Phase 47 structural forms, top-level
+  positions without rewriting AOT structural forms, top-level
   =defmacro= inside =seq= as compile-time-only definitions,
   =let*= → nested =let=, normalization for macro output
   (=progn= singletons, 3-arg =if=, =nil= → 0), and value-context
@@ -234,7 +234,7 @@
   forms emitted by common macros like =cl-defstruct=.
 - *129.2 MVP*: =defun-sexp-int= lowers a monomorphic
   =(defun-sexp-int NAME (OUT ARG...) BODY)= surface into ordinary
-  Phase 47 DSL: =ARG= values are assumed =Sexp::Int= pointers and
+  AOT DSL: =ARG= values are assumed =Sexp::Int= pointers and
   are read via =sexp-int-unwrap=; the raw integer result is written to
   caller-owned =OUT= via =sexp-int-make=.  This is intentionally a
   boxed-boundary step, not the full compiler-wide "every IR value is
@@ -247,7 +247,7 @@
   signed remainder semantics; full Emacs =mod= floor semantics for
   mixed-sign operands remains a later widening.
 - *129.2C MVP*: raw value contexts now fold source =t= to integer true
-  (=1=), matching the existing nil/zero convention used by Phase 47
+  (=1=), matching the existing nil/zero convention used by AOT
   control predicates.  This is intentionally not a full boxed
   =Sexp::T= materialization; tagged =t= values still require the
   Sexp-write paths.
@@ -273,7 +273,7 @@
   materializes the symbol, asks =nelisp_mirror_is_bound= whether the
   value cell is already bound, and only on the unbound branch boxes
   BODY into =OUT= and delegates to =nelisp_env_set_value=.  To stay
-  inside the current six-GP-argument Phase 47 ABI, =OUT= must initially
+  inside the current six-GP-argument AOT ABI, =OUT= must initially
   contain the runtime unbound marker and is reused as the
   =nelisp_mirror_is_bound= marker argument before the unbound branch
   overwrites it with the boxed initial value.  This proves
@@ -375,7 +375,7 @@
   values fall back to the existing boxed integer setq helper surface.
 - *129.3T MVP*: the direct top-level init materializer now supports
   quoted proper/dotted lists and vector literals.  It uses the existing
-  Phase 47 =cons-make-with-clone=, =vector-make=, =vector-slot-set=,
+  AOT =cons-make-with-clone=, =vector-make=, =vector-slot-set=,
   and =vector-ref-ptr= primitives with the standard init =scratch=
   vector as temporary storage, so no new runtime ABI is introduced.
 - *129.3U MVP*: top-level =make-hash-table= initializers now direct-
@@ -387,14 +387,14 @@
   existing empty record-shaped hash-table primitive.
 - *129.7V MVP*: =nelisp-cc-runtime-aot-module-init-plan= now accepts
   AOT closure descriptors from
-  =nelisp-phase47-compiler--closure-descriptors=.  Plan execution
+  =nelisp-aot-compiler--closure-descriptors=.  Plan execution
   validates and registers those descriptors through
   =nelisp-cc-runtime-register-aot-closure-descriptor= by default, so
   the 129.7U =nelisp_aot_make_closure= bridge no longer depends on an
   ad hoc test-only registration step.  Native object embedding remains
   loader work; 129.7AE adds the runtime root-vector pinning convention
   for closure records materialized through hash-table =FRAMES=.
-- *129.7W MVP*: =nelisp-phase47-compiler--module-init-plan= now
+- *129.7W MVP*: =nelisp-aot-compiler--module-init-plan= now
   produces the normalized Doc99 handoff in one call, combining
   top-level init helpers, =defcustom= metadata, 129.5 root descriptors,
   and 129.7 closure descriptors through the runtime validator.  Native
@@ -434,9 +434,9 @@
 - *129.5B MVP*: =nelisp-gc-root-set= now has an =aot-frame= root
   category and =nelisp-gc--with-active-aot-frame= can dynamically
   register a frame-local root vector.  This proves the runtime root
-  enumeration substrate for Phase 47 frames.  The compiled prologue /
+  enumeration substrate for AOT frames.  The compiled prologue /
   epilogue still does not emit the push/pop sequence automatically.
-- *129.5C MVP*: Phase 47 can now expose =:gc-root-slots= as
+- *129.5C MVP*: AOT can now expose =:gc-root-slots= as
   call-boundary descriptors, and =nelisp-cc-runtime= can materialize
   a root vector from those slots and run a thunk with that vector
   registered as an active AOT frame.  This fixes the metadata/runtime
@@ -450,13 +450,13 @@
   liveness map.
 - *129.5E MVP*: =nelisp-cc-runtime= now exposes explicit native root
   stack bridges =nelisp_aot_push_roots= and =nelisp_aot_pop_roots=,
-  and Phase 47 lowers internal =(aot-push-roots ROOTS)= /
+  and AOT lowers internal =(aot-push-roots ROOTS)= /
   =(aot-pop-roots ROOTS)= forms to those relocs.  This makes native
   push/pop expressible in object output and updates
   =nelisp-gc-root-set= during the active extent.  Automatic defun
   prologue/epilogue insertion starts in 129.5F; root-vector
   materialisation from =:gc-root-slots= follows in 129.5G.
-- *129.5F MVP*: Phase 47 now wraps allocating defuns that have
+- *129.5F MVP*: AOT now wraps allocating defuns that have
   =:gc-root-slots= and already expose the Doc 99 boundary locals
   =out=, =mirror=, =frames=, =scratch=, and =roots= in an internal
   =aot-root-scope= IR.  Emission inserts balanced
@@ -476,19 +476,19 @@
   same root-vector shape as 129.5G.  It gives non-boundary native
   frames a runtime contract for root materialisation before the backend
   can fully synthesize per-frame prologue/epilogue code.
-- *129.5I MVP*: Phase 47 can now keep hash-FRAMES root vectors in a
+- *129.5I MVP*: AOT can now keep hash-FRAMES root vectors in a
   stack temporary across an allocating body.  A defun with the usual
   AOT handles and an explicit =frame_roots= marker emits
   =nelisp_aot_materialize_frame_roots= plus balanced
   =nelisp_aot_push_roots= / =nelisp_aot_pop_roots= without requiring a
   caller-owned =roots= slot.
-- *129.5J MVP*: Phase 47 now accepts an =auto_frame_roots= marker for
+- *129.5J MVP*: AOT now accepts an =auto_frame_roots= marker for
   loader-selected stack-held hash-FRAMES root scopes.  When an
   allocating defun has =:gc-root-slots=, the usual AOT handles =out=,
   =mirror=, =frames=, and =scratch=, and that marker, the compiler emits
   the same non-boundary root prologue/epilogue shape as the explicit
   =frame_roots= path.
-- *129.5K MVP*: =nelisp-phase47-compile-to-object= now accepts
+- *129.5K MVP*: =nelisp-aot-compile-to-object= now accepts
   =:auto-frame-roots t=.  That object-emission mode parses the module
   root descriptors, finds allocating defuns that already expose =out=,
   =mirror=, =frames=, and =scratch= handles, and inserts the
@@ -532,10 +532,10 @@
   builtin table instead of hard-coding only =symbol-name=.  Representative
   unary calls such as =identity=, =length=, =car=, =cdr=, type predicates,
   numeric/string converters, and simple string case functions lower
-  through =nelisp_aot_builtin_call1=.  A same-named Phase 47 =defun= in
+  through =nelisp_aot_builtin_call1=.  A same-named AOT =defun= in
   the compile unit still wins over builtin delegation.
 - *129.6F MVP*: =nelisp-cc-runtime= now exposes the vararg builtin
-  bridge =nelisp_aot_builtin_calln=, and Phase 47 lowers direct calls
+  bridge =nelisp_aot_builtin_calln=, and AOT lowers direct calls
   to a small vararg builtin table (=list= / =vector= / =concat= /
   =append=) through that ABI.  This uses the existing outgoing stack-GP
   machinery when the fixed boundary prefix plus user arguments exceeds
@@ -793,7 +793,7 @@
 - *129.7B MVP*: direct =(funcall FN ARG0 ARG1)= now lowers through
   =nelisp_aot_funcall2=.  The fixed-arity ABI is
   =MIRROR/FRAMES/FN/ARG0/ARG1/OUT=, deliberately omitting =SCRATCH= so
-  the call remains inside the current six-GP-register Phase 47 extern
+  the call remains inside the current six-GP-register AOT extern
   budget.  Three-or-more argument =funcall= is started by 129.7E;
   general calln/rest-list lowering is completed for direct =funcall= by
   129.7H.
@@ -843,7 +843,7 @@
   the final argument as the list tail, appends preceding ordinary args
   in front of it, dispatches through the same apply fallback, writes
   =OUT=, and returns =OUT=.
-- *129.7J MVP*: source-level =&rest= parameters in Phase 47 =defun=
+- *129.7J MVP*: source-level =&rest= parameters in AOT =defun=
   forms now lower as one final boxed ABI parameter.  Direct calls to
   such defuns collect the surplus source arguments through
   =nelisp_aot_listn=, write that constructed list into the caller's
@@ -853,7 +853,7 @@
 - *129.7K MVP*: non-capturing literal lambda designators in
   =(funcall (lambda (...) ...) ARG...)= and
   =(funcall (function (lambda (...) ...)) ARG...)= now lambda-lift
-  during frontend preprocessing into synthetic top-level Phase 47
+  during frontend preprocessing into synthetic top-level AOT
   defuns and direct calls.  Direct captures are threaded by 129.7R;
   captured mutation uses the 129.7Y heap-closure dispatch path.
 - *129.7L MVP*: direct literal lambda applications
@@ -900,7 +900,7 @@
   lexical =setq= writes through the cell's optional writer.  This gives
   the native-frame write-through path a concrete runtime target without
   changing ordinary closure environments.
-- *129.7AB MVP*: the runtime ABI table and Phase 47 value parser now
+- *129.7AB MVP*: the runtime ABI table and AOT value parser now
   expose =nelisp_aot_capture_cell=.  The internal
   =(aot-capture-cell NAME VALUE)= form materializes a capture cell
   through the same boxed-boundary =OUT= convention used by the closure
@@ -928,7 +928,7 @@
   bridges.  The capture-cell default writer uses the same setter, so
   captured =setq= write-through, non-boundary root materialisation, and
   standalone/native frame updates share one frame-slot contract.
-- *129.7AG MVP*: Phase 47 now parses internal
+- *129.7AG MVP*: AOT now parses internal
   =(aot-frame-slot-ref SLOT)= and =(aot-frame-slot-set SLOT VALUE)=
   forms through those 129.7AF ABI bridges.  Quoted symbol slots are
   materialized through the standard scratch symbol slot, and object
@@ -987,7 +987,7 @@
   compiler-emitted descriptor names through runtime-owned module
   metadata instead of test-local setup.
 - *129.7W MVP*: the compiler now exposes
-  =nelisp-phase47-compiler--module-init-plan=, a single normalized
+  =nelisp-aot-compiler--module-init-plan=, a single normalized
   module-plan handoff that includes init helpers, =defcustom= metadata,
   root descriptors, and closure descriptors.  129.7AI embeds that plan
   in ELF object output.
@@ -1117,17 +1117,17 @@
 - *129.8S MVP*: =nelisp-cc-runtime= now exposes
   =nelisp_aot_landing_jump=.  The bridge validates a landing descriptor,
   extracts =landing-pad= and =saved-sp=, and writes a simulator
-  =landing-jump= plan to =OUT=.  Phase 47 parses the internal
+  =landing-jump= plan to =OUT=.  AOT parses the internal
   =(aot-landing-jump LANDING)= form and object output exposes the
   relocation.
-- *129.8T MVP*: Phase 47 now has backend-native landing labels and
+- *129.8T MVP*: AOT now has backend-native landing labels and
   stack-restoring machine jumps.  The internal
   =(aot-machine-landing-jump SAVED-SP LABEL)= form evaluates the saved
   stack pointer, emits an x86_64 =mov rsp, r10= restore sequence, and
   branches to a same-text =(aot-landing-label LABEL BODY)= target via
   =jmp rel32=.  Source exception lowering still has to connect
   conditional and cleanup landing descriptors to these concrete labels.
-- *129.8U MVP*: Phase 47 can now materialize the current native stack
+- *129.8U MVP*: AOT can now materialize the current native stack
   pointer through the internal =(aot-current-sp)= value form.  On
   x86_64 this emits =mov rax, rsp=, giving handler push records and
   machine landing jumps a concrete saved-SP source.
@@ -1334,7 +1334,7 @@
   native code" track.  Authored after a 2026-05-25 session that
   (a) root-caused + fixed the standalone reader heap-corruption that
   blocked loading large .elc (Doc 129 §6 prerequisite, now SHIPPED),
-  and (b) audited the grammar gap between the Phase 47 compiler's
+  and (b) audited the grammar gap between the AOT compiler's
   current surface and what =anvil-server.el=-class application code
   needs.
 - *Parent / siblings*:
@@ -1354,7 +1354,7 @@
     *run AOT-compiled user .el*.
 - *Motivation*: the standalone-NeLisp anvil cold-load is ~286s,
   dominated (≈100%) by the pure-elisp evaluator walking ~13K LOC of
-  user/substrate forms at ~1 MB/s.  The Reader is already Phase 47
+  user/substrate forms at ~1 MB/s.  The Reader is already AOT
   native (Doc 116, 394x); the *evaluator* of user code is the
   remaining interpreted hot spot.  Doc 129 is the structural endgame:
   compile user .el to native so cold-load drops to near-link-time.
@@ -1363,11 +1363,11 @@
 
 ** §0.1 The gap, in one sentence
 
-The Phase 47 compiler (=lisp/nelisp-phase47-compiler.el=, ~5,900 LOC)
+The AOT compiler (=lisp/nelisp-aot-compiler.el=, ~5,900 LOC)
 is a frontend for a *restricted Sexp DSL* — values are raw =i64= in
 registers + rbp spill slots, with no heap, no GC integration, no
 tagged-value calculus, no closures, no dynamic dispatch.  It was built
-for *Phase 47 self-application* (= rewriting nelisp's own Rust
+for *AOT self-application* (= rewriting nelisp's own Rust
 primitive bodies as elisp that emits identical asm), not for compiling
 arbitrary elisp.  Compiling =anvil-server.el=-class code requires
 turning that "i64 calculator" into a full "Lisp value machine".
@@ -1394,7 +1394,7 @@ relocations) → =nelisp-elf-write-binary=.  SysV AMD64 (+ arm64).
 Frequency from a 2026-05-25 grep of the 6 GREEN anvil modules
 (=anvil-server*.el= + =anvil-discovery/sqlite/bench.el=, ~4,400 LOC):
 
-| Construct                         | Uses | Phase 47 today |
+| Construct                         | Uses | AOT today |
 |-----------------------------------+------+----------------|
 | =defun= / =let= / =if= / =cond= / =and= / =or= / =while= | core | ✓ partial      |
 | =let= / =let*= (N bindings, runtime values, lexical scope) | 193  | partial (=let-rt-n= runtime MVP) |
@@ -1432,7 +1432,7 @@ Every value-producing op must box/unbox and type-dispatch.
 *** §1.A.1 Shipped MVP: boxed-boundary Int functions
 
 The first 129.2 implementation deliberately avoids rewriting the
-entire Phase 47 raw-i64 IR.  Instead, =defun-sexp-int= defines a
+entire AOT raw-i64 IR.  Instead, =defun-sexp-int= defines a
 boxed-boundary function:
 
 #+begin_src elisp
@@ -1457,7 +1457,7 @@ arbitrary user-elisp value semantics.
 ** §1.B Heap + GC root integration
 
 =cons=, =make-hash-table=, strings, vectors, and closures all
-allocate.  Phase 47 has no heap today.
+allocate.  AOT has no heap today.
 
 - Allocation: call the existing allocator via =extern-call= (Doc 122.A
   =nl_alloc_str= / =nl_alloc_symbol=, Doc 125 alloc/dealloc grammar).
@@ -1513,7 +1513,7 @@ bytecode VM stack roots.
 
 This is still not full native-frame GC integration.  Stage 129.5E
 adds explicit native push/pop hooks; the remaining bridge is to have
-Phase 47 / Doc 99 call-boundary code materialize a root vector from
+AOT / Doc 99 call-boundary code materialize a root vector from
 =:gc-root-slots= and insert those hooks around compiled function
 execution automatically.
 
@@ -1526,7 +1526,7 @@ code.
 Compiler side:
 
 #+begin_src elisp
-(nelisp-phase47-compiler--gc-root-descriptor-for-defun defun-ir)
+(nelisp-aot-compiler--gc-root-descriptor-for-defun defun-ir)
 ;; => (:name make-str :slots (0) :param-count 3 :rt-slot-count 0)
 #+end_src
 
@@ -1662,7 +1662,7 @@ frame handles.
 
 *** §1.B.9 Shipped MVP: stack-held frame-root auto scope
 
-Stage 129.5I lets Phase 47 emit an automatic root scope without a
+Stage 129.5I lets AOT emit an automatic root scope without a
 caller-owned =roots= local.  A defun that exposes the usual AOT handles
 and opts into frame-root materialisation with a =frame_roots= marker:
 
@@ -1716,10 +1716,10 @@ Stage 129.5K connects the marker to object emission.  When the loader
 or compiler driver calls:
 
 #+begin_src elisp
-(nelisp-phase47-compile-to-object source path :auto-frame-roots t)
+(nelisp-aot-compile-to-object source path :auto-frame-roots t)
 #+end_src
 
-Phase 47 first parses =source= to collect the Doc 129.5 root
+AOT first parses =source= to collect the Doc 129.5 root
 descriptors, then rewrites only eligible defuns by inserting
 =auto_frame_roots= before the final parse/emission pass.  Eligibility
 requires:
@@ -1780,7 +1780,7 @@ binding:
 
 The Emacs-side runtime simulator saves the previous value-cell state,
 binds the symbol to the new value, returns a restore handle in =OUT=,
-and restores the prior bound/unbound state on pop.  Phase 47 also
+and restores the prior bound/unbound state on pop.  AOT also
 accepts explicit internal forms:
 
 #+begin_src elisp
@@ -2186,7 +2186,7 @@ init-helper descriptors:
   :index 2))
 #+end_src
 
-=nelisp-phase47-compiler--module-init-plan= is the compiler-side
+=nelisp-aot-compiler--module-init-plan= is the compiler-side
 single-call handoff; it gathers top-level init descriptors,
 =defcustom= metadata descriptors, 129.5C root descriptors, and 129.7
 closure descriptors, then normalizes them through
@@ -2301,7 +2301,7 @@ not part of =nelisp-cc-runtime-aot-init-helper-argv=; it is a
 loader/native-call side channel for carrying the runtime =Env= pointer
 that backs or owns the =MIRROR= / =FRAMES= handles.
 
-This still is not full top-level execution inside Phase 47 itself.
+This still is not full top-level execution inside AOT itself.
 The compiled object exposes the initializer entry points and the
 runtime now has a validated scheduling/execution hook, metadata store,
 helper resolution/call contract, default allocation for the standard
@@ -2551,7 +2551,7 @@ through the same apply fallback as =nelisp_aot_apply=.
 
 *** §1.E.3.2 Shipped MVP: source =&rest= parameter binding
 
-Stage 129.7J adds source =&rest= syntax to Phase 47 =defun= forms:
+Stage 129.7J adds source =&rest= syntax to AOT =defun= forms:
 
 #+begin_src elisp
 (defun collect
@@ -3107,7 +3107,7 @@ nelisp_aot_module_init_plan
 
 The embedded payload is intentionally loader-friendly rather than a
 final binary protocol: it is the same normalized plan exposed by
-=nelisp-phase47-compiler--module-init-plan=, carrying top-level
+=nelisp-aot-compiler--module-init-plan=, carrying top-level
 init-helper ordering, =defcustom= metadata, root descriptors, and
 closure descriptors.  129.7AJ wires the first loader consumption path;
 whole-object ABI selection remains later 129.7 work.
@@ -4119,7 +4119,7 @@ Stage 129.8AW covers the first non-local cleanup-body shape:
   (signal tag value))
 #+end_src
 
-When the protected body exits normally, Phase 47 now evaluates and saves
+When the protected body exits normally, AOT now evaluates and saves
 that body value, runs any earlier local cleanup forms in order, and lets
 the final direct =throw= / =signal= / =error= cleanup form take over the
 function's exit.  This deliberately does not claim the harder override
@@ -4142,7 +4142,7 @@ forms:
 #+end_src
 
 The protected =throw= / =signal= still installs the unwind cleanup pad.
-When control reaches that pad, Phase 47 runs any earlier local cleanup
+When control reaches that pad, AOT runs any earlier local cleanup
 forms and emits the final cleanup =throw= / =signal= / =error= directly,
 so the cleanup exit overrides the original protected-body descriptor.
 This stage only covers direct protected non-local forms; branch-tree
@@ -4463,10 +4463,10 @@ arguments.
 =defmacro= / =when= / =unless= / =dolist= / =cl-*= / =pcase= reduce to
 core forms via compile-time macro expansion.  The Wave A21 bytecode
 path already does broad =macroexpand-all= before =nelisp-bc-compile=.
-For Phase 47, the shipped MVP is deliberately narrower: selectively
+For AOT, the shipped MVP is deliberately narrower: selectively
 macroexpand value/call positions while preserving DSL structural forms
 such as =defun=, because host =macroexpand-all= rewrites them to
-=defalias= forms outside the Phase 47 grammar.  Multi-form macro
+=defalias= forms outside the AOT grammar.  Multi-form macro
 bodies lower through =value-seq= so the final child value is preserved
 in value context.  Near-zero new asm.
 
@@ -4484,7 +4484,7 @@ Stage 129.6A extends the frontend with top-level =require= /
 #+end_src
 
 =require= is evaluated during compilation, before top-level
-=defmacro= bodies are installed, and then stripped from the Phase 47
+=defmacro= bodies are installed, and then stripped from the AOT
 IR.  Only literal arguments are accepted: =FEATURE= must resolve to a
 symbol, =FILENAME= to nil or a string, and =NOERROR= follows host
 =require= semantics.  =provide= is also stripped after validating its
@@ -4549,7 +4549,7 @@ Stage 129.6B adds an explicit boxed-boundary helper form:
     (out mirror frames scratch name-slot arg))
 #+end_src
 
-It lowers to ordinary Phase 47 DSL:
+It lowers to ordinary AOT DSL:
 
 #+begin_src elisp
 (defun call-symbol-name
@@ -4646,7 +4646,7 @@ upcase downcase
 
 Each table entry lowers to the same =nelisp_aot_builtin_call1=
 sequence as =symbol-name=.  The parser checks the current defun table
-first: if the compile unit defines a same-named Phase 47 function,
+first: if the compile unit defines a same-named AOT function,
 ordinary direct-call lowering to that function wins and builtin
 delegation is not used.
 
@@ -4699,7 +4699,7 @@ lowers to:
 
 The fixed boundary prefix already consumes six GP arguments, so any
 user argument to =nelisp_aot_builtin_calln= exercises the outgoing
-stack-GP spill path shipped under 129.7G.  Same-unit Phase 47 defuns
+stack-GP spill path shipped under 129.7G.  Same-unit AOT defuns
 still shadow builtin delegation.
 
 *** §1.H.6 Shipped MVP: fixed-arity calln builtin table expansion
@@ -4718,7 +4718,7 @@ ordinary two-argument and fixed-arity host builtins:
 Each call lowers to =nelisp_aot_builtin_calln= with =ARGC= set from
 the source arity.  The runtime side already dispatches by resolving the
 symbol and applying the host/NeLisp function, so no new bridge shape is
-needed.  Same-unit Phase 47 defuns still shadow the builtin table.
+needed.  Same-unit AOT defuns still shadow the builtin table.
 
 *** §1.H.7 Shipped MVP: string/format calln builtin table expansion
 
@@ -5416,7 +5416,7 @@ are ordinary one-argument functions:
 #+end_src
 
 They lower through the direct =nelisp_aot_builtin_call1= path used by
-the unary builtin table.  Same-unit Phase 47 defuns still shadow these
+the unary builtin table.  Same-unit AOT defuns still shadow these
 names before builtin delegation is considered.
 
 Stage 129.6AR extends that unary cl-lib surface to the four-deep
@@ -5452,7 +5452,7 @@ require the dispatcher boundary or a later direct materialization path.
 
 * §2 Staged roadmap (Rust LOC net ≤ 0 per commit — user rule 2026-04-30/05-19)
 
-Each grammar group ships as new elisp in =nelisp-phase47-compiler.el=
+Each grammar group ships as new elisp in =nelisp-aot-compiler.el=
 (+ siblings) compiling to asm; Rust delta is 0 (the externs they call
 already exist via Doc 122 / Doc 125 / Doc 100).  Where a group needs a
 genuinely new Rust extern, it must be paired with an offsetting
@@ -5480,12 +5480,12 @@ end on real application code).  Production engagement = 129.4–129.8.
 language runtime*.  "Compile =anvil-server.el= to native" is, in
 honest terms, "build a native-comp backend for elisp" — the same
 scope as GNU Emacs's libgccjit native-comp, except hand-emitted via
-the Phase 47 asm chain instead of delegating to GCC.  Realistic
+the AOT asm chain instead of delegating to GCC.  Realistic
 horizon: multi-month to multi-year, paced one group per engagement.
 
 This is *not* a near-term cold-load fix.  It is the structural endgame
 that aligns with Doc 99 Arch C ("every byte of code derives from elisp
-the Phase 47 chain compiled").
+the AOT chain compiled").
 
 * §4 Relationship to the other axes
 
@@ -5506,7 +5506,7 @@ The Wave A21 bytecode VM (=byte-compile-file= → =.elc= → =nelisp-bc-run=)
 because it runs on the interpreter's runtime, not bare registers.  Its
 only blocker for standalone use was a heap-corruption bug in the
 reader (§6), now fixed.  Bytecode gives a 5–10x evaluator speedup with
-*zero* new grammar.  Phase 47 AOT (this doc) gives native speed but
+*zero* new grammar.  AOT AOT (this doc) gives native speed but
 needs the full §1 stack.
 
 Recommended sequencing: harvest the bytecode-VM win first (cheap,
@@ -5520,7 +5520,7 @@ vector) aborted standalone NeLisp with glibc =corrupted size vs.
 prev_size= / =double free=.
 
 Root cause: =build-tool/src/lib.rs= reader =PARSER_POOL_SIZE = 3 + 4 *
-1024= (depth ≈1023).  The Phase 47 elisp parser
+1024= (depth ≈1023).  The AOT elisp parser
 (=nelisp-cc-reader-parser.el=) recurses depth+1 per list/vector
 *element*, indexing the slot-pool via *unchecked* =vector-ref-ptr=, so
 any list/vector literal with ≳1024 elements overran the pool → heap

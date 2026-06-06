@@ -267,7 +267,7 @@ following `(declare ...)' forms are treated as declarations."
 
 ;; Doc 111 §111.B — `recordp' now routes through the internal
 ;; `nelisp--recordp-cc' bridge.  Linux x86_64 uses the new
-;; Phase 47-compiled tag-check object; other targets keep the legacy
+;; AOT-compiled tag-check object; other targets keep the legacy
 ;; direct Rust fallback behind the same builtin name.
 (defun recordp (x)
   "Return t if X is a record."

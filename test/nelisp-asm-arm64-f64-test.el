@@ -285,23 +285,23 @@
       (funcall thunk b)
       (should (= (nelisp-asm-arm64-buffer-pos b) 4)))))
 
-;; ---- §110.D.2 — Phase 47 compiler aarch64 f64 integration ----
+;; ---- §110.D.2 — AOT compiler aarch64 f64 integration ----
 ;;
 ;; End-to-end compile + emit smoke for `(defun fn ((a :type f64)
 ;; (b :type f64)) (f64-add a b))' under AArch64 target.
 
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
 (defun nelisp-asm-arm64-f64-test--compile-defun (sexp)
-  "Compile SEXP via Phase 47 compiler targeting aarch64.
+  "Compile SEXP via AOT compiler targeting aarch64.
 Returns the emitted bytes from `--emit-defun' for byte-level
 assertions.  Sets `--arch' to `aarch64' and uses the arm64
 assembler buffer."
-  (let* ((nelisp-phase47-compiler--arch 'aarch64)
-         (nelisp-phase47-compiler--label-counter 0)
-         (ir (nelisp-phase47-compiler--parse-stmt sexp nil nil nil))
+  (let* ((nelisp-aot-compiler--arch 'aarch64)
+         (nelisp-aot-compiler--label-counter 0)
+         (ir (nelisp-aot-compiler--parse-stmt sexp nil nil nil))
          (buf (nelisp-asm-arm64-make-buffer)))
-    (nelisp-phase47-compiler--emit-defun ir buf)
+    (nelisp-aot-compiler--emit-defun ir buf)
     (nelisp-asm-arm64-buffer-bytes buf)))
 
 ;; Defun compiles without error (= no `:f64-defun-aarch64-not-yet').

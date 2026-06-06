@@ -10,7 +10,7 @@
 
 ;; Doc 117 §117.D.gaps.3 — moves the syscall body of `(nl-write-file
 ;; PATH CONTENT)' (= `build-tool/src/eval/builtins.rs::bi_nl_write_file')
-;; into a Phase 47 elisp object.  Third handler in the Doc 122 §122.I
+;; into a AOT elisp object.  Third handler in the Doc 122 §122.I
 ;; CString helper sweep (after `nelisp_bi_syscall_stat' and
 ;; `nelisp_bi_syscall_canonicalize').
 ;;
@@ -212,7 +212,7 @@
 
     ;; 6-arg with-fd dispatcher — branches on the open(2) rc.
     ;; Args (all i64, capped at SysV AMD64's 6 GP arg regs per
-    ;; Phase 47 `--arg-regs' limit; pads from the pre-Wave-15 body
+    ;; AOT `--arg-regs' limit; pads from the pre-Wave-15 body
     ;; have been dropped to stay within 6 regs):
     ;;   fd:        open(2) rc.  Negative = error; non-negative = file
     ;;              descriptor.
@@ -296,7 +296,7 @@
        (alloc-bytes (str-len content-ptr) 1)
        (str-bytes-ptr content-ptr)
        (str-len content-ptr))))
-  "Phase 47 source for the Doc 117 §117.D.gaps.3 `(nl-write-file
+  "AOT source for the Doc 117 §117.D.gaps.3 `(nl-write-file
 PATH CONTENT)' libc syscall body swap, with Wave 15 (2026-05-23)
 UTF-8 → Latin-1 byte decoder threaded in front of `write(2)'.
 
@@ -322,7 +322,7 @@ Eight-entry `(seq DEFUN ...)' manifest:
 - `nelisp_bi_nl_write_file (path-ptr content-ptr)' — 2-arg public
   entry; builds path CString + alloc dst buffer + dispatch.
 
-Composes existing Phase 47 grammar (no new opcode):
+Composes existing AOT grammar (no new opcode):
 - §122.I `nelisp_cstr_from_sexp' — path CString construction (cross-
   `.o' `extern-call').
 - §125.A `alloc-bytes' / `dealloc-bytes' — raw `*mut u8' buffer for

@@ -1070,7 +1070,7 @@ forms are out of scope)."
 ;; user has to pass an explicit `nil' to retain empty fragments.  We
 ;; mirror this via `(2-arity)' detection — if the caller passes 1
 ;; arg, send `t'; if they pass 2 args, send whatever they passed.
-;; The Phase-47-compiled `nl_jit_split_by_non_alnum' body builds the
+;; The AOT-compiled `nl_jit_split_by_non_alnum' body builds the
 ;; result cons list in REVERSE order (prepend-each-part algorithm).
 ;; `nreverse' restores forward order matching the former Rust contract.
 (fset 'nl-split-by-non-alnum

@@ -10,7 +10,7 @@
 
 ;; Doc 117 §117.B — swaps the bodies of the three quit-flag builtins
 ;; (`(set-quit-flag)' / `(clear-quit-flag)' / `(quit-flag-pending-p)')
-;; to Phase 47 elisp objects.  Each kernel is a single composed value
+;; to AOT elisp objects.  Each kernel is a single composed value
 ;; form using the Doc 122 §122.E atomic / raw-memory grammar ops.
 ;;
 ;; The process-global quit flag lives in the `QUIT_FLAG' static of
@@ -41,7 +41,7 @@
 ;;       on x86_64, atomic at the hardware level).  Returns 0 if clear,
 ;;       1 if pending.  Rust shim converts to `Sexp::T' / `Sexp::Nil'.
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   §122.E `atomic-compare-exchange'  — SeqCst CAS for set / clear.
 ;;   §122.E `ptr-read-u64'             — Hardware-atomic aligned load
 ;;                                       for the pending-p reader.
@@ -80,9 +80,9 @@
      ;; 0 (= transitioned to 1), 0 if already 1 (= benign no-op, slot
      ;; remains 1 which is the desired post-condition).
      (atomic-compare-exchange flag-ptr 0 1))
-  "Phase 47 source for the Doc 117 §117.B `(set-quit-flag)' swap.
+  "AOT source for the Doc 117 §117.B `(set-quit-flag)' swap.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills
+Single-arg function — AOT's SysV AMD64 prologue spills
 `flag-ptr' (= `*mut i64' to the `QUIT_FLAG' static in
 `build-tool/src/eval/quit.rs', surfaced by `nl_quit_flag_ptr')
 into the rbp-relative slot 0.  The body is one composed value
@@ -107,7 +107,7 @@ fixup for `nl_atomic_compare_exchange'.")
      ;; returns 1 if the slot was 1 (= transitioned to 0), 0 if already
      ;; 0 (= benign no-op, slot remains 0).
      (atomic-compare-exchange flag-ptr 1 0))
-  "Phase 47 source for the Doc 117 §117.B `(clear-quit-flag)' swap.
+  "AOT source for the Doc 117 §117.B `(clear-quit-flag)' swap.
 Mirrors the set kernel modulo the swap of `expected' / `new'.")
 
 (defconst nelisp-cc-bi-quit-flag--pending-p-source
@@ -120,7 +120,7 @@ Mirrors the set kernel modulo the swap of `expected' / `new'.")
      ;; is always one of the prior `compare-exchange' results — never
      ;; a torn read.  Returns 0 if clear, 1 if pending.
      (ptr-read-u64 flag-ptr 0))
-  "Phase 47 source for the Doc 117 §117.B `(quit-flag-pending-p)' swap.
+  "AOT source for the Doc 117 §117.B `(quit-flag-pending-p)' swap.
 
 Single-arg function reading `*flag-ptr' as a `u64' and returning
 it in rax.  Lowers to `call nl_ptr_read_u64@PLT'.  The Rust shim

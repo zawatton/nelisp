@@ -1,4 +1,4 @@
-;;; nelisp-cc-bi-tty-raw.el --- Wave k tty raw-mode / winsize / jobctrl Phase 47 swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bi-tty-raw.el --- Wave k tty raw-mode / winsize / jobctrl AOT swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Wave k — moves the syscall bodies of the tty builtins from
-;; `build-tool/src/eval/builtins.rs' into Phase 47 elisp .o objects.
+;; `build-tool/src/eval/builtins.rs' into AOT elisp .o objects.
 ;;
 ;; The Rust shim (build-tool/src/eval/tty.rs) retains:
 ;;
@@ -261,7 +261,7 @@
             65536)
          (+ (* (ptr-read-u8 ws-buf 1) 256)
             (ptr-read-u8 ws-buf 0)))))
-  "Wave k Phase 47 source for tty raw-mode / winsize syscall bodies.
+  "Wave k AOT source for tty raw-mode / winsize syscall bodies.
 
 Exports:
 - `nelisp_tty_prog2 (val _eff)' — 2-arg sequencer

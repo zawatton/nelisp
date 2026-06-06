@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group B helper #11 — `mirror_set_constant'.  Phase 47
+;; Doc 111 §111.E Group B helper #11 — `mirror_set_constant'.  AOT
 ;; reimplementation of the env-mirror entry constant-flag writer (=
 ;; slot 3 of the `symbol-entry' record).  Mirrors
 ;; `build-tool/src/eval/env_mirror.rs::mirror_set_constant''s existing-
@@ -49,7 +49,7 @@
       (nelisp_mirror_set_constant_apply
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        flag-ptr)))
-  "Phase 47 source for Doc 111 §111.E #11 `mirror_set_constant'.
+  "AOT source for Doc 111 §111.E #11 `mirror_set_constant'.
 
 Compose-on-7 with slot index 3 (= the constant-flag slot).  Returns
 i64 1 on hit / 0 on miss; the Rust dispatcher falls back to a

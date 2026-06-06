@@ -11,7 +11,7 @@
 ;; Doc 111 §111.E Group E helper #22 — `frame_pop_rust_direct'.
 ;; Doc 115 §115.2 — full pure-elisp implementation of the lexframe
 ;; pop.  Replaces the prior Rust shim `nl_frame_pop' (= deleted from
-;; `build-tool/src/eval/env_lexframe_phase47_shims.rs').
+;; `build-tool/src/eval/env_lexframe_aot_shims.rs').
 ;;
 ;; Algorithm (= literal transcription of the Rust impl):
 ;;
@@ -81,7 +81,7 @@
       ;; is reached via slot 1 which we overwrite last.
       ;;
       ;; The `and' threads the rax = 1 sentinel from each side-effect
-      ;; op (= the Phase 47 idiom for value-form sequencing).
+      ;; op (= the AOT idiom for value-form sequencing).
       ;; `vector-slot-set' (= §111.E + §115.1 rax = 1 epilogue),
       ;; `sexp-int-make' (= returns slot pointer in rax which is
       ;; non-zero hence truthy), and `record-slot-set' (= §111.B
@@ -116,7 +116,7 @@
            (- (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 1)
            0) ; _pad — Doc 124.F-blocker even-arity fix
         0)))
-  "Phase 47 source for Doc 111 §111.E #22 / Doc 115 §115.2
+  "AOT source for Doc 111 §111.E #22 / Doc 115 §115.2
 `frame_pop_rust_direct'.
 
 Pure-elisp lexframe pop.  Composes `record-slot-ref-ptr' (§111.B),
@@ -126,7 +126,7 @@ helper-function call for the two-step refcount-safe write
 (backing[depth-1] := Nil + depth := Int(depth-1)).
 
 Replaces the ~30 LOC Rust shim `nl_frame_pop' which has been
-removed from `env_lexframe_phase47_shims.rs'.")
+removed from `env_lexframe_aot_shims.rs'.")
 
 (provide 'nelisp-cc-frame-pop)
 

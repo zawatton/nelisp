@@ -102,7 +102,7 @@ clean:
 # ===================================================================
 # Standalone NeLisp eval binary (pure-elisp AOT, ZERO Rust).
 # The REAL evaluator (nl_eval_inner + combiner cons/apply + bootstrap
-# mirror) is compiled by the Phase 47 elisp compiler into relocatable
+# mirror) is compiled by the AOT elisp compiler into relocatable
 # units and linked by the pure-elisp static linker into a freestanding
 # static ELF.  No cargo / rustc / target binary involved.
 #
@@ -229,7 +229,7 @@ standalone-selfhost-mt-test:
 	./tools/selfhost-mt-test.sh
 
 # Stage 4 PRODUCTION PARALLEL BUILD: the standalone interpreter compiles N units
-# CONCURRENTLY (fork(2) workers, each running the full Phase-47 compiler, COW-
+# CONCURRENTLY (fork(2) workers, each running the full AOT compiler, COW-
 # isolated so no shared-state race), joined via a MAP_SHARED atomic counter.
 standalone-parallel-compile-test:
 	./tools/parallel-compile-test.sh

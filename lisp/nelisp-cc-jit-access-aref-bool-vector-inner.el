@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.D — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.D — AOT-compiled replacement for the Rust
 ;; `nl_jit_access_aref_bool_vector_inner' narrow helper in
 ;; `build-tool/src/jit/access.rs'.
 ;;
@@ -50,7 +50,7 @@
 ;;
 ;; The sub-arm factoring via `nl_jit_access_aref_bv_do' avoids
 ;; evaluating `sexp-payload-ptr' twice by receiving the NlBoolVector*
-;; as a parameter -- Phase 47 `let' supports compile-time constants only.
+;; as a parameter -- AOT `let' supports compile-time constants only.
 
 ;;; Code:
 
@@ -71,7 +71,7 @@
       (if (< idx 0)
           1
         (nl_jit_access_aref_bv_do (sexp-payload-ptr arg) idx out))))
-  "Phase 47 source for the §120.D `nl_jit_access_aref_bool_vector_inner' swap.
+  "AOT source for the §120.D `nl_jit_access_aref_bool_vector_inner' swap.
 
 Two-function package (= `seq' form):
 
@@ -86,7 +86,7 @@ Two-function package (= `seq' form):
   delegates to the inner helper with `sexp-payload-ptr arg' to
   obtain NlBoolVector* in one op.
 
-The factoring avoids a double `sexp-payload-ptr' call (= Phase 47
+The factoring avoids a double `sexp-payload-ptr' call (= AOT
 `let' is compile-time constant only) at the cost of one call frame.
 ABI: `(*const Sexp, i64, *mut Sexp) -> i64' matches the former
 Rust extern and the `extern-call' invocation in

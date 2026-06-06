@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 101 §101.D moves `(cons A B)' construction into a
-;; Phase-47-compiled elisp object.  The body allocates a fresh
+;; AOT-compiled elisp object.  The body allocates a fresh
 ;; `NlConsBox', copies the caller-owned car/cdr Sexp slots into the
 ;; box, and writes `Sexp::Cons(box)' into the caller-owned result
 ;; slot.
@@ -30,7 +30,7 @@
      ;; here do not call `nl_rc_inc'; a future §101.D.2 stage can make
      ;; the copies refcount-aware if profiling justifies the extra cost.
      (cons-make arg0 arg1 result-slot))
-  "Phase 47 source for the Doc 101 §101.D cons constructor swap.")
+  "AOT source for the Doc 101 §101.D cons constructor swap.")
 
 (provide 'nelisp-cc-cons-construct)
 

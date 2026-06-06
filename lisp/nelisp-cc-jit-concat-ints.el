@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-concat-ints.el --- Phase 47 body for nl_jit_concat_ints  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-concat-ints.el --- AOT body for nl_jit_concat_ints  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 86 §86.1.e.2 (2026-05-19): Phase 47 elisp migration of
+;; Doc 86 §86.1.e.2 (2026-05-19): AOT elisp migration of
 ;; `nl_jit_concat_ints' from `build-tool/src/jit/strings.rs'.
 ;;
 ;; Trampoline signature: `(*const Sexp, *mut Sexp) -> i64'
@@ -47,7 +47,7 @@
 ;;   `mut-str-make-empty'     — §122.B: alloc fresh MutStr builder.
 ;;   `mut-str-push-codepoint' — §122.B: UTF-8 encode + append.
 ;;   `mut-str-finalize'       — §122.B: clone MutStr→Str, write to slot.
-;;   Phase 47 arith: `+', `<', `>', `=', `>=', `<=', `and', `if', `or'
+;;   AOT arith: `+', `<', `>', `=', `>=', `<=', `and', `if', `or'
 ;;
 ;; Tag constants (pinned by §62.5 ABI assert tests in
 ;; `tests/sexp_repr.rs'):
@@ -129,7 +129,7 @@
        (if (= (nl_jit_concat_ints_walk arg out) 0)
            (and (mut-str-finalize out out) 0)
          1))))
-  "Phase 47 source for the `nl_jit_concat_ints' trampoline.
+  "AOT source for the `nl_jit_concat_ints' trampoline.
 
 Two-entry `(seq DEFUN ...)' manifest:
   `nl_jit_concat_ints_walk (arg out)' — recursive cons-list walker.

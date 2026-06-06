@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group A helper #4 — `mirror_is_bound'.  Phase 47
+;; Doc 111 §111.E Group A helper #4 — `mirror_is_bound'.  AOT
 ;; composition of #1 (`mirror_lookup_entry') + §111.B
 ;; `record-slot-ref-ptr' (slot 0) + §101.C `symbol-eq' against the
 ;; caller-supplied unbound-marker.  Replaces the
@@ -45,7 +45,7 @@
                 1)
              0
            1))))
-  "Phase 47 source for Doc 111 §111.E #4 `mirror_is_bound'.
+  "AOT source for Doc 111 §111.E #4 `mirror_is_bound'.
 
 `boundp' equivalent against the elisp env mirror.  Returns 1 iff the
 named entry exists in the mirror AND its value cell does not hold

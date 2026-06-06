@@ -1,4 +1,4 @@
-;;; nelisp-cc-nlrecord-set-slot.el --- nl_record_set_slot Phase 47 swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-nlrecord-set-slot.el --- nl_record_set_slot AOT swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Replaces the Rust `nl_record_set_slot' body with a Phase 47-compiled
+;; Replaces the Rust `nl_record_set_slot' body with a AOT-compiled
 ;; elisp object.  The function writes the 32-byte Sexp at `val' into
 ;; element `n' of the `slots' Vec inside the NlRecord pointed to by
 ;; `record'.
@@ -41,7 +41,7 @@
 ;; The Rust body indexes into Vec<Sexp>:
 ;;   (&mut (*record).slots)[n] = (*val).clone()
 ;;
-;; In Phase 47 spike scope (raw copy, no drop/clone):
+;; In AOT spike scope (raw copy, no drop/clone):
 ;;   data_ptr = *(u64*)(record + 40)    // Vec.data_ptr inside slots
 ;;   dst      = data_ptr + n * 32       // slot n; n*32 = n << 5
 ;;
@@ -51,7 +51,7 @@
 ;;   word 3: dst+24 <- val+24
 ;;
 ;; `usize' in C-ABI on x86_64 is a 64-bit integer (same as i64 in rsi).
-;; Phase 47 `shl' computes n*32 = n<<5 as an i64.
+;; AOT `shl' computes n*32 = n<<5 as an i64.
 ;;
 ;; C-ABI contract (SysV AMD64):
 ;;   rdi = *mut NlRecord
@@ -60,7 +60,7 @@
 ;;   return: void (rax = 1 sentinel from last ptr-write-u64)
 ;;
 ;; NOTE: Raw 4×u64 copy without refcount-safe drop of the slot's
-;; previous occupant.  Matches the Phase 47 cutover spike scope.
+;; previous occupant.  Matches the AOT cutover spike scope.
 
 ;;; Code:
 
@@ -79,7 +79,7 @@
       ;; over-freed a still-owned box (= the §9.2 / §9.6.4 bootstrap UAF).
       (let ((dst (+ (ptr-read-u64 record 40) (shl n 5))))
         (extern-call nl_sexp_clone_into val dst))))
-  "Phase 47 source for the `nl_record_set_slot' cutover spike.
+  "AOT source for the `nl_record_set_slot' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
 - `nl_record_set_slot (record n val) -> i64' — reads Vec.data_ptr
@@ -87,7 +87,7 @@ Single-entry `(seq DEFUN)' manifest:
   computes DST = data_ptr + (N << 5) = data_ptr + N*32, copies the
   32-byte Sexp at VAL into DST via four word-copy pairs.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `ptr-read-u64'   — load Vec.data_ptr from NlRecord+40.
   `shl'            — N << 5 = N*32 (slot byte offset).
   `+'              — data_ptr + slot offset.

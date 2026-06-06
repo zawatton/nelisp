@@ -12,7 +12,7 @@
 ;; Doc 115 §115.1 — full pure-elisp implementation of the lexframe-
 ;; stack capacity-doubling grow.  Replaces the prior Rust shim
 ;; `nl_frame_stack_ensure_capacity' (= deleted from
-;; `build-tool/src/eval/env_lexframe_phase47_shims.rs').
+;; `build-tool/src/eval/env_lexframe_aot_shims.rs').
 ;;
 ;; Algorithm (= literal transcription of the Rust impl):
 ;;
@@ -33,7 +33,7 @@
 ;;   7. Return new-cap.
 ;;
 ;; Recursion is used for the two loops (compute-new-cap and copy-
-;; elem) because Phase 47 has no mutable local variables — only
+;; elem) because AOT has no mutable local variables — only
 ;; immutable let-bound integer constants.  Each recursive call passes
 ;; the iteration state through arg registers.
 ;;
@@ -141,7 +141,7 @@
             needed)
            0) ; _pad — Doc 124.F-blocker even-arity fix
         (vector-len (record-slot-ref-ptr frames-ptr 0)))))
-  "Phase 47 source for Doc 111 §111.E #20 / Doc 115 §115.1
+  "AOT source for Doc 111 §111.E #20 / Doc 115 §115.1
 `frame_stack_ensure_capacity'.
 
 Pure-elisp capacity-doubling grow.  Composes `record-slot-ref-ptr'
@@ -151,7 +151,7 @@ new), `sexp-int-unwrap' (§100), and recursive helper-function calls
 for the two inner loops (= compute-new-cap doubling + copy-elem).
 
 Replaces the 47 LOC Rust shim `nl_frame_stack_ensure_capacity'
-which has been removed from `env_lexframe_phase47_shims.rs'.")
+which has been removed from `env_lexframe_aot_shims.rs'.")
 
 (provide 'nelisp-cc-frame-ensure-capacity)
 

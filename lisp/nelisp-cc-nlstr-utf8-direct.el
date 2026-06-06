@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 
-;; Wave n2 §n2.A — Phase 47 elisp migrations that replace Rust
+;; Wave n2 §n2.A — AOT elisp migrations that replace Rust
 ;; `#[no_mangle]' bodies in `build-tool/src/eval/nlstr.rs' by
-;; exporting the SAME C-linkage symbol names from Phase 47 `.o' files.
+;; exporting the SAME C-linkage symbol names from AOT `.o' files.
 ;;
 ;; Migrated symbols:
 ;;
@@ -43,7 +43,7 @@
 ;; `(sexp-tag sexp)' is a pure u8 load at [sexp+0]; safe to evaluate
 ;; multiple times.  SEXP tags: Symbol=4, Str=5, MutStr=6.
 ;;
-;; Phase 47 `let' restriction: compile-time constant folding only.
+;; AOT `let' restriction: compile-time constant folding only.
 ;; All runtime pointer values are threaded as extra function parameters.
 
 ;;; Code:
@@ -108,7 +108,7 @@
                (ptr-read-u64 str-ptr 16)
                (ptr-read-u64 str-ptr 24))
             0)))))
-  "Phase 47 direct-symbol source for `nl_str_char_count'.
+  "AOT direct-symbol source for `nl_str_char_count'.
 
 Exports `nl_str_char_count' (C-linkage) to replace the Rust
 `#[no_mangle] pub unsafe extern \"C\" fn nl_str_char_count' body
@@ -158,7 +158,7 @@ fields ptr@16, len@24.")
     ;; out-cp: *mut i64, out-bw: *mut i64, b0: leading byte value.
     ;; Returns 1 on success.
     ;;
-    ;; Phase 47 arithmetic note: "left-shift by N" = multiply by 2^N.
+    ;; AOT arithmetic note: "left-shift by N" = multiply by 2^N.
     ;; 2^6=64, 2^12=4096, 2^18=262144.
     (defun nl_str_codepoint_at_decode (data idx len out-cp out-bw b0)
       (if (= (logand b0 128) 0)
@@ -242,7 +242,7 @@ fields ptr@16, len@24.")
             (if (= (sexp-tag str-ptr) 4)
                 (nl_str_codepoint_at_str str-ptr byte-idx out-cp out-bw)
               0))))))
-  "Phase 47 direct-symbol source for `nl_str_codepoint_at'.
+  "AOT direct-symbol source for `nl_str_codepoint_at'.
 
 Exports `nl_str_codepoint_at' (C-linkage) to replace the Rust
 `#[no_mangle] pub unsafe extern \"C\" fn nl_str_codepoint_at' body
@@ -375,7 +375,7 @@ runtime values as extra parameters.")
             (if (= (sexp-tag str-ptr) 4)
                 (nl_str_is_alnum_str str-ptr byte-idx)
               0))))))
-  "Phase 47 direct-symbol source for `nl_str_is_alphanumeric_at'.
+  "AOT direct-symbol source for `nl_str_is_alphanumeric_at'.
 
 Exports `nl_str_is_alphanumeric_at' (C-linkage) to replace the Rust
 `#[no_mangle] pub unsafe extern \"C\" fn nl_str_is_alphanumeric_at' body
@@ -393,7 +393,7 @@ Char-boundary check: leading byte must not be a continuation byte
 `s.is_char_boundary(idx)' check.
 
 Helper chain threads data/idx/len + decoded codepoint as function params
-to avoid Phase 47's `let' restriction.")
+to avoid AOT's `let' restriction.")
 
 (provide 'nelisp-cc-nlstr-utf8-direct)
 

@@ -11,7 +11,7 @@
 ;; Doc 117 §117.B / Doc 122 §122.H — moves the byte-write algorithmic
 ;; body of the `(nelisp--write-stdout-bytes STR)' builtin from Rust
 ;; (`build-tool/src/eval/builtins.rs::bi_write_stdout_bytes') into a
-;; Phase 47 elisp object.  The Rust shim keeps:
+;; AOT elisp object.  The Rust shim keeps:
 ;;
 ;;   * arity validation                      (1 arg)
 ;;   * `WrongType' dispatch                  (`Sexp::Str' / `Sexp::MutStr')
@@ -29,7 +29,7 @@
 ;; fd literal (1 instead of 2) and the trailing newline (none here,
 ;; this builtin is the `princ' building block).
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   §122.H  `str-bytes-ptr'  — `*const u8' data pointer of a string-y
 ;;                              Sexp (via Rust `nl_str_bytes_ptr' extern).
 ;;   §101.C  `str-len'        — `String::len' byte count (= `mov rax,
@@ -63,10 +63,10 @@
      ;;
      ;; Returns the `write(2)' i64 (= bytes written, or -1 on error).
      (extern-call write 1 (str-bytes-ptr str-ptr) (str-len str-ptr)))
-  "Phase 47 source for the Doc 117 §117.B / Doc 122 §122.H
+  "AOT source for the Doc 117 §117.B / Doc 122 §122.H
 `(nelisp--write-stdout-bytes STR)' algorithmic body swap.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills
+Single-arg function — AOT's SysV AMD64 prologue spills
 `str-ptr' (= `*const Sexp' to a `Sexp::Str' / `Sexp::Symbol' /
 `Sexp::MutStr') into the rbp-relative slot 0.  The body is one
 composed value form: a 3-arg `extern-call' to libc `write' with

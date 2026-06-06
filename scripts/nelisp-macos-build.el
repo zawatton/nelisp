@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Builds native macOS arm64 (Apple Silicon) executables from the
-;; Phase-47 aarch64 backend, wrapped in the pure-elisp Mach-O
+;; AOT aarch64 backend, wrapped in the pure-elisp Mach-O
 ;; MH_EXECUTE writer (`nelisp-mach-o-write-executable').
 ;;
 ;; Ground truth (verified on an M1, macOS 26):
@@ -27,7 +27,7 @@
 
 ;;; Code:
 
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 (require 'nelisp-mach-o-write)
 (require 'nelisp-asm-arm64)
 
@@ -39,38 +39,38 @@ defun is appended after; their labels are forward-resolved by
 `resolve-fixups' (also required for B / B.cond — without it every
 branch keeps its placeholder offset 0 = self-loop).  Returns a
 unibyte string containing code followed by string/table rodata."
-  (let* ((nelisp-phase47-compiler--arch 'aarch64)
-         (nelisp-phase47-compiler--os 'darwin)
-         (nelisp-phase47-compiler--label-counter 0)
+  (let* ((nelisp-aot-compiler--arch 'aarch64)
+         (nelisp-aot-compiler--os 'darwin)
+         (nelisp-aot-compiler--label-counter 0)
          ;; Statement grammar (`exit'/`write'/`seq'/`defun'/...) accepts
          ;; programs with function definitions; a bare value expression
          ;; (e.g. ending in `syscall-direct') is `:unknown-form' there, so
          ;; fall back to the value grammar for those.
          (stmt-ir (condition-case nil
-                      (nelisp-phase47-compiler--parse sexp nil)
-                    (nelisp-phase47-compiler-error nil))))
+                      (nelisp-aot-compiler--parse sexp nil)
+                    (nelisp-aot-compiler-error nil))))
     (let ((bytes
            (if stmt-ir
                (let* ((str-collected
-                       (nelisp-phase47-compiler--collect-strings stmt-ir))
+                       (nelisp-aot-compiler--collect-strings stmt-ir))
                       (str-offsets (car str-collected))
                       (str-rodata-bytes (cdr str-collected))
                       (table-collected
-                       (nelisp-phase47-compiler--collect-tables stmt-ir))
+                       (nelisp-aot-compiler--collect-tables stmt-ir))
                       (table-offsets (car table-collected))
                       (table-bytes (cdr table-collected))
                       (str-rodata-len (length str-rodata-bytes))
                       (rodata-bytes (concat str-rodata-bytes table-bytes))
-                      (defuns (nelisp-phase47-compiler--collect-defuns stmt-ir))
+                      (defuns (nelisp-aot-compiler--collect-defuns stmt-ir))
                       (emit-pass
                        (lambda (rodata-vaddr table-vaddrs)
-                         (let ((nelisp-phase47-compiler--table-vaddrs
+                         (let ((nelisp-aot-compiler--table-vaddrs
                                 table-vaddrs)
                                (buf (nelisp-asm-arm64-make-buffer)))
-                           (nelisp-phase47-compiler--emit-stmt
+                           (nelisp-aot-compiler--emit-stmt
                             stmt-ir buf str-offsets rodata-vaddr)
                            (dolist (d defuns)
-                             (nelisp-phase47-compiler--emit-defun d buf))
+                             (nelisp-aot-compiler--emit-defun d buf))
                            buf)))
                       (pass1-table-vaddrs
                        (mapcar (lambda (entry) (cons (car entry) 0))
@@ -95,8 +95,8 @@ unibyte string containing code followed by string/table rodata."
                       (text-bytes (nelisp-asm-arm64-resolve-fixups pass2)))
                  (concat text-bytes rodata-bytes))
              (let ((buf (nelisp-asm-arm64-make-buffer)))
-               (nelisp-phase47-compiler--emit-value
-                (nelisp-phase47-compiler--parse-value sexp nil nil nil) buf)
+               (nelisp-aot-compiler--emit-value
+                (nelisp-aot-compiler--parse-value sexp nil nil nil) buf)
                (nelisp-asm-arm64-resolve-fixups buf)))))
       (if (multibyte-string-p bytes)
           (apply #'unibyte-string (append bytes nil))

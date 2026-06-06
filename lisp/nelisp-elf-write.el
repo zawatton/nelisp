@@ -1,4 +1,4 @@
-;;; nelisp-elf-write.el --- ELF64 binary writer (Phase 47 spike)  -*- lexical-binding: t; -*-
+;;; nelisp-elf-write.el --- ELF64 binary writer (AOT spike)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 

@@ -1,11 +1,11 @@
-#+TITLE: Doc 110 — Phase 47 f64 ABI (= xmm0 / d0 register class)
+#+TITLE: Doc 110 — AOT f64 ABI (= xmm0 / d0 register class)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-12
 
 * Status
 
 - *State*: DRAFT 2026-05-12
-- *Parent*: Doc 100 v2 (= Phase 47 Sexp::Int ABI MVP, §100.A-D
+- *Parent*: Doc 100 v2 (= AOT Sexp::Int ABI MVP, §100.A-D
   SHIPPED 2026-05-11/12).  Doc 110 reuses Doc 100's 5-step swap
   pattern verbatim; only the register class + instruction set
   differs.
@@ -22,7 +22,7 @@
 ** Why this DRAFT exists (= 2026-05-12 audit triggered it)
 
 Post-§100.D audit (= =feedback_phase47_capability_exhausted= memory)
-found that under current Phase 47 i64-only ABI, the remaining
+found that under current AOT i64-only ABI, the remaining
 =build-tool/src/jit/*.rs= and =build-tool/src/eval/builtins.rs= Rust
 LOC are *all* blocked by ABI gaps: f64 register class, extern-call
 ABI, syscall ABI, or refcount/clone semantics (pre-check #3
@@ -42,7 +42,7 @@ capability.
 ** §0.1 What §100.D left unfinished
 
 §100.D Stage 2/3 (= commit ae4bb08a, 2026-05-12) shipped 12
-=nl_jit_arith_*= trampolines as Phase 47-compiled =.o= files and
+=nl_jit_arith_*= trampolines as AOT-compiled =.o= files and
 *deleted* =build-tool/src/jit/arith.rs= (= −181 LOC) on three target
 triples (linux-x86_64, linux-aarch64, macos-aarch64).
 
@@ -53,9 +53,9 @@ trampolines in =jit/float.rs= (8 fns) + =jit/math.rs= (3 fns) cannot
 be swapped under §100.D's ABI because:
 
 1. Their arguments arrive in xmm0/xmm1 (x86_64) or d0/d1 (aarch64),
-   not in rdi/rsi or x0/x1.  Phase 47's =arg-regs= constant
-   (=lisp/nelisp-phase47-compiler.el= line 121) is GP-only.
-2. f64 arithmetic uses SSE2 / NEON instructions that Phase 47's
+   not in rdi/rsi or x0/x1.  AOT's =arg-regs= constant
+   (=lisp/nelisp-aot-compiler.el= line 121) is GP-only.
+2. f64 arithmetic uses SSE2 / NEON instructions that AOT's
    =asm-x86_64.el= + =asm-arm64.el= helpers do not encode.  See
    =lisp/nelisp-asm-x86_64.el:103= which explicitly states "Covers
    only integer GPRs — xmm/ymm/zmm extension is out of scope".
@@ -68,12 +68,12 @@ be swapped under §100.D's ABI because:
 Three architectural directions exist:
 
 *Option A (extern-call only)*: keep f64 trampolines in Rust, but
-expose them via Phase 47's existing =extern-call= grammar.  Elisp
+expose them via AOT's existing =extern-call= grammar.  Elisp
 =.o= cannot *be* the trampoline; it can only call into the Rust
 one.  Net Rust delta: 0 (= trampoline stays).  *Rejected* — defeats
 the purpose.
 
-*Option B (full f64 register class)*: teach Phase 47 about xmm /
+*Option B (full f64 register class)*: teach AOT about xmm /
 NEON register class.  Add f64 arg / return ABI, f64 arithmetic emit,
 f64 compare emit, f64 → i64 / i64 → f64 cast.  Elisp =.o= becomes
 the trampoline directly.  Net Rust delta: −49 LOC after §110.E + F.
@@ -82,7 +82,7 @@ the trampoline directly.  Net Rust delta: −49 LOC after §110.E + F.
 *Option C (mixed: GP-stash, SSE in epilogue)*: smuggle f64 values
 through GP registers (= rax holds the i64 bit-pattern of the f64,
 then movq rax, xmm0 just before return).  This avoids most asm
-encoding work but produces obscure code paths Phase 47 readers will
+encoding work but produces obscure code paths AOT readers will
 hate, and breaks for any f64 arithmetic intermediate (= you can't
 ADDSD across a GP value).  *Rejected* — would only work for
 =nl_jit_float_float= (= identity) and nothing else.
@@ -117,7 +117,7 @@ In scope:
 - =extern "C" fn(f64, f64) -> f64=                  (= 4 ops: add/sub/mul/div in float.rs)
 - =extern "C" fn(f64, f64) -> i64=                  (= 4 ops: eq-eps/lt/gt/le/ge in float.rs)
 - =extern "C" fn(f64) -> f64=                       (= 3 ops in math.rs)
-- Phase 47 register class enumeration (GP vs xmm vs NEON)
+- AOT register class enumeration (GP vs xmm vs NEON)
 - Frozen f64 → i64 cast semantics (= IEEE 754 truncation)
 
 Out of scope (= Doc 111+):
@@ -130,11 +130,11 @@ Out of scope (= Doc 111+):
 
 ** §1.1 Why elisp `.o' cannot use f64 today
 
-Phase 47's emit pipeline picks ABI registers from a single GP-only
-table at =lisp/nelisp-phase47-compiler.el= line 121:
+AOT's emit pipeline picks ABI registers from a single GP-only
+table at =lisp/nelisp-aot-compiler.el= line 121:
 
 #+begin_src elisp
-  (defconst nelisp-phase47-compiler--arg-regs
+  (defconst nelisp-aot-compiler--arg-regs
     '((x86_64 . (rdi rsi rdx rcx r8 r9))
       (aarch64 . (x0 x1 x2 x3 x4 x5 x6 x7))))
 #+end_src
@@ -213,7 +213,7 @@ The swap targets in detail:
 #+end_src
 
 Pure compute: no allocation, no refcount, no clone, no syscall.  All
-8 fit Phase 47 swap rules once f64 ABI lands.
+8 fit AOT swap rules once f64 ABI lands.
 
 *=jit/math.rs= (= 29 LOC body)*
 
@@ -225,7 +225,7 @@ Pure compute: no allocation, no refcount, no clone, no syscall.  All
 
 =nl_jit_float_float= is identity — trivially swappable.
 =nl_jit_float_exp= / =nl_jit_float_log= delegate to Rust libm via
-=f64::exp= / =f64::ln=.  Swap requires Phase 47 =extern-call=
+=f64::exp= / =f64::ln=.  Swap requires AOT =extern-call=
 grammar to support f64 args + f64 return (= §100.A extern-call is
 i64-only; §110.F extends it).  The libm symbols (=exp=, =log=) are
 already linked into the binary via std's libm dependency, so the
@@ -235,10 +235,10 @@ already linked into the binary via std's libm dependency, so the
 
 ** §2.1 Register class model
 
-Add to =lisp/nelisp-phase47-compiler.el=:
+Add to =lisp/nelisp-aot-compiler.el=:
 
 #+begin_src elisp
-  (defconst nelisp-phase47-compiler--reg-class-alist
+  (defconst nelisp-aot-compiler--reg-class-alist
     '((x86_64
        (gp  . (rdi rsi rdx rcx r8 r9))
        (xmm . (xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)))
@@ -257,9 +257,9 @@ The existing =arg-regs= constant is retained as a thin alias for
 the =gp= class (= avoids touching i64-only call sites).  New f64
 emit goes through the class-aware lookup.
 
-** §2.2 Phase 47 grammar additions
+** §2.2 AOT grammar additions
 
-Add 7 new value / IR forms to =nelisp-phase47-compiler--parse-value=
+Add 7 new value / IR forms to =nelisp-aot-compiler--parse-value=
 dispatch:
 
 *1. =(f64 LITERAL-OR-VAR)= — value form*
@@ -353,7 +353,7 @@ xmm0/xmm1 without spilling).  Spill is deferred to a future Doc 112
 when complex f64 expressions arrive.
 
 Stack alignment at call (= 16-byte boundary) is preserved by the
-existing Phase 47 prologue (= already enforces 16-byte alignment for
+existing AOT prologue (= already enforces 16-byte alignment for
 GP-only code).  =CALL exp= within =(f64-call)= works without
 additional pad insertion.
 
@@ -361,10 +361,10 @@ additional pad insertion.
 
 Reuses §100.A + §100.D infrastructure:
 - ELF: =SHN_UNDEF= entry + =R_X86_64_PLT32= relocation for libm
-  externs.  Phase 47's existing relocation emit handles the
+  externs.  AOT's existing relocation emit handles the
   encoding once symbol name + addend are filled in.
 - Mach-O 64: =N_UNDF= entry + =X86_64_RELOC_BRANCH= for libm
-  externs.  Phase 47's §100.D Mach-O writer covers this.
+  externs.  AOT's §100.D Mach-O writer covers this.
 - AArch64: =R_AARCH64_CALL26= for BL targets.
 
 The libm symbol names (=exp=, =log=) link against the C library
@@ -390,20 +390,20 @@ constraint when emitting f64 entries (= existing string entries are
 
 *Scope*:
 
-1. Add =nelisp-phase47-compiler--reg-class-alist= (§2.1) to
-   =lisp/nelisp-phase47-compiler.el=.
+1. Add =nelisp-aot-compiler--reg-class-alist= (§2.1) to
+   =lisp/nelisp-aot-compiler.el=.
 2. Extend =nelisp-asm-x86_64.el= with xmm register encoding helpers:
    =(asm-x86-64-movsd-reg-reg DST SRC)= (= F2 0F 10 /r),
    =(asm-x86-64-movsd-rip-load DST DISP32)= (= F2 0F 10 /r mod=00 rm=101).
-3. Extend =nelisp-phase47-compiler--emit-value= to dispatch =(f64
+3. Extend =nelisp-aot-compiler--emit-value= to dispatch =(f64
    :form 'literal)= → emit rodata entry + RIP-relative MOVSD.
 4. Add 8-byte rodata alignment support to the rodata serializer.
 
 *LOC delta*:
-- =lisp/nelisp-phase47-compiler.el=          : +50 (= reg-class + emit-value f64 arm)
+- =lisp/nelisp-aot-compiler.el=          : +50 (= reg-class + emit-value f64 arm)
 - =lisp/nelisp-asm-x86_64.el=                : +40 (= movsd helpers)
 - =lisp/nelisp-cc-f64-smoke.el=              : +20 (new, smoke test source)
-- =test/nelisp-phase47-compiler-f64-tests.el=: +60 (new, 5+ smoke tests)
+- =test/nelisp-aot-compiler-f64-tests.el=: +60 (new, 5+ smoke tests)
 
 *Net Rust*: *0* (= no Rust changes).
 
@@ -419,7 +419,7 @@ constraint when emitting f64 entries (= existing string entries are
 
 1. Add =asm-x86-64-addsd-reg-reg / subsd / mulsd / divsd= helpers to
    =lisp/nelisp-asm-x86_64.el=.
-2. Extend =nelisp-phase47-compiler--emit-value= to dispatch
+2. Extend =nelisp-aot-compiler--emit-value= to dispatch
    =(f64-binop :op ADD|SUB|MUL|DIV)= → emit ADDSD / SUBSD / MULSD /
    DIVSD between xmm0 and xmm1 (= 2-operand convention).
 3. Extend the =(defun)= prologue to map f64-typed parameters to xmm
@@ -429,8 +429,8 @@ constraint when emitting f64 entries (= existing string entries are
 
 *LOC delta*:
 - =lisp/nelisp-asm-x86_64.el=                : +30 (= 4 binop helpers)
-- =lisp/nelisp-phase47-compiler.el=          : +40 (= parse + emit + param typing)
-- =test/nelisp-phase47-compiler-f64-tests.el*: +80 (= 4 ops × 2 cases each)
+- =lisp/nelisp-aot-compiler.el=          : +40 (= parse + emit + param typing)
+- =test/nelisp-aot-compiler-f64-tests.el*: +80 (= 4 ops × 2 cases each)
 
 *Net Rust*: *0*.
 
@@ -446,7 +446,7 @@ constraint when emitting f64 entries (= existing string entries are
 
 1. Add =asm-x86-64-ucomisd-reg-reg= + =asm-x86-64-setcc-byte= +
    =asm-x86-64-movzx-rax-al= helpers.
-2. Extend =nelisp-phase47-compiler--emit-value= to dispatch
+2. Extend =nelisp-aot-compiler--emit-value= to dispatch
    =(f64-cmp :op OP)= → emit UCOMISD + SETcc + MOVZX sequence per
    §2.2.6.
 3. =:EQ-EPS= specifically: handle abs-mask rodata entry + 2-step
@@ -454,8 +454,8 @@ constraint when emitting f64 entries (= existing string entries are
 
 *LOC delta*:
 - =lisp/nelisp-asm-x86_64.el=                : +35 (= ucomisd + setcc + movzx + andps)
-- =lisp/nelisp-phase47-compiler.el=          : +50 (= f64-cmp parse + emit + 6 cmp variants)
-- =test/nelisp-phase47-compiler-f64-tests.el*: +100 (= 6 ops × edge cases)
+- =lisp/nelisp-aot-compiler.el=          : +50 (= f64-cmp parse + emit + 6 cmp variants)
+- =test/nelisp-aot-compiler-f64-tests.el*: +100 (= 6 ops × edge cases)
 
 *Net Rust*: *0*.
 
@@ -471,15 +471,15 @@ constraint when emitting f64 entries (= existing string entries are
 1. Extend =lisp/nelisp-asm-arm64.el= with =asm-arm64-fmov-reg-reg=,
    =asm-arm64-fadd / fsub / fmul / fdiv=, =asm-arm64-fcmp=,
    =asm-arm64-cset-reg-cond= helpers.
-2. Extend Phase 47 emit dispatch to use AArch64 SIMD&FP encoding when
-   =nelisp-phase47-compiler--arch= is =aarch64=.
+2. Extend AOT emit dispatch to use AArch64 SIMD&FP encoding when
+   =nelisp-aot-compiler--arch= is =aarch64=.
 3. Add rodata-load equivalent (= =LDR d0, [rip + disp]=-style via
    PC-relative literal pool).
 
 *LOC delta*:
 - =lisp/nelisp-asm-arm64.el=                 : +80 (= 6+ FP helpers)
-- =lisp/nelisp-phase47-compiler.el=          : +30 (= aarch64 arm of f64 emit dispatch)
-- =test/nelisp-phase47-compiler-f64-tests.el*: +0 (= existing tests reused with arch override)
+- =lisp/nelisp-aot-compiler.el=          : +30 (= aarch64 arm of f64 emit dispatch)
+- =test/nelisp-aot-compiler-f64-tests.el*: +0 (= existing tests reused with arch override)
 
 *Net Rust*: *0*.
 
@@ -556,7 +556,7 @@ constraint when emitting f64 entries (= existing string entries are
 *LOC delta*:
 - =lisp/nelisp-cc-jit-math.el=             : +50 (new)
 - =scripts/compile-elisp-objects.el=         : +9 (= 3 manifest entries)
-- =lisp/nelisp-phase47-compiler.el=          : +30 (= f64-call extern dispatch)
+- =lisp/nelisp-aot-compiler.el=          : +30 (= f64-call extern dispatch)
 - =build-tool/src/lib.rs=                    : +12 (= 3 extern + 3 pub fn)
 - =build-tool/src/jit/bridge.rs=             : ~5
 - =build-tool/src/jit/math.rs=               : *−29* (DELETED)
@@ -604,7 +604,7 @@ After §110.F:
 ** §5.1 Register pressure with mixed-class function bodies
 
 Functions like =nl_jit_float_eq_eps= use xmm0 + xmm1 + rax
-simultaneously.  Phase 47's existing register allocator tracks GP
+simultaneously.  AOT's existing register allocator tracks GP
 liveness only; teaching it about xmm liveness is a structural
 change.
 
@@ -651,7 +651,7 @@ Mach-O; actuals were within ~15% (= confirms our methodology).  Doc
 Each stage commit records actuals; deviations >25% trigger a DRAFT
 revision before the next stage.
 
-** §5.6 What if Phase 47 reveals a fundamental design issue at §110.B?
+** §5.6 What if AOT reveals a fundamental design issue at §110.B?
 
 E.g., the existing IR data structures (= =(:kind ...)= plists)
 don't accommodate per-node register class.
@@ -670,7 +670,7 @@ Doc 100 v1 → v2).
 
 - *Vector / SIMD operations*: 128-bit xmm vector ops (= ADDPS etc.)
   are not introduced.  Future Doc 112+ if vector compute reaches
-  Phase 47.
+  AOT.
 
 - *Long double / x87*: x87 80-bit FP stack is not introduced.  All
   Doc 110 paths use SSE2 scalar double, not x87.
@@ -695,7 +695,7 @@ Doc 100 v1 → v2).
   swap pattern (§100.C truncate-int).
 - =build-tool/src/jit/float.rs= — §3.E swap target body (20 LOC).
 - =build-tool/src/jit/math.rs= — §3.F swap target body (29 LOC).
-- =lisp/nelisp-phase47-compiler.el= line 121 — current =arg-regs=
+- =lisp/nelisp-aot-compiler.el= line 121 — current =arg-regs=
   constant (= GP-only) replaced by §2.1 reg-class-alist.
 - =lisp/nelisp-asm-x86_64.el= line 103 — explicit "GP only" scope
   declaration that §110.A-C expand.

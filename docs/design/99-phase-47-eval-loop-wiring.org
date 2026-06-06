@@ -1,11 +1,11 @@
-#+TITLE: Doc 99 — Phase 47 native compile を eval loop に配線
+#+TITLE: Doc 99 — AOT native compile を eval loop に配線
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-11
 
 * Status
 
 - *State*: DRAFT 2026-05-11
-- *Parent*: Doc 85 (= Phase 47 feasibility spike VALIDATED) /
+- *Parent*: Doc 85 (= AOT feasibility spike VALIDATED) /
   Doc 96 (= chain demonstrator SHIPPED) / Doc 97 (= Sexp → asm
   compiler with §97.a/b/c SHIPPED)
 - *Sibling*: Doc 90 (= Phase 2 postship audit) §3 deferrals D1/D2/D3
@@ -21,9 +21,9 @@
 
 ** §0.1 The "配線" gap
 
-Phase 47 chain (Doc 91-97) currently ships a *frontend* that takes
+AOT chain (Doc 91-97) currently ships a *frontend* that takes
 elisp Sexp source and produces *standalone* Linux ELF executables.
-Run `nelisp-phase47-build-program' on `(seq (write "hi\n") (exit 0))'
+Run `nelisp-aot-build-program' on `(seq (write "hi\n") (exit 0))'
 and you get a `/tmp/x' file the kernel can exec directly.
 
 What it does NOT ship: a way for the `nelisp' interpreter to *call
@@ -37,7 +37,7 @@ control flow.  There is no:
 - Calling-convention / ABI document for how the interpreter would
   hand argument lists + receive return values
 
-Without one of these, "Phase 47 unlocks Doc 90 D1/D2/D3 deferrals"
+Without one of these, "AOT unlocks Doc 90 D1/D2/D3 deferrals"
 cannot land — there is no path for the `nelisp' binary to delegate
 a `bind_formals' call to elisp-compiled code in place of the Rust
 hot-path.
@@ -59,7 +59,7 @@ hot-path.
 #+end_src
 
 Every byte of code in the binary derives from elisp source the
-Phase 47 chain compiled.  Rust is build-time only (= cargo as
+AOT chain compiled.  Rust is build-time only (= cargo as
 self-host check) and disappears once the chain bootstraps itself.
 
 This satisfies Doc 77c v1.0 condition #4 (= 4-core C runtime +
@@ -101,7 +101,7 @@ its own slice; cumulative expected timeline:
 
 * §1 Background
 
-** §1.1 Phase 47 chain — current capability
+** §1.1 AOT chain — current capability
 
 The chain is *complete* for the standalone-binary use case.  Each
 component is feature-grade per its parent doc:
@@ -115,8 +115,8 @@ component is feature-grade per its parent doc:
 | 94  | =lisp/nelisp-crt0.el=             |  510 | x86_64 _start |
 | 94  | =lisp/nelisp-crt0-arm64.el=       |  339 | arm64 _start |
 | 95  | =lisp/nelisp-sexp-dsl.el=         | 2348 | Sexp layout DSL (= structures hash-tables, vectors, conses) |
-| 96  | =lisp/nelisp-phase47-build.el=    |  245 | chain orchestrator (3 hand-crafted demos) |
-| 97  | =lisp/nelisp-phase47-compiler.el= | 1091 | Sexp → asm (§97.a/b/c SHIPPED) |
+| 96  | =lisp/nelisp-aot-build.el=    |  245 | chain orchestrator (3 hand-crafted demos) |
+| 97  | =lisp/nelisp-aot-compiler.el= | 1091 | Sexp → asm (§97.a/b/c SHIPPED) |
 
 Total: ~7,500 LOC of pure elisp.  Verified end-to-end by the demo
 suite in Doc 96 — `(fact 5)' compiles to native x86_64, execs,
@@ -126,7 +126,7 @@ exits 120.
 
 #+begin_src text
   ┌────────────────────────────┐
-  │ Phase 47 chain (Doc 91-97) │ ←  Sexp source
+  │ AOT chain (Doc 91-97) │ ←  Sexp source
   └─────────────┬──────────────┘
                 ↓
        /tmp/foo (= ET_EXEC)   ← can run via fork+exec
@@ -146,7 +146,7 @@ system.  `cargo build' has no way to consume compiled elisp code.
 Doc 90 §3.1〜§3.3 (= D1/D2/D3 deferrals) all cite the same blocker:
 
 #+begin_quote
-Phase 47 unlock 条件: Phase 3 D-B (= Doc 77c master) が ship し
+AOT unlock 条件: Phase 3 D-B (= Doc 77c master) が ship し
 native compiler 経由で elisp =NAME= が Rust 同等 perf で動く時点。
 #+end_quote
 
@@ -159,7 +159,7 @@ second half is what Doc 99 specifies — the wiring layer.
 
 NeLisp already burned the Cranelift bridge (Doc 28 §3.7.b cited
 in =bin/nelisp.rs= header comment: "post-Cranelift全削除").  The
-Phase 47 chain replaces that JIT with AOT pure-elisp asm emission.
+AOT chain replaces that JIT with AOT pure-elisp asm emission.
 This is *the* architectural commitment — Doc 99 reinforces it
 rather than reopens it.
 
@@ -177,14 +177,14 @@ future option for §99.E if a use case emerges.
 #+begin_src text
   Source code that ships in nelisp repo:
     lisp/nelisp-*.el        ← elisp source (stdlib + builtin shims)
-    lisp/nelisp-cc-*.el     ← Phase 47 chain (Doc 91-97)
+    lisp/nelisp-cc-*.el     ← AOT chain (Doc 91-97)
     build-tool/src/         ← Rust (= shrinks toward zero)
 
   Build-time process (= cargo build):
     1. cargo compiles build-tool/src/ → emits temporary Rust nelisp
     2. Temporary nelisp loads stdlib via existing frozen-heap path
-    3. Temporary nelisp runs Phase 47 chain on selected stdlib *.el
-    4. Phase 47 emits *.o (= ET_REL ELF objects)
+    3. Temporary nelisp runs AOT chain on selected stdlib *.el
+    4. AOT emits *.o (= ET_REL ELF objects)
     5. Cargo links *.o into final nelisp binary alongside Rust .rlib
     6. Final nelisp binary boots, links to elisp-compiled functions
 
@@ -223,7 +223,7 @@ Two options for the C ABI shape:
 Doc 99 picks *Option B* because:
 - It matches the elisp side's natural argument representation (=
   `args' is already a cons list before destructuring).
-- Phase 47 chain doesn't have a struct passing convention yet —
+- AOT chain doesn't have a struct passing convention yet —
   passing a single tagged-pointer Sexp value is the lowest-friction
   starting point.
 - Error propagation via env-side flag is already how the Rust
@@ -231,7 +231,7 @@ Doc 99 picks *Option B* because:
 
 The exact `Sexp' tag layout + `Env' pointer layout are pinned by
 Doc 95 (= Sexp DSL) and existing Rust `eval/sexp.rs' definitions.
-§99.B must publish a *frozen* layout document so the Phase 47
+§99.B must publish a *frozen* layout document so the AOT
 compiler can emit matching field offsets.
 
 ** §2.3 Why static link, not dlopen
@@ -303,10 +303,10 @@ test fixtures stay green because ET_EXEC code path is untouched.
 *Scope*:
 
 1. Add =scripts/compile-elisp-objects.el= — script that:
-   - Loads Phase 47 chain (= require nelisp-phase47-compiler).
+   - Loads AOT chain (= require nelisp-aot-compiler).
    - Reads a manifest (`build-tool/elisp-objects.toml' or similar)
      listing `.el' files to compile.
-   - For each, runs `nelisp-phase47-compile-sexp' (extended to emit
+   - For each, runs `nelisp-aot-compile-sexp' (extended to emit
      `.o' instead of executable) into `target/elisp-objects/X.o'.
 2. Add =build-tool/build.rs= step:
    - Detect manifest.
@@ -362,7 +362,7 @@ Process:
 
 1. Write elisp equivalent of the chosen `bi_*' as a stand-alone
    function (= `lisp/nelisp-cc-XXX.el').
-2. Phase 47 chain compiles it to `.o' via §99.B's manifest.
+2. AOT chain compiles it to `.o' via §99.B's manifest.
 3. Replace the Rust `bi_XXX' implementation with `extern "C"' call
    that hands `[Sexp]' + `&mut Env' across.
 4. Verify cargo test (lib, single-threaded) stays 679/679.
@@ -370,7 +370,7 @@ Process:
    expected value.
 
 *LOC delta*: −20〜−50 Rust (= the deleted `bi_*' body) + +30〜+60
-elisp (= the equivalent + Phase 47 chain glue).  Net likely
+elisp (= the equivalent + AOT chain glue).  Net likely
 positive on first swap but the *machinery* is fully in place.
 
 *Verification gate*:
@@ -402,7 +402,7 @@ Each becomes a *separate sub-stage doc* (= Doc 100, 101, 102, ...)
 following the §99.C template:
 
 - elisp equivalent
-- Phase 47 compile manifest entry
+- AOT compile manifest entry
 - Rust delete + extern "C" replace
 - cargo test + perf gate
 
@@ -433,19 +433,19 @@ deferrals consume their Rust hot paths.
 ** §4.1 Single source of truth
 
 In Arch C, every byte of code in `nelisp' descends from
-`lisp/*.el' via the Phase 47 chain.  No second-language redundancy
+`lisp/*.el' via the AOT chain.  No second-language redundancy
 (= Rust copy of an elisp builtin), no "is the Rust or the elisp
 canonical" ambiguity.  Source = elisp, binary = compiled elisp,
 runtime = compiled elisp executing.
 
 ** §4.2 Self-hosting fixed point
 
-Once the Phase 47 chain itself is among the things the binary
+Once the AOT chain itself is among the things the binary
 compiles, `nelisp' can re-produce its own binary from its own
 source.  Bootstrap is fixed-point closed:
 
 #+begin_src text
-  nelisp(N)  +  nelisp-phase47-compiler.el  →  nelisp(N+1)
+  nelisp(N)  +  nelisp-aot-compiler.el  →  nelisp(N+1)
             sources both versions are identical
 #+end_src
 
@@ -484,28 +484,28 @@ exact memory layout of `Sexp' / `Env'.  Any field reorder in
 *Mitigation*: §99.B publishes a frozen layout document committed to
 the repo (= `docs/arch/sexp-abi.md').  CI gate detects layout
 drift via a generated assertion in Rust (`const_assert!' on field
-offsets).  Phase 47 chain reads the same frozen doc.
+offsets).  AOT chain reads the same frozen doc.
 
 ** §5.2 elisp compile errors at build time
 
-Phase 47 chain currently aborts on unsupported forms (§97 v1
+AOT chain currently aborts on unsupported forms (§97 v1
 language is very restricted).  Selecting Rust functions for
 §99.D swap requires they fit the supported language subset.
 
 *Mitigation*: §99.C picks the simplest possible function for the
 spike.  §99.D swap order matches available compiler features —
-the Phase 47 chain evolves alongside (= §97.d / §97.e land before
+the AOT chain evolves alongside (= §97.d / §97.e land before
 expensive D1 env.rs migration).
 
 ** §5.3 cargo build ordering
 
 `build.rs' runs *before* `rustc' on `nelisp-build-tool'.  But the
 script `compile-elisp-objects.el' needs a working `emacs --batch'
-that knows about the Phase 47 chain — meaning it needs the
+that knows about the AOT chain — meaning it needs the
 *current* state of `lisp/*.el' as source files (= no chicken-and-
 egg on the binary).
 
-*Mitigation*: `emacs --batch -Q -L lisp -l nelisp-phase47-compiler'
+*Mitigation*: `emacs --batch -Q -L lisp -l nelisp-aot-compiler'
 runs the chain *inside host Emacs*, not inside `nelisp'.  No
 chicken-and-egg.  The compiled `.o' is what gets linked into
 the *new* `nelisp' binary.
@@ -533,9 +533,9 @@ target) waits for x86_64 spike validation.
 
 ** §6.2 Cumulative gates
 
-- *Doc 90 D1/D2/D3 unlock*: each deferral's "Phase 47 unlock 条件"
+- *Doc 90 D1/D2/D3 unlock*: each deferral's "AOT unlock 条件"
   clause is satisfied by §99.C SHIPPED.
-- *Phase 47 production engagement*: Doc 96 §0.2 thesis ("a single
+- *AOT production engagement*: Doc 96 §0.2 thesis ("a single
   pure-elisp tool chain produces production native code") moves
   from "demonstrator" to "production" once §99.D substantial
   rollout completes.
@@ -544,9 +544,9 @@ target) waits for x86_64 spike validation.
 
 ** §7.1 Parent docs
 
-- Doc 85 — Phase 47 feasibility spike (= VALIDATED 2026-05-11)
+- Doc 85 — AOT feasibility spike (= VALIDATED 2026-05-11)
 - Doc 90 — Phase 2 postship audit (= D1/D2/D3 deferral unlock conditions)
-- Doc 96 — Phase 47 build orchestrator (= chain demonstrator SHIPPED)
+- Doc 96 — AOT build orchestrator (= chain demonstrator SHIPPED)
 - Doc 97 — Sexp → asm compiler (= §97.a/b/c SHIPPED, §97.d/e DRAFT)
 - Doc 98 — Stage 9.5 real frozen-heap baker (= sibling, SHIPPED 2026-05-11)
 

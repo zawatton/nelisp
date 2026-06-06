@@ -840,7 +840,7 @@ Stage 7.2.b takeover for the `read-all' style read used by `load'.
 
 Doc 49 Wave 7 follow-up (2026-05-22): when the
 `nelisp--read-all-from-string-native' builtin (= Doc 116 §116.A+B
-Phase 47 native reader) is present, delegate to it.  The native
+AOT native reader) is present, delegate to it.  The native
 path is what `crate::reader::read_all' already uses to bake-load
 elisp at binary startup; before this delegation the runtime `load'
 path stayed on the pure-elisp tokenizer (Doc 49 §7 profile: 142ms

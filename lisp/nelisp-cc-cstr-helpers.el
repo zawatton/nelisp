@@ -18,7 +18,7 @@
 ;; ~12 handlers that each need to materialise a NUL-terminated path
 ;; from an elisp Sexp::Str argument).  Today the Rust shim allocates
 ;; via `CString::new(s)?`; with §122.I shipping, the entire path can
-;; live in Phase 47 elisp through `extern-call' + raw byte ops.
+;; live in AOT elisp through `extern-call' + raw byte ops.
 ;;
 ;; Surface:
 ;;
@@ -89,7 +89,7 @@
 ;; Linux-x86_64 only for the same reason as the rest of the §122
 ;; family — the underlying §101.C / §122.E / §125.A grammar ops only
 ;; have x86_64 emit paths today; aarch64 lands with the rest of the
-;; Phase 47 aarch64 sweep.
+;; AOT aarch64 sweep.
 
 ;;; Code:
 
@@ -114,7 +114,7 @@
     ;; Returns `buf' unchanged (= the freshly-allocated pointer)
     ;; so the outer `nelisp_cstr_from_sexp' can return it as the
     ;; public buffer-pointer result without a separate `let'
-    ;; binding (= Phase 47's `let' only accepts compile-time
+    ;; binding (= AOT's `let' only accepts compile-time
     ;; constant bindings, so runtime intermediate values must
     ;; thread through call args).
     ;;
@@ -176,7 +176,7 @@
     ;; composition with sibling syscall side effects.
     (defun nelisp_cstr_drop (buf-ptr size)
       (dealloc-bytes buf-ptr size 1)))
-  "Phase 47 source for the Doc 122 §122.I CString construction
+  "AOT source for the Doc 122 §122.I CString construction
 helpers.
 
 Three-entry `(seq DEFUN ...)' manifest:
@@ -194,13 +194,13 @@ Plus an optional sibling for the dealloc side:
 - `nelisp_cstr_drop (buf-ptr size) -> 1' — convenience wrapper
   around `(dealloc-bytes BUF-PTR SIZE 1)'.
 
-Composes only existing Phase 47 grammar ops — no new opcode added.
+Composes only existing AOT grammar ops — no new opcode added.
 ABI deps: §101.C (str-len / str-byte-at), §122.E (ptr-write-u8),
 §125.A (alloc-bytes / dealloc-bytes).
 
 Unlocks Doc 117 §117.D.gaps.3 Tier C — the file-I/O sweep can now
 materialise libc `const char *path' arguments from Sexp::Str
-inputs entirely in Phase 47 elisp via `extern-call' + this helper,
+inputs entirely in AOT elisp via `extern-call' + this helper,
 deleting the Rust `CString::new(s)?' shims in
 `build-tool/src/eval/builtins.rs::bi_open' / `bi_stat' / `bi_mkdir' /
 the ~12 sibling I/O handlers.")

@@ -59,11 +59,11 @@ f32 f64 char32                                         ; optional scalars
 
 * Runtime / ABI intrinsics
 
-These lower to existing Phase 47 grammar ops (zero new Rust); raw box/slot
+These lower to existing AOT grammar ops (zero new Rust); raw box/slot
 operands are passed as =usize= / =i64= addresses (the same convention the
 atomics, =sys:peek-u64=, and =sys:alloc= use), not =(ptr T)= values.
 
-Floating point (Phase 47 f64 SSE grammar):
+Floating point (AOT f64 SSE grammar):
 - =(sys:f64+ A B)= =(sys:f64- A B)= =(sys:f64* A B)= =(sys:f64/ A B)= —
   binary f64 arithmetic, =f64 x f64 -> f64=.  Plain =+ - * /= reject float
   operands (=E-SYS-TYPE-008=); use these forms.

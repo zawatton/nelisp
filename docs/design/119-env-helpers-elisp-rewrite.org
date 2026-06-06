@@ -7,16 +7,16 @@
 =build-tool/src/eval/env_helpers.rs= is 880 LOC.  Of that:
 
 - ~430 LOC: =mirror_*= helpers (globals dictionary read/write).
-  Already dispatch the hit-path to Phase 47 (Doc 111 §111.E).  But
+  Already dispatch the hit-path to AOT (Doc 111 §111.E).  But
   the *miss-path* (= auto-vivify a new symbol-entry) is still Rust:
   =mirror_insert_new_entry= (~12 LOC) + =mirror_prepend_to_bucket=
   (~45 LOC) +  =Sexp::record / Sexp::cons= calls.
 
 - ~250 LOC: =frame_*_rust_direct= helpers (lexical frame stack
-  push/pop/bind/lookup).  Already dispatch most ops to Phase 47.
+  push/pop/bind/lookup).  Already dispatch most ops to AOT.
   Remaining Rust: =frame_stack_ensure_capacity= bootstrap path,
   =make_empty_frame_record=, =frame_bind_into= / =frame_lookup_in=
-  inner-bucket walks (= called when Phase 47 misses).
+  inner-bucket walks (= called when AOT misses).
 
 - ~200 LOC: snapshot/diff helpers (=mirror_snapshot_globals=,
   =mirror_diff_view=, =wrap_alist_cells=).  =mirror_snapshot_globals=
@@ -26,7 +26,7 @@
 
 ** §119.A — auto-vivify path → elisp
 
-The Phase 47 helpers currently return `1` on hit and `0` on miss; the
+The AOT helpers currently return `1` on hit and `0` on miss; the
 caller falls back to Rust =mirror_prepend_to_bucket=.  Push the
 prepend step into elisp so the helper handles both paths.
 
@@ -39,7 +39,7 @@ New elisp helpers needed:
 - =nelisp_mirror_alloc_entry= (= replaces =mirror_insert_new_entry=)
 - =nelisp_mirror_bucket_prepend= (= replaces =mirror_prepend_to_bucket=)
 
-Both already have Phase 47 grammar coverage (=record-make=,
+Both already have AOT grammar coverage (=record-make=,
 =vector-make=, =cons-make=, =int-logand=, =mut-str-*= unused here,
 =ptr-read/write-u64= for bucket-count slot).
 
@@ -71,7 +71,7 @@ Called from =push_captured= only.
 
 Two paths:
 1. Move whole body to elisp =nelisp-env-wrap-alist-cells=.  Requires
-   =cell-make= (already in Phase 47 §122.E).
+   =cell-make= (already in AOT §122.E).
 2. Keep Rust but inline (= no separate helper).  Lower priority since
    we'd save ~5 LOC of helper-call overhead.
 
@@ -104,7 +104,7 @@ Target: −137 + −85 + −50 = −272 LOC verified deletions.
 
 - =impl Env= block existence.  Method dispatch must go through `&self`
   or `&mut self`, which requires a Rust impl block on a Rust struct.
-  The end state is "1-line method body that delegates to Phase 47 +
+  The end state is "1-line method body that delegates to AOT +
   pointer plumbing", which is the floor we can't pass.
 
 * §119.4 Sequencing + LOC budget
@@ -123,12 +123,12 @@ production compile unit drops further via §D.
 * §119.5 Risk + mitigation
 
 - §119.A SIGSEGV risk: Doc 124.F-blocker (NlBox Clone sweep) shows that
-  Phase 47 composed paths can crash.  Mitigate by shipping each helper
+  AOT composed paths can crash.  Mitigate by shipping each helper
   swap individually + smoke-test before composing.
 
 - =mirror_prepend_to_bucket= mutates =NlVector.value= via
   =with_value_mut= — this is the same pattern that crashed in §124.F
-  when composed with another Phase 47 call.  Pin investigation result
+  when composed with another AOT call.  Pin investigation result
   before §A ships.
 
 * §119.6 Status

@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-lambda.el --- Phase 47 nl_sf_lambda swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-lambda.el --- AOT nl_sf_lambda swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_lambda' Rust body in
+;; AOT replacement for the `sf_lambda' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -25,7 +25,7 @@
 ;; `args' is the raw unevaluated argument list for `(lambda FORMALS BODY...)' —
 ;; a Sexp::Cons with car=FORMALS, cdr=(BODY...) or Nil.
 ;;
-;; The Phase 47 body builds `(closure captured FORMALS BODY...)':
+;; The AOT body builds `(closure captured FORMALS BODY...)':
 ;;   1. Checks args is Cons (tag 7).
 ;;   2. Captures lexical env into `out' via `nl_env_capture_lexical'.
 ;;   3. `nl_cons_prepend_clone(out, args, out)' → out = (captured . args)
@@ -134,7 +134,7 @@
            args out s1)
         1)))
 
-  "Phase 47 source for `nl_sf_lambda' (eval/special_forms.rs sf_lambda → elisp).
+  "AOT source for `nl_sf_lambda' (eval/special_forms.rs sf_lambda → elisp).
 
 Six defuns (seq form).  Uses nl_cons_prepend_clone for refcount-safe cons building.
 

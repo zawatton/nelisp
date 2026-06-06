@@ -50,7 +50,7 @@
 ;; `record-slot-set' (= Doc 124.F-blocker even-arity fix; see
 ;; `nelisp-cc-frame-push.el').  The `_dispatch' sub-defun is 5-arg
 ;; (= odd) so the runtime `sub rsp, 8' rsp-alignment kicks in via
-;; the `nelisp-phase47-compiler--current-defun-arity' dynvar; see
+;; the `nelisp-aot-compiler--current-defun-arity' dynvar; see
 ;; `nelisp-cc-frame-push.el' commentary for the pattern.  Doc 124.F-
 ;; blocker even-arity fix applies to defuns that *issue* alignment-
 ;; sensitive ops (= `record-make' / `cons-make'); the outer defun
@@ -111,7 +111,7 @@
       (nelisp_mirror_set_value_or_insert_dispatch
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        mirror-ptr sym-ptr scratch-vec-ptr 0 0)))
-  "Phase 47 source for Doc 119 §119.A `mirror_set_value_or_insert'.
+  "AOT source for Doc 119 §119.A `mirror_set_value_or_insert'.
 
 Composes `mirror_lookup_entry' (= helper #1) + on-hit `record-slot-set'
 (= helper #7's fast path) + on-miss `mirror_alloc_entry' +

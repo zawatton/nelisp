@@ -82,9 +82,9 @@
      ;; zero-extension contract as `variant_tag' in `sexp.rs:234' —
      ;; 0xFF returns 255, not -1.
      (ptr-read-u8 sexp-ptr 0))
-  "Phase 47 source for the Doc 123 §123.C kind-byte reader kernel.
+  "AOT source for the Doc 123 §123.C kind-byte reader kernel.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills the
+Single-arg function — AOT's SysV AMD64 prologue spills the
 first arg (`sexp-ptr' = raw `*const Sexp' as i64) into the rbp-
 relative slot 0.  The body is one composed value form: pass
 `sexp-ptr' + offset = 0 (= the `#[repr(C, u8)]' discriminant

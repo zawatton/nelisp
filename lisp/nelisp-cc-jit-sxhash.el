@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.A.3 — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.A.3 — AOT-compiled replacement for the Rust
 ;; `nl_jit_sxhash' trampoline in `build-tool/src/jit/predicate.rs'.
 ;; Same `(*const Sexp, *mut Sexp) -> i64' contract:
 ;;
@@ -31,9 +31,9 @@
 ;; per-variant tag mixing provides sufficient entropy for disambiguation.
 ;;
 ;; String hashing delegates to `nelisp_fnv1a' (Doc 115 §115.7) via
-;; `extern-call' — already a Phase 47-compiled object in the binary.
+;; `extern-call' — already a AOT-compiled object in the binary.
 ;;
-;; Phase 47 grammar pieces used:
+;; AOT grammar pieces used:
 ;;   `(sexp-tag PTR)'                   — read tag byte at offset 0.
 ;;   `(sexp-int-unwrap PTR)'            — read i64 payload at offset 8.
 ;;   `(ptr-read-u64 PTR OFF)'           — read u64 at PTR+OFF (Float bits).
@@ -70,7 +70,7 @@
     ;; the result fits in a positive Sexp::Int.
     ;;
     ;; PRIME = 16777619 (= 0x01000193, FNV-1a 32-bit prime).  Chosen
-    ;; because Phase 47's `MOV r/m64, imm32' encoding only supports
+    ;; because AOT's `MOV r/m64, imm32' encoding only supports
     ;; 32-bit immediate values; the FNV-1a 64-bit prime (1099511628211)
     ;; exceeds this range.  The 32-bit prime still provides good mixing
     ;; properties for the sxhash discrimination requirement.
@@ -206,7 +206,7 @@
                       (logand (nl_jit_sxhash_inner arg 1)
                               (- (shl 1 62) 1)))
        0)))
-  "Phase 47 source for the Doc 120 §120.A.3 `nl_jit_sxhash' swap.
+  "AOT source for the Doc 120 §120.A.3 `nl_jit_sxhash' swap.
 
 Implements a multiplicative polynomial hash (FNV-1a prime mixing) over
 the full Sexp variant tree.  Cell unwrapping uses the `sexp-payload-ptr'

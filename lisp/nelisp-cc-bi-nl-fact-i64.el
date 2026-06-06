@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 swap for the Rust `bi_nl_fact_i64' thin shell in
+;; AOT swap for the Rust `bi_nl_fact_i64' thin shell in
 ;; `build-tool/src/eval/builtins.rs'.  Composes:
 ;;   - `sexp-int-unwrap' (§100) to read N from `arg-ptr'
 ;;   - range check (`< 0', `> 20') for the i64-safe factorial range
@@ -39,7 +39,7 @@
                result-slot
                (extern-call nelisp_fact_i64 (sexp-int-unwrap arg-ptr)))
               0))))
-  "Phase 47 source for the `nl-fact-i64' Rust-wrapper swap.
+  "AOT source for the `nl-fact-i64' Rust-wrapper swap.
 
 Two-arg function — `arg-ptr' is a `*const Sexp::Int' pointer (caller
 has tag-validated) and `result-slot' is a caller-owned 32-byte slot.

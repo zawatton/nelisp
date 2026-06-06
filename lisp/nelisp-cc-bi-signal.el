@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 127 — moves the symbol-name tag-dispatch of the `(signal TAG DATA)'
-;; builtin from Rust into a Phase 47 elisp object.  The Rust shim keeps:
+;; builtin from Rust into a AOT elisp object.  The Rust shim keeps:
 ;;
 ;;   * arity validation                      (2 args)
 ;;   * `WrongType' guard                     (TAG must be `Sexp::Symbol')
@@ -21,7 +21,7 @@
 ;;
 ;; The elisp body's job: compare the TAG symbol against the three
 ;; builtin-signal names ("quit", "arith-error", "wrong-type-argument")
-;; using the Phase 47 `symbol-eq' grammar op (= tag-byte guard +
+;; using the AOT `symbol-eq' grammar op (= tag-byte guard +
 ;; byte-wise name comparison) and return an i64 discriminant:
 ;;
 ;;   0  — "quit"
@@ -34,7 +34,7 @@
 ;; (= `&args[0]') so `symbol-eq' can compare by name bytes without
 ;; any heap allocation inside this body.
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   `symbol-eq'   — require both tags = `Sexp::Symbol', then compare
 ;;                   name bytes; returns i64 0 or 1.
 ;;
@@ -68,9 +68,9 @@
          (if (= (symbol-eq tag-ptr wrong-type-ptr) 1)
              2
            3))))
-  "Phase 47 source for the Doc 127 `(signal TAG DATA)' tag-dispatch swap.
+  "AOT source for the Doc 127 `(signal TAG DATA)' tag-dispatch swap.
 
-Four-argument function — Phase 47's SysV AMD64 prologue spills all
+Four-argument function — AOT's SysV AMD64 prologue spills all
 four `*const Sexp' arguments into consecutive rbp-relative slots.
 The body is a nested if-chain that calls `symbol-eq' twice or thrice
 (short-circuit on first match):
@@ -82,7 +82,7 @@ The body is a nested if-chain that calls `symbol-eq' twice or thrice
 `symbol-eq' emits a tag-byte guard (`movzx rax, byte [rdi]'; `cmp
 rax, SEXP_TAG_SYMBOL = 4'; `jnz false') for each input pointer, then
 the byte-loop string comparison (= a PLT call to the shared helper
-emitted by `nelisp-phase47-compiler--emit-string-eq-core').  Both
+emitted by `nelisp-aot-compiler--emit-string-eq-core').  Both
 sides are caller-guaranteed `Sexp::Symbol' values so the tag guard
 always passes.
 

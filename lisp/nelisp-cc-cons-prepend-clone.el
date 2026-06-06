@@ -1,4 +1,4 @@
-;;; nelisp-cc-cons-prepend-clone.el --- Phase 47 nl_cons_prepend_clone swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-cons-prepend-clone.el --- AOT nl_cons_prepend_clone swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `nl_cons_prepend_clone' Rust extern in
+;; AOT replacement for the `nl_cons_prepend_clone' Rust extern in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   #[no_mangle]
@@ -27,7 +27,7 @@
 ;; and writes the resulting `Sexp::Cons(_)' into *out.  Returns 0
 ;; (TRAMPOLINE_OK) on success.
 ;;
-;; Phase 47 equivalent: the G3 `cons-make-with-clone' fused grammar op
+;; AOT equivalent: the G3 `cons-make-with-clone' fused grammar op
 ;; (Doc 120.E) performs exactly this sequence in one composed value form:
 ;;   1. `nl_alloc_consbox' — allocate a fresh NlConsBox (car/cdr = Nil,
 ;;      refcount = 1).
@@ -57,7 +57,7 @@
 ;;
 ;; Net Rust impact: deleting the 10-LOC Rust body in `special_forms.rs'
 ;; (= the `#[no_mangle]' declaration + 3 local bindings + return).
-;; Arity 3 — same as `nl_jit_cons_make' in Doc 120.E; the Phase 47
+;; Arity 3 — same as `nl_jit_cons_make' in Doc 120.E; the AOT
 ;; SysV AMD64 prologue spills the three `*const Sexp' / `*mut Sexp'
 ;; arguments into rbp-relative slots 0..2.
 
@@ -89,7 +89,7 @@
      ;; *cdr-ptr (via `nl_sexp_clone_into') BEFORE overwriting *out, so the
      ;; alias is safe.
      (and (cons-make-with-clone car-ptr cdr-ptr out) 0))
-  "Phase 47 source for `nl_cons_prepend_clone' (special_forms.rs → elisp).
+  "AOT source for `nl_cons_prepend_clone' (special_forms.rs → elisp).
 
 Single defun.  The `cons-make-with-clone' grammar op (Doc 120.E) fuses
 NlConsBox allocation + two `nl_sexp_clone_into' calls + tag/payload write

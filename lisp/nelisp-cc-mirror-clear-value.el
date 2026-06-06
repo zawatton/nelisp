@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group B helper #9 — `mirror_clear_value'.  Phase 47
+;; Doc 111 §111.E Group B helper #9 — `mirror_clear_value'.  AOT
 ;; reimplementation of the env-mirror entry value-slot clearer (=
 ;; `makunbound' fast path).  Mirrors
 ;; `build-tool/src/eval/env_mirror.rs::mirror_clear_value':
@@ -18,7 +18,7 @@
 ;;   }
 ;;
 ;; The Rust impl reads `self.unbound_marker' from the live `Env'.  The
-;; Phase 47 helper cannot access Env state, so the caller passes the
+;; AOT helper cannot access Env state, so the caller passes the
 ;; unbound-marker `*const Sexp' as an explicit argument (= the same
 ;; pattern used by `mirror_clear_value' callers which all have access
 ;; to `self.unbound_marker' anyway).
@@ -52,7 +52,7 @@
       (nelisp_mirror_clear_value_apply
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        unbound-ptr)))
-  "Phase 47 source for Doc 111 §111.E #9 `mirror_clear_value'.
+  "AOT source for Doc 111 §111.E #9 `mirror_clear_value'.
 
 Compose-on-7 with the unbound-marker pointer passed as the new slot
 value.  Returns i64 1 on hit / 0 on miss; production callers ignore

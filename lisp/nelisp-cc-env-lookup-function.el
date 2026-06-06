@@ -1,4 +1,4 @@
-;;; nelisp-cc-env-lookup-function.el --- Wave a-2: Env::lookup_function Phase 47 .o  -*- lexical-binding: t; -*-
+;;; nelisp-cc-env-lookup-function.el --- Wave a-2: Env::lookup_function AOT .o  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Wave a-2 — `Env::lookup_function' body migrated to Phase 47 elisp .o.
+;; Wave a-2 — `Env::lookup_function' body migrated to AOT elisp .o.
 ;; Replaces the 7-LOC Rust body in
 ;; `build-tool/src/eval/env_helpers.rs::Env::lookup_function'.
 ;;
@@ -64,7 +64,7 @@
        (if (= entry 0)
            1
          (and (record-slot-ref entry 1 out-ptr) 0))))
-  "Phase 47 source for Wave a-2 `Env::lookup_function' body.
+  "AOT source for Wave a-2 `Env::lookup_function' body.
 
 R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun
 using `let-rt' CSE hoist of the entry pointer + `record-slot-ref'

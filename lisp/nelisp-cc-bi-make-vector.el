@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 117 §117.A.1 swaps the body of `(make-vector N INIT)' to a
-;; Phase 47-compiled elisp object.  The Rust side keeps only arg
+;; AOT-compiled elisp object.  The Rust side keeps only arg
 ;; validation (= `require_arity' + `as_int' + the negative-length
 ;; check) plus the caller-owned result-slot setup; the allocate +
 ;; fill body itself lives only in the source below.
@@ -64,7 +64,7 @@
       (and (vector-make (sexp-int-unwrap n-ptr) result-slot)
            (nelisp_bi_make_vector_fill
             result-slot init-ptr 0 (sexp-int-unwrap n-ptr)))))
-  "Phase 47 source for the Doc 117 §117.A.1 `(make-vector N INIT)' swap.
+  "AOT source for the Doc 117 §117.A.1 `(make-vector N INIT)' swap.
 
 `n-ptr' is a `*const Sexp' that the Rust dispatcher has already
 validated points at a non-negative `Sexp::Int'.  `init-ptr' is a
@@ -75,7 +75,7 @@ or any other Sexp shape — `vector-slot-set' is shape-agnostic).
 `Sexp::Vector(NlVectorRef)' on return.
 
 The fill helper is a separate defun so the outer entry-point keeps
-the Phase 47 grammar simple (= no inline `while', recursion is the
+the AOT grammar simple (= no inline `while', recursion is the
 canonical loop idiom — see `nelisp-cc-length-cons.el' for the same
 pattern on the read side).  The terminating `1' on the false arm of
 the `<' test feeds the outer `and' so the call site sees a truthy

@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.C — Phase-47-compiled replacements for 4 of 5
+;; Doc 120 §120.C — AOT-compiled replacements for 4 of 5
 ;; `jit/cons.rs' trampolines:
 ;;
 ;;   - `nl_jit_cons_car'     → `nelisp_jit_cons_car'
@@ -24,7 +24,7 @@
 ;;
 ;; Return: TRAMPOLINE_OK=0 / TRAMPOLINE_ERR=1.
 ;;
-;; Phase 47 grammar pieces used:
+;; AOT grammar pieces used:
 ;;   `(sexp-tag PTR)'           — read tag byte at offset 0.
 ;;   `(sexp-write-nil SLOT)'    — tag-only Nil write into the out slot.
 ;;   `(extern-call NAME ...)'   — Rust extern dispatch.
@@ -51,7 +51,7 @@
 ;; `nl_jit_cons_make' SKIP rationale: the constructor does
 ;; `(car.clone(), cdr.clone(), forget pair)' which requires temporary
 ;; Sexp slots to hold the clones before `cons-make' moves them into
-;; the box.  Phase 47 has no local-slot allocation primitive yet
+;; the box.  AOT has no local-slot allocation primitive yet
 ;; (`alloc-bytes' is heap-only) so this trampoline stays in Rust.
 ;; Future option: add a tiny `nl_cons_clone_pair_into_box(car, cdr,
 ;; out)' extern that fuses the 2 clones + the box alloc + the SIMD
@@ -80,7 +80,7 @@
              out)
             0)
          1)))
-  "Phase 47 source for the §120.C `nl_jit_cons_car' swap.
+  "AOT source for the §120.C `nl_jit_cons_car' swap.
 
 NIL fast path writes `Sexp::Nil' to out (= same as Rust's `(car
 nil) = nil' shortcut); Cons arm obtains the car slot pointer via
@@ -106,7 +106,7 @@ to a stable 0 return per §120.A `nl_jit_ref_eq' convention.")
              out)
             0)
          1)))
-  "Phase 47 source for the §120.C `nl_jit_cons_cdr' swap.
+  "AOT source for the §120.C `nl_jit_cons_cdr' swap.
 
 Mirror of `nl_jit_cons_car' with `nl_cons_cdr_ptr' (= `&(*box_ptr
 ).cdr as *const Sexp', cdr lives at `NlConsBox' offset 32) for
@@ -131,7 +131,7 @@ the slot-ptr resolution.")
           (extern-call nl_sexp_clone_into val out)
           0)
        1))
-  "Phase 47 source for the §120.C `nl_jit_cons_setcar' swap.
+  "AOT source for the §120.C `nl_jit_cons_setcar' swap.
 
 Tag-checks `arg' against `nelisp-sexp--tag-cons' (= 7) inline; on
 match calls `cons-set-car' (= `nl_consbox_set_car' extern) to
@@ -150,7 +150,7 @@ Returns 0 on Cons input, 1 on any other variant.")
           (extern-call nl_sexp_clone_into val out)
           0)
        1))
-  "Phase 47 source for the §120.C `nl_jit_cons_setcdr' swap.
+  "AOT source for the §120.C `nl_jit_cons_setcdr' swap.
 
 Mirror of `nl_jit_cons_setcar' with `cons-set-cdr' (= `nl_consbox
 _set_cdr' extern) for the cdr-field overwrite.")

@@ -14,7 +14,7 @@
 ;; implementation of the innermost-first stack walk.  Replaces the
 ;; ~78 LOC Rust shim `nl_frame_stack_find' (+ private
 ;; `lookup_in_frame' helper) that previously lived in
-;; `build-tool/src/eval/env_lexframe_phase47_shims.rs'.
+;; `build-tool/src/eval/env_lexframe_aot_shims.rs'.
 ;;
 ;; Algorithm (= literal transcription of the Rust impl):
 ;;
@@ -54,7 +54,7 @@
     (defun nelisp_frame_stack_find_walk_bucket (box-ptr name-ptr)
       ;; Tail-recursive walk over one bucket's NlConsBox* chain.
       ;; Identical in shape to `nelisp_mirror_walk_bucket' (§111.E #1);
-      ;; duplicated here so this object stands alone for Phase 47
+      ;; duplicated here so this object stands alone for AOT
       ;; compile (= each helper module owns its tight loop).
       ;;
       ;;   box-ptr:  i64.  0 means end-of-bucket.  Otherwise a live
@@ -117,7 +117,7 @@
       ;;
       ;; R11b Wave 9 CSE-hoist: the pre-R11b version re-evaluated
       ;; `nelisp_frame_stack_find_in_frame' on the hit branch (= second
-      ;; call site) because the original Phase 47 source elided the
+      ;; call site) because the original AOT source elided the
       ;; let-binding.  This paid a redundant FNV-1a hash + bucket walk
       ;; per hit — non-negligible since lookup hit rate dominates.
       ;; We now hoist the first call's result into `found' via let-rt
@@ -156,7 +156,7 @@
        name-ptr))
 
     ;; ============================================================
-    ;; Doc 49 Wave 10.1d-retry — capture-to-depth Phase 47 native
+    ;; Doc 49 Wave 10.1d-retry — capture-to-depth AOT native
     ;; ============================================================
     ;;
     ;; `nelisp-lexframe-stack-capture-to-depth' (= R9 95% cumulative
@@ -207,7 +207,7 @@
     ;; because the clones complete before the dst overwrite drops the
     ;; old `*out' value.
     ;;
-    ;; ABI deps satisfied (all existing Phase 47 ops — no new primitives):
+    ;; ABI deps satisfied (all existing AOT ops — no new primitives):
     ;;   §111.B  `record-slot-ref-ptr' — stack.slots[0] → backing,
     ;;                                    frame.slots[0] → ht, ht.slots[0/1]
     ;;                                    → bc/buckets.
@@ -334,7 +334,7 @@
       ;;
       ;; Returns i64 0 = TRAMPOLINE_OK so the `out_call!' bridge yields
       ;; the populated `*out' Sexp value back to the elisp caller.
-      ;; Phase 47 `let' is single-binding only; nest each var.
+      ;; AOT `let' is single-binding only; nest each var.
       (let ((depth (sexp-int-unwrap (vector-ref-ptr in-vec 1))))
         (if (= depth 0)
             0
@@ -346,7 +346,7 @@
                     pair-slot
                     out)
                    0)))))))
-  "Phase 47 source for Doc 111 §111.E #24 / Doc 115 §115.6
+  "AOT source for Doc 111 §111.E #24 / Doc 115 §115.6
 `frame_stack_find_rust_direct' + folded `lookup_in_frame'.
 
 Pure-elisp innermost-first stack walk.  Composes `record-slot-ref-
@@ -359,7 +359,7 @@ bucket walk + per-frame lookup + stack descend).
 
 Replaces the ~78 LOC Rust shim `nl_frame_stack_find' (+ private
 `lookup_in_frame' helper) which has been removed from
-`env_lexframe_phase47_shims.rs'.")
+`env_lexframe_aot_shims.rs'.")
 
 (provide 'nelisp-cc-frame-stack-find)
 

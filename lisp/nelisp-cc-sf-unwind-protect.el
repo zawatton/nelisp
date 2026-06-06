@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-unwind-protect.el --- Phase 47 nl_sf_unwind_protect swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-unwind-protect.el --- AOT nl_sf_unwind_protect swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_unwind_protect' Rust body in
+;; AOT replacement for the `sf_unwind_protect' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -159,7 +159,7 @@
          (extern-call nl_cons_car_ptr args)
          args env out))))
 
-  "Phase 47 source for `nl_sf_unwind_protect'.
+  "AOT source for `nl_sf_unwind_protect'.
 
 8 defuns (seq form) — CPS chain implementing protected body eval,
 unconditional cleanup walk (errors silently discarded via nl_eval_is_truthy

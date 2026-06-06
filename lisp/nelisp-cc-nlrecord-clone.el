@@ -63,7 +63,7 @@
       (nelisp_nlrecord_clone_prog2
        (atomic-fetch-add (+ box-ptr 56) 1)
        box-ptr)))
-  "Phase 47 source for the Doc 124 §124.D NlRecord Clone kernel.
+  "AOT source for the Doc 124 §124.D NlRecord Clone kernel.
 
 Mechanical port of §124.A modulo the REFCOUNT_OFFSET literal (= 56
 for `NlRecord', which trails the `type_tag: Sexp' + `slots: Vec<Sexp>'

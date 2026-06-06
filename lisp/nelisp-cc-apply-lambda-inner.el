@@ -1,4 +1,4 @@
-;;; nelisp-cc-apply-lambda-inner.el --- Phase 47 nl_apply_lambda_inner swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-apply-lambda-inner.el --- AOT nl_apply_lambda_inner swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for `apply_lambda_inner' in `eval/mod.rs'.
+;; AOT replacement for `apply_lambda_inner' in `eval/mod.rs'.
 ;; The Rust body (~27 LOC) has been physically deleted.
 ;;
 ;; The original Rust body was:
@@ -412,7 +412,7 @@
 ;;            as arg0 to its continuation — but that's two extern-calls
 ;;            and the rule requires arg0 per function, which means separate fns).
 ;;
-;; ACTUAL REAL-WORLD SOLUTION: look at how other Phase-47 files handle
+;; ACTUAL REAL-WORLD SOLUTION: look at how other AOT files handle
 ;; situations where more than 6 live vars exist. They don't, because sf_let
 ;; uses nl_let_setup to batch multiple operations into one extern-call.
 ;; WE SHOULD DO THE SAME.
@@ -552,7 +552,7 @@
          (extern-call nl_env_push_captured env captured)
          formals body-list args-list env out))))
 
-  "Phase 47 source for `nl_apply_lambda_inner'
+  "AOT source for `nl_apply_lambda_inner'
 (eval/mod.rs apply_lambda_inner → elisp).
 
 Eleven defuns (seq form).  Replaces the ~27-LOC Rust `apply_lambda_inner'

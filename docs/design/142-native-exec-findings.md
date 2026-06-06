@@ -4,9 +4,9 @@ Date: 2026-06-04
 
 ## Scope
 
-This note records the runtime contract surfaced by Phase 47 object-mode
+This note records the runtime contract surfaced by AOT object-mode
 native defuns that lower ordinary Elisp builtins through the hidden AOT
-boundary in `lisp/nelisp-phase47-compiler.el`.
+boundary in `lisp/nelisp-aot-compiler.el`.
 
 The host proof added in this branch deliberately uses the "host-link a
 generated harness" option from Doc 142 rather than doing in-process ELF

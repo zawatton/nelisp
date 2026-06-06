@@ -1,4 +1,4 @@
-;;; nelisp-cc-env-lookup-value.el --- Wave a-2: Env::lookup_value Phase 47 .o  -*- lexical-binding: t; -*-
+;;; nelisp-cc-env-lookup-value.el --- Wave a-2: Env::lookup_value AOT .o  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Wave a-2 — `Env::lookup_value' body migrated to Phase 47 elisp .o.
+;; Wave a-2 — `Env::lookup_value' body migrated to AOT elisp .o.
 ;; Replaces the 13-LOC Rust body in
 ;; `build-tool/src/eval/env_helpers.rs::Env::lookup_value'.
 ;;
@@ -93,7 +93,7 @@
             (nelisp_env_lkv_mirror mirror-ptr name-ptr out-ptr 0)
           ;; Frame hit: read cell value (refcount-safe).
           (extern-call nl_cell_get_value cell-ptr out-ptr)))))
-  "Phase 47 source for Wave a-2 `Env::lookup_value' body.
+  "AOT source for Wave a-2 `Env::lookup_value' body.
 
 R11a (Doc 49 Wave 9): two-tier `let-rt' CSE hoist:
   1. `nelisp_env_lookup_value' binds the `frame_stack_find' result

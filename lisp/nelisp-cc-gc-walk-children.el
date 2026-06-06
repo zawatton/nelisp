@@ -57,7 +57,7 @@
 ;;
 ;; Cons-make refcount semantics (= MVP byte-copy):
 ;;   `cons-make' raw-copies 32-byte Sexp payloads without nested
-;;   refcount bumps (per `lisp/nelisp-phase47-compiler.el:3579-3635'
+;;   refcount bumps (per `lisp/nelisp-aot-compiler.el:3579-3635'
 ;;   docstring).  In the cycle collector's usage pattern, the input
 ;;   Sexp::Cons is held alive by the calling frame for the duration
 ;;   of this call, so the raw copies of its car/cdr into the new
@@ -122,12 +122,12 @@
      ;;      `result-slot'.  Returns `result-slot' in rax.
      ;;
      ;; Two ptr-read-u64 evaluations of the same `(ptr-read-u64
-     ;; sexp-ptr 8)' form — Phase 47 does not common-subexpression
+     ;; sexp-ptr 8)' form — AOT does not common-subexpression
      ;; eliminate, so each call lowers to a fresh
      ;; `call nl_ptr_read_u64@PLT'.  The redundant read is cheap
      ;; (~2 cycles + cache hit) and avoids the let-binding gap in
-     ;; the Phase 47 grammar (= `let' only supports int-foldable
-     ;; constants per `nelisp-phase47-compiler.el:1290-1310').
+     ;; the AOT grammar (= `let' only supports int-foldable
+     ;; constants per `nelisp-aot-compiler.el:1290-1310').
      (and (sexp-write-nil tail-slot)
           (cons-make (+ (ptr-read-u64 sexp-ptr 8) 32)
                      tail-slot
@@ -135,9 +135,9 @@
           (cons-make (ptr-read-u64 sexp-ptr 8)
                      tail-slot
                      result-slot)))
-  "Phase 47 source for the Doc 123 §123.D walk-children kernel.
+  "AOT source for the Doc 123 §123.D walk-children kernel.
 
-Three-arg function — Phase 47's SysV AMD64 prologue spills
+Three-arg function — AOT's SysV AMD64 prologue spills
 `sexp-ptr' (= raw `*const Sexp' as i64), `result-slot' (= `*mut
 Sexp'), `tail-slot' (= `*mut Sexp' scratch) into rbp-relative
 slots 0/1/2.

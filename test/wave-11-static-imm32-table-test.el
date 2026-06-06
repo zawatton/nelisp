@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; ert + e2e for Doc 49 Wave 11.1 `static-imm32-table-define' /
-;; `static-imm32-table-lookup' Phase 47 primitives.
+;; `static-imm32-table-lookup' AOT primitives.
 ;;
 ;; Coverage:
 ;;
@@ -37,9 +37,9 @@
     (add-to-list 'load-path lisp-dir)))
 
 (require 'nelisp-asm-x86_64)
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
-;; ---- helpers (= mirror nelisp-phase47-compiler-test helpers) ----
+;; ---- helpers (= mirror nelisp-aot-compiler-test helpers) ----
 
 (defun wave-11-static-imm32-table-test--linux-p ()
   "Return non-nil when the host kernel can exec x86_64 ELF64 binaries."
@@ -80,7 +80,7 @@
 
 (ert-deftest wave-11-static-imm32-table/parse-define ()
   "`static-imm32-table-define' parses into a table-define IR node."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(static-imm32-table-define "t" (10 20 30)))))
     (should (eq (plist-get ir :kind) 'table-define))
     (should (equal (plist-get ir :name) "t"))
@@ -89,20 +89,20 @@
 (ert-deftest wave-11-static-imm32-table/parse-define-rejects-non-int ()
   "Non-integer element signals."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(static-imm32-table-define "t" (1 "x" 3)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 (ert-deftest wave-11-static-imm32-table/parse-define-rejects-non-string-name ()
   "Non-string NAME signals."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(static-imm32-table-define t (1 2 3)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 (ert-deftest wave-11-static-imm32-table/parse-lookup ()
   "`static-imm32-table-lookup' inside a defun parses into a table-lookup IR."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun look (i) (static-imm32-table-lookup "t" i))))
          (body (plist-get ir :body)))
     (should (eq (plist-get ir :kind) 'defun))
@@ -116,10 +116,10 @@
 
 (ert-deftest wave-11-static-imm32-table/collect-single-table ()
   "Single table-define lands in the collector output as 4N little-endian bytes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (static-imm32-table-define "t" (#x0A #x14 #x1E))
                     (exit 0))))
-         (collected (nelisp-phase47-compiler--collect-tables ir))
+         (collected (nelisp-aot-compiler--collect-tables ir))
          (offsets (car collected))
          (bytes   (cdr collected)))
     (should (= (length offsets) 1))
@@ -134,17 +134,17 @@
 (ert-deftest wave-11-static-imm32-table/collect-rejects-duplicate-name ()
   "Two table-defines with the same NAME signal."
   (should-error
-   (nelisp-phase47-compiler--collect-tables
-    (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--collect-tables
+    (nelisp-aot-compiler--parse
      '(seq (static-imm32-table-define "t" (1 2))
            (static-imm32-table-define "t" (3 4))
            (exit 0))))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 (ert-deftest wave-11-static-imm32-table/collect-no-tables-returns-empty ()
   "Programs with no tables produce empty collector output."
-  (let* ((ir (nelisp-phase47-compiler--parse '(exit 0)))
-         (collected (nelisp-phase47-compiler--collect-tables ir)))
+  (let* ((ir (nelisp-aot-compiler--parse '(exit 0)))
+         (collected (nelisp-aot-compiler--collect-tables ir)))
     (should (null (car collected)))
     (should (= (length (cdr collected)) 0))))
 
@@ -152,22 +152,22 @@
 
 (ert-deftest wave-11-static-imm32-table/emit-lookup-byte-invariance ()
   "Pass-1 and pass-2 emit identical text byte counts for a table-lookup."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (static-imm32-table-define "t" (1 2 3))
                     (defun look (i) (static-imm32-table-lookup "t" i))
                     (exit (look 0)))))
          (str-offsets nil)
-         (table-collected (nelisp-phase47-compiler--collect-tables ir))
+         (table-collected (nelisp-aot-compiler--collect-tables ir))
          (table-offsets (car table-collected))
-         (defuns (nelisp-phase47-compiler--collect-defuns ir))
+         (defuns (nelisp-aot-compiler--collect-defuns ir))
          (placeholder-vaddrs
           (mapcar (lambda (e) (cons (car e) 0)) table-offsets))
          (real-vaddrs
           (mapcar (lambda (e) (cons (car e) #xABCDEF0123)) table-offsets))
-         (pass1 (nelisp-phase47-compiler--pass
+         (pass1 (nelisp-aot-compiler--pass
                  ir defuns str-offsets 0 placeholder-vaddrs))
          (size1 (nelisp-asm-x86_64-buffer-pos pass1))
-         (pass2 (nelisp-phase47-compiler--pass
+         (pass2 (nelisp-aot-compiler--pass
                  ir defuns str-offsets #x401000 real-vaddrs))
          (size2 (nelisp-asm-x86_64-buffer-pos pass2)))
     (should (= size1 size2))))
@@ -192,7 +192,7 @@
   (let ((path (wave-11-static-imm32-table-test--tmp-binary "lookup0")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (static-imm32-table-define "t" (42 100 200 1 7))
              (defun look (i) (static-imm32-table-lookup "t" i))
@@ -211,7 +211,7 @@
   (let ((path (wave-11-static-imm32-table-test--tmp-binary "lookup2")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (static-imm32-table-define "t" (42 100 200 1 7))
              (defun look (i) (static-imm32-table-lookup "t" i))
@@ -228,7 +228,7 @@
   (let ((path (wave-11-static-imm32-table-test--tmp-binary "lookup4")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (static-imm32-table-define "t" (42 100 200 1 7))
              (defun look (i) (static-imm32-table-lookup "t" i))
@@ -245,7 +245,7 @@
   (let ((path (wave-11-static-imm32-table-test--tmp-binary "regress")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (static-imm32-table-define "t" (1 2 3))
              (defun look (i) (static-imm32-table-lookup "t" i))

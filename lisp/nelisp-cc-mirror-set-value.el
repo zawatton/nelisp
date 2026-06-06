@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group B helper #7 — `mirror_set_value'.  Phase 47
+;; Doc 111 §111.E Group B helper #7 — `mirror_set_value'.  AOT
 ;; reimplementation of the env-mirror entry value-slot writer.  Mirrors
 ;; the existing-entry fast path of
 ;; `build-tool/src/eval/env_mirror.rs::mirror_set_value':
@@ -58,7 +58,7 @@
       (nelisp_mirror_set_value_apply
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        val-ptr)))
-  "Phase 47 source for Doc 111 §111.E #7 `mirror_set_value'.
+  "AOT source for Doc 111 §111.E #7 `mirror_set_value'.
 
 Composes `mirror_lookup_entry' (§111.E #1) + `record-slot-set'
 (§111.B).  Returns i64 1 on hit / 0 on miss; the Rust dispatcher

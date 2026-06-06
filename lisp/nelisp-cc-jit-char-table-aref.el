@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the Rust `nl_jit_char_table_aref' trampoline
+;; AOT replacement for the Rust `nl_jit_char_table_aref' trampoline
 ;; in `build-tool/src/jit/box_accessor.rs' (deleted via this file).
 ;;
 ;; Function contract (`(*const Sexp, i64, *mut Sexp) -> i64'):
@@ -23,7 +23,7 @@
 ;;      `build-tool/src/eval/nlchartable.rs') which calls
 ;;      `char_table_get(r, idx)' — handles parent-table lookup and
 ;;      default_val fallback internally.  Writes result to *out.
-;;   3. The outer guard tag-check is expressed in Phase 47 elisp so
+;;   3. The outer guard tag-check is expressed in AOT elisp so
 ;;      that the public `nl_jit_char_table_aref' symbol is provided
 ;;      by this .o, not by a Rust `#[no_mangle]' body.
 ;;
@@ -45,11 +45,11 @@
      ;; sexp-tag = 9 guards Sexp::CharTable; the raw lookup (parent
      ;; recursion + default_val) is handled by the Rust extern
      ;; `nl_char_table_get_raw' which cannot yet be expressed in
-     ;; Phase 47 grammar (no Vec<(i64,Sexp)> iteration op).
+     ;; AOT grammar (no Vec<(i64,Sexp)> iteration op).
      (if (= (sexp-tag arg) 9)
          (extern-call nl_char_table_get_raw arg idx out)
        1))
-  "Phase 47 source for the `nl_jit_char_table_aref' swap (Doc 120.B residual).
+  "AOT source for the `nl_jit_char_table_aref' swap (Doc 120.B residual).
 
 Guard: sexp-tag == 9 (CharTable); delegates to `nl_char_table_get_raw'
 Rust extern for the actual `char_table_get' lookup (parent recursion +

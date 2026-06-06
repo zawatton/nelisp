@@ -1,4 +1,4 @@
-;;; nelisp-cc-bf-args-nth-ptr.el --- Phase 47 nl_bf_args_nth_ptr swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bf-args-nth-ptr.el --- AOT nl_bf_args_nth_ptr swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `nl_bf_args_nth_ptr' Rust extern in
+;; AOT replacement for the `nl_bf_args_nth_ptr' Rust extern in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was (~11 LOC):
 ;;
 ;;   #[no_mangle]
@@ -52,7 +52,7 @@
 ;;   `nl_bf_args_nth_ptr' is the public entry, a thin wrapper over the
 ;;   recursive helper (keeps arity even = 2 on both functions).
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   `(sexp-tag PTR)'          — tag byte check (inline).
 ;;   `(sexp-payload-ptr PTR)'  — NlConsBox* when tag==7, else 0 (inline).
 ;;   `(+ A B)', `(- A B)'      — pointer arithmetic / counter.
@@ -62,7 +62,7 @@
 ;;
 ;; Arity: both defuns arity 2 (even) → body-entry rsp ≡ 0 mod 16.
 ;; `nl_bf_args_nth_step' is a private helper (no callers outside this .o
-;; at link time) but must be a named defun since Phase 47 `let' is
+;; at link time) but must be a named defun since AOT `let' is
 ;; compile-time-constant-only.
 ;;
 ;; Net Rust impact: deletes the 11-LOC `nl_bf_args_nth_ptr' body from
@@ -110,7 +110,7 @@
     (defun nl_bf_args_nth_ptr (args_ptr idx)
       (nl_bf_args_nth_step args_ptr idx)))
 
-  "Phase 47 source for `nl_bf_args_nth_ptr' (special_forms.rs → elisp).
+  "AOT source for `nl_bf_args_nth_ptr' (special_forms.rs → elisp).
 
 Two defuns in a `seq' form:
   `nl_bf_args_nth_step (cur remaining)' — recursive walker (arity 2).

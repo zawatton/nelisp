@@ -1,4 +1,4 @@
-#+TITLE: Doc 137 — AOT-interpreter self-hosting (Phase 47 path, zero Rust)
+#+TITLE: Doc 137 — AOT-interpreter self-hosting (AOT path, zero Rust)
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-05-31
 
@@ -92,7 +92,7 @@ accumulator clause unsupported; no error-subtype hierarchy.
     expansion; the =(fset 'defmacro …)= bootstrap → =defmacro= works → the dormant
     stdlib macros run: =(when (< 1 2) 42)=→42, =(unless (< 5 1) 42)=→42.
   - DURABLE TODO: fix the compiler =(not (= raw-bool 0))= lowering (will recur
-    when compiling the compiler itself for self-host) — nelisp-phase47-compiler
+    when compiling the compiler itself for self-host) — nelisp-aot-compiler
     ~L7846/7862 boundary gate.
 
 * Milestone ladder
@@ -171,6 +171,6 @@ multi-process path was startup-bound, ~no speedup — see worklog 2026-05-30).
 - Stage 4: wall-clock build time scales with thread count on a many-unit set.
 
 * Invariants (do not regress)
-- Zero =.rs= / cargo / rustc. Every layer is pure elisp compiled by Phase 47.
+- Zero =.rs= / cargo / rustc. Every layer is pure elisp compiled by AOT.
 - Rust LOC must never increase (it is being driven to zero).
 - The existing 11-special-form eval core + reader stay byte-stable; growth is additive.

@@ -984,7 +984,7 @@
   in a *separate* session — Windows is the next target after macOS lands.
 - *Parent*: Doc 132 (=nelisp-sys= ABI and platform model — already declares
   the =x86_64-pc-windows-msvc= target).
-- *Siblings*: Doc 101 (Phase 47 Sexp/Cons/Symbol/Str ABI — carries the
+- *Siblings*: Doc 101 (AOT Sexp/Cons/Symbol/Str ABI — carries the
   =win64= ABI scaffolding), Doc 114 (x86_64-linux-pivot).
 - *Scope*: Identify the bottlenecks that block running the *standalone
   self-host binary* natively on Windows x86_64, rank them, and give a
@@ -1072,7 +1072,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
 
 - =lisp/nelisp-asm-x86_64.el= — ABI slot models =('sysv | 'win64)=
   (Doc 101 §101.B Wave 4 framework).  win64 = RCX/RDX/R8/R9 + shadow space.
-- =lisp/nelisp-phase47-compiler.el:149= — =nelisp-phase47-compiler--abi=
+- =lisp/nelisp-aot-compiler.el:149= — =nelisp-aot-compiler--abi=
   dynvar selects =sysv= vs =win64= emit paths (Doc 101 §101.B Wave 5).
 - =lisp/nelisp-pe-write.el= — PE32+/COFF *relocatable object* writer
   (Doc 101 §101.A).  Accepts =link.exe= / =lld-link=.  *Not* wired into the
@@ -1157,7 +1157,7 @@ worklog: the standalone runtime is Linux x86_64 specific (raw syscall
 ** B5. Win64 calling convention (Microsoft x64 ABI) emit completion
 
 - *Progress*: =nelisp-asm-x86_64.el= ABI slot =('sysv | 'win64)= and
-  =nelisp-phase47-compiler--abi= dynvar now drive Win64 GP register selection.
+  =nelisp-aot-compiler--abi= dynvar now drive Win64 GP register selection.
   Stage 58 locked =extern-call= COFF emission to =RCX/RDX/R8/R9= plus 32-byte
   caller shadow space.  Stage 59 adds fifth-and-later GP stack arguments in the
   Win64 outgoing area above shadow space, including computed stack args copied
@@ -2142,27 +2142,27 @@ largest uncertainty (B1 + B2) first.
    has a native =CreateFileW= write/delete smoke that exercises file creation,
    =WriteFile=, =CloseHandle=, and =DeleteFileW= through the PE import table and
    is included in =tools/windows-selfhost-test.ps1=.
-   *Win64 extern-call ABI coverage SHIPPED 2026-06-03*: Phase 47 COFF tests now
+   *Win64 extern-call ABI coverage SHIPPED 2026-06-03*: AOT COFF tests now
    verify Win64 =extern-call= uses =RCX/RDX/R8/R9=, emits 32-byte shadow space
    around =CALL=, and rejects unsupported GP stack arguments before bad object
    emission.
-   *Win64 extern-call stack args SHIPPED 2026-06-03*: Phase 47 COFF tests now
+   *Win64 extern-call stack args SHIPPED 2026-06-03*: AOT COFF tests now
    verify fifth-and-later Win64 GP args are written above the 32-byte shadow
    space, including computed stack args copied from temporary spills.
    *Win64 GP callee-save coverage SHIPPED 2026-06-03*: Win64 defuns now save
    and restore =RDI/RSI= in private frame slots below param/runtime-let storage,
    and COFF tests lock the prologue/epilogue byte shape.
-   *Win64 f64 XMM arg limit SHIPPED 2026-06-03*: Phase 47 COFF tests now verify
+   *Win64 f64 XMM arg limit SHIPPED 2026-06-03*: AOT COFF tests now verify
    Win64 f64 defuns and =extern-call= use the =XMM0..XMM3= argument window and
    reject a fifth f64 argument before selecting =XMM4+= / callee-saved =XMM6+=.
-   *Win64 mixed f64 extern-call SHIPPED 2026-06-03*: Phase 47 COFF tests now
+   *Win64 mixed f64 extern-call SHIPPED 2026-06-03*: AOT COFF tests now
    verify mixed GP/f64 =extern-call= assigns register args by Microsoft x64
    argument position and copies fifth-and-later f64 args to the outgoing stack
    area above shadow space.
-   *Win64 mixed f64 defun params SHIPPED 2026-06-03*: Phase 47 COFF tests now
+   *Win64 mixed f64 defun params SHIPPED 2026-06-03*: AOT COFF tests now
    verify mixed GP/f64 defun params in the four Win64 register slots spill from
    the paired =RCX/XMM0=, =RDX/XMM1=, =R8/XMM2=, and =R9/XMM3= positions.
-   *Win64 defun stack params SHIPPED 2026-06-03*: Phase 47 COFF tests now
+   *Win64 defun stack params SHIPPED 2026-06-03*: AOT COFF tests now
    verify fifth-and-later Win64 defun GP, f64, and mixed params spill from the
    incoming stack area starting at =[rbp+48]= into normal local frame slots.
    *Win64 XMM callee-saves SHIPPED 2026-06-03*: Win64 defuns now preserve
@@ -2268,7 +2268,7 @@ writer (import directory).  That single coupling (B1+B2) is the whole game.
   GetHandleInformation, GetLastError, GetCommandLineW, CommandLineToArgvW, and
   WSAStartup.
 - =lisp/nelisp-asm-x86_64.el= — =('sysv | 'win64)= ABI slot.
-- =lisp/nelisp-phase47-compiler.el:149= — =--abi= dynvar (sysv/win64).
+- =lisp/nelisp-aot-compiler.el:149= — =--abi= dynvar (sysv/win64).
 - =lisp/nelisp-stdlib-os.el= — Linux/Darwin POSIX-like path plus Windows
   stdin/stdout/stderr and regular-file HANDLE read/write/close branch with
   UTF-16 =CreateFileW= paths.

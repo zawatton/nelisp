@@ -11,7 +11,7 @@
 ;; Doc 117 §117.B — moves the byte-read algorithmic body of the
 ;; `(read-stdin-bytes LIMIT)' builtin from Rust
 ;; (`build-tool/src/eval/builtins.rs::bi_read_stdin_bytes') into a
-;; Phase 47 elisp object.  The Rust shim keeps:
+;; AOT elisp object.  The Rust shim keeps:
 ;;
 ;;   * arity validation              (1 arg)
 ;;   * positive-integer dispatch     (`Sexp::Int(n)' with `n > 0')
@@ -31,7 +31,7 @@
 ;; byte count for Rust to truncate + wrap.
 ;;
 ;; Why split this way: `from_utf8_lossy' requires a fallible UTF-8
-;; check that Phase 47's `sexp-write-str' grammar op (= §122.A,
+;; check that AOT's `sexp-write-str' grammar op (= §122.A,
 ;; `nl_alloc_str' via `from_utf8_unchecked') can NOT express today.
 ;; A future §122.X `sexp-write-str-lossy' op would let the entire
 ;; body migrate; pending that, the syscall itself is the highest-
@@ -39,7 +39,7 @@
 ;; criterion of "the libc / syscall line, not the validation
 ;; bookkeeping").
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   §100.A  `extern-call'    — 3-arg libc call to `read(0, ...)`.
 ;;
 ;; Function contract:
@@ -67,9 +67,9 @@
      ;;
      ;; Returns the `read(2)' i64 (= bytes read, 0 = EOF, -1 = errno).
      (extern-call read 0 buf-ptr limit))
-  "Phase 47 source for the Doc 117 §117.B `(read-stdin-bytes LIMIT)' swap.
+  "AOT source for the Doc 117 §117.B `(read-stdin-bytes LIMIT)' swap.
 
-Two-arg function — Phase 47's SysV AMD64 prologue spills `buf-ptr'
+Two-arg function — AOT's SysV AMD64 prologue spills `buf-ptr'
 (= `*mut u8' destination, Rust-allocated `Vec<u8>`'s `as_mut_ptr()')
 into the rbp-relative slot 0 and `limit' (= i64) into slot 1.  The
 body is one composed value form: a 3-arg `extern-call' to libc

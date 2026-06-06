@@ -1,4 +1,4 @@
-;;; nelisp-phase47-doc129-test.el --- Doc 129 Phase47 frontend tests  -*- lexical-binding: t; -*-
+;;; nelisp-aot-doc129-test.el --- Doc 129 Phase47 frontend tests  -*- lexical-binding: t; -*-
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -9,92 +9,92 @@
 (require 'seq)
 (require 'nelisp-elf-write)
 (require 'nelisp-cc-runtime)
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
-(defun nelisp-phase47-doc129-test--linux-p ()
+(defun nelisp-aot-doc129-test--linux-p ()
   "Return non-nil when this host can exec x86_64 ELF64 binaries."
   (and (eq system-type 'gnu/linux)
        (stringp system-configuration)
        (string-match-p "x86_64\\|amd64" system-configuration)))
 
-(defun nelisp-phase47-doc129-test--tmp-binary (suffix)
+(defun nelisp-aot-doc129-test--tmp-binary (suffix)
   "Return a fresh temporary binary path using SUFFIX."
   (make-temp-file (format "nelisp-doc129-%s-" suffix)))
 
-(defun nelisp-phase47-doc129-test--run-binary (path)
+(defun nelisp-aot-doc129-test--run-binary (path)
   "Exec PATH and return its process exit code."
   (call-process path nil nil nil))
 
-(defun nelisp-phase47-doc129-test--extern-call-names (ir)
+(defun nelisp-aot-doc129-test--extern-call-names (ir)
   "Return extern-call names found while walking IR."
   (let (names)
-    (nelisp-phase47-compiler--walk-ir
+    (nelisp-aot-compiler--walk-ir
      ir
      (lambda (node)
-       (when (eq (nelisp-phase47-compiler--ir-kind node) 'extern-call)
-         (push (nelisp-phase47-compiler--ir-get node :name) names))))
+       (when (eq (nelisp-aot-compiler--ir-kind node) 'extern-call)
+         (push (nelisp-aot-compiler--ir-get node :name) names))))
     (nreverse names)))
 
-(defun nelisp-phase47-doc129-test--ir-nodes (ir kind)
+(defun nelisp-aot-doc129-test--ir-nodes (ir kind)
   "Return IR nodes of KIND found while walking IR."
   (let (nodes)
-    (nelisp-phase47-compiler--walk-ir
+    (nelisp-aot-compiler--walk-ir
      ir
      (lambda (node)
-       (when (eq (nelisp-phase47-compiler--ir-kind node) kind)
+       (when (eq (nelisp-aot-compiler--ir-kind node) kind)
          (push node nodes))))
     (nreverse nodes)))
 
-(defun nelisp-phase47-doc129-test--assert-single-landing-metadata
+(defun nelisp-aot-doc129-test--assert-single-landing-metadata
     (ir extern-name label-prefix)
   "Assert IR pushes EXTERN-NAME with one landing label named LABEL-PREFIX."
   (let* ((push-call
           (car (seq-filter
                 (lambda (node)
-                  (eq (nelisp-phase47-compiler--ir-get node :name)
+                  (eq (nelisp-aot-compiler--ir-get node :name)
                       extern-name))
-                (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call))))
-         (push-args (nelisp-phase47-compiler--ir-get push-call :args))
+                (nelisp-aot-doc129-test--ir-nodes ir 'extern-call))))
+         (push-args (nelisp-aot-compiler--ir-get push-call :args))
          (landing-arg (nth 3 push-args))
          (saved-sp-arg (nth 4 push-args))
          (landing-labels
-          (nelisp-phase47-doc129-test--ir-nodes ir 'aot-landing-label))
+          (nelisp-aot-doc129-test--ir-nodes ir 'aot-landing-label))
          (landing-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get (car landing-labels) :label)))
+           (nelisp-aot-compiler--ir-get (car landing-labels) :label)))
          (symbol-writes
           (mapcar (lambda (node)
-                    (nelisp-phase47-compiler--ir-get node :bytes))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                    (nelisp-aot-compiler--ir-get node :bytes))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'sexp-write-symbol-lit))))
     (should (= (length landing-labels) 1))
     (should (string-prefix-p label-prefix landing-name))
     (should (member (string-to-list landing-name) symbol-writes))
-    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get landing-arg :var)
                 'scratch))
-    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+    (should (eq (nelisp-aot-compiler--ir-kind saved-sp-arg)
                 'aot-current-sp))))
 
-(defun nelisp-phase47-doc129-test--assert-landing-metadata-count
+(defun nelisp-aot-doc129-test--assert-landing-metadata-count
     (ir extern-name label-prefix count)
   "Assert IR pushes EXTERN-NAME with COUNT landing labels named LABEL-PREFIX."
   (let* ((push-calls
           (seq-filter
            (lambda (node)
-             (eq (nelisp-phase47-compiler--ir-get node :name)
+             (eq (nelisp-aot-compiler--ir-get node :name)
                  extern-name))
-           (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call)))
+           (nelisp-aot-doc129-test--ir-nodes ir 'extern-call)))
          (landing-labels
-          (nelisp-phase47-doc129-test--ir-nodes ir 'aot-landing-label))
+          (nelisp-aot-doc129-test--ir-nodes ir 'aot-landing-label))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
+                     (nelisp-aot-compiler--ir-get node :label)))
                   landing-labels))
          (symbol-writes
           (mapcar (lambda (node)
-                    (nelisp-phase47-compiler--ir-get node :bytes))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                    (nelisp-aot-compiler--ir-get node :bytes))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'sexp-write-symbol-lit))))
     (should (= (length push-calls) count))
     (should (= (length landing-labels) count))
@@ -102,34 +102,34 @@
       (should (string-prefix-p label-prefix name))
       (should (member (string-to-list name) symbol-writes)))
     (dolist (call push-calls)
-      (let* ((args (nelisp-phase47-compiler--ir-get call :args))
+      (let* ((args (nelisp-aot-compiler--ir-get call :args))
              (landing-arg (nth 3 args))
              (saved-sp-arg (nth 4 args)))
-        (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+        (should (eq (nelisp-aot-compiler--ir-get landing-arg :var)
                     'scratch))
-        (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+        (should (eq (nelisp-aot-compiler--ir-kind saved-sp-arg)
                     'aot-current-sp))))))
 
-(defun nelisp-phase47-doc129-test--assert-landing-label-count
+(defun nelisp-aot-doc129-test--assert-landing-label-count
     (ir label-prefix count)
   "Assert IR contains COUNT landing labels named LABEL-PREFIX."
   (let* ((landing-labels
-          (nelisp-phase47-doc129-test--ir-nodes ir 'aot-landing-label))
+          (nelisp-aot-doc129-test--ir-nodes ir 'aot-landing-label))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
+                     (nelisp-aot-compiler--ir-get node :label)))
                   landing-labels)))
     (should (= (length landing-labels) count))
     (dolist (name landing-names)
       (should (string-prefix-p label-prefix name)))))
 
-(defun nelisp-phase47-doc129-test--capturing-callback-closure-ir
+(defun nelisp-aot-doc129-test--capturing-callback-closure-ir
     (form callback-arg-index)
   "Assert FORM lowers a captured callback through make-closure.
 CALLBACK-ARG-INDEX is the calln argument index that should receive the
 materialized closure temporary."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               `(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -140,64 +140,64 @@ materialized closure temporary."
                     (xs :type sexp)
                     (table :type sexp))
                  ,form)))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (make-closure (nth 2 forms))
          (call-node (nth 3 forms))
-         (make-args (nelisp-phase47-compiler--ir-get make-closure :args))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+         (make-args (nelisp-aot-compiler--ir-get make-closure :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get make-closure :name)
                 'nelisp_aot_make_closure))
-    (should (= (nelisp-phase47-compiler--ir-get (nth 3 make-args) :value)
+    (should (= (nelisp-aot-compiler--ir-get (nth 3 make-args) :value)
                1))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 make-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 make-args) :var)
                 'cap))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth callback-arg-index call-args) :var)
                 'out))
     ir))
 
-(ert-deftest nelisp-phase47-doc129/value-seq-from-when-progn ()
+(ert-deftest nelisp-aot-doc129/value-seq-from-when-progn ()
   "Doc 129.1: multi-form macro body becomes a value-seq branch."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun f (x)
                  (when (> x 0)
                    (+ x 1)
                    (+ x 2)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (then-branch (nelisp-phase47-compiler--ir-get body :then)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
-    (should (eq (nelisp-phase47-compiler--ir-kind then-branch) 'value-seq))
-    (should (= (length (nelisp-phase47-compiler--ir-get then-branch :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (then-branch (nelisp-aot-compiler--ir-get body :then)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
+    (should (eq (nelisp-aot-compiler--ir-kind then-branch) 'value-seq))
+    (should (= (length (nelisp-aot-compiler--ir-get then-branch :forms))
                2))))
 
-(ert-deftest nelisp-phase47-doc129/value-seq-from-if-multi-else ()
+(ert-deftest nelisp-aot-doc129/value-seq-from-if-multi-else ()
   "Doc 129.1C: source `if' ELSE... becomes a value-seq branch."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun f (x)
                  (if (> x 0)
                      (+ x 1)
                    (+ x 2)
                    (+ x 3)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (else-branch (nelisp-phase47-compiler--ir-get body :else)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
-    (should (eq (nelisp-phase47-compiler--ir-kind else-branch)
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (else-branch (nelisp-aot-compiler--ir-get body :else)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
+    (should (eq (nelisp-aot-compiler--ir-kind else-branch)
                 'value-seq))
-    (should (= (length (nelisp-phase47-compiler--ir-get else-branch :forms))
+    (should (= (length (nelisp-aot-compiler--ir-get else-branch :forms))
                2))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-value-seq-from-when-progn ()
+(ert-deftest nelisp-aot-doc129/e2e-value-seq-from-when-progn ()
   "Doc 129.1: value-seq returns the final child value."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary "value-seq")))
+  (let ((path (nelisp-aot-doc129-test--tmp-binary "value-seq")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun f (x)
                (when (> x 0)
@@ -205,45 +205,45 @@ materialized closure temporary."
                  (+ x 2)))
              (exit (f 3)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 5)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 5)))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-user-macro-progn ()
+(ert-deftest nelisp-aot-doc129/e2e-user-macro-progn ()
   "Doc 129.1: user macros that emit multi-form progn compile."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary "user-progn")))
+  (let ((path (nelisp-aot-doc129-test--tmp-binary "user-progn")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defmacro plus-two-last (x)
                (list 'progn (list '+ x 1) (list '+ x 2)))
              (exit (plus-two-last 8)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 10)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 10)))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-defun-sexp-int ()
+(ert-deftest nelisp-aot-doc129/parse-defun-sexp-int ()
   "Doc 129.2 MVP: `defun-sexp-int' lowers to unwrap + int-make."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun-sexp-int add (out a b) (+ a b))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (val (nelisp-phase47-compiler--ir-get body :val)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-int-make))
-    (should (eq (nelisp-phase47-compiler--ir-kind val) 'arith))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get val :a))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (val (nelisp-aot-compiler--ir-get body :val)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'sexp-int-make))
+    (should (eq (nelisp-aot-compiler--ir-kind val) 'arith))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get val :a))
                 'sexp-int-unwrap))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get val :b))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get val :b))
                 'sexp-int-unwrap))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-defun-sexp-int-add ()
+(ert-deftest nelisp-aot-doc129/e2e-defun-sexp-int-add ()
   "Doc 129.2 MVP: boxed-boundary Int add writes Sexp::Int result."
   (skip-unless (and (executable-find "ld")
-                    (nelisp-phase47-doc129-test--linux-p)))
+                    (nelisp-aot-doc129-test--linux-p)))
   (let* ((probe-path (make-temp-file "nelisp-doc129-sexp-int-probe-" nil ".o"))
          (host-path (make-temp-file "nelisp-doc129-sexp-int-host-" nil ".o"))
          (bin-path (make-temp-file "nelisp-doc129-sexp-int-bin-" nil ""))
@@ -269,7 +269,7 @@ materialized closure temporary."
            (unibyte-string #xB8 #x3C 0 0 0 #x0F #x05))))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun-sexp-int add (out a b) (+ a b))
            probe-path)
           (nelisp-elf-write-binary
@@ -303,35 +303,35 @@ materialized closure temporary."
                                "-o" bin-path probe-path host-path)))
             (should (zerop ld-status)))
           (set-file-modes bin-path #o755)
-          (should (= (nelisp-phase47-doc129-test--run-binary bin-path) 13)))
+          (should (= (nelisp-aot-doc129-test--run-binary bin-path) 13)))
       (ignore-errors (delete-file probe-path))
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-defun-sexp-int-setq ()
+(ert-deftest nelisp-aot-doc129/parse-defun-sexp-int-setq ()
   "Doc 129.3A: boxed Int setq lowers to env_set_value delegation."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun-sexp-int-setq set_x
                    (out mirror frames scratch name a)
                  (+ a 16))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (make-node (nth 0 forms))
          (set-node (nth 1 forms))
          (ret-node (nth 2 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind make-node) 'sexp-int-make))
-    (should (eq (nelisp-phase47-compiler--ir-kind set-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get set-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind make-node) 'sexp-int-make))
+    (should (eq (nelisp-aot-compiler--ir-kind set-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get set-node :name)
                 'nelisp_env_set_value))
-    (should (eq (nelisp-phase47-compiler--ir-kind ret-node) 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get ret-node :var) 'out))))
+    (should (eq (nelisp-aot-compiler--ir-kind ret-node) 'ref))
+    (should (eq (nelisp-aot-compiler--ir-get ret-node :var) 'out))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-defun-sexp-int-setq-env-call ()
+(ert-deftest nelisp-aot-doc129/e2e-defun-sexp-int-setq-env-call ()
   "Doc 129.3A: setq wrapper boxes Int, calls env setter, returns OUT."
   (skip-unless (and (executable-find "ld")
-                    (nelisp-phase47-doc129-test--linux-p)))
+                    (nelisp-aot-doc129-test--linux-p)))
   (let* ((probe-path (make-temp-file "nelisp-doc129-setq-probe-" nil ".o"))
          (host-path (make-temp-file "nelisp-doc129-setq-host-" nil ".o"))
          (bin-path (make-temp-file "nelisp-doc129-setq-bin-" nil ""))
@@ -370,7 +370,7 @@ materialized closure temporary."
            (unibyte-string #x48 #x83 #x41 #x08 #x01 #x31 #xC0 #xC3))))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun-sexp-int-setq set_x
                 (out mirror frames scratch name a)
               (+ a 16))
@@ -423,36 +423,36 @@ materialized closure temporary."
             (should (zerop ld-status)))
           (set-file-modes bin-path #o755)
           ;; BODY makes 21; the stub env setter increments OUT to 22.
-          (should (= (nelisp-phase47-doc129-test--run-binary bin-path) 22)))
+          (should (= (nelisp-aot-doc129-test--run-binary bin-path) 22)))
       (ignore-errors (delete-file probe-path))
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-defun-sexp-int-setq-symbol ()
+(ert-deftest nelisp-aot-doc129/parse-defun-sexp-int-setq-symbol ()
   "Doc 129.3B: setq wrapper can materialize a symbol literal."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun-sexp-int-setq-symbol set_x x
                    (out mirror frames scratch name-slot a)
                  (+ a 16))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (sym-node (nth 0 forms))
          (make-node (nth 1 forms))
          (set-node (nth 2 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-kind sym-node)
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-kind sym-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get sym-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get sym-node :bytes)
                    (string-to-list "x")))
-    (should (eq (nelisp-phase47-compiler--ir-kind make-node) 'sexp-int-make))
-    (should (eq (nelisp-phase47-compiler--ir-kind set-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get set-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind make-node) 'sexp-int-make))
+    (should (eq (nelisp-aot-compiler--ir-kind set-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get set-node :name)
                 'nelisp_env_set_value))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-defun-sexp-int-setq-symbol ()
+(ert-deftest nelisp-aot-doc129/e2e-defun-sexp-int-setq-symbol ()
   "Doc 129.3B: symbol literal is materialized before env_set_value."
   (skip-unless (and (executable-find "ld")
-                    (nelisp-phase47-doc129-test--linux-p)))
+                    (nelisp-aot-doc129-test--linux-p)))
   (let* ((probe-path (make-temp-file "nelisp-doc129-setq-sym-probe-" nil ".o"))
          (host-path (make-temp-file "nelisp-doc129-setq-sym-host-" nil ".o"))
          (bin-path (make-temp-file "nelisp-doc129-setq-sym-bin-" nil ""))
@@ -506,7 +506,7 @@ materialized closure temporary."
          (host-text (concat start-text alloc-text setter-text)))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun-sexp-int-setq-symbol set_x x
                 (out mirror frames scratch name_slot a)
               (+ a 16))
@@ -563,54 +563,54 @@ materialized closure temporary."
             (should (zerop ld-status)))
           (set-file-modes bin-path #o755)
           ;; BODY makes 21; setter adds materialized byte('x') = 120.
-          (should (= (nelisp-phase47-doc129-test--run-binary bin-path) 141)))
+          (should (= (nelisp-aot-doc129-test--run-binary bin-path) 141)))
       (ignore-errors (delete-file probe-path))
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-defun-sexp-int-defvar-symbol ()
+(ert-deftest nelisp-aot-doc129/parse-defun-sexp-int-defvar-symbol ()
   "Doc 129.3C: defvar wrapper conditionally delegates value-cell set."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun-sexp-int-defvar-symbol ensure_x x
                    (out mirror frames scratch name-slot a)
                  (+ a 16))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (sym-node (nth 0 forms))
          (if-node (nth 1 forms))
-         (test-node (nelisp-phase47-compiler--ir-get if-node :test))
-         (bound-node (nelisp-phase47-compiler--ir-get test-node :a))
-         (bound-args (nelisp-phase47-compiler--ir-get bound-node :args))
-         (else-node (nelisp-phase47-compiler--ir-get if-node :else))
-         (else-forms (nelisp-phase47-compiler--ir-get else-node :forms))
+         (test-node (nelisp-aot-compiler--ir-get if-node :test))
+         (bound-node (nelisp-aot-compiler--ir-get test-node :a))
+         (bound-args (nelisp-aot-compiler--ir-get bound-node :args))
+         (else-node (nelisp-aot-compiler--ir-get if-node :else))
+         (else-forms (nelisp-aot-compiler--ir-get else-node :forms))
          (set-node (nth 1 else-forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind sym-node)
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind sym-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get sym-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get sym-node :bytes)
                    (string-to-list "x")))
-    (should (eq (nelisp-phase47-compiler--ir-kind if-node) 'if))
-    (should (eq (nelisp-phase47-compiler--ir-get bound-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind if-node) 'if))
+    (should (eq (nelisp-aot-compiler--ir-get bound-node :name)
                 'nelisp_mirror_is_bound))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 2 bound-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 2 bound-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get if-node :then))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get if-node :then))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-kind else-node) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 else-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind else-node) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 0 else-forms))
                 'sexp-int-make))
-    (should (eq (nelisp-phase47-compiler--ir-kind set-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get set-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind set-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get set-node :name)
                 'nelisp_env_set_value))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 2 else-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 2 else-forms))
                 'ref))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-defun-sexp-int-defvar-symbol ()
+(ert-deftest nelisp-aot-doc129/e2e-defun-sexp-int-defvar-symbol ()
   "Doc 129.3C: defvar symbol helper sets only when unbound."
   (skip-unless (and (executable-find "ld")
-                    (nelisp-phase47-doc129-test--linux-p)))
+                    (nelisp-aot-doc129-test--linux-p)))
   (dolist (case '((0 . 121) (1 . 120)))
     (let* ((is-bound (car case))
            (expected (cdr case))
@@ -671,7 +671,7 @@ materialized closure temporary."
            (host-text (concat start-text alloc-text bound-text setter-text)))
       (unwind-protect
           (progn
-            (nelisp-phase47-compile-to-object
+            (nelisp-aot-compile-to-object
              '(defun-sexp-int-defvar-symbol ensure_x x
                   (out mirror frames scratch name_slot a)
                 (+ a 16))
@@ -731,54 +731,54 @@ materialized closure temporary."
                                  "-o" bin-path probe-path host-path)))
               (should (zerop ld-status)))
             (set-file-modes bin-path #o755)
-            (should (= (nelisp-phase47-doc129-test--run-binary bin-path)
+            (should (= (nelisp-aot-doc129-test--run-binary bin-path)
                        expected)))
         (ignore-errors (delete-file probe-path))
         (ignore-errors (delete-file host-path))
         (ignore-errors (delete-file bin-path))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-defun-sexp-int-defconst-symbol ()
+(ert-deftest nelisp-aot-doc129/parse-defun-sexp-int-defconst-symbol ()
   "Doc 129.3D: defconst wrapper writes value and marks constant."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun-sexp-int-defconst-symbol const_x x
                    (out mirror frames scratch name-slot a)
                  (+ a 16))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (clear-node (nth 2 forms))
          (set-node (nth 4 forms))
          (mark-node (nth 6 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 forms))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 0 forms))
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get (nth 0 forms) :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get (nth 0 forms) :bytes)
                    (string-to-list "x")))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 1 forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 1 forms))
                 'sexp-write-nil))
-    (should (eq (nelisp-phase47-compiler--ir-kind clear-node)
+    (should (eq (nelisp-aot-compiler--ir-kind clear-node)
                 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get clear-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get clear-node :name)
                 'nelisp_mirror_set_constant))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 3 forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 3 forms))
                 'sexp-int-make))
-    (should (eq (nelisp-phase47-compiler--ir-kind set-node)
+    (should (eq (nelisp-aot-compiler--ir-kind set-node)
                 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get set-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get set-node :name)
                 'nelisp_env_set_value))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 5 forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 5 forms))
                 'sexp-write-t))
-    (should (eq (nelisp-phase47-compiler--ir-kind mark-node)
+    (should (eq (nelisp-aot-compiler--ir-kind mark-node)
                 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get mark-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get mark-node :name)
                 'nelisp_mirror_set_constant))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 7 forms))
                 'ref))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-defun-sexp-int-defconst-symbol ()
+(ert-deftest nelisp-aot-doc129/e2e-defun-sexp-int-defconst-symbol ()
   "Doc 129.3D: defconst symbol helper clears, writes, and marks constant."
   (skip-unless (and (executable-find "ld")
-                    (nelisp-phase47-doc129-test--linux-p)))
+                    (nelisp-aot-doc129-test--linux-p)))
   (let* ((probe-path (make-temp-file "nelisp-doc129-defconst-sym-probe-" nil ".o"))
          (host-path (make-temp-file "nelisp-doc129-defconst-sym-host-" nil ".o"))
          (bin-path (make-temp-file "nelisp-doc129-defconst-sym-bin-" nil ""))
@@ -844,7 +844,7 @@ materialized closure temporary."
          (host-text (concat start-text alloc-text constant-text setter-text)))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun-sexp-int-defconst-symbol const_x x
                 (out mirror frames scratch name_slot a)
               (+ a 16))
@@ -905,233 +905,233 @@ materialized closure temporary."
             (should (zerop ld-status)))
           (set-file-modes bin-path #o755)
           ;; name byte 120 + clear call 2 + BODY 21 + mark call 3.
-          (should (= (nelisp-phase47-doc129-test--run-binary bin-path) 146)))
+          (should (= (nelisp-aot-doc129-test--run-binary bin-path) 146)))
       (ignore-errors (delete-file probe-path))
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-top-level-var-init-helpers ()
+(ert-deftest nelisp-aot-doc129/parse-top-level-var-init-helpers ()
   "Doc 129.3E/F: top-level var declarations lower to AOT init helpers."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar x 42 "doc")
                 (defconst y 7 "doc")
                 (defcustom z 9 "doc" :type 'integer))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (defvar-ir (nth 0 forms))
          (defconst-ir (nth 1 forms))
          (defcustom-ir (nth 2 forms))
-         (defvar-body (nelisp-phase47-compiler--ir-get defvar-ir :body))
-         (defconst-body (nelisp-phase47-compiler--ir-get defconst-ir :body))
-         (defcustom-body (nelisp-phase47-compiler--ir-get defcustom-ir :body))
-         (defvar-forms (nelisp-phase47-compiler--ir-get defvar-body :forms))
-         (defconst-forms (nelisp-phase47-compiler--ir-get defconst-body :forms))
-         (defcustom-forms (nelisp-phase47-compiler--ir-get defcustom-body :forms)))
+         (defvar-body (nelisp-aot-compiler--ir-get defvar-ir :body))
+         (defconst-body (nelisp-aot-compiler--ir-get defconst-ir :body))
+         (defcustom-body (nelisp-aot-compiler--ir-get defcustom-ir :body))
+         (defvar-forms (nelisp-aot-compiler--ir-get defvar-body :forms))
+         (defconst-forms (nelisp-aot-compiler--ir-get defconst-body :forms))
+         (defcustom-forms (nelisp-aot-compiler--ir-get defcustom-body :forms)))
     (should (= (length forms) 3))
-    (should (eq (nelisp-phase47-compiler--ir-get defvar-ir :name)
+    (should (eq (nelisp-aot-compiler--ir-get defvar-ir :name)
                 'nelisp_aot_var_0_x))
-    (should (eq (nelisp-phase47-compiler--ir-get defconst-ir :name)
+    (should (eq (nelisp-aot-compiler--ir-get defconst-ir :name)
                 'nelisp_aot_const_1_y))
-    (should (eq (nelisp-phase47-compiler--ir-get defcustom-ir :name)
+    (should (eq (nelisp-aot-compiler--ir-get defcustom-ir :name)
                 'nelisp_aot_custom_2_z))
-    (should (equal (nelisp-phase47-compiler--ir-get defvar-ir :params)
+    (should (equal (nelisp-aot-compiler--ir-get defvar-ir :params)
                    '(out mirror frames scratch name_slot)))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defvar-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 0 defvar-forms))
                 'sexp-write-symbol-lit))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 1 defvar-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 1 defvar-forms))
                 'if))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defconst-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 0 defconst-forms))
                 'sexp-write-symbol-lit))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 1 defconst-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 1 defconst-forms))
                 'sexp-write-nil))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 defconst-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 defconst-forms))
                 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defcustom-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 0 defcustom-forms))
                 'sexp-write-symbol-lit))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 1 defcustom-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 1 defcustom-forms))
                 'if))
-    (should (equal (nelisp-phase47-compiler--ir-get defcustom-ir :params)
+    (should (equal (nelisp-aot-compiler--ir-get defcustom-ir :params)
                    '(out mirror frames scratch name_slot)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-top-level-var-literal-init-helpers ()
+(ert-deftest nelisp-aot-doc129/parse-top-level-var-literal-init-helpers ()
   "Doc 129.3R: top-level var helpers materialize common Sexp literals."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar buffer-name "*scratch*" "doc")
                 (defconst major-mode 'fundamental-mode "doc")
                 (defcustom optional nil "doc" :type 'boolean))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
-         (defvar-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
-         (defconst-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
-         (defcustom-body (nelisp-phase47-compiler--ir-get (nth 2 forms) :body))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
+         (defvar-body (nelisp-aot-compiler--ir-get (nth 0 forms) :body))
+         (defconst-body (nelisp-aot-compiler--ir-get (nth 1 forms) :body))
+         (defcustom-body (nelisp-aot-compiler--ir-get (nth 2 forms) :body))
          (defvar-else
-          (nelisp-phase47-compiler--ir-get
-           (nelisp-phase47-compiler--ir-get
-            (nth 1 (nelisp-phase47-compiler--ir-get defvar-body :forms))
+          (nelisp-aot-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
+            (nth 1 (nelisp-aot-compiler--ir-get defvar-body :forms))
             :else)
            :forms))
          (defconst-forms
-          (nelisp-phase47-compiler--ir-get defconst-body :forms))
+          (nelisp-aot-compiler--ir-get defconst-body :forms))
          (defcustom-else
-          (nelisp-phase47-compiler--ir-get
-           (nelisp-phase47-compiler--ir-get
-            (nth 1 (nelisp-phase47-compiler--ir-get defcustom-body :forms))
+          (nelisp-aot-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
+            (nth 1 (nelisp-aot-compiler--ir-get defcustom-body :forms))
             :else)
            :forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defvar-else))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 0 defvar-else))
                 'sexp-write-str-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get (nth 0 defvar-else) :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get (nth 0 defvar-else) :bytes)
                    (string-to-list "*scratch*")))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 3 defconst-forms))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 3 defconst-forms))
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get
+    (should (equal (nelisp-aot-compiler--ir-get
                     (nth 3 defconst-forms) :bytes)
                    (string-to-list "fundamental-mode")))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 0 defcustom-else))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 0 defcustom-else))
                 'sexp-write-nil))))
 
-(ert-deftest nelisp-phase47-doc129/parse-top-level-var-aggregate-init-helpers ()
+(ert-deftest nelisp-aot-doc129/parse-top-level-var-aggregate-init-helpers ()
   "Doc 129.3T: top-level var helpers materialize list/vector literals."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar modes '(emacs-lisp-mode org-mode) "doc")
                 (defconst empty [] "doc")
                 (defcustom alist '(("\\.el\\'" . emacs-lisp-mode))
                   "doc" :type 'sexp))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
-         (defvar-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
-         (defconst-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
-         (defcustom-body (nelisp-phase47-compiler--ir-get (nth 2 forms) :body))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
+         (defvar-body (nelisp-aot-compiler--ir-get (nth 0 forms) :body))
+         (defconst-body (nelisp-aot-compiler--ir-get (nth 1 forms) :body))
+         (defcustom-body (nelisp-aot-compiler--ir-get (nth 2 forms) :body))
          (defvar-else
-          (nelisp-phase47-compiler--ir-get
-           (nelisp-phase47-compiler--ir-get
-            (nth 1 (nelisp-phase47-compiler--ir-get defvar-body :forms))
+          (nelisp-aot-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
+            (nth 1 (nelisp-aot-compiler--ir-get defvar-body :forms))
             :else)
            :forms))
          (defconst-forms
-          (nelisp-phase47-compiler--ir-get defconst-body :forms))
+          (nelisp-aot-compiler--ir-get defconst-body :forms))
          (defcustom-else
-          (nelisp-phase47-compiler--ir-get
-           (nelisp-phase47-compiler--ir-get
-            (nth 1 (nelisp-phase47-compiler--ir-get defcustom-body :forms))
+          (nelisp-aot-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
+            (nth 1 (nelisp-aot-compiler--ir-get defcustom-body :forms))
             :else)
            :forms)))
     (should (cl-find-if
              (lambda (node)
-               (eq (nelisp-phase47-compiler--ir-kind node)
+               (eq (nelisp-aot-compiler--ir-kind node)
                    'cons-make-with-clone))
              defvar-else))
     (should (cl-find-if
              (lambda (node)
-               (eq (nelisp-phase47-compiler--ir-kind node) 'vector-make))
+               (eq (nelisp-aot-compiler--ir-kind node) 'vector-make))
              defconst-forms))
     (should (cl-find-if
              (lambda (node)
-               (eq (nelisp-phase47-compiler--ir-kind node)
+               (eq (nelisp-aot-compiler--ir-kind node)
                    'cons-make-with-clone))
              defcustom-else))))
 
-(ert-deftest nelisp-phase47-doc129/parse-top-level-var-literal-constructors ()
+(ert-deftest nelisp-aot-doc129/parse-top-level-var-literal-constructors ()
   "Doc 129.3V: literal constructors lower through direct Sexp helpers."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar keys (vector) "doc")
                 (defconst modes (list 'emacs-lisp-mode 'lisp-mode) "doc")
                 (defcustom pair (cons 'major-mode "Elisp")
                   "doc" :type 'sexp)
                 (defconst prompt (concat "M-" "x") "doc"))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
-         (keys-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
-         (modes-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
-         (pair-body (nelisp-phase47-compiler--ir-get (nth 2 forms) :body))
-         (prompt-body (nelisp-phase47-compiler--ir-get (nth 3 forms) :body))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
+         (keys-body (nelisp-aot-compiler--ir-get (nth 0 forms) :body))
+         (modes-body (nelisp-aot-compiler--ir-get (nth 1 forms) :body))
+         (pair-body (nelisp-aot-compiler--ir-get (nth 2 forms) :body))
+         (prompt-body (nelisp-aot-compiler--ir-get (nth 3 forms) :body))
          (keys-else
-          (nelisp-phase47-compiler--ir-get
-           (nelisp-phase47-compiler--ir-get
-            (nth 1 (nelisp-phase47-compiler--ir-get keys-body :forms))
+          (nelisp-aot-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
+            (nth 1 (nelisp-aot-compiler--ir-get keys-body :forms))
             :else)
            :forms))
-         (modes-forms (nelisp-phase47-compiler--ir-get modes-body :forms))
+         (modes-forms (nelisp-aot-compiler--ir-get modes-body :forms))
          (pair-else
-          (nelisp-phase47-compiler--ir-get
-           (nelisp-phase47-compiler--ir-get
-            (nth 1 (nelisp-phase47-compiler--ir-get pair-body :forms))
+          (nelisp-aot-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
+            (nth 1 (nelisp-aot-compiler--ir-get pair-body :forms))
             :else)
            :forms))
-         (prompt-forms (nelisp-phase47-compiler--ir-get prompt-body :forms)))
+         (prompt-forms (nelisp-aot-compiler--ir-get prompt-body :forms)))
     (should (cl-find-if
              (lambda (node)
-               (eq (nelisp-phase47-compiler--ir-kind node) 'vector-make))
+               (eq (nelisp-aot-compiler--ir-kind node) 'vector-make))
              keys-else))
     (should (cl-find-if
              (lambda (node)
-               (eq (nelisp-phase47-compiler--ir-kind node)
+               (eq (nelisp-aot-compiler--ir-kind node)
                    'cons-make-with-clone))
              modes-forms))
     (should (cl-find-if
              (lambda (node)
-               (eq (nelisp-phase47-compiler--ir-kind node)
+               (eq (nelisp-aot-compiler--ir-kind node)
                    'cons-make-with-clone))
              pair-else))
     (should (cl-find-if
              (lambda (node)
-               (and (eq (nelisp-phase47-compiler--ir-kind node)
+               (and (eq (nelisp-aot-compiler--ir-kind node)
                         'sexp-write-str-lit)
-                    (equal (nelisp-phase47-compiler--ir-get node :bytes)
+                    (equal (nelisp-aot-compiler--ir-get node :bytes)
                            (string-to-list "M-x"))))
              prompt-forms))))
 
-(ert-deftest nelisp-phase47-doc129/parse-top-level-var-hash-table-init-helpers ()
+(ert-deftest nelisp-aot-doc129/parse-top-level-var-hash-table-init-helpers ()
   "Doc 129.3U: top-level var helpers materialize empty hash tables."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar table-a (make-hash-table :test 'eq) "doc")
                 (defconst table-b
                   (make-hash-table :test #'eql :weakness nil :size 17)
                   "doc"))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
-         (defvar-body (nelisp-phase47-compiler--ir-get (nth 0 forms) :body))
-         (defconst-body (nelisp-phase47-compiler--ir-get (nth 1 forms) :body))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
+         (defvar-body (nelisp-aot-compiler--ir-get (nth 0 forms) :body))
+         (defconst-body (nelisp-aot-compiler--ir-get (nth 1 forms) :body))
          (defvar-else
-          (nelisp-phase47-compiler--ir-get
-           (nelisp-phase47-compiler--ir-get
-            (nth 1 (nelisp-phase47-compiler--ir-get defvar-body :forms))
+          (nelisp-aot-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
+            (nth 1 (nelisp-aot-compiler--ir-get defvar-body :forms))
             :else)
            :forms))
          (defconst-forms
-          (nelisp-phase47-compiler--ir-get defconst-body :forms))
+          (nelisp-aot-compiler--ir-get defconst-body :forms))
          (defvar-record
           (cl-find-if
            (lambda (node)
-             (eq (nelisp-phase47-compiler--ir-kind node) 'record-make))
+             (eq (nelisp-aot-compiler--ir-kind node) 'record-make))
            defvar-else))
          (defconst-record
           (cl-find-if
            (lambda (node)
-             (eq (nelisp-phase47-compiler--ir-kind node) 'record-make))
+             (eq (nelisp-aot-compiler--ir-kind node) 'record-make))
            defconst-forms)))
     (should defvar-record)
-    (should (= (nelisp-phase47-compiler--ir-get
-                (nelisp-phase47-compiler--ir-get defvar-record :slot-count)
+    (should (= (nelisp-aot-compiler--ir-get
+                (nelisp-aot-compiler--ir-get defvar-record :slot-count)
                 :value)
                16))
     (should defconst-record)
-    (should (= (nelisp-phase47-compiler--ir-get
-                (nelisp-phase47-compiler--ir-get defconst-record :slot-count)
+    (should (= (nelisp-aot-compiler--ir-get
+                (nelisp-aot-compiler--ir-get defconst-record :slot-count)
                 :value)
                32))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-defcustom-requires-docstring ()
+(ert-deftest nelisp-aot-doc129/top-level-defcustom-requires-docstring ()
   "Doc 129.3F: top-level defcustom validates its docstring."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(seq
       (defcustom z 9 :type 'integer)))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-defcustom-metadata-descriptor ()
+(ert-deftest nelisp-aot-doc129/top-level-defcustom-metadata-descriptor ()
   "Doc 129.3G: top-level defcustom exposes metadata for Doc 99."
   (let ((descriptors
-         (nelisp-phase47-compiler--custom-metadata-descriptors
+         (nelisp-aot-compiler--custom-metadata-descriptors
           '(seq
             (defvar x 42 "doc")
             (defcustom z 9 "doc" :type 'integer :group 'nelisp)))))
@@ -1143,10 +1143,10 @@ materialized closure temporary."
                :docstring "doc"
                :options (:type (quote integer) :group (quote nelisp))))))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-var-init-descriptors ()
+(ert-deftest nelisp-aot-doc129/top-level-var-init-descriptors ()
   "Doc 129.3H: top-level var init helpers expose scheduling metadata."
   (let ((descriptors
-         (nelisp-phase47-compiler--init-helper-descriptors
+         (nelisp-aot-compiler--init-helper-descriptors
           '(seq
             (defvar no-init)
             (defvar x 42 "doc")
@@ -1167,10 +1167,10 @@ materialized closure temporary."
                :helper nelisp_aot_custom_3_z
                :index 3))))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-setq-init-descriptors ()
+(ert-deftest nelisp-aot-doc129/top-level-setq-init-descriptors ()
   "Doc 129.3S: top-level `setq' pairs expose init helpers."
   (let ((descriptors
-         (nelisp-phase47-compiler--init-helper-descriptors
+         (nelisp-aot-compiler--init-helper-descriptors
           '(seq
             (setq a 0 b "")))))
     (should
@@ -1184,10 +1184,10 @@ materialized closure temporary."
                :helper nelisp_aot_setq_1_b
                :index 1))))))
 
-(ert-deftest nelisp-phase47-doc129/module-init-plan-combines-descriptors ()
+(ert-deftest nelisp-aot-doc129/module-init-plan-combines-descriptors ()
   "Doc 129.7W: compiler exposes a normalized module-init plan."
   (let* ((plan
-          (nelisp-phase47-compiler--module-init-plan
+          (nelisp-aot-compiler--module-init-plan
            '(seq
              (defvar x 42 "doc")
              (defcustom z 9 "doc" :type 'integer)
@@ -1229,10 +1229,10 @@ materialized closure temporary."
     (should (equal (plist-get closure :arglist) '(item)))
     (should (equal (plist-get closure :captures) '(cap)))))
 
-(ert-deftest nelisp-phase47-doc129/object-module-init-metadata ()
+(ert-deftest nelisp-aot-doc129/object-module-init-metadata ()
   "Doc 129.7AI: object metadata serializes the module-init plan."
   (let* ((metadata
-          (nelisp-phase47-compiler--object-module-init-metadata
+          (nelisp-aot-compiler--object-module-init-metadata
            '(seq
              (defcustom z 9 "doc" :type 'integer)
              (defun caller
@@ -1255,24 +1255,24 @@ materialized closure temporary."
     (should (string-match-p "nelisp_aot_custom_0_z" text))
     (should (string-match-p ":closure-descriptors" text))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-defcustom-rejects-bad-options ()
+(ert-deftest nelisp-aot-doc129/top-level-defcustom-rejects-bad-options ()
   "Doc 129.3G: defcustom metadata options are keyword/value pairs."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(seq
       (defcustom z 9 "doc" :type))))
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(seq
       (defcustom z 9 "doc" type 'integer)))))
 
-(ert-deftest nelisp-phase47-doc129/object-top-level-var-init-helpers ()
+(ert-deftest nelisp-aot-doc129/object-top-level-var-init-helpers ()
   "Doc 129.3E/F: object output accepts top-level var declaration forms."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-top-var-init-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar x 42 "doc")
              (defconst y 7 "doc")
@@ -1289,28 +1289,28 @@ materialized closure temporary."
       (ignore-errors (delete-file path)))))
 
 
-(ert-deftest nelisp-phase47-doc129/parse-multi-let-rt ()
+(ert-deftest nelisp-aot-doc129/parse-multi-let-rt ()
   "Doc 129.4: multi-binding runtime `let' lowers to `let-rt-n'."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (defun id (x) x)
                     (defun f (x y)
                       (let ((a (id x))
                             (b (+ y 10)))
                         (+ a b))))))
-         (f-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
-         (body (nelisp-phase47-compiler--ir-get f-ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt-n))
-    (should (= (length (nelisp-phase47-compiler--ir-get body :bindings)) 2))
-    (should (= (nelisp-phase47-compiler--ir-get f-ir :rt-slot-count) 2))))
+         (f-ir (nth 1 (nelisp-aot-compiler--ir-get ir :forms)))
+         (body (nelisp-aot-compiler--ir-get f-ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt-n))
+    (should (= (length (nelisp-aot-compiler--ir-get body :bindings)) 2))
+    (should (= (nelisp-aot-compiler--ir-get f-ir :rt-slot-count) 2))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-multi-let-rt ()
+(ert-deftest nelisp-aot-doc129/e2e-multi-let-rt ()
   "Doc 129.4: execute a multi-binding runtime `let'."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary "multi-let")))
+  (let ((path (nelisp-aot-doc129-test--tmp-binary "multi-let")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq (defun id (x) x)
                  (defun f (x y)
                    (let ((a (id x))
@@ -1318,20 +1318,20 @@ materialized closure temporary."
                      (+ a b)))
                  (exit (f 5 7)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 22)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 22)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/captured-mutation-bare-symbol-let-bindings ()
+(ert-deftest nelisp-aot-doc129/captured-mutation-bare-symbol-let-bindings ()
   "Doc 129.4J: captured-mutation analysis accepts bare-symbol let bindings."
-  (should (equal (nelisp-phase47-compiler--let-binding-vars
+  (should (equal (nelisp-aot-compiler--let-binding-vars
                   '(before (point (nelisp-ec-buffer-point buffer)) after))
                  '(before point after)))
   (should
    (null
-    (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+    (nelisp-aot-compiler--captured-mutation-guaranteed-vars
      '(let ((point (nelisp-ec-buffer-point buffer)) before after)
         (seq before after)))))
-  (should (equal (nelisp-phase47-compiler--lambda-free-vars
+  (should (equal (nelisp-aot-compiler--lambda-free-vars
                   '(let (out)
                      (when params
                        (setq out params))
@@ -1340,9 +1340,9 @@ materialized closure temporary."
                   t)
                  nil)))
 
-(ert-deftest nelisp-phase47-doc129/preprocess-macroexpanded-defvar-declaration ()
+(ert-deftest nelisp-aot-doc129/preprocess-macroexpanded-defvar-declaration ()
   "Doc 129.4J: macroexpanded declaration-only defvars are top-level no-ops."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (progn (defvar cl-struct-demo-tags))
                 'emacs-frame-p
@@ -1357,14 +1357,14 @@ materialized closure temporary."
                   :group 'org)
                 :autoload-end
                 (defun f () 0))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name) 'f))))
+    (should (eq (nelisp-aot-compiler--ir-get (car forms) :name) 'f))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-special-var-descriptors ()
+(ert-deftest nelisp-aot-doc129/top-level-special-var-descriptors ()
   "Doc 129.4B: top-level vars are tracked as special declarations."
   (let ((extracted
-         (nelisp-phase47-compiler--extract-defmacros
+         (nelisp-aot-compiler--extract-defmacros
           '(seq
             (defvar dyn)
             (defconst c 1 "doc")
@@ -1372,9 +1372,9 @@ materialized closure temporary."
     (should (equal (plist-get extracted :special-vars)
                    '(dyn c opt)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-mixed-let-normal-exit ()
   "Doc 129.4F: mixed lexical/special `let' lowers to temp/push/body/pop."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_mixed
@@ -1388,16 +1388,16 @@ materialized closure temporary."
                   (let (((a :type sexp) value-a)
                         (dyn value-b))
                     a)))))
-         (defun-ir (car (nelisp-phase47-compiler--ir-get ir :forms)))
-         (body (nelisp-phase47-compiler--ir-get defun-ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt-n))
+         (defun-ir (car (nelisp-aot-compiler--ir-get ir :forms)))
+         (body (nelisp-aot-compiler--ir-get defun-ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt-n))
     (should (= (cl-count 'nelisp_aot_push_special externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-multi-let-normal-exit ()
   "Doc 129.4E: all-special multi-binding `let' lowers to push/body/pop."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn-a)
                 (defvar dyn-b)
@@ -1412,16 +1412,16 @@ materialized closure temporary."
                   (let ((dyn-a value-a)
                         (dyn-b value-b))
                     value-b)))))
-         (defun-ir (car (nelisp-phase47-compiler--ir-get ir :forms)))
-         (body (nelisp-phase47-compiler--ir-get defun-ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt-n))
+         (defun-ir (car (nelisp-aot-compiler--ir-get ir :forms)))
+         (body (nelisp-aot-compiler--ir-get defun-ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt-n))
     (should (= (cl-count 'nelisp_aot_push_special externs) 2))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-let-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-let-normal-exit ()
   "Doc 129.4D: source special `let' lowers to push/body/pop."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_special
@@ -1433,16 +1433,16 @@ materialized closure temporary."
                      (value :type sexp))
                   (let ((dyn value))
                     value)))))
-         (defun-ir (car (nelisp-phase47-compiler--ir-get ir :forms)))
-         (body (nelisp-phase47-compiler--ir-get defun-ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+         (defun-ir (car (nelisp-aot-compiler--ir-get ir :forms)))
+         (body (nelisp-aot-compiler--ir-get defun-ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
     (should (member 'nelisp_aot_push_special externs))
     (should (member 'nelisp_aot_pop_special externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-let-direct-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-let-direct-throw ()
   "Doc 129.4G: special `let' direct throw pops before non-local exit."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_special
@@ -1454,14 +1454,14 @@ materialized closure temporary."
                      (value :type sexp))
                   (let ((dyn value))
                     (throw 'tag value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_special externs))
     (should (member 'nelisp_aot_pop_special externs))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-let-dynamic-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-let-dynamic-throw ()
   "Doc 129.8AV: special `let' dynamic throw captures args before pop."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_special
@@ -1474,14 +1474,14 @@ materialized closure temporary."
                      (value :type sexp))
                   (let ((dyn value))
                     (throw tag value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_special externs))
     (should (member 'nelisp_aot_pop_special externs))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-let-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-let-dynamic-signal ()
   "Doc 129.8AV: special `let' dynamic signal pops before signalling."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_special
@@ -1494,14 +1494,14 @@ materialized closure temporary."
                      (value :type sexp))
                   (let ((dyn value))
                     (signal tag value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_special externs))
     (should (member 'nelisp_aot_pop_special externs))
     (should (member 'nelisp_aot_signal externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-direct-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-multi-let-direct-throw ()
   "Doc 129.4G: multi-special `let' direct throw pops all bindings."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn-a)
                 (defvar dyn-b)
@@ -1516,14 +1516,14 @@ materialized closure temporary."
                   (let ((dyn-a value-a)
                         (dyn-b value-b))
                     (throw 'tag value-b))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 2))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-multi-let-dynamic-signal ()
   "Doc 129.8AV: multi-special `let' dynamic signal pops all bindings."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn-a)
                 (defvar dyn-b)
@@ -1539,14 +1539,14 @@ materialized closure temporary."
                   (let ((dyn-a value-a)
                         (dyn-b value-b))
                     (signal tag value-b))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 2))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
     (should (member 'nelisp_aot_signal externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-direct-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-mixed-let-direct-throw ()
   "Doc 129.4G: mixed special/lexical `let' direct throw preserves lexical value."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_mixed
@@ -1560,14 +1560,14 @@ materialized closure temporary."
                   (let (((a :type sexp) value-a)
                         (dyn value-b))
                     (throw 'tag a))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 1))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-dynamic-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-mixed-let-dynamic-throw ()
   "Doc 129.8AV: mixed special `let' dynamic throw preserves lexical scope."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_mixed
@@ -1582,14 +1582,14 @@ materialized closure temporary."
                   (let (((a :type sexp) value-a)
                         (dyn value-b))
                     (throw tag a))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 1))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-let-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-let-conditional-throw ()
   "Doc 129.4H: special `let' conditional throw cleans up both branches."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_special
@@ -1603,14 +1603,14 @@ materialized closure temporary."
                     (if value
                         (throw 'tag value)
                       value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_special externs))
     (should (member 'nelisp_aot_pop_special externs))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-multi-let-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-multi-let-conditional-throw ()
   "Doc 129.4H: multi-special `let' conditional throw pops every binding."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn-a)
                 (defvar dyn-b)
@@ -1627,14 +1627,14 @@ materialized closure temporary."
                     (if value-a
                         (throw 'tag value-b)
                       value-a))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 2))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 4))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-mixed-let-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-mixed-let-conditional-throw ()
   "Doc 129.4H: mixed special `let' conditional throw keeps lexical aliases."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_mixed
@@ -1650,14 +1650,14 @@ materialized closure temporary."
                     (if a
                         (throw 'tag a)
                       value-b))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 2))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-source-special-let-nested-throw ()
+(ert-deftest nelisp-aot-doc129/parse-source-special-let-nested-throw ()
   "Doc 129.4I: nested special `let' throw trees clean up every leaf."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defvar dyn)
                 (defun bind_special
@@ -1673,14 +1673,14 @@ materialized closure temporary."
                             (throw 'tag value)
                           value)
                       value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_special externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_special externs) 3))
     (should (member 'nelisp_aot_throw externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-aot-special-push-pop ()
+(ert-deftest nelisp-aot-doc129/parse-aot-special-push-pop ()
   "Doc 129.4C: explicit special binding push/pop forms lower to bridges."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun bind_special
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -1692,19 +1692,19 @@ materialized closure temporary."
                  (seq
                   (aot-push-special 'dyn value)
                   (aot-pop-special handle)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_special externs))
     (should (member 'nelisp_aot_pop_special externs))))
 
-(ert-deftest nelisp-phase47-doc129/aot-special-push-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/aot-special-push-requires-boundary ()
   "Doc 129.4C: special binding push lowering requires boxed boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun bind_special ((value :type sexp))
        (aot-push-special 'dyn value)))
-   :type 'nelisp-phase47-compiler-error)
+   :type 'nelisp-aot-compiler-error)
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun bind_special
          ((out :type sexp)
           (mirror :type sexp)
@@ -1712,15 +1712,15 @@ materialized closure temporary."
           (scratch :type sexp)
           (value :type sexp))
        (aot-push-special 'dyn value)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-aot-special-push-pop ()
+(ert-deftest nelisp-aot-doc129/object-aot-special-push-pop ()
   "Doc 129.4C: object output exposes special binding bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-special-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun bind_special
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -1740,13 +1740,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_special" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-source-special-let-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-source-special-let-normal-exit ()
   "Doc 129.4D: object output exposes source special let bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-special-let-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar dyn)
              (defun bind_special
@@ -1766,13 +1766,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_special" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-source-special-multi-let-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-source-special-multi-let-normal-exit ()
   "Doc 129.4E: object output exposes multi-special let bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-special-multi-let-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar dyn-a)
              (defvar dyn-b)
@@ -1795,13 +1795,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_special" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-source-special-mixed-let-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-source-special-mixed-let-normal-exit ()
   "Doc 129.4F: object output exposes mixed special let bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-special-mixed-let-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar dyn)
              (defun bind_mixed
@@ -1823,13 +1823,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_special" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-source-special-let-direct-throw ()
+(ert-deftest nelisp-aot-doc129/object-source-special-let-direct-throw ()
   "Doc 129.4G: object output exposes special cleanup before throw."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-special-let-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar dyn)
              (defun bind_special
@@ -1850,13 +1850,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_throw" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-source-special-let-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/object-source-special-let-dynamic-signal ()
   "Doc 129.8AV: object output exposes special cleanup before signal."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-special-let-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar dyn)
              (defun bind_special
@@ -1878,13 +1878,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_signal" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-source-special-let-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/object-source-special-let-conditional-throw ()
   "Doc 129.4H: object output exposes branch special cleanup before throw."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-special-let-if-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar dyn)
              (defun bind_special
@@ -1907,55 +1907,55 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_throw" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-static-gc-root-map ()
+(ert-deftest nelisp-aot-doc129/parse-static-gc-root-map ()
   "Doc 129.5A: allocating defuns expose annotated Sexp root slots."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(defun make-str ((slot :type sexp) bytes len)
                 (sexp-write-str slot bytes len)))))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :gc-root-slots)
+    (should (equal (nelisp-aot-compiler--ir-get ir :gc-root-slots)
                    '(0)))))
 
-(ert-deftest nelisp-phase47-doc129/gc-root-descriptor-for-defun ()
+(ert-deftest nelisp-aot-doc129/gc-root-descriptor-for-defun ()
   "Doc 129.5C: root slots are exposed as call-boundary descriptors."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make-str ((slot :type sexp) bytes len)
                  (sexp-write-str slot bytes len))))
          (descriptor
-          (nelisp-phase47-compiler--gc-root-descriptor-for-defun ir)))
+          (nelisp-aot-compiler--gc-root-descriptor-for-defun ir)))
     (should (equal descriptor
                    '(:name make-str
                      :slots (0)
                      :param-count 3
                      :rt-slot-count 0)))))
 
-(ert-deftest nelisp-phase47-doc129/gc-root-descriptors-skip-empty-defuns ()
+(ert-deftest nelisp-aot-doc129/gc-root-descriptors-skip-empty-defuns ()
   "Doc 129.5C: non-allocating defuns do not produce root descriptors."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defun id ((x :type sexp)) x)
                 (defun make-str ((slot :type sexp) bytes len)
                   (sexp-write-str slot bytes len)))))
          (descriptors
-          (nelisp-phase47-compiler--gc-root-descriptors ir)))
+          (nelisp-aot-compiler--gc-root-descriptors ir)))
     (should (equal descriptors
                    '((:name make-str
                       :slots (0)
                       :param-count 3
                       :rt-slot-count 0))))))
 
-(ert-deftest nelisp-phase47-doc129/runtime-let-sexp-root-slot ()
+(ert-deftest nelisp-aot-doc129/runtime-let-sexp-root-slot ()
   "Doc 129.5D: annotated runtime `let' locals enter the static root map."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defun id (x) x)
                 (defun make-str (raw)
                   (let (((slot :type sexp) (id raw)))
                     (sexp-write-str slot raw raw))))))
-         (make-str-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
+         (make-str-ir (nth 1 (nelisp-aot-compiler--ir-get ir :forms)))
          (descriptor
-          (nelisp-phase47-compiler--gc-root-descriptor-for-defun
+          (nelisp-aot-compiler--gc-root-descriptor-for-defun
            make-str-ir)))
-    (should (equal (nelisp-phase47-compiler--ir-get make-str-ir
+    (should (equal (nelisp-aot-compiler--ir-get make-str-ir
                                                      :gc-root-slots)
                    '(1)))
     (should (equal descriptor
@@ -1964,9 +1964,9 @@ materialized closure temporary."
                      :param-count 1
                      :rt-slot-count 1)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-aot-root-push-pop ()
+(ert-deftest nelisp-aot-doc129/parse-aot-root-push-pop ()
   "Doc 129.5E: explicit native root push/pop forms lower to bridges."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun root_frame
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -1976,32 +1976,32 @@ materialized closure temporary."
                  (seq
                   (aot-push-roots roots)
                   (aot-pop-roots roots)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_roots externs))
     (should (member 'nelisp_aot_pop_roots externs))))
 
-(ert-deftest nelisp-phase47-doc129/aot-root-push-pop-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/aot-root-push-pop-requires-boundary ()
   "Doc 129.5E: root push/pop lowering requires boxed boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun root_frame
          ((roots :type sexp))
        (aot-push-roots roots)))
-   :type 'nelisp-phase47-compiler-error)
+   :type 'nelisp-aot-compiler-error)
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun root_frame
          ((roots :type sexp))
        (aot-pop-roots roots)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-aot-root-push-pop ()
+(ert-deftest nelisp-aot-doc129/object-aot-root-push-pop ()
   "Doc 129.5E: object output exposes root push/pop bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-roots-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun root_frame
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -2019,9 +2019,9 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_roots" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope ()
+(ert-deftest nelisp-aot-doc129/parse-auto-aot-root-scope ()
   "Doc 129.5F: boundary defuns with root slots get automatic root scope."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make-str
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -2031,30 +2031,30 @@ materialized closure temporary."
                     bytes
                     len)
                  (sexp-write-str out bytes len))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'aot-root-scope))
-    (should (equal (nelisp-phase47-compiler--ir-get body :root-slots)
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'aot-root-scope))
+    (should (equal (nelisp-aot-compiler--ir-get body :root-slots)
                    '(0)))
-    (should (equal (nelisp-phase47-compiler--ir-get body :root-symbols)
+    (should (equal (nelisp-aot-compiler--ir-get body :root-symbols)
                    '(out)))
     (should (member 'nelisp_aot_materialize_roots externs))
     (should (member 'nelisp_aot_push_roots externs))
     (should (member 'nelisp_aot_pop_roots externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope-requires-roots ()
+(ert-deftest nelisp-aot-doc129/parse-auto-aot-root-scope-requires-roots ()
   "Doc 129.5F: automatic root scope is skipped without AOT handles."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make-str ((slot :type sexp) bytes len)
                  (sexp-write-str slot bytes len))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-write-str))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :gc-root-slots)
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'sexp-write-str))
+    (should (equal (nelisp-aot-compiler--ir-get ir :gc-root-slots)
                    '(0)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope-frame-roots-auto ()
+(ert-deftest nelisp-aot-doc129/parse-auto-aot-root-scope-frame-roots-auto ()
   "Doc 129.5J: loader-selected hash-FRAMES root scope uses stack roots."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make-str
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -2064,18 +2064,18 @@ materialized closure temporary."
                     bytes
                     len)
                  (sexp-write-str out bytes len))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'aot-root-scope))
-    (should (equal (nelisp-phase47-compiler--ir-get body :root-slots)
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'aot-root-scope))
+    (should (equal (nelisp-aot-compiler--ir-get body :root-slots)
                    '(0)))
-    (should (eq (nelisp-phase47-compiler--ir-get body :root-storage)
+    (should (eq (nelisp-aot-compiler--ir-get body :root-storage)
                 'stack))
-    (should (eq (nelisp-phase47-compiler--ir-get body :materialize-kind)
+    (should (eq (nelisp-aot-compiler--ir-get body :materialize-kind)
                 'frames))
     (should (member 'nelisp_aot_materialize_frame_roots externs))))
 
-(ert-deftest nelisp-phase47-doc129/select-auto-frame-roots-from-metadata ()
+(ert-deftest nelisp-aot-doc129/select-auto-frame-roots-from-metadata ()
   "Doc 129.5K: object loader metadata selects auto frame roots."
   (let* ((source
           '(seq
@@ -2090,7 +2090,7 @@ materialized closure temporary."
             (defun plain ((slot :type sexp) bytes len)
               (sexp-write-str slot bytes len))))
          (selected
-          (nelisp-phase47-compiler--select-auto-frame-roots source)))
+          (nelisp-aot-compiler--select-auto-frame-roots source)))
     (should
      (equal selected
             '(seq
@@ -2106,9 +2106,9 @@ materialized closure temporary."
               (defun plain ((slot :type sexp) bytes len)
                 (sexp-write-str slot bytes len)))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-auto-aot-root-scope-stack-roots ()
+(ert-deftest nelisp-aot-doc129/parse-auto-aot-root-scope-stack-roots ()
   "Doc 129.5I: root scope can use hash-FRAMES roots without a roots slot."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make-str
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -2118,24 +2118,24 @@ materialized closure temporary."
                     bytes
                     len)
                  (sexp-write-str out bytes len))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'aot-root-scope))
-    (should (equal (nelisp-phase47-compiler--ir-get body :root-slots)
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'aot-root-scope))
+    (should (equal (nelisp-aot-compiler--ir-get body :root-slots)
                    '(0)))
-    (should (eq (nelisp-phase47-compiler--ir-get body :root-storage)
+    (should (eq (nelisp-aot-compiler--ir-get body :root-storage)
                 'stack))
-    (should (eq (nelisp-phase47-compiler--ir-get body :materialize-kind)
+    (should (eq (nelisp-aot-compiler--ir-get body :materialize-kind)
                 'frames))
     (should (member 'nelisp_aot_materialize_frame_roots externs))))
 
-(ert-deftest nelisp-phase47-doc129/object-auto-aot-root-scope ()
+(ert-deftest nelisp-aot-doc129/object-auto-aot-root-scope ()
   "Doc 129.5F: object output auto-emits balanced root bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-auto-roots-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun make-str
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -2154,13 +2154,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_roots" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-auto-aot-root-scope-frame-roots-auto ()
+(ert-deftest nelisp-aot-doc129/object-auto-aot-root-scope-frame-roots-auto ()
   "Doc 129.5J: object output supports loader-selected frame roots."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-auto-frame-roots-selected-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun make-str
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -2179,13 +2179,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_roots" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-auto-aot-root-scope-loader-selected ()
+(ert-deftest nelisp-aot-doc129/object-auto-aot-root-scope-loader-selected ()
   "Doc 129.5K: compile-to-object can select frame roots from metadata."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-auto-frame-roots-loader-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun make-str
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -2204,13 +2204,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_roots" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-auto-aot-root-scope-stack-roots ()
+(ert-deftest nelisp-aot-doc129/object-auto-aot-root-scope-stack-roots ()
   "Doc 129.5I: object output uses frame-root materialization without roots."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-auto-frame-roots-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun make-str
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -2229,154 +2229,154 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_roots" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-require-provide-stripped ()
+(ert-deftest nelisp-aot-doc129/top-level-require-provide-stripped ()
   "Doc 129.6A: top-level module forms are compile-time-only."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (require 'cl-lib)
-                (provide 'nelisp-phase47-doc129-test-feature)
+                (provide 'nelisp-aot-doc129-test-feature)
                 (exit 9))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'exit))))
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'exit))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-define-error-stripped ()
+(ert-deftest nelisp-aot-doc129/top-level-define-error-stripped ()
   "Doc 129.6A: top-level `define-error' is a compile-time module form."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (define-error 'nelisp-doc129-smoke-error
                   "Doc129 smoke error" 'error)
                 (exit 4))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'exit))
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'exit))
     (should (get 'nelisp-doc129-smoke-error 'error-conditions))
     (should (equal (get 'nelisp-doc129-smoke-error 'error-message)
                    "Doc129 smoke error"))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-defalias-stripped ()
+(ert-deftest nelisp-aot-doc129/top-level-defalias-stripped ()
   "Doc 129.6A: top-level `defalias' is a compile-time module form."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defalias 'nelisp-doc129-alias #'identity)
                 (exit 6))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'exit))))
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'exit))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-require-noerror-missing ()
+(ert-deftest nelisp-aot-doc129/top-level-require-noerror-missing ()
   "Doc 129.6A: `(require FEATURE nil t)' can be stripped when absent."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
-                (require 'nelisp-phase47-doc129-missing-feature nil t)
+                (require 'nelisp-aot-doc129-missing-feature nil t)
                 (exit 3))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'exit))))
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'exit))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-require-missing-signals ()
+(ert-deftest nelisp-aot-doc129/top-level-require-missing-signals ()
   "Doc 129.6A: missing top-level `require' without NOERROR still signals."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(seq
-      (require 'nelisp-phase47-doc129-missing-feature)
+      (require 'nelisp-aot-doc129-missing-feature)
       (exit 3)))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-unless-fboundp-stripped ()
+(ert-deftest nelisp-aot-doc129/top-level-unless-fboundp-stripped ()
   "Doc 129.1B: top-level `unless (fboundp ...)' guards are stripped."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (unless (fboundp 'identity)
                   (defun skipped (x) (+ x 9)))
                 (defun kept (x) (+ x 1)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get (car forms) :name)
                 'kept))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-when-fboundp-spliced ()
+(ert-deftest nelisp-aot-doc129/top-level-when-fboundp-spliced ()
   "Doc 129.1B: true top-level `when (fboundp ...)' guards splice body."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (when (fboundp 'identity)
                   (defun guarded (x) (+ x 1))))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get (car forms) :name)
                 'guarded))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-if-featurep-spliced ()
+(ert-deftest nelisp-aot-doc129/top-level-if-featurep-spliced ()
   "Doc 129.1B: static top-level `if' guards select one branch."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
-                (if (featurep 'nelisp-phase47-doc129-missing-feature)
+                (if (featurep 'nelisp-aot-doc129-missing-feature)
                     (defun skipped (x) (+ x 9))
                   (progn
                     (defun selected (x) (+ x 2)))))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get (car forms) :name)
                 'selected))))
 
-(ert-deftest nelisp-phase47-doc129/top-level-if-multi-else-spliced ()
+(ert-deftest nelisp-aot-doc129/top-level-if-multi-else-spliced ()
   "Doc 129.1C: static top-level `if' guard accepts ELSE... forms."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
-                (if (featurep 'nelisp-phase47-doc129-missing-feature)
+                (if (featurep 'nelisp-aot-doc129-missing-feature)
                     (defun skipped (x) (+ x 9))
                   (defalias 'nelisp-doc129-alias #'identity)
                   (defun selected (x) (+ x 3))))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms)))
+         (forms (nelisp-aot-compiler--ir-get ir :forms)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car forms)) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get (car forms) :name)
+    (should (eq (nelisp-aot-compiler--ir-kind (car forms)) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get (car forms) :name)
                 'selected))))
 
-(ert-deftest nelisp-phase47-doc129/function-static-fboundp-if-prunes-branch ()
+(ert-deftest nelisp-aot-doc129/function-static-fboundp-if-prunes-branch ()
   "Doc 129.1E: function-local static `fboundp' guards select one branch."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun guarded ()
-                 (if (fboundp 'nelisp-phase47-doc129-missing-function)
+                 (if (fboundp 'nelisp-aot-doc129-missing-function)
                      (unknown-form 1)
                    17))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get body :value) 17))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get body :value) 17))))
 
-(ert-deftest nelisp-phase47-doc129/function-static-fboundp-and-prunes-tail ()
+(ert-deftest nelisp-aot-doc129/function-static-fboundp-and-prunes-tail ()
   "Doc 129.1E: statically false `and' guards drop unsupported tail forms."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun guarded ()
-                 (and (fboundp 'nelisp-phase47-doc129-missing-function)
+                 (and (fboundp 'nelisp-aot-doc129-missing-function)
                       (unknown-form 1)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get body :value) 0))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get body :value) 0))))
 
-(ert-deftest nelisp-phase47-doc129/function-static-fboundp-cond-prunes-clause ()
+(ert-deftest nelisp-aot-doc129/function-static-fboundp-cond-prunes-clause ()
   "Doc 129.1E: `cond' skips statically false compatibility clauses."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun guarded ()
                  (cond
-                  ((fboundp 'nelisp-phase47-doc129-missing-function)
+                  ((fboundp 'nelisp-aot-doc129-missing-function)
                    (unknown-form 1))
                   (t 23)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (clauses (nelisp-phase47-compiler--ir-get body :clauses)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'cond))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (clauses (nelisp-aot-compiler--ir-get body :clauses)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'cond))
     (should (= (length clauses) 1))
     (should (eq (caar clauses) 'always))))
 
-(ert-deftest nelisp-phase47-doc129/object-external-user-call-reloc ()
+(ert-deftest nelisp-aot-doc129/object-external-user-call-reloc ()
   "Doc 129.7AS: object mode lowers unknown user calls to PLT relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-external-user-call-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller ((arg :type sexp))
               (external-user-function arg))
            path)
@@ -2386,13 +2386,13 @@ materialized closure temporary."
             (should (string-match-p "external-user-function" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unboundary-builtin-call-reloc ()
+(ert-deftest nelisp-aot-doc129/object-unboundary-builtin-call-reloc ()
   "Doc 129.7AW: ordinary object defuns get synthetic builtin boundaries."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unboundary-builtin-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller (arg)
               (car arg))
            path)
@@ -2402,13 +2402,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_call1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unboundary-funcall-reloc ()
+(ert-deftest nelisp-aot-doc129/object-unboundary-funcall-reloc ()
   "Doc 129.7AW: ordinary object defuns get synthetic funcall boundaries."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unboundary-funcall-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller (fn arg)
               (funcall fn arg))
            path)
@@ -2418,13 +2418,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-top-level-dynamic-var-init-reloc ()
+(ert-deftest nelisp-aot-doc129/object-top-level-dynamic-var-init-reloc ()
   "Doc 129.7AT: dynamic top-level Sexp initializers may use external calls."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-dynamic-var-init-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defvar doc129-dynamic-var
               (let ((value (external-make-value 7)))
                 (external-touch-value value)
@@ -2437,13 +2437,13 @@ materialized closure temporary."
             (should (string-match-p "external-touch-value" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-top-level-dynamic-builtin-init-reloc ()
+(ert-deftest nelisp-aot-doc129/object-top-level-dynamic-builtin-init-reloc ()
   "Doc 129.7AT: dynamic initializers preserve var symbols across builtin calls."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-dynamic-builtin-init-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defvar doc129-dynamic-builtin-var
               (list (external-make-value)))
            path)
@@ -2454,13 +2454,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-runtime-sexp-literal-values ()
+(ert-deftest nelisp-aot-doc129/object-runtime-sexp-literal-values ()
   "Doc 129.7AU: boxed AOT boundaries materialize literal Sexp values."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-runtime-literal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller ((out :type sexp)
                            (mirror :type sexp)
                            (frames :type sexp)
@@ -2478,13 +2478,13 @@ materialized closure temporary."
             (should (string-match-p "caller" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-boundary-global-value-lookup ()
+(ert-deftest nelisp-aot-doc129/object-boundary-global-value-lookup ()
   "Doc 129.7AV: boxed object functions lower free symbols to value lookup."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-global-value-lookup-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller ((out :type sexp)
                            (mirror :type sexp)
                            (frames :type sexp)
@@ -2498,13 +2498,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_env_lookup_value" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-global-setq-value-cell ()
+(ert-deftest nelisp-aot-doc129/object-global-setq-value-cell ()
   "Doc 129.7AX: object functions lower global setq through env_set_value."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-global-setq-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller ()
               (setq doc129-global-counter 0
                     doc129-global-name "ready"))
@@ -2515,13 +2515,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_env_set_value" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-hidden-boundary-keyword-fallback ()
+(ert-deftest nelisp-aot-doc129/object-hidden-boundary-keyword-fallback ()
   "Doc 129.7AY: object hidden boundaries accept keyword literal fallback."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-keyword-fallback-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller (entry)
               (plist-get entry :name))
            path)
@@ -2531,13 +2531,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-optional-arity-padding ()
+(ert-deftest nelisp-aot-doc129/object-optional-arity-padding ()
   "Doc 129.7AZ: object calls accept omitted optional parameters."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-optional-arity-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun callee (required &optional maybe)
                required)
@@ -2551,13 +2551,13 @@ materialized closure temporary."
             (should (string-match-p "caller" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-common-vararg-source-forms ()
+(ert-deftest nelisp-aot-doc129/object-common-vararg-source-forms ()
   "Doc 129.7BA: object parsing accepts common vararg source forms."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-vararg-source-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller (a b c prompt seconds)
               (seq
                (+ a b c)
@@ -2571,13 +2571,13 @@ materialized closure temporary."
             (should (string-match-p "caller" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-top-level-compat-forms ()
+(ert-deftest nelisp-aot-doc129/object-top-level-compat-forms ()
   "Doc 129.7BB: object frontend accepts common top-level compatibility forms."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-top-compat-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar-local doc129-local-state 'ready "doc")
              (prog1
@@ -2591,13 +2591,13 @@ materialized closure temporary."
             (should (string-match-p "doc129-prog1-defun" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-empty-let ()
+(ert-deftest nelisp-aot-doc129/object-empty-let ()
   "Doc 129.7BC: empty let bindings parse as their body."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-empty-let-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller (x)
               (let nil x))
            path)
@@ -2607,13 +2607,13 @@ materialized closure temporary."
 	            (should (string-match-p "caller" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-source-compat-value-forms ()
+(ert-deftest nelisp-aot-doc129/object-source-compat-value-forms ()
   "Doc 129.7BD: object frontend accepts common macroexpanded value shapes."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-value-compat-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun let_singleton (x)
                (let ((--cl-var--)) x))
@@ -2634,13 +2634,13 @@ materialized closure temporary."
             (should (string-match-p "whole_float_literal" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-dynamic-nonlocal-source-forms ()
+(ert-deftest nelisp-aot-doc129/object-dynamic-nonlocal-source-forms ()
   "Doc 129.8BJ: object output allows dynamic nonlocal forms through bridges."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-dynamic-nonlocal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun catch_loop (x)
                (catch 'done
@@ -2666,7 +2666,7 @@ materialized closure temporary."
             (should (string-match-p "special_nonlocal" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-large-generated-defconst ()
+(ert-deftest nelisp-aot-doc129/object-large-generated-defconst ()
   "Doc 129.7BE: generated giant table defconsts do not block object AOT."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-large-defconst-" nil ".o"))
@@ -2674,7 +2674,7 @@ materialized closure temporary."
                        (number-sequence 0 2100))))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            `(seq
              (defconst doc129-large-table ',table)
              (defun after_large_table (x) x))
@@ -2685,13 +2685,13 @@ materialized closure temporary."
             (should (string-match-p "after_large_table" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-top-level-unless-fboundp-polyfill-strip ()
+(ert-deftest nelisp-aot-doc129/object-top-level-unless-fboundp-polyfill-strip ()
   "Doc 129.1B: object output accepts host-compat polyfill guards."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-top-guard-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (unless (fboundp 'identity)
                (defun identity (x) x))
@@ -2704,17 +2704,17 @@ materialized closure temporary."
             (should-not (string-match-p "\\bidentity\\b" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-empty-after-top-level-guard-strip ()
+(ert-deftest nelisp-aot-doc129/object-empty-after-top-level-guard-strip ()
   "Doc 129.1B: fully stripped guarded files still produce an empty object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-empty-top-guard-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (unless (fboundp 'identity)
                (defun identity (x) x))
-             (provide 'nelisp-phase47-doc129-empty-guard))
+             (provide 'nelisp-aot-doc129-empty-guard))
            path)
           (let ((out (with-output-to-string
                        (with-current-buffer standard-output
@@ -2723,48 +2723,48 @@ materialized closure temporary."
             (should (string-match-p "\\.text" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-empty-source-still-evaluates-require ()
+(ert-deftest nelisp-aot-doc129/object-empty-source-still-evaluates-require ()
   "Doc 129.1B: empty object fast path still validates module forms."
   (let ((path (make-temp-file "nelisp-doc129-empty-require-" nil ".o")))
     (unwind-protect
         (should-error
-         (nelisp-phase47-compile-to-object
+         (nelisp-aot-compile-to-object
           '(seq
-            (require 'nelisp-phase47-doc129-missing-feature)
+            (require 'nelisp-aot-doc129-missing-feature)
             (unless (fboundp 'identity)
               (defun identity (x) x)))
           path))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-builtin1-delegation-helper ()
+(ert-deftest nelisp-aot-doc129/parse-builtin1-delegation-helper ()
   "Doc 129.6B: builtin1 helpers delegate through the runtime dispatcher."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun-sexp-builtin1-symbol call_symbol_name symbol-name
                    (out mirror frames scratch name_slot arg))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (symbol-node (nth 0 forms))
          (call-node (nth 1 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-get ir :name)
+    (should (eq (nelisp-aot-compiler--ir-get ir :name)
                 'call_symbol_name))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :params)
+    (should (equal (nelisp-aot-compiler--ir-get ir :params)
                    '(out mirror frames scratch name_slot arg)))
-    (should (eq (nelisp-phase47-compiler--ir-kind symbol-node)
+    (should (eq (nelisp-aot-compiler--ir-kind symbol-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get symbol-node :bytes)
                    (string-to-list "symbol-name")))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node)
+    (should (eq (nelisp-aot-compiler--ir-kind call-node)
                 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_call1))))
 
-(ert-deftest nelisp-phase47-doc129/object-builtin1-delegation-helper ()
+(ert-deftest nelisp-aot-doc129/object-builtin1-delegation-helper ()
   "Doc 129.6B: object output exposes builtin delegation relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-builtin1-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun-sexp-builtin1-symbol call_symbol_name symbol-name
                 (out mirror frames scratch name_slot arg))
            path)
@@ -2776,9 +2776,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtin1-user-call ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtin1-user-call ()
   "Doc 129.6D: direct one-arg builtin calls lower to dispatcher sequence."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_symbol_name
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -2787,59 +2787,59 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (arg :type sexp))
                  (symbol-name arg))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (symbol-node (nth 0 forms))
          (call-node (nth 1 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind symbol-node)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind symbol-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get symbol-node :bytes)
                    (string-to-list "symbol-name")))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node)
+    (should (eq (nelisp-aot-compiler--ir-kind call-node)
                 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_call1))))
 
-(ert-deftest nelisp-phase47-doc129/direct-builtin1-user-call-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/direct-builtin1-user-call-requires-boundary ()
   "Doc 129.6D: direct builtin lowering requires explicit boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun call_symbol_name ((arg :type sexp))
        (symbol-name arg)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-tag-predicate-without-boundary ()
+(ert-deftest nelisp-aot-doc129/parse-direct-tag-predicate-without-boundary ()
   "Doc 129.6AT: simple predicates lower via Sexp tags without boundary slots."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun not_consp ((arg :type sexp))
                  (not (consp arg)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'cmp))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get body :a))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'cmp))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get body :a))
                 'cmp))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get
-                 (nelisp-phase47-compiler--ir-get body :a)
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get
+                 (nelisp-aot-compiler--ir-get body :a)
                  :a))
                 'sexp-tag))))
 
-(ert-deftest nelisp-phase47-doc129/parse-raw-t-literal-value ()
+(ert-deftest nelisp-aot-doc129/parse-raw-t-literal-value ()
   "Doc 129.2C: raw value context treats source `t' as integer true."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun always () t)))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get body :value) 1))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get body :value) 1))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtin1-user-call ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtin1-user-call ()
   "Doc 129.6D: object output for direct builtin calls exposes dispatcher relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-direct-builtin1-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_symbol_name
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -2857,13 +2857,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtin1-cl-lib-accessor ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtin1-cl-lib-accessor ()
   "Doc 129.6AQ: object output exposes cl-lib accessor aliases."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-accessor-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_cadddr
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -2881,9 +2881,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-user-call ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-user-call ()
   "Doc 129.6F: direct vararg builtin calls lower to calln."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_list
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -2893,23 +2893,23 @@ materialized closure temporary."
                     (a :type sexp)
                     (b :type sexp))
                  (list a b))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (symbol-node (nth 0 forms))
          (call-node (nth 1 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind symbol-node)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind symbol-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get symbol-node :bytes)
                    (string-to-list "list")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (= (nelisp-phase47-compiler--ir-get (nth 3 call-args)
+    (should (= (nelisp-aot-compiler--ir-get (nth 3 call-args)
                                                 :value)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-expanded-table ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-expanded-table ()
   "Doc 129.6G/U: calln lowering covers common fixed-arity builtins."
   (dolist (case '((cons (cons a b))
                   (eq (eq a b))
@@ -2991,7 +2991,7 @@ materialized closure temporary."
                   (cl-fill (cl-fill a b))
                   (cl-replace (cl-replace a b))))
     (pcase-let ((`(,builtin ,form) case))
-      (let* ((ir (nelisp-phase47-compiler--parse
+      (let* ((ir (nelisp-aot-compiler--parse
                   `(defun call_builtin
                        ((out :type sexp)
                         (mirror :type sexp)
@@ -3002,17 +3002,17 @@ materialized closure temporary."
                         (b :type sexp)
                         (c :type sexp))
                      ,form)))
-             (body (nelisp-phase47-compiler--ir-get ir :body))
-             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (body (nelisp-aot-compiler--ir-get ir :body))
+             (forms (nelisp-aot-compiler--ir-get body :forms))
              (symbol-node (nth 0 forms))
              (call-node (nth 1 forms)))
-        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-        (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+        (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-aot-compiler--ir-get symbol-node :bytes)
                        (string-to-list (symbol-name builtin))))
-        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+        (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                     'nelisp_aot_builtin_calln))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-string-table ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-string-table ()
   "Doc 129.6H: calln lowering covers string and format builtins."
   (dolist (case '((format 2 (format a b))
                   (message 1 (message a))
@@ -3024,7 +3024,7 @@ materialized closure temporary."
                   (replace-regexp-in-string 3
                                             (replace-regexp-in-string a b c))))
     (pcase-let ((`(,builtin ,argc ,form) case))
-      (let* ((ir (nelisp-phase47-compiler--parse
+      (let* ((ir (nelisp-aot-compiler--parse
                   `(defun call_builtin
                        ((out :type sexp)
                         (mirror :type sexp)
@@ -3035,21 +3035,21 @@ materialized closure temporary."
                         (b :type sexp)
                         (c :type sexp))
                      ,form)))
-             (body (nelisp-phase47-compiler--ir-get ir :body))
-             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (body (nelisp-aot-compiler--ir-get ir :body))
+             (forms (nelisp-aot-compiler--ir-get body :forms))
              (symbol-node (nth 0 forms))
              (call-node (nth 1 forms))
-             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-        (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+             (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-aot-compiler--ir-get symbol-node :bytes)
                        (string-to-list (symbol-name builtin))))
-        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+        (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                     'nelisp_aot_builtin_calln))
-        (should (= (nelisp-phase47-compiler--ir-get (nth 3 call-args)
+        (should (= (nelisp-aot-compiler--ir-get (nth 3 call-args)
                                                     :value)
                    argc))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-higher-order-table ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-higher-order-table ()
   "Doc 129.6I: calln lowering covers dynamic higher-order builtins."
   (dolist (case '((mapcar 2 (mapcar fn xs))
                   (mapc 2 (mapc fn xs))
@@ -3139,7 +3139,7 @@ materialized closure temporary."
                   (cl-merge 4 (cl-merge type xs ys fn))
                   (sort 2 (sort xs fn))))
     (pcase-let ((`(,builtin ,argc ,form) case))
-      (let* ((ir (nelisp-phase47-compiler--parse
+      (let* ((ir (nelisp-aot-compiler--parse
                   `(defun call_builtin
                        ((out :type sexp)
                         (mirror :type sexp)
@@ -3154,21 +3154,21 @@ materialized closure temporary."
                         (seed :type sexp)
                         (sep :type sexp))
                      ,form)))
-             (body (nelisp-phase47-compiler--ir-get ir :body))
-             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (body (nelisp-aot-compiler--ir-get ir :body))
+             (forms (nelisp-aot-compiler--ir-get body :forms))
              (symbol-node (nth 0 forms))
              (call-node (nth 1 forms))
-             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-        (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+             (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-aot-compiler--ir-get symbol-node :bytes)
                        (string-to-list (symbol-name builtin))))
-        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+        (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                     'nelisp_aot_builtin_calln))
-        (should (= (nelisp-phase47-compiler--ir-get (nth 3 call-args)
+        (should (= (nelisp-aot-compiler--ir-get (nth 3 call-args)
                                                     :value)
                    argc))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-map-designator ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-map-designator ()
   "Doc 129.6J: map builtins materialize quoted/function designators."
   (dolist (form '((mapcar #'foo xs)
                   (mapc 'foo xs)
@@ -3224,7 +3224,7 @@ materialized closure temporary."
                   (cl-position-if #'foo xs)
                   (cl-position-if-not #'foo xs)
                   (cl-reduce #'foo xs)))
-    (let* ((ir (nelisp-phase47-compiler--parse
+    (let* ((ir (nelisp-aot-compiler--parse
                 `(defun call_builtin
                      ((out :type sexp)
                       (mirror :type sexp)
@@ -3237,27 +3237,27 @@ materialized closure temporary."
                       (seed :type sexp)
                       (sep :type sexp))
                    ,form)))
-           (body (nelisp-phase47-compiler--ir-get ir :body))
-           (forms (nelisp-phase47-compiler--ir-get body :forms))
+           (body (nelisp-aot-compiler--ir-get ir :body))
+           (forms (nelisp-aot-compiler--ir-get body :forms))
            (builtin-symbol (nth 0 forms))
            (fn-symbol (nth 1 forms))
            (call-node (nth 2 forms))
-           (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-      (should (eq (nelisp-phase47-compiler--ir-kind builtin-symbol)
+           (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+      (should (eq (nelisp-aot-compiler--ir-kind builtin-symbol)
                   'sexp-write-symbol-lit))
-      (should (eq (nelisp-phase47-compiler--ir-kind fn-symbol)
+      (should (eq (nelisp-aot-compiler--ir-kind fn-symbol)
                   'sexp-write-symbol-lit))
-      (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+      (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                      (string-to-list "foo")))
-      (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+      (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                   'nelisp_aot_builtin_calln))
-      (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+      (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                   'ref))
-      (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+      (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                   'scratch)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-extended-designator-indexes ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-extended-designator-indexes ()
   "Doc 129.6R/W: additional higher-order builtins materialize designators."
   (dolist (case '(((seq-uniq xs #'foo) 7 "seq-uniq")
                   ((seq-position xs seed #'foo) 8 "seq-position")
@@ -3278,7 +3278,7 @@ materialized closure temporary."
                   ((cl-nsubst-if-not seed #'foo xs) 7 "cl-nsubst-if-not")
                   ((map-merge-with type #'foo xs ys) 7 "map-merge-with")))
     (pcase-let ((`(,form ,arg-index ,builtin-name) case))
-      (let* ((ir (nelisp-phase47-compiler--parse
+      (let* ((ir (nelisp-aot-compiler--parse
                   `(defun call_builtin
                        ((out :type sexp)
                         (mirror :type sexp)
@@ -3290,26 +3290,26 @@ materialized closure temporary."
                         (ys :type sexp)
                         (seed :type sexp))
                      ,form)))
-             (body (nelisp-phase47-compiler--ir-get ir :body))
-             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (body (nelisp-aot-compiler--ir-get ir :body))
+             (forms (nelisp-aot-compiler--ir-get body :forms))
              (builtin-symbol (nth 0 forms))
              (fn-symbol (nth 1 forms))
              (call-node (nth 2 forms))
-             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-        (should (equal (nelisp-phase47-compiler--ir-get builtin-symbol :bytes)
+             (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-aot-compiler--ir-get builtin-symbol :bytes)
                        (string-to-list builtin-name)))
-        (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+        (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                        (string-to-list "foo")))
-        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+        (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                     'nelisp_aot_builtin_calln))
-        (should (eq (nelisp-phase47-compiler--ir-kind (nth arg-index call-args))
+        (should (eq (nelisp-aot-compiler--ir-kind (nth arg-index call-args))
                     'ref))
-        (should (eq (nelisp-phase47-compiler--ir-get (nth arg-index call-args)
+        (should (eq (nelisp-aot-compiler--ir-get (nth arg-index call-args)
                                                      :var)
                     'scratch))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-keyword-designator ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-keyword-designator ()
   "Doc 129.6AF: keyword callback options materialize literal symbols."
   (dolist (case '(((cl-find item xs :test #'eq)
                    keyword_slot 8 9 ":test" "eq")
@@ -3352,7 +3352,7 @@ materialized closure temporary."
     (pcase-let ((`(,form ,keyword-slot ,keyword-arg-index
                          ,fn-arg-index ,keyword-name ,fn-name)
                  case))
-      (let* ((ir (nelisp-phase47-compiler--parse
+      (let* ((ir (nelisp-aot-compiler--parse
                   `(defun call_builtin
                        ((out :type sexp)
                         (mirror :type sexp)
@@ -3364,31 +3364,31 @@ materialized closure temporary."
                         (xs :type sexp)
                         (ys :type sexp))
                      ,form)))
-             (body (nelisp-phase47-compiler--ir-get ir :body))
-             (forms (nelisp-phase47-compiler--ir-get body :forms))
+             (body (nelisp-aot-compiler--ir-get ir :body))
+             (forms (nelisp-aot-compiler--ir-get body :forms))
              (keyword-symbol (nth 1 forms))
              (fn-symbol (nth 2 forms))
              (call-node (nth 3 forms))
-             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-        (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-        (should (equal (nelisp-phase47-compiler--ir-get keyword-symbol :bytes)
+             (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+        (should (equal (nelisp-aot-compiler--ir-get keyword-symbol :bytes)
                        (string-to-list keyword-name)))
-        (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+        (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                        (string-to-list fn-name)))
-        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+        (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                     'nelisp_aot_builtin_calln))
-        (should (eq (nelisp-phase47-compiler--ir-get
+        (should (eq (nelisp-aot-compiler--ir-get
                      (nth keyword-arg-index call-args)
                      :var)
                     keyword-slot))
-        (should (eq (nelisp-phase47-compiler--ir-get
+        (should (eq (nelisp-aot-compiler--ir-get
                      (nth fn-arg-index call-args)
                      :var)
                     'scratch))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-multiple-keywords ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-multiple-keywords ()
   "Doc 129.6AF: multiple literal keywords use indexed keyword slots."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_builtin
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3402,36 +3402,36 @@ materialized closure temporary."
                     (test :type sexp)
                     (key :type sexp))
                  (cl-find item xs :test test :key key))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (kw0-symbol (nth 1 forms))
          (kw1-symbol (nth 2 forms))
          (call-node (nth 3 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-aot-compiler--ir-get kw0-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get kw1-symbol :bytes)
                    (string-to-list ":key")))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'keyword_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 10 call-args)
                  :var)
                 'keyword_slot_1))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'test))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 11 call-args)
                  :var)
                 'key))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-sequence-helper-keywords ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-sequence-helper-keywords ()
   "Doc 129.6AP: cl-lib sequence helpers materialize literal keywords."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_builtin
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3445,36 +3445,36 @@ materialized closure temporary."
                     (start :type sexp)
                     (end :type sexp))
                  (cl-fill xs item :start start :end end))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (kw0-symbol (nth 1 forms))
          (kw1-symbol (nth 2 forms))
          (call-node (nth 3 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-aot-compiler--ir-get kw0-symbol :bytes)
                    (string-to-list ":start")))
-    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get kw1-symbol :bytes)
                    (string-to-list ":end")))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'keyword_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 10 call-args)
                  :var)
                 'keyword_slot_1))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'start))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 11 call-args)
                  :var)
                 'end))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-multiple-keyword-designators ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-multiple-keyword-designators ()
   "Doc 129.6AG: multiple keyword callback designators use callback slots."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_builtin
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3488,42 +3488,42 @@ materialized closure temporary."
                     (item :type sexp)
                     (xs :type sexp))
                  (cl-find item xs :test #'eq :key #'car))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (kw0-symbol (nth 1 forms))
          (kw1-symbol (nth 2 forms))
          (test-symbol (nth 3 forms))
          (key-symbol (nth 4 forms))
          (call-node (nth 5 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-aot-compiler--ir-get kw0-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get kw1-symbol :bytes)
                    (string-to-list ":key")))
-    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get test-symbol :bytes)
                    (string-to-list "eq")))
-    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get key-symbol :bytes)
                    (string-to-list "car")))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'keyword_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'callback_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 10 call-args)
                  :var)
                 'keyword_slot_1))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 11 call-args)
                  :var)
                 'callback_slot_1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-seq-sort-by-dual-designators ()
+(ert-deftest nelisp-aot-doc129/parse-seq-sort-by-dual-designators ()
   "Doc 129.6AG: `seq-sort-by' can materialize both callback designators."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_builtin
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3534,34 +3534,34 @@ materialized closure temporary."
                     (callback_slot_1 :type sexp)
                     (xs :type sexp))
                  (seq-sort-by #'car #'string< xs))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (key-symbol (nth 1 forms))
          (pred-symbol (nth 2 forms))
          (call-node (nth 3 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (equal (nelisp-aot-compiler--ir-get key-symbol :bytes)
                    (string-to-list "car")))
-    (should (equal (nelisp-phase47-compiler--ir-get pred-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get pred-symbol :bytes)
                    (string-to-list "string<")))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 6 call-args)
                  :var)
                 'callback_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 7 call-args)
                  :var)
                 'callback_slot_1))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'xs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtinn-sort-designator ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtinn-sort-designator ()
   "Doc 129.6K: `sort' materializes quoted/function predicate designators."
   (dolist (form '((sort xs #'string<)
                   (sort xs 'lessp)))
-    (let* ((ir (nelisp-phase47-compiler--parse
+    (let* ((ir (nelisp-aot-compiler--parse
                 `(defun call_sort
                      ((out :type sexp)
                       (mirror :type sexp)
@@ -3570,27 +3570,27 @@ materialized closure temporary."
                       (name_slot :type sexp)
                       (xs :type sexp))
                    ,form)))
-           (body (nelisp-phase47-compiler--ir-get ir :body))
-           (forms (nelisp-phase47-compiler--ir-get body :forms))
+           (body (nelisp-aot-compiler--ir-get ir :body))
+           (forms (nelisp-aot-compiler--ir-get body :forms))
            (builtin-symbol (nth 0 forms))
            (fn-symbol (nth 1 forms))
            (call-node (nth 2 forms))
-           (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-      (should (equal (nelisp-phase47-compiler--ir-get builtin-symbol :bytes)
+           (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+      (should (equal (nelisp-aot-compiler--ir-get builtin-symbol :bytes)
                      (string-to-list "sort")))
-      (should (eq (nelisp-phase47-compiler--ir-kind fn-symbol)
+      (should (eq (nelisp-aot-compiler--ir-kind fn-symbol)
                   'sexp-write-symbol-lit))
-      (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+      (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                   'nelisp_aot_builtin_calln))
-      (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+      (should (eq (nelisp-aot-compiler--ir-kind (nth 7 call-args))
                   'ref))
-      (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+      (should (eq (nelisp-aot-compiler--ir-get (nth 7 call-args) :var)
                   'scratch)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-map-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-map-lambda-lift ()
   "Doc 129.7M: map-family literal lambdas lift to synthetic defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3599,34 +3599,34 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (xs :type sexp))
                  (mapcar (lambda (x) (+ x 1)) xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
     (should (string-prefix-p
              "nelisp_aot_lambda_"
-             (symbol-name (nelisp-phase47-compiler--ir-get lambda-ir :name))))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+             (symbol-name (nelisp-aot-compiler--ir-get lambda-ir :name))))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-mapcan-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-mapcan-lambda-lift ()
   "Doc 129.7N: `mapcan' literal lambdas lift to synthetic defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3635,30 +3635,30 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (xs :type sexp))
                  (mapcan (lambda (x) x) xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-maphash-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-maphash-lambda-lift ()
   "Doc 129.7O: `maphash' literal lambdas lift to synthetic defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3667,30 +3667,30 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (table :type sexp))
                  (maphash (lambda (k v) k) table))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-seq-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-seq-lambda-lift ()
   "Doc 129.7P: seq.el literal lambdas lift to synthetic defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3700,30 +3700,30 @@ materialized closure temporary."
                     (xs :type sexp)
                     (seed :type sexp))
                  (seq-reduce (lambda (acc x) (+ acc x)) xs seed))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-seq-prefix-group-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-seq-prefix-group-lambda-lift ()
   "Doc 129.6X/129.7P: new seq.el callbacks participate in lambda lifting."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3732,30 +3732,30 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (xs :type sexp))
                  (seq-group-by (lambda (x) x) xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-seq-sort-by-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-seq-sort-by-lambda-lift ()
   "Doc 129.6Y/129.7P: `seq-sort-by' transform lambdas lift to defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3765,34 +3765,34 @@ materialized closure temporary."
                     (pred :type sexp)
                     (xs :type sexp))
                  (seq-sort-by (lambda (x) x) pred xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 7 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 7 call-args) :var)
                 'pred))))
 
-(ert-deftest nelisp-phase47-doc129/parse-seq-sort-by-dual-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-seq-sort-by-dual-lambda-lift ()
   "Doc 129.7AN: `seq-sort-by' lifts both static callback lambdas."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3805,41 +3805,41 @@ materialized closure temporary."
                  (seq-sort-by (lambda (x) x)
                               (lambda (a b) a)
                               xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (key-lambda (nth 0 forms))
          (pred-lambda (nth 1 forms))
          (caller-ir (nth 2 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (key-symbol (nth 1 body-forms))
          (pred-symbol (nth 2 body-forms))
          (call-node (nth 3 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind key-lambda) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-kind pred-lambda) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind key-lambda) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-kind pred-lambda) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get key-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get key-lambda :name)))))
-    (should (equal (nelisp-phase47-compiler--ir-get pred-symbol :bytes)
+                     (nelisp-aot-compiler--ir-get key-lambda :name)))))
+    (should (equal (nelisp-aot-compiler--ir-get pred-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get pred-lambda :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get pred-lambda :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 6 call-args)
                  :var)
                 'callback_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 7 call-args)
                  :var)
                 'callback_slot_1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-keyword-dual-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-keyword-dual-lambda-lift ()
   "Doc 129.7AN: cl-lib keyword callback lambdas lift together."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3855,53 +3855,53 @@ materialized closure temporary."
                  (cl-find item xs
                           :test (lambda (a b) a)
                           :key (lambda (x) x)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (test-lambda (nth 0 forms))
          (key-lambda (nth 1 forms))
          (caller-ir (nth 2 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (kw0-symbol (nth 1 body-forms))
          (kw1-symbol (nth 2 body-forms))
          (test-symbol (nth 3 body-forms))
          (key-symbol (nth 4 body-forms))
          (call-node (nth 5 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-kind key-lambda) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get kw0-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind test-lambda) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-kind key-lambda) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get kw0-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get kw1-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get kw1-symbol :bytes)
                    (string-to-list ":key")))
-    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get test-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
-    (should (equal (nelisp-phase47-compiler--ir-get key-symbol :bytes)
+                     (nelisp-aot-compiler--ir-get test-lambda :name)))))
+    (should (equal (nelisp-aot-compiler--ir-get key-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get key-lambda :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get
+                     (nelisp-aot-compiler--ir-get key-lambda :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'keyword_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'callback_slot_0))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 10 call-args)
                  :var)
                 'keyword_slot_1))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 11 call-args)
                  :var)
                 'callback_slot_1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-list-keyword-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-list-keyword-lambda-lift ()
   "Doc 129.6AJ: cl-lib list helper keyword lambdas lift to defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3912,37 +3912,37 @@ materialized closure temporary."
                     (item :type sexp)
                     (xs :type sexp))
                  (cl-adjoin item xs :test (lambda (a b) a)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (test-lambda (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (kw-symbol (nth 1 body-forms))
          (test-symbol (nth 2 body-forms))
          (call-node (nth 3 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get kw-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind test-lambda) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get kw-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get test-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get test-lambda :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'keyword_slot))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-tree-equal-keyword-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-tree-equal-keyword-lambda-lift ()
   "Doc 129.6AL: cl-tree-equal keyword lambdas lift to defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3953,37 +3953,37 @@ materialized closure temporary."
                     (left :type sexp)
                     (right :type sexp))
                  (cl-tree-equal left right :test (lambda (a b) a)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (test-lambda (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (kw-symbol (nth 1 body-forms))
          (test-symbol (nth 2 body-forms))
          (call-node (nth 3 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get kw-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind test-lambda) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get kw-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get test-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get test-lambda :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'keyword_slot))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-duplicates-keyword-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-duplicates-keyword-lambda-lift ()
   "Doc 129.6AM: cl-lib duplicate helpers keyword lambdas lift to defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -3993,37 +3993,37 @@ materialized closure temporary."
                     (keyword_slot :type sexp)
                     (xs :type sexp))
                  (cl-remove-duplicates xs :test (lambda (a b) a)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (test-lambda (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (kw-symbol (nth 1 body-forms))
          (test-symbol (nth 2 body-forms))
          (call-node (nth 3 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get kw-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind test-lambda) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get kw-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get test-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get test-lambda :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 7 call-args)
                  :var)
                 'keyword_slot))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-destructive-set-keyword-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-destructive-set-keyword-lambda-lift ()
   "Doc 129.6AN: cl-lib destructive set keyword lambdas lift to defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4034,37 +4034,37 @@ materialized closure temporary."
                     (xs :type sexp)
                     (ys :type sexp))
                  (cl-nunion xs ys :test (lambda (a b) a)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (test-lambda (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (kw-symbol (nth 1 body-forms))
          (test-symbol (nth 2 body-forms))
          (call-node (nth 3 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get kw-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind test-lambda) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get kw-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get test-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get test-lambda :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 8 call-args)
                  :var)
                 'keyword_slot))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-tree-substitution-keyword-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-tree-substitution-keyword-lambda-lift ()
   "Doc 129.6AO: cl-lib tree substitution keyword lambdas lift to defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4076,37 +4076,37 @@ materialized closure temporary."
                     (old :type sexp)
                     (tree :type sexp))
                  (cl-subst new old tree :test (lambda (a b) a)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (test-lambda (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (kw-symbol (nth 1 body-forms))
          (test-symbol (nth 2 body-forms))
          (call-node (nth 3 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind test-lambda) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get kw-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind test-lambda) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get kw-symbol :bytes)
                    (string-to-list ":test")))
-    (should (equal (nelisp-phase47-compiler--ir-get test-symbol :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get test-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get test-lambda :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get test-lambda :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 9 call-args)
                  :var)
                 'keyword_slot))
-    (should (eq (nelisp-phase47-compiler--ir-get
+    (should (eq (nelisp-aot-compiler--ir-get
                  (nth 10 call-args)
                  :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-lambda-lift ()
   "Doc 129.7Q: cl-lib literal lambdas lift to synthetic defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4115,30 +4115,30 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (xs :type sexp))
                  (cl-remove-if (lambda (x) x) xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-predicate-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-predicate-lambda-lift ()
   "Doc 129.7S: extended cl-lib predicate lambdas lift to defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4147,30 +4147,30 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (xs :type sexp))
                  (cl-member-if (lambda (x) x) xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-substitute-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-substitute-lambda-lift ()
   "Doc 129.7S: cl-substitute-if predicate position lambda-lifts."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4180,29 +4180,29 @@ materialized closure temporary."
                     (new :type sexp)
                     (xs :type sexp))
                  (cl-substitute-if new (lambda (x) x) xs))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'new))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 7 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 7 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-cl-lib-tree-predicate-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-cl-lib-tree-predicate-lambda-lift ()
   "Doc 129.6AS: cl-subst-if predicate position lambda-lifts."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4212,27 +4212,27 @@ materialized closure temporary."
                     (new :type sexp)
                     (tree :type sexp))
                  (cl-subst-if new (lambda (x) x) tree))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 6 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 6 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 call-args) :var)
                 'new))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 7 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 7 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-extended-higher-order-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-extended-higher-order-lambda-lift ()
   "Doc 129.7Z: extended higher-order literal lambdas lift to defuns."
   (dolist (case '(((seq-each (lambda (x) x) xs) 6)
                   ((seq-map-indexed (lambda (x i) x) xs) 6)
@@ -4249,7 +4249,7 @@ materialized closure temporary."
                   ((cl-map type (lambda (x) x) xs) 7)
                   ((cl-merge type xs ys (lambda (a b) a)) 9)))
     (pcase-let ((`(,form ,arg-index) case))
-      (let* ((ir (nelisp-phase47-compiler--parse
+      (let* ((ir (nelisp-aot-compiler--parse
                   `(defun caller
                        ((out :type sexp)
                         (mirror :type sexp)
@@ -4261,32 +4261,32 @@ materialized closure temporary."
                         (ys :type sexp)
                         (seed :type sexp))
                      ,form)))
-             (forms (nelisp-phase47-compiler--ir-get ir :forms))
+             (forms (nelisp-aot-compiler--ir-get ir :forms))
              (lambda-ir (nth 0 forms))
              (caller-ir (nth 1 forms))
-             (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-             (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+             (body (nelisp-aot-compiler--ir-get caller-ir :body))
+             (body-forms (nelisp-aot-compiler--ir-get body :forms))
              (fn-symbol (nth 1 body-forms))
              (call-node (nth 2 body-forms))
-             (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-        (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-        (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-        (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+             (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+        (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+        (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+        (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                        (string-to-list
                         (symbol-name
-                         (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-        (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                         (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+        (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                     'nelisp_aot_builtin_calln))
-        (should (eq (nelisp-phase47-compiler--ir-kind
+        (should (eq (nelisp-aot-compiler--ir-kind
                      (nth arg-index call-args))
                     'ref))
-        (should (eq (nelisp-phase47-compiler--ir-get
+        (should (eq (nelisp-aot-compiler--ir-get
                      (nth arg-index call-args) :var)
                     'scratch))))))
 
-(ert-deftest nelisp-phase47-doc129/parse-sort-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-sort-lambda-lift ()
   "Doc 129.7N: `sort' predicate lambdas lift to synthetic defuns."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4295,37 +4295,37 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (xs :type sexp))
                  (sort xs (lambda (a b) (< a b))))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (body-forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (body-forms (nelisp-aot-compiler--ir-get body :forms))
          (fn-symbol (nth 1 body-forms))
          (call-node (nth 2 body-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get fn-symbol :bytes)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get fn-symbol :bytes)
                    (string-to-list
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+                     (nelisp-aot-compiler--ir-get lambda-ir :name)))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_builtin_calln))
-    (should (eq (nelisp-phase47-compiler--ir-kind (nth 7 call-args))
+    (should (eq (nelisp-aot-compiler--ir-kind (nth 7 call-args))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 7 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 7 call-args) :var)
                 'scratch))))
 
-(ert-deftest nelisp-phase47-doc129/map-lambda-closure-capture ()
+(ert-deftest nelisp-aot-doc129/map-lambda-closure-capture ()
   "Doc 129.7U: map callbacks with captures materialize heap closures."
-  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+  (nelisp-aot-doc129-test--capturing-callback-closure-ir
    '(mapcar (lambda (x) (+ x cap)) xs)
    6))
 
-(ert-deftest nelisp-phase47-doc129/map-lambda-closure-descriptor ()
+(ert-deftest nelisp-aot-doc129/map-lambda-closure-descriptor ()
   "Doc 129.7U: captured callbacks expose closure descriptors."
   (let* ((descriptors
-          (nelisp-phase47-compiler--closure-descriptors
+          (nelisp-aot-compiler--closure-descriptors
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4342,10 +4342,10 @@ materialized closure temporary."
     (should (equal (plist-get descriptor :body) '((+ x cap))))
     (should (equal (plist-get descriptor :captures) '(cap)))))
 
-(ert-deftest nelisp-phase47-doc129/map-lambda-closure-module-plan ()
+(ert-deftest nelisp-aot-doc129/map-lambda-closure-module-plan ()
   "Doc 129.7V: captured callback descriptors enter module init plans."
   (let* ((descriptors
-          (nelisp-phase47-compiler--closure-descriptors
+          (nelisp-aot-compiler--closure-descriptors
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4360,9 +4360,9 @@ materialized closure temporary."
     (should (equal (plist-get plan :closure-descriptors)
                    descriptors))))
 
-(ert-deftest nelisp-phase47-doc129/function-lambda-closure-value ()
+(ert-deftest nelisp-aot-doc129/function-lambda-closure-value ()
   "Doc 129.7X: escaping literal lambda values materialize heap closures."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make_closure
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4370,24 +4370,24 @@ materialized closure temporary."
                     (scratch :type sexp)
                     (cap :type sexp))
                  (function (lambda (x) (+ x cap))))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (make-closure (nth 1 forms))
-         (make-args (nelisp-phase47-compiler--ir-get make-closure :args))
+         (make-args (nelisp-aot-compiler--ir-get make-closure :args))
          (result (nth 2 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get make-closure :name)
                 'nelisp_aot_make_closure))
-    (should (= (nelisp-phase47-compiler--ir-get (nth 3 make-args) :value)
+    (should (= (nelisp-aot-compiler--ir-get (nth 3 make-args) :value)
                1))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 6 make-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 6 make-args) :var)
                 'cap))
-    (should (eq (nelisp-phase47-compiler--ir-kind result) 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get result :var) 'out))))
+    (should (eq (nelisp-aot-compiler--ir-kind result) 'ref))
+    (should (eq (nelisp-aot-compiler--ir-get result :var) 'out))))
 
-(ert-deftest nelisp-phase47-doc129/raw-lambda-closure-value ()
+(ert-deftest nelisp-aot-doc129/raw-lambda-closure-value ()
   "Doc 129.7X: raw escaping lambda values materialize heap closures."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make_closure
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -4395,17 +4395,17 @@ materialized closure temporary."
                     (scratch :type sexp)
                     (cap :type sexp))
                  (lambda (x) (+ x cap)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (make-closure (nth 1 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get make-closure :name)
                 'nelisp_aot_make_closure))))
 
-(ert-deftest nelisp-phase47-doc129/function-lambda-closure-descriptor ()
+(ert-deftest nelisp-aot-doc129/function-lambda-closure-descriptor ()
   "Doc 129.7X: escaping lambda values expose closure descriptors."
   (let* ((descriptors
-          (nelisp-phase47-compiler--closure-descriptors
+          (nelisp-aot-compiler--closure-descriptors
            '(defun make_closure
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4420,56 +4420,56 @@ materialized closure temporary."
     (should (equal (plist-get descriptor :body) '((+ x cap))))
     (should (equal (plist-get descriptor :captures) '(cap)))))
 
-(ert-deftest nelisp-phase47-doc129/sort-lambda-closure-capture ()
+(ert-deftest nelisp-aot-doc129/sort-lambda-closure-capture ()
   "Doc 129.7U: `sort' predicates with captures materialize closures."
-  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+  (nelisp-aot-doc129-test--capturing-callback-closure-ir
    '(sort xs (lambda (a b) (< (+ a cap) b)))
    7))
 
-(ert-deftest nelisp-phase47-doc129/maphash-lambda-closure-capture ()
+(ert-deftest nelisp-aot-doc129/maphash-lambda-closure-capture ()
   "Doc 129.7U: `maphash' callbacks with captures materialize closures."
-  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+  (nelisp-aot-doc129-test--capturing-callback-closure-ir
    '(maphash (lambda (k v) (+ cap k)) table)
    6))
 
-(ert-deftest nelisp-phase47-doc129/seq-lambda-closure-capture ()
+(ert-deftest nelisp-aot-doc129/seq-lambda-closure-capture ()
   "Doc 129.7U: seq.el callbacks with captures materialize closures."
-  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+  (nelisp-aot-doc129-test--capturing-callback-closure-ir
    '(seq-filter (lambda (x) (eq x cap)) xs)
    6))
 
-(ert-deftest nelisp-phase47-doc129/cl-lib-lambda-closure-capture ()
+(ert-deftest nelisp-aot-doc129/cl-lib-lambda-closure-capture ()
   "Doc 129.7U: cl-lib callbacks with captures materialize closures."
-  (nelisp-phase47-doc129-test--capturing-callback-closure-ir
+  (nelisp-aot-doc129-test--capturing-callback-closure-ir
    '(cl-find-if (lambda (x) (eq x cap)) xs)
    6))
 
-(ert-deftest nelisp-phase47-doc129/direct-builtinn-user-call-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/direct-builtinn-user-call-requires-boundary ()
   "Doc 129.6F: vararg builtin lowering requires explicit boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun call_list ((a :type sexp) (b :type sexp))
        (list a b)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/direct-builtinn-defun-shadow-wins ()
+(ert-deftest nelisp-aot-doc129/direct-builtinn-defun-shadow-wins ()
   "Doc 129.6F: same-unit defuns shadow vararg builtin delegation."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defun list (a b) (+ a b))
                 (defun caller (a b) (list a b)))))
-         (caller (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
-         (body (nelisp-phase47-compiler--ir-get caller :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'call))
-    (should (eq (nelisp-phase47-compiler--ir-get body :name) 'list))))
+         (caller (nth 1 (nelisp-aot-compiler--ir-get ir :forms)))
+         (body (nelisp-aot-compiler--ir-get caller :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'call))
+    (should (eq (nelisp-aot-compiler--ir-get body :name) 'list))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-user-call ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-user-call ()
   "Doc 129.6F: object output exposes builtin calln dispatcher relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-direct-builtinn-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_list
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4488,13 +4488,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-map-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-map-designator ()
   "Doc 129.6J: object output exposes map designator materialization."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-map-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_mapcar
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4512,13 +4512,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-mapcan-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-mapcan-designator ()
   "Doc 129.6L: object output exposes mapcan designator materialization."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-mapcan-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_mapcan
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4536,13 +4536,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-maphash-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-maphash-designator ()
   "Doc 129.6M: object output exposes maphash designator materialization."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-maphash-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_maphash
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4560,13 +4560,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-map-el-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-map-el-designator ()
   "Doc 129.6Z: object output exposes map.el designator materialization."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-map-el-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_map_filter
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4584,13 +4584,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-seq-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-seq-designator ()
   "Doc 129.6N: object output exposes seq.el designator materialization."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-seq-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_seq
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4608,13 +4608,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-extra-callback-designators ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-extra-callback-designators ()
   "Doc 129.6AH: object output exposes remaining callback designators."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-extra-callback-designators-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun call_seq_each
                  ((out :type sexp)
@@ -4662,13 +4662,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-designator ()
   "Doc 129.6O: object output exposes cl-lib designator materialization."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4686,13 +4686,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-predicate-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-predicate-designator ()
   "Doc 129.6P: object output exposes extended cl-lib predicates."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-pred-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_pred
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4711,13 +4711,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-list-keyword-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-list-keyword-designator ()
   "Doc 129.6AJ: object output exposes cl-lib list keyword callbacks."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-list-keyword-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_adjoin
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4737,13 +4737,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-member-keyword-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-member-keyword-designator ()
   "Doc 129.6AK: object output exposes cl-lib member/assoc callbacks."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-member-keyword-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_member
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4763,13 +4763,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-tree-equal-keyword-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-tree-equal-keyword-designator ()
   "Doc 129.6AL: object output exposes cl-tree-equal keyword callbacks."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-tree-equal-keyword-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_tree_equal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4789,13 +4789,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-duplicates-keyword-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-duplicates-keyword-designator ()
   "Doc 129.6AM: object output exposes duplicate-removal callbacks."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-duplicates-keyword-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_remove_duplicates
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4814,13 +4814,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-destructive-set-keyword-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-destructive-set-keyword-designator ()
   "Doc 129.6AN: object output exposes destructive set callbacks."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-destructive-set-keyword-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_nunion
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4840,13 +4840,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-tree-substitution-keyword-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-tree-substitution-keyword-designator ()
   "Doc 129.6AO/AS: object output exposes tree substitution callbacks."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-tree-substitution-keyword-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_subst_if
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4865,13 +4865,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-cl-lib-sequence-helper-keywords ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-cl-lib-sequence-helper-keywords ()
   "Doc 129.6AP: object output exposes cl-lib sequence helper keywords."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-sequence-helper-keywords-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_cl_fill
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4894,13 +4894,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-builtinn-sort-designator ()
+(ert-deftest nelisp-aot-doc129/object-direct-builtinn-sort-designator ()
   "Doc 129.6K: object output exposes sort predicate materialization."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-sort-designator-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_sort
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4918,13 +4918,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-map-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-map-lambda-lift ()
   "Doc 129.7M: object output exposes map lambda-lift defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-map-lambda-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4942,13 +4942,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-map-lambda-closure-capture ()
+(ert-deftest nelisp-aot-doc129/object-map-lambda-closure-capture ()
   "Doc 129.7U: object output exposes captured callback closure bridge."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-map-closure-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_mapcar
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -4968,13 +4968,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-module-init-plan-embedded ()
+(ert-deftest nelisp-aot-doc129/object-module-init-plan-embedded ()
   "Doc 129.7AI: object output embeds module-init metadata in rodata."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-module-init-plan-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defcustom z 9 "doc" :type 'integer)
              (defun call_mapcar
@@ -5002,12 +5002,12 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_custom_0_z" contents))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-module-init-plan-loader-consumes ()
+(ert-deftest nelisp-aot-doc129/object-module-init-plan-loader-consumes ()
   "Doc 129.7AJ: standalone loader consumes embedded object metadata."
   (let ((path (make-temp-file "nelisp-doc129-module-init-loader-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defcustom z 9 "doc" :type 'integer)
              (defun call_mapcar
@@ -5054,7 +5054,7 @@ materialized closure temporary."
               (nelisp-cc-runtime-clear-aot-closure-descriptors))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-module-init-loader-native-thunk ()
+(ert-deftest nelisp-aot-doc129/object-module-init-loader-native-thunk ()
   "Doc 129.3Q: object loader can run an external native-call thunk."
   (skip-unless (file-executable-p "/bin/sh"))
   (let ((path (make-temp-file "nelisp-doc129-module-init-thunk-" nil ".o"))
@@ -5065,7 +5065,7 @@ materialized closure temporary."
            "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$2\" \"$3\" \"$4\"\n"
            nil script nil 'silent)
           (set-file-modes script #o755)
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defvar z 9)
              (defconst k 11))
@@ -5098,13 +5098,13 @@ materialized closure temporary."
       (ignore-errors (delete-file path))
       (ignore-errors (delete-file script)))))
 
-(ert-deftest nelisp-phase47-doc129/object-function-lambda-closure-value ()
+(ert-deftest nelisp-aot-doc129/object-function-lambda-closure-value ()
   "Doc 129.7X: object output exposes escaping lambda closure bridge."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-value-closure-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun make_closure
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5121,13 +5121,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-mapcan-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-mapcan-lambda-lift ()
   "Doc 129.7N: object output exposes mapcan lambda-lift defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-mapcan-lambda-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5145,13 +5145,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-maphash-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-maphash-lambda-lift ()
   "Doc 129.7O: object output exposes maphash lambda-lift defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-maphash-lambda-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5169,13 +5169,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-seq-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-seq-lambda-lift ()
   "Doc 129.7P: object output exposes seq.el lambda-lift defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-seq-lambda-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5193,13 +5193,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-cl-lib-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-cl-lib-lambda-lift ()
   "Doc 129.7Q: object output exposes cl-lib lambda-lift defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cl-lib-lambda-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5217,13 +5217,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-sort-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-sort-lambda-lift ()
   "Doc 129.7N: object output exposes sort predicate lambda-lift defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-sort-lambda-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5241,7 +5241,7 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_builtin_calln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-builtin1-table ()
+(ert-deftest nelisp-aot-doc129/parse-direct-builtin1-table ()
   "Doc 129.6E/U: direct builtin1 lowering covers the shipped unary table."
   (dolist (builtin '(identity length car cdr symbolp stringp
                               hash-table-p hash-table-count
@@ -5257,7 +5257,7 @@ materialized closure temporary."
                               cl-copy-seq cl-evenp cl-oddp
                               cl-plusp cl-minusp cl-functionp
                               cl-floatp-safe cl-type-of))
-    (let* ((ir (nelisp-phase47-compiler--parse
+    (let* ((ir (nelisp-aot-compiler--parse
                 `(defun call_builtin
                      ((out :type sexp)
                       (mirror :type sexp)
@@ -5266,19 +5266,19 @@ materialized closure temporary."
                       (name_slot :type sexp)
                       (arg :type sexp))
                    (,builtin arg))))
-           (body (nelisp-phase47-compiler--ir-get ir :body))
-           (forms (nelisp-phase47-compiler--ir-get body :forms))
+           (body (nelisp-aot-compiler--ir-get ir :body))
+           (forms (nelisp-aot-compiler--ir-get body :forms))
            (symbol-node (nth 0 forms))
            (call-node (nth 1 forms)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-      (should (equal (nelisp-phase47-compiler--ir-get symbol-node :bytes)
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+      (should (equal (nelisp-aot-compiler--ir-get symbol-node :bytes)
                      (string-to-list (symbol-name builtin))))
-      (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+      (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                   'nelisp_aot_builtin_call1)))))
 
-(ert-deftest nelisp-phase47-doc129/direct-builtin1-defun-shadow-wins ()
-  "Doc 129.6E: a same-named Phase 47 defun is not captured by the builtin table."
-  (let* ((ir (nelisp-phase47-compiler--parse
+(ert-deftest nelisp-aot-doc129/direct-builtin1-defun-shadow-wins ()
+  "Doc 129.6E: a same-named AOT defun is not captured by the builtin table."
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defun identity ((x :type sexp))
                   x)
@@ -5290,15 +5290,15 @@ materialized closure temporary."
                      (name_slot :type sexp)
                      (arg :type sexp))
                   (identity arg)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (caller (cadr forms))
-         (body (nelisp-phase47-compiler--ir-get caller :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'call))
-    (should (eq (nelisp-phase47-compiler--ir-get body :name) 'identity))))
+         (body (nelisp-aot-compiler--ir-get caller :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'call))
+    (should (eq (nelisp-aot-compiler--ir-get body :name) 'identity))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall1-delegation ()
+(ert-deftest nelisp-aot-doc129/parse-funcall1-delegation ()
   "Doc 129.7A: `(funcall FN ARG)' lowers to the runtime dispatcher."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_fn
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5307,29 +5307,29 @@ materialized closure temporary."
                     (fn :type sexp)
                     (arg :type sexp))
                  (funcall fn arg))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (car forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall1))))
 
-(ert-deftest nelisp-phase47-doc129/funcall1-delegation-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/funcall1-delegation-requires-boundary ()
   "Doc 129.7A: funcall delegation requires explicit boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun call_fn ((fn :type sexp) (arg :type sexp))
        (funcall fn arg)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-funcall1-delegation ()
+(ert-deftest nelisp-aot-doc129/object-funcall1-delegation ()
   "Doc 129.7A: object output exposes the funcall dispatcher reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-funcall1-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_fn
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5346,9 +5346,9 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall2-delegation ()
+(ert-deftest nelisp-aot-doc129/parse-funcall2-delegation ()
   "Doc 129.7B: `(funcall FN ARG0 ARG1)' lowers to the two-arg dispatcher."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_fn2
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5357,17 +5357,17 @@ materialized closure temporary."
                     (arg0 :type sexp)
                     (arg1 :type sexp))
                  (funcall fn arg0 arg1))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (car forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall3-delegation ()
+(ert-deftest nelisp-aot-doc129/parse-funcall3-delegation ()
   "Doc 129.7E: `(funcall FN ARG0 ARG1 ARG2)' lowers to funcall3."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_fn3
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5377,17 +5377,17 @@ materialized closure temporary."
                     (arg1 :type sexp)
                     (arg2 :type sexp))
                  (funcall fn arg0 arg1 arg2))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (car forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall3))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall4-calln-delegation ()
+(ert-deftest nelisp-aot-doc129/parse-funcall4-calln-delegation ()
   "Doc 129.7H: `(funcall FN ARG0 ARG1 ARG2 ARG3)' lowers to calln."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_fn4
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5399,23 +5399,23 @@ materialized closure temporary."
                     (arg2 :type sexp)
                     (arg3 :type sexp))
                  (funcall fn arg0 arg1 arg2 arg3))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (car forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcalln))
-    (should (= (length (nelisp-phase47-compiler--ir-get call-node :args))
+    (should (= (length (nelisp-aot-compiler--ir-get call-node :args))
                10))))
 
-(ert-deftest nelisp-phase47-doc129/object-funcall2-delegation ()
+(ert-deftest nelisp-aot-doc129/object-funcall2-delegation ()
   "Doc 129.7B: object output exposes the funcall2 dispatcher reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-funcall2-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_fn2
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5432,13 +5432,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall2" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-funcall3-delegation ()
+(ert-deftest nelisp-aot-doc129/object-funcall3-delegation ()
   "Doc 129.7E: object output exposes the funcall3 dispatcher reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-funcall3-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_fn3
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5456,13 +5456,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall3" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-funcall4-calln-delegation ()
+(ert-deftest nelisp-aot-doc129/object-funcall4-calln-delegation ()
   "Doc 129.7H: object output exposes the funcalln dispatcher reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-funcall4-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_fn4
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5482,9 +5482,9 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcalln" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-apply-delegation ()
+(ert-deftest nelisp-aot-doc129/parse-apply-delegation ()
   "Doc 129.7C: `(apply FN ARGS-LIST)' lowers to the apply dispatcher."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_apply
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5493,17 +5493,17 @@ materialized closure temporary."
                     (fn :type sexp)
                     (args :type sexp))
                  (apply fn args))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (car forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_apply))))
 
-(ert-deftest nelisp-phase47-doc129/parse-apply-splicing-delegation ()
+(ert-deftest nelisp-aot-doc129/parse-apply-splicing-delegation ()
   "Doc 129.7I: `(apply FN ARG... ARGS-LIST)' lowers to applyn."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_applyn
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5514,32 +5514,32 @@ materialized closure temporary."
                     (arg1 :type sexp)
                     (args :type sexp))
                  (apply fn arg0 arg1 args))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (car forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'extern-call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'extern-call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_applyn))
-    (should (equal (mapcar #'nelisp-phase47-compiler--ir-kind call-args)
+    (should (equal (mapcar #'nelisp-aot-compiler--ir-kind call-args)
                    '(ref ref ref imm ref ref ref ref ref)))))
 
-(ert-deftest nelisp-phase47-doc129/apply-delegation-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/apply-delegation-requires-boundary ()
   "Doc 129.7C: apply delegation requires explicit boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun call_apply ((fn :type sexp) (args :type sexp))
        (apply fn args)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-apply-delegation ()
+(ert-deftest nelisp-aot-doc129/object-apply-delegation ()
   "Doc 129.7C: object output exposes the apply dispatcher reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-apply-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_apply
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5556,13 +5556,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_apply" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-apply-splicing-delegation ()
+(ert-deftest nelisp-aot-doc129/object-apply-splicing-delegation ()
   "Doc 129.7I: object output exposes the applyn dispatcher reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-applyn-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_applyn
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -5581,9 +5581,9 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_applyn" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-rest-param-call-listn ()
+(ert-deftest nelisp-aot-doc129/parse-rest-param-call-listn ()
   "Doc 129.7J: source &rest defuns receive a constructed rest list."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defun collect
                     ((out :type sexp)
@@ -5598,39 +5598,39 @@ materialized closure temporary."
                      (a :type sexp)
                      (b :type sexp))
                   (collect out a b)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (collect-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (caller-body (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (nelisp-phase47-compiler--ir-get collect-ir :rest-p))
-    (should (= (nelisp-phase47-compiler--ir-get collect-ir
+         (caller-body (nelisp-aot-compiler--ir-get caller-ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (nelisp-aot-compiler--ir-get collect-ir :rest-p))
+    (should (= (nelisp-aot-compiler--ir-get collect-ir
                                                 :fixed-param-count)
                1))
-    (should (equal (nelisp-phase47-compiler--ir-get collect-ir :params)
+    (should (equal (nelisp-aot-compiler--ir-get collect-ir :params)
                    '(out args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind caller-body)
+    (should (eq (nelisp-aot-compiler--ir-kind caller-body)
                 'value-seq))
     (should (member 'nelisp_aot_listn externs))))
 
-(ert-deftest nelisp-phase47-doc129/rest-param-call-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/rest-param-call-requires-boundary ()
   "Doc 129.7J: rest call lowering needs caller listn boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(seq
       (defun collect ((out :type sexp) &rest (args :type sexp))
         args)
       (defun call_collect ((out :type sexp) (a :type sexp))
         (collect out a))))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-rest-param-call-listn ()
+(ert-deftest nelisp-aot-doc129/object-rest-param-call-listn ()
   "Doc 129.7J: object output exposes rest-param list construction."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-rest-param-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun collect
                  ((out :type sexp)
@@ -5654,83 +5654,83 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_listn" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-funcall-lambda-lift ()
   "Doc 129.7K: literal lambda funcall lifts to a synthetic defun."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller (x)
                  (funcall (lambda (y) (+ y 1)) x))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind lambda-ir) 'defun))
+         (call-node (nelisp-aot-compiler--ir-get caller-ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (eq (nelisp-aot-compiler--ir-kind lambda-ir) 'defun))
     (should (string-prefix-p
              "nelisp_aot_lambda_"
-             (symbol-name (nelisp-phase47-compiler--ir-get lambda-ir :name))))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
-                (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+             (symbol-name (nelisp-aot-compiler--ir-get lambda-ir :name))))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
+                (nelisp-aot-compiler--ir-get lambda-ir :name)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-function-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-function-lambda-lift ()
   "Doc 129.7K: `(function (lambda ...))' funcall also lambda-lifts."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller (x)
                  (funcall (function (lambda (y) (* y 2))) x))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
+         (call-node (nelisp-aot-compiler--ir-get caller-ir :body)))
     (should (string-prefix-p
              "nelisp_aot_lambda_"
-             (symbol-name (nelisp-phase47-compiler--ir-get lambda-ir :name))))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
-                (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+             (symbol-name (nelisp-aot-compiler--ir-get lambda-ir :name))))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
+                (nelisp-aot-compiler--ir-get lambda-ir :name)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall-lambda-lift-capture ()
+(ert-deftest nelisp-aot-doc129/parse-funcall-lambda-lift-capture ()
   "Doc 129.7R: direct funcall lambda captures thread as leading args."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller (cap x)
                  (funcall (lambda (y) (+ y cap)) x))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (equal (nelisp-phase47-compiler--ir-get lambda-ir :params)
+         (call-node (nelisp-aot-compiler--ir-get caller-ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (equal (nelisp-aot-compiler--ir-get lambda-ir :params)
                    '(cap y)))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
-                (nelisp-phase47-compiler--ir-get lambda-ir :name)))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
+                (nelisp-aot-compiler--ir-get lambda-ir :name)))
     (should (equal (mapcar (lambda (arg)
-                             (nelisp-phase47-compiler--ir-get arg :var))
-                           (nelisp-phase47-compiler--ir-get call-node :args))
+                             (nelisp-aot-compiler--ir-get arg :var))
+                           (nelisp-aot-compiler--ir-get call-node :args))
                    '(cap x)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall-lambda-lift-let-capture ()
+(ert-deftest nelisp-aot-doc129/parse-funcall-lambda-lift-let-capture ()
   "Doc 129.7R: direct funcall lambda captures runtime let slots."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller (x)
                  (let ((cap x))
                    (funcall (lambda (y) (+ y cap)) x)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (let-node (nelisp-phase47-compiler--ir-get caller-ir :body))
-         (call-node (nelisp-phase47-compiler--ir-get let-node :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind let-node) 'let-rt))
-    (should (equal (nelisp-phase47-compiler--ir-get lambda-ir :params)
+         (let-node (nelisp-aot-compiler--ir-get caller-ir :body))
+         (call-node (nelisp-aot-compiler--ir-get let-node :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind let-node) 'let-rt))
+    (should (equal (nelisp-aot-compiler--ir-get lambda-ir :params)
                    '(cap y)))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
-                (nelisp-phase47-compiler--ir-get lambda-ir :name)))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
+                (nelisp-aot-compiler--ir-get lambda-ir :name)))
     (should (equal (mapcar (lambda (arg)
-                             (nelisp-phase47-compiler--ir-get arg :var))
-                           (nelisp-phase47-compiler--ir-get call-node :args))
+                             (nelisp-aot-compiler--ir-get arg :var))
+                           (nelisp-aot-compiler--ir-get call-node :args))
                    '(cap x)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-funcall-lambda-captured-setq-closure ()
+(ert-deftest nelisp-aot-doc129/parse-funcall-lambda-captured-setq-closure ()
   "Doc 129.7Y: captured mutation funcalls materialize heap closures."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5739,38 +5739,38 @@ materialized closure temporary."
                     (cap :type sexp)
                     (x :type sexp))
                  (funcall (lambda (y) (setq cap y)) x))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (make-closure (nth 1 forms))
          (call-node (nth 2 forms))
-         (make-args (nelisp-phase47-compiler--ir-get make-closure :args))
+         (make-args (nelisp-aot-compiler--ir-get make-closure :args))
          (capture-cell (nth 6 make-args))
-         (capture-forms (nelisp-phase47-compiler--ir-get capture-cell :forms))
+         (capture-forms (nelisp-aot-compiler--ir-get capture-cell :forms))
          (capture-call (nth 1 capture-forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get make-closure :name)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get make-closure :name)
                 'nelisp_aot_make_closure))
-    (should (= (nelisp-phase47-compiler--ir-get (nth 3 make-args) :value)
+    (should (= (nelisp-aot-compiler--ir-get (nth 3 make-args) :value)
                1))
-    (should (eq (nelisp-phase47-compiler--ir-kind capture-cell)
+    (should (eq (nelisp-aot-compiler--ir-kind capture-cell)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get capture-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get capture-call :name)
                 'nelisp_aot_capture_cell))
-    (should (eq (nelisp-phase47-compiler--ir-get
-                 (nth 3 (nelisp-phase47-compiler--ir-get capture-call :args))
+    (should (eq (nelisp-aot-compiler--ir-get
+                 (nth 3 (nelisp-aot-compiler--ir-get capture-call :args))
                  :var)
                 'cap))
     (should (member 'nelisp_aot_capture_cell externs))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall1))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 call-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 2 call-args) :var)
                 'out))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read ()
   "Doc 129.7AH: captured mutation reads use the frame-slot ABI."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5781,25 +5781,25 @@ materialized closure temporary."
                  (seq
                   (funcall (lambda (y) (setq cap y)) x)
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (slot-args (nelisp-phase47-compiler--ir-get slot-call :args))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (slot-args (nelisp-aot-compiler--ir-get slot-call :args))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 slot-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 2 slot-args) :var)
                 'scratch))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-if ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-after-if ()
   "Doc 129.7AK: both-branch captured mutation selects frame-slot reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5814,22 +5814,22 @@ materialized closure temporary."
                       (funcall (lambda (v) (setq cap v)) x)
                     (funcall (lambda (v) (setq cap v)) y))
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-if-partial ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-if-partial ()
   "Doc 129.7AK: one-branch captured mutation keeps ordinary reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5843,18 +5843,18 @@ materialized closure temporary."
                       (funcall (lambda (v) (setq cap v)) x)
                     0)
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (read-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind read-node) 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get read-node :var) 'cap))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind read-node) 'ref))
+    (should (eq (nelisp-aot-compiler--ir-get read-node :var) 'cap))
     (should (member 'nelisp_aot_capture_cell externs))
     (should-not (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-cond ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-after-cond ()
   "Doc 129.7AL: exhaustive cond mutation selects frame-slot reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5871,22 +5871,22 @@ materialized closure temporary."
                    (t
                     (funcall (lambda (v) (setq cap v)) y)))
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-cond-partial ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-cond-partial ()
   "Doc 129.7AL: non-exhaustive cond keeps ordinary reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5900,18 +5900,18 @@ materialized closure temporary."
                    (flag
                     (funcall (lambda (v) (setq cap v)) x)))
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (read-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind read-node) 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get read-node :var) 'cap))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind read-node) 'ref))
+    (should (eq (nelisp-aot-compiler--ir-get read-node :var) 'cap))
     (should (member 'nelisp_aot_capture_cell externs))
     (should-not (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-and-leading ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-after-and-leading ()
   "Doc 129.7AM: leading short-circuit mutation selects frame-slot reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5925,22 +5925,22 @@ materialized closure temporary."
                    (funcall (lambda (v) (setq cap v)) x)
                    flag)
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-and-trailing ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-and-trailing ()
   "Doc 129.7AM: trailing short-circuit mutation keeps ordinary reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5954,18 +5954,18 @@ materialized closure temporary."
                    flag
                    (funcall (lambda (v) (setq cap v)) x))
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (read-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind read-node) 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get read-node :var) 'cap))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind read-node) 'ref))
+    (should (eq (nelisp-aot-compiler--ir-get read-node :var) 'cap))
     (should (member 'nelisp_aot_capture_cell externs))
     (should-not (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-or-leading ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-after-or-leading ()
   "Doc 129.7AP: leading `or' mutation selects frame-slot reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -5979,22 +5979,22 @@ materialized closure temporary."
                    (funcall (lambda (v) (setq cap v)) x)
                    flag)
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-or-trailing ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-or-trailing ()
   "Doc 129.7AP: trailing `or' mutation keeps ordinary reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6008,18 +6008,18 @@ materialized closure temporary."
                    flag
                    (funcall (lambda (v) (setq cap v)) x))
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (read-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind read-node) 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get read-node :var) 'cap))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind read-node) 'ref))
+    (should (eq (nelisp-aot-compiler--ir-get read-node :var) 'cap))
     (should (member 'nelisp_aot_capture_cell externs))
     (should-not (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-inside-and ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-inside-and ()
   "Doc 129.7AQ: later `and' operands see guaranteed captured mutation."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6030,23 +6030,23 @@ materialized closure temporary."
                  (and
                   (funcall (lambda (v) (setq cap v)) x)
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'logic))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'logic))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-inside-or ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-inside-or ()
   "Doc 129.7AQ: executed later `or' operands see prior captured mutation."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6057,23 +6057,23 @@ materialized closure temporary."
                  (or
                   (funcall (lambda (v) (setq cap v)) x)
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'logic))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'logic))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-inside-if-condition ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-inside-if-condition ()
   "Doc 129.7AR: `if' branches see captured mutation from condition."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6084,29 +6084,29 @@ materialized closure temporary."
                  (if (funcall (lambda (v) (setq cap v)) x)
                      cap
                    cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (then-ref (nelisp-phase47-compiler--ir-get body :then))
-         (else-ref (nelisp-phase47-compiler--ir-get body :else))
-         (then-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (then-ref (nelisp-aot-compiler--ir-get body :then))
+         (else-ref (nelisp-aot-compiler--ir-get body :else))
+         (then-call (nth 1 (nelisp-aot-compiler--ir-get
                             then-ref :forms)))
-         (else-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (else-call (nth 1 (nelisp-aot-compiler--ir-get
                             else-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
-    (should (eq (nelisp-phase47-compiler--ir-kind then-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
+    (should (eq (nelisp-aot-compiler--ir-kind then-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind else-ref)
+    (should (eq (nelisp-aot-compiler--ir-kind else-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get then-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get then-call :name)
                 'nelisp_aot_frame_slot_ref))
-    (should (eq (nelisp-phase47-compiler--ir-get else-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get else-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-let ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-after-let ()
   "Doc 129.7AO: captured mutation inside `let' selects later frame-slot reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6118,22 +6118,22 @@ materialized closure temporary."
                   (let ((tmp x))
                     (funcall (lambda (v) (setq cap v)) tmp))
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-captured-setq-frame-slot-read-after-let-star ()
+(ert-deftest nelisp-aot-doc129/parse-captured-setq-frame-slot-read-after-let-star ()
   "Doc 129.7AO: captured mutation inside `let*' selects later frame-slot reads."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6146,22 +6146,22 @@ materialized closure temporary."
                          (tmp2 tmp))
                     (funcall (lambda (v) (setq cap v)) tmp2))
                   cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (slot-ref (nth 1 forms))
-         (slot-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (slot-call (nth 1 (nelisp-aot-compiler--ir-get
                             slot-ref :forms)))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind slot-ref)
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind slot-ref)
                 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get slot-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get slot-call :name)
                 'nelisp_aot_frame_slot_ref))
     (should (member 'nelisp_aot_capture_cell externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-frame-slot-rewrite-respects-let-shadow ()
+(ert-deftest nelisp-aot-doc129/parse-frame-slot-rewrite-respects-let-shadow ()
   "Doc 129.7AO: frame-slot rewrite does not cross lexical `let' shadowing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6174,21 +6174,21 @@ materialized closure temporary."
                   (funcall (lambda (v) (setq cap v)) x)
                   (let ((cap y))
                     cap)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (let-node (nth 1 forms))
-         (let-body (nelisp-phase47-compiler--ir-get let-node :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind let-node) 'let-rt))
-    (should (eq (nelisp-phase47-compiler--ir-kind let-body) 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-get let-body :var) 'cap))
+         (let-body (nelisp-aot-compiler--ir-get let-node :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind let-node) 'let-rt))
+    (should (eq (nelisp-aot-compiler--ir-kind let-body) 'ref))
+    (should (eq (nelisp-aot-compiler--ir-get let-body :var) 'cap))
     (should (member 'nelisp_aot_capture_cell externs))
     (should-not (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/funcall-lambda-captured-setq-descriptor ()
+(ert-deftest nelisp-aot-doc129/funcall-lambda-captured-setq-descriptor ()
   "Doc 129.7Y: captured mutation closures expose descriptors."
   (let* ((descriptors
-          (nelisp-phase47-compiler--closure-descriptors
+          (nelisp-aot-compiler--closure-descriptors
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6204,17 +6204,17 @@ materialized closure temporary."
     (should (equal (plist-get descriptor :body) '((setq cap y))))
     (should (equal (plist-get descriptor :captures) '(cap)))))
 
-(ert-deftest nelisp-phase47-doc129/funcall-lambda-captured-setq-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/funcall-lambda-captured-setq-requires-boundary ()
   "Doc 129.7Y: captured mutation closure lowering needs boundary slots."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun caller (cap x)
        (funcall (lambda (y) (setq cap y)) x)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/parse-aot-capture-cell ()
+(ert-deftest nelisp-aot-doc129/parse-aot-capture-cell ()
   "Doc 129.7AB: capture-cell materialization lowers to the runtime bridge."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6222,21 +6222,21 @@ materialized closure temporary."
                     (scratch :type sexp)
                     (cap :type sexp))
                  (aot-capture-cell 'cap cap))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (nth 1 forms))
-         (args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+         (args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_capture_cell))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 2 args) :var)
                 'scratch))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 3 args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 3 args) :var)
                 'cap))))
 
-(ert-deftest nelisp-phase47-doc129/parse-aot-frame-slot-ref-set ()
+(ert-deftest nelisp-aot-doc129/parse-aot-frame-slot-ref-set ()
   "Doc 129.7AG: frame-slot forms lower to the runtime ABI bridges."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6246,97 +6246,97 @@ materialized closure temporary."
                  (seq
                   (aot-frame-slot-set 'cap cap)
                   (aot-frame-slot-ref 'cap)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (set-seq (nth 0 forms))
          (ref-seq (nth 1 forms))
-         (set-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (set-call (nth 1 (nelisp-aot-compiler--ir-get
                            set-seq :forms)))
-         (ref-call (nth 1 (nelisp-phase47-compiler--ir-get
+         (ref-call (nth 1 (nelisp-aot-compiler--ir-get
                            ref-seq :forms)))
-         (set-args (nelisp-phase47-compiler--ir-get set-call :args))
-         (ref-args (nelisp-phase47-compiler--ir-get ref-call :args))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind set-seq) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get set-call :name)
+         (set-args (nelisp-aot-compiler--ir-get set-call :args))
+         (ref-args (nelisp-aot-compiler--ir-get ref-call :args))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind set-seq) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get set-call :name)
                 'nelisp_aot_frame_slot_set))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 set-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 2 set-args) :var)
                 'scratch))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 3 set-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 3 set-args) :var)
                 'cap))
-    (should (eq (nelisp-phase47-compiler--ir-get ref-call :name)
+    (should (eq (nelisp-aot-compiler--ir-get ref-call :name)
                 'nelisp_aot_frame_slot_ref))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 ref-args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 2 ref-args) :var)
                 'scratch))
     (should (member 'nelisp_aot_frame_slot_set externs))
     (should (member 'nelisp_aot_frame_slot_ref externs))))
 
-(ert-deftest nelisp-phase47-doc129/aot-frame-slot-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/aot-frame-slot-requires-boundary ()
   "Doc 129.7AG: frame-slot forms require boxed boundary slots."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun caller (cap)
        (aot-frame-slot-set 'cap cap)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/e2e-funcall-lambda-lift ()
   "Doc 129.7K: execute a non-capturing lambda-lifted funcall."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary "lambda-lift")))
+  (let ((path (nelisp-aot-doc129-test--tmp-binary "lambda-lift")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun caller (x)
                (funcall (lambda (y) (+ y 1)) x))
              (exit (caller 41)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift-capture ()
+(ert-deftest nelisp-aot-doc129/e2e-funcall-lambda-lift-capture ()
   "Doc 129.7R: execute direct funcall lambda capture threading."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary
+  (let ((path (nelisp-aot-doc129-test--tmp-binary
                "lambda-lift-capture")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun caller (cap x)
                (funcall (lambda (y) (+ y cap)) x))
              (exit (caller 8 34)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-funcall-lambda-lift-let-capture ()
+(ert-deftest nelisp-aot-doc129/e2e-funcall-lambda-lift-let-capture ()
   "Doc 129.7R: execute runtime let capture threading."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary
+  (let ((path (nelisp-aot-doc129-test--tmp-binary
                "lambda-lift-let-capture")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun caller (x)
                (let ((cap x))
                  (funcall (lambda (y) (+ y cap)) x)))
              (exit (caller 21)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-funcall-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-funcall-lambda-lift ()
   "Doc 129.7K: object output exposes synthetic lambda defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-lift-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller (x)
               (funcall (lambda (y) (+ y 1)) x))
            path)
@@ -6347,13 +6347,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_lambda_0" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-funcall-lambda-captured-setq ()
+(ert-deftest nelisp-aot-doc129/object-funcall-lambda-captured-setq ()
   "Doc 129.7Y: object output exposes captured mutation closure dispatch."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6373,13 +6373,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read ()
   "Doc 129.7AH: object output selects frame-slot ABI after captured setq."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6399,13 +6399,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-if ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-after-if ()
   "Doc 129.7AK: object output selects frame-slot ABI after both branches."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-if-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6429,13 +6429,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-cond ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-after-cond ()
   "Doc 129.7AL: object output selects frame-slot ABI after exhaustive cond."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-cond-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6461,13 +6461,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-and-leading ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-after-and-leading ()
   "Doc 129.7AM: object output selects frame-slot ABI after leading and."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-and-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6490,13 +6490,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-or-leading ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-after-or-leading ()
   "Doc 129.7AP: object output selects frame-slot ABI after leading or."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-or-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6519,13 +6519,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-inside-and ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-inside-and ()
   "Doc 129.7AQ: object output selects frame-slot ABI inside `and'."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-and-intra-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6545,13 +6545,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-inside-if-condition ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-inside-if-condition ()
   "Doc 129.7AR: object output selects frame-slot ABI inside `if' branches."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-if-condition-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6571,13 +6571,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-let ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-after-let ()
   "Doc 129.7AO: object output selects frame-slot ABI after lexical let."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-let-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6598,13 +6598,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-captured-setq-frame-slot-read-after-let-star ()
+(ert-deftest nelisp-aot-doc129/object-captured-setq-frame-slot-read-after-let-star ()
   "Doc 129.7AP: object output selects frame-slot ABI after lexical let*."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-lambda-setq-let-star-read-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6626,13 +6626,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_funcall1" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-aot-capture-cell ()
+(ert-deftest nelisp-aot-doc129/object-aot-capture-cell ()
   "Doc 129.7AB: object output exposes capture-cell bridge relocation."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-capture-cell-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6648,13 +6648,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-aot-frame-slot-ref-set ()
+(ert-deftest nelisp-aot-doc129/object-aot-frame-slot-ref-set ()
   "Doc 129.7AG: object output exposes frame-slot ABI relocations."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-frame-slot-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6673,77 +6673,77 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/parse-direct-lambda-lift ()
   "Doc 129.7L: direct literal lambda application also lambda-lifts."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller (x)
                  ((lambda (y) (+ y 1)) x))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind call-node) 'call))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
-                (nelisp-phase47-compiler--ir-get lambda-ir :name)))))
+         (call-node (nelisp-aot-compiler--ir-get caller-ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind call-node) 'call))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
+                (nelisp-aot-compiler--ir-get lambda-ir :name)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-direct-lambda-lift-capture ()
+(ert-deftest nelisp-aot-doc129/parse-direct-lambda-lift-capture ()
   "Doc 129.7R: direct literal lambda captures thread as leading args."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun caller (cap x)
                  ((lambda (y) (* y cap)) x))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (lambda-ir (nth 0 forms))
          (caller-ir (nth 1 forms))
-         (call-node (nelisp-phase47-compiler--ir-get caller-ir :body)))
-    (should (equal (nelisp-phase47-compiler--ir-get lambda-ir :params)
+         (call-node (nelisp-aot-compiler--ir-get caller-ir :body)))
+    (should (equal (nelisp-aot-compiler--ir-get lambda-ir :params)
                    '(cap y)))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
-                (nelisp-phase47-compiler--ir-get lambda-ir :name)))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
+                (nelisp-aot-compiler--ir-get lambda-ir :name)))
     (should (equal (mapcar (lambda (arg)
-                             (nelisp-phase47-compiler--ir-get arg :var))
-                           (nelisp-phase47-compiler--ir-get call-node :args))
+                             (nelisp-aot-compiler--ir-get arg :var))
+                           (nelisp-aot-compiler--ir-get call-node :args))
                    '(cap x)))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-direct-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/e2e-direct-lambda-lift ()
   "Doc 129.7L: execute a direct non-capturing lambda application."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary "direct-lambda-lift")))
+  (let ((path (nelisp-aot-doc129-test--tmp-binary "direct-lambda-lift")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun caller (x)
                ((lambda (y) (* y 2)) x))
              (exit (caller 21)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-direct-lambda-lift-capture ()
+(ert-deftest nelisp-aot-doc129/e2e-direct-lambda-lift-capture ()
   "Doc 129.7R: execute direct literal lambda capture threading."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary
+  (let ((path (nelisp-aot-doc129-test--tmp-binary
                "direct-lambda-lift-capture")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun caller (cap x)
                ((lambda (y) (* y cap)) x))
              (exit (caller 2 21)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 42)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 42)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-direct-lambda-lift ()
+(ert-deftest nelisp-aot-doc129/object-direct-lambda-lift ()
   "Doc 129.7L: object output exposes direct lambda-lift defuns."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-direct-lambda-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun caller (x)
               ((lambda (y) (+ y 1)) x))
            path)
@@ -6754,9 +6754,9 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_lambda_0" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-quoted-funcall-designator ()
+(ert-deftest nelisp-aot-doc129/parse-quoted-funcall-designator ()
   "Doc 129.7D: quoted function symbols materialize through NAME-SLOT."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_quoted
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6765,25 +6765,25 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (arg :type sexp))
                  (funcall 'identity arg))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
          (fn-arg (nth 2 call-args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "identity")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall1))
-    (should (eq (nelisp-phase47-compiler--ir-get fn-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get fn-arg :var)
                 'name_slot))))
 
-(ert-deftest nelisp-phase47-doc129/parse-function-funcall2-designator ()
+(ert-deftest nelisp-aot-doc129/parse-function-funcall2-designator ()
   "Doc 129.7D: `#'symbol' funcall2 lowers through the same name slot."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_function
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6792,20 +6792,20 @@ materialized closure temporary."
                     (arg0 :type sexp)
                     (arg1 :type sexp))
                  (funcall #'concat arg0 arg1))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "concat")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcall2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-quoted-funcall4-calln-designator ()
+(ert-deftest nelisp-aot-doc129/parse-quoted-funcall4-calln-designator ()
   "Doc 129.7H: quoted function symbols also materialize for calln."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun call_quoted4
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6817,28 +6817,28 @@ materialized closure temporary."
                     (arg2 :type sexp)
                     (arg3 :type sexp))
                  (funcall '+ arg0 arg1 arg2 arg3))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
          (fn-arg (nth 2 call-args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "+")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_funcalln))
-    (should (equal (mapcar #'nelisp-phase47-compiler--ir-kind call-args)
+    (should (equal (mapcar #'nelisp-aot-compiler--ir-kind call-args)
                    '(ref ref ref imm ref ref ref ref ref ref)))
-    (should (eq (nelisp-phase47-compiler--ir-get fn-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get fn-arg :var)
                 'name_slot))))
 
-(ert-deftest nelisp-phase47-doc129/quoted-apply-designator-requires-name-slot ()
+(ert-deftest nelisp-aot-doc129/quoted-apply-designator-requires-name-slot ()
   "Doc 129.7D: quoted apply designators require caller-owned NAME-SLOT."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun call_apply
          ((out :type sexp)
           (mirror :type sexp)
@@ -6846,15 +6846,15 @@ materialized closure temporary."
           (scratch :type sexp)
           (args :type sexp))
        (apply '+ args)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-quoted-apply-designator ()
+(ert-deftest nelisp-aot-doc129/object-quoted-apply-designator ()
   "Doc 129.7D: object output exposes symbol materialization + apply reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-quoted-apply-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun call_apply_symbol
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -6872,9 +6872,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-throw-literal-tag ()
+(ert-deftest nelisp-aot-doc129/parse-throw-literal-tag ()
   "Doc 129.8B: `(throw 'TAG VALUE)' lowers through the throw bridge."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun throw_tag
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6883,25 +6883,25 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (value :type sexp))
                  (throw 'done value))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
          (tag-arg (nth 2 call-args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "done")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_throw))
-    (should (eq (nelisp-phase47-compiler--ir-get tag-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get tag-arg :var)
                 'name_slot))))
 
-(ert-deftest nelisp-phase47-doc129/parse-signal-dynamic-tag ()
+(ert-deftest nelisp-aot-doc129/parse-signal-dynamic-tag ()
   "Doc 129.8B: dynamic signal tags use the supplied boxed tag value."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun signal_tag
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6910,21 +6910,21 @@ materialized closure temporary."
                     (tag :type sexp)
                     (data :type sexp))
                  (signal tag data))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (nth 0 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
          (tag-arg (nth 2 call-args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_signal))
-    (should (eq (nelisp-phase47-compiler--ir-get tag-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get tag-arg :var)
                 'tag))))
 
-(ert-deftest nelisp-phase47-doc129/throw-literal-tag-requires-name-slot ()
+(ert-deftest nelisp-aot-doc129/throw-literal-tag-requires-name-slot ()
   "Doc 129.8B: literal throw tags require caller-owned NAME-SLOT."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun throw_tag
          ((out :type sexp)
           (mirror :type sexp)
@@ -6932,15 +6932,15 @@ materialized closure temporary."
           (scratch :type sexp)
           (value :type sexp))
        (throw 'done value)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-throw-signal-bridges ()
+(ert-deftest nelisp-aot-doc129/object-throw-signal-bridges ()
   "Doc 129.8B: object output exposes throw/signal bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-exception-bridges-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun throw_tag
                  ((out :type sexp)
@@ -6969,9 +6969,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-error-bridge ()
+(ert-deftest nelisp-aot-doc129/parse-error-bridge ()
   "Doc 129.8H: `(error DATA)' lowers as `(signal 'error DATA)'."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun error_value
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -6980,21 +6980,21 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (value :type sexp))
                  (error value))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "error")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_signal))))
 
-(ert-deftest nelisp-phase47-doc129/parse-error-varargs-bridge ()
+(ert-deftest nelisp-aot-doc129/parse-error-varargs-bridge ()
   "Doc 129.8I: formatted `(error FMT ARG...)' lowers to errorn."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun error_fmt
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7003,28 +7003,28 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (value :type sexp))
                  (error "%s" value))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+         (call-args (nelisp-aot-compiler--ir-get call-node :args)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-str-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "%s")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_errorn))
-    (should (equal (mapcar #'nelisp-phase47-compiler--ir-kind call-args)
+    (should (equal (mapcar #'nelisp-aot-compiler--ir-kind call-args)
                    '(ref ref imm ref ref ref ref)))))
 
-(ert-deftest nelisp-phase47-doc129/object-error-bridge ()
+(ert-deftest nelisp-aot-doc129/object-error-bridge ()
   "Doc 129.8H: object output exposes error-as-signal bridge reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-error-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun error_value
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7042,13 +7042,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-error-varargs-bridge ()
+(ert-deftest nelisp-aot-doc129/object-error-varargs-bridge ()
   "Doc 129.8I: object output exposes formatted errorn bridge reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-errorn-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun error_fmt
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7066,9 +7066,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_str" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-push-catch-handler ()
+(ert-deftest nelisp-aot-doc129/parse-push-catch-handler ()
   "Doc 129.8C: explicit catch handler push lowers to runtime bridge."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun push_catch
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7076,21 +7076,21 @@ materialized closure temporary."
                     (scratch :type sexp)
                     (name_slot :type sexp))
                  (aot-push-catch 'done 4096 64))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "done")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_push_catch))))
 
-(ert-deftest nelisp-phase47-doc129/parse-push-catch-handler-landing-label ()
+(ert-deftest nelisp-aot-doc129/parse-push-catch-handler-landing-label ()
   "Doc 129.8V: quoted handler landing labels materialize as metadata."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun push_catch_label
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7100,27 +7100,27 @@ materialized closure temporary."
                  (aot-push-catch 'done
                                  'doc129_catch_landing
                                  (aot-current-sp)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (tag-write (nth 0 forms))
          (landing-write (nth 1 forms))
          (call-node (nth 2 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
          (landing-arg (nth 3 call-args))
          (saved-sp-arg (nth 4 call-args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (equal (nelisp-phase47-compiler--ir-get tag-write :bytes)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (equal (nelisp-aot-compiler--ir-get tag-write :bytes)
                    (string-to-list "done")))
-    (should (equal (nelisp-phase47-compiler--ir-get landing-write :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get landing-write :bytes)
                    (string-to-list "doc129_catch_landing")))
-    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get landing-arg :var)
                 'scratch))
-    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+    (should (eq (nelisp-aot-compiler--ir-kind saved-sp-arg)
                 'aot-current-sp))))
 
-(ert-deftest nelisp-phase47-doc129/parse-push-unwind-handler ()
+(ert-deftest nelisp-aot-doc129/parse-push-unwind-handler ()
   "Doc 129.8C: explicit unwind handler push accepts dynamic cleanup."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun push_unwind
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7128,35 +7128,35 @@ materialized closure temporary."
                     (scratch :type sexp)
                     (cleanup :type sexp))
                  (aot-push-unwind cleanup 8192 64))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (nth 0 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
          (cleanup-arg (nth 2 call-args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_push_unwind))
-    (should (eq (nelisp-phase47-compiler--ir-get cleanup-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get cleanup-arg :var)
                 'cleanup))))
 
-(ert-deftest nelisp-phase47-doc129/push-catch-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/push-catch-requires-boundary ()
   "Doc 129.8C: handler push lowering requires boxed boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun push_catch
          ((name_slot :type sexp)
           (landing :type sexp)
           (saved :type sexp))
        (aot-push-catch 'done landing saved)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-push-handler-bridges ()
+(ert-deftest nelisp-aot-doc129/object-push-handler-bridges ()
   "Doc 129.8C: object output exposes push handler bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-push-handlers-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun push_catch
                  ((out :type sexp)
@@ -7189,9 +7189,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-pop-handler ()
+(ert-deftest nelisp-aot-doc129/parse-pop-handler ()
   "Doc 129.8D: explicit handler pop lowers to runtime bridge."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun pop_catch
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7199,38 +7199,38 @@ materialized closure temporary."
                     (scratch :type sexp)
                     (name_slot :type sexp))
                  (aot-pop-handler 'catch))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (write-node (nth 0 forms))
          (call-node (nth 1 forms))
-         (call-args (nelisp-phase47-compiler--ir-get call-node :args))
+         (call-args (nelisp-aot-compiler--ir-get call-node :args))
          (kind-arg (nth 2 call-args)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind write-node)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind write-node)
                 'sexp-write-symbol-lit))
-    (should (equal (nelisp-phase47-compiler--ir-get write-node :bytes)
+    (should (equal (nelisp-aot-compiler--ir-get write-node :bytes)
                    (string-to-list "catch")))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_pop_handler))
-    (should (eq (nelisp-phase47-compiler--ir-get kind-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get kind-arg :var)
                 'name_slot))))
 
-(ert-deftest nelisp-phase47-doc129/pop-handler-requires-boundary ()
+(ert-deftest nelisp-aot-doc129/pop-handler-requires-boundary ()
   "Doc 129.8D: pop handler lowering requires boxed boundary params."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun pop_catch
          ((name_slot :type sexp))
        (aot-pop-handler 'catch)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-doc129/object-pop-handler-bridge ()
+(ert-deftest nelisp-aot-doc129/object-pop-handler-bridge ()
   "Doc 129.8D: object output exposes pop handler bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-pop-handler-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun pop_catch
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7246,9 +7246,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-catch-normal-exit ()
   "Doc 129.8E: source `catch' normal exit lowers to push/body/pop."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_value
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7257,22 +7257,22 @@ materialized closure temporary."
                     (name_slot :type sexp)
                     (value :type sexp))
                  (catch 'done value))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (push-node (nth 0 forms))
          (save-node (nth 1 forms))
-         (save-body (nelisp-phase47-compiler--ir-get save-node :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind push-node) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind save-node) 'let-rt))
-    (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
+         (save-body (nelisp-aot-compiler--ir-get save-node :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind push-node) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind save-node) 'let-rt))
+    (should (eq (nelisp-aot-compiler--ir-kind save-body) 'value-seq))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_pop_handler externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-direct-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-direct-throw ()
   "Doc 129.8L/V: direct catch throw extracts from a labelled landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7282,49 +7282,49 @@ materialized closure temporary."
                     (value :type sexp))
                  (catch 'done
                    (throw 'done value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (push-call
           (car (seq-filter
                 (lambda (node)
-                  (eq (nelisp-phase47-compiler--ir-get node :name)
+                  (eq (nelisp-aot-compiler--ir-get node :name)
                       'nelisp_aot_push_catch))
-                (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call))))
-         (push-args (nelisp-phase47-compiler--ir-get push-call :args))
+                (nelisp-aot-doc129-test--ir-nodes ir 'extern-call))))
+         (push-args (nelisp-aot-compiler--ir-get push-call :args))
          (landing-arg (nth 3 push-args))
          (saved-sp-arg (nth 4 push-args))
          (landing-label
-          (car (nelisp-phase47-doc129-test--ir-nodes
+          (car (nelisp-aot-doc129-test--ir-nodes
                 ir 'aot-landing-label)))
          (machine-jump
-          (car (nelisp-phase47-doc129-test--ir-nodes
+          (car (nelisp-aot-doc129-test--ir-nodes
                 ir 'aot-machine-landing-jump)))
          (landing-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get landing-label :label)))
+           (nelisp-aot-compiler--ir-get landing-label :label)))
          (symbol-writes
           (mapcar (lambda (node)
-                    (nelisp-phase47-compiler--ir-get node :bytes))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                    (nelisp-aot-compiler--ir-get node :bytes))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'sexp-write-symbol-lit))))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_pop_handler externs))
     (should (string-prefix-p "aot-catch-landing-" landing-name))
-    (should (eq (nelisp-phase47-compiler--ir-get machine-jump :target)
-                (nelisp-phase47-compiler--ir-get landing-label :label)))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get machine-jump :saved-sp))
+    (should (eq (nelisp-aot-compiler--ir-get machine-jump :target)
+                (nelisp-aot-compiler--ir-get landing-label :label)))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get machine-jump :saved-sp))
                 'aot-current-sp))
     (should (member (string-to-list landing-name) symbol-writes))
-    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get landing-arg :var)
                 'scratch))
-    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+    (should (eq (nelisp-aot-compiler--ir-kind saved-sp-arg)
                 'aot-current-sp))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-dynamic-throw-descriptor-route ()
+(ert-deftest nelisp-aot-doc129/parse-catch-dynamic-throw-descriptor-route ()
   "Doc 129.8AN: direct dynamic catch throw resumes via landing descriptor."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7335,27 +7335,27 @@ materialized closure temporary."
                     (value :type sexp))
                  (catch 'done
                    (throw tag value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (landing-label
-          (car (nelisp-phase47-doc129-test--ir-nodes
+          (car (nelisp-aot-doc129-test--ir-nodes
                 ir 'aot-landing-label)))
          (landing-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get landing-label :label))))
+           (nelisp-aot-compiler--ir-get landing-label :label))))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_jump externs))
     (should (member 'nelisp_aot_landing_value externs))
     (should-not (member 'nelisp_aot_pop_handler externs))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
     (should (string-prefix-p "aot-catch-landing-" landing-name))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-aot-landing-jump ()
+(ert-deftest nelisp-aot-doc129/parse-aot-landing-jump ()
   "Doc 129.8S: landing-jump form lowers to the native jump ABI."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun landing_jump
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7363,61 +7363,61 @@ materialized closure temporary."
                     (scratch :type sexp)
                     (landing :type sexp))
                  (aot-landing-jump landing))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (call-node (nth 0 forms))
-         (args (nelisp-phase47-compiler--ir-get call-node :args))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-get call-node :name)
+         (args (nelisp-aot-compiler--ir-get call-node :args))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-get call-node :name)
                 'nelisp_aot_landing_jump))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 2 args) :var)
+    (should (eq (nelisp-aot-compiler--ir-get (nth 2 args) :var)
                 'landing))
     (should (member 'nelisp_aot_landing_jump externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-aot-machine-landing-jump ()
+(ert-deftest nelisp-aot-doc129/parse-aot-machine-landing-jump ()
   "Doc 129.8T: machine landing jump names a label and saved SP value."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun machine_landing
                    ((saved_sp :type gp)
                     (value :type gp))
                  (seq
                   (aot-machine-landing-jump saved_sp doc129_landing_pad)
                   (aot-landing-label doc129_landing_pad value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (jump (nth 0 forms))
          (label (nth 1 forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind jump)
+    (should (eq (nelisp-aot-compiler--ir-kind jump)
                 'aot-machine-landing-jump))
-    (should (eq (nelisp-phase47-compiler--ir-get jump :target)
+    (should (eq (nelisp-aot-compiler--ir-get jump :target)
                 'doc129_landing_pad))
-    (should (eq (nelisp-phase47-compiler--ir-get
-                 (nelisp-phase47-compiler--ir-get jump :saved-sp)
+    (should (eq (nelisp-aot-compiler--ir-get
+                 (nelisp-aot-compiler--ir-get jump :saved-sp)
                  :var)
                 'saved_sp))
-    (should (eq (nelisp-phase47-compiler--ir-kind label)
+    (should (eq (nelisp-aot-compiler--ir-kind label)
                 'aot-landing-label))
-    (should (eq (nelisp-phase47-compiler--ir-get label :label)
+    (should (eq (nelisp-aot-compiler--ir-get label :label)
                 'doc129_landing_pad))))
 
-(ert-deftest nelisp-phase47-doc129/parse-aot-current-sp ()
+(ert-deftest nelisp-aot-doc129/parse-aot-current-sp ()
   "Doc 129.8U: current stack pointer is a value form."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun current_sp
                    ((value :type gp))
                  (seq
                   (aot-current-sp)
                   value))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (current-sp (car forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind current-sp)
+    (should (eq (nelisp-aot-compiler--ir-kind current-sp)
                 'aot-current-sp))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-conditional-throw ()
   "Doc 129.8N: conditional direct catch throw lowers both branches."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_if_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7429,25 +7429,25 @@ materialized closure temporary."
                    (if value
                        (throw 'done value)
                      value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (if-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind if-node) 'if))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind if-node) 'if))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
     (should (member 'nelisp_aot_pop_handler externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-cond-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-cond-throw ()
   "Doc 129.8AO: cond catch throw trees reuse the static landing route."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_cond_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7459,20 +7459,20 @@ materialized closure temporary."
                    (cond
                     (value (throw 'done value))
                     (t value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
     (should (member 'nelisp_aot_pop_handler externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-and-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-and-throw ()
   "Doc 129.8AO: simple and catch throw trees lower through if routing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_and_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7482,18 +7482,18 @@ materialized closure temporary."
                     (value :type sexp))
                  (catch 'done
                    (and value (throw 'done value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
     (should (member 'nelisp_aot_pop_handler externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-nested-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-nested-throw ()
   "Doc 129.8R: nested catch throw trees dispatch every throwing leaf."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_nested
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7507,25 +7507,25 @@ materialized closure temporary."
                            (throw 'done value)
                          value)
                      value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (if-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind if-node) 'if))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind if-node) 'if))
     (should (= (cl-count 'nelisp_aot_push_catch externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_value externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_catch "aot-catch-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-multi-leaf-throw-labels ()
+(ert-deftest nelisp-aot-doc129/parse-catch-multi-leaf-throw-labels ()
   "Doc 129.8X: multi-leaf catch trees assign one landing per throw leaf."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_two_throws
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7537,22 +7537,22 @@ materialized closure temporary."
                    (if value
                        (throw 'done value)
                      (throw 'done value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should-not (member 'nelisp_aot_pop_handler externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                2))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_catch "aot-catch-landing-" 2)))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-catch-normal-exit ()
   "Doc 129.8E: source `catch' exposes push/pop bridge relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-normal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun catch_value
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7571,13 +7571,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-direct-throw ()
+(ert-deftest nelisp-aot-doc129/object-catch-direct-throw ()
   "Doc 129.8L: source `catch' direct throw exposes landing-value reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun catch_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7597,13 +7597,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_value" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-dynamic-throw-descriptor-route ()
+(ert-deftest nelisp-aot-doc129/object-catch-dynamic-throw-descriptor-route ()
   "Doc 129.8AN: direct dynamic catch throw compiles to descriptor route."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-dynamic-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun catch_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7625,13 +7625,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_value" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-aot-landing-jump ()
+(ert-deftest nelisp-aot-doc129/object-aot-landing-jump ()
   "Doc 129.8S: object output exposes landing-jump relocation."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-landing-jump-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun landing_jump
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7647,14 +7647,14 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-aot-machine-landing-jump ()
+(ert-deftest nelisp-aot-doc129/object-aot-machine-landing-jump ()
   "Doc 129.8T: object output emits stack restore and label jump bytes."
   (skip-unless (executable-find "readelf"))
   (skip-unless (executable-find "objdump"))
   (let ((path (make-temp-file "nelisp-doc129-machine-landing-jump-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun machine_landing
                 ((value :type gp))
               (seq
@@ -7675,13 +7675,13 @@ materialized closure temporary."
             (should (string-match-p "\\be9\\b" disasm))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/object-catch-conditional-throw ()
   "Doc 129.8N: source conditional catch throw exposes both branch relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-if-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun catch_if_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7704,13 +7704,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_handler" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-cond-throw ()
+(ert-deftest nelisp-aot-doc129/object-catch-cond-throw ()
   "Doc 129.8AO: source cond catch throw compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-cond-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun catch_cond_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -7733,9 +7733,9 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_handler" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-normal-exit ()
   "Doc 129.8F: source condition-case normal exit lowers to push/body/pop."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_value
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7746,22 +7746,22 @@ materialized closure temporary."
                  (condition-case err
                      value
                    (error out)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (push-node (nth 0 forms))
          (save-node (nth 1 forms))
-         (save-body (nelisp-phase47-compiler--ir-get save-node :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind push-node) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind save-node) 'let-rt))
-    (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
+         (save-body (nelisp-aot-compiler--ir-get save-node :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind push-node) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind save-node) 'let-rt))
+    (should (eq (nelisp-aot-compiler--ir-kind save-body) 'value-seq))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_pop_handler externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-direct-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-direct-signal ()
   "Doc 129.8M/V: direct condition-case signal uses a labelled landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7772,56 +7772,56 @@ materialized closure temporary."
                  (condition-case err
                      (signal 'error value)
                    (error err)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (landing-label
-          (car (nelisp-phase47-doc129-test--ir-nodes
+          (car (nelisp-aot-doc129-test--ir-nodes
                 ir 'aot-landing-label)))
          (machine-jump
-          (car (nelisp-phase47-doc129-test--ir-nodes
+          (car (nelisp-aot-doc129-test--ir-nodes
                 ir 'aot-machine-landing-jump)))
-         (handler-let (nelisp-phase47-compiler--ir-get landing-label :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (handler-let (nelisp-aot-compiler--ir-get landing-label :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (push-call
           (car (seq-filter
                 (lambda (node)
-                  (eq (nelisp-phase47-compiler--ir-get node :name)
+                  (eq (nelisp-aot-compiler--ir-get node :name)
                       'nelisp_aot_push_condition))
-                (nelisp-phase47-doc129-test--ir-nodes ir 'extern-call))))
-         (push-args (nelisp-phase47-compiler--ir-get push-call :args))
+                (nelisp-aot-doc129-test--ir-nodes ir 'extern-call))))
+         (push-args (nelisp-aot-compiler--ir-get push-call :args))
          (landing-arg (nth 3 push-args))
          (saved-sp-arg (nth 4 push-args))
          (landing-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get landing-label :label)))
+           (nelisp-aot-compiler--ir-get landing-label :label)))
          (symbol-writes
           (mapcar (lambda (node)
-                    (nelisp-phase47-compiler--ir-get node :bytes))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                    (nelisp-aot-compiler--ir-get node :bytes))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'sexp-write-symbol-lit))))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind landing-label)
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind landing-label)
                 'aot-landing-label))
-    (should (eq (nelisp-phase47-compiler--ir-kind handler-let) 'let-rt))
+    (should (eq (nelisp-aot-compiler--ir-kind handler-let) 'let-rt))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
     (should-not (member 'nelisp_aot_pop_handler externs))
-    (should (eq (nelisp-phase47-compiler--ir-get machine-jump :target)
-                (nelisp-phase47-compiler--ir-get landing-label :label)))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get machine-jump :saved-sp))
+    (should (eq (nelisp-aot-compiler--ir-get machine-jump :target)
+                (nelisp-aot-compiler--ir-get landing-label :label)))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get machine-jump :saved-sp))
                 'aot-current-sp))
     (should (string-prefix-p "aot-condition-landing-" landing-name))
     (should (member (string-to-list landing-name) symbol-writes))
-    (should (eq (nelisp-phase47-compiler--ir-get landing-arg :var)
+    (should (eq (nelisp-aot-compiler--ir-get landing-arg :var)
                 'scratch))
-    (should (eq (nelisp-phase47-compiler--ir-kind saved-sp-arg)
+    (should (eq (nelisp-aot-compiler--ir-kind saved-sp-arg)
                 'aot-current-sp))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-dynamic-signal-descriptor-route ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-dynamic-signal-descriptor-route ()
   "Doc 129.8AN: direct dynamic condition signal resumes via descriptor."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7833,27 +7833,27 @@ materialized closure temporary."
                  (condition-case err
                      (signal tag value)
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (landing-label
-          (car (nelisp-phase47-doc129-test--ir-nodes
+          (car (nelisp-aot-doc129-test--ir-nodes
                 ir 'aot-landing-label)))
          (landing-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get landing-label :label))))
+           (nelisp-aot-compiler--ir-get landing-label :label))))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_jump externs))
     (should (member 'nelisp_aot_landing_error externs))
     (should-not (member 'nelisp_aot_pop_handler externs))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
     (should (string-prefix-p "aot-condition-landing-" landing-name))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-dynamic-signal-multi-clause ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-dynamic-signal-multi-clause ()
   "Doc 129.8AT: dynamic condition descriptors support multiple clauses."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_signal_dynamic_multi
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7866,12 +7866,12 @@ materialized closure temporary."
                      (signal tag value)
                    ((error quit) err)
                    (file-error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label)))
          (condition-landing-writes
           (cl-count-if
@@ -7880,15 +7880,15 @@ materialized closure temporary."
               "aot-condition-landing-"
               (apply #'string bytes)))
            (mapcar (lambda (node)
-                     (nelisp-phase47-compiler--ir-get node :bytes))
-                   (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :bytes))
+                   (nelisp-aot-doc129-test--ir-nodes
                     ir 'sexp-write-symbol-lit)))))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 3))
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_error externs) 2))
     (should-not (member 'nelisp_aot_pop_handler externs))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
     (should (= (cl-count-if
                 (lambda (name)
@@ -7897,9 +7897,9 @@ materialized closure temporary."
                2))
     (should (= condition-landing-writes 3))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-dynamic-signal ()
   "Doc 129.8AS: dynamic condition cleanup resumes via descriptor route."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_dynamic_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7913,15 +7913,15 @@ materialized closure temporary."
                          (signal tag value)
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 1))
@@ -7941,9 +7941,9 @@ materialized closure temporary."
                 landing-names)
                1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-dynamic-signal-multi-clause ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-dynamic-signal-multi-clause ()
   "Doc 129.8AT: dynamic condition cleanup supports multiple clauses."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_dynamic_signal_multi
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -7958,15 +7958,15 @@ materialized closure temporary."
                        (identity value))
                    ((error quit) err)
                    (file-error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label)))
          (condition-landing-writes
           (cl-count-if
@@ -7975,8 +7975,8 @@ materialized closure temporary."
               "aot-condition-landing-"
               (apply #'string bytes)))
            (mapcar (lambda (node)
-                     (nelisp-phase47-compiler--ir-get node :bytes))
-                   (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :bytes))
+                   (nelisp-aot-doc129-test--ir-nodes
                     ir 'sexp-write-symbol-lit)))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 3))
@@ -7998,9 +7998,9 @@ materialized closure temporary."
                2))
     (should (= condition-landing-writes 3))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-dynamic-signal-branch-tree ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-dynamic-signal-branch-tree ()
   "Doc 129.8AU: dynamic condition branches resume through descriptors."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_signal_dynamic_branch
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8015,15 +8015,15 @@ materialized closure temporary."
                        value)
                    ((error quit) err)
                    (file-error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 3))
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
@@ -8037,9 +8037,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-dynamic-signal-cond-tree ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-dynamic-signal-cond-tree ()
   "Doc 129.8AU: dynamic condition branches accept normalized cond."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_signal_dynamic_cond
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8053,18 +8053,18 @@ materialized closure temporary."
                       (value value)
                       (t (signal tag value)))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 1))
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_error externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 1))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-dynamic-signal-logic-tree ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-dynamic-signal-logic-tree ()
   "Doc 129.8AU: dynamic condition cleanup accepts normalized logic trees."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_dynamic_signal_logic
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8079,15 +8079,15 @@ materialized closure temporary."
                        (identity value))
                    ((error quit) err)
                    (file-error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 3))
@@ -8108,9 +8108,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-direct-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-direct-signal ()
   "Doc 129.8AE: condition-targeted cleanup jumps to static landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8123,19 +8123,19 @@ materialized closure temporary."
                          (signal 'error value)
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
             (car machine-jumps) :target)))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_condition externs))
@@ -8151,9 +8151,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-direct-cleanup-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-direct-cleanup-signal ()
   "Doc 129.8BA: final cleanup signal overrides condition cleanup landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8168,15 +8168,15 @@ materialized closure temporary."
                        (identity value)
                        (signal tag value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_push_unwind externs))
@@ -8190,9 +8190,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-let-cleanup-signal-route ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-let-cleanup-signal-route ()
   "Doc 129.8BH: condition cleanup-local lexical let exposes tail signals."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_let_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8207,15 +8207,15 @@ materialized closure temporary."
                        (let (((x :type sexp) (identity value)))
                          (signal tag x)))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_push_unwind externs))
@@ -8229,9 +8229,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-empty-let-cleanup-signal-route ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-empty-let-cleanup-signal-route ()
   "Doc 129.8BI: condition cleanup-local empty let exposes tail signals."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_empty_let_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8246,9 +8246,9 @@ materialized closure temporary."
                        (let ()
                          (signal tag value)))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_push_unwind externs))
@@ -8258,9 +8258,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 0))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-conditional-mixed ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-conditional-mixed ()
   "Doc 129.8AF: mixed condition cleanup pops normal or jumps to landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8275,19 +8275,19 @@ materialized closure temporary."
                            value)
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
             (car machine-jumps) :target)))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_condition externs))
@@ -8304,9 +8304,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-conditional-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-conditional-cleanup-throw ()
   "Doc 129.8BA: final cleanup throw overrides mixed condition cleanup."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8321,15 +8321,15 @@ materialized closure temporary."
                            value)
                        (throw 'other value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_push_condition externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -8344,9 +8344,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-prefix-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-prefix-cleanup-throw ()
   "Doc 129.8BB: condition cleanup stops at the first cleanup non-local."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8362,9 +8362,9 @@ materialized closure temporary."
                        (throw 'other value)
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -8376,9 +8376,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 0))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-conditional-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-conditional-cleanup-throw-route ()
   "Doc 129.8BC: condition cleanup conditionally overrides descriptor routes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_cond_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8395,9 +8395,9 @@ materialized closure temporary."
                          value)
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -8408,9 +8408,9 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_error externs))
     (should-not machine-jumps)))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-mixed-handled-unhandled ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-mixed-handled-unhandled ()
   "Doc 129.8AK: condition cleanup mixes static handled and dynamic routes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8425,19 +8425,19 @@ materialized closure temporary."
                            (signal 'quit value))
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
             (car machine-jumps) :target)))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (member 'nelisp_aot_push_condition externs))
@@ -8454,9 +8454,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-mixed-handled-dynamic ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-mixed-handled-dynamic ()
   "Doc 129.8AK: dynamic condition leaves resume through the descriptor route."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8472,9 +8472,9 @@ materialized closure temporary."
                            (signal tag value))
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (member 'nelisp_aot_push_condition externs))
@@ -8484,9 +8484,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
     (should (= (length machine-jumps) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-mixed-condition-normal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-mixed-condition-normal ()
   "Doc 129.8AK: mixed condition cleanup keeps ordinary leaves."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8503,9 +8503,9 @@ materialized closure temporary."
                              value))
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
     (should (member 'nelisp_aot_push_condition externs))
@@ -8516,9 +8516,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
     (should (= (length machine-jumps) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-multi-handled ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-multi-handled ()
   "Doc 129.8AL: multiple static condition cleanup leaves route separately."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8534,20 +8534,20 @@ materialized closure temporary."
                        (identity value))
                    (error err)
                    (quit err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :target)))
+                     (nelisp-aot-compiler--ir-get node :target)))
                   machine-jumps))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
@@ -8566,9 +8566,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-multi-handled-dynamic ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-multi-handled-dynamic ()
   "Doc 129.8AM: multi-handler condition cleanup keeps dynamic leaves dynamic."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8587,14 +8587,14 @@ materialized closure temporary."
                        (identity value))
                    (error err)
                    (quit err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :target)))
+                     (nelisp-aot-compiler--ir-get node :target)))
                   machine-jumps)))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
@@ -8605,9 +8605,9 @@ materialized closure temporary."
     (should (= (length machine-jumps) 2))
     (should (= (length (delete-dups (copy-sequence target-names))) 2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-multi-handled-other-normal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-multi-handled-other-normal ()
   "Doc 129.8AM: multi-handler condition cleanup preserves other and normal leaves."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8627,9 +8627,9 @@ materialized closure temporary."
                        (identity value))
                    (file-error err)
                    (quit err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 4))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
@@ -8640,9 +8640,9 @@ materialized closure temporary."
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
     (should (= (length machine-jumps) 2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-conditional-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-conditional-signal ()
   "Doc 129.8Q: conditional condition-case signal dispatches one branch."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8655,25 +8655,25 @@ materialized closure temporary."
                          (signal 'error value)
                        value)
                    (error err)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (branch (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind branch) 'if))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind branch) 'if))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
     (should (member 'nelisp_aot_pop_handler externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-cond-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-cond-signal ()
   "Doc 129.8AO: cond condition-case signal trees reuse static routing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_cond_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8686,20 +8686,20 @@ materialized closure temporary."
                       (value (signal 'error value))
                       (t value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
     (should (member 'nelisp_aot_pop_handler externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-or-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-or-signal ()
   "Doc 129.8AO: simple or condition-case signal trees lower through if routing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_or_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8710,18 +8710,18 @@ materialized closure temporary."
                  (condition-case err
                      (or value (signal 'error value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
     (should (member 'nelisp_aot_pop_handler externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-nested-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-nested-signal ()
   "Doc 129.8R: nested condition-case signal trees dispatch throwing leaves."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8736,25 +8736,25 @@ materialized closure temporary."
                            value)
                        value)
                    (error out)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (branch (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind branch) 'if))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind branch) 'if))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 1))
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_error externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                1))
-    (nelisp-phase47-doc129-test--assert-single-landing-metadata
+    (nelisp-aot-doc129-test--assert-single-landing-metadata
      ir 'nelisp_aot_push_condition "aot-condition-landing-")))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-multi-leaf-labels ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-multi-leaf-labels ()
   "Doc 129.8X: multi-leaf condition trees assign one landing per signal leaf."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_two_signals
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8767,19 +8767,19 @@ materialized closure temporary."
                          (signal 'error value)
                        (error value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
     (should-not (member 'nelisp_aot_pop_handler externs))
     (should (member 'nelisp_aot_landing_error externs))
-    (should (= (length (nelisp-phase47-doc129-test--ir-nodes
+    (should (= (length (nelisp-aot-doc129-test--ir-nodes
                         ir 'aot-machine-landing-jump))
                2))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_condition "aot-condition-landing-" 2)))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-list-spec-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-list-spec-normal-exit ()
   "Doc 129.8J: list condition specs push one handler per selector."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_list_spec
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8790,13 +8790,13 @@ materialized closure temporary."
                  (condition-case err
                      value
                    ((error quit) out)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-multiple-handlers-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-multiple-handlers-normal-exit ()
   "Doc 129.8K: normal-exit condition-case walks every handler clause."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_multi_handler
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -8808,17 +8808,17 @@ materialized closure temporary."
                      value
                    (error out)
                    (quit out)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_condition externs) 2))
     (should (= (cl-count 'nelisp_aot_pop_handler externs) 2))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-normal-exit ()
   "Doc 129.8F: source condition-case exposes condition push/pop relocs."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-normal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_value
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -8839,13 +8839,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-direct-signal ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-direct-signal ()
   "Doc 129.8M: direct condition-case signal exposes landing-error reloc."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -8866,13 +8866,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-dynamic-signal-descriptor-route ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-dynamic-signal-descriptor-route ()
   "Doc 129.8AN: direct dynamic condition signal compiles to descriptor route."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-dynamic-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -8895,13 +8895,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-dynamic-signal-multi-clause ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-dynamic-signal-multi-clause ()
   "Doc 129.8AT: dynamic condition descriptors compile with multiple clauses."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-dynamic-signal-multi-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_signal_dynamic_multi
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -8925,13 +8925,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-dynamic-signal ()
   "Doc 129.8AS: dynamic condition cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-dynamic-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_dynamic_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -8957,13 +8957,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-dynamic-signal-multi-clause ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-dynamic-signal-multi-clause ()
   "Doc 129.8AT: dynamic condition cleanup compiles with multiple clauses."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-dynamic-signal-multi-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_dynamic_signal_multi
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -8990,13 +8990,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-dynamic-signal-branch-tree ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-dynamic-signal-branch-tree ()
   "Doc 129.8AU: dynamic condition branches compile to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-dynamic-signal-branch-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_signal_dynamic_branch
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9023,13 +9023,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-dynamic-signal-logic-tree ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-dynamic-signal-logic-tree ()
   "Doc 129.8AU: dynamic condition cleanup logic trees compile to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-dynamic-signal-logic-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_dynamic_signal_logic
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9057,13 +9057,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_error" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-direct-signal ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-direct-signal ()
   "Doc 129.8AE: static condition-targeted cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9089,13 +9089,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-cleanup-signal ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-cleanup-signal ()
   "Doc 129.8BA: condition-targeted final cleanup signal compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-cleanup-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_cleanup_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9123,13 +9123,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-conditional-mixed ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-conditional-mixed ()
   "Doc 129.8AF: mixed condition-targeted cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-if-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9158,13 +9158,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-mixed-handled-unhandled ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-mixed-handled-unhandled ()
   "Doc 129.8AK: mixed handled/unhandled condition cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-if-unhandled-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9192,13 +9192,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-multi-handled ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-multi-handled ()
   "Doc 129.8AL: multiple static condition cleanup leaves compile to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-if-multi-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9227,13 +9227,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-multi-handled-dynamic ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-multi-handled-dynamic ()
   "Doc 129.8AM: multi-handler condition cleanup with dynamic leaf compiles."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-if-multi-dyn-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9265,13 +9265,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-conditional-signal ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-conditional-signal ()
   "Doc 129.8Q: conditional condition-case signal compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-if-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9295,13 +9295,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_handler" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-cond-signal ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-cond-signal ()
   "Doc 129.8AO: source cond condition-case signal compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-cond-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_cond_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9325,13 +9325,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_pop_handler" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-list-spec-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-list-spec-normal-exit ()
   "Doc 129.8J: list condition specs compile through condition push/pop."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-list-normal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_list_spec
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9352,13 +9352,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-multiple-handlers-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-multiple-handlers-normal-exit ()
   "Doc 129.8K: multiple handler clauses compile through condition push/pop."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-multi-normal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_multi_handler
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -9380,9 +9380,9 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-normal-exit ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-normal-exit ()
   "Doc 129.8G: source unwind-protect saves BODY, runs cleanup, returns BODY."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_value
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9393,21 +9393,21 @@ materialized closure temporary."
                  (unwind-protect
                      value
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (save-body (nelisp-phase47-compiler--ir-get body :body))
-         (forms (nelisp-phase47-compiler--ir-get save-body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (save-body (nelisp-aot-compiler--ir-get body :body))
+         (forms (nelisp-aot-compiler--ir-get save-body :forms))
          (cleanup-node (nth 0 forms))
          (return-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
-    (should (eq (nelisp-phase47-compiler--ir-kind save-body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind cleanup-node) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind return-node) 'ref))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt))
+    (should (eq (nelisp-aot-compiler--ir-kind save-body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind cleanup-node) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind return-node) 'ref))
     (should (member 'nelisp_aot_builtin_call1 externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-direct-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-direct-throw ()
   "Doc 129.8Z: source unwind-protect hands off through cleanup landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9418,24 +9418,24 @@ materialized closure temporary."
                  (unwind-protect
                      (throw 'done value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (push-node (nth 0 forms))
          (save-node (nth 1 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind push-node) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind save-node) 'let-rt))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind push-node) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind save-node) 'let-rt))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-direct-signal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-direct-signal ()
   "Doc 129.8AG: standalone unwind-protect direct signal uses cleanup landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9446,22 +9446,22 @@ materialized closure temporary."
                  (unwind-protect
                      (signal 'error value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (forms (nelisp-phase47-compiler--ir-get body :forms))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (forms (nelisp-aot-compiler--ir-get body :forms))
          (push-node (nth 0 forms))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
-    (should (eq (nelisp-phase47-compiler--ir-kind push-node) 'value-seq))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
+    (should (eq (nelisp-aot-compiler--ir-kind push-node) 'value-seq))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-cleanup-throw ()
   "Doc 129.8AW: final cleanup throw overrides normal protected value."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9473,16 +9473,16 @@ materialized closure temporary."
                  (unwind-protect
                      value
                    (throw tag value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt))
     (should (member 'nelisp_aot_throw externs))
     (should-not (member 'nelisp_aot_push_unwind externs))
     (should-not (member 'nelisp_aot_landing_jump externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-cleanup-signal-after-local ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-cleanup-signal-after-local ()
   "Doc 129.8AW: local cleanup forms can precede final cleanup signal."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9495,17 +9495,17 @@ materialized closure temporary."
                      value
                    (identity value)
                    (signal tag value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_signal externs))
     (should-not (member 'nelisp_aot_push_unwind externs))
     (should-not (member 'nelisp_aot_landing_jump externs))))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-direct-throw-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-direct-throw-cleanup-throw ()
   "Doc 129.8AX: final cleanup throw overrides direct protected throw."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9516,16 +9516,16 @@ materialized closure temporary."
                  (unwind-protect
                      (throw 'done value)
                    (throw 'other value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-direct-signal-cleanup-signal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-direct-signal-cleanup-signal ()
   "Doc 129.8AX: final cleanup signal overrides direct protected signal."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9538,17 +9538,17 @@ materialized closure temporary."
                      (signal 'error value)
                    (identity value)
                    (signal tag value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (= (cl-count 'nelisp_aot_signal externs) 2))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-throw-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-conditional-throw-cleanup-throw ()
   "Doc 129.8AY: cleanup throw overrides branch-tree protected exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9561,18 +9561,18 @@ materialized closure temporary."
                          (throw 'done value)
                        value)
                    (throw 'other value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (= (cl-count 'nelisp_aot_throw externs) 3))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-mixed-cleanup-signal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-mixed-cleanup-signal ()
   "Doc 129.8AY: cleanup signal overrides mixed branch-tree exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9587,20 +9587,20 @@ materialized closure temporary."
                        (signal 'error value))
                    (identity value)
                    (signal tag value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
     (should (= (cl-count 'nelisp_aot_signal externs) 3))
     (should (= (cl-count 'nelisp_aot_throw externs) 1))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 2)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-cleanup-prefix-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-cleanup-prefix-throw ()
   "Doc 129.8BB: first cleanup non-local exits before later cleanups."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9614,19 +9614,19 @@ materialized closure temporary."
                        value)
                    (throw 'other value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (= (cl-count 'nelisp_aot_throw externs) 3))
     (should-not (member 'nelisp_aot_builtin_call1 externs))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-conditional-cleanup-throw-route ()
   "Doc 129.8BC: conditional cleanup exits only on non-local leaves."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_cond_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9641,17 +9641,17 @@ materialized closure temporary."
                        (throw 'other value)
                      value)
                    (identity value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
   "Doc 129.8BD: all-nonlocal cleanup trees omit unreachable suffixes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_all_nonlocal_suffix
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9667,18 +9667,18 @@ materialized closure temporary."
                      (signal 'error value))
                    (unwind-protect value
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
     (should-not (member 'nelisp_aot_builtin_call1 externs))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-progn-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-progn-cleanup-throw-route ()
   "Doc 129.8BE: cleanup-local progn wrappers expose non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_progn_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9693,17 +9693,17 @@ materialized closure temporary."
                      (identity value)
                      (throw 'other value))
                    (identity value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-let-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-let-cleanup-throw-route ()
   "Doc 129.8BH: cleanup-local lexical let wrappers expose tail non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_let_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9717,17 +9717,17 @@ materialized closure temporary."
                    (let (((x :type sexp) (identity value)))
                      (throw 'other x))
                    (identity value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-empty-let-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-empty-let-cleanup-throw-route ()
   "Doc 129.8BI: cleanup-local empty let wrappers expose tail non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_empty_let_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9741,17 +9741,17 @@ materialized closure temporary."
                    (let ()
                      (throw 'other value))
                    (identity value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should-not (member 'nelisp_aot_builtin_call1 externs))
     (should-not (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-progn-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-progn-body-throw-route ()
   "Doc 129.8BF: protected-body progn wrappers expose tail non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_body_progn_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9765,17 +9765,17 @@ materialized closure temporary."
                        (identity value)
                        (throw tag value))
                    (identity value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 1))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-let-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-let-body-throw-route ()
   "Doc 129.8BG: protected-body lexical let wrappers expose tail non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_body_let_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9788,17 +9788,17 @@ materialized closure temporary."
                      (let (((x :type sexp) (identity value)))
                        (throw tag x))
                    (identity value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 1))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-empty-let-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-empty-let-body-throw-route ()
   "Doc 129.8BI: protected-body empty let wrappers expose tail non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_body_empty_let_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9811,17 +9811,17 @@ materialized closure temporary."
                      (let ()
                        (throw tag value))
                    (identity value)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 1))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-direct-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-direct-throw ()
   "Doc 129.8AB: catch-targeted unwind cleanup jumps to static landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9833,19 +9833,19 @@ materialized closure temporary."
                    (unwind-protect
                        (throw 'done value)
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
             (car machine-jumps) :target)))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_catch externs))
@@ -9861,9 +9861,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-direct-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-direct-cleanup-throw ()
   "Doc 129.8AZ: final cleanup throw overrides static catch cleanup."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9875,15 +9875,15 @@ materialized closure temporary."
                    (unwind-protect
                        (throw 'done value)
                      (throw 'other value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_push_unwind externs))
@@ -9896,9 +9896,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-let-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-let-cleanup-throw-route ()
   "Doc 129.8BH: catch cleanup-local lexical let exposes tail throws."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_unwind_cleanup_let_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9911,15 +9911,15 @@ materialized closure temporary."
                        (throw 'done value)
                      (let (((x :type sexp) (identity value)))
                        (throw 'other x)))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_push_catch externs))
     (should (member 'nelisp_aot_push_unwind externs))
@@ -9933,9 +9933,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-conditional-all-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-conditional-all-throw ()
   "Doc 129.8AC: all-throw unwind branches jump to one catch landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9949,20 +9949,20 @@ materialized closure temporary."
                            (throw 'done value)
                          (throw 'done value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :target)))
+                     (nelisp-aot-compiler--ir-get node :target)))
                   machine-jumps))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (member 'nelisp_aot_push_catch externs))
@@ -9980,9 +9980,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-conditional-mixed ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-conditional-mixed ()
   "Doc 129.8AD: mixed unwind branches pop normal or jump to catch landing."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -9996,19 +9996,19 @@ materialized closure temporary."
                            (throw 'done value)
                          value)
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
             (car machine-jumps) :target)))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_catch externs))
@@ -10025,9 +10025,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-mixed-cleanup-signal ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-mixed-cleanup-signal ()
   "Doc 129.8AZ: final cleanup signal overrides mixed catch cleanup."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10042,15 +10042,15 @@ materialized closure temporary."
                          value)
                      (identity value)
                      (signal 'error value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10066,9 +10066,9 @@ materialized closure temporary."
                (string-prefix-p "aot-unwind-cleanup-" name))
              landing-names))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
   "Doc 129.8BD: condition cleanup all-nonlocal trees omit unreachable suffixes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_all_nonlocal_suffix
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10086,9 +10086,9 @@ materialized closure temporary."
                        (unwind-protect value
                          (identity value)))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10099,9 +10099,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should-not machine-jumps)))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-progn-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-progn-cleanup-throw-route ()
   "Doc 129.8BE: condition cleanup progn wrappers expose non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cleanup_progn_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10118,9 +10118,9 @@ materialized closure temporary."
                          (throw 'other value))
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10131,9 +10131,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should-not machine-jumps)))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-progn-body-signal-route ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-progn-body-signal-route ()
   "Doc 129.8BF: condition protected-body progn wrappers expose tail signals."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_body_progn_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10148,9 +10148,9 @@ materialized closure temporary."
                            (signal 'error value))
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10160,9 +10160,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-let-body-signal-route ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-let-body-signal-route ()
   "Doc 129.8BG: condition protected-body lexical let exposes tail signals."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_body_let_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10176,9 +10176,9 @@ materialized closure temporary."
                            (signal 'error x))
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_condition externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10188,9 +10188,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-prefix-cleanup-signal ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-prefix-cleanup-signal ()
   "Doc 129.8BB: catch cleanup stops at the first cleanup non-local."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cleanup_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10205,9 +10205,9 @@ materialized closure temporary."
                          value)
                      (signal 'error value)
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10219,9 +10219,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 0))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-conditional-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-conditional-cleanup-throw-route ()
   "Doc 129.8BC: catch cleanup conditionally overrides descriptor routes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_unwind_cleanup_cond_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10237,9 +10237,9 @@ materialized closure temporary."
                          (throw 'other value)
                        value)
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10249,9 +10249,9 @@ materialized closure temporary."
     (should (member 'nelisp_aot_landing_value externs))
     (should-not machine-jumps)))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
   "Doc 129.8BD: catch cleanup all-nonlocal trees omit unreachable suffixes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_unwind_cleanup_all_nonlocal_suffix
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10268,9 +10268,9 @@ materialized closure temporary."
                        (signal 'error value))
                      (unwind-protect value
                        (identity value)))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10281,9 +10281,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should-not machine-jumps)))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-seq-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-seq-cleanup-throw-route ()
   "Doc 129.8BE: catch cleanup seq wrappers expose non-local exits."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_unwind_cleanup_seq_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10299,9 +10299,9 @@ materialized closure temporary."
                       (identity value)
                       (throw 'other value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10311,9 +10311,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should-not machine-jumps)))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-seq-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-seq-body-throw-route ()
   "Doc 129.8BF: catch protected-body seq wrappers expose tail throws."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_unwind_body_seq_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10327,9 +10327,9 @@ materialized closure temporary."
                         (identity value)
                         (throw 'done value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10339,9 +10339,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-let-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-let-body-throw-route ()
   "Doc 129.8BG: catch protected-body lexical let exposes tail throws."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_unwind_body_let_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10354,9 +10354,9 @@ materialized closure temporary."
                        (let (((x :type sexp) (identity value)))
                          (throw 'done x))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10366,9 +10366,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-empty-let-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-empty-let-body-throw-route ()
   "Doc 129.8BI: catch protected-body empty let exposes tail throws."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun catch_unwind_body_empty_let_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10381,9 +10381,9 @@ materialized closure temporary."
                        (let ()
                          (throw 'done value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump)))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
@@ -10393,9 +10393,9 @@ materialized closure temporary."
     (should-not (member 'nelisp_aot_landing_jump externs))
     (should (= (length machine-jumps) 1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-mixed-static-dynamic-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-mixed-static-dynamic-throw ()
   "Doc 129.8AJ: catch cleanup can mix static and dynamic throw targets."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10410,19 +10410,19 @@ materialized closure temporary."
                            (throw 'done value)
                          (throw tag value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (target-name
           (symbol-name
-           (nelisp-phase47-compiler--ir-get
+           (nelisp-aot-compiler--ir-get
             (car machine-jumps) :target)))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (member 'nelisp_aot_push_catch externs))
@@ -10438,9 +10438,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-mixed-static-throw-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-mixed-static-throw-dynamic-signal ()
   "Doc 129.8AR: catch cleanup can mix static throw and signal leaves."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10454,15 +10454,15 @@ materialized closure temporary."
                            (throw 'done value)
                          (signal 'error value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (member 'nelisp_aot_push_catch externs))
@@ -10478,9 +10478,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-mixed-static-other-throw ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-mixed-static-other-throw ()
   "Doc 129.8AJ: catch cleanup routes nonmatching quoted throws dynamically."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10494,15 +10494,15 @@ materialized closure temporary."
                            (throw 'done value)
                          (throw 'other value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (member 'nelisp_aot_push_catch externs))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
@@ -10515,9 +10515,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-mixed-dynamic-normal ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-mixed-dynamic-normal ()
   "Doc 129.8AJ: catch cleanup keeps ordinary leaves with dynamic throws."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10534,15 +10534,15 @@ materialized closure temporary."
                              (throw tag value)
                            value))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
     (should (member 'nelisp_aot_push_catch externs))
@@ -10558,9 +10558,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-cond-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-cond-throw ()
   "Doc 129.8AP: standalone cleanup accepts cond throw trees."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cond_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10573,21 +10573,21 @@ materialized closure temporary."
                       (value (throw 'done value))
                       (t value))
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_throw externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-or-signal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-or-signal ()
   "Doc 129.8AP: standalone cleanup accepts simple or signal trees."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_or_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10598,21 +10598,21 @@ materialized closure temporary."
                  (unwind-protect
                      (or value (signal 'error value))
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 1))
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 1))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-dynamic-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-dynamic-throw ()
   "Doc 129.8AQ: standalone cleanup accepts dynamic throw tags."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_dynamic_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10624,21 +10624,21 @@ materialized closure temporary."
                  (unwind-protect
                      (throw tag value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_jump externs))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-dynamic-signal ()
   "Doc 129.8AQ: standalone cleanup accepts dynamic signal tags."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_dynamic_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10650,21 +10650,21 @@ materialized closure temporary."
                  (unwind-protect
                      (signal tag value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'value-seq))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'value-seq))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_jump externs))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-catch-unwind-protect-cond-mixed ()
+(ert-deftest nelisp-aot-doc129/parse-catch-unwind-protect-cond-mixed ()
   "Doc 129.8AP: catch cleanup cond trees keep static and dynamic routes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_cond_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10679,15 +10679,15 @@ materialized closure temporary."
                         (value (throw 'done value))
                         (t (throw tag value)))
                      (identity value))))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (member 'nelisp_aot_push_catch externs))
@@ -10702,9 +10702,9 @@ materialized closure temporary."
                 landing-names)
                2))))
 
-(ert-deftest nelisp-phase47-doc129/parse-condition-case-unwind-protect-cond-signal ()
+(ert-deftest nelisp-aot-doc129/parse-condition-case-unwind-protect-cond-signal ()
   "Doc 129.8AP: condition cleanup cond trees keep static condition routes."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun cc_unwind_cond_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10719,15 +10719,15 @@ materialized closure temporary."
                           (t value))
                        (identity value))
                    (error err)))))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir))
          (machine-jumps
-          (nelisp-phase47-doc129-test--ir-nodes
+          (nelisp-aot-doc129-test--ir-nodes
            ir 'aot-machine-landing-jump))
          (landing-names
           (mapcar (lambda (node)
                     (symbol-name
-                     (nelisp-phase47-compiler--ir-get node :label)))
-                  (nelisp-phase47-doc129-test--ir-nodes
+                     (nelisp-aot-compiler--ir-get node :label)))
+                  (nelisp-aot-doc129-test--ir-nodes
                    ir 'aot-landing-label))))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (member 'nelisp_aot_push_condition externs))
@@ -10743,9 +10743,9 @@ materialized closure temporary."
                 landing-names)
                1))))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-conditional-throw ()
   "Doc 129.8P: source unwind-protect conditional throw cleans up both branches."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10758,19 +10758,19 @@ materialized closure temporary."
                          (throw 'done value)
                        value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-conditional-signal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-conditional-signal ()
   "Doc 129.8AH: standalone conditional signal cleans up both branches."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_signal
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10783,19 +10783,19 @@ materialized closure temporary."
                          (signal 'error value)
                        value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (member 'nelisp_aot_builtin_call1 externs))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_signal externs))
     (should (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-mixed-nonlocal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-mixed-nonlocal ()
   "Doc 129.8AI: standalone unwind cleanup can mix throw and signal leaves."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_mixed
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10808,22 +10808,22 @@ materialized closure temporary."
                          (throw 'done value)
                        (signal 'error value))
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 2))
     (should (= (cl-count 'nelisp_aot_throw externs) 1))
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 2)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-mixed-nonlocal-normal ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-mixed-nonlocal-normal ()
   "Doc 129.8AI: mixed standalone cleanup preserves ordinary leaves."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_mixed
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10838,22 +10838,22 @@ materialized closure temporary."
                            (signal 'error value)
                          value))
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 2))
     (should (= (cl-count 'nelisp_aot_throw externs) 1))
     (should (= (cl-count 'nelisp_aot_signal externs) 1))
-    (should-not (nelisp-phase47-doc129-test--ir-nodes
+    (should-not (nelisp-aot-doc129-test--ir-nodes
                  ir 'aot-machine-landing-jump))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 2)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-nested-throw ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-nested-throw ()
   "Doc 129.8R: nested unwind-protect throw trees clean up every leaf."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_throw
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10868,19 +10868,19 @@ materialized closure temporary."
                            value)
                        value)
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 3))
     (should (member 'nelisp_aot_push_unwind externs))
     (should (member 'nelisp_aot_throw externs))
     (should (member 'nelisp_aot_landing_jump externs))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 1)))
 
-(ert-deftest nelisp-phase47-doc129/parse-unwind-protect-multi-leaf-cleanup-labels ()
+(ert-deftest nelisp-aot-doc129/parse-unwind-protect-multi-leaf-cleanup-labels ()
   "Doc 129.8Y: multi-leaf unwind-protect trees label every cleanup leaf."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun unwind_two_throws
                    ((out :type sexp)
                     (mirror :type sexp)
@@ -10893,23 +10893,23 @@ materialized closure temporary."
                          (throw 'done value)
                        (throw 'done value))
                    (identity value)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (externs (nelisp-phase47-doc129-test--extern-call-names ir)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'if))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (externs (nelisp-aot-doc129-test--extern-call-names ir)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'if))
     (should (= (cl-count 'nelisp_aot_builtin_call1 externs) 2))
     (should (= (cl-count 'nelisp_aot_push_unwind externs) 2))
     (should (= (cl-count 'nelisp_aot_throw externs) 2))
     (should (= (cl-count 'nelisp_aot_landing_jump externs) 2))
-    (nelisp-phase47-doc129-test--assert-landing-metadata-count
+    (nelisp-aot-doc129-test--assert-landing-metadata-count
      ir 'nelisp_aot_push_unwind "aot-unwind-cleanup-" 2)))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-normal-exit ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-normal-exit ()
   "Doc 129.8G: source unwind-protect normal path compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-normal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_value
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -10929,13 +10929,13 @@ materialized closure temporary."
             (should (string-match-p "nl_alloc_symbol" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-direct-throw ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-direct-throw ()
   "Doc 129.8O: source unwind-protect direct throw compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -10957,13 +10957,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-direct-signal ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-direct-signal ()
   "Doc 129.8AG: standalone unwind-protect direct signal compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -10985,13 +10985,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-cleanup-signal ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-cleanup-signal ()
   "Doc 129.8AW: final cleanup signal compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-cleanup-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11015,13 +11015,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-direct-throw-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-direct-throw-cleanup-throw ()
   "Doc 129.8AX: cleanup throw overrides protected throw in object output."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-throw-cleanup-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11042,13 +11042,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-conditional-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-conditional-cleanup-throw ()
   "Doc 129.8AY: cleanup throw overrides branch-tree protected exits in object output."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-branch-cleanup-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11071,13 +11071,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-conditional-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-conditional-cleanup-throw-route ()
   "Doc 129.8BC: conditional cleanup route compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-cond-cleanup-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_cond_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11103,13 +11103,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-all-nonlocal-cleanup-tree-omits-suffix ()
   "Doc 129.8BD: all-nonlocal cleanup tree suffix omission reaches object output."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-all-nonlocal-cleanup-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_all_nonlocal_suffix
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11137,13 +11137,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-progn-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-progn-cleanup-throw-route ()
   "Doc 129.8BE: cleanup progn non-local route compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-cleanup-progn-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_progn_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11169,13 +11169,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-let-cleanup-throw-route ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-let-cleanup-throw-route ()
   "Doc 129.8BH: cleanup lexical let non-local route compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-cleanup-let-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_let_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11200,13 +11200,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-progn-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-progn-body-throw-route ()
   "Doc 129.8BF: protected-body progn non-local route compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-body-progn-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_body_progn_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11231,13 +11231,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-let-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-let-body-throw-route ()
   "Doc 129.8BG: protected-body lexical let non-local route compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-body-let-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_body_let_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11261,13 +11261,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-empty-let-body-throw-route ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-empty-let-body-throw-route ()
   "Doc 129.8BI: protected-body empty let non-local route compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-body-empty-let-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_body_empty_let_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11291,13 +11291,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-direct-throw ()
+(ert-deftest nelisp-aot-doc129/object-catch-unwind-protect-direct-throw ()
   "Doc 129.8AB: static catch-targeted unwind cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-unwind-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11321,13 +11321,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-cleanup-throw ()
+(ert-deftest nelisp-aot-doc129/object-catch-unwind-protect-cleanup-throw ()
   "Doc 129.8AZ: catch-targeted final cleanup throw compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-unwind-cleanup-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cleanup_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11350,13 +11350,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-conditional-all-throw ()
+(ert-deftest nelisp-aot-doc129/object-catch-unwind-protect-conditional-all-throw ()
   "Doc 129.8AC: conditional static catch-targeted cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-unwind-if-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11382,13 +11382,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-conditional-mixed ()
+(ert-deftest nelisp-aot-doc129/object-catch-unwind-protect-conditional-mixed ()
   "Doc 129.8AD: mixed catch-targeted cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-unwind-if-mixed-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11415,13 +11415,13 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-mixed-static-dynamic-throw ()
+(ert-deftest nelisp-aot-doc129/object-catch-unwind-protect-mixed-static-dynamic-throw ()
   "Doc 129.8AJ: mixed static/dynamic catch cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-unwind-if-dynamic-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11448,13 +11448,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-mixed-static-throw-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/object-catch-unwind-protect-mixed-static-throw-dynamic-signal ()
   "Doc 129.8AR: mixed static throw/signal catch cleanup compiles."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-unwind-if-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_throw_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11480,13 +11480,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-conditional-throw ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-conditional-throw ()
   "Doc 129.8P: source unwind-protect conditional throw compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-if-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11510,13 +11510,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-conditional-signal ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-conditional-signal ()
   "Doc 129.8AH: standalone conditional signal compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-if-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11540,13 +11540,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-mixed-nonlocal ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-mixed-nonlocal ()
   "Doc 129.8AI: standalone mixed throw/signal cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-mixed-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_mixed
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11571,13 +11571,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-cond-throw ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-cond-throw ()
   "Doc 129.8AP: standalone cond throw cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-cond-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cond_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11601,13 +11601,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-dynamic-throw ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-dynamic-throw ()
   "Doc 129.8AQ: standalone dynamic throw cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-dynamic-throw-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_dynamic_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11630,13 +11630,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-unwind-protect-dynamic-signal ()
+(ert-deftest nelisp-aot-doc129/object-unwind-protect-dynamic-signal ()
   "Doc 129.8AQ: standalone dynamic signal cleanup compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-unwind-dynamic-signal-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_dynamic_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11659,13 +11659,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-catch-unwind-protect-cond-mixed ()
+(ert-deftest nelisp-aot-doc129/object-catch-unwind-protect-cond-mixed ()
   "Doc 129.8AP: catch cleanup cond mixed routes compile to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-catch-unwind-cond-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun unwind_cond_throw
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11691,13 +11691,13 @@ materialized closure temporary."
             (should (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/object-condition-case-unwind-protect-cond-signal ()
+(ert-deftest nelisp-aot-doc129/object-condition-case-unwind-protect-cond-signal ()
   "Doc 129.8AP: condition cleanup cond signal compiles to object."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc129-cc-unwind-cond-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun cc_unwind_cond_signal
                 ((out :type sexp)
                  (mirror :type sexp)
@@ -11724,30 +11724,30 @@ materialized closure temporary."
             (should-not (string-match-p "nelisp_aot_landing_jump" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-top-level-require-provide ()
+(ert-deftest nelisp-aot-doc129/e2e-top-level-require-provide ()
   "Doc 129.6A: stripped module forms do not block binary emission."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary "require-provide")))
+  (let ((path (nelisp-aot-doc129-test--tmp-binary "require-provide")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (require 'cl-lib)
-             (provide 'nelisp-phase47-doc129-test-feature)
+             (provide 'nelisp-aot-doc129-test-feature)
              (exit 17))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 17)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 17)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-doc129/e2e-local-setq-runtime-let ()
+(ert-deftest nelisp-aot-doc129/e2e-local-setq-runtime-let ()
   "Doc 129.4E: local `setq' updates a runtime let frame slot."
-  (unless (nelisp-phase47-doc129-test--linux-p)
+  (unless (nelisp-aot-doc129-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-doc129-test--tmp-binary "local-setq")))
+  (let ((path (nelisp-aot-doc129-test--tmp-binary "local-setq")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun bump (x)
                (let ((i 0))
@@ -11756,9 +11756,9 @@ materialized closure temporary."
                   i)))
              (exit (bump 7)))
            path)
-          (should (= (nelisp-phase47-doc129-test--run-binary path) 7)))
+          (should (= (nelisp-aot-doc129-test--run-binary path) 7)))
       (ignore-errors (delete-file path)))))
 
-(provide 'nelisp-phase47-doc129-test)
+(provide 'nelisp-aot-doc129-test)
 
-;;; nelisp-phase47-doc129-test.el ends here
+;;; nelisp-aot-doc129-test.el ends here

@@ -10,7 +10,7 @@
 
 ;; Doc 119 §119.A — pure-elisp port of the Rust
 ;; `mirror_prepend_to_bucket' helper.  Hashes NAME via the §115.7
-;; `nelisp_fnv1a' Phase 47 `.o', locates the destination bucket in
+;; `nelisp_fnv1a' AOT `.o', locates the destination bucket in
 ;; the env-mirror fast-hash-table, builds a fresh
 ;; `(KEY-STR . ENTRY-RECORD)' Cons pair, and prepends it onto the
 ;; bucket head via a refcount-safe `vector-slot-set'.  Bumps the
@@ -39,7 +39,7 @@
 ;; NOTE: the bucket KEY must be a `Sexp::Str' (not `Sexp::Symbol').
 ;; The baker-only walker `Env::mirror_iter_entries' tag-matches on
 ;; `Sexp::Str(k)' to enumerate entries; storing a Symbol would make
-;; the entry invisible to image bake.  The Phase 47 walker
+;; the entry invisible to image bake.  The AOT walker
 ;; `nelisp_mirror_walk_bucket' uses `str-eq' which is byte-payload-
 ;; only and works for both tags, so the lookup path doesn't care.
 ;; Per Rust impl: `Sexp::cons(Sexp::Str(name.to_string()), entry)'.
@@ -196,7 +196,7 @@
        (record-slot-set (record-slot-ref-ptr mirror-ptr 0)
                         2
                         (vector-ref-ptr scratch-vec-ptr 3)))))
-  "Phase 47 source for Doc 119 §119.A `mirror_bucket_prepend'.
+  "AOT source for Doc 119 §119.A `mirror_bucket_prepend'.
 
 Pure-elisp port of `Env::mirror_prepend_to_bucket' (~45 LOC).
 Hashes NAME via the pure-elisp `nelisp_fnv1a' (§115.7), locates

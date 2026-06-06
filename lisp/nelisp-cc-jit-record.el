@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.B — Phase-47-compiled replacements for 5 of 11
+;; Doc 120 §120.B — AOT-compiled replacements for 5 of 11
 ;; `jit/box_accessor.rs' trampolines, covering the record family:
 ;;
 ;;   - `nl_jit_record_type'  → `nelisp_jit_record_type'
@@ -25,7 +25,7 @@
 ;;
 ;; Return value: TRAMPOLINE_OK=0 / TRAMPOLINE_ERR=1.
 ;;
-;; Phase 47 grammar pieces used:
+;; AOT grammar pieces used:
 ;;   `(sexp-tag PTR)'          — read tag byte at offset 0 (= 12 for Record).
 ;;   `(record-type-tag P S)'   — copy record.type_tag Sexp into slot.
 ;;   `(record-slot-count P)'   — read record.slots.len() into rax.
@@ -66,7 +66,7 @@
            out)
           0)
        1))
-  "Phase 47 source for the §120.B `nl_jit_record_type' swap.
+  "AOT source for the §120.B `nl_jit_record_type' swap.
 
 Tag-checks `arg' against `nelisp-sexp--tag-record' (= 12) inline;
 on match obtains `*const Sexp' for the inline type_tag via the
@@ -93,7 +93,7 @@ the side effect through to a stable 0 return per §120.A
      (if (= (sexp-tag arg) 12)
          (and (sexp-int-make out (record-slot-count arg)) 0)
        1))
-  "Phase 47 source for the §120.B `nl_jit_record_len' swap.
+  "AOT source for the §120.B `nl_jit_record_len' swap.
 
 Tag-checks `arg' against `nelisp-sexp--tag-record' (= 12) inline;
 on match reads `arg.slots.len()' (= i64 at NlRecord offset 48) via
@@ -113,7 +113,7 @@ on match reads `arg.slots.len()' (= i64 at NlRecord offset 48) via
                (and (record-slot-ref arg idx out) 0)
              1))
        1))
-  "Phase 47 source for the §120.B `nl_jit_record_ref' swap.
+  "AOT source for the §120.B `nl_jit_record_ref' swap.
 
 Three-arm guard: (1) tag check vs `nelisp-sexp--tag-record', (2)
 `idx >= 0' lower bound, (3) `idx < slots.len' upper bound.  On all
@@ -139,7 +139,7 @@ non-Record from OOR by re-probing with `nl_jit_record_type'.")
                 0)
              1))
        1))
-  "Phase 47 source for the §120.B `nl_jit_record_set' swap.
+  "AOT source for the §120.B `nl_jit_record_set' swap.
 
 Three-arm guard identical to `nl_jit_record_ref'.  On OK arm:
 (1) `record-slot-set' refcount-safely overwrites `slots[idx]' with
@@ -198,7 +198,7 @@ bit-for-bit.  Returns 0 / 1 per TRAMPOLINE_{OK,ERR}.")
                      0))
                 1))
           1))))
-  "Phase 47 source for the `nl_jit_record_alloc' trampoline.
+  "AOT source for the `nl_jit_record_alloc' trampoline.
 
 Uses a 2-pass proper-list walk: count first, allocate the record
 with `record-make', then fill slots through refcount-safe

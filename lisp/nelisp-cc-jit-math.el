@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 110 §110.F — Phase 47 source for the 3 `jit/math.rs'
+;; Doc 110 §110.F — AOT source for the 3 `jit/math.rs'
 ;; trampoline swaps (`float' identity / `exp' / `log').  Each
 ;; defconst below carries the canonical elisp source for one
 ;; `nl_jit_float_*' symbol; the build chain compiles each into
@@ -32,7 +32,7 @@
 (defconst nelisp-cc-jit-math-float--source
   '(defun nl_jit_float_float ((x :type f64))
      x)
-  "Phase 47 source for `nl_jit_float_float' (= identity).
+  "AOT source for `nl_jit_float_float' (= identity).
 ABI: `extern \"C\" fn(f64) -> f64'.  Body is a single f64 ref
 that compiles to `MOVSD xmm0, [rbp - 8]' on x86_64 / `LDUR d0,
 [x29, #-16]' on aarch64 (= pure passthrough; the spill+reload
@@ -42,7 +42,7 @@ prologue / epilogue pattern).")
 (defconst nelisp-cc-jit-math-exp--source
   '(defun nl_jit_float_exp ((x :type f64))
      (f64-call exp x))
-  "Phase 47 source for `nl_jit_float_exp' (= libm `exp').
+  "AOT source for `nl_jit_float_exp' (= libm `exp').
 ABI: `extern \"C\" fn(f64) -> f64'.  Calls libm `exp' via the
 SysV / AAPCS f64 calling convention (= xmm0 / d0 in, xmm0 / d0
 out).  IEEE 754 semantics propagate from libm — NaN in → NaN
@@ -51,7 +51,7 @@ out, ±inf as documented.")
 (defconst nelisp-cc-jit-math-log--source
   '(defun nl_jit_float_log ((x :type f64))
      (f64-call log x))
-  "Phase 47 source for `nl_jit_float_log' (= libm natural log).
+  "AOT source for `nl_jit_float_log' (= libm natural log).
 ABI: `extern \"C\" fn(f64) -> f64'.  Calls libm `log' (= base-e
 natural logarithm).  `(log 0.0)' = -inf, `(log negative)' = NaN,
 `(log NaN)' = NaN — all forwarded from libm.")

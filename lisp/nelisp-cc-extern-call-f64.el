@@ -13,7 +13,7 @@
 ;; f64 → xmm0-7.  Return type defaults to i64 (= rax); the new
 ;; `extern-call-f64' head op marks an f64 return read from xmm0.
 ;;
-;; This file packages three thin Phase 47 wrappers around libm
+;; This file packages three thin AOT wrappers around libm
 ;; unary f64 → f64 functions (= sin / cos / sqrt) so the
 ;; `tests/elisp_cc_extern_call_f64_probe.rs' integration test can
 ;; drive each round-trip independently.  Each wrapper exercises:
@@ -41,7 +41,7 @@
      ;; Lowers to `MOVSD xmm0, [rbp - 8]; CALL rel32 sqrt; <ret>'
      ;; with the result already in xmm0 per SysV AMD64.
      (extern-call-f64 sqrt (:f64 x)))
-  "Phase 47 source for the Doc 122 §122.C f64 extern-call probe.
+  "AOT source for the Doc 122 §122.C f64 extern-call probe.
 Wraps libm `sqrt'.  Verifies f64-arg placement (= xmm0) + f64
 return (= xmm0) + PLT32 reloc against an extern libc / libm
 symbol with the new `extern-call-f64' head.")
@@ -49,7 +49,7 @@ symbol with the new `extern-call-f64' head.")
 (defconst nelisp-cc-extern-call-f64--sin-source
   '(defun nelisp_libm_sin ((x :type f64))
      (extern-call-f64 sin (:f64 x)))
-  "Phase 47 source — libm `sin' wrapper.  Same ABI as `sqrt' but
+  "AOT source — libm `sin' wrapper.  Same ABI as `sqrt' but
 covers a different libm symbol (= proves the PLT32 reloc machinery
 generalises to any extern f64 → f64 function rather than special-
 casing one symbol).")
@@ -57,12 +57,12 @@ casing one symbol).")
 (defconst nelisp-cc-extern-call-f64--cos-source
   '(defun nelisp_libm_cos ((x :type f64))
      (extern-call-f64 cos (:f64 x)))
-  "Phase 47 source — libm `cos' wrapper.  Third probe in the
+  "AOT source — libm `cos' wrapper.  Third probe in the
 sin/cos/sqrt triplet.  Together the three exercise:
   - All-positive arg domain (= sqrt 4.0).
   - Trigonometric arg domain crossing zero (= sin / cos 0.0 / pi).
   - Distinct extern symbols (= proves no symbol-name collision in
-    the per-`.o' relocation table emitted by Phase 47).")
+    the per-`.o' relocation table emitted by AOT).")
 
 (provide 'nelisp-cc-extern-call-f64)
 

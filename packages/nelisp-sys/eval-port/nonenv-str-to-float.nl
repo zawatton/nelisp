@@ -39,14 +39,14 @@
 ;;       NaN/Inf strings not parsed.
 ;;
 ;;   [D] ABI for nl_sexp_write_float f64 arg: nelisp-sys backend lowers
-;;       the call as a gp-class call.  Phase-47 emit-value puts the
+;;       the call as a gp-class call.  AOT emit-value puts the
 ;;       f64 result in xmm0 but the call spill pushes rax (stale) → wrong
 ;;       register at runtime.  The .o IS produced; symbol nl_str_to_float
-;;       is defined.  Deferred: Phase-47 mixed-ABI extern-call wiring.
+;;       is defined.  Deferred: AOT mixed-ABI extern-call wiring.
 ;;
 ;; ---------------------------------------------------------------------------
 ;; Compiler prerequisite (Doc 136 §fix):
-;;   nelisp-phase47-compiler--emit-value gained a tag-28 (i64-to-f64) arm
+;;   nelisp-aot-compiler--emit-value gained a tag-28 (i64-to-f64) arm
 ;;   that emits CVTSI2SD xmm0, rax for the x86_64 path.  Without it, any
 ;;   sys:i64->f64 in call-arg or if-arm position signals :unknown-value-kind.
 ;;

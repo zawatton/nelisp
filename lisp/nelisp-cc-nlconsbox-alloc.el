@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Replaces the Rust `nl_alloc_consbox' body in
-;; `build-tool/src/eval/nlconsbox.rs' with a Phase 47-compiled elisp
+;; `build-tool/src/eval/nlconsbox.rs' with a AOT-compiled elisp
 ;; object.  The function allocates a fresh `NlConsBox' (car=Nil,
 ;; cdr=Nil, refcount=1) using the existing `alloc-bytes' /
 ;; `sexp-write-nil' / `ptr-write-u64' grammar ops and returns the
@@ -24,7 +24,7 @@
 ;;   total = 72 bytes, align = 8
 ;;
 ;; The two-function manifest (init helper + public entry) avoids
-;; needing `let' in a value context (= Phase 47 `let' only supports
+;; needing `let' in a value context (= AOT `let' only supports
 ;; compile-time constant bindings).  The helper takes `box-ptr' as a
 ;; parameter, allowing it to reference the allocated pointer from
 ;; three different write sites without re-calling `alloc-bytes'.
@@ -72,7 +72,7 @@
   '(seq
     ;; Helper: takes a freshly-allocated box pointer, writes the
     ;; three fields, and returns the pointer.  Defined as a separate
-    ;; defun because Phase 47 `let' only supports compile-time
+    ;; defun because AOT `let' only supports compile-time
     ;; constants; the runtime pointer from `alloc-bytes' must travel
     ;; as a function argument to be spilled to a named slot.
     ;;
@@ -95,7 +95,7 @@
     ;; initialise fields, return raw pointer as i64.
     (defun nl_alloc_consbox ()
       (nl_alloc_consbox_init (alloc-bytes 72 8))))
-  "Phase 47 source for the `nl_alloc_consbox' allocator swap.
+  "AOT source for the `nl_alloc_consbox' allocator swap.
 
 Two-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_consbox_init (box-ptr) -> box-ptr' — helper that
@@ -103,7 +103,7 @@ Two-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_consbox () -> *mut NlConsBox' — public entry; calls
   `alloc-bytes(72, 8)' then delegates to the init helper.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `alloc-bytes'    — 2-arg `nl_alloc_bytes(size, align) -> *mut u8'
                      call; size=72 / align=8 are compile-time immediates.
   `sexp-write-nil' — writes `SEXP_TAG_NIL' (1 byte) to a `*mut Sexp'

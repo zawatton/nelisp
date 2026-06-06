@@ -1,4 +1,4 @@
-;;; nelisp-cc-bf-formal-tag.el --- Phase 47 nl_bf_formal_tag swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bf-formal-tag.el --- AOT nl_bf_formal_tag swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `nl_bf_formal_tag' Rust extern in
+;; AOT replacement for the `nl_bf_formal_tag' Rust extern in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was (~9 LOC):
 ;;
 ;;   #[no_mangle]
@@ -31,7 +31,7 @@
 ;;               0  = Sexp::Symbol (any other symbol)
 ;;              -1  = not a Sexp::Symbol (= WrongType sentinel for caller)
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   `(sexp-tag PTR)'            — reads tag byte at [PTR+0], returns i64.
 ;;   `(symbol-name-eq PTR "L")' — inline tag-check + length-check +
 ;;        byte-loop compare against compile-time UTF-8 literal bytes.
@@ -76,7 +76,7 @@
                2
              0))
        -1))
-  "Phase 47 source for `nl_bf_formal_tag' (special_forms.rs → elisp).
+  "AOT source for `nl_bf_formal_tag' (special_forms.rs → elisp).
 
 Classifies a formal-parameter Sexp:
   1  = Sexp::Symbol(\"&optional\")

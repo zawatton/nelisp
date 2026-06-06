@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 
-;; Wave A26 (Phase 47 self-application — final wave, manifest walker
-;; Phase 47 native).  Replaces the elisp `while' / `aref' iteration of
-;; `compile-elisp-objects-meta--walk' with a Phase 47-compiled
+;; Wave A26 (AOT self-application — final wave, manifest walker
+;; AOT native).  Replaces the elisp `while' / `aref' iteration of
+;; `compile-elisp-objects-meta--walk' with a AOT-compiled
 ;; tail-recursive walker that batch-evaluates the per-entry
 ;; `nelisp_meta_should_rebuild' decision and packs the result into a
 ;; single i64 bitmask returned to the elisp driver via the standalone
@@ -24,11 +24,11 @@
 ;;         -> nelisp_bi_syscall_stat_mtime (= A25.1-min)
 ;;           -> libc stat(2)        (= OS edge)
 ;;
-;; is now Phase 47 native end-to-end up to the libc syscall edge.  No
+;; is now AOT native end-to-end up to the libc syscall edge.  No
 ;; elisp interpreter step participates in the per-entry up-to-date
 ;; check; the elisp driver only walks the returned bitmask to dispatch
-;; the emit step (which itself is too heavy to Phase 47-compile in this
-;; PoC scope — it lives one layer up in `nelisp-phase47-compile-to-
+;; the emit step (which itself is too heavy to AOT-compile in this
+;; PoC scope — it lives one layer up in `nelisp-aot-compile-to-
 ;; object').
 ;;
 ;; Bridge contract.  The standalone NeLisp interpreter's
@@ -56,7 +56,7 @@
 ;; Input vectors.  Two parallel vectors instead of a single
 ;; pair-vector: `srcs[i]' = `Sexp::Str' of the source path, `outs[i]'
 ;; = `Sexp::Str' of the output path.  This avoids `(* 2 i)' index
-;; arithmetic in the walker (= Phase 47 supports `*' but the simpler
+;; arithmetic in the walker (= AOT supports `*' but the simpler
 ;; layout makes the iteration easier to read in the cross-`.o' debug
 ;; output produced by the assembler).  Vector lengths MUST match;
 ;; mismatches are caller-detected on the elisp side and never reach
@@ -65,13 +65,13 @@
 ;; Substrate composition:
 ;;
 ;;   §111.C  `vector-len' / `vector-ref-ptr'  — vector probe + element
-;;            pointer extraction (cross-`.o' Phase 47 ops).
+;;            pointer extraction (cross-`.o' AOT ops).
 ;;   §125.A  `alloc-bytes' / `dealloc-bytes'  — single 32-byte scratch
 ;;            slot for the per-entry `nelisp_meta_should_rebuild'
 ;;            result.  Allocated once outside the loop, reused on
 ;;            every iteration (= 0 bytes/iter overhead).
 ;;   §100.A  `extern-call' to A25.2
-;;            `nelisp_meta_should_rebuild'  — cross-`.o' Phase 47
+;;            `nelisp_meta_should_rebuild'  — cross-`.o' AOT
 ;;            dispatch into the should-rebuild kernel.
 ;;   §100    `sexp-int-unwrap' / `sexp-int-make' — read decision i64 +
 ;;            write final bitmask Sexp::Int.
@@ -90,7 +90,7 @@
 ;;                bitmask from the result slot.
 ;;
 ;; Linux-x86_64 only — same arch gate as the A25.2 / A25.1-min
-;; parents.  Composes only existing Phase 47 grammar (= no new opcode,
+;; parents.  Composes only existing AOT grammar (= no new opcode,
 ;; no Rust extern added).
 
 ;;; Code:
@@ -100,7 +100,7 @@
     ;; 3-arg side-effect sequencer — `(val _e1 _e2) -> val'.  Used by
     ;; the public entry to thread the `dealloc-bytes' cleanup of the
     ;; per-call scratch slot behind the result-slot write.  Odd arity
-    ;; (3) — Phase 47 emits the rsp alignment pad via the `--needs-
+    ;; (3) — AOT emits the rsp alignment pad via the `--needs-
     ;; align' branch around the outer caller's dispatch into this
     ;; entry.
     (defun nelisp_meta_walk_seq3 (val _e1 _e2) val)
@@ -222,7 +222,7 @@
         (alloc-bytes 32 8)
         result-slot)
        0)))
-  "Phase 47 source for the Wave A26 manifest walker
+  "AOT source for the Wave A26 manifest walker
 `(nelisp_meta_walk SRCS OUTS RESULT-SLOT)'.
 
 Six-entry `(seq DEFUN ...)' manifest:
@@ -257,14 +257,14 @@ Six-entry `(seq DEFUN ...)' manifest:
   TRAMPOLINE_OK so the `nl-jit-call-out-2' bridge can surface the
   bitmask via the caller-owned RESULT-SLOT.
 
-Composes only existing Phase 47 grammar — no new opcode:
+Composes only existing AOT grammar — no new opcode:
 
 - §111.C `vector-len' / `vector-ref-ptr' — vector probe + element
-  pointer extraction (cross-`.o' Phase 47 ops).
+  pointer extraction (cross-`.o' AOT ops).
 - §125.A `alloc-bytes' / `dealloc-bytes' — single 32-byte scratch
   slot, reused per iteration.
 - §100.A `extern-call' to A25.2 `nelisp_meta_should_rebuild' —
-  cross-`.o' Phase 47 dispatch into the should-rebuild kernel.
+  cross-`.o' AOT dispatch into the should-rebuild kernel.
 - §100 `sexp-int-unwrap' / `sexp-int-make' — read decision i64 +
   write final bitmask Sexp::Int.
 - §100.D `shl' — left-shift decision bit into mask position i.

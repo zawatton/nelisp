@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the Rust `nl_jit_mut_str_set_codepoint'
+;; AOT replacement for the Rust `nl_jit_mut_str_set_codepoint'
 ;; trampoline in `build-tool/src/jit/box_accessor.rs' (deleted via this file).
 ;;
 ;; Function contract (`(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64'):
@@ -60,13 +60,13 @@
                             out)
              1)
          1)))
-  "Phase 47 source for the `nl_jit_mut_str_set_codepoint' swap (Doc 120.B residual).
+  "AOT source for the `nl_jit_mut_str_set_codepoint' swap (Doc 120.B residual).
 
 Three guard layers: idx >= 0; sexp-tag arg == 6 (MutStr); sexp-tag val == 2
 (Int).  Extracts the codepoint i64 from *val at offset 8 via `ptr-read-u64'
 and delegates to `nl_mut_str_set_codepoint_raw' Rust extern which
 rebuilds the String with the replacement codepoint via `NlStrRef::set_value'
-(no Phase 47 grammar op for in-place String content replace exists yet;
+(no AOT grammar op for in-place String content replace exists yet;
 pending `mut-str-set-codepoint-at' from Doc 122 §1.2).
 
 The extern writes `Sexp::Int(val_cp)' to *out on success, matching the

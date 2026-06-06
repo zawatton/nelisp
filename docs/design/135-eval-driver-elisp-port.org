@@ -34,7 +34,7 @@ The driver port is written in the *typed nelisp-sys DSL*, not hand-written
   already nelisp-sys grammar ops" is MISLEADING. The ops ~sys:str-to-float~ /
   ~sys:char-table-get,set~ / ~sys:mut-str-push-byte,codepoint~ exist, but each
   *lowers to a `(extern-call nl_…)` / `(mut-str-push-byte …)` that CALLS the very
-  deleted symbol* (verified: ~lisp/nelisp-phase47-compiler.el:10604~ emits
+  deleted symbol* (verified: ~lisp/nelisp-aot-compiler.el:10604~ emits
   ~call nl_mut_str_push_byte~; backend ~nelisp-sys-backend.el:159-204~ emits
   ~extern-call nl_char_table_*~ / ~nl_str_to_float~). So the ops are CALLERS,
   not definitions — using them to define the symbol is self-recursive. All 6
@@ -548,7 +548,7 @@ delegation is DEFERRED per combiner-cons).
 ** 9.6.4 THE BLOCKER (why this session reverted)
 Applying 9.6.2 (reorder Env to the eval_ctx layout) makes the binary SIGSEGV
 EARLIER — now inside ~install_stage0~, BEFORE any eval (0 boot-trace lines). The
-crash (si_addr=0x0, NULL deref) is in Phase-47 ~nelisp_mirror_lookup_entry~, called
+crash (si_addr=0x0, NULL deref) is in AOT ~nelisp_mirror_lookup_entry~, called
 from ~nelisp_mirror_install_entry_or_insert~ during the very first ("nil") install:
   ~fresh ok~ → ~mirror_init ok~ → CRASH (no ~installed nil~).
 PROBED right before the crash: globals_record g_tag=12 g_pay=0x..2fa0 (NON-null
@@ -574,7 +574,7 @@ ROOT CAUSE — CONFIRMED (drill-down this session, refcount/drop bug):
   reused garbage. The reordered/larger Env merely changes the allocator's reuse
   pattern so the latent use-after-free becomes an active corruption (original layout
   masks it = "works by luck").
-- The bug is PRE-EXISTING, in the Phase-47 bootstrap mirror construction
+- The bug is PRE-EXISTING, in the AOT bootstrap mirror construction
   ~lisp/nelisp-cc-env-install-empty.el~ + its primitives. That file's header comment
   (lines 37-65) already ADMITS refcount sloppiness ("refcount LEAK", scratch[4]
   "raw-overwritten") and asserts an rc=2 discipline for scratch[3] (ht) / scratch[4]

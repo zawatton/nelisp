@@ -117,7 +117,7 @@ Out of scope:
 
 - =extern_builtins: HashMap<String, ExternBuiltin>= migration (= Phase 6, Doc 107)
 - frame *content* changes (= the Sexp::Cell write-through pattern is preserved verbatim)
-- Phase 47 grammar form for frame ops (= deferred to Phase 7+ if needed)
+- AOT grammar form for frame ops (= deferred to Phase 7+ if needed)
 - =unbound-marker= sentinel for frames (= frames don't have an unbound concept; absent = HashMap miss, equivalent fast-hash miss)
 
 * §1 Background
@@ -239,9 +239,9 @@ The post-Phase-3 mirror walk must preserve the exact same =NlCellRef= identity (
 
 Implementation note: the bucket alist cell carries =(Sexp::Str . Sexp::Cell(NlCellRef))=, so reading the cdr-as-cell preserves identity for free (= no helper required).
 
-** §2.4 No new Phase 47 grammar form
+** §2.4 No new AOT grammar form
 
-Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Record= / =Sexp::Vector= ABI walks; no new compiler lowering is needed.  Phase 47 stays cleanly separated.
+Same as Phase 2 §2.4 — the frame Rust-side helpers use the existing =Sexp::Record= / =Sexp::Vector= ABI walks; no new compiler lowering is needed.  AOT stays cleanly separated.
 
 * §3 Stage outline
 
@@ -416,9 +416,9 @@ Doc 102 §3 Phase 3 estimated *Rust -80 / Elisp +50, 1 session*.  This DRAFT spl
 
 =FrameCell = NlCellRef= stays as-is.  Closure write-through semantics are an invariant, not a migration target.
 
-** §6.2 Phase 47 grammar form for frame ops
+** §6.2 AOT grammar form for frame ops
 
-The Phase 47 strategy (= compile critical loops to native code via per-target =.o=) is a separate concern.  Phase 3 stays at the Rust-direct =Sexp::Record= walk level; if =find_frame_cell= proves too slow under Phase 3.d, it gets a dedicated Phase 47 grammar form in a future doc (= Doc 110-class capability expansion), not as part of Phase 3.
+The AOT strategy (= compile critical loops to native code via per-target =.o=) is a separate concern.  Phase 3 stays at the Rust-direct =Sexp::Record= walk level; if =find_frame_cell= proves too slow under Phase 3.d, it gets a dedicated AOT grammar form in a future doc (= Doc 110-class capability expansion), not as part of Phase 3.
 
 ** §6.3 =push_captured= alist representation
 
@@ -430,7 +430,7 @@ Doc 102 Phase 6 / Doc 107.  Same map, different concern (= Rust closure registry
 
 ** §6.5 Frame perf optimisations beyond bucket-count tuning
 
-If §5.1 mitigation isn't enough, the Phase 47 path (= §6.2) is the next escalation — *not* an inline optimisation in Phase 3.  Keeps the scope of this doc small.
+If §5.1 mitigation isn't enough, the AOT path (= §6.2) is the next escalation — *not* an inline optimisation in Phase 3.  Keeps the scope of this doc small.
 
 * §7 References
 
@@ -442,7 +442,7 @@ If §5.1 mitigation isn't enough, the Phase 47 path (= §6.2) is the next escala
 ** §7.2 Memory entries
 
 - =project_anvil_runtime_phase_b_complete= (= Phase B Final B Stage 2 + standalone NeLisp baseline)
-- =project_phase_47_spike_validated= (= Phase 47 toolchain capability gate)
+- =project_phase_47_spike_validated= (= AOT toolchain capability gate)
 
 ** §7.3 Code references
 

@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 101 §101.B moves the proper-list walk for `(length X)' on
-;; `Sexp::Cons' / `nil' inputs into a Phase 47-compiled elisp object.
+;; `Sexp::Cons' / `nil' inputs into a AOT-compiled elisp object.
 ;; The Rust side keeps only the dispatch + caller-owned result-slot
 ;; setup; the loop body itself lives only in the source below.
 
@@ -28,12 +28,12 @@
                      (nelisp_length_cons_walk
                       (sexp-payload-ptr arg0)
                       0))))
-  "Phase 47 source for the Doc 101 §101.B `(length CONS)' swap.
+  "AOT source for the Doc 101 §101.B `(length CONS)' swap.
 
 `arg0' is a `*const Sexp' expected to point at either `Sexp::Cons(_)'
 or `Sexp::Nil'.  `sexp-payload-ptr' seeds the walk with the
 `NlConsBox*' payload for Cons and 0 for Nil.  The helper defun keeps
-the walk in Phase 47's current expressible subset (= recursion +
+the walk in AOT's current expressible subset (= recursion +
 integer compare/add + self-call) while `cons-cdr-raw-from-box'
 follows the cdr edge only when it is itself a Cons; any non-Cons tail
 produces 0 and terminates the walk.

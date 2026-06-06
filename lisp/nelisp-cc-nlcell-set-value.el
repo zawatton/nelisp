@@ -1,4 +1,4 @@
-;;; nelisp-cc-nlcell-set-value.el --- nl_cell_set_value Phase 47 swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-nlcell-set-value.el --- nl_cell_set_value AOT swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Replaces the Rust `nl_cell_set_value' body with a Phase 47-compiled
+;; Replaces the Rust `nl_cell_set_value' body with a AOT-compiled
 ;; elisp object.  The function copies the 32-byte Sexp at `val' into the
 ;; `value' field of the NlCell pointed to by `cell'.
 ;;
@@ -37,7 +37,7 @@
 ;;   return: void (rax holds 1 sentinel from the last ptr-write-u64)
 ;;
 ;; NOTE: Raw 4×u64 copy without refcount-safe drop/clone.
-;; Matches the Phase 47 cutover spike scope (same rationale as
+;; Matches the AOT cutover spike scope (same rationale as
 ;; `nelisp-cc-nlconsbox-set-car.el').
 
 ;;; Code:
@@ -50,14 +50,14 @@
            (ptr-write-u64 cell 8 (ptr-read-u64 val 8))
            (ptr-write-u64 cell 16 (ptr-read-u64 val 16))
            (ptr-write-u64 cell 24 (ptr-read-u64 val 24)))))
-  "Phase 47 source for the `nl_cell_set_value' cutover spike.
+  "AOT source for the `nl_cell_set_value' cutover spike.
 
 Single-entry `(seq DEFUN)' manifest:
 - `nl_cell_set_value (cell val) -> i64' — copies the 32-byte Sexp
   at VAL into the value slot (offset 0) of the NlCell at CELL via
   four `ptr-write-u64' / `ptr-read-u64' word-copy pairs.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `ptr-read-u64'   — `*(u64*)(val + offset)' load (offsets 0/8/16/24).
   `ptr-write-u64'  — `*(u64*)(cell + offset) = v' store (same offsets).")
 

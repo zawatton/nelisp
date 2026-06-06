@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-make-symbol.el --- Phase 47 body for nl_jit_make_symbol  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-make-symbol.el --- AOT body for nl_jit_make_symbol  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 elisp migration of `nl_jit_make_symbol' from
+;; AOT elisp migration of `nl_jit_make_symbol' from
 ;; `build-tool/src/jit/strings.rs' (Doc 122 §122.A + §122.E).
 ;;
 ;; The trampoline signature is `(*const Sexp, *mut Sexp) -> i64'
@@ -44,7 +44,7 @@
 ;;   §122.E  `atomic-fetch-add', `ptr-write-u8'
 ;;   §122.C  `extern-call nl_make_symbol_counter_ptr' (zero-arg)
 ;;   §125.A  `alloc-bytes', `dealloc-bytes'
-;;   Phase 47 arith: `+', `-', `<', `=', `or', `shl', `sar', `logand'
+;;   AOT arith: `+', `-', `<', `=', `or', `shl', `sar', `logand'
 ;;
 ;; Output format:
 ;;   `NAME__nelisp-uninterned-XXXXXXXXXXXXXXXX'
@@ -159,7 +159,7 @@
     ;;
     ;; Parameters thread the name length `n', the counter pointer
     ;; `ctr-ptr', and the buffer `buf' so that alloc-bytes + str-len
-    ;; are each evaluated only once (Phase 47 `let' only accepts
+    ;; are each evaluated only once (AOT `let' only accepts
     ;; compile-time constants).
     ;;
     ;; Total buffer layout (n + 36 bytes):
@@ -203,7 +203,7 @@
           (nl_jit_sym_inner arg out (str-len arg)
                             (extern-call nl_make_symbol_counter_ptr))
         1)))
-  "Phase 47 source for the `nl_jit_make_symbol' trampoline.
+  "AOT source for the `nl_jit_make_symbol' trampoline.
 
 Six-entry `(seq DEFUN ...)' manifest:
   `nl_jit_sym_prog2 (_eff val)'    — side-effect sequencer.

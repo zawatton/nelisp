@@ -111,7 +111,7 @@
 
 ;; nl_sexp_clone_into(dst, src) -> i64
 ;; Shipped: 0x0472 T in libnelisp_elisp_spike.a
-;; Phase 47 swap: core::ptr::write(dst, (*src).clone()).  3-way tag dispatch.
+;; AOT swap: core::ptr::write(dst, (*src).clone()).  3-way tag dispatch.
 (sys:extern nl_sexp_clone_into
   (:symbol "nl_sexp_clone_into" :abi c :unsafe t)
   ((dst usize) (src usize))

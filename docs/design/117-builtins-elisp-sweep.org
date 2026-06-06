@@ -22,13 +22,13 @@ eval/builtins.rs is the biggest single Rust file in the project
 dispatched by `eval::builtins::dispatch'.  Each handler is a small
 function (~20-80 LOC) doing arg-validation + algorithm + result
 wrap.  Doc 100 §100.C + Doc 101 §101.B + Doc 111 §111.B already
-demonstrated that individual handlers can swap to Phase 47 elisp
+demonstrated that individual handlers can swap to AOT elisp
 (`bi_truncate', `bi_length_cons_cc', `bi_recordp_cc' precedent).
 
 Doc 117 sweeps the remaining ~46 handlers (= 49 minus 3 already
 elisp-dispatching), targeting Tier A *first* (= pure-logic
 handlers with no Env mutation, no syscall, no reader callout).
-Tier B (syscalls) waits for Doc 122 (Phase 47 syscall grammar) +
+Tier B (syscalls) waits for Doc 122 (AOT syscall grammar) +
 Doc 125 (libc binding).  Tier C (Env-touching) waits for Doc 119.
 
 * §1 Builtin audit (= 49 functions categorized)
@@ -38,7 +38,7 @@ Doc 125 (libc binding).  Tier C (Env-touching) waits for Doc 119.
 These have no Env mutation, no syscall, no reader.  Each is a
 self-contained algorithm that consumes Sexps and produces Sexps.
 
-| Function          | Line | LOC | Description                              | Phase 47 ops needed             |
+| Function          | Line | LOC | Description                              | AOT ops needed             |
 |-------------------+------+-----+------------------------------------------+---------------------------------|
 | bi_string_bytes   | 549  | ~30 | Return Str bytes as Vector of Ints       | str-len, str-byte-at, vector-make, vector-slot-set |
 | bi_funcall        | 1096 | ~6  | Call function with args                  | (Tier C — touches Env::eval)    |
@@ -57,14 +57,14 @@ self-contained algorithm that consumes Sexps and produces Sexps.
 *Pure Tier A subset (no atomic, no extern call) = 4 handlers*:
 `bi_string_bytes`, `bi_signal`, `bi_f64_trunc`, `bi_make_vector`.
 Estimated LOC delta: -150 Rust + +200 elisp = +50 net (= elisp
-slightly larger because Phase 47 grammar is denser than Rust
+slightly larger because AOT grammar is denser than Rust
 match arms, but the Rust here is small).
 
 ** Tier B — Syscall wrappers (~20 handlers)
 
 These wrap libc / kernel calls (file I/O, terminal control,
 signals).  elisp化 requires `extern-call` to libc symbols (=
-already shipped via Phase 47 §100.A `extern-call` grammar) PLUS
+already shipped via AOT §100.A `extern-call` grammar) PLUS
 small additions to handle:
 - Static atomic flag storage (= Doc 122 atomic ops)
 - Sigaction installation (= libc binding via extern-call)
@@ -124,11 +124,11 @@ Each handler swap follows the established pattern (Doc 111 §111.B
 recordp / §111.C aref-vector / §111.D cell-ops shipped examples):
 
 1. Write `lisp/nelisp-cc-bi-<name>.el' with `defconst …--source'
-   holding the Phase 47 elisp.
+   holding the AOT elisp.
 2. Add `scripts/compile-elisp-objects.el' manifest entry +
    `build.rs' source list entry.
 3. Add extern decl + safe wrapper in `build-tool/src/lib.rs'.
-4. Replace the `bi_<name>' Rust body with a thin Phase 47 dispatch
+4. Replace the `bi_<name>' Rust body with a thin AOT dispatch
    (= same pattern as `bi_truncate' / `bi_length_cons_cc' on main).
 5. Add probe test `build-tool/tests/elisp_cc_bi_<name>_probe.rs'
    with ≥ 3/3 cases.
@@ -141,7 +141,7 @@ recordp / §111.C aref-vector / §111.D cell-ops shipped examples):
 Algorithm: `(make-vector N INIT)` → fresh `Sexp::Vector` of N
 copies of INIT.
 
-Phase 47 ops: `vector-make N slot' (§115.1) + N-element fill via
+AOT ops: `vector-make N slot' (§115.1) + N-element fill via
 `vector-slot-set' (§111.E) in a recursive helper.
 
 Estimate: ~20 LOC elisp.  Single commit.
@@ -151,7 +151,7 @@ Estimate: ~20 LOC elisp.  Single commit.
 Algorithm: `(string-bytes STR)` → `Vector` of `Sexp::Int` (one per
 byte).
 
-Phase 47 ops: `str-len' + `str-byte-at' + `vector-make' +
+AOT ops: `str-len' + `str-byte-at' + `vector-make' +
 recursive copy.
 
 Estimate: ~30 LOC elisp.  Single commit.
@@ -164,7 +164,7 @@ DATA, throw via `EvalError::Lisp(_)`.
 The "throw" part needs control flow back to the dispatcher.  In
 the Rust version this is a `Err(EvalError::Lisp(...))` return; in
 elisp it'd need either:
-- A throw / catch primitive (= already shipped? check Phase 47
+- A throw / catch primitive (= already shipped? check AOT
   grammar).
 - A sentinel Sexp tag the dispatcher recognises as "this is a
   signal".
@@ -177,7 +177,7 @@ condition-case primitives ship.  Skip from initial sweep.
 Algorithm: f64 → i64 truncation.  Doc 110 §110.F covers most of
 the f64 dispatch already.
 
-Phase 47 ops: f64 → int conversion grammar (Doc 110 §110.E.2.b if
+AOT ops: f64 → int conversion grammar (Doc 110 §110.E.2.b if
 present, else add).
 
 Estimate: ~25 LOC elisp.  Single commit, requires Doc 110 §110.E
@@ -207,7 +207,7 @@ Per handler:
 Cumulative (post-Doc-117.A SHIPPED):
 - 2 new `.o' files in the archive (nelisp_make_vector,
   nelisp_string_bytes).
-- `bi_make_vector' + `bi_string_bytes' bodies are thin Phase 47
+- `bi_make_vector' + `bi_string_bytes' bodies are thin AOT
   dispatch in builtins.rs.
 - Rust net delta: ~-50 LOC.
 
@@ -217,7 +217,7 @@ Cumulative (post-Doc-117.A SHIPPED):
 
 `bi_signal' and friends need a way to non-locally return from
 elisp.  Options:
-- Add Phase 47 `throw' grammar op that returns a sentinel tag the
+- Add AOT `throw' grammar op that returns a sentinel tag the
   dispatcher recognises.
 - Use the existing `condition-case' machinery in Rust (= keep
   signal Rust-side for now).
@@ -239,7 +239,7 @@ add new behaviour; pure migration.
 
 ** §4.4 Tier B + C interactions
 
-After Tier A ships, Tier B (syscalls) needs Doc 122 (Phase 47
+After Tier A ships, Tier B (syscalls) needs Doc 122 (AOT
 syscall + atomic grammar) + Doc 125 (libc binding) before
 proceeding.  Tier C waits for Doc 119 (env.rs elisp化).
 
@@ -310,7 +310,7 @@ The §117.B quit-flag sweep paid this cost (+152 net per commit
      eval loop's perspective once Doc 119 lands), so the Rust
      plumbing dies when the Rust eval loop dies.
   2. The set / clear ops are *write* paths that need to live in
-     elisp anyway for the Phase 47 cutover.
+     elisp anyway for the AOT cutover.
 
 Neither condition holds for the bool readers below — they are
 consumed by either Rust-side test probes or by other Rust shims,
@@ -340,7 +340,7 @@ Rust LOC).
 
 The following handlers read =std::sync::Once::is_completed()=.
 The =Once= struct has no stable in-memory representation that
-Phase 47 elisp can poke via =ptr-read-u8= — it's an opaque
+AOT elisp can poke via =ptr-read-u8= — it's an opaque
 synchronization primitive.  Sweeping requires either:
 
   (a) Adding a parallel =AtomicBool COMPLETED= flag set after

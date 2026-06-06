@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 122 §122.D introduces three new Phase 47 grammar ops for the
+;; Doc 122 §122.D introduces three new AOT grammar ops for the
 ;; UTF-8 helper cluster (= codepoint-aware string operations the
 ;; Reader lexer + several Doc 120 trampolines need):
 ;;
@@ -31,7 +31,7 @@
 ;;       `char::is_alphanumeric'.  Used by `nl_jit_split_by_non_alnum'
 ;;       (Doc 120) + Reader lexer char-class predicates.
 ;;
-;; This file packages each op as a standalone Phase 47-compiled
+;; This file packages each op as a standalone AOT-compiled
 ;; `defun' so the `tests/elisp_cc_utf8_probe.rs' integration test
 ;; can probe each round-trip independently.  Pattern mirrors
 ;; `nelisp-cc-sexp-write-str.el' (§122.A) / `nelisp-cc-mut-str.el'
@@ -55,7 +55,7 @@
      ;; count.  Distinct from `str-len' / `nl_mut_str_len' which
      ;; return byte counts.
      (str-char-count ptr))
-  "Phase 47 source for the Doc 122 §122.D `str-char-count' op probe.")
+  "AOT source for the Doc 122 §122.D `str-char-count' op probe.")
 
 (defconst nelisp-cc-utf8--codepoint-at-source
   '(defun nelisp_str_codepoint_at (ptr idx cp-slot width-slot)
@@ -73,7 +73,7 @@
      ;; returns rax = 1 on success or 0 on invalid IDX / malformed
      ;; UTF-8.  On failure the out-slots are left untouched.
      (str-codepoint-at ptr idx cp-slot width-slot))
-  "Phase 47 source for the Doc 122 §122.D `str-codepoint-at' op probe.")
+  "AOT source for the Doc 122 §122.D `str-codepoint-at' op probe.")
 
 (defconst nelisp-cc-utf8--is-alphanumeric-at-source
   '(defun nelisp_str_is_alphanumeric_at (ptr idx)
@@ -87,7 +87,7 @@
      ;; decode otherwise.  Returns rax = 1 if alphanumeric, 0
      ;; otherwise (including out-of-range / mid-codepoint indices).
      (str-is-alphanumeric-at ptr idx))
-  "Phase 47 source for the Doc 122 §122.D `str-is-alphanumeric-at' op probe.")
+  "AOT source for the Doc 122 §122.D `str-is-alphanumeric-at' op probe.")
 
 (provide 'nelisp-cc-utf8)
 

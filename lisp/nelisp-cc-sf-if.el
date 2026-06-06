@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-if.el --- Phase 47 nl_sf_if swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-if.el --- AOT nl_sf_if swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_if' Rust body in
+;; AOT replacement for the `sf_if' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -152,7 +152,7 @@
        (extern-call nl_cons_cdr_ptr args)
        args env out)))
 
-  "Phase 47 source for `nl_sf_if' (eval/special_forms.rs sf_if → elisp).
+  "AOT source for `nl_sf_if' (eval/special_forms.rs sf_if → elisp).
 
 Ten defuns (seq form).  Each extern-call is argument 0 at its call site.
 

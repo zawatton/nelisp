@@ -1,4 +1,4 @@
-#+TITLE: Doc 101 — Phase 47 Sexp::Cons / Symbol / Str ABI (= list / atom layout extensions)
+#+TITLE: Doc 101 — AOT Sexp::Cons / Symbol / Str ABI (= list / atom layout extensions)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-17
 
@@ -10,7 +10,7 @@
   sexp-abi-check= CI gate) + §100.C (= =bi_truncate= Int swap via
   =nelisp_truncate_int.o=) all SHIPPED.  Doc 101 §101.A-D can build
   on the frozen-layout invariant + the CI drift gate directly.
-- *Parent*: Doc 100 v2 (= Phase 47 Sexp::Int ABI MVP, SHIPPED
+- *Parent*: Doc 100 v2 (= AOT Sexp::Int ABI MVP, SHIPPED
   2026-05-12).  Doc 100 §0.4 + §5.2 + §5.3 explicitly reserved this
   doc number for "Sexp::Cons / Symbol / Str layout extensions".
 - *Sibling*: Doc 110 (= f64 ABI track, parallel capability expansion);
@@ -26,7 +26,7 @@
   list-walking swap / §101.C Symbol/Str read ops + first hash-key
   swap / §101.D Cons construction + allocator helper + first list-
   builder swap).
-- *Doc 102 unlock relevance*: Phase 8.b condition (a) (= Phase 47
+- *Doc 102 unlock relevance*: Phase 8.b condition (a) (= AOT
   native compile reaches elisp helpers used by =env_mirror.rs= /
   =env_lexframe.rs=).  Doc 101 covers ~60% of the ABI surface those
   helpers need; Doc 111 covers the remaining ~40% (= Record / Vector
@@ -37,11 +37,11 @@
 ** §0.1 What Doc 100 leaves unfinished
 
 Doc 100 v2 *shipped* the Sexp::Int ABI MVP (= 2026-05-17 audit re-
-synced the Doc 100 status header).  Three Phase 47 grammar ops
+synced the Doc 100 status header).  Three AOT grammar ops
 (=(sexp-tag H)=, =(sexp-int-unwrap H)=, =(sexp-int-make SLOT N)=)
 read + construct =Sexp::Int(n)= values via direct =#[repr(C, u8)]=
 byte access, and =bi_truncate='s Int arm now routes through a
-Phase 47-compiled =nelisp_truncate_int.o= linked into =bin/nelisp=.
+AOT-compiled =nelisp_truncate_int.o= linked into =bin/nelisp=.
 
 That covers ~7% of the Sexp variant space (= 1 of 14 variants).
 The remaining 13 variants are queued for follow-on docs; Doc 101
@@ -61,7 +61,7 @@ Every non-trivial elisp helper handles richer shapes:
   read ops, every sentinel check is interpreted.
 
 Doc 102 §3 Phase 8.b's deletion path for =eval/env_mirror.rs= /
-=eval/env_lexframe.rs= is gated on Phase 47 reaching the elisp
+=eval/env_lexframe.rs= is gated on AOT reaching the elisp
 helpers they currently shadow.  Doc 101 ships the layer-2 ABI that
 makes that path viable.
 
@@ -101,7 +101,7 @@ Two sub-options for the allocator:
 
 *Sub-option α (Rust helper)*: a tiny Rust =extern "C"= function
 =nl_alloc_consbox(car, cdr) -> *mut NlConsBox= (~10 LOC of Rust).
-Phase 47 emits =call nl_alloc_consbox= via the §100.A =extern-call=
+AOT emits =call nl_alloc_consbox= via the §100.A =extern-call=
 grammar.  Pros: trivial implementation, no elisp arena allocator
 needed.  Cons: violates "pure elisp" goal *slightly* (= still 10
 LOC of Rust on the call path, vs. 250 LOC in v1's rejected Option C).
@@ -109,7 +109,7 @@ LOC of Rust on the call path, vs. 250 LOC in v1's rejected Option C).
 *Sub-option β (pure-elisp arena allocator)*: ~100 LOC of elisp that
 implements a bump-pointer arena over =mmap='d pages.  Pros: fully
 pure-elisp.  Cons: significant new substrate; needs its own GC story
-to interop with =NlRc='s refcount; risks Phase 47 grammar bloat (=
+to interop with =NlRc='s refcount; risks AOT grammar bloat (=
 arena ops are new value-producing forms).
 
 This doc picks sub-option α.  Rationale (§5.3 + Doc 100 §5.3):
@@ -120,7 +120,7 @@ This doc picks sub-option α.  Rationale (§5.3 + Doc 100 §5.3):
   have to interop with that refcount or replace it.  Both options
   are large new design surfaces.
 - Doc 110 §2.2 already establishes the precedent that f64 literals
-  use Rust-resident rodata — i.e. the Phase 47 elisp doesn't try to
+  use Rust-resident rodata — i.e. the AOT elisp doesn't try to
   be entirely Rust-free, just monotonically less Rust per swap.
 
 Sub-option β remains the long-term target; Doc 101 picks α for the
@@ -132,9 +132,9 @@ allocator call is a hot path.
 | Stage    | Scope                                                                                                | Effect |
 |----------+------------------------------------------------------------------------------------------------------+--------|
 | §101.A   | Layout doc extension (=docs/arch/sexp-abi.md=) + elisp constants for Cons/Symbol/Str.  CI drift gate already from Doc 100 §100.B. | unblock |
-| §101.B   | Phase 47 grammar gains read ops: =(cons-car H)=, =(cons-cdr H)=, =(cons-null-p H)=.  First swap: =bi_length= for cons lists.        | spike  |
-| §101.C   | Phase 47 grammar gains atom read ops: =(symbol-bytes H)= / =(symbol-len H)= / =(str-bytes H)= / =(str-len H)= / =(symbol-eq H1 H2)= / =(str-eq H1 H2)=.  First swap: =bi_eq= for symbol identity. | extend |
-| §101.D   | Phase 47 grammar gains construction ops: =(cons-make CAR CDR)= with =nl_alloc_consbox= helper, =(cons-set-car H V)= / =(cons-set-cdr H V)= mutation.  First swap: =bi_cons= construction. | builder |
+| §101.B   | AOT grammar gains read ops: =(cons-car H)=, =(cons-cdr H)=, =(cons-null-p H)=.  First swap: =bi_length= for cons lists.        | spike  |
+| §101.C   | AOT grammar gains atom read ops: =(symbol-bytes H)= / =(symbol-len H)= / =(str-bytes H)= / =(str-len H)= / =(symbol-eq H1 H2)= / =(str-eq H1 H2)=.  First swap: =bi_eq= for symbol identity. | extend |
+| §101.D   | AOT grammar gains construction ops: =(cons-make CAR CDR)= with =nl_alloc_consbox= helper, =(cons-set-car H V)= / =(cons-set-cdr H V)= mutation.  First swap: =bi_cons= construction. | builder |
 
 §101.A-C is the *read-only foundation*: ~4-5 days of focused work,
 proves that elisp =.o= files can walk Cons chains + compare names
@@ -181,7 +181,7 @@ Rust-direct code in =build-tool/src/eval/env_mirror.rs= +
 
 This walks 5 levels of structure: bucket → cons → pair → str → bytes.
 Without Doc 101, every step uses Rust-direct accessors; with Doc 101,
-the entire walk is Phase 47-emitted machine code.
+the entire walk is AOT-emitted machine code.
 
 *Str byte access (= FNV-1a hashing)*:
 
@@ -275,12 +275,12 @@ queued.  Doc 101 §5.4 documents the mitigation: a pinned
 
 ** §2.1 Sexp::Cons read ops
 
-Three new value-producing Phase 47 grammar forms, all compiling to
+Three new value-producing AOT grammar forms, all compiling to
 direct memory access:
 
 *1. =(cons-null-p H)= — predicate for the Sexp::Nil tag*
 
-Phase 47 sometimes needs to test "is the cdr a Cons or a Nil
+AOT sometimes needs to test "is the cdr a Cons or a Nil
 terminator" in a list walk.  =(cons-null-p H)= reads the tag byte
 at offset 0 and compares against =SEXP_TAG_NIL= (= 0).
 
@@ -289,7 +289,7 @@ Emits:
 - =sub rax, 0=          (= sets ZF if tag==0)
 - =sete al=             (= bool result in al)
 
-Result: i64 0 or 1, suitable for =if= dispatch in Phase 47.
+Result: i64 0 or 1, suitable for =if= dispatch in AOT.
 
 *2. =(cons-car H SLOT)= — read the car field into a caller slot*
 
@@ -360,7 +360,7 @@ This is the actual list-walking primitive.  =bi_length= boils down to:
       n))
 #+end_src
 
-(The actual elisp shape is more verbose due to Phase 47 grammar
+(The actual elisp shape is more verbose due to AOT grammar
 limits; see §2.3 for the real source.)
 
 *Const additions* (= =lisp/nelisp-sexp-layout.el=):
@@ -449,7 +449,7 @@ First real swap target.  Original Rust:
   }
 #+end_src
 
-Phase 47 elisp replacement:
+AOT elisp replacement:
 
 #+begin_src elisp
   ;; lisp/nelisp-cc-length-cons.el
@@ -505,7 +505,7 @@ Original Rust (= simplified):
   Ok(Sexp::from_bool(a == b))
 #+end_src
 
-Phase 47 elisp:
+AOT elisp:
 
 #+begin_src elisp
   ;; lisp/nelisp-cc-eq-symbol.el
@@ -521,7 +521,7 @@ Phase 47 elisp:
 
 Where =sexp-write-t= / =sexp-write-nil= are trivial ops emitting
 "mov byte [rdi], 1" / "mov byte [rdi], 0".  They're not first-class
-grammar primitives in Doc 101 — they're produced by Phase 47 from
+grammar primitives in Doc 101 — they're produced by AOT from
 =(sexp-int-make SLOT 1)= with the tag overridden, but for clarity
 the source uses named helpers.
 
@@ -536,7 +536,7 @@ Pre-condition: =CAR-PTR= + =CDR-PTR= point at valid 32-byte =Sexp=
 values that will be CLONED into the new =NlConsBox=.  =SLOT= is a
 =*mut Sexp= 32-byte slot for the new =Sexp::Cons(_)= handle.
 
-Phase 47 emit:
+AOT emit:
 
 #+begin_src text
   ; Allocate 72-byte NlConsBox via Rust helper
@@ -572,7 +572,7 @@ Phase 47 emit:
 Signature + body (~10 LOC of Rust in =build-tool/src/eval/nlconsbox.rs=):
 
 #+begin_src rust
-  /// Doc 101 §101.D — allocator helper for Phase 47-compiled elisp.
+  /// Doc 101 §101.D — allocator helper for AOT-compiled elisp.
   /// Returns a freshly-allocated NlConsBox with car=Nil, cdr=Nil,
   /// refcount=1.  The caller is responsible for overwriting car/cdr
   /// before any other code observes the box.
@@ -684,7 +684,7 @@ behavior.
 
 1. Add =cons-null-p=, =cons-car=, =cons-cdr=, =cons-cdr-raw=,
    =sexp-payload-ptr= as new value forms in
-   =lisp/nelisp-phase47-compiler.el='s =parse-value= dispatch.
+   =lisp/nelisp-aot-compiler.el='s =parse-value= dispatch.
 2. Add the IR + emit cases for each (= ~30 LOC of elisp per op).
 3. Add =lisp/nelisp-cc-length-cons.el= with the §2.3 source.
 4. Add to =scripts/compile-elisp-objects.el= manifest.
@@ -696,7 +696,7 @@ behavior.
    nil, 1-element, 100-element, deeply-nested cases.
 
 *LOC delta*:
-- =lisp/nelisp-phase47-compiler.el=                 : +150 (5 new emit ops + IR + parse)
+- =lisp/nelisp-aot-compiler.el=                 : +150 (5 new emit ops + IR + parse)
 - =lisp/nelisp-cc-length-cons.el=                   : +35 (new)
 - =scripts/compile-elisp-objects.el=                : +5 (manifest entry)
 - =build-tool/src/lib.rs=                            : +15 (extern + wrapper)
@@ -728,7 +728,7 @@ behavior.
    lengths (= 3/8/16 bytes).
 
 *LOC delta*:
-- =lisp/nelisp-phase47-compiler.el=                : +200 (5 new emit ops + SIMD path)
+- =lisp/nelisp-aot-compiler.el=                : +200 (5 new emit ops + SIMD path)
 - =lisp/nelisp-cc-eq-symbol.el=                    : +30 (new)
 - =scripts/compile-elisp-objects.el=               : +5
 - =build-tool/src/lib.rs=                           : +15
@@ -757,7 +757,7 @@ behavior.
 6. Probe test with various car/cdr type combinations.
 
 *LOC delta*:
-- =lisp/nelisp-phase47-compiler.el=                  : +250 (3 new emit ops + refcount dispatch)
+- =lisp/nelisp-aot-compiler.el=                  : +250 (3 new emit ops + refcount dispatch)
 - =build-tool/src/eval/nlconsbox.rs=                 : +12 (allocator helper + extern decl)
 - =lisp/nelisp-cc-cons-construct.el=                 : +30 (new)
 - =scripts/compile-elisp-objects.el=                 : +5
@@ -800,19 +800,19 @@ After §101.D:
 4. Three production builtin paths whose algorithms live only in
    elisp source (= =bi_truncate= Int from Doc 100, =bi_length= Cons
    + =bi_eq= Symbol from Doc 101) plus the =bi_cons= constructor.
-5. Phase 47 grammar surface stabilizes at ~25 Sexp-specific forms
+5. AOT grammar surface stabilizes at ~25 Sexp-specific forms
    (= 3 from Doc 100 + 13 from Doc 101).  Doc 111's Record / Vector
    / Cell additions land on top of this foundation.
 
 ** §4.3 Performance gate (= regression budget)
 
 The Doc 100 §100.C =bi_truncate= swap measured ~10-20µs/call for the
-Phase 47-emitted version (= near-zero overhead vs. native Rust).
+AOT-emitted version (= near-zero overhead vs. native Rust).
 
 Doc 101 swaps must stay within *2× the Rust baseline* (= a Rust
-fn-call typically 10-50ns; Phase 47-emit + extern-call boundary adds
+fn-call typically 10-50ns; AOT-emit + extern-call boundary adds
 ~50-200ns for the call setup).  Probe tests include a microbench
-that compares Rust baseline against Phase 47 version.  If the
+that compares Rust baseline against AOT version.  If the
 delta exceeds 2×, the swap is deferred for emit-path optimisation.
 
 * §5 Risks / unknowns
@@ -862,19 +862,19 @@ replacing =Box::new= with the arena's bump-pointer call.  The
 =extern "C"= signature stays identical.
 
 If sub-option β is later ranked as the right path, a follow-up Doc
-101b can swap the implementation transparently (= no Phase 47
+101b can swap the implementation transparently (= no AOT
 grammar churn, no probe-test churn).
 
 ** §5.4 Refcount maintenance correctness
 
 When =cons-car= / =cons-cdr= clone a Sexp value out of an NlConsBox,
 the refcount of any boxed sub-fields must be incremented (= the
-same semantic as =Sexp::Clone=).  The Phase 47 emit's
+same semantic as =Sexp::Clone=).  The AOT emit's
 conditional-=nl_rc_inc= dispatch table must cover every box-tagged
 Sexp variant.
 
 *Mitigation*: =sexp_abi_assert.rs= adds a "box-variant tag set"
-constant (= bitset of which tags are boxed); Phase 47 emit reads
+constant (= bitset of which tags are boxed); AOT emit reads
 this same constant from the elisp side (= =defconst
 nelisp-sexp--box-tag-mask=); CI drift gate checks the bitset.
 Probe tests include a refcount-leak assertion (= alloc + clone N
@@ -899,13 +899,13 @@ adding.
   per-type-doc pattern)
 - =docs/design/102-env-rs-elisp-migration.org= §3 Phase 8.b (= the
   consumer that drives Doc 101's priority)
-- =docs/design/97-phase-47-sexp-to-asm-compiler.org= (= base Phase 47
+- =docs/design/97-phase-47-sexp-to-asm-compiler.org= (= base AOT
   compiler that Doc 101 extends)
 
 ** §6.2 Memory entries (= context)
 
 - =project_doc_99_phases_a_b_c_shipped= — §99 SHIPPED state +
-  Phase 47 build chain wiring
+  AOT build chain wiring
 - =feedback_nelisp_runtime_vs_elisp_language= — symbol non-interning
   in NeLisp (= why =symbol-eq= compares by name not by pointer)
 - =feedback_nelisp_core_vs_layer2_boundary= — what belongs in Phase
@@ -918,7 +918,7 @@ adding.
 - =build-tool/src/eval/nlconsbox.rs:56-67= — =NlConsBox= layout
   (=#[repr(C)]= car/cdr/refcount)
 - =build-tool/src/eval/nlconsbox.rs:85-101= — =set_car= / =set_cdr=
-  mutation methods (= §2.5 const-set-car / cons-set-cdr Phase 47
+  mutation methods (= §2.5 const-set-car / cons-set-cdr AOT
   emit wraps these via =extern-call=)
 - =build-tool/src/eval/env_mirror.rs= — env_mirror Rust-direct walks
   (= primary Doc 101 consumer for Phase 8.b)

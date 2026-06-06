@@ -12,7 +12,7 @@
 ;; §115.4 — full pure-elisp implementation of the closure-env alist
 ;; preprocessor.  Replaces the prior ~50 LOC Rust shim
 ;; `nl_wrap_alist_cells' (= deleted from
-;; `build-tool/src/eval/env_lexframe_phase47_shims.rs').
+;; `build-tool/src/eval/env_lexframe_aot_shims.rs').
 ;;
 ;; Algorithm (= literal transcription of the Rust impl):
 ;;
@@ -53,7 +53,7 @@
 ;;     wrapper-locals' Drop from decrementing refcounts on heap
 ;;     nodes that the result chain already accounts for.
 ;;
-;; Recursion is used for the tail walker because Phase 47 has no
+;; Recursion is used for the tail walker because AOT has no
 ;; mutable locals — every iteration state passes through arg
 ;; registers (recursive self-call with 6 args).
 ;;
@@ -91,7 +91,7 @@
     ;; On malformed (inner not Cons): we return 0 without touching
     ;; WRITE-SLOT (= caller is responsible for the Nil-fill).
     ;;
-    ;; The 6th `_pad' parameter is a Phase 47 alignment placeholder:
+    ;; The 6th `_pad' parameter is a AOT alignment placeholder:
     ;; this defun's body invokes `cons-make' (= 4 pushes alive at the
     ;; nl_alloc_consbox call site).  Odd-arity defuns land at
     ;; body-entry rsp ≡ 8 mod 16, which would make the call site
@@ -121,7 +121,7 @@
          ;; into cell-slot before the `cons-make' below reads from it).
          ;;
          ;; The wrap branches INLINE on the value's tag instead of
-         ;; calling a `cell-ptr' helper, because Phase 47's
+         ;; calling a `cell-ptr' helper, because AOT's
          ;; `cons-make' emit pushes its first arg before evaluating
          ;; the second.  A nested function CALL inside cons-make's
          ;; cdr-ptr argument would land at an rsp 8 bytes off the SysV
@@ -167,7 +167,7 @@
     ;; preserved in the caller's slots; the entry function overwrites
     ;; `result-slot' to Nil on the way out.
     ;;
-    ;; Implementation note (= Phase 47 outer-cmp-push limitation):
+    ;; Implementation note (= AOT outer-cmp-push limitation):
     ;; the pattern `(if (= (FN ...) N) ...)' is dangerous because
     ;; `--emit-cmp' pushes the cmp's B operand BEFORE evaluating A,
     ;; misaligning rsp by 8 bytes at any inner `extern-call' / `call'
@@ -230,7 +230,7 @@
               (and (sexp-write-nil result-slot) 0))
           (and (sexp-write-nil result-slot) 0))))
     )
-  "Phase 47 source for Doc 111 §111.E #26 / Doc 115 §115.4
+  "AOT source for Doc 111 §111.E #26 / Doc 115 §115.4
 `wrap_alist_cells'.
 
 Pure-elisp closure-env alist preprocessor: walks `((NAME . VALUE) ...)'
@@ -246,7 +246,7 @@ ping-pong via `cons-set-cdr' + tail recursion give bounded scratch
 independent of input list length.
 
 Replaces the ~50 LOC Rust shim `nl_wrap_alist_cells' which has been
-removed from `env_lexframe_phase47_shims.rs'.")
+removed from `env_lexframe_aot_shims.rs'.")
 
 (provide 'nelisp-cc-wrap-alist-cells)
 

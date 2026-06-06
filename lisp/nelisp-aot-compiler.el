@@ -1,4 +1,4 @@
-;;; nelisp-phase47-compiler.el --- Phase 47 Sexp -> asm compiler (Doc 97)  -*- lexical-binding: t; -*-
+;;; nelisp-aot-compiler.el --- AOT Sexp -> asm compiler (Doc 97)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 
-;; Doc 97 — Phase 47 production engagement entry point.
+;; Doc 97 — AOT production engagement entry point.
 ;;
-;; This module is a *frontend* for the existing Doc 91-94 Phase 47
+;; This module is a *frontend* for the existing Doc 91-94 AOT
 ;; chain.  It consumes a Sexp source program (= an elisp form treated
 ;; as DATA, not code) and emits a static-linked Linux ELF64
 ;; executable via:
@@ -56,7 +56,7 @@
 ;; (= _start's RSP is 16-byte aligned by the kernel; one push rbp
 ;; before each call site keeps subsequent call sites 16-aligned).
 ;;
-;; Anything else signals `nelisp-phase47-compiler-error' at parse
+;; Anything else signals `nelisp-aot-compiler-error' at parse
 ;; time.  Dynamic typing and heap allocation defer to Doc 97.d /
 ;; 97.e; Doc 97.c lands control flow and integer comparison.
 ;;
@@ -97,8 +97,8 @@
 (require 'nelisp-elf-write)
 (require 'nelisp-sexp-layout)
 
-(define-error 'nelisp-phase47-compiler-error
-  "Doc 97 Phase 47 Sexp compiler error")
+(define-error 'nelisp-aot-compiler-error
+  "Doc 97 AOT Sexp compiler error")
 
 ;; ---- §97.0 layout constants ----
 ;;
@@ -107,31 +107,31 @@
 ;; with no padding.  These constants mirror nelisp-elf--build-rich's
 ;; phnum=1 layout — keep them in sync if §91.b is ever rearranged.
 
-(defconst nelisp-phase47-compiler--vaddr-base #x400000
+(defconst nelisp-aot-compiler--vaddr-base #x400000
   "Default ELF64 ET_EXEC load base = 0x400000.
 Matches `nelisp-elf--minimal-vaddr-base'.")
 
-(defconst nelisp-phase47-compiler--text-off #x78
+(defconst nelisp-aot-compiler--text-off #x78
   "File offset of the .text section in the single-PT_LOAD layout.
 Equals Ehdr(64) + Phdr(56) = 120 = 0x78.")
 
-(defconst nelisp-phase47-compiler--text-vaddr
-  (+ nelisp-phase47-compiler--vaddr-base
-     nelisp-phase47-compiler--text-off)
+(defconst nelisp-aot-compiler--text-vaddr
+  (+ nelisp-aot-compiler--vaddr-base
+     nelisp-aot-compiler--text-off)
   "Absolute virtual address of byte 0 of .text (= 0x400078).")
 
-(defconst nelisp-phase47-compiler--arg-regs
+(defconst nelisp-aot-compiler--arg-regs
   '(rdi rsi rdx rcx r8 r9)
   "SysV AMD64 integer argument registers (= positional, 1..6).
 Doc 97.b started with up to 6 args; Doc 129.7E opens the first
 SysV stack-argument path for GP extern calls and boxed-boundary
 defuns that receive 7+ GP params.")
 
-(defconst nelisp-phase47-compiler--aarch64-arg-regs
+(defconst nelisp-aot-compiler--aarch64-arg-regs
   '(x0 x1 x2 x3 x4 x5 x6 x7)
   "AAPCS64 integer argument registers (= positional, 1..8).")
 
-(defconst nelisp-phase47-compiler--xmm-arg-regs
+(defconst nelisp-aot-compiler--xmm-arg-regs
   '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)
   "SysV AMD64 / aarch64 floating-point argument registers (positional 1..8).
 Doc 110 §110.A f64 ABI groundwork.  Names map to the x86_64 xmm
@@ -139,18 +139,18 @@ register table; aarch64 emit translates to d0..d7 via a parallel
 table when that arch lands the f64 emit pass (Doc 110 §110.D).
 Doc 110 MVP supports up to 8 f64 args.")
 
-(defvar nelisp-phase47-compiler--label-counter 0
+(defvar nelisp-aot-compiler--label-counter 0
   "Parse-time monotonic counter for control-flow label uniqueness.
-Bound fresh to 0 by `nelisp-phase47-compile-sexp' before parsing
+Bound fresh to 0 by `nelisp-aot-compile-sexp' before parsing
 each top-level form so the generated label names are reproducible
 within one compile but never collide between control-flow nodes.")
 
-(defvar nelisp-phase47-compiler--arch 'x86_64
+(defvar nelisp-aot-compiler--arch 'x86_64
   "Target arch bound by the public compile entry points before emit.
 Emit helpers consult this dynvar to pick the x86_64 or aarch64 code
 path while sharing the same parsed IR.")
 
-(defvar nelisp-phase47-compiler--abi 'sysv
+(defvar nelisp-aot-compiler--abi 'sysv
   "Calling convention ABI bound by the public compile entry points.
 Doc 101 §101.B Wave 5: selects SysV vs Win64 emit paths for x86_64.
   'sysv  — System V AMD64 (Linux / macOS); default
@@ -159,14 +159,14 @@ Emit helpers consult this dynvar for arg-register selection, shadow
 space allocation, and prologue/epilogue layout.  The aarch64 path
 ignores this var (= AAPCS64 only).")
 
-(defvar nelisp-phase47-compiler--os 'linux
+(defvar nelisp-aot-compiler--os 'linux
   "Target OS bound by the public compile entry points before emit.
 Selects the raw-syscall convention for `syscall-direct' on aarch64:
   linux  (default) puts NR in x8 and emits SVC #0;
   darwin puts NR in x16 and emits SVC #0x80 (macOS / Apple Silicon).
 x86_64 ignores this var (Linux SYSCALL only).")
 
-(defvar nelisp-phase47-compiler--next-rt-let-slot nil
+(defvar nelisp-aot-compiler--next-rt-let-slot nil
   "Cons cell `(N)' holding the next free runtime-let frame slot index.
 Bound by the `defun' parser around body parsing; N starts at the
 defun's param count (= first slot after param spill area).  Each
@@ -174,7 +174,7 @@ defun's param count (= first slot after param spill area).  Each
 that binding.  Nil at top level (= outside any defun parse), where
 runtime `let' is not yet supported.")
 
-(defvar nelisp-phase47-compiler--table-vaddrs nil
+(defvar nelisp-aot-compiler--table-vaddrs nil
   "Alist `((NAME . VADDR) ...)' of absolute vaddrs for static-imm32 tables.
 Bound by `--pass' before emit so `--emit-table-lookup' can resolve
 the table name to its absolute virtual address.  During pass-1
@@ -182,42 +182,42 @@ sizing every VADDR is 0 (= placeholder); during pass-2 the values
 are the real `.rodata' vaddrs.  Nil outside compile passes (=
 default top-level binding).  See Doc 49 Wave 11.1.")
 
-(defvar nelisp-phase47-compiler--allow-external-user-calls nil
+(defvar nelisp-aot-compiler--allow-external-user-calls nil
   "Non-nil lets object-mode parsing lower unknown calls to extern relocs.
 Doc 129 uses this only while producing ET_REL objects for user `.el'
 modules.  Static executable output keeps the stricter historical rule:
-ordinary calls must target a same-unit Phase 47 defun unless they use
+ordinary calls must target a same-unit AOT defun unless they use
 the explicit `extern-call' surface.")
 
-(defun nelisp-phase47-compiler--x86_64-push-width (reg)
+(defun nelisp-aot-compiler--x86_64-push-width (reg)
   "Return the encoded byte width of `push REG' in the current backend subset."
   (if (memq reg '(r8 r9)) 2 1))
 
-(defun nelisp-phase47-compiler--object-defun-body-offset (defun-ir)
+(defun nelisp-aot-compiler--object-defun-body-offset (defun-ir)
   "Return the body-entry PC offset for DEFUN-IR in object mode, or nil.
 This is the offset immediately after the emitted prologue/spill sequence.
 The host-side Doc 142 proof uses it to jump into the compiled body after
 populating the hidden boundary slots in a synthetic frame."
-  (let* ((arity (length (or (nelisp-phase47-compiler--ir-get defun-ir :param-regs)
+  (let* ((arity (length (or (nelisp-aot-compiler--ir-get defun-ir :param-regs)
                             nil)))
-         (param-regs (nelisp-phase47-compiler--ir-get defun-ir :param-regs))
-         (param-class (or (nelisp-phase47-compiler--ir-get defun-ir :param-class) 'gp))
-         (rt-slot-count (or (nelisp-phase47-compiler--ir-get defun-ir :rt-slot-count) 0)))
+         (param-regs (nelisp-aot-compiler--ir-get defun-ir :param-regs))
+         (param-class (or (nelisp-aot-compiler--ir-get defun-ir :param-class) 'gp))
+         (rt-slot-count (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0)))
     (cond
-     ((not (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                (eq nelisp-phase47-compiler--abi 'sysv)
+     ((not (and (eq nelisp-aot-compiler--arch 'x86_64)
+                (eq nelisp-aot-compiler--abi 'sysv)
                 (eq param-class 'gp)
                 (not (cl-some #'consp param-regs))))
       nil)
      (t
       (+ 1                              ; push rbp
          3                              ; mov rbp, rsp
-         (apply #'+ (mapcar #'nelisp-phase47-compiler--x86_64-push-width
+         (apply #'+ (mapcar #'nelisp-aot-compiler--x86_64-push-width
                             param-regs))
          (if (= 1 (logand arity 1)) 7 0)
          (if (> rt-slot-count 0) 7 0))))))
 
-(defun nelisp-phase47-compiler--byte-vec->string (vec)
+(defun nelisp-aot-compiler--byte-vec->string (vec)
   "Convert byte VEC into a unibyte-string without large-arity `apply'.
 The standalone interpreter still mis-handles `(apply #'unibyte-string
 ...)' on long byte vectors, so emit fixed-size chunks and join them."
@@ -233,7 +233,7 @@ The standalone interpreter still mis-handles `(apply #'unibyte-string
         (push (apply #'unibyte-string (nreverse bytes)) chunks)))
     (apply #'concat (nreverse chunks))))
 
-(defconst nelisp-phase47-compiler--external-user-call-reserved-ops
+(defconst nelisp-aot-compiler--external-user-call-reserved-ops
   '(quote function lambda progn seq
     if while cond and or let let*
     catch condition-case unwind-protect
@@ -246,7 +246,7 @@ The standalone interpreter still mis-handles `(apply #'unibyte-string
 ;; Wave 11.2 introduces four runtime hash-table primitives — `hash-
 ;; table-make' / `hash-table-put' / `hash-table-get' / `hash-table-
 ;; contains-p' — implemented as **parse-time macros** that desugar
-;; into compositions of existing Phase 47 primitives (`record-make',
+;; into compositions of existing AOT primitives (`record-make',
 ;; `record-slot-ref-ptr', `record-slot-set', `cons-make-with-clone',
 ;; `sexp-payload-ptr', `extern-call nelisp_fnv1a', `str-eq', etc.).
 ;;
@@ -274,7 +274,7 @@ The standalone interpreter still mis-handles `(apply #'unibyte-string
 ;; `cons-make' / `cons-make-with-clone'): every constructor takes
 ;; an explicit `SLOT' parameter (= `*mut Sexp') for the result.
 
-(defun nelisp-phase47-compiler--ht-desugar-make (cap-expr slot-expr tag-ptr-expr)
+(defun nelisp-aot-compiler--ht-desugar-make (cap-expr slot-expr tag-ptr-expr)
   "Desugar `(hash-table-make TAG-PTR CAP SLOT)' to a `record-make' form.
 TAG-PTR-EXPR is a value-form producing a `*const Sexp' that
 points at the type-tag symbol for the new record (caller
@@ -287,7 +287,7 @@ new record's slots are already pre-filled with `Sexp::Nil' by
 `nl_alloc_record', which is exactly the empty-bucket sentinel."
   `(record-make ,tag-ptr-expr ,cap-expr ,slot-expr))
 
-(defun nelisp-phase47-compiler--ht-desugar-bucket-idx (ht-expr key-expr)
+(defun nelisp-aot-compiler--ht-desugar-bucket-idx (ht-expr key-expr)
   "Build the sexp computing `(fnv1a(KEY) & (CAP - 1))'.
 HT-EXPR is the hash-table `*const Sexp', KEY-EXPR is the lookup
 key `*const Sexp'.  Capacity comes from the record's slot count
@@ -297,7 +297,7 @@ yields a uniform hash but the index will not span all buckets."
   `(logand (extern-call nelisp_fnv1a ,key-expr)
            (- (record-slot-count ,ht-expr) 1)))
 
-(defun nelisp-phase47-compiler--ht-desugar-put
+(defun nelisp-aot-compiler--ht-desugar-put
     (ht-expr key-expr val-expr cons-slot-expr pair-slot-expr)
   "Desugar `(hash-table-put HT KEY VAL CONS-SLOT PAIR-SLOT)'.
 Conceptually evaluates to:
@@ -322,7 +322,7 @@ the desugar cannot enforce.  The duplicated fnv1a is acceptable
 (= rest of the operation is already dominated by the two cons
 clones); a future optimisation may inline a let when the desugar
 runs inside a defun body."
-  (let ((idx-expr (nelisp-phase47-compiler--ht-desugar-bucket-idx
+  (let ((idx-expr (nelisp-aot-compiler--ht-desugar-bucket-idx
                    ht-expr key-expr)))
     `(record-slot-set
       ,ht-expr
@@ -332,7 +332,7 @@ runs inside a defun body."
        (record-slot-ref ,ht-expr ,idx-expr ,cons-slot-expr)
        ,cons-slot-expr))))
 
-(defun nelisp-phase47-compiler--ht-desugar-get
+(defun nelisp-aot-compiler--ht-desugar-get
     (ht-expr key-expr slot-expr)
   "Desugar `(hash-table-get HT KEY SLOT)'.
 Walks the bucket chain at `HT.slots[fnv1a(KEY) & (CAP-1)]'.  On
@@ -361,12 +361,12 @@ caller treats the return value as the lookup result)."
   `(nelisp_ht_walk
     (sexp-payload-ptr
      (record-slot-ref-ptr ,ht-expr
-                          ,(nelisp-phase47-compiler--ht-desugar-bucket-idx
+                          ,(nelisp-aot-compiler--ht-desugar-bucket-idx
                             ht-expr key-expr)))
     ,key-expr
     ,slot-expr))
 
-(defun nelisp-phase47-compiler--ht-desugar-contains-p
+(defun nelisp-aot-compiler--ht-desugar-contains-p
     (ht-expr key-expr slot-expr)
   "Desugar `(hash-table-contains-p HT KEY SLOT)' → 1 if KEY found else 0.
 Re-uses the `nelisp_ht_walk' helper (= same defun `hash-table-
@@ -376,7 +376,7 @@ uses."
   `(if (= (nelisp_ht_walk
            (sexp-payload-ptr
             (record-slot-ref-ptr ,ht-expr
-                                 ,(nelisp-phase47-compiler--ht-desugar-bucket-idx
+                                 ,(nelisp-aot-compiler--ht-desugar-bucket-idx
                                    ht-expr key-expr)))
            ,key-expr
            ,slot-expr)
@@ -384,7 +384,7 @@ uses."
        0
      1))
 
-(defconst nelisp-phase47-compiler--ht-helpers-source
+(defconst nelisp-aot-compiler--ht-helpers-source
   '(seq
     ;; `nelisp_ht_walk' is the shared bucket-chain walker used by
     ;; `hash-table-get' and `hash-table-contains-p'.  Mirrors the
@@ -418,7 +418,7 @@ uses."
              key-ptr
              nil-slot)))))))
 
-(defvar nelisp-phase47-compiler--current-defun-arity nil
+(defvar nelisp-aot-compiler--current-defun-arity nil
   "Arity of the defun currently being emitted, or nil during main `_start'.
 Bound dynamically by `--emit-defun' so inner emit helpers (= those
 that issue `call' / `extern-call') can compute the correct stack
@@ -434,35 +434,35 @@ manual `push %rsi' inside `--emit-record-slot-ref' (= 3-arg defun,
 also odd) which the design notes call out as a stack-alignment
 band-aid.  This dynvar generalises the pattern.")
 
-(defsubst nelisp-phase47-compiler--current-arg-regs ()
+(defsubst nelisp-aot-compiler--current-arg-regs ()
   "Return the GP argument register list for the current ABI.
-Doc 101 §101.B Wave 5: dispatches on `nelisp-phase47-compiler--abi'."
+Doc 101 §101.B Wave 5: dispatches on `nelisp-aot-compiler--abi'."
   (cond
-   ((eq nelisp-phase47-compiler--arch 'aarch64)
-    nelisp-phase47-compiler--aarch64-arg-regs)
-   ((eq nelisp-phase47-compiler--abi 'win64)
+   ((eq nelisp-aot-compiler--arch 'aarch64)
+    nelisp-aot-compiler--aarch64-arg-regs)
+   ((eq nelisp-aot-compiler--abi 'win64)
     nelisp-asm-x86_64--abi-win64-arg-regs)
    (t
-    nelisp-phase47-compiler--arg-regs)))
+    nelisp-aot-compiler--arg-regs)))
 
-(defsubst nelisp-phase47-compiler--current-xmm-arg-regs ()
+(defsubst nelisp-aot-compiler--current-xmm-arg-regs ()
   "Return the f64 argument register list for the current ABI.
 SysV/AAPCS keep the existing XMM0-XMM7 budget.  Win64 uses only
 XMM0-XMM3 for f64 args; XMM4/XMM5 are volatile but not arg regs, and
 XMM6-XMM15 are callee-saved under Microsoft x64."
-  (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
-           (eq nelisp-phase47-compiler--abi 'win64))
-      (cl-subseq nelisp-phase47-compiler--xmm-arg-regs 0 4)
-    nelisp-phase47-compiler--xmm-arg-regs))
+  (if (and (eq nelisp-aot-compiler--arch 'x86_64)
+           (eq nelisp-aot-compiler--abi 'win64))
+      (cl-subseq nelisp-aot-compiler--xmm-arg-regs 0 4)
+    nelisp-aot-compiler--xmm-arg-regs))
 
-(defun nelisp-phase47-compiler--gensym (prefix)
+(defun nelisp-aot-compiler--gensym (prefix)
   "Return a fresh symbol `PREFIX-N' for control-flow labelling.
-N is the next value of `nelisp-phase47-compiler--label-counter'.
+N is the next value of `nelisp-aot-compiler--label-counter'.
 The result is interned (= comparable with `eq') so it slots
 straight into Doc 92's labels alist."
-  (setq nelisp-phase47-compiler--label-counter
-        (1+ nelisp-phase47-compiler--label-counter))
-  (intern (format "%s-%d" prefix nelisp-phase47-compiler--label-counter)))
+  (setq nelisp-aot-compiler--label-counter
+        (1+ nelisp-aot-compiler--label-counter))
+  (intern (format "%s-%d" prefix nelisp-aot-compiler--label-counter)))
 
 ;; ---- §97.1 frontend = parser + IR builder ----
 ;;
@@ -478,7 +478,7 @@ straight into Doc 92's labels alist."
 ;; (= function parameter) emits an `:kind arith' node compiled to
 ;; runtime instructions in §97.5.
 
-(defun nelisp-phase47-compiler--int-foldable-p (sexp env fenv)
+(defun nelisp-aot-compiler--int-foldable-p (sexp env fenv)
   "Return non-nil if SEXP is compile-time foldable in ENV/FENV.
 ENV is the let-binding alist; FENV is the function-parameter alist
 (symbols whose values live in registers and therefore prevent
@@ -492,22 +492,22 @@ because §97.b only folds the same shapes v1 did."
          (assq sexp env)))
    ((and (consp sexp) (memq (car sexp) '(+ - * / mod))
          (= (length sexp) 3))
-    (and (nelisp-phase47-compiler--int-foldable-p (nth 1 sexp) env fenv)
-         (nelisp-phase47-compiler--int-foldable-p (nth 2 sexp) env fenv)))
+    (and (nelisp-aot-compiler--int-foldable-p (nth 1 sexp) env fenv)
+         (nelisp-aot-compiler--int-foldable-p (nth 2 sexp) env fenv)))
    (t nil)))
 
-(defun nelisp-phase47-compiler--fold-int (sexp env)
+(defun nelisp-aot-compiler--fold-int (sexp env)
   "Fold SEXP to a compile-time integer using ENV (= let alist).
 Caller has already verified foldability via
-`nelisp-phase47-compiler--int-foldable-p'."
+`nelisp-aot-compiler--int-foldable-p'."
   (cond
    ((integerp sexp) sexp)
    ((eq sexp t) 1)
    ((symbolp sexp) (cdr (assq sexp env)))
    ((consp sexp)
     (let ((op (car sexp))
-          (a (nelisp-phase47-compiler--fold-int (nth 1 sexp) env))
-          (b (nelisp-phase47-compiler--fold-int (nth 2 sexp) env)))
+          (a (nelisp-aot-compiler--fold-int (nth 1 sexp) env))
+          (b (nelisp-aot-compiler--fold-int (nth 2 sexp) env)))
       (cond
        ((eq op '+) (+ a b))
        ((eq op '-) (- a b))
@@ -515,11 +515,11 @@ Caller has already verified foldability via
        ((eq op '/) (/ a b))
        ((eq op 'mod) (mod a b)))))))
 
-(defconst nelisp-phase47-compiler--cmp-ops
+(defconst nelisp-aot-compiler--cmp-ops
   '(< > <= >= =)
   "Doc 97.c comparison operators (= produce 0 or 1 in rax).")
 
-(defun nelisp-phase47-compiler--parse-extern-call-args
+(defun nelisp-aot-compiler--parse-extern-call-args
     (op name raw-args env fenv defuns)
   "Parse Doc 122 §122.C extern-call arg list into IR descriptors.
 OP is the head op symbol (= `extern-call' or `extern-call-f64').
@@ -556,13 +556,13 @@ already distinguishes `extern-call' (i64 return) from
       (cond
        ((and (consp a) (eq (car a) :varargs))
         (when varargs-p
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :extern-call-multiple-varargs name op)))
         (setq varargs-p t
               varargs (cdr a)))
        (varargs-p
         ;; Anything after the (:varargs ...) form is an error.
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :extern-call-trailing-after-varargs name a)))
        (t
         (push a fixed-args))))
@@ -580,14 +580,14 @@ already distinguishes `extern-call' (i64 return) from
                        ;; (:i64) / (:f64) without an expression is bad.
                        ((and (consp form)
                              (memq (car form) '(:i64 :f64)))
-                        (signal 'nelisp-phase47-compiler-error
+                        (signal 'nelisp-aot-compiler-error
                                 (list :extern-call-bad-arg-shape
                                       name form)))
                        ;; Bare value expr → default i64.
                        (t (cons 'gp form))))
                      (cls (car cls-expr))
                      (expr (cdr cls-expr))
-                     (parsed (nelisp-phase47-compiler--parse-value
+                     (parsed (nelisp-aot-compiler--parse-value
                               expr env fenv defuns)))
                 ;; A33.4 — PARSED is now the flat key-value vector built by
                 ;; `--make-ir', so extend it with `vconcat' (not `append',
@@ -603,30 +603,30 @@ already distinguishes `extern-call' (i64 return) from
                                varargs))
            (all-args (append parsed-fixed parsed-var))
            (gp-args (cl-remove-if-not
-                     (lambda (n) (eq (nelisp-phase47-compiler--ir-get n :cls) 'gp))
+                     (lambda (n) (eq (nelisp-aot-compiler--ir-get n :cls) 'gp))
                      all-args))
            (f64-args (cl-remove-if-not
-                      (lambda (n) (eq (nelisp-phase47-compiler--ir-get n :cls) 'f64))
+                      (lambda (n) (eq (nelisp-aot-compiler--ir-get n :cls) 'f64))
                       all-args)))
       (when (and (> (length gp-args)
-                    (length (nelisp-phase47-compiler--current-arg-regs)))
-                 (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                           (memq nelisp-phase47-compiler--abi '(sysv win64)))))
-        (signal 'nelisp-phase47-compiler-error
+                    (length (nelisp-aot-compiler--current-arg-regs)))
+                 (not (and (eq nelisp-aot-compiler--arch 'x86_64)
+                           (memq nelisp-aot-compiler--abi '(sysv win64)))))
+        (signal 'nelisp-aot-compiler-error
                 (list :extern-call-too-many-gp-args name
                       (length gp-args))))
       (when (and (> (length f64-args)
-                    (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
-                 (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                           (eq nelisp-phase47-compiler--abi 'win64))))
-        (signal 'nelisp-phase47-compiler-error
+                    (length (nelisp-aot-compiler--current-xmm-arg-regs)))
+                 (not (and (eq nelisp-aot-compiler--arch 'x86_64)
+                           (eq nelisp-aot-compiler--abi 'win64))))
+        (signal 'nelisp-aot-compiler-error
                 (list :extern-call-too-many-f64-args name
                       (length f64-args))))
       (list :args all-args
             :varargs-p varargs-p
             :f64-count (length f64-args)))))
 
-(defsubst nelisp-phase47-compiler--make-ir (kind &rest plist)
+(defsubst nelisp-aot-compiler--make-ir (kind &rest plist)
   "Construct an IR node tagged KIND carrying PLIST.
 A33.4 — the internal representation is now a flat key-value vector
 `[KIND K1 V1 K2 V2 ...]' (slot 0 = the `:kind' symbol, then the PLIST
@@ -643,7 +643,7 @@ the rest of the compiler and, since the emit path computes identical
 bytes either way, the produced `.o' objects are byte-identical."
   (apply #'vector kind plist))
 
-(defsubst nelisp-phase47-compiler--ir-kind (node)
+(defsubst nelisp-aot-compiler--ir-kind (node)
   "Read the :kind tag of IR NODE.
 A33.4 — NODE is now the flat key-value vector built by `--make-ir', so
 the kind tag lives at slot 0 and this is a single `aref' (the future
@@ -652,7 +652,7 @@ were centralized here in A33.2, so the list -> vector swap touches only
 this body; the emitted `.o' bytes are unchanged."
   (aref node 0))
 
-(defsubst nelisp-phase47-compiler--ir-get (node field)
+(defsubst nelisp-aot-compiler--ir-get (node field)
   "Read FIELD of IR NODE.
 A33.4 — NODE is the flat key-value vector `[KIND K1 V1 K2 V2 ...]', so
 the lookup scans the key slots (1, 3, 5, ...) for FIELD and returns the
@@ -670,7 +670,7 @@ at its kind-fixed offset since per-kind layout is constant."
       (setq i (+ i 2)))
     result))
 
-(defconst nelisp-phase47-compiler--ir-kind-tags
+(defconst nelisp-aot-compiler--ir-kind-tags
   '((alloc-bytes . 0)
     (addr-of . 97)
     (data-addr . 99)
@@ -775,32 +775,32 @@ at its kind-fixed offset since per-kind layout is constant."
 A33.2 defines this table only (no behavior change); A33.3 uses it to
 turn the symbol-keyed `pcase'/`cond' emit dispatch into integer
 dispatch.  The entries cover every kind produced by
-`nelisp-phase47-compiler--make-ir'.  Tag values are stable; later
+`nelisp-aot-compiler--make-ir'.  Tag values are stable; later
 extensions append new tags instead of renumbering existing values.")
 
-(defsubst nelisp-phase47-compiler--ir-kind-tag (node)
+(defsubst nelisp-aot-compiler--ir-kind-tag (node)
   "Return the small-integer tag for IR NODE's `:kind' (A33.2 table).
 A33.3 — looks the `:kind' symbol up in `--ir-kind-tags' so the emit
 dispatch sites can compare integers (`(= tag N)') instead of symbols.
 This is a behaviour-preserving change: every dispatched kind maps to a
 distinct stable tag, so the emitted `.o' bytes are unchanged."
-  (cdr (assq (nelisp-phase47-compiler--ir-kind node)
-             nelisp-phase47-compiler--ir-kind-tags)))
+  (cdr (assq (nelisp-aot-compiler--ir-kind node)
+             nelisp-aot-compiler--ir-kind-tags)))
 
-(defsubst nelisp-phase47-compiler--ir-node-p (value)
-  "Return non-nil when VALUE is a Phase 47 IR node vector."
+(defsubst nelisp-aot-compiler--ir-node-p (value)
+  "Return non-nil when VALUE is a AOT IR node vector."
   (and (vectorp value)
        (> (length value) 0)
        (symbolp (aref value 0))
-       (assq (aref value 0) nelisp-phase47-compiler--ir-kind-tags)))
+       (assq (aref value 0) nelisp-aot-compiler--ir-kind-tags)))
 
-(defun nelisp-phase47-compiler--walk-ir (ir fn)
+(defun nelisp-aot-compiler--walk-ir (ir fn)
   "Walk IR and nested IR children, calling FN for each node."
   (cl-labels
       ((walk-value
         (value)
         (cond
-         ((nelisp-phase47-compiler--ir-node-p value)
+         ((nelisp-aot-compiler--ir-node-p value)
           (funcall fn value)
           (cl-loop for i from 1 below (length value)
                    do (walk-value (aref value i))))
@@ -812,7 +812,7 @@ distinct stable tag, so the emitted `.o' bytes are unchanged."
                    do (walk-value (aref value i)))))))
     (walk-value ir)))
 
-(defconst nelisp-phase47-compiler--allocating-kinds
+(defconst nelisp-aot-compiler--allocating-kinds
   '(alloc-bytes
     cell-make
     cons-make
@@ -826,92 +826,92 @@ distinct stable tag, so the emitted `.o' bytes are unchanged."
     vector-make)
   "IR kinds that allocate heap or heap-like storage.")
 
-(defun nelisp-phase47-compiler--ir-contains-allocation-p (ir)
+(defun nelisp-aot-compiler--ir-contains-allocation-p (ir)
   "Return non-nil when IR contains an allocation-producing node."
   (let ((found nil))
-    (nelisp-phase47-compiler--walk-ir
+    (nelisp-aot-compiler--walk-ir
      ir
      (lambda (node)
-       (when (memq (nelisp-phase47-compiler--ir-kind node)
-                   nelisp-phase47-compiler--allocating-kinds)
+       (when (memq (nelisp-aot-compiler--ir-kind node)
+                   nelisp-aot-compiler--allocating-kinds)
          (setq found t))))
     found))
 
-(defun nelisp-phase47-compiler--gc-root-slots-for-defun (body-ir)
+(defun nelisp-aot-compiler--gc-root-slots-for-defun (body-ir)
   "Return conservative static GC root slots for a defun BODY-IR.
 Stage 129.5A only records explicitly annotated Sexp GP refs and only
 when the body contains an allocation site.  Runtime registration of
 these slots is a later 129.5 step."
-  (when (nelisp-phase47-compiler--ir-contains-allocation-p body-ir)
+  (when (nelisp-aot-compiler--ir-contains-allocation-p body-ir)
     (let ((slots nil))
-      (nelisp-phase47-compiler--walk-ir
+      (nelisp-aot-compiler--walk-ir
        body-ir
        (lambda (node)
-         (when (and (eq (nelisp-phase47-compiler--ir-kind node) 'ref)
-                    (eq (nelisp-phase47-compiler--ir-get node :class) 'gp)
-                    (nelisp-phase47-compiler--ir-get node :root-p))
-           (push (nelisp-phase47-compiler--ir-get node :slot) slots))))
+         (when (and (eq (nelisp-aot-compiler--ir-kind node) 'ref)
+                    (eq (nelisp-aot-compiler--ir-get node :class) 'gp)
+                    (nelisp-aot-compiler--ir-get node :root-p))
+           (push (nelisp-aot-compiler--ir-get node :slot) slots))))
       (sort (delete-dups slots) #'<))))
 
-(defun nelisp-phase47-compiler--gc-root-descriptor-for-defun (defun-ir)
+(defun nelisp-aot-compiler--gc-root-descriptor-for-defun (defun-ir)
   "Return the call-boundary GC root descriptor for DEFUN-IR, or nil.
 The descriptor is the compiler-side handoff for Doc 99 / 129.5C:
 `:slots' names the frame slots that must be copied into a runtime AOT
 root vector while the compiled function is active."
-  (when (and (nelisp-phase47-compiler--ir-node-p defun-ir)
-             (eq (nelisp-phase47-compiler--ir-kind defun-ir) 'defun))
-    (let ((slots (nelisp-phase47-compiler--ir-get defun-ir :gc-root-slots)))
+  (when (and (nelisp-aot-compiler--ir-node-p defun-ir)
+             (eq (nelisp-aot-compiler--ir-kind defun-ir) 'defun))
+    (let ((slots (nelisp-aot-compiler--ir-get defun-ir :gc-root-slots)))
       (when slots
-        (list :name (nelisp-phase47-compiler--ir-get defun-ir :name)
+        (list :name (nelisp-aot-compiler--ir-get defun-ir :name)
               :slots slots
               :param-count
-              (length (nelisp-phase47-compiler--ir-get defun-ir :params))
+              (length (nelisp-aot-compiler--ir-get defun-ir :params))
               :rt-slot-count
-              (nelisp-phase47-compiler--ir-get defun-ir :rt-slot-count))))))
+              (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count))))))
 
-(defun nelisp-phase47-compiler--gc-root-descriptors (ir)
+(defun nelisp-aot-compiler--gc-root-descriptors (ir)
   "Return all non-empty GC root descriptors found in top-level IR."
   (let ((descriptors nil))
-    (nelisp-phase47-compiler--walk-ir
+    (nelisp-aot-compiler--walk-ir
      ir
      (lambda (node)
        (let ((descriptor
-              (nelisp-phase47-compiler--gc-root-descriptor-for-defun node)))
+              (nelisp-aot-compiler--gc-root-descriptor-for-defun node)))
          (when descriptor
            (push descriptor descriptors)))))
     (nreverse descriptors)))
 
-(defun nelisp-phase47-compiler--defun-param-symbol (param)
+(defun nelisp-aot-compiler--defun-param-symbol (param)
   "Return the symbol named by defun PARAM, or nil for unsupported shapes."
   (cond
    ((symbolp param) param)
    ((and (consp param) (symbolp (car param))) (car param))
    (t nil)))
 
-(defun nelisp-phase47-compiler--defun-param-symbols (param-forms sexp)
+(defun nelisp-aot-compiler--defun-param-symbols (param-forms sexp)
   "Return normalized defun PARAM-FORMS as symbols for SEXP."
-  (mapcar #'nelisp-phase47-compiler--defun-param-symbol
+  (mapcar #'nelisp-aot-compiler--defun-param-symbol
           (plist-get
-           (nelisp-phase47-compiler--normalize-defun-params param-forms sexp)
+           (nelisp-aot-compiler--normalize-defun-params param-forms sexp)
            :params)))
 
-(defconst nelisp-phase47-compiler--object-hidden-boundary-symbols
+(defconst nelisp-aot-compiler--object-hidden-boundary-symbols
   '(out mirror frames scratch name_slot
     callback-slot-0 callback-slot-1 callback-slot-2 callback-slot-3
     callback-slot-4 callback-slot-5 callback-slot-6 callback-slot-7
     callback-slot-8 callback-slot-9 callback-slot-10 callback-slot-11)
   "Object-mode synthetic boxed-boundary slots for ordinary user defuns.")
 
-(defun nelisp-phase47-compiler--object-hidden-boundary-fenv
+(defun nelisp-aot-compiler--object-hidden-boundary-fenv
     (fenv start-slot)
   "Return FENV extended with object-mode hidden boundary slots.
 START-SLOT is the first reserved frame slot after source parameters."
-  (if (or (not nelisp-phase47-compiler--allow-external-user-calls)
-          (nelisp-phase47-compiler--aot-funcall-boundary-available-p fenv))
+  (if (or (not nelisp-aot-compiler--allow-external-user-calls)
+          (nelisp-aot-compiler--aot-funcall-boundary-available-p fenv))
       (list :fenv fenv :count 0)
     (let ((slot start-slot)
           (extra nil))
-      (dolist (sym nelisp-phase47-compiler--object-hidden-boundary-symbols)
+      (dolist (sym nelisp-aot-compiler--object-hidden-boundary-symbols)
         (unless (assq sym fenv)
           (push (cons sym (list :slot slot :class 'gp :root-p t)) extra)
           (setq slot (1+ slot))))
@@ -919,7 +919,7 @@ START-SLOT is the first reserved frame slot after source parameters."
         (list :fenv (append (nreverse extra) fenv)
               :count count)))))
 
-(defun nelisp-phase47-compiler--insert-param-before-rest
+(defun nelisp-aot-compiler--insert-param-before-rest
     (param-forms param)
   "Insert PARAM into PARAM-FORMS before `&rest' when present."
   (let ((before nil)
@@ -932,14 +932,14 @@ START-SLOT is the first reserved frame slot after source parameters."
         (setq tail (cdr tail))))
     (append (nreverse before) (list param) tail)))
 
-(defun nelisp-phase47-compiler--auto-frame-root-defun-p
+(defun nelisp-aot-compiler--auto-frame-root-defun-p
     (form root-names)
   "Return non-nil when FORM should receive `auto_frame_roots'."
   (when (and (consp form) (eq (car form) 'defun))
     (let* ((name (nth 1 form))
            (param-forms (nth 2 form))
            (symbols
-            (nelisp-phase47-compiler--defun-param-symbols
+            (nelisp-aot-compiler--defun-param-symbols
              param-forms form)))
       (and (memq name root-names)
            (cl-every (lambda (sym) (memq sym symbols))
@@ -948,25 +948,25 @@ START-SLOT is the first reserved frame slot after source parameters."
            (not (memq 'frame_roots symbols))
            (not (memq 'auto_frame_roots symbols))))))
 
-(defun nelisp-phase47-compiler--select-auto-frame-roots (sexp)
+(defun nelisp-aot-compiler--select-auto-frame-roots (sexp)
   "Return SEXP with loader-selected `auto_frame_roots' markers inserted.
 
 Only defuns with non-empty Doc 129.5 root descriptors and the standard
 AOT handle params `out', `mirror', `frames', and `scratch' are marked.
 Boundary defuns with `roots' and explicit `frame_roots' / existing
 `auto_frame_roots' forms are left unchanged."
-  (let* ((ir (nelisp-phase47-compiler--parse sexp nil))
+  (let* ((ir (nelisp-aot-compiler--parse sexp nil))
          (root-names
           (mapcar (lambda (descriptor)
                     (plist-get descriptor :name))
-                  (nelisp-phase47-compiler--gc-root-descriptors ir))))
+                  (nelisp-aot-compiler--gc-root-descriptors ir))))
     (cl-labels
         ((maybe-mark-defun
           (form)
-          (if (nelisp-phase47-compiler--auto-frame-root-defun-p
+          (if (nelisp-aot-compiler--auto-frame-root-defun-p
                form root-names)
               (let ((params
-                     (nelisp-phase47-compiler--insert-param-before-rest
+                     (nelisp-aot-compiler--insert-param-before-rest
                       (nth 2 form) 'auto_frame_roots)))
                 `(defun ,(nth 1 form) ,params ,@(nthcdr 3 form)))
             form)))
@@ -977,7 +977,7 @@ Boundary defuns with `roots' and explicit `frame_roots' / existing
         (cons 'seq (mapcar #'maybe-mark-defun (cdr sexp))))
        (t sexp)))))
 
-(defun nelisp-phase47-compiler--auto-aot-root-boundary-slots
+(defun nelisp-aot-compiler--auto-aot-root-boundary-slots
     (fenv &optional require-roots)
   "Return Doc 129.5F/I boundary slots from FENV, or nil.
 
@@ -1000,7 +1000,7 @@ vector in an aligned stack temporary."
     (when ok
       (nreverse slots))))
 
-(defun nelisp-phase47-compiler--symbols-for-root-slots (fenv root-slots)
+(defun nelisp-aot-compiler--symbols-for-root-slots (fenv root-slots)
   "Return FENV symbols corresponding to ROOT-SLOTS."
   (mapcar
    (lambda (slot)
@@ -1010,30 +1010,30 @@ vector in an aligned stack temporary."
                (= (or (plist-get (cdr pair) :slot) -1) slot))
              fenv)))
        (unless entry
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :aot-root-slot-symbol-missing
                        slot :root-slots root-slots)))
        (car entry)))
    root-slots))
 
-(defun nelisp-phase47-compiler--maybe-wrap-aot-root-scope
+(defun nelisp-aot-compiler--maybe-wrap-aot-root-scope
     (body-ir gc-root-slots env fenv defuns)
   "Wrap BODY-IR in automatic Doc 129.5 root push/pop when possible."
   (let* ((slot-boundary-slots
           (and gc-root-slots
-               (nelisp-phase47-compiler--auto-aot-root-boundary-slots
+               (nelisp-aot-compiler--auto-aot-root-boundary-slots
                 fenv t)))
          (frame-boundary-slots
           (and gc-root-slots
                (or slot-boundary-slots
                    (and (or (assq 'frame_roots fenv)
                             (assq 'auto_frame_roots fenv))
-                        (nelisp-phase47-compiler--auto-aot-root-boundary-slots
+                        (nelisp-aot-compiler--auto-aot-root-boundary-slots
                          fenv nil)))))
          (boundary-slots frame-boundary-slots)
          (root-symbols
           (and slot-boundary-slots
-               (nelisp-phase47-compiler--symbols-for-root-slots
+               (nelisp-aot-compiler--symbols-for-root-slots
                 fenv gc-root-slots))))
     (if boundary-slots
         (let* ((slot-storage-p (and slot-boundary-slots t))
@@ -1045,7 +1045,7 @@ vector in an aligned stack temporary."
                   `(extern-call nelisp_aot_materialize_frame_roots
                                 mirror frames ,(length gc-root-slots)
                                 out scratch ,@gc-root-slots))))
-          (nelisp-phase47-compiler--make-ir
+          (nelisp-aot-compiler--make-ir
                 'aot-root-scope
                 :root-slots gc-root-slots
                 :root-symbols root-symbols
@@ -1053,25 +1053,25 @@ vector in an aligned stack temporary."
                 :root-storage (if slot-storage-p 'slot 'stack)
                 :materialize-kind (if slot-storage-p 'values 'frames)
                 :materialize-ir
-                (nelisp-phase47-compiler--parse-value
+                (nelisp-aot-compiler--parse-value
                  materialize-form env fenv defuns)
                 :push-ir
                 (and slot-storage-p
-                     (nelisp-phase47-compiler--parse-value
+                     (nelisp-aot-compiler--parse-value
                       '(extern-call nelisp_aot_push_roots
                                     mirror frames roots out scratch)
                       env fenv defuns))
                 :body body-ir
                 :pop-ir
                 (and slot-storage-p
-                     (nelisp-phase47-compiler--parse-value
+                     (nelisp-aot-compiler--parse-value
                       '(extern-call nelisp_aot_pop_roots
                                     mirror frames roots out scratch)
                       env fenv defuns))))
       body-ir)))
 
-(defun nelisp-phase47-compiler--parse-let-var (var-form)
-  "Return `(VAR ROOT-P)' for a Phase 47 `let' VAR-FORM."
+(defun nelisp-aot-compiler--parse-let-var (var-form)
+  "Return `(VAR ROOT-P)' for a AOT `let' VAR-FORM."
   (cond
    ((symbolp var-form)
     (list var-form nil))
@@ -1082,11 +1082,11 @@ vector in an aligned stack temporary."
          (eq (nth 2 var-form) 'sexp))
     (list (car var-form) t))
    (t
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :let-var-shape var-form)))))
 
-(defun nelisp-phase47-compiler--validate-let-binding (binding)
-  "Return `(VAR VALUE ROOT-P)' for one Phase 47 `let' BINDING."
+(defun nelisp-aot-compiler--validate-let-binding (binding)
+  "Return `(VAR VALUE ROOT-P)' for one AOT `let' BINDING."
   (if (symbolp binding)
       (list binding 0 nil)
     (cond
@@ -1098,111 +1098,111 @@ vector in an aligned stack temporary."
            (consp (cdr binding))
            (null (cddr binding)))
       (let ((parsed-var
-             (nelisp-phase47-compiler--parse-let-var (car binding))))
+             (nelisp-aot-compiler--parse-let-var (car binding))))
         (list (car parsed-var) (cadr binding) (cadr parsed-var))))
      (t
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :let-binding-shape binding))))))
 
-(defun nelisp-phase47-compiler--check-let-vars-unique (bindings)
+(defun nelisp-aot-compiler--check-let-vars-unique (bindings)
   "Signal when BINDINGS contains duplicate variables."
   (let ((seen nil))
     (dolist (binding bindings)
-      (let ((var (car (nelisp-phase47-compiler--validate-let-binding binding))))
+      (let ((var (car (nelisp-aot-compiler--validate-let-binding binding))))
         (when (memq var seen)
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :let-duplicate-var var)))
         (push var seen)))))
 
-(defun nelisp-phase47-compiler--check-let-var-lexical (var)
+(defun nelisp-aot-compiler--check-let-var-lexical (var)
   "Signal when VAR is known to require special binding semantics."
-  (when (memq var nelisp-phase47-compiler--special-vars)
-    (signal 'nelisp-phase47-compiler-error
+  (when (memq var nelisp-aot-compiler--special-vars)
+    (signal 'nelisp-aot-compiler-error
             (list :let-special-binding-pending var))))
 
-(defun nelisp-phase47-compiler--special-var-p (var)
+(defun nelisp-aot-compiler--special-var-p (var)
   "Return non-nil when VAR has top-level special binding semantics."
-  (memq var nelisp-phase47-compiler--special-vars))
+  (memq var nelisp-aot-compiler--special-vars))
 
-(defun nelisp-phase47-compiler--check-let-vars-lexical (bindings)
+(defun nelisp-aot-compiler--check-let-vars-lexical (bindings)
   "Signal when BINDINGS contain a known special variable."
   (dolist (binding bindings)
-    (let ((var (car (nelisp-phase47-compiler--validate-let-binding binding))))
-      (nelisp-phase47-compiler--check-let-var-lexical var))))
+    (let ((var (car (nelisp-aot-compiler--validate-let-binding binding))))
+      (nelisp-aot-compiler--check-let-var-lexical var))))
 
-(defun nelisp-phase47-compiler--let-binding-special-p (binding)
+(defun nelisp-aot-compiler--let-binding-special-p (binding)
   "Return non-nil when BINDING targets a known special variable."
-  (let ((var (car (nelisp-phase47-compiler--validate-let-binding binding))))
-    (and (nelisp-phase47-compiler--special-var-p var) t)))
+  (let ((var (car (nelisp-aot-compiler--validate-let-binding binding))))
+    (and (nelisp-aot-compiler--special-var-p var) t)))
 
-(defun nelisp-phase47-compiler--parse-multi-let
+(defun nelisp-aot-compiler--parse-multi-let
     (bindings body-sexp env fenv defuns parse-body-fn)
   "Parse a multi-binding `let' in value or statement context.
 BINDINGS are evaluated in the original ENV/FENV, matching ordinary
 parallel `let' semantics.  Compile-time-foldable bindings extend ENV
 only for BODY.  Runtime bindings allocate frame slots together and
 extend FENV only for BODY.  PARSE-BODY-FN is either
-`nelisp-phase47-compiler--parse-value' or `--parse-stmt'."
+`nelisp-aot-compiler--parse-value' or `--parse-stmt'."
   (if (not (consp bindings))
       (funcall parse-body-fn body-sexp env fenv defuns)
-    (nelisp-phase47-compiler--check-let-vars-unique bindings)
+    (nelisp-aot-compiler--check-let-vars-unique bindings)
     (let* ((special-flags
-            (mapcar #'nelisp-phase47-compiler--let-binding-special-p bindings))
+            (mapcar #'nelisp-aot-compiler--let-binding-special-p bindings))
            (special-count (cl-count t special-flags)))
       (cond
        ((= special-count (length bindings))
-        (nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
+        (nelisp-aot-compiler--parse-aot-special-let-n-normal-exit
          bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
        ((> special-count 0)
-        (nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
+        (nelisp-aot-compiler--parse-aot-special-let-mixed-normal-exit
          bindings body-sexp env fenv defuns (list 'let bindings body-sexp)))
        (t
         (let ((new-env env)
               (new-fenv fenv)
               (rt-bindings nil))
           (dolist (binding bindings)
-            (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+            (let* ((pair (nelisp-aot-compiler--validate-let-binding binding))
                    (var (nth 0 pair))
                    (val-sexp (nth 1 pair))
                    (root-p (nth 2 pair)))
-              (if (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
-                  (let ((val (nelisp-phase47-compiler--fold-int val-sexp env)))
+              (if (nelisp-aot-compiler--int-foldable-p val-sexp env fenv)
+                  (let ((val (nelisp-aot-compiler--fold-int val-sexp env)))
                     (push (cons var val) new-env))
-                (unless nelisp-phase47-compiler--next-rt-let-slot
-                  (signal 'nelisp-phase47-compiler-error
+                (unless nelisp-aot-compiler--next-rt-let-slot
+                  (signal 'nelisp-aot-compiler-error
                           (list :let-rt-requires-defun-context var)))
-                (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
-                       (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
+                (let* ((slot (car nelisp-aot-compiler--next-rt-let-slot))
+                       (_ (setcar nelisp-aot-compiler--next-rt-let-slot
                                   (1+ slot)))
-                       (val-ir (nelisp-phase47-compiler--parse-value
+                       (val-ir (nelisp-aot-compiler--parse-value
                                 val-sexp env fenv defuns)))
                   (push (list var slot val-ir root-p) rt-bindings)
                   (push (cons var (list :slot slot :class 'gp :root-p root-p))
                         new-fenv)))))
           (let ((body-ir (funcall parse-body-fn body-sexp new-env new-fenv defuns)))
             (if rt-bindings
-                (nelisp-phase47-compiler--make-ir 'let-rt-n
+                (nelisp-aot-compiler--make-ir 'let-rt-n
                       :bindings (nreverse rt-bindings)
                       :body body-ir)
               body-ir))))))))
 
 ;; ---- Doc 129.1 frontend macro expansion ----
 ;;
-;; Phase 47 parses a DSL, not host elisp.  Running `macroexpand-all'
+;; AOT parses a DSL, not host elisp.  Running `macroexpand-all'
 ;; over a whole program would rewrite DSL `defun' into host `defalias',
-;; so macro expansion is selective: preserve Phase 47 structural forms,
+;; so macro expansion is selective: preserve AOT structural forms,
 ;; expand user macros in value positions, then normalize the small host
 ;; core forms (`progn', 3-arg `if', `nil') that common macros produce.
 
-(defun nelisp-phase47-compiler--function-designator-literal (form)
+(defun nelisp-aot-compiler--function-designator-literal (form)
   "Return FORM's literal function designator for top-level validation."
   (if (and (consp form)
            (eq (car form) 'function)
            (= (length form) 2))
       (cadr form)
-    (nelisp-phase47-compiler--literal-arg form)))
+    (nelisp-aot-compiler--literal-arg form)))
 
-(defun nelisp-phase47-compiler--top-level-defmacro-p (form)
+(defun nelisp-aot-compiler--top-level-defmacro-p (form)
   "Return non-nil when FORM is a top-level `defmacro' form."
   (and (consp form)
        (eq (car form) 'defmacro)
@@ -1210,20 +1210,20 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
        (listp (nth 2 form))
        (>= (length form) 4)))
 
-(defun nelisp-phase47-compiler--top-level-module-form-p (form)
+(defun nelisp-aot-compiler--top-level-module-form-p (form)
   "Return non-nil when FORM is a compile-time top-level module form."
   (and (consp form)
        (memq (car form) '(require provide define-error defalias))))
 
-(defun nelisp-phase47-compiler--top-level-var-form-p (form)
+(defun nelisp-aot-compiler--top-level-var-form-p (form)
   "Return non-nil when FORM is a top-level variable declaration form."
   (and (consp form)
        (memq (car form) '(defvar defvar-local defconst defcustom))))
 
-(defconst nelisp-phase47-compiler--large-top-level-literal-threshold 2048
+(defconst nelisp-aot-compiler--large-top-level-literal-threshold 2048
   "Maximum top-level aggregate literal expanded into object init helpers.")
 
-(defun nelisp-phase47-compiler--aggregate-literal-over-threshold-p
+(defun nelisp-aot-compiler--aggregate-literal-over-threshold-p
     (value threshold)
   "Return non-nil when aggregate VALUE has more than THRESHOLD entries."
   (cond
@@ -1238,14 +1238,14 @@ extend FENV only for BODY.  PARSE-BODY-FN is either
       (> count threshold)))
    (t nil)))
 
-(defun nelisp-phase47-compiler--large-top-level-literal-var-form-p (form)
+(defun nelisp-aot-compiler--large-top-level-literal-var-form-p (form)
   "Return non-nil when FORM's initializer is too large to inline in AOT.
 Generated mapping tables contain tens of thousands of quoted cons cells;
 expanding them into helper IR is currently slower than the Doc 129 object
 pipeline can tolerate.  They are left for the runtime/table-data loading
 path instead of blocking compilation of the module's functions."
-  (and nelisp-phase47-compiler--allow-external-user-calls
-       (nelisp-phase47-compiler--top-level-var-form-p form)
+  (and nelisp-aot-compiler--allow-external-user-calls
+       (nelisp-aot-compiler--top-level-var-form-p form)
        (>= (length form) 3)
        (let* ((init (nth 2 form))
               (literal (cond
@@ -1255,21 +1255,21 @@ path instead of blocking compilation of the module's functions."
                          (nth 1 init))
                         ((vectorp init) init)
                         (t nil))))
-         (nelisp-phase47-compiler--aggregate-literal-over-threshold-p
+         (nelisp-aot-compiler--aggregate-literal-over-threshold-p
           literal
-          nelisp-phase47-compiler--large-top-level-literal-threshold))))
+          nelisp-aot-compiler--large-top-level-literal-threshold))))
 
-(defun nelisp-phase47-compiler--top-level-setq-form-p (form)
+(defun nelisp-aot-compiler--top-level-setq-form-p (form)
   "Return non-nil when FORM is a top-level assignment form."
   (and (consp form)
        (memq (car form) '(setq setq-default))))
 
-(defun nelisp-phase47-compiler--top-level-setq-pairs (form)
+(defun nelisp-aot-compiler--top-level-setq-pairs (form)
   "Return validated `(NAME VALUE)' pairs for top-level setq FORM."
-  (unless (and (nelisp-phase47-compiler--top-level-setq-form-p form)
+  (unless (and (nelisp-aot-compiler--top-level-setq-form-p form)
                (>= (length form) 3)
                (zerop (% (length (cdr form)) 2)))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :top-level-setq-arity form)))
   (let ((args (cdr form))
         (pairs nil))
@@ -1277,71 +1277,71 @@ path instead of blocking compilation of the module's functions."
       (let ((name (car args))
             (value (cadr args)))
         (unless (symbolp name)
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :top-level-setq-name-not-symbol form)))
         (push (list name value) pairs)
         (setq args (cddr args))))
     (nreverse pairs)))
 
-(defun nelisp-phase47-compiler--top-level-special-var-name (form)
+(defun nelisp-aot-compiler--top-level-special-var-name (form)
   "Return FORM's top-level special variable name."
-  (when (nelisp-phase47-compiler--top-level-var-form-p form)
+  (when (nelisp-aot-compiler--top-level-var-form-p form)
     (let ((name (nth 1 form)))
       (unless (symbolp name)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :top-level-var-name-not-symbol form)))
       name)))
 
-(defun nelisp-phase47-compiler--link-name-fragment (symbol)
+(defun nelisp-aot-compiler--link-name-fragment (symbol)
   "Return a deterministic linker-friendly fragment for SYMBOL."
   (let* ((raw (symbol-name symbol))
          (frag (replace-regexp-in-string "[^A-Za-z0-9_]" "_" raw)))
     (if (string-empty-p frag) "sym" frag)))
 
-(defun nelisp-phase47-compiler--top-level-var-helper-name (kind symbol index)
+(defun nelisp-aot-compiler--top-level-var-helper-name (kind symbol index)
   "Return the generated AOT init helper name for KIND/SYMBOL at INDEX."
   (intern (format "nelisp_aot_%s_%d_%s"
                   (if (memq kind '(defvar defconst defcustom))
                       (substring (symbol-name kind) 3)
                     (symbol-name kind))
                   index
-                  (nelisp-phase47-compiler--link-name-fragment symbol))))
+                  (nelisp-aot-compiler--link-name-fragment symbol))))
 
-(defun nelisp-phase47-compiler--defcustom-metadata-descriptor (form index)
+(defun nelisp-aot-compiler--defcustom-metadata-descriptor (form index)
   "Return the custom metadata descriptor for top-level defcustom FORM.
 INDEX must match the top-level variable declaration index used for the
 generated AOT init helper."
   (unless (and (consp form) (eq (car form) 'defcustom))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :not-defcustom-form form)))
   (unless (>= (length form) 4)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defcustom-arity form)))
   (let ((name (nth 1 form))
         (options (nthcdr 4 form)))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :top-level-var-name-not-symbol form)))
     (unless (stringp (nth 3 form))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defcustom-docstring-not-string form)))
     (unless (zerop (% (length options) 2))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defcustom-keyword-value-shape form)))
     (let ((rest options))
       (while rest
         (unless (keywordp (car rest))
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :defcustom-key-not-keyword (car rest))))
         (setq rest (cddr rest))))
     (list :name name
-          :helper (nelisp-phase47-compiler--top-level-var-helper-name
+          :helper (nelisp-aot-compiler--top-level-var-helper-name
                    'defcustom name index)
           :standard (nth 2 form)
           :docstring (nth 3 form)
           :options options)))
 
-(defun nelisp-phase47-compiler--top-level-literal-value (form)
+(defun nelisp-aot-compiler--top-level-literal-value (form)
   "Return `(literal . VALUE)' when FORM is a supported literal init."
   (cond
    ((and (consp form) (eq (car form) 'quote) (= (length form) 2))
@@ -1356,7 +1356,7 @@ generated AOT init helper."
           (ok t))
       (dolist (arg (cdr form))
         (let ((literal
-               (nelisp-phase47-compiler--top-level-literal-value arg)))
+               (nelisp-aot-compiler--top-level-literal-value arg)))
           (if literal
               (push (cdr literal) values)
             (setq ok nil))))
@@ -1367,16 +1367,16 @@ generated AOT init helper."
           (ok t))
       (dolist (arg (cdr form))
         (let ((literal
-               (nelisp-phase47-compiler--top-level-literal-value arg)))
+               (nelisp-aot-compiler--top-level-literal-value arg)))
           (if literal
               (push (cdr literal) values)
             (setq ok nil))))
       (when ok
         (cons 'literal (nreverse values)))))
    ((and (consp form) (eq (car form) 'cons) (= (length form) 3))
-    (let ((car-lit (nelisp-phase47-compiler--top-level-literal-value
+    (let ((car-lit (nelisp-aot-compiler--top-level-literal-value
                     (nth 1 form)))
-          (cdr-lit (nelisp-phase47-compiler--top-level-literal-value
+          (cdr-lit (nelisp-aot-compiler--top-level-literal-value
                     (nth 2 form))))
       (when (and car-lit cdr-lit)
         (cons 'literal (cons (cdr car-lit) (cdr cdr-lit))))))
@@ -1385,7 +1385,7 @@ generated AOT init helper."
           (ok t))
       (dolist (arg (cdr form))
         (let ((literal
-               (nelisp-phase47-compiler--top-level-literal-value arg)))
+               (nelisp-aot-compiler--top-level-literal-value arg)))
           (if (and literal (stringp (cdr literal)))
               (push (cdr literal) parts)
             (setq ok nil))))
@@ -1396,7 +1396,7 @@ generated AOT init helper."
     (cons 'literal form))
    (t nil)))
 
-(defun nelisp-phase47-compiler--runtime-sexp-literal-value (form)
+(defun nelisp-aot-compiler--runtime-sexp-literal-value (form)
   "Return `(literal . VALUE)' when FORM should materialize as runtime Sexp.
 Raw integer and boolean immediates keep their historical i64 lowering;
 quoted values, strings, keywords, vectors, and literal constructors are
@@ -1405,70 +1405,70 @@ boxed into caller-owned Sexp slots when a boxed AOT boundary exists."
    ((or (integerp form) (eq form t) (null form))
     nil)
    (t
-    (nelisp-phase47-compiler--top-level-literal-value form))))
+    (nelisp-aot-compiler--top-level-literal-value form))))
 
-(defun nelisp-phase47-compiler--runtime-sexp-literal-form (form fenv)
+(defun nelisp-aot-compiler--runtime-sexp-literal-form (form fenv)
   "Return a value form that materializes runtime Sexp literal FORM."
-  (let ((literal (nelisp-phase47-compiler--runtime-sexp-literal-value
+  (let ((literal (nelisp-aot-compiler--runtime-sexp-literal-value
                   form)))
     (when literal
-      (let ((out (and (nelisp-phase47-compiler--fenv-has-symbol-p
+      (let ((out (and (nelisp-aot-compiler--fenv-has-symbol-p
                        fenv 'out)
                       'out))
-            (scratch (and (nelisp-phase47-compiler--fenv-has-symbol-p
+            (scratch (and (nelisp-aot-compiler--fenv-has-symbol-p
                            fenv 'scratch)
                           'scratch)))
         (unless (and out scratch)
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :aot-literal-boundary-missing
                         '(out scratch)
                         :form form)))
         (let ((write-forms
-               (nelisp-phase47-compiler--top-level-literal-write-forms
+               (nelisp-aot-compiler--top-level-literal-write-forms
                 out (cdr literal) scratch 0)))
           (when write-forms
             `(seq ,@write-forms ,out)))))))
 
-(defun nelisp-phase47-compiler--runtime-boxed-sexp-form (form fenv)
+(defun nelisp-aot-compiler--runtime-boxed-sexp-form (form fenv)
   "Return FORM rewritten to produce a boxed Sexp pointer when needed.
 This is used for value-cell writes where raw integer/t/nil immediates
 must be materialized into a Sexp slot before calling the env bridge."
-  (let ((literal (nelisp-phase47-compiler--top-level-literal-value form)))
+  (let ((literal (nelisp-aot-compiler--top-level-literal-value form)))
     (if (not literal)
         form
-      (let ((out (and (nelisp-phase47-compiler--fenv-has-symbol-p
+      (let ((out (and (nelisp-aot-compiler--fenv-has-symbol-p
                        fenv 'out)
                       'out))
-            (scratch (and (nelisp-phase47-compiler--fenv-has-symbol-p
+            (scratch (and (nelisp-aot-compiler--fenv-has-symbol-p
                            fenv 'scratch)
                           'scratch)))
         (unless (and out scratch)
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :aot-literal-boundary-missing
                         '(out scratch)
                         :form form)))
         (let ((write-forms
-               (nelisp-phase47-compiler--top-level-literal-write-forms
+               (nelisp-aot-compiler--top-level-literal-write-forms
                 out (cdr literal) scratch 0)))
           (unless write-forms
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :aot-literal-unsupported form)))
           `(seq ,@write-forms ,out))))))
 
-(defun nelisp-phase47-compiler--scratch-slot (scratch index)
+(defun nelisp-aot-compiler--scratch-slot (scratch index)
   "Return a pointer form for scratch vector slot INDEX."
   `(vector-ref-ptr ,scratch ,index))
 
-(defun nelisp-phase47-compiler--next-power-of-two (n)
+(defun nelisp-aot-compiler--next-power-of-two (n)
   "Return the smallest power of two that is >= N."
   (let ((cap 1))
     (while (< cap n)
       (setq cap (ash cap 1)))
     cap))
 
-(defun nelisp-phase47-compiler--top-level-make-hash-table-capacity (form)
+(defun nelisp-aot-compiler--top-level-make-hash-table-capacity (form)
   "Return a bucket capacity for top-level `(make-hash-table ...)' FORM.
-The current Phase 47 hash-table primitive stores only the empty bucket
+The current AOT hash-table primitive stores only the empty bucket
 array.  Emacs keyword options are accepted syntactically so common
 source initializers can AOT-compile; `:size' is used when it is a
 positive integer, and the remaining options are runtime metadata the
@@ -1486,26 +1486,26 @@ MVP table does not yet store."
               (setq args (cddr args)))
           (setq ok nil)))
       (when ok
-        (max 16 (nelisp-phase47-compiler--next-power-of-two size))))))
+        (max 16 (nelisp-aot-compiler--next-power-of-two size))))))
 
-(defun nelisp-phase47-compiler--top-level-make-hash-table-write-forms
+(defun nelisp-aot-compiler--top-level-make-hash-table-write-forms
     (slot form scratch)
   "Return init-helper forms that materialize FORM as an empty hash table."
   (let ((capacity
-         (nelisp-phase47-compiler--top-level-make-hash-table-capacity form)))
+         (nelisp-aot-compiler--top-level-make-hash-table-capacity form)))
     (when capacity
-      (let ((tag-slot (nelisp-phase47-compiler--scratch-slot scratch 0)))
+      (let ((tag-slot (nelisp-aot-compiler--scratch-slot scratch 0)))
         `((sexp-write-symbol-lit ,tag-slot "hash-table")
           (hash-table-make ,tag-slot ,capacity ,slot))))))
 
-(defun nelisp-phase47-compiler--top-level-literal-write-forms
+(defun nelisp-aot-compiler--top-level-literal-write-forms
     (slot literal scratch depth)
   "Return forms that materialize LITERAL into SLOT.
 SCRATCH is the standard AOT init scratch vector; DEPTH selects a
 temporary scratch slot for nested aggregate construction.  Nil means
 the literal shape is outside the current module-init materializer."
   (when (>= depth 10)
-    (cl-return-from nelisp-phase47-compiler--top-level-literal-write-forms
+    (cl-return-from nelisp-aot-compiler--top-level-literal-write-forms
       nil))
   (cond
    ((integerp literal)
@@ -1525,13 +1525,13 @@ the literal shape is outside the current module-init materializer."
         (push (car tail) items)
         (setq tail (cdr tail)))
       (let ((forms
-             (nelisp-phase47-compiler--top-level-literal-write-forms
+             (nelisp-aot-compiler--top-level-literal-write-forms
               slot tail scratch depth))
-            (temp (nelisp-phase47-compiler--scratch-slot scratch depth)))
+            (temp (nelisp-aot-compiler--scratch-slot scratch depth)))
         (when forms
           (dolist (item items)
             (let ((item-forms
-                   (nelisp-phase47-compiler--top-level-literal-write-forms
+                   (nelisp-aot-compiler--top-level-literal-write-forms
                     temp item scratch (1+ depth))))
               (unless item-forms
                 (setq forms nil))
@@ -1544,12 +1544,12 @@ the literal shape is outside the current module-init materializer."
           forms))))
    ((vectorp literal)
     (let ((forms `((vector-make ,(length literal) ,slot)))
-          (temp (nelisp-phase47-compiler--scratch-slot scratch depth))
+          (temp (nelisp-aot-compiler--scratch-slot scratch depth))
           (idx 0)
           (ok t))
       (while (and ok (< idx (length literal)))
         (let ((item-forms
-               (nelisp-phase47-compiler--top-level-literal-write-forms
+               (nelisp-aot-compiler--top-level-literal-write-forms
                 temp (aref literal idx) scratch (1+ depth))))
           (if item-forms
               (setq forms
@@ -1561,27 +1561,27 @@ the literal shape is outside the current module-init materializer."
       (when ok forms)))
    (t nil)))
 
-(defun nelisp-phase47-compiler--top-level-sexp-init-write-forms
+(defun nelisp-aot-compiler--top-level-sexp-init-write-forms
     (slot form scratch)
   "Return init-helper forms that materialize FORM into SLOT.
 Returns nil when FORM is outside the literal Sexp MVP and should keep
 using the boxed integer init helper path."
-  (or (nelisp-phase47-compiler--top-level-make-hash-table-write-forms
+  (or (nelisp-aot-compiler--top-level-make-hash-table-write-forms
        slot form scratch)
-      (let ((literal (nelisp-phase47-compiler--top-level-literal-value form)))
+      (let ((literal (nelisp-aot-compiler--top-level-literal-value form)))
         (when literal
-          (nelisp-phase47-compiler--top-level-literal-write-forms
+          (nelisp-aot-compiler--top-level-literal-write-forms
            slot (cdr literal) scratch 0)))))
 
-(defun nelisp-phase47-compiler--top-level-var-direct-defun
+(defun nelisp-aot-compiler--top-level-var-direct-defun
     (kind helper name init-form)
   "Return a direct Sexp literal init-helper defun for KIND/NAME.
 INIT-FORM must be supported by
-`nelisp-phase47-compiler--top-level-sexp-init-write-form'."
+`nelisp-aot-compiler--top-level-sexp-init-write-form'."
   (let* ((params '(out mirror frames scratch name_slot))
          (symbol-name (symbol-name name))
          (write-forms
-          (nelisp-phase47-compiler--top-level-sexp-init-write-forms
+          (nelisp-aot-compiler--top-level-sexp-init-write-forms
            'out init-form 'scratch)))
     (when write-forms
       `(defun ,helper
@@ -1616,7 +1616,7 @@ INIT-FORM must be supported by
                              mirror name_slot out)
                 name_slot))))))))
 
-(defun nelisp-phase47-compiler--form-uses-aot-builtin-delegation-p (form)
+(defun nelisp-aot-compiler--form-uses-aot-builtin-delegation-p (form)
   "Return non-nil when FORM may clobber the init helper name slot.
 The direct dynamic top-level helper keeps the variable symbol in
 NAME-SLOT while evaluating INIT-FORM.  AOT builtin delegation reuses
@@ -1630,9 +1630,9 @@ slot."
             ((or found (atom node)) nil)
             ((memq (car node) '(quote function)) nil)
             ((or (memq (car node)
-                       nelisp-phase47-compiler--aot-builtin1-delegation-symbols)
+                       nelisp-aot-compiler--aot-builtin1-delegation-symbols)
                  (memq (car node)
-                       nelisp-phase47-compiler--aot-builtinn-delegation-symbols))
+                       nelisp-aot-compiler--aot-builtinn-delegation-symbols))
              (setq found t))
             (t
              (dolist (child node)
@@ -1640,13 +1640,13 @@ slot."
       (walk form))
     found))
 
-(defun nelisp-phase47-compiler--top-level-var-dynamic-defun
+(defun nelisp-aot-compiler--top-level-var-dynamic-defun
     (kind helper name init-form)
   "Return an object-mode dynamic Sexp init-helper defun for KIND/NAME."
-  (when nelisp-phase47-compiler--allow-external-user-calls
+  (when nelisp-aot-compiler--allow-external-user-calls
     (let* ((params '(out mirror frames scratch name_slot))
            (symbol-name (symbol-name name))
-           (init-slot (nelisp-phase47-compiler--gensym "top-var-init"))
+           (init-slot (nelisp-aot-compiler--gensym "top-var-init"))
            (annotated-params
             (mapcar (lambda (p) (list p :type 'sexp)) params)))
       `(defun ,helper ,annotated-params
@@ -1686,85 +1686,85 @@ slot."
                                 mirror name_slot out)
                    name_slot))))))))))
 
-(defun nelisp-phase47-compiler--top-level-var-init-descriptor (form index)
+(defun nelisp-aot-compiler--top-level-var-init-descriptor (form index)
   "Return the AOT init descriptor for top-level variable FORM.
 Returns nil for declaration-only `defvar' forms with no initializer."
   (let ((kind (car form))
         (name (nth 1 form)))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :top-level-var-name-not-symbol form)))
     (pcase kind
       ((or 'defvar 'defvar-local)
        (unless (<= 2 (length form) 4)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :defvar-arity form)))
        (when (= (length form) 4)
          (unless (stringp (nth 3 form))
-           (signal 'nelisp-phase47-compiler-error
+           (signal 'nelisp-aot-compiler-error
                    (list :defvar-docstring-not-string form))))
        (when (>= (length form) 3)
          (list :kind 'defvar
                :name name
-               :helper (nelisp-phase47-compiler--top-level-var-helper-name
+               :helper (nelisp-aot-compiler--top-level-var-helper-name
                         'defvar name index)
                :index index)))
       ('defconst
        (unless (<= 3 (length form) 4)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :defconst-arity form)))
        (when (= (length form) 4)
          (unless (stringp (nth 3 form))
-           (signal 'nelisp-phase47-compiler-error
+           (signal 'nelisp-aot-compiler-error
                    (list :defconst-docstring-not-string form))))
        (list :kind 'defconst
              :name name
-             :helper (nelisp-phase47-compiler--top-level-var-helper-name
+             :helper (nelisp-aot-compiler--top-level-var-helper-name
                       kind name index)
              :index index))
       ('defcustom
-       (nelisp-phase47-compiler--defcustom-metadata-descriptor form index)
+       (nelisp-aot-compiler--defcustom-metadata-descriptor form index)
        (list :kind 'defcustom
              :name name
-             :helper (nelisp-phase47-compiler--top-level-var-helper-name
+             :helper (nelisp-aot-compiler--top-level-var-helper-name
                       kind name index)
              :index index))
       ((or 'setq 'setq-default)
        (unless (= (length form) 3)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :top-level-setq-pair-shape form)))
        (list :kind kind
              :name name
-             :helper (nelisp-phase47-compiler--top-level-var-helper-name
+             :helper (nelisp-aot-compiler--top-level-var-helper-name
                       kind name index)
              :index index))
       (_
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :unknown-top-level-var-form form))))))
 
-(defun nelisp-phase47-compiler--lower-top-level-var-form (form index)
+(defun nelisp-aot-compiler--lower-top-level-var-form (form index)
   "Lower top-level FORM into an explicit AOT init helper.
 Returns nil for declaration-only `defvar' forms with no initializer."
   (let ((kind (car form))
         (name (nth 1 form)))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :top-level-var-name-not-symbol form)))
     (pcase kind
       ((or 'defvar 'defvar-local)
        (unless (<= 2 (length form) 4)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :defvar-arity form)))
        (when (= (length form) 4)
          (unless (stringp (nth 3 form))
-           (signal 'nelisp-phase47-compiler-error
+           (signal 'nelisp-aot-compiler-error
                    (list :defvar-docstring-not-string form))))
        (when (>= (length form) 3)
-         (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+         (let ((helper (nelisp-aot-compiler--top-level-var-helper-name
                         'defvar name index)))
-           (or (nelisp-phase47-compiler--top-level-var-direct-defun
+           (or (nelisp-aot-compiler--top-level-var-direct-defun
                 'defvar helper name (nth 2 form))
-               (nelisp-phase47-compiler--top-level-var-dynamic-defun
+               (nelisp-aot-compiler--top-level-var-dynamic-defun
                 'defvar helper name (nth 2 form))
                `(defun-sexp-int-defvar-symbol
                     ,helper
@@ -1773,17 +1773,17 @@ Returns nil for declaration-only `defvar' forms with no initializer."
                   ,(nth 2 form))))))
       ('defconst
        (unless (<= 3 (length form) 4)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :defconst-arity form)))
        (when (= (length form) 4)
          (unless (stringp (nth 3 form))
-           (signal 'nelisp-phase47-compiler-error
+           (signal 'nelisp-aot-compiler-error
                    (list :defconst-docstring-not-string form))))
-       (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+       (let ((helper (nelisp-aot-compiler--top-level-var-helper-name
                       kind name index)))
-         (or (nelisp-phase47-compiler--top-level-var-direct-defun
+         (or (nelisp-aot-compiler--top-level-var-direct-defun
               kind helper name (nth 2 form))
-             (nelisp-phase47-compiler--top-level-var-dynamic-defun
+             (nelisp-aot-compiler--top-level-var-dynamic-defun
               kind helper name (nth 2 form))
              `(defun-sexp-int-defconst-symbol
                   ,helper
@@ -1791,12 +1791,12 @@ Returns nil for declaration-only `defvar' forms with no initializer."
                   (out mirror frames scratch name_slot)
                 ,(nth 2 form)))))
       ('defcustom
-       (nelisp-phase47-compiler--defcustom-metadata-descriptor form index)
-       (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+       (nelisp-aot-compiler--defcustom-metadata-descriptor form index)
+       (let ((helper (nelisp-aot-compiler--top-level-var-helper-name
                       kind name index)))
-         (or (nelisp-phase47-compiler--top-level-var-direct-defun
+         (or (nelisp-aot-compiler--top-level-var-direct-defun
               'defvar helper name (nth 2 form))
-             (nelisp-phase47-compiler--top-level-var-dynamic-defun
+             (nelisp-aot-compiler--top-level-var-dynamic-defun
               'defvar helper name (nth 2 form))
              `(defun-sexp-int-defvar-symbol
                   ,helper
@@ -1805,13 +1805,13 @@ Returns nil for declaration-only `defvar' forms with no initializer."
                 ,(nth 2 form)))))
       ((or 'setq 'setq-default)
        (unless (= (length form) 3)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :top-level-setq-pair-shape form)))
-       (let ((helper (nelisp-phase47-compiler--top-level-var-helper-name
+       (let ((helper (nelisp-aot-compiler--top-level-var-helper-name
                       kind name index)))
-         (or (nelisp-phase47-compiler--top-level-var-direct-defun
+         (or (nelisp-aot-compiler--top-level-var-direct-defun
               kind helper name (nth 2 form))
-             (nelisp-phase47-compiler--top-level-var-dynamic-defun
+             (nelisp-aot-compiler--top-level-var-dynamic-defun
               kind helper name (nth 2 form))
              `(defun-sexp-int-setq-symbol
                   ,helper
@@ -1819,10 +1819,10 @@ Returns nil for declaration-only `defvar' forms with no initializer."
                   (out mirror frames scratch name_slot dummy)
                 ,(nth 2 form)))))
       (_
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :unknown-top-level-var-form form))))))
 
-(defun nelisp-phase47-compiler--literal-arg (form)
+(defun nelisp-aot-compiler--literal-arg (form)
   "Return FORM's literal value for compile-time top-level forms."
   (if (and (consp form)
            (eq (car form) 'quote)
@@ -1830,7 +1830,7 @@ Returns nil for declaration-only `defvar' forms with no initializer."
       (cadr form)
     form))
 
-(defun nelisp-phase47-compiler--eval-top-level-module-form (form)
+(defun nelisp-aot-compiler--eval-top-level-module-form (form)
   "Evaluate one compile-time top-level module FORM.
 `require' is run during compilation so macros and helper definitions
 needed by later forms can be loaded.  `provide', `define-error', and
@@ -1840,72 +1840,72 @@ side effects."
   (pcase (car form)
     ('require
      (unless (<= 2 (length form) 4)
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :require-arity form)))
-     (let ((feature (nelisp-phase47-compiler--literal-arg (nth 1 form)))
+     (let ((feature (nelisp-aot-compiler--literal-arg (nth 1 form)))
            (filename (when (>= (length form) 3)
-                       (nelisp-phase47-compiler--literal-arg (nth 2 form))))
+                       (nelisp-aot-compiler--literal-arg (nth 2 form))))
            (noerror (when (>= (length form) 4)
-                      (nelisp-phase47-compiler--literal-arg (nth 3 form)))))
+                      (nelisp-aot-compiler--literal-arg (nth 3 form)))))
        (unless (symbolp feature)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :require-feature-not-symbol feature)))
        (unless (or (null filename) (stringp filename))
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :require-filename-not-string filename)))
        (require feature filename noerror)))
     ('provide
      (unless (<= 2 (length form) 3)
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :provide-arity form)))
-     (let ((feature (nelisp-phase47-compiler--literal-arg (nth 1 form))))
+     (let ((feature (nelisp-aot-compiler--literal-arg (nth 1 form))))
        (unless (symbolp feature)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :provide-feature-not-symbol feature)))))
     ('define-error
      (unless (<= 3 (length form) 4)
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :define-error-arity form)))
-     (let ((name (nelisp-phase47-compiler--literal-arg (nth 1 form)))
-           (message (nelisp-phase47-compiler--literal-arg (nth 2 form)))
+     (let ((name (nelisp-aot-compiler--literal-arg (nth 1 form)))
+           (message (nelisp-aot-compiler--literal-arg (nth 2 form)))
            (parent (when (= (length form) 4)
-                     (nelisp-phase47-compiler--literal-arg (nth 3 form)))))
+                     (nelisp-aot-compiler--literal-arg (nth 3 form)))))
        (unless (symbolp name)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :define-error-name-not-symbol form)))
        (unless (stringp message)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :define-error-message-not-string form)))
        (unless (or (null parent) (symbolp parent))
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :define-error-parent-not-symbol form)))
        (if (= (length form) 4)
            (define-error name message parent)
          (define-error name message))))
     ('defalias
      (unless (<= 3 (length form) 4)
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :defalias-arity form)))
-     (let ((name (nelisp-phase47-compiler--literal-arg (nth 1 form)))
+     (let ((name (nelisp-aot-compiler--literal-arg (nth 1 form)))
            (target
-            (nelisp-phase47-compiler--function-designator-literal
+            (nelisp-aot-compiler--function-designator-literal
              (nth 2 form))))
        (unless (symbolp name)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :defalias-name-not-symbol form)))
        (unless (or (symbolp target)
                    (and (consp target) (eq (car target) 'lambda)))
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :defalias-target-unsupported form)))
        (when (= (length form) 4)
          (unless (stringp (nth 3 form))
-           (signal 'nelisp-phase47-compiler-error
+           (signal 'nelisp-aot-compiler-error
                    (list :defalias-docstring-not-string form))))))
     (_
-     (signal 'nelisp-phase47-compiler-error
+     (signal 'nelisp-aot-compiler-error
              (list :unknown-module-form form)))))
 
-(defun nelisp-phase47-compiler--top-level-static-condition (form)
+(defun nelisp-aot-compiler--top-level-static-condition (form)
   "Return `(known . BOOL)' when top-level guard FORM is compile-time known.
 This intentionally recognizes only side-effect-free host predicates used
 by compatibility guards.  Unknown conditions return nil and are left in
@@ -1915,7 +1915,7 @@ the source so the normal parser reports the existing unsupported form."
    ((null form) (cons 'known nil))
    ((and (consp form) (eq (car form) 'not) (= (length form) 2))
     (let ((value
-           (nelisp-phase47-compiler--top-level-static-condition
+           (nelisp-aot-compiler--top-level-static-condition
             (nth 1 form))))
       (when value
         (cons 'known (not (cdr value))))))
@@ -1925,7 +1925,7 @@ the source so the normal parser reports the existing unsupported form."
           (result t))
       (while (and args known result)
         (let ((value
-               (nelisp-phase47-compiler--top-level-static-condition
+               (nelisp-aot-compiler--top-level-static-condition
                 (car args))))
           (if value
               (setq result (cdr value))
@@ -1939,7 +1939,7 @@ the source so the normal parser reports the existing unsupported form."
           (result nil))
       (while (and args known (not result))
         (let ((value
-               (nelisp-phase47-compiler--top-level-static-condition
+               (nelisp-aot-compiler--top-level-static-condition
                 (car args))))
           (if value
               (setq result (cdr value))
@@ -1950,7 +1950,7 @@ the source so the normal parser reports the existing unsupported form."
    ((and (consp form)
          (= (length form) 2)
          (memq (car form) '(fboundp boundp featurep)))
-    (let ((name (nelisp-phase47-compiler--literal-arg (nth 1 form))))
+    (let ((name (nelisp-aot-compiler--literal-arg (nth 1 form))))
       (when (symbolp name)
         (cons 'known
               (pcase (car form)
@@ -1958,7 +1958,7 @@ the source so the normal parser reports the existing unsupported form."
                 ('boundp (boundp name))
                 ('featurep (featurep name)))))))))
 
-(defun nelisp-phase47-compiler--top-level-branch-forms (form)
+(defun nelisp-aot-compiler--top-level-branch-forms (form)
   "Return top-level forms represented by selected guard branch FORM."
   (cond
    ((null form) nil)
@@ -1967,7 +1967,7 @@ the source so the normal parser reports the existing unsupported form."
    (t
     (list form))))
 
-(defun nelisp-phase47-compiler--top-level-guard-forms (form)
+(defun nelisp-aot-compiler--top-level-guard-forms (form)
   "Return `(known . FORMS)' for a statically selected top-level guard.
 The caller splices FORMS into the surrounding top-level sequence."
   (when (consp form)
@@ -1975,7 +1975,7 @@ The caller splices FORMS into the surrounding top-level sequence."
       ('when
        (when (>= (length form) 2)
          (let ((value
-                (nelisp-phase47-compiler--top-level-static-condition
+                (nelisp-aot-compiler--top-level-static-condition
                  (nth 1 form))))
            (when value
              (cons 'known
@@ -1985,7 +1985,7 @@ The caller splices FORMS into the surrounding top-level sequence."
       ('unless
        (when (>= (length form) 2)
          (let ((value
-                (nelisp-phase47-compiler--top-level-static-condition
+                (nelisp-aot-compiler--top-level-static-condition
                  (nth 1 form))))
            (when value
              (cons 'known
@@ -1995,19 +1995,19 @@ The caller splices FORMS into the surrounding top-level sequence."
       ('if
        (when (>= (length form) 3)
          (let ((value
-                (nelisp-phase47-compiler--top-level-static-condition
+                (nelisp-aot-compiler--top-level-static-condition
                  (nth 1 form))))
            (when value
              (cons 'known
                    (if (cdr value)
-                       (nelisp-phase47-compiler--top-level-branch-forms
+                       (nelisp-aot-compiler--top-level-branch-forms
                         (nth 2 form))
                      (apply #'append
                             (mapcar
-                             #'nelisp-phase47-compiler--top-level-branch-forms
+                             #'nelisp-aot-compiler--top-level-branch-forms
                              (nthcdr 3 form))))))))))))
 
-(defun nelisp-phase47-compiler--extract-defmacros (sexp)
+(defun nelisp-aot-compiler--extract-defmacros (sexp)
   "Return plist for compile-time top-level forms in SEXP.
 Only a top-level `defmacro', or `defmacro' children directly inside
 `seq', are treated as compile-time macro definitions.  Top-level
@@ -2018,36 +2018,36 @@ expose a callable runtime entry for those declarations.  Top-level
 `defcustom' forms also produce custom metadata descriptors keyed to
 the same generated helper names."
   (cond
-   ((nelisp-phase47-compiler--top-level-defmacro-p sexp)
+   ((nelisp-aot-compiler--top-level-defmacro-p sexp)
     (list :source '(seq)
           :defmacros (list sexp)
           :module-forms nil
           :init-helpers nil
           :custom-metadata nil
           :special-vars nil))
-   ((nelisp-phase47-compiler--top-level-module-form-p sexp)
+   ((nelisp-aot-compiler--top-level-module-form-p sexp)
     (list :source '(seq)
           :defmacros nil
           :module-forms (list sexp)
           :init-helpers nil
           :custom-metadata nil
           :special-vars nil))
-	   ((nelisp-phase47-compiler--top-level-var-form-p sexp)
-	    (if (nelisp-phase47-compiler--large-top-level-literal-var-form-p sexp)
+	   ((nelisp-aot-compiler--top-level-var-form-p sexp)
+	    (if (nelisp-aot-compiler--large-top-level-literal-var-form-p sexp)
 	        (list :source '(seq)
 	              :defmacros nil
 	              :module-forms nil
 	              :init-helpers nil
 	              :custom-metadata nil
 	              :special-vars
-	              (list (nelisp-phase47-compiler--top-level-special-var-name
+	              (list (nelisp-aot-compiler--top-level-special-var-name
 	                     sexp)))
 	      (let ((descriptor
-	             (nelisp-phase47-compiler--top-level-var-init-descriptor sexp 0))
-	            (lowered (nelisp-phase47-compiler--lower-top-level-var-form sexp 0))
+	             (nelisp-aot-compiler--top-level-var-init-descriptor sexp 0))
+	            (lowered (nelisp-aot-compiler--lower-top-level-var-form sexp 0))
 	            (custom-metadata
 	             (when (eq (car sexp) 'defcustom)
-	               (list (nelisp-phase47-compiler--defcustom-metadata-descriptor
+	               (list (nelisp-aot-compiler--defcustom-metadata-descriptor
 	                      sexp 0)))))
 	        (list :source (or lowered '(seq))
 	              :defmacros nil
@@ -2055,19 +2055,19 @@ the same generated helper names."
 	              :init-helpers (when descriptor (list descriptor))
 	              :custom-metadata custom-metadata
 	              :special-vars
-	              (list (nelisp-phase47-compiler--top-level-special-var-name
+	              (list (nelisp-aot-compiler--top-level-special-var-name
 	                     sexp))))))
-   ((nelisp-phase47-compiler--top-level-setq-form-p sexp)
+   ((nelisp-aot-compiler--top-level-setq-form-p sexp)
     (let ((kept nil)
           (init-helpers nil)
           (setq-index 0))
-      (dolist (pair (nelisp-phase47-compiler--top-level-setq-pairs sexp))
+      (dolist (pair (nelisp-aot-compiler--top-level-setq-pairs sexp))
         (let* ((form (list (car sexp) (car pair) (cadr pair)))
                (lowered
-                (nelisp-phase47-compiler--lower-top-level-var-form
+                (nelisp-aot-compiler--lower-top-level-var-form
                  form setq-index))
                (descriptor
-                (nelisp-phase47-compiler--top-level-var-init-descriptor
+                (nelisp-aot-compiler--top-level-var-init-descriptor
                  form setq-index)))
           (push descriptor init-helpers)
           (push lowered kept)
@@ -2090,53 +2090,53 @@ the same generated helper names."
           ((process-child
             (child)
             (let ((guard
-                   (nelisp-phase47-compiler--top-level-guard-forms child)))
+                   (nelisp-aot-compiler--top-level-guard-forms child)))
               (if guard
                   (dolist (selected (cdr guard))
                     (process-child selected))
                 (cond
-                 ((nelisp-phase47-compiler--top-level-defmacro-p child)
+                 ((nelisp-aot-compiler--top-level-defmacro-p child)
                   (push child defs))
-                 ((nelisp-phase47-compiler--top-level-module-form-p child)
+                 ((nelisp-aot-compiler--top-level-module-form-p child)
                   (push child module-forms))
-	                 ((nelisp-phase47-compiler--top-level-var-form-p child)
-	                  (push (nelisp-phase47-compiler--top-level-special-var-name child)
+	                 ((nelisp-aot-compiler--top-level-var-form-p child)
+	                  (push (nelisp-aot-compiler--top-level-special-var-name child)
 	                        special-vars)
-	                  (if (nelisp-phase47-compiler--large-top-level-literal-var-form-p
+	                  (if (nelisp-aot-compiler--large-top-level-literal-var-form-p
 	                       child)
 	                      (setq var-index (1+ var-index))
 	                    (let ((lowered
-	                           (nelisp-phase47-compiler--lower-top-level-var-form
+	                           (nelisp-aot-compiler--lower-top-level-var-form
 	                            child var-index))
 	                          (descriptor
-	                           (nelisp-phase47-compiler--top-level-var-init-descriptor
+	                           (nelisp-aot-compiler--top-level-var-init-descriptor
 	                            child var-index)))
 	                      (when descriptor
 	                        (push descriptor init-helpers))
 	                      (when (eq (car child) 'defcustom)
 	                        (push
-	                         (nelisp-phase47-compiler--defcustom-metadata-descriptor
+	                         (nelisp-aot-compiler--defcustom-metadata-descriptor
 	                          child var-index)
 	                         custom-metadata))
 	                      (setq var-index (1+ var-index))
 	                      (when lowered
 	                        (push lowered kept)))))
-                 ((nelisp-phase47-compiler--top-level-setq-form-p child)
+                 ((nelisp-aot-compiler--top-level-setq-form-p child)
                   (dolist (pair
-                           (nelisp-phase47-compiler--top-level-setq-pairs
+                           (nelisp-aot-compiler--top-level-setq-pairs
                             child))
                     (let* ((form (list (car child) (car pair) (cadr pair)))
                            (lowered
-                            (nelisp-phase47-compiler--lower-top-level-var-form
+                            (nelisp-aot-compiler--lower-top-level-var-form
                              form var-index))
                            (descriptor
-                            (nelisp-phase47-compiler--top-level-var-init-descriptor
+                            (nelisp-aot-compiler--top-level-var-init-descriptor
                              form var-index)))
                       (push descriptor init-helpers)
                       (setq var-index (1+ var-index))
                       (when lowered
                         (push lowered kept)))))
-                 ((and nelisp-phase47-compiler--allow-external-user-calls
+                 ((and nelisp-aot-compiler--allow-external-user-calls
                        (consp child)
                        (symbolp (car child))
                        (not (memq (car child) '(defun prog1))))
@@ -2159,83 +2159,83 @@ the same generated helper names."
           :custom-metadata nil
           :special-vars nil))))
 
-(defun nelisp-phase47-compiler--init-helper-descriptors (sexp)
+(defun nelisp-aot-compiler--init-helper-descriptors (sexp)
   "Return top-level variable AOT init helper descriptors in SEXP.
 Declaration-only `defvar' forms are omitted because they do not emit a
 callable helper."
-  (plist-get (nelisp-phase47-compiler--extract-defmacros sexp)
+  (plist-get (nelisp-aot-compiler--extract-defmacros sexp)
              :init-helpers))
 
-(defun nelisp-phase47-compiler--custom-metadata-descriptors (sexp)
+(defun nelisp-aot-compiler--custom-metadata-descriptors (sexp)
   "Return top-level `defcustom' metadata descriptors in SEXP.
 This is the compiler-side handoff for Doc 99 scheduling: each
 descriptor records the variable name, generated init helper, standard
 value expression, docstring, and customization keyword plist."
-  (plist-get (nelisp-phase47-compiler--extract-defmacros sexp)
+  (plist-get (nelisp-aot-compiler--extract-defmacros sexp)
              :custom-metadata))
 
-(defun nelisp-phase47-compiler--closure-descriptors (sexp)
+(defun nelisp-aot-compiler--closure-descriptors (sexp)
   "Return Doc 129.7U heap-closure descriptors found in SEXP."
-  (let* ((extracted (nelisp-phase47-compiler--extract-defmacros sexp))
+  (let* ((extracted (nelisp-aot-compiler--extract-defmacros sexp))
          (source (plist-get extracted :source))
          (defs (plist-get extracted :defmacros))
          (module-forms (plist-get extracted :module-forms))
          (special-vars (plist-get extracted :special-vars)))
     (dolist (form module-forms)
-      (nelisp-phase47-compiler--eval-top-level-module-form form))
-    (nelisp-phase47-compiler--with-defmacros
+      (nelisp-aot-compiler--eval-top-level-module-form form))
+    (nelisp-aot-compiler--with-defmacros
      defs
      (lambda ()
-       (let ((nelisp-phase47-compiler--lambda-lift-counter 0)
-             (nelisp-phase47-compiler--closure-lift-counter 0)
-             (nelisp-phase47-compiler--lambda-lift-hoists nil)
-             (nelisp-phase47-compiler--closure-lift-descriptors nil)
-             (nelisp-phase47-compiler--lambda-lift-names
-              (nelisp-phase47-compiler--top-level-defun-names source))
-             (nelisp-phase47-compiler--special-vars special-vars))
-         (nelisp-phase47-compiler--preprocess-source source)
-         (nreverse nelisp-phase47-compiler--closure-lift-descriptors))))))
+       (let ((nelisp-aot-compiler--lambda-lift-counter 0)
+             (nelisp-aot-compiler--closure-lift-counter 0)
+             (nelisp-aot-compiler--lambda-lift-hoists nil)
+             (nelisp-aot-compiler--closure-lift-descriptors nil)
+             (nelisp-aot-compiler--lambda-lift-names
+              (nelisp-aot-compiler--top-level-defun-names source))
+             (nelisp-aot-compiler--special-vars special-vars))
+         (nelisp-aot-compiler--preprocess-source source)
+         (nreverse nelisp-aot-compiler--closure-lift-descriptors))))))
 
-(defun nelisp-phase47-compiler--module-init-plan (sexp)
+(defun nelisp-aot-compiler--module-init-plan (sexp)
   "Return the normalized Doc 129/Doc 99 module-init plan for SEXP.
 This is the compiler-side handoff that combines top-level variable init
 helpers, defcustom metadata, GC root descriptors, and AOT closure
 descriptors into the runtime plan consumed by
 `nelisp-cc-runtime-run-aot-module-init-plan'."
-  (let ((ir (nelisp-phase47-compiler--parse sexp nil)))
+  (let ((ir (nelisp-aot-compiler--parse sexp nil)))
     (nelisp-cc-runtime-aot-module-init-plan
-     (nelisp-phase47-compiler--init-helper-descriptors sexp)
-     (nelisp-phase47-compiler--custom-metadata-descriptors sexp)
-     (nelisp-phase47-compiler--gc-root-descriptors ir)
-     (nelisp-phase47-compiler--closure-descriptors sexp))))
+     (nelisp-aot-compiler--init-helper-descriptors sexp)
+     (nelisp-aot-compiler--custom-metadata-descriptors sexp)
+     (nelisp-aot-compiler--gc-root-descriptors ir)
+     (nelisp-aot-compiler--closure-descriptors sexp))))
 
-(defconst nelisp-phase47-compiler--object-module-init-symbol
+(defconst nelisp-aot-compiler--object-module-init-symbol
   "nelisp_aot_module_init_plan"
   "Local object symbol for embedded Doc 129 module-init metadata.")
 
-(defun nelisp-phase47-compiler--module-init-plan-empty-p (plan)
+(defun nelisp-aot-compiler--module-init-plan-empty-p (plan)
   "Return non-nil when PLAN has no object-load metadata to embed."
   (and (null (plist-get plan :helper-order))
        (null (plist-get plan :custom-by-helper))
        (null (plist-get plan :root-descriptors))
        (null (plist-get plan :closure-descriptors))))
 
-(defun nelisp-phase47-compiler--object-module-init-metadata (sexp)
+(defun nelisp-aot-compiler--object-module-init-metadata (sexp)
   "Return object metadata plist for SEXP's Doc 129 module-init plan.
 The result is nil when SEXP has no helper/custom/root/closure metadata.
 When non-nil, it is a plist with a UTF-8/NUL-terminated printable plan
 payload suitable for ET_REL `.rodata' embedding."
-  (let ((plan (nelisp-phase47-compiler--module-init-plan sexp)))
-    (unless (nelisp-phase47-compiler--module-init-plan-empty-p plan)
+  (let ((plan (nelisp-aot-compiler--module-init-plan sexp)))
+    (unless (nelisp-aot-compiler--module-init-plan-empty-p plan)
       (let* ((text (prin1-to-string plan))
              (bytes (concat (encode-coding-string text 'utf-8 t)
                             (unibyte-string 0))))
-        (list :symbol nelisp-phase47-compiler--object-module-init-symbol
+        (list :symbol nelisp-aot-compiler--object-module-init-symbol
               :plan plan
               :bytes bytes
               :size (length bytes))))))
 
-(defun nelisp-phase47-compiler--with-defmacros (defs thunk)
+(defun nelisp-aot-compiler--with-defmacros (defs thunk)
   "Temporarily install DEFS while calling THUNK.
 Existing function cells are restored afterwards so compile-time user
 macros do not leak into the host Emacs session."
@@ -2257,25 +2257,25 @@ macros do not leak into the host Emacs session."
               (fset name old-fn)
             (fmakunbound name)))))))
 
-(defvar nelisp-phase47-compiler--lambda-lift-counter 0
+(defvar nelisp-aot-compiler--lambda-lift-counter 0
   "Counter for Doc 129.7K synthetic non-capturing lambda defuns.")
 
-(defvar nelisp-phase47-compiler--lambda-lift-hoists nil
+(defvar nelisp-aot-compiler--lambda-lift-hoists nil
   "Dynamically collected Doc 129.7K synthetic defun forms.")
 
-(defvar nelisp-phase47-compiler--lambda-lift-names nil
+(defvar nelisp-aot-compiler--lambda-lift-names nil
   "Top-level and synthetic names reserved during Doc 129.7K lambda lifting.")
 
-(defvar nelisp-phase47-compiler--closure-lift-counter 0
+(defvar nelisp-aot-compiler--closure-lift-counter 0
   "Counter for Doc 129.7U synthetic heap-closure descriptors.")
 
-(defvar nelisp-phase47-compiler--closure-lift-descriptors nil
+(defvar nelisp-aot-compiler--closure-lift-descriptors nil
   "Dynamically collected Doc 129.7U heap-closure descriptors.")
 
-(defvar nelisp-phase47-compiler--special-vars nil
+(defvar nelisp-aot-compiler--special-vars nil
   "Top-level special variables declared in the current Doc 129 compile unit.")
 
-(defun nelisp-phase47-compiler--top-level-defun-names (sexp)
+(defun nelisp-aot-compiler--top-level-defun-names (sexp)
   "Return top-level defun names in SEXP."
   (let (names)
     (cond
@@ -2289,7 +2289,7 @@ macros do not leak into the host Emacs session."
           (push (nth 1 child) names)))))
     names))
 
-(defun nelisp-phase47-compiler--lambda-literal-form (form)
+(defun nelisp-aot-compiler--lambda-literal-form (form)
   "Return FORM's literal lambda form, or nil."
   (cond
    ((and (consp form) (eq (car form) 'lambda))
@@ -2302,35 +2302,35 @@ macros do not leak into the host Emacs session."
     (cadr form))
    (t nil)))
 
-(defun nelisp-phase47-compiler--lambda-lift-name ()
+(defun nelisp-aot-compiler--lambda-lift-name ()
   "Return a fresh Doc 129.7K synthetic defun name."
   (let (name)
     (while
         (progn
           (setq name
                 (intern (format "nelisp_aot_lambda_%d"
-                                nelisp-phase47-compiler--lambda-lift-counter)))
-          (setq nelisp-phase47-compiler--lambda-lift-counter
-                (1+ nelisp-phase47-compiler--lambda-lift-counter))
-          (memq name nelisp-phase47-compiler--lambda-lift-names)))
-    (push name nelisp-phase47-compiler--lambda-lift-names)
+                                nelisp-aot-compiler--lambda-lift-counter)))
+          (setq nelisp-aot-compiler--lambda-lift-counter
+                (1+ nelisp-aot-compiler--lambda-lift-counter))
+          (memq name nelisp-aot-compiler--lambda-lift-names)))
+    (push name nelisp-aot-compiler--lambda-lift-names)
     name))
 
-(defun nelisp-phase47-compiler--closure-lift-name ()
+(defun nelisp-aot-compiler--closure-lift-name ()
   "Return a fresh Doc 129.7U synthetic heap-closure descriptor name."
   (let (name)
     (while
         (progn
           (setq name
                 (intern (format "nelisp_aot_closure_%d"
-                                nelisp-phase47-compiler--closure-lift-counter)))
-          (setq nelisp-phase47-compiler--closure-lift-counter
-                (1+ nelisp-phase47-compiler--closure-lift-counter))
-          (memq name nelisp-phase47-compiler--lambda-lift-names)))
-    (push name nelisp-phase47-compiler--lambda-lift-names)
+                                nelisp-aot-compiler--closure-lift-counter)))
+          (setq nelisp-aot-compiler--closure-lift-counter
+                (1+ nelisp-aot-compiler--closure-lift-counter))
+          (memq name nelisp-aot-compiler--lambda-lift-names)))
+    (push name nelisp-aot-compiler--lambda-lift-names)
     name))
 
-(defun nelisp-phase47-compiler--lambda-param-vars (params)
+(defun nelisp-aot-compiler--lambda-param-vars (params)
   "Return bindable lambda parameter symbols from PARAMS."
   (let (vars)
     (while params
@@ -2345,11 +2345,11 @@ macros do not leak into the host Emacs session."
          ((symbolp p)
           (push p vars))
          (t
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :lambda-lift-param-shape params))))))
     (nreverse vars)))
 
-(defun nelisp-phase47-compiler--lambda-free-vars
+(defun nelisp-aot-compiler--lambda-free-vars
     (form bound &optional allow-captured-setq)
   "Return source symbols used free in FORM relative to BOUND."
   (let (free)
@@ -2371,13 +2371,13 @@ macros do not leak into the host Emacs session."
             ((atom node) nil)
             ((eq (car node) 'quote) nil)
             ((and (eq (car node) 'function)
-                  (not (nelisp-phase47-compiler--lambda-literal-form
+                  (not (nelisp-aot-compiler--lambda-literal-form
                         (cadr node))))
              nil)
-            ((nelisp-phase47-compiler--lambda-literal-form node)
+            ((nelisp-aot-compiler--lambda-literal-form node)
              (let* ((params (nth 1 node))
                     (inner-bound
-                     (append (nelisp-phase47-compiler--lambda-param-vars
+                     (append (nelisp-aot-compiler--lambda-param-vars
                               params)
                              bound*)))
                (walk-body (cddr node) inner-bound)))
@@ -2409,7 +2409,7 @@ macros do not leak into the host Emacs session."
                  (when (and (symbolp (car pairs))
                             (not (memq (car pairs) bound*))
                             (not allow-captured-setq))
-                   (signal 'nelisp-phase47-compiler-error
+                   (signal 'nelisp-aot-compiler-error
                            (list :lambda-lift-captured-setq-pending
                                  (car pairs))))
                  (add (car pairs) bound*)
@@ -2427,27 +2427,27 @@ macros do not leak into the host Emacs session."
       (walk form bound))
     (nreverse free)))
 
-(defun nelisp-phase47-compiler--lambda-captures
+(defun nelisp-aot-compiler--lambda-captures
     (lambda-form &optional allow-captured-setq)
   "Return lexical capture candidates for literal LAMBDA-FORM."
   (let* ((params (nth 1 lambda-form))
-         (bound (nelisp-phase47-compiler--lambda-param-vars params))
+         (bound (nelisp-aot-compiler--lambda-param-vars params))
          (body (cddr lambda-form)))
-    (nelisp-phase47-compiler--lambda-free-vars
+    (nelisp-aot-compiler--lambda-free-vars
      (cons 'progn body) bound allow-captured-setq)))
 
-(defun nelisp-phase47-compiler--lambda-captured-setq-p (lambda-form)
+(defun nelisp-aot-compiler--lambda-captured-setq-p (lambda-form)
   "Return non-nil when LAMBDA-FORM mutates a captured variable."
   (condition-case err
       (progn
-        (nelisp-phase47-compiler--lambda-captures lambda-form)
+        (nelisp-aot-compiler--lambda-captures lambda-form)
         nil)
-    (nelisp-phase47-compiler-error
+    (nelisp-aot-compiler-error
      (if (eq (car-safe (cdr err)) :lambda-lift-captured-setq-pending)
          t
        (signal (car err) (cdr err))))))
 
-(defun nelisp-phase47-compiler--lambda-captured-setq-vars (lambda-form)
+(defun nelisp-aot-compiler--lambda-captured-setq-vars (lambda-form)
   "Return captured variable names mutated by LAMBDA-FORM."
   (let ((mutated nil))
     (cl-labels
@@ -2464,12 +2464,12 @@ macros do not leak into the host Emacs session."
             ((atom node) nil)
             ((eq (car node) 'quote) nil)
             ((and (eq (car node) 'function)
-                  (not (nelisp-phase47-compiler--lambda-literal-form
+                  (not (nelisp-aot-compiler--lambda-literal-form
                         (cadr node))))
              nil)
-            ((nelisp-phase47-compiler--lambda-literal-form node)
+            ((nelisp-aot-compiler--lambda-literal-form node)
              (let ((inner-bound
-                    (append (nelisp-phase47-compiler--lambda-param-vars
+                    (append (nelisp-aot-compiler--lambda-param-vars
                              (nth 1 node))
                             bound*)))
                (walk-body (cddr node) inner-bound)))
@@ -2502,69 +2502,69 @@ macros do not leak into the host Emacs session."
              (dolist (child node)
                (walk child bound*))))))
       (walk (cons 'progn (cddr lambda-form))
-            (nelisp-phase47-compiler--lambda-param-vars
+            (nelisp-aot-compiler--lambda-param-vars
              (nth 1 lambda-form))))
     (nreverse mutated)))
 
-(defun nelisp-phase47-compiler--lambda-lift-call (lambda-form arg-forms)
+(defun nelisp-aot-compiler--lambda-lift-call (lambda-form arg-forms)
   "Return a direct call to a synthetic defun for LAMBDA-FORM and ARG-FORMS."
   (unless (and (>= (length lambda-form) 3)
                (listp (nth 1 lambda-form))
                (cl-every #'symbolp (nth 1 lambda-form)))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :lambda-lift-param-shape lambda-form)))
-  (let* ((name (nelisp-phase47-compiler--lambda-lift-name))
+  (let* ((name (nelisp-aot-compiler--lambda-lift-name))
          (params (nth 1 lambda-form))
-         (captures (nelisp-phase47-compiler--lambda-captures lambda-form))
-         (body (nelisp-phase47-compiler--body->form
+         (captures (nelisp-aot-compiler--lambda-captures lambda-form))
+         (body (nelisp-aot-compiler--body->form
                 (cddr lambda-form)))
-         (args (mapcar #'nelisp-phase47-compiler--preprocess-source
+         (args (mapcar #'nelisp-aot-compiler--preprocess-source
                        (append captures arg-forms))))
     (push `(defun ,name ,(append captures params) ,body)
-          nelisp-phase47-compiler--lambda-lift-hoists)
+          nelisp-aot-compiler--lambda-lift-hoists)
     (cons name args)))
 
-(defun nelisp-phase47-compiler--lambda-lift-designator (lambda-form)
+(defun nelisp-aot-compiler--lambda-lift-designator (lambda-form)
   "Return a function designator for a synthetic defun from LAMBDA-FORM."
   (unless (and (>= (length lambda-form) 3)
                (listp (nth 1 lambda-form))
                (cl-every #'symbolp (nth 1 lambda-form)))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :lambda-lift-param-shape lambda-form)))
-  (let* ((name (nelisp-phase47-compiler--lambda-lift-name))
+  (let* ((name (nelisp-aot-compiler--lambda-lift-name))
          (params (nth 1 lambda-form))
-         (captures (nelisp-phase47-compiler--lambda-captures lambda-form))
-         (body (nelisp-phase47-compiler--body->form
+         (captures (nelisp-aot-compiler--lambda-captures lambda-form))
+         (body (nelisp-aot-compiler--body->form
                 (cddr lambda-form))))
     (if captures
-      (let ((closure-name (nelisp-phase47-compiler--closure-lift-name)))
+      (let ((closure-name (nelisp-aot-compiler--closure-lift-name)))
         (push (list :name closure-name
                     :arglist params
                     :body (cddr lambda-form)
                     :captures captures)
-              nelisp-phase47-compiler--closure-lift-descriptors)
+              nelisp-aot-compiler--closure-lift-descriptors)
         `(aot-closure-lambda ,closure-name ,@captures))
       (push `(defun ,name ,params ,body)
-            nelisp-phase47-compiler--lambda-lift-hoists)
+            nelisp-aot-compiler--lambda-lift-hoists)
       `(function ,name))))
 
-(defun nelisp-phase47-compiler--lambda-closure-value
+(defun nelisp-aot-compiler--lambda-closure-value
     (lambda-form &optional capture-cell-vars)
   "Return an escaping heap-closure value form for literal LAMBDA-FORM."
   (unless (and (>= (length lambda-form) 3)
                (listp (nth 1 lambda-form))
                (cl-every #'symbolp (nth 1 lambda-form)))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :lambda-lift-param-shape lambda-form)))
-  (let* ((closure-name (nelisp-phase47-compiler--closure-lift-name))
+  (let* ((closure-name (nelisp-aot-compiler--closure-lift-name))
          (params (nth 1 lambda-form))
-         (captures (nelisp-phase47-compiler--lambda-captures
+         (captures (nelisp-aot-compiler--lambda-captures
                     lambda-form t)))
     (push (list :name closure-name
                 :arglist params
                 :body (cddr lambda-form)
                 :captures captures)
-          nelisp-phase47-compiler--closure-lift-descriptors)
+          nelisp-aot-compiler--closure-lift-descriptors)
     `(aot-closure-lambda
       ,closure-name
       ,@(mapcar (lambda (capture)
@@ -2573,42 +2573,42 @@ macros do not leak into the host Emacs session."
                     capture))
                 captures))))
 
-(defun nelisp-phase47-compiler--preprocess-funcall-lambda (sexp)
+(defun nelisp-aot-compiler--preprocess-funcall-lambda (sexp)
   "Lambda-lift a literal lambda designator in `(funcall ...)'.
 Captured lexical values are threaded into the synthetic direct call as
 leading arguments.  Captured mutation uses the heap-closure dispatcher
 path instead of by-value lambda lifting."
-  (let ((lambda-form (nelisp-phase47-compiler--lambda-literal-form
+  (let ((lambda-form (nelisp-aot-compiler--lambda-literal-form
                       (nth 1 sexp))))
     (if (not lambda-form)
         (cons 'funcall
-              (mapcar #'nelisp-phase47-compiler--preprocess-source
+              (mapcar #'nelisp-aot-compiler--preprocess-source
                       (cdr sexp)))
-      (if (nelisp-phase47-compiler--lambda-captured-setq-p lambda-form)
+      (if (nelisp-aot-compiler--lambda-captured-setq-p lambda-form)
           `(funcall
-            ,(nelisp-phase47-compiler--lambda-closure-value
+            ,(nelisp-aot-compiler--lambda-closure-value
               lambda-form
-              (nelisp-phase47-compiler--lambda-captured-setq-vars
+              (nelisp-aot-compiler--lambda-captured-setq-vars
                lambda-form))
-            ,@(mapcar #'nelisp-phase47-compiler--preprocess-source
+            ,@(mapcar #'nelisp-aot-compiler--preprocess-source
                       (nthcdr 2 sexp)))
-        (nelisp-phase47-compiler--lambda-lift-call
+        (nelisp-aot-compiler--lambda-lift-call
          lambda-form (nthcdr 2 sexp))))))
 
-(defun nelisp-phase47-compiler--captured-mutation-funcall-vars (sexp)
+(defun nelisp-aot-compiler--captured-mutation-funcall-vars (sexp)
   "Return captured variables mutated by a literal-lambda FUNCALL SEXP."
   (let ((lambda-form
          (and (consp sexp)
               (eq (car sexp) 'funcall)
-              (nelisp-phase47-compiler--lambda-literal-form
+              (nelisp-aot-compiler--lambda-literal-form
                (nth 1 sexp)))))
     (when (and lambda-form
-               (nelisp-phase47-compiler--lambda-captured-setq-p
+               (nelisp-aot-compiler--lambda-captured-setq-p
                 lambda-form))
-      (nelisp-phase47-compiler--lambda-captured-setq-vars
+      (nelisp-aot-compiler--lambda-captured-setq-vars
        lambda-form))))
 
-(defun nelisp-phase47-compiler--symbol-list-union (left right)
+(defun nelisp-aot-compiler--symbol-list-union (left right)
   "Return order-preserving union of symbol lists LEFT and RIGHT."
   (let ((out (copy-sequence left)))
     (dolist (sym right)
@@ -2616,7 +2616,7 @@ path instead of by-value lambda lifting."
         (setq out (append out (list sym)))))
     out))
 
-(defun nelisp-phase47-compiler--symbol-list-intersection (left right)
+(defun nelisp-aot-compiler--symbol-list-intersection (left right)
   "Return symbols present in both LEFT and RIGHT, preserving LEFT order."
   (let (out)
     (dolist (sym left)
@@ -2624,7 +2624,7 @@ path instead of by-value lambda lifting."
         (push sym out)))
     (nreverse out)))
 
-(defun nelisp-phase47-compiler--symbol-list-difference (left right)
+(defun nelisp-aot-compiler--symbol-list-difference (left right)
   "Return symbols from LEFT that are not present in RIGHT."
   (let (out)
     (dolist (sym left)
@@ -2632,7 +2632,7 @@ path instead of by-value lambda lifting."
         (push sym out)))
     (nreverse out)))
 
-(defun nelisp-phase47-compiler--let-binding-vars (bindings)
+(defun nelisp-aot-compiler--let-binding-vars (bindings)
   "Return symbol names bound by LET BINDINGS."
   (let (vars)
     (dolist (binding bindings)
@@ -2643,7 +2643,7 @@ path instead of by-value lambda lifting."
         (push (car binding) vars))))
     (nreverse vars)))
 
-(defun nelisp-phase47-compiler--form-setqs-var-p (form var)
+(defun nelisp-aot-compiler--form-setqs-var-p (form var)
   "Return non-nil when FORM directly contains `(setq VAR ...)'."
   (let ((found nil))
     (cl-labels
@@ -2667,7 +2667,7 @@ path instead of by-value lambda lifting."
                (dolist (binding bindings)
                  (when (and (consp binding) (consp (cdr binding)))
                    (walk (cadr binding))))
-               (unless (memq var (nelisp-phase47-compiler--let-binding-vars
+               (unless (memq var (nelisp-aot-compiler--let-binding-vars
                                   bindings))
                  (walk-body (nthcdr 2 node)))))
             ((eq (car node) 'let*)
@@ -2690,18 +2690,18 @@ path instead of by-value lambda lifting."
       (walk form))
     found))
 
-(defun nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars (forms)
+(defun nelisp-aot-compiler--captured-mutation-body-guaranteed-vars (forms)
   "Return captured vars definitely updated after sequential FORMS."
   (let (guaranteed)
     (dolist (child forms)
       (setq guaranteed
-            (nelisp-phase47-compiler--symbol-list-union
+            (nelisp-aot-compiler--symbol-list-union
              guaranteed
-             (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+             (nelisp-aot-compiler--captured-mutation-guaranteed-vars
               child))))
     guaranteed))
 
-(defun nelisp-phase47-compiler--captured-mutation-cond-guaranteed-vars
+(defun nelisp-aot-compiler--captured-mutation-cond-guaranteed-vars
     (clauses)
   "Return captured vars definitely updated after `cond' CLAUSES.
 This requires an unconditional `t' clause; without it, the `cond' can
@@ -2715,12 +2715,12 @@ fall through without executing a mutating branch."
           (let* ((pred (car clause))
                  (body (cdr clause))
                  (body-vars
-                  (nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars
+                  (nelisp-aot-compiler--captured-mutation-body-guaranteed-vars
                    body)))
             (setq guaranteed
                   (if first
                       body-vars
-                    (nelisp-phase47-compiler--symbol-list-intersection
+                    (nelisp-aot-compiler--symbol-list-intersection
                      guaranteed body-vars)))
             (setq first nil)
             (when (eq pred t)
@@ -2728,7 +2728,7 @@ fall through without executing a mutating branch."
       (setq clauses (cdr clauses)))
     (and covered guaranteed)))
 
-(defun nelisp-phase47-compiler--captured-mutation-let-guaranteed-vars
+(defun nelisp-aot-compiler--captured-mutation-let-guaranteed-vars
     (bindings body sequential)
   "Return definitely updated captured vars after a `let' or `let*' form.
 Initializer expressions are evaluated outside the binding they create.
@@ -2740,10 +2740,10 @@ after the form exits."
         (dolist (binding bindings)
           (when (and (consp binding) (consp (cdr binding)))
             (setq init-vars
-                  (nelisp-phase47-compiler--symbol-list-union
+                  (nelisp-aot-compiler--symbol-list-union
                    init-vars
-                   (nelisp-phase47-compiler--symbol-list-difference
-                    (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                   (nelisp-aot-compiler--symbol-list-difference
+                    (nelisp-aot-compiler--captured-mutation-guaranteed-vars
                      (cadr binding))
                     bound))))
           (cond
@@ -2754,19 +2754,19 @@ after the form exits."
       (dolist (binding bindings)
         (when (and (consp binding) (consp (cdr binding)))
           (setq init-vars
-                (nelisp-phase47-compiler--symbol-list-union
+                (nelisp-aot-compiler--symbol-list-union
                  init-vars
-                 (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                 (nelisp-aot-compiler--captured-mutation-guaranteed-vars
                   (cadr binding))))))
       (setq bound
-            (nelisp-phase47-compiler--let-binding-vars bindings)))
-    (nelisp-phase47-compiler--symbol-list-union
+            (nelisp-aot-compiler--let-binding-vars bindings)))
+    (nelisp-aot-compiler--symbol-list-union
      init-vars
-     (nelisp-phase47-compiler--symbol-list-difference
-      (nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars body)
+     (nelisp-aot-compiler--symbol-list-difference
+      (nelisp-aot-compiler--captured-mutation-body-guaranteed-vars body)
       bound))))
 
-(defun nelisp-phase47-compiler--captured-mutation-guaranteed-vars (form)
+(defun nelisp-aot-compiler--captured-mutation-guaranteed-vars (form)
   "Return captured vars definitely updated after FORM's normal exit.
 This is intentionally conservative: a direct captured-mutation funcall
 guarantees its mutated slots, sequential forms guarantee the union of
@@ -2775,35 +2775,35 @@ intersection of exhaustive branches."
   (cond
    ((atom form) nil)
    ((eq (car form) 'funcall)
-    (nelisp-phase47-compiler--captured-mutation-funcall-vars form))
+    (nelisp-aot-compiler--captured-mutation-funcall-vars form))
    ((memq (car form) '(progn seq))
-    (nelisp-phase47-compiler--captured-mutation-body-guaranteed-vars
+    (nelisp-aot-compiler--captured-mutation-body-guaranteed-vars
      (cdr form)))
    ((eq (car form) 'let)
-    (nelisp-phase47-compiler--captured-mutation-let-guaranteed-vars
+    (nelisp-aot-compiler--captured-mutation-let-guaranteed-vars
      (nth 1 form) (nthcdr 2 form) nil))
    ((eq (car form) 'let*)
-    (nelisp-phase47-compiler--captured-mutation-let-guaranteed-vars
+    (nelisp-aot-compiler--captured-mutation-let-guaranteed-vars
      (nth 1 form) (nthcdr 2 form) t))
    ((eq (car form) 'if)
     (let ((then-vars
-           (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+           (nelisp-aot-compiler--captured-mutation-guaranteed-vars
             (nth 2 form)))
           (else-vars
            (and (= (length form) 4)
-                (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                (nelisp-aot-compiler--captured-mutation-guaranteed-vars
                  (nth 3 form)))))
-      (nelisp-phase47-compiler--symbol-list-intersection
+      (nelisp-aot-compiler--symbol-list-intersection
        then-vars else-vars)))
    ((eq (car form) 'cond)
-    (nelisp-phase47-compiler--captured-mutation-cond-guaranteed-vars
+    (nelisp-aot-compiler--captured-mutation-cond-guaranteed-vars
      (cdr form)))
    ((memq (car form) '(and or))
-    (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+    (nelisp-aot-compiler--captured-mutation-guaranteed-vars
      (cadr form)))
    (t nil)))
 
-(defun nelisp-phase47-compiler--rewrite-frame-slot-refs (form vars)
+(defun nelisp-aot-compiler--rewrite-frame-slot-refs (form vars)
   "Rewrite free references to VARS in FORM through `aot-frame-slot-ref'."
   (cond
    ((and (symbolp form) (memq form vars))
@@ -2819,27 +2819,27 @@ intersection of exhaustive branches."
               (value (cadr pairs)))
           (push var out)
           (when (cdr pairs)
-            (push (nelisp-phase47-compiler--rewrite-frame-slot-refs
+            (push (nelisp-aot-compiler--rewrite-frame-slot-refs
                    value vars)
                   out))
           (setq pairs (cddr pairs))))
       (cons 'setq (nreverse out))))
    ((eq (car form) 'let)
     (let* ((bindings (nth 1 form))
-           (bound (nelisp-phase47-compiler--let-binding-vars bindings))
+           (bound (nelisp-aot-compiler--let-binding-vars bindings))
            (body-vars
-            (nelisp-phase47-compiler--symbol-list-difference vars bound)))
+            (nelisp-aot-compiler--symbol-list-difference vars bound)))
       `(let ,(mapcar
               (lambda (binding)
                 (if (and (consp binding) (consp (cdr binding)))
                     (list (car binding)
-                          (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                          (nelisp-aot-compiler--rewrite-frame-slot-refs
                            (cadr binding) vars))
                   binding))
               bindings)
          ,@(mapcar
             (lambda (child)
-              (nelisp-phase47-compiler--rewrite-frame-slot-refs
+              (nelisp-aot-compiler--rewrite-frame-slot-refs
                child body-vars))
             (nthcdr 2 form)))))
    ((eq (car form) 'let*)
@@ -2849,88 +2849,88 @@ intersection of exhaustive branches."
       (dolist (binding bindings)
         (push (if (and (consp binding) (consp (cdr binding)))
                   (list (car binding)
-                        (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                        (nelisp-aot-compiler--rewrite-frame-slot-refs
                          (cadr binding) body-vars))
                 binding)
               out-bindings)
         (when (symbolp (car-safe binding))
           (setq body-vars
-                (nelisp-phase47-compiler--symbol-list-difference
+                (nelisp-aot-compiler--symbol-list-difference
                  body-vars
                  (list (car binding)))))
         (when (symbolp binding)
           (setq body-vars
-                (nelisp-phase47-compiler--symbol-list-difference
+                (nelisp-aot-compiler--symbol-list-difference
                  body-vars
                  (list binding)))))
       `(let* ,(nreverse out-bindings)
          ,@(mapcar
             (lambda (child)
-              (nelisp-phase47-compiler--rewrite-frame-slot-refs
+              (nelisp-aot-compiler--rewrite-frame-slot-refs
                child body-vars))
             (nthcdr 2 form)))))
    (t
     (cons (car form)
           (mapcar (lambda (child)
-                    (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                    (nelisp-aot-compiler--rewrite-frame-slot-refs
                      child vars))
                   (cdr form))))))
 
-(defun nelisp-phase47-compiler--preprocess-seq-forms (forms)
+(defun nelisp-aot-compiler--preprocess-seq-forms (forms)
   "Preprocess FORMS while tracking captured-mutation frame-slot reads."
   (let ((mutated nil)
         (out nil))
     (dolist (form forms)
-      (let ((processed (nelisp-phase47-compiler--preprocess-source form)))
+      (let ((processed (nelisp-aot-compiler--preprocess-source form)))
         (when mutated
           (setq processed
-                (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                (nelisp-aot-compiler--rewrite-frame-slot-refs
                  processed mutated)))
-        (if (eq processed 'nelisp-phase47--top-level-noop)
+        (if (eq processed 'nelisp-aot--top-level-noop)
             nil
           (if (and (consp processed) (eq (car processed) 'seq))
             (setq out (append (reverse (cdr processed)) out))
             (push processed out)))
-        (dolist (var (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+        (dolist (var (nelisp-aot-compiler--captured-mutation-guaranteed-vars
                       form))
           (unless (memq var mutated)
             (push var mutated)))))
     (nreverse out)))
 
-(defun nelisp-phase47-compiler--preprocess-short-circuit-forms (forms)
+(defun nelisp-aot-compiler--preprocess-short-circuit-forms (forms)
   "Preprocess short-circuit FORMS with left-to-right frame-slot tracking."
   (let ((mutated nil)
         (out nil))
     (dolist (form forms)
-      (let ((processed (nelisp-phase47-compiler--preprocess-source form)))
+      (let ((processed (nelisp-aot-compiler--preprocess-source form)))
         (when mutated
           (setq processed
-                (nelisp-phase47-compiler--rewrite-frame-slot-refs
+                (nelisp-aot-compiler--rewrite-frame-slot-refs
                  processed mutated)))
         (push processed out)
-        (dolist (var (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+        (dolist (var (nelisp-aot-compiler--captured-mutation-guaranteed-vars
                       form))
           (unless (memq var mutated)
             (push var mutated)))))
     (nreverse out)))
 
-(defun nelisp-phase47-compiler--preprocess-builtinn-lambda (sexp)
+(defun nelisp-aot-compiler--preprocess-builtinn-lambda (sexp)
   "Lambda-lift a literal function-designator argument in builtin SEXP."
   (let* ((builtin (car sexp))
          (args (cdr sexp))
          (argc (length args))
          (designator-index
           (cdr (assq builtin
-                     nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes)))
+                     nelisp-aot-compiler--aot-builtinn-designator-arg-indexes)))
          (extra-designator-indexes
           (cdr (assq builtin
-                     nelisp-phase47-compiler--aot-builtinn-extra-designator-arg-indexes)))
+                     nelisp-aot-compiler--aot-builtinn-extra-designator-arg-indexes)))
          (keyword-designator-positions
           (cl-loop for idx from 1 below argc
                    for previous = (nth (1- idx) args)
                    for arg = (nth idx args)
                    when (and (keywordp previous)
-                             (nelisp-phase47-compiler--lambda-literal-form
+                             (nelisp-aot-compiler--lambda-literal-form
                               arg))
                    collect idx))
          (candidate-indexes
@@ -2945,13 +2945,13 @@ intersection of exhaustive branches."
           (cl-loop for idx in candidate-indexes
                    when (< idx argc)
                    for lambda-form =
-                   (nelisp-phase47-compiler--lambda-literal-form
+                   (nelisp-aot-compiler--lambda-literal-form
                     (nth idx args))
                    when lambda-form
                    collect (cons idx lambda-form))))
     (if (not lambda-alist)
         (cons builtin
-              (mapcar #'nelisp-phase47-compiler--preprocess-source
+              (mapcar #'nelisp-aot-compiler--preprocess-source
                       args))
       (cons builtin
             (cl-loop for arg in args
@@ -2959,21 +2959,21 @@ intersection of exhaustive branches."
                      collect
                      (let ((entry (assq idx lambda-alist)))
                        (if entry
-                           (nelisp-phase47-compiler--lambda-lift-designator
+                           (nelisp-aot-compiler--lambda-lift-designator
                             (cdr entry))
-                         (nelisp-phase47-compiler--preprocess-source
+                         (nelisp-aot-compiler--preprocess-source
                           arg))))))))
 
-(defun nelisp-phase47-compiler--body->form (body)
-  "Normalize BODY forms into one Phase 47 form."
+(defun nelisp-aot-compiler--body->form (body)
+  "Normalize BODY forms into one AOT form."
   (cond
    ((null body) 0)
    ((null (cdr body))
-    (nelisp-phase47-compiler--preprocess-source (car body)))
+    (nelisp-aot-compiler--preprocess-source (car body)))
    (t
-    (nelisp-phase47-compiler--preprocess-source (cons 'progn body)))))
+    (nelisp-aot-compiler--preprocess-source (cons 'progn body)))))
 
-(defun nelisp-phase47-compiler--defun-runtime-body-forms (body)
+(defun nelisp-aot-compiler--defun-runtime-body-forms (body)
   "Return BODY with Emacs Lisp defun metadata forms removed.
 
 A leading string is a docstring, and leading `declare' / `interactive'
@@ -2987,10 +2987,10 @@ forms after that are function metadata rather than runtime body forms."
       (setq forms (cdr forms)))
     forms))
 
-(defun nelisp-phase47-compiler--preprocess-let*-bindings (bindings body)
-  "Desugar `let*' BINDINGS and BODY into nested Phase 47 `let' forms."
+(defun nelisp-aot-compiler--preprocess-let*-bindings (bindings body)
+  "Desugar `let*' BINDINGS and BODY into nested AOT `let' forms."
   (if (null bindings)
-      (nelisp-phase47-compiler--body->form body)
+      (nelisp-aot-compiler--body->form body)
     (let ((binding (car bindings)))
 	      (unless (or (symbolp binding)
 	                  (and (consp binding)
@@ -2999,31 +2999,31 @@ forms after that are function metadata rather than runtime body forms."
 	                  (and (consp binding)
 	                       (consp (cdr binding))
 	                       (null (cddr binding))))
-	        (signal 'nelisp-phase47-compiler-error
+	        (signal 'nelisp-aot-compiler-error
 	                (list :let-binding-shape binding)))
 	      `(let (,(if (symbolp binding)
 	                  (list binding 0)
 	                (if (null (cdr binding))
 	                    (list (car binding) 0)
 	                  (list (car binding)
-	                        (nelisp-phase47-compiler--preprocess-source
+	                        (nelisp-aot-compiler--preprocess-source
 	                         (cadr binding))))))
-	         ,(nelisp-phase47-compiler--preprocess-let*-bindings
+	         ,(nelisp-aot-compiler--preprocess-let*-bindings
 	           (cdr bindings) body)))))
 
-(defun nelisp-phase47-compiler--preprocess-cond-clause (clause)
-  "Normalize one `cond' CLAUSE for the Phase 47 parser."
+(defun nelisp-aot-compiler--preprocess-cond-clause (clause)
+  "Normalize one `cond' CLAUSE for the AOT parser."
   (unless (consp clause)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :cond-clause-not-list clause)))
   (let ((pred (car clause))
         (body (cdr clause)))
     (list (if (eq pred t)
               t
-            (nelisp-phase47-compiler--preprocess-source pred))
-          (nelisp-phase47-compiler--body->form body))))
+            (nelisp-aot-compiler--preprocess-source pred))
+          (nelisp-aot-compiler--body->form body))))
 
-(defun nelisp-phase47-compiler--preprocess-cond-clauses (clauses)
+(defun nelisp-aot-compiler--preprocess-cond-clauses (clauses)
   "Normalize COND CLAUSES, pruning statically false compatibility guards."
   (let ((out nil)
         (done nil))
@@ -3032,7 +3032,7 @@ forms after that are function metadata rather than runtime body forms."
              (pred (car clause))
              (static
               (and (not (eq pred t))
-                   (nelisp-phase47-compiler--top-level-static-condition
+                   (nelisp-aot-compiler--top-level-static-condition
                     pred))))
         (cond
          ((and static (not (cdr static)))
@@ -3047,13 +3047,13 @@ forms after that are function metadata rather than runtime body forms."
       (setq clauses (cdr clauses)))
     (nreverse out)))
 
-(defun nelisp-phase47-compiler--preprocess-static-and (forms)
+(defun nelisp-aot-compiler--preprocess-static-and (forms)
   "Return source for AND FORMS after pruning static compatibility guards."
   (let ((out nil)
         (done nil))
     (while (and forms (not done))
       (let ((static
-             (nelisp-phase47-compiler--top-level-static-condition
+             (nelisp-aot-compiler--top-level-static-condition
               (car forms))))
         (cond
          ((and static (not (cdr static)))
@@ -3070,13 +3070,13 @@ forms after that are function metadata rather than runtime body forms."
        ((null (cdr kept)) (car kept))
        (t (cons 'and kept))))))
 
-(defun nelisp-phase47-compiler--preprocess-static-or (forms)
+(defun nelisp-aot-compiler--preprocess-static-or (forms)
   "Return source for OR FORMS after pruning static compatibility guards."
   (let ((out nil)
         (done nil))
     (while (and forms (not done))
       (let ((static
-             (nelisp-phase47-compiler--top-level-static-condition
+             (nelisp-aot-compiler--top-level-static-condition
               (car forms))))
         (cond
          ((and static (cdr static))
@@ -3093,10 +3093,10 @@ forms after that are function metadata rather than runtime body forms."
        ((null (cdr kept)) (car kept))
        (t (cons 'or kept))))))
 
-(defun nelisp-phase47-compiler--preprocess-sexp-int-expr (expr sexp-vars)
+(defun nelisp-aot-compiler--preprocess-sexp-int-expr (expr sexp-vars)
   "Lower monomorphic Sexp::Int EXPR using SEXP-VARS as boxed inputs.
 This is the Stage 129.2 boxed-boundary MVP: values stay raw i64
-inside the existing Phase 47 compiler, while Sexp input parameters
+inside the existing AOT compiler, while Sexp input parameters
 are unwrapped at use sites and the caller-owned output slot is boxed
 by the surrounding `defun-sexp-int' lowering."
   (cond
@@ -3106,72 +3106,72 @@ by the surrounding `defun-sexp-int' lowering."
    ((symbolp expr) expr)
    ((and (consp expr) (memq (car expr) '(+ - * logior logand logxor)))
     (unless (= (length expr) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-binop-arity expr)))
     (list (car expr)
-          (nelisp-phase47-compiler--preprocess-sexp-int-expr
+          (nelisp-aot-compiler--preprocess-sexp-int-expr
            (nth 1 expr) sexp-vars)
-          (nelisp-phase47-compiler--preprocess-sexp-int-expr
+          (nelisp-aot-compiler--preprocess-sexp-int-expr
            (nth 2 expr) sexp-vars)))
    ((and (consp expr) (memq (car expr) '(< > <= >= =)))
     (unless (= (length expr) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-cmp-arity expr)))
     (list (car expr)
-          (nelisp-phase47-compiler--preprocess-sexp-int-expr
+          (nelisp-aot-compiler--preprocess-sexp-int-expr
            (nth 1 expr) sexp-vars)
-          (nelisp-phase47-compiler--preprocess-sexp-int-expr
+          (nelisp-aot-compiler--preprocess-sexp-int-expr
            (nth 2 expr) sexp-vars)))
    ((and (consp expr) (eq (car expr) 'if))
     (unless (= (length expr) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-if-arity expr)))
-    `(if ,(nelisp-phase47-compiler--preprocess-sexp-int-expr
+    `(if ,(nelisp-aot-compiler--preprocess-sexp-int-expr
            (nth 1 expr) sexp-vars)
-         ,(nelisp-phase47-compiler--preprocess-sexp-int-expr
+         ,(nelisp-aot-compiler--preprocess-sexp-int-expr
            (nth 2 expr) sexp-vars)
-       ,(nelisp-phase47-compiler--preprocess-sexp-int-expr
+       ,(nelisp-aot-compiler--preprocess-sexp-int-expr
          (nth 3 expr) sexp-vars)))
    ((and (consp expr) (eq (car expr) 'seq))
     (cons 'seq
           (mapcar (lambda (child)
-                    (nelisp-phase47-compiler--preprocess-sexp-int-expr
+                    (nelisp-aot-compiler--preprocess-sexp-int-expr
                      child sexp-vars))
                   (cdr expr))))
    (t
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-sexp-int-unsupported expr)))))
 
-(defun nelisp-phase47-compiler--preprocess-defun-sexp-int (sexp)
-  "Lower `(defun-sexp-int NAME (OUT ARG...) BODY...)' to Phase 47 DSL.
+(defun nelisp-aot-compiler--preprocess-defun-sexp-int (sexp)
+  "Lower `(defun-sexp-int NAME (OUT ARG...) BODY...)' to AOT DSL.
 OUT is a caller-owned `*mut Sexp' slot.  ARGs are `*const Sexp'
 inputs assumed to hold Int values.  BODY is a monomorphic integer
 expression; the lowered function writes `Sexp::Int(result)' into OUT
 and returns OUT."
   (unless (>= (length sexp) 4)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-sexp-int-arity sexp)))
   (let* ((name (nth 1 sexp))
          (params (nth 2 sexp))
-         (body (nelisp-phase47-compiler--body->form (nthcdr 3 sexp))))
+         (body (nelisp-aot-compiler--body->form (nthcdr 3 sexp))))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-name-not-symbol name)))
     (unless (and (consp params) (cl-every #'symbolp params))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-params params)))
     (let* ((out (car params))
            (sexp-vars (cdr params))
            (annotated-params
             (mapcar (lambda (p) (list p :type 'sexp)) params))
            (raw-body
-            (nelisp-phase47-compiler--preprocess-sexp-int-expr
+            (nelisp-aot-compiler--preprocess-sexp-int-expr
              body sexp-vars)))
       `(defun ,name ,annotated-params
          (sexp-int-make ,out ,raw-body)))))
 
-(defun nelisp-phase47-compiler--preprocess-defun-sexp-int-setq (sexp)
-  "Lower `(defun-sexp-int-setq NAME PARAMS BODY...)' to Phase 47 DSL.
+(defun nelisp-aot-compiler--preprocess-defun-sexp-int-setq (sexp)
+  "Lower `(defun-sexp-int-setq NAME PARAMS BODY...)' to AOT DSL.
 This is the Doc 129.3A boxed-boundary symbol-cell MVP.  PARAMS must be
 `(OUT MIRROR FRAMES SCRATCH NAME ARG...)':
 
@@ -3186,18 +3186,18 @@ BODY is compiled as a raw integer expression using ARG... as boxed
 inputs.  The lowered function writes the boxed Int into OUT, delegates
 the symbol-cell write to `nelisp_env_set_value', and returns OUT."
   (unless (>= (length sexp) 4)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-sexp-int-setq-arity sexp)))
   (let* ((name (nth 1 sexp))
          (params (nth 2 sexp))
-         (body (nelisp-phase47-compiler--body->form (nthcdr 3 sexp))))
+         (body (nelisp-aot-compiler--body->form (nthcdr 3 sexp))))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-setq-name-not-symbol name)))
     (unless (and (listp params)
                  (>= (length params) 5)
                  (cl-every #'symbolp params))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-setq-params params)))
     (let* ((out (nth 0 params))
            (mirror (nth 1 params))
@@ -3208,7 +3208,7 @@ the symbol-cell write to `nelisp_env_set_value', and returns OUT."
            (annotated-params
             (mapcar (lambda (p) (list p :type 'sexp)) params))
            (raw-body
-            (nelisp-phase47-compiler--preprocess-sexp-int-expr
+            (nelisp-aot-compiler--preprocess-sexp-int-expr
              body sexp-vars)))
       `(defun ,name ,annotated-params
          (seq
@@ -3217,7 +3217,7 @@ the symbol-cell write to `nelisp_env_set_value', and returns OUT."
                        ,mirror ,frames ,sym ,out ,scratch 0)
           ,out)))))
 
-(defun nelisp-phase47-compiler--preprocess-defun-sexp-int-setq-symbol (sexp)
+(defun nelisp-aot-compiler--preprocess-defun-sexp-int-setq-symbol (sexp)
   "Lower boxed Int setq with a compile-time symbol literal.
 Surface form:
 
@@ -3228,22 +3228,22 @@ Surface form:
 SYM-SLOT is caller-owned `*mut Sexp' storage used to materialize
 SYMBOL before delegating to `nelisp_env_set_value'."
   (unless (>= (length sexp) 5)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-sexp-int-setq-symbol-arity sexp)))
   (let* ((name (nth 1 sexp))
          (sym-lit (nth 2 sexp))
          (params (nth 3 sexp))
-         (body (nelisp-phase47-compiler--body->form (nthcdr 4 sexp))))
+         (body (nelisp-aot-compiler--body->form (nthcdr 4 sexp))))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-setq-symbol-name-not-symbol name)))
     (unless (or (symbolp sym-lit) (stringp sym-lit))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-setq-symbol-literal sym-lit)))
     (unless (and (listp params)
                  (>= (length params) 6)
                  (cl-every #'symbolp params))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-setq-symbol-params params)))
     (let* ((out (nth 0 params))
            (mirror (nth 1 params))
@@ -3255,7 +3255,7 @@ SYMBOL before delegating to `nelisp_env_set_value'."
            (annotated-params
             (mapcar (lambda (p) (list p :type 'sexp)) params))
            (raw-body
-            (nelisp-phase47-compiler--preprocess-sexp-int-expr
+            (nelisp-aot-compiler--preprocess-sexp-int-expr
              body sexp-vars)))
       `(defun ,name ,annotated-params
          (seq
@@ -3265,7 +3265,7 @@ SYMBOL before delegating to `nelisp_env_set_value'."
                        ,mirror ,frames ,sym-slot ,out ,scratch 0)
           ,out)))))
 
-(defun nelisp-phase47-compiler--preprocess-defun-sexp-int-defvar-symbol (sexp)
+(defun nelisp-aot-compiler--preprocess-defun-sexp-int-defvar-symbol (sexp)
   "Lower boxed Int defvar with a compile-time symbol literal.
 Surface form:
 
@@ -3280,22 +3280,22 @@ already bound, the lowered function returns SYM-SLOT without
 overwriting the value cell.  Otherwise it boxes BODY into OUT,
 delegates to `nelisp_env_set_value', and returns SYM-SLOT."
   (unless (>= (length sexp) 5)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-sexp-int-defvar-symbol-arity sexp)))
   (let* ((name (nth 1 sexp))
          (sym-lit (nth 2 sexp))
          (params (nth 3 sexp))
-         (body (nelisp-phase47-compiler--body->form (nthcdr 4 sexp))))
+         (body (nelisp-aot-compiler--body->form (nthcdr 4 sexp))))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-defvar-symbol-name-not-symbol name)))
     (unless (or (symbolp sym-lit) (stringp sym-lit))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-defvar-symbol-literal sym-lit)))
     (unless (and (listp params)
                  (>= (length params) 5)
                  (cl-every #'symbolp params))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-defvar-symbol-params params)))
     (let* ((out (nth 0 params))
            (mirror (nth 1 params))
@@ -3307,7 +3307,7 @@ delegates to `nelisp_env_set_value', and returns SYM-SLOT."
            (annotated-params
             (mapcar (lambda (p) (list p :type 'sexp)) params))
            (raw-body
-            (nelisp-phase47-compiler--preprocess-sexp-int-expr
+            (nelisp-aot-compiler--preprocess-sexp-int-expr
              body sexp-vars)))
       `(defun ,name ,annotated-params
          (seq
@@ -3322,7 +3322,7 @@ delegates to `nelisp_env_set_value', and returns SYM-SLOT."
                           ,mirror ,frames ,sym-slot ,out ,scratch 0)
              ,sym-slot)))))))
 
-(defun nelisp-phase47-compiler--preprocess-defun-sexp-int-defconst-symbol (sexp)
+(defun nelisp-aot-compiler--preprocess-defun-sexp-int-defconst-symbol (sexp)
   "Lower boxed Int defconst with a compile-time symbol literal.
 Surface form:
 
@@ -3336,22 +3336,22 @@ existing constant flag, BODY is boxed into OUT for `nelisp_env_set_value',
 then T is written into OUT before `nelisp_mirror_set_constant' marks the
 symbol constant.  The lowered function returns SYM-SLOT."
   (unless (>= (length sexp) 5)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-sexp-int-defconst-symbol-arity sexp)))
   (let* ((name (nth 1 sexp))
          (sym-lit (nth 2 sexp))
          (params (nth 3 sexp))
-         (body (nelisp-phase47-compiler--body->form (nthcdr 4 sexp))))
+         (body (nelisp-aot-compiler--body->form (nthcdr 4 sexp))))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-defconst-symbol-name-not-symbol name)))
     (unless (or (symbolp sym-lit) (stringp sym-lit))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-defconst-symbol-literal sym-lit)))
     (unless (and (listp params)
                  (>= (length params) 5)
                  (cl-every #'symbolp params))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-int-defconst-symbol-params params)))
     (let* ((out (nth 0 params))
            (mirror (nth 1 params))
@@ -3363,7 +3363,7 @@ symbol constant.  The lowered function returns SYM-SLOT."
            (annotated-params
             (mapcar (lambda (p) (list p :type 'sexp)) params))
            (raw-body
-            (nelisp-phase47-compiler--preprocess-sexp-int-expr
+            (nelisp-aot-compiler--preprocess-sexp-int-expr
              body sexp-vars)))
       `(defun ,name ,annotated-params
          (seq
@@ -3379,7 +3379,7 @@ symbol constant.  The lowered function returns SYM-SLOT."
                        ,mirror ,sym-slot ,out)
           ,sym-slot)))))
 
-(defun nelisp-phase47-compiler--preprocess-defun-sexp-builtin1-symbol (sexp)
+(defun nelisp-aot-compiler--preprocess-defun-sexp-builtin1-symbol (sexp)
   "Lower a one-argument Sexp builtin delegation helper.
 Surface form:
 
@@ -3392,21 +3392,21 @@ delegates to the Doc 129.6 runtime dispatcher ABI
 `nelisp_aot_builtin_call1', which writes its result to OUT and returns
 OUT."
   (unless (= (length sexp) 4)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-sexp-builtin1-symbol-arity sexp)))
   (let ((name (nth 1 sexp))
         (builtin-lit (nth 2 sexp))
         (params (nth 3 sexp)))
     (unless (symbolp name)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-builtin1-symbol-name-not-symbol name)))
     (unless (or (symbolp builtin-lit) (stringp builtin-lit))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-builtin1-symbol-literal builtin-lit)))
     (unless (and (listp params)
                  (= (length params) 6)
                  (cl-every #'symbolp params))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-sexp-builtin1-symbol-params params)))
     (let* ((out (nth 0 params))
            (mirror (nth 1 params))
@@ -3426,10 +3426,10 @@ OUT."
                        ,mirror ,frames ,name-slot ,arg ,out ,scratch)
           ,out)))))
 
-(defun nelisp-phase47-compiler--preprocess-source (sexp)
-  "Macroexpand and normalize SEXP before Phase 47 parsing.
+(defun nelisp-aot-compiler--preprocess-source (sexp)
+  "Macroexpand and normalize SEXP before AOT parsing.
 This is Doc 129.1's host-frontend step.  It deliberately preserves
-Phase 47 structural forms instead of applying `macroexpand-all' to
+AOT structural forms instead of applying `macroexpand-all' to
 the whole program."
   (cond
    ;; Host `nil' is the false/zero value in the current raw-i64 Phase
@@ -3439,13 +3439,13 @@ the whole program."
    ((atom sexp) sexp)
    ((eq (car sexp) 'quote) sexp)
    ((and (eq (car sexp) 'defvar) (= (length sexp) 2))
-    'nelisp-phase47--top-level-noop)
-   ((nelisp-phase47-compiler--lambda-literal-form sexp)
-    (nelisp-phase47-compiler--lambda-closure-value
-     (nelisp-phase47-compiler--lambda-literal-form sexp)))
+    'nelisp-aot--top-level-noop)
+   ((nelisp-aot-compiler--lambda-literal-form sexp)
+    (nelisp-aot-compiler--lambda-closure-value
+     (nelisp-aot-compiler--lambda-literal-form sexp)))
    ((eq (car sexp) 'function) sexp)
    ((eq (car sexp) 'funcall)
-    (nelisp-phase47-compiler--preprocess-funcall-lambda sexp))
+    (nelisp-aot-compiler--preprocess-funcall-lambda sexp))
    ((memq (car sexp) '(mapcar mapc mapconcat mapcan maphash
                        map-char-table map-keymap
                        map-apply map-do map-filter map-merge-with
@@ -3483,57 +3483,57 @@ the whole program."
                        cl-remove-duplicates cl-delete-duplicates
                        cl-fill cl-replace
                        cl-adjoin sort))
-    (nelisp-phase47-compiler--preprocess-builtinn-lambda sexp))
-   ((nelisp-phase47-compiler--lambda-literal-form (car sexp))
-    (nelisp-phase47-compiler--lambda-lift-call
-     (nelisp-phase47-compiler--lambda-literal-form (car sexp))
+    (nelisp-aot-compiler--preprocess-builtinn-lambda sexp))
+   ((nelisp-aot-compiler--lambda-literal-form (car sexp))
+    (nelisp-aot-compiler--lambda-lift-call
+     (nelisp-aot-compiler--lambda-literal-form (car sexp))
      (cdr sexp)))
    ((eq (car sexp) 'progn)
-    (let ((body (nelisp-phase47-compiler--preprocess-seq-forms
+    (let ((body (nelisp-aot-compiler--preprocess-seq-forms
                  (cdr sexp))))
       (cond
        ((null body)
-        (if (cdr sexp) 'nelisp-phase47--top-level-noop 0))
+        (if (cdr sexp) 'nelisp-aot--top-level-noop 0))
        ((null (cdr body)) (car body))
        (t (cons 'seq body)))))
    ((eq (car sexp) 'seq)
-    (cons 'seq (nelisp-phase47-compiler--preprocess-seq-forms
+    (cons 'seq (nelisp-aot-compiler--preprocess-seq-forms
                 (cdr sexp))))
    ((eq (car sexp) 'defun-sexp-int)
-    (nelisp-phase47-compiler--preprocess-source
-     (nelisp-phase47-compiler--preprocess-defun-sexp-int sexp)))
+    (nelisp-aot-compiler--preprocess-source
+     (nelisp-aot-compiler--preprocess-defun-sexp-int sexp)))
    ((eq (car sexp) 'defun-sexp-int-setq)
-    (nelisp-phase47-compiler--preprocess-source
-     (nelisp-phase47-compiler--preprocess-defun-sexp-int-setq sexp)))
+    (nelisp-aot-compiler--preprocess-source
+     (nelisp-aot-compiler--preprocess-defun-sexp-int-setq sexp)))
    ((eq (car sexp) 'defun-sexp-int-setq-symbol)
-    (nelisp-phase47-compiler--preprocess-source
-     (nelisp-phase47-compiler--preprocess-defun-sexp-int-setq-symbol sexp)))
+    (nelisp-aot-compiler--preprocess-source
+     (nelisp-aot-compiler--preprocess-defun-sexp-int-setq-symbol sexp)))
    ((eq (car sexp) 'defun-sexp-int-defvar-symbol)
-    (nelisp-phase47-compiler--preprocess-source
-     (nelisp-phase47-compiler--preprocess-defun-sexp-int-defvar-symbol sexp)))
+    (nelisp-aot-compiler--preprocess-source
+     (nelisp-aot-compiler--preprocess-defun-sexp-int-defvar-symbol sexp)))
    ((eq (car sexp) 'defun-sexp-int-defconst-symbol)
-    (nelisp-phase47-compiler--preprocess-source
-     (nelisp-phase47-compiler--preprocess-defun-sexp-int-defconst-symbol sexp)))
+    (nelisp-aot-compiler--preprocess-source
+     (nelisp-aot-compiler--preprocess-defun-sexp-int-defconst-symbol sexp)))
    ((eq (car sexp) 'defun-sexp-builtin1-symbol)
-    (nelisp-phase47-compiler--preprocess-source
-     (nelisp-phase47-compiler--preprocess-defun-sexp-builtin1-symbol sexp)))
+    (nelisp-aot-compiler--preprocess-source
+     (nelisp-aot-compiler--preprocess-defun-sexp-builtin1-symbol sexp)))
    ((eq (car sexp) 'defun)
     (unless (>= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-arity sexp)))
     `(defun ,(nth 1 sexp)
        ,(nth 2 sexp)
-       ,(nelisp-phase47-compiler--body->form
-         (nelisp-phase47-compiler--defun-runtime-body-forms
+       ,(nelisp-aot-compiler--body->form
+         (nelisp-aot-compiler--defun-runtime-body-forms
           (nthcdr 3 sexp)))))
    ((eq (car sexp) 'defmacro)
     ;; Top-level defmacros are stripped before this point.  Nested
-    ;; defmacro has no Phase 47 runtime meaning.
-    (signal 'nelisp-phase47-compiler-error
+    ;; defmacro has no AOT runtime meaning.
+    (signal 'nelisp-aot-compiler-error
             (list :nested-defmacro sexp)))
    ((eq (car sexp) 'let)
     (unless (>= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :let-arity sexp)))
     `(let ,(mapcar
 	            (lambda (binding)
@@ -3544,85 +3544,85 @@ the whole program."
 	                          (and (consp binding)
 	                               (consp (cdr binding))
 	                               (null (cddr binding))))
-	                (signal 'nelisp-phase47-compiler-error
+	                (signal 'nelisp-aot-compiler-error
 	                        (list :let-binding-shape binding)))
 	              (if (symbolp binding)
 	                  (list binding 0)
 	                (if (null (cdr binding))
 	                    (list (car binding) 0)
 	                  (list (car binding)
-	                        (nelisp-phase47-compiler--preprocess-source
+	                        (nelisp-aot-compiler--preprocess-source
 	                         (cadr binding))))))
             (nth 1 sexp))
-       ,(nelisp-phase47-compiler--body->form (nthcdr 2 sexp))))
+       ,(nelisp-aot-compiler--body->form (nthcdr 2 sexp))))
    ((eq (car sexp) 'let*)
-    (nelisp-phase47-compiler--preprocess-let*-bindings
+    (nelisp-aot-compiler--preprocess-let*-bindings
      (nth 1 sexp) (nthcdr 2 sexp)))
    ((eq (car sexp) 'if)
     (unless (>= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :if-arity sexp)))
     (let* ((condition (nth 1 sexp))
            (static
-            (nelisp-phase47-compiler--top-level-static-condition
+            (nelisp-aot-compiler--top-level-static-condition
              condition)))
       (if static
           (if (cdr static)
-              (nelisp-phase47-compiler--preprocess-source (nth 2 sexp))
-            (nelisp-phase47-compiler--body->form (nthcdr 3 sexp)))
+              (nelisp-aot-compiler--preprocess-source (nth 2 sexp))
+            (nelisp-aot-compiler--body->form (nthcdr 3 sexp)))
         (let* ((condition-vars
-                (nelisp-phase47-compiler--captured-mutation-guaranteed-vars
+                (nelisp-aot-compiler--captured-mutation-guaranteed-vars
                  condition))
                (then-form
-                (nelisp-phase47-compiler--preprocess-source (nth 2 sexp)))
+                (nelisp-aot-compiler--preprocess-source (nth 2 sexp)))
                (else-form
-                (nelisp-phase47-compiler--body->form (nthcdr 3 sexp))))
-          `(if ,(nelisp-phase47-compiler--preprocess-source condition)
-               ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
+                (nelisp-aot-compiler--body->form (nthcdr 3 sexp))))
+          `(if ,(nelisp-aot-compiler--preprocess-source condition)
+               ,(nelisp-aot-compiler--rewrite-frame-slot-refs
                  then-form condition-vars)
-             ,(nelisp-phase47-compiler--rewrite-frame-slot-refs
+             ,(nelisp-aot-compiler--rewrite-frame-slot-refs
                else-form condition-vars))))))
    ((eq (car sexp) 'while)
-    (cons 'while (mapcar #'nelisp-phase47-compiler--preprocess-source
+    (cons 'while (mapcar #'nelisp-aot-compiler--preprocess-source
                          (cdr sexp))))
    ((eq (car sexp) 'cond)
     (let ((clauses
-           (nelisp-phase47-compiler--preprocess-cond-clauses
+           (nelisp-aot-compiler--preprocess-cond-clauses
             (cdr sexp))))
       (if clauses
           (cons 'cond
-                (mapcar #'nelisp-phase47-compiler--preprocess-cond-clause
+                (mapcar #'nelisp-aot-compiler--preprocess-cond-clause
                         clauses))
         0)))
    ((eq (car sexp) 'and)
     (let ((pruned
-           (nelisp-phase47-compiler--preprocess-static-and (cdr sexp))))
+           (nelisp-aot-compiler--preprocess-static-and (cdr sexp))))
       (if (and (consp pruned) (eq (car pruned) 'and))
           (cons 'and
-                (nelisp-phase47-compiler--preprocess-short-circuit-forms
+                (nelisp-aot-compiler--preprocess-short-circuit-forms
                  (cdr pruned)))
-        (nelisp-phase47-compiler--preprocess-source pruned))))
+        (nelisp-aot-compiler--preprocess-source pruned))))
    ((eq (car sexp) 'or)
     (let ((pruned
-           (nelisp-phase47-compiler--preprocess-static-or (cdr sexp))))
+           (nelisp-aot-compiler--preprocess-static-or (cdr sexp))))
       (if (and (consp pruned) (eq (car pruned) 'or))
           (cons 'or
-                (nelisp-phase47-compiler--preprocess-short-circuit-forms
+                (nelisp-aot-compiler--preprocess-short-circuit-forms
                  (cdr pruned)))
-        (nelisp-phase47-compiler--preprocess-source pruned))))
+        (nelisp-aot-compiler--preprocess-source pruned))))
    ((memq (car sexp) '(write static-imm32-table-define))
     sexp)
    (t
     (let ((expanded (macroexpand sexp)))
       (if (not (equal expanded sexp))
-          (nelisp-phase47-compiler--preprocess-source expanded)
+          (nelisp-aot-compiler--preprocess-source expanded)
         (cons (car sexp)
-              (mapcar #'nelisp-phase47-compiler--preprocess-source
+              (mapcar #'nelisp-aot-compiler--preprocess-source
                       (cdr sexp))))))))
 
-(defun nelisp-phase47-compiler--top-level-noop-form-p (form)
+(defun nelisp-aot-compiler--top-level-noop-form-p (form)
   "Return non-nil for top-level forms with no runtime effect."
-  (or (eq form 'nelisp-phase47--top-level-noop)
+  (or (eq form 'nelisp-aot--top-level-noop)
       (and (consp form) (eq (car form) 'seq) (null (cdr form)))
       (and (consp form) (eq (car form) 'quote))
       (and (consp form)
@@ -3635,16 +3635,16 @@ the whole program."
       (null form)
       (eq form t)))
 
-(defun nelisp-phase47-compiler--prune-top-level-noops (source)
+(defun nelisp-aot-compiler--prune-top-level-noops (source)
   "Remove macroexpanded top-level no-op forms from SOURCE."
   (cond
    ((and (consp source) (eq (car source) 'seq))
     (let (forms)
       (dolist (child (cdr source))
-        (let ((pruned (nelisp-phase47-compiler--prune-top-level-noops
+        (let ((pruned (nelisp-aot-compiler--prune-top-level-noops
                        child)))
           (cond
-           ((nelisp-phase47-compiler--top-level-noop-form-p pruned)
+           ((nelisp-aot-compiler--top-level-noop-form-p pruned)
             nil)
            ((and (consp pruned) (eq (car pruned) 'seq))
             (setq forms (append (reverse (cdr pruned)) forms)))
@@ -3653,46 +3653,46 @@ the whole program."
       (cons 'seq (nreverse forms))))
    ((and (consp source) (eq (car source) 'prog1))
     (let ((children
-           (mapcar #'nelisp-phase47-compiler--prune-top-level-noops
+           (mapcar #'nelisp-aot-compiler--prune-top-level-noops
                    (cdr source))))
       (cond
-       ((cl-every #'nelisp-phase47-compiler--top-level-noop-form-p
+       ((cl-every #'nelisp-aot-compiler--top-level-noop-form-p
                   children)
         '(seq))
        ((and children
-             (cl-every #'nelisp-phase47-compiler--top-level-noop-form-p
+             (cl-every #'nelisp-aot-compiler--top-level-noop-form-p
                        (cdr children)))
         (car children))
        (t
         (cons 'prog1 children)))))
-   ((nelisp-phase47-compiler--top-level-noop-form-p source)
+   ((nelisp-aot-compiler--top-level-noop-form-p source)
     '(seq))
    (t source)))
 
-(defun nelisp-phase47-compiler--prepare-source (sexp)
+(defun nelisp-aot-compiler--prepare-source (sexp)
   "Apply Doc 129.1 compile-time macro handling to SEXP."
-  (let* ((extracted (nelisp-phase47-compiler--extract-defmacros sexp))
+  (let* ((extracted (nelisp-aot-compiler--extract-defmacros sexp))
          (source (plist-get extracted :source))
          (defs (plist-get extracted :defmacros))
          (module-forms (plist-get extracted :module-forms))
          (special-vars (plist-get extracted :special-vars)))
     (dolist (form module-forms)
-      (nelisp-phase47-compiler--eval-top-level-module-form form))
-    (nelisp-phase47-compiler--with-defmacros
+      (nelisp-aot-compiler--eval-top-level-module-form form))
+    (nelisp-aot-compiler--with-defmacros
      defs
      (lambda ()
-       (let* ((nelisp-phase47-compiler--lambda-lift-counter 0)
-              (nelisp-phase47-compiler--closure-lift-counter 0)
-              (nelisp-phase47-compiler--lambda-lift-hoists nil)
-              (nelisp-phase47-compiler--closure-lift-descriptors nil)
-              (nelisp-phase47-compiler--lambda-lift-names
-               (nelisp-phase47-compiler--top-level-defun-names source))
-              (nelisp-phase47-compiler--special-vars special-vars)
+       (let* ((nelisp-aot-compiler--lambda-lift-counter 0)
+              (nelisp-aot-compiler--closure-lift-counter 0)
+              (nelisp-aot-compiler--lambda-lift-hoists nil)
+              (nelisp-aot-compiler--closure-lift-descriptors nil)
+              (nelisp-aot-compiler--lambda-lift-names
+               (nelisp-aot-compiler--top-level-defun-names source))
+              (nelisp-aot-compiler--special-vars special-vars)
               (processed
-               (nelisp-phase47-compiler--preprocess-source source))
+               (nelisp-aot-compiler--preprocess-source source))
               (hoists (nreverse
-                       nelisp-phase47-compiler--lambda-lift-hoists)))
-         (nelisp-phase47-compiler--prune-top-level-noops
+                       nelisp-aot-compiler--lambda-lift-hoists)))
+         (nelisp-aot-compiler--prune-top-level-noops
           (cond
            ((null hoists) processed)
            ((and (consp processed) (eq (car processed) 'seq))
@@ -3700,7 +3700,7 @@ the whole program."
            (t
             (cons 'seq (append hoists (list processed)))))))))))
 
-(defconst nelisp-phase47-compiler--aot-builtin1-delegation-symbols
+(defconst nelisp-aot-compiler--aot-builtin1-delegation-symbols
   '(identity ignore
     not null atom consp listp symbolp keywordp numberp integerp
     float stringp vectorp
@@ -3720,40 +3720,40 @@ the whole program."
     symbol-name prin1-to-string number-to-string string-to-number
     upcase downcase)
   "One-argument builtins that may lower through Doc 129.6 delegation.
-These names are direct-call candidates only when no same-named Phase 47
+These names are direct-call candidates only when no same-named AOT
 defun is visible in the current compile unit.")
 
-(defconst nelisp-phase47-compiler--aot-direct-tag-predicate-symbols
+(defconst nelisp-aot-compiler--aot-direct-tag-predicate-symbols
   '(not null atom consp listp symbolp numberp integerp float stringp vectorp)
   "One-argument predicates that can lower without the AOT builtin boundary.
 These produce raw i64 booleans through `sexp-tag' comparisons and are
 used only when the current defun does not expose the dispatcher
 boundary slots.")
 
-(defun nelisp-phase47-compiler--aot-builtin-boundary-available-p (fenv)
+(defun nelisp-aot-compiler--aot-builtin-boundary-available-p (fenv)
   "Return non-nil when FENV has the standard AOT builtin boundary slots."
-  (and (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'out)
-       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'mirror)
-       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'frames)
-       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'scratch)
-       (or (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'name-slot)
-           (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'name_slot))))
+  (and (nelisp-aot-compiler--fenv-has-symbol-p fenv 'out)
+       (nelisp-aot-compiler--fenv-has-symbol-p fenv 'mirror)
+       (nelisp-aot-compiler--fenv-has-symbol-p fenv 'frames)
+       (nelisp-aot-compiler--fenv-has-symbol-p fenv 'scratch)
+       (or (nelisp-aot-compiler--fenv-has-symbol-p fenv 'name-slot)
+           (nelisp-aot-compiler--fenv-has-symbol-p fenv 'name_slot))))
 
-(defun nelisp-phase47-compiler--aot-funcall-boundary-available-p (fenv)
+(defun nelisp-aot-compiler--aot-funcall-boundary-available-p (fenv)
   "Return non-nil when FENV has the standard AOT funcall/apply slots."
-  (and (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'out)
-       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'mirror)
-       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'frames)
-       (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'scratch)))
+  (and (nelisp-aot-compiler--fenv-has-symbol-p fenv 'out)
+       (nelisp-aot-compiler--fenv-has-symbol-p fenv 'mirror)
+       (nelisp-aot-compiler--fenv-has-symbol-p fenv 'frames)
+       (nelisp-aot-compiler--fenv-has-symbol-p fenv 'scratch)))
 
-(defun nelisp-phase47-compiler--aot-direct-raw-bool-form-p (form)
+(defun nelisp-aot-compiler--aot-direct-raw-bool-form-p (form)
   "Return non-nil when FORM is known to produce a raw i64 boolean."
   (or (and (consp form) (memq (car form) '(< > <= >= =)))
       (and (consp form)
            (memq (car form)
-                 nelisp-phase47-compiler--aot-direct-tag-predicate-symbols))))
+                 nelisp-aot-compiler--aot-direct-tag-predicate-symbols))))
 
-(defun nelisp-phase47-compiler--aot-boundary-raw-bool-form-p (form)
+(defun nelisp-aot-compiler--aot-boundary-raw-bool-form-p (form)
   "Return non-nil when FORM is a raw i64 boolean even with the boundary.
 Unlike `--aot-direct-raw-bool-form-p' (which assumes the boundary-free
 tag-predicate path is taken), this only recognizes forms that stay raw
@@ -3770,20 +3770,20 @@ are deliberately excluded."
                 (= (length form) 3))
            (and (eq (car form) 'not)
                 (= (length form) 2)
-                (nelisp-phase47-compiler--aot-boundary-raw-bool-form-p
+                (nelisp-aot-compiler--aot-boundary-raw-bool-form-p
                  (cadr form))))))
 
-(defun nelisp-phase47-compiler--aot-direct-tag-predicate-form (sexp)
+(defun nelisp-aot-compiler--aot-direct-tag-predicate-form (sexp)
   "Return a boundary-free lowering for simple one-argument predicate SEXP."
   (when (and (consp sexp)
              (= (length sexp) 2)
              (memq (car sexp)
-                   nelisp-phase47-compiler--aot-direct-tag-predicate-symbols))
+                   nelisp-aot-compiler--aot-direct-tag-predicate-symbols))
     (let ((op (car sexp))
           (arg (cadr sexp)))
       (pcase op
         ('not
-         (if (nelisp-phase47-compiler--aot-direct-raw-bool-form-p arg)
+         (if (nelisp-aot-compiler--aot-direct-raw-bool-form-p arg)
              `(= ,arg 0)
            `(= (sexp-tag ,arg) ,nelisp-sexp--tag-nil)))
         ('null
@@ -3812,7 +3812,7 @@ are deliberately excluded."
          `(= (sexp-tag ,arg) ,nelisp-sexp--tag-vector))
         (_ nil)))))
 
-(defconst nelisp-phase47-compiler--aot-builtinn-delegation-symbols
+(defconst nelisp-aot-compiler--aot-builtinn-delegation-symbols
   '(list vector concat append
     cons eq eql equal
     memq member assq assv assoc
@@ -3870,10 +3870,10 @@ are deliberately excluded."
     cl-map cl-sort cl-stable-sort cl-merge
     sort)
   "Vararg builtins that may lower through Doc 129.6 calln delegation.
-These names are direct-call candidates only when no same-named Phase 47
+These names are direct-call candidates only when no same-named AOT
 defun is visible in the current compile unit.")
 
-(defconst nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes
+(defconst nelisp-aot-compiler--aot-builtinn-designator-arg-indexes
   '((mapcar . 0)
     (mapc . 0)
     (mapconcat . 0)
@@ -3963,36 +3963,36 @@ defun is visible in the current compile unit.")
 The index is zero-based within the source call's ordinary argument
 list, excluding the builtin name itself.")
 
-(defconst nelisp-phase47-compiler--aot-builtinn-extra-designator-arg-indexes
+(defconst nelisp-aot-compiler--aot-builtinn-extra-designator-arg-indexes
   '((seq-sort-by . (1)))
   "Additional function-designator argument positions for calln lowering.
-These extend `nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes'
+These extend `nelisp-aot-compiler--aot-builtinn-designator-arg-indexes'
 for builtins that can consume more than one static callback.")
 
-(defun nelisp-phase47-compiler--fenv-has-symbol-p (fenv sym)
+(defun nelisp-aot-compiler--fenv-has-symbol-p (fenv sym)
   "Return non-nil when FENV binds SYM."
   (and (symbolp sym) (assq sym fenv)))
 
-(defun nelisp-phase47-compiler--aot-name-slot-symbol (fenv sexp)
+(defun nelisp-aot-compiler--aot-name-slot-symbol (fenv sexp)
   "Return the caller-owned function-name slot symbol in FENV.
 The boxed-boundary MVP accepts either `name-slot' or `name_slot' to
 match the spelling already used by older Doc 129 helpers."
   (let ((name-slot (cond
-                    ((nelisp-phase47-compiler--fenv-has-symbol-p
+                    ((nelisp-aot-compiler--fenv-has-symbol-p
                       fenv 'name-slot)
                      'name-slot)
-                    ((nelisp-phase47-compiler--fenv-has-symbol-p
+                    ((nelisp-aot-compiler--fenv-has-symbol-p
                       fenv 'name_slot)
                      'name_slot)
                     (t nil))))
     (unless name-slot
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-function-designator-boundary-missing
                     '(name-slot)
                     :form sexp)))
     name-slot))
 
-(defun nelisp-phase47-compiler--aot-keyword-slot-symbols (fenv count sexp)
+(defun nelisp-aot-compiler--aot-keyword-slot-symbols (fenv count sexp)
   "Return COUNT caller-owned keyword materialization slots from FENV.
 For one keyword literal, accept `keyword-slot' / `keyword_slot' or the
 indexed `keyword-slot-0' / `keyword_slot_0' spelling.  For multiple
@@ -4007,22 +4007,22 @@ storage through the call boundary."
                       (intern (format "keyword_slot_%d" idx)))))
              (slot (cl-find-if
                     (lambda (sym)
-                      (nelisp-phase47-compiler--fenv-has-symbol-p
+                      (nelisp-aot-compiler--fenv-has-symbol-p
                        fenv sym))
                     candidates)))
         (unless slot
-          (if (and nelisp-phase47-compiler--allow-external-user-calls
-                   (nelisp-phase47-compiler--fenv-has-symbol-p
+          (if (and nelisp-aot-compiler--allow-external-user-calls
+                   (nelisp-aot-compiler--fenv-has-symbol-p
                     fenv 'scratch))
               (setq slot 'scratch)
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :aot-keyword-slot-boundary-missing
                           candidates
                           :form sexp))))
         (push slot slots)))
     (nreverse slots)))
 
-(defun nelisp-phase47-compiler--aot-callback-slot-symbols (fenv count sexp)
+(defun nelisp-aot-compiler--aot-callback-slot-symbols (fenv count sexp)
   "Return COUNT caller-owned callback materialization slots from FENV.
 Single callback materialization keeps using `scratch'.  Multiple static
 callbacks require indexed `callback-slot-N' / `callback_slot_N' slots so
@@ -4037,18 +4037,18 @@ calln dispatch."
                       (intern (format "callback_slot_%d" idx))))
                (slot (cl-find-if
                       (lambda (sym)
-                        (nelisp-phase47-compiler--fenv-has-symbol-p
+                        (nelisp-aot-compiler--fenv-has-symbol-p
                          fenv sym))
                       candidates)))
           (unless slot
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :aot-callback-slot-boundary-missing
                           candidates
                           :form sexp)))
           (push slot slots)))
       (nreverse slots))))
 
-(defun nelisp-phase47-compiler--aot-function-designator-symbol (form)
+(defun nelisp-aot-compiler--aot-function-designator-symbol (form)
   "Return FORM's quoted/function symbol designator, or nil.
 Recognizes `(quote SYMBOL)' and `(function SYMBOL)' only.  Lambda
 closures and arbitrary value forms stay on the normal runtime-dispatch
@@ -4059,7 +4059,7 @@ path and must already be materialized as boxed Sexp values."
              (symbolp (cadr form)))
     (cadr form)))
 
-(defun nelisp-phase47-compiler--aot-function-designator-lowering
+(defun nelisp-aot-compiler--aot-function-designator-lowering
     (fn-form fenv sexp)
   "Return plist describing lowered FN-FORM, or nil for dynamic values.
 For quoted/function symbol designators, materialize a `Sexp::Symbol' in
@@ -4067,11 +4067,11 @@ the caller-owned name slot before dispatching through the AOT bridge.
 For internal `aot-closure-lambda' designators, materialize a canonical
 heap closure into `out' before dispatch."
   (cond
-   ((nelisp-phase47-compiler--aot-function-designator-symbol fn-form)
-    (let* ((sym (nelisp-phase47-compiler--aot-function-designator-symbol
+   ((nelisp-aot-compiler--aot-function-designator-symbol fn-form)
+    (let* ((sym (nelisp-aot-compiler--aot-function-designator-symbol
                  fn-form))
            (name-slot
-            (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)))
+            (nelisp-aot-compiler--aot-name-slot-symbol fenv sexp)))
       (list :fn-expr name-slot
             :prefix `((sexp-write-symbol-lit
                        ,name-slot
@@ -4080,7 +4080,7 @@ heap closure into `out' before dispatch."
          (eq (car fn-form) 'aot-closure-lambda)
          (symbolp (cadr fn-form)))
     (let* ((boundary
-            (nelisp-phase47-compiler--aot-closure-boundary-symbols
+            (nelisp-aot-compiler--aot-closure-boundary-symbols
              fenv sexp))
            (out (plist-get boundary :out))
            (mirror (plist-get boundary :mirror))
@@ -4098,7 +4098,7 @@ heap closure into `out' before dispatch."
                                    ,out ,scratch
                                    ,@captures)))))))
 
-(defun nelisp-phase47-compiler--aot-builtin1-boundary-symbols (fenv sexp)
+(defun nelisp-aot-compiler--aot-builtin1-boundary-symbols (fenv sexp)
   "Return boundary symbols for direct builtin1 lowering in FENV.
 SEXP is used only for diagnostics.  The MVP requires a fixed set of
 caller-owned boundary params in the current defun:
@@ -4109,21 +4109,21 @@ caller-owned boundary params in the current defun:
          (frames 'frames)
          (scratch 'scratch)
          (name-slot (cond
-                     ((nelisp-phase47-compiler--fenv-has-symbol-p
+                     ((nelisp-aot-compiler--fenv-has-symbol-p
                        fenv 'name-slot)
                       'name-slot)
-                     ((nelisp-phase47-compiler--fenv-has-symbol-p
+                     ((nelisp-aot-compiler--fenv-has-symbol-p
                        fenv 'name_slot)
                       'name_slot)
                      (t nil)))
          (missing nil))
     (dolist (sym (list out mirror frames scratch))
-      (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+      (unless (nelisp-aot-compiler--fenv-has-symbol-p fenv sym)
         (push sym missing)))
     (unless name-slot
       (push 'name-slot missing))
     (when missing
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-builtin1-boundary-missing
                     (nreverse missing)
                     :form sexp)))
@@ -4133,23 +4133,23 @@ caller-owned boundary params in the current defun:
           :scratch scratch
           :name-slot name-slot)))
 
-(defun nelisp-phase47-compiler--parse-aot-builtin1-call
+(defun nelisp-aot-compiler--parse-aot-builtin1-call
     (sexp env fenv defuns)
   "Lower a direct one-argument builtin call SEXP through the AOT dispatcher."
   (let ((builtin (car sexp)))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-builtin1-call-arity sexp)))
     (let* ((arg (nth 1 sexp))
            (boundary
-            (nelisp-phase47-compiler--aot-builtin1-boundary-symbols
+            (nelisp-aot-compiler--aot-builtin1-boundary-symbols
              fenv sexp))
            (out (plist-get boundary :out))
            (mirror (plist-get boundary :mirror))
            (frames (plist-get boundary :frames))
            (scratch (plist-get boundary :scratch))
            (name-slot (plist-get boundary :name-slot)))
-      (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--parse-value
        `(seq
          (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
          (extern-call nelisp_aot_builtin_call1
@@ -4157,14 +4157,14 @@ caller-owned boundary params in the current defun:
          ,out)
        env fenv defuns))))
 
-(defun nelisp-phase47-compiler--parse-aot-builtinn-call
+(defun nelisp-aot-compiler--parse-aot-builtinn-call
     (sexp env fenv defuns)
   "Lower a direct vararg builtin call SEXP through the AOT dispatcher."
   (let* ((builtin (car sexp))
          (args (cdr sexp))
          (argc (length args))
          (boundary
-          (nelisp-phase47-compiler--aot-builtin1-boundary-symbols
+          (nelisp-aot-compiler--aot-builtin1-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
@@ -4173,16 +4173,16 @@ caller-owned boundary params in the current defun:
          (name-slot (plist-get boundary :name-slot))
          (designator-index
           (cdr (assq builtin
-                     nelisp-phase47-compiler--aot-builtinn-designator-arg-indexes)))
+                     nelisp-aot-compiler--aot-builtinn-designator-arg-indexes)))
          (extra-designator-indexes
           (cdr (assq builtin
-                     nelisp-phase47-compiler--aot-builtinn-extra-designator-arg-indexes)))
+                     nelisp-aot-compiler--aot-builtinn-extra-designator-arg-indexes)))
          (keyword-designator-positions
           (cl-loop for idx from 1 below argc
                    for previous = (nth (1- idx) args)
                    for arg = (nth idx args)
                    when (and (keywordp previous)
-                             (or (nelisp-phase47-compiler--aot-function-designator-symbol
+                             (or (nelisp-aot-compiler--aot-function-designator-symbol
                                   arg)
                                  (and (consp arg)
                                       (eq (car arg) 'aot-closure-lambda)
@@ -4200,7 +4200,7 @@ caller-owned boundary params in the current defun:
           (cl-loop for idx in designator-candidate-indexes
                    when (< idx argc)
                    for form = (nth idx args)
-                   for sym = (nelisp-phase47-compiler--aot-function-designator-symbol
+                   for sym = (nelisp-aot-compiler--aot-function-designator-symbol
                               form)
                    for closure = (and (consp form)
                                       (eq (car form) 'aot-closure-lambda)
@@ -4217,7 +4217,7 @@ caller-owned boundary params in the current defun:
                         designator-entries)))
          (callback-slots
           (and designator-entries
-               (nelisp-phase47-compiler--aot-callback-slot-symbols
+               (nelisp-aot-compiler--aot-callback-slot-symbols
                 fenv (length designator-entries) sexp)))
          (designator-slot-alist
           (cl-mapcar
@@ -4236,7 +4236,7 @@ caller-owned boundary params in the current defun:
                    collect idx))
          (keyword-slots
           (and keyword-positions
-               (nelisp-phase47-compiler--aot-keyword-slot-symbols
+               (nelisp-aot-compiler--aot-keyword-slot-symbols
                 fenv (length keyword-positions) sexp)))
          (keyword-slot-alist
           (cl-mapcar #'cons keyword-positions keyword-slots))
@@ -4284,7 +4284,7 @@ caller-owned boundary params in the current defun:
                   (t nil))))
              designator-entries
              callback-slots)))))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (sexp-write-symbol-lit ,name-slot ,(symbol-name builtin))
        ,@arg-prefix
@@ -4294,14 +4294,14 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--aot-funcall1-boundary-symbols (fenv sexp)
+(defun nelisp-aot-compiler--aot-funcall1-boundary-symbols (fenv sexp)
   "Return boundary symbols for direct `(funcall FN ARG)' lowering in FENV."
   (let ((missing nil))
     (dolist (sym '(out mirror frames scratch))
-      (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+      (unless (nelisp-aot-compiler--fenv-has-symbol-p fenv sym)
         (push sym missing)))
     (when missing
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-funcall1-boundary-missing
                     (nreverse missing)
                     :form sexp)))
@@ -4310,14 +4310,14 @@ caller-owned boundary params in the current defun:
           :frames 'frames
           :scratch 'scratch)))
 
-(defun nelisp-phase47-compiler--aot-closure-boundary-symbols (fenv sexp)
+(defun nelisp-aot-compiler--aot-closure-boundary-symbols (fenv sexp)
   "Return boundary symbols for escaping heap-closure lowering in FENV."
   (let ((missing nil))
     (dolist (sym '(out mirror frames scratch))
-      (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+      (unless (nelisp-aot-compiler--fenv-has-symbol-p fenv sym)
         (push sym missing)))
     (when missing
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-closure-boundary-missing
                     (nreverse missing)
                     :form sexp)))
@@ -4326,15 +4326,15 @@ caller-owned boundary params in the current defun:
           :frames 'frames
           :scratch 'scratch)))
 
-(defun nelisp-phase47-compiler--parse-aot-closure-lambda
+(defun nelisp-aot-compiler--parse-aot-closure-lambda
     (sexp env fenv defuns)
   "Lower internal escaping heap-closure value SEXP."
   (unless (and (>= (length sexp) 2)
                (symbolp (nth 1 sexp)))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-closure-lambda-shape sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+          (nelisp-aot-compiler--aot-closure-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
@@ -4342,7 +4342,7 @@ caller-owned boundary params in the current defun:
          (scratch (plist-get boundary :scratch))
          (descriptor (nth 1 sexp))
          (captures (nthcdr 2 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (sexp-write-symbol-lit ,scratch ,(symbol-name descriptor))
        (extern-call nelisp_aot_make_closure
@@ -4353,27 +4353,27 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-capture-cell
+(defun nelisp-aot-compiler--parse-aot-capture-cell
     (sexp env fenv defuns)
   "Lower internal `(aot-capture-cell NAME VALUE)' through the AOT bridge."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-capture-cell-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+          (nelisp-aot-compiler--aot-closure-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (name-symbol
-          (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 sexp)))
+          (nelisp-aot-compiler--aot-quoted-symbol (nth 1 sexp)))
          (name (if name-symbol scratch (nth 1 sexp)))
          (prefix (and name-symbol
                       `((sexp-write-symbol-lit
                          ,scratch ,(symbol-name name-symbol)))))
          (value (nth 2 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_capture_cell
@@ -4381,16 +4381,16 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--aot-frame-slot-lowering
+(defun nelisp-aot-compiler--aot-frame-slot-lowering
     (slot-form fenv sexp)
   "Return plist for lowering SLOT-FORM as a Doc 129 hash-FRAMES key."
-  (let ((sym (nelisp-phase47-compiler--aot-quoted-symbol slot-form)))
+  (let ((sym (nelisp-aot-compiler--aot-quoted-symbol slot-form)))
     (if sym
         (let ((scratch
-               (or (and (nelisp-phase47-compiler--fenv-has-symbol-p
+               (or (and (nelisp-aot-compiler--fenv-has-symbol-p
                          fenv 'scratch)
                         'scratch)
-                   (signal 'nelisp-phase47-compiler-error
+                   (signal 'nelisp-aot-compiler-error
                            (list :aot-frame-slot-boundary-missing
                                  '(scratch)
                                  :form sexp)))))
@@ -4401,25 +4401,25 @@ caller-owned boundary params in the current defun:
       (list :slot-expr slot-form
             :prefix nil))))
 
-(defun nelisp-phase47-compiler--parse-aot-frame-slot-ref
+(defun nelisp-aot-compiler--parse-aot-frame-slot-ref
     (sexp env fenv defuns)
   "Lower internal `(aot-frame-slot-ref SLOT)' through the AOT bridge."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-frame-slot-ref-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+          (nelisp-aot-compiler--aot-closure-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (slot-lowering
-          (nelisp-phase47-compiler--aot-frame-slot-lowering
+          (nelisp-aot-compiler--aot-frame-slot-lowering
            (nth 1 sexp) fenv sexp))
          (slot (plist-get slot-lowering :slot-expr))
          (prefix (plist-get slot-lowering :prefix)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_frame_slot_ref
@@ -4427,26 +4427,26 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-frame-slot-set
+(defun nelisp-aot-compiler--parse-aot-frame-slot-set
     (sexp env fenv defuns)
   "Lower internal `(aot-frame-slot-set SLOT VALUE)' through the AOT bridge."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-frame-slot-set-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-closure-boundary-symbols
+          (nelisp-aot-compiler--aot-closure-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (slot-lowering
-          (nelisp-phase47-compiler--aot-frame-slot-lowering
+          (nelisp-aot-compiler--aot-frame-slot-lowering
            (nth 1 sexp) fenv sexp))
          (slot (plist-get slot-lowering :slot-expr))
          (prefix (plist-get slot-lowering :prefix))
          (value (nth 2 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_frame_slot_set
@@ -4454,27 +4454,27 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-funcall1
+(defun nelisp-aot-compiler--parse-aot-funcall1
     (sexp env fenv defuns)
   "Lower `(funcall FN ARG)' through the Doc 129.7 one-arg dispatcher."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-funcall1-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-funcall1-boundary-symbols
+          (nelisp-aot-compiler--aot-funcall1-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (fn-lowering
-          (nelisp-phase47-compiler--aot-function-designator-lowering
+          (nelisp-aot-compiler--aot-function-designator-lowering
            (nth 1 sexp) fenv sexp))
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
          (arg (nth 2 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_funcall1
@@ -4482,18 +4482,18 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-funcall2
+(defun nelisp-aot-compiler--parse-aot-funcall2
     (sexp env fenv defuns)
   "Lower `(funcall FN ARG0 ARG1)' through the Doc 129.7 two-arg dispatcher."
   (unless (= (length sexp) 4)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-funcall2-arity sexp)))
   (let* ((missing nil)
          (_ (dolist (sym '(out mirror frames))
-              (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+              (unless (nelisp-aot-compiler--fenv-has-symbol-p fenv sym)
                 (push sym missing))))
          (_ (when missing
-              (signal 'nelisp-phase47-compiler-error
+              (signal 'nelisp-aot-compiler-error
                       (list :aot-funcall2-boundary-missing
                             (nreverse missing)
                             :form sexp))))
@@ -4501,14 +4501,14 @@ caller-owned boundary params in the current defun:
          (mirror 'mirror)
          (frames 'frames)
          (fn-lowering
-          (nelisp-phase47-compiler--aot-function-designator-lowering
+          (nelisp-aot-compiler--aot-function-designator-lowering
            (nth 1 sexp) fenv sexp))
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
          (arg0 (nth 2 sexp))
          (arg1 (nth 3 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_funcall2
@@ -4516,18 +4516,18 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-funcall3
+(defun nelisp-aot-compiler--parse-aot-funcall3
     (sexp env fenv defuns)
   "Lower `(funcall FN ARG0 ARG1 ARG2)' through the Doc 129.7 dispatcher."
   (unless (= (length sexp) 5)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-funcall3-arity sexp)))
   (let* ((missing nil)
          (_ (dolist (sym '(out mirror frames))
-              (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+              (unless (nelisp-aot-compiler--fenv-has-symbol-p fenv sym)
                 (push sym missing))))
          (_ (when missing
-              (signal 'nelisp-phase47-compiler-error
+              (signal 'nelisp-aot-compiler-error
                       (list :aot-funcall3-boundary-missing
                             (nreverse missing)
                             :form sexp))))
@@ -4535,7 +4535,7 @@ caller-owned boundary params in the current defun:
          (mirror 'mirror)
          (frames 'frames)
          (fn-lowering
-          (nelisp-phase47-compiler--aot-function-designator-lowering
+          (nelisp-aot-compiler--aot-function-designator-lowering
            (nth 1 sexp) fenv sexp))
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
@@ -4543,7 +4543,7 @@ caller-owned boundary params in the current defun:
          (arg0 (nth 2 sexp))
          (arg1 (nth 3 sexp))
          (arg2 (nth 4 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_funcall3
@@ -4551,28 +4551,28 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-funcalln
+(defun nelisp-aot-compiler--parse-aot-funcalln
     (sexp env fenv defuns)
   "Lower `(funcall FN ARG...)' through the Doc 129.7 calln dispatcher."
   (when (< (length sexp) 6)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-funcalln-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-funcall1-boundary-symbols
+          (nelisp-aot-compiler--aot-funcall1-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (fn-lowering
-          (nelisp-phase47-compiler--aot-function-designator-lowering
+          (nelisp-aot-compiler--aot-function-designator-lowering
            (nth 1 sexp) fenv sexp))
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
          (args (nthcdr 2 sexp))
          (argc (length args)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_funcalln
@@ -4580,28 +4580,28 @@ caller-owned boundary params in the current defun:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-apply
+(defun nelisp-aot-compiler--parse-aot-apply
     (sexp env fenv defuns)
   "Lower `apply' through the Doc 129.7 apply dispatchers."
   (when (< (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-apply-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-funcall1-boundary-symbols
+          (nelisp-aot-compiler--aot-funcall1-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (fn-lowering
-          (nelisp-phase47-compiler--aot-function-designator-lowering
+          (nelisp-aot-compiler--aot-function-designator-lowering
            (nth 1 sexp) fenv sexp))
          (fn (or (plist-get fn-lowering :fn-expr)
                  (nth 1 sexp)))
          (prefix (plist-get fn-lowering :prefix))
          (apply-args (nthcdr 2 sexp))
          (argc (length apply-args)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      (if (= argc 1)
          `(seq
            ,@prefix
@@ -4615,14 +4615,14 @@ caller-owned boundary params in the current defun:
          ,out))
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--aot-exception-boundary-symbols (fenv sexp)
+(defun nelisp-aot-compiler--aot-exception-boundary-symbols (fenv sexp)
   "Return boundary symbols for Doc 129.8 throw/signal lowering in FENV."
   (let ((missing nil))
     (dolist (sym '(out mirror frames scratch))
-      (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+      (unless (nelisp-aot-compiler--fenv-has-symbol-p fenv sym)
         (push sym missing)))
     (when missing
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-exception-boundary-missing
                     (nreverse missing)
                     :form sexp)))
@@ -4631,7 +4631,7 @@ caller-owned boundary params in the current defun:
           :frames 'frames
           :scratch 'scratch)))
 
-(defun nelisp-phase47-compiler--aot-quoted-symbol (form)
+(defun nelisp-aot-compiler--aot-quoted-symbol (form)
   "Return FORM's `(quote SYMBOL)' payload, or nil."
   (when (and (consp form)
              (eq (car form) 'quote)
@@ -4639,14 +4639,14 @@ caller-owned boundary params in the current defun:
              (symbolp (cadr form)))
     (cadr form)))
 
-(defun nelisp-phase47-compiler--aot-tag-lowering (tag-form fenv sexp)
+(defun nelisp-aot-compiler--aot-tag-lowering (tag-form fenv sexp)
   "Return plist for lowering TAG-FORM as a Doc 129.8 tag value.
 Quoted symbol tags are materialized into the caller-owned name slot.
 Dynamic tag values are forwarded as ordinary value expressions."
-  (let ((sym (nelisp-phase47-compiler--aot-quoted-symbol tag-form)))
+  (let ((sym (nelisp-aot-compiler--aot-quoted-symbol tag-form)))
     (if sym
         (let ((name-slot
-               (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)))
+               (nelisp-aot-compiler--aot-name-slot-symbol fenv sexp)))
           (list :tag-expr name-slot
                 :prefix `((sexp-write-symbol-lit
                            ,name-slot
@@ -4654,12 +4654,12 @@ Dynamic tag values are forwarded as ordinary value expressions."
       (list :tag-expr tag-form
             :prefix nil))))
 
-(defun nelisp-phase47-compiler--aot-landing-pad-lowering
+(defun nelisp-aot-compiler--aot-landing-pad-lowering
     (landing-form scratch)
   "Return plist for lowering LANDING-FORM as handler landing metadata.
 Quoted symbol labels are materialized into SCRATCH; dynamic landing-pad
 values are forwarded as ordinary value expressions."
-  (let ((sym (nelisp-phase47-compiler--aot-quoted-symbol landing-form)))
+  (let ((sym (nelisp-aot-compiler--aot-quoted-symbol landing-form)))
     (if sym
         (list :landing-expr scratch
               :prefix `((sexp-write-symbol-lit
@@ -4668,26 +4668,26 @@ values are forwarded as ordinary value expressions."
       (list :landing-expr landing-form
             :prefix nil))))
 
-(defun nelisp-phase47-compiler--parse-aot-throw
+(defun nelisp-aot-compiler--parse-aot-throw
     (sexp env fenv defuns)
   "Lower `(throw TAG VALUE)' through the Doc 129.8 throw bridge."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-throw-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (tag-lowering
-          (nelisp-phase47-compiler--aot-tag-lowering
+          (nelisp-aot-compiler--aot-tag-lowering
            (nth 1 sexp) fenv sexp))
          (tag (plist-get tag-lowering :tag-expr))
          (prefix (plist-get tag-lowering :prefix))
          (value (nth 2 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_throw
@@ -4695,26 +4695,26 @@ values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-signal
+(defun nelisp-aot-compiler--parse-aot-signal
     (sexp env fenv defuns)
   "Lower `(signal TAG DATA)' through the Doc 129.8 signal bridge."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-signal-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (tag-lowering
-          (nelisp-phase47-compiler--aot-tag-lowering
+          (nelisp-aot-compiler--aot-tag-lowering
            (nth 1 sexp) fenv sexp))
          (tag (plist-get tag-lowering :tag-expr))
          (prefix (plist-get tag-lowering :prefix))
          (data (nth 2 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_signal
@@ -4722,116 +4722,116 @@ values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-landing-value
+(defun nelisp-aot-compiler--parse-aot-landing-value
     (sexp env fenv defuns)
   "Lower internal landing descriptor value extraction."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-landing-value-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (landing (nth 1 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (extern-call nelisp_aot_landing_value
                     ,mirror ,frames ,landing ,out ,scratch)
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-landing-error
+(defun nelisp-aot-compiler--parse-aot-landing-error
     (sexp env fenv defuns)
   "Lower internal condition landing error extraction."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-landing-error-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (landing (nth 1 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (extern-call nelisp_aot_landing_error
                     ,mirror ,frames ,landing ,out ,scratch)
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-landing-jump
+(defun nelisp-aot-compiler--parse-aot-landing-jump
     (sexp env fenv defuns)
   "Lower internal native landing-pad jump planning."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-landing-jump-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (landing (nth 1 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (extern-call nelisp_aot_landing_jump
                     ,mirror ,frames ,landing ,out ,scratch)
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-landing-label
+(defun nelisp-aot-compiler--parse-aot-landing-label
     (sexp env fenv defuns)
   "Parse an internal native landing-pad label form."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-landing-label-arity sexp)))
   (let ((label (nth 1 sexp)))
     (unless (symbolp label)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-landing-label-not-symbol label)))
-    (nelisp-phase47-compiler--make-ir
+    (nelisp-aot-compiler--make-ir
      'aot-landing-label
      :label label
-     :body (nelisp-phase47-compiler--parse-value
+     :body (nelisp-aot-compiler--parse-value
             (nth 2 sexp) env fenv defuns))))
 
-(defun nelisp-phase47-compiler--parse-aot-machine-landing-jump
+(defun nelisp-aot-compiler--parse-aot-machine-landing-jump
     (sexp env fenv defuns)
   "Parse an internal stack-restoring native landing-pad jump."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-machine-landing-jump-arity sexp)))
   (let ((target (nth 2 sexp)))
     (unless (symbolp target)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-machine-landing-jump-target-not-symbol target)))
-    (nelisp-phase47-compiler--make-ir
+    (nelisp-aot-compiler--make-ir
      'aot-machine-landing-jump
-     :saved-sp (nelisp-phase47-compiler--parse-value
+     :saved-sp (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
      :target target)))
 
-(defun nelisp-phase47-compiler--parse-aot-current-sp (sexp)
+(defun nelisp-aot-compiler--parse-aot-current-sp (sexp)
   "Parse an internal current-stack-pointer value form."
   (unless (= (length sexp) 1)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-current-sp-arity sexp)))
-  (nelisp-phase47-compiler--make-ir 'aot-current-sp))
+  (nelisp-aot-compiler--make-ir 'aot-current-sp))
 
-(defun nelisp-phase47-compiler--parse-aot-errorn
+(defun nelisp-aot-compiler--parse-aot-errorn
     (sexp env fenv defuns)
   "Lower formatted `(error ARG...)' through the Doc 129.8 errorn bridge."
   (when (< (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-errorn-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
@@ -4845,7 +4845,7 @@ values are forwarded as ordinary value expressions."
          (prefix (when (stringp first)
                    `((sexp-write-str-lit ,scratch ,first))))
          (argc (length args)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_errorn
@@ -4853,22 +4853,22 @@ values are forwarded as ordinary value expressions."
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-error
+(defun nelisp-aot-compiler--parse-aot-error
     (sexp env fenv defuns)
   "Lower source `error' through the Doc 129.8 signal/error bridges."
   (cond
    ((= (length sexp) 2)
-    (nelisp-phase47-compiler--parse-aot-signal
+    (nelisp-aot-compiler--parse-aot-signal
      `(signal 'error ,(nth 1 sexp))
      env fenv defuns))
    ((> (length sexp) 2)
-    (nelisp-phase47-compiler--parse-aot-errorn
+    (nelisp-aot-compiler--parse-aot-errorn
      sexp env fenv defuns))
    (t
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-error-arity sexp)))))
 
-(defun nelisp-phase47-compiler--parse-aot-push-handler
+(defun nelisp-aot-compiler--parse-aot-push-handler
     (sexp env fenv defuns)
   "Lower Doc 129.8 explicit AOT handler push forms.
 Accepted forms:
@@ -4876,60 +4876,60 @@ Accepted forms:
   (aot-push-condition CONDITIONS LANDING-PAD SAVED-SP)
   (aot-push-unwind CLEANUP LANDING-PAD SAVED-SP)"
   (unless (= (length sexp) 4)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-push-handler-arity sexp)))
   (let* ((op (car sexp))
          (extern (pcase op
                    ('aot-push-catch 'nelisp_aot_push_catch)
                    ('aot-push-condition 'nelisp_aot_push_condition)
                    ('aot-push-unwind 'nelisp_aot_push_unwind)
-                   (_ (signal 'nelisp-phase47-compiler-error
+                   (_ (signal 'nelisp-aot-compiler-error
                               (list :aot-push-handler-op op)))))
          (boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (selector-lowering
           (if (memq op '(aot-push-catch aot-push-condition))
-              (nelisp-phase47-compiler--aot-tag-lowering
+              (nelisp-aot-compiler--aot-tag-lowering
                (nth 1 sexp) fenv sexp)
             (list :tag-expr (nth 1 sexp) :prefix nil)))
          (selector (plist-get selector-lowering :tag-expr))
          (landing-pad-lowering
-          (nelisp-phase47-compiler--aot-landing-pad-lowering
+          (nelisp-aot-compiler--aot-landing-pad-lowering
            (nth 2 sexp) scratch))
          (prefix `(,@(plist-get selector-lowering :prefix)
                    ,@(plist-get landing-pad-lowering :prefix)))
          (landing-pad (plist-get landing-pad-lowering :landing-expr))
          (saved-sp (nth 3 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call ,extern
                     ,mirror ,frames ,selector ,landing-pad ,saved-sp ,scratch))
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-pop-handler
+(defun nelisp-aot-compiler--parse-aot-pop-handler
     (sexp env fenv defuns)
   "Lower `(aot-pop-handler EXPECTED-KIND)' through the Doc 129.8 pop bridge."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-pop-handler-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (kind-lowering
-          (nelisp-phase47-compiler--aot-tag-lowering
+          (nelisp-aot-compiler--aot-tag-lowering
            (nth 1 sexp) fenv sexp))
          (kind (plist-get kind-lowering :tag-expr))
          (prefix (plist-get kind-lowering :prefix)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_pop_handler
@@ -4937,14 +4937,14 @@ Accepted forms:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--aot-root-boundary-symbols (fenv sexp)
+(defun nelisp-aot-compiler--aot-root-boundary-symbols (fenv sexp)
   "Return boundary symbols for Doc 129.5 AOT root push/pop lowering."
   (let ((missing nil))
     (dolist (sym '(out mirror frames scratch))
-      (unless (nelisp-phase47-compiler--fenv-has-symbol-p fenv sym)
+      (unless (nelisp-aot-compiler--fenv-has-symbol-p fenv sym)
         (push sym missing)))
     (when missing
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-root-boundary-missing
                     (nreverse missing)
                     :form sexp)))
@@ -4953,66 +4953,66 @@ Accepted forms:
           :frames 'frames
           :scratch 'scratch)))
 
-(defun nelisp-phase47-compiler--parse-aot-push-roots
+(defun nelisp-aot-compiler--parse-aot-push-roots
     (sexp env fenv defuns)
   "Lower `(aot-push-roots ROOTS)' through the Doc 129.5 push bridge."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-push-roots-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-root-boundary-symbols fenv sexp))
+          (nelisp-aot-compiler--aot-root-boundary-symbols fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (roots (nth 1 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (extern-call nelisp_aot_push_roots
                     ,mirror ,frames ,roots ,out ,scratch)
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-pop-roots
+(defun nelisp-aot-compiler--parse-aot-pop-roots
     (sexp env fenv defuns)
   "Lower `(aot-pop-roots ROOTS)' through the Doc 129.5 pop bridge."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-pop-roots-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-root-boundary-symbols fenv sexp))
+          (nelisp-aot-compiler--aot-root-boundary-symbols fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (roots (nth 1 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (extern-call nelisp_aot_pop_roots
                     ,mirror ,frames ,roots ,out ,scratch)
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-push-special
+(defun nelisp-aot-compiler--parse-aot-push-special
     (sexp env fenv defuns)
   "Lower `(aot-push-special NAME VALUE)' through the Doc 129.4 bridge."
   (unless (= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-push-special-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (name-lowering
-          (nelisp-phase47-compiler--aot-tag-lowering
+          (nelisp-aot-compiler--aot-tag-lowering
            (nth 1 sexp) fenv sexp))
          (name (plist-get name-lowering :tag-expr))
          (prefix (plist-get name-lowering :prefix))
          (value (nth 2 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        ,@prefix
        (extern-call nelisp_aot_push_special
@@ -5020,28 +5020,28 @@ Accepted forms:
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--parse-aot-pop-special
+(defun nelisp-aot-compiler--parse-aot-pop-special
     (sexp env fenv defuns)
   "Lower `(aot-pop-special HANDLE)' through the Doc 129.4 bridge."
   (unless (= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-pop-special-arity sexp)))
   (let* ((boundary
-          (nelisp-phase47-compiler--aot-exception-boundary-symbols
+          (nelisp-aot-compiler--aot-exception-boundary-symbols
            fenv sexp))
          (out (plist-get boundary :out))
          (mirror (plist-get boundary :mirror))
          (frames (plist-get boundary :frames))
          (scratch (plist-get boundary :scratch))
          (handle (nth 1 sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(seq
        (extern-call nelisp_aot_pop_special
                     ,mirror ,frames ,handle ,out ,scratch)
        ,out)
      env fenv defuns)))
 
-(defun nelisp-phase47-compiler--aot-nonlocal-source-form-p (sexp)
+(defun nelisp-aot-compiler--aot-nonlocal-source-form-p (sexp)
   "Return non-nil when SEXP contains a not-yet-safe non-local form.
 Doc 129.8E only synthesizes balanced handler push/pop for bodies that
 return normally.  Until source lowering can place unique branch-safe
@@ -5052,16 +5052,16 @@ ordinary fallthrough code after a simulated non-local exit."
    ((atom sexp) nil)
    ((memq (car sexp) '(quote function)) nil)
    ((memq (car sexp) '(throw signal error condition-case unwind-protect)) t)
-   (t (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+   (t (cl-some #'nelisp-aot-compiler--aot-nonlocal-source-form-p
                (cdr sexp)))))
 
-(defun nelisp-phase47-compiler--aot-branch-dup-safe-form-p (sexp)
+(defun nelisp-aot-compiler--aot-branch-dup-safe-form-p (sexp)
   "Return non-nil when SEXP can be duplicated in branch normalization."
   (or (atom sexp)
       (and (consp sexp)
            (memq (car sexp) '(quote function)))))
 
-(defun nelisp-phase47-compiler--aot-cond-branch-form (clauses)
+(defun nelisp-aot-compiler--aot-cond-branch-form (clauses)
   "Return CLAUSES normalized to an if tree, or nil when unsupported."
   (when clauses
     (let ((clause (car clauses)))
@@ -5070,52 +5070,52 @@ ordinary fallthrough code after a simulated non-local exit."
               (body (cadr clause)))
           (if (eq pred t)
               body
-            (let ((rest (nelisp-phase47-compiler--aot-cond-branch-form
+            (let ((rest (nelisp-aot-compiler--aot-cond-branch-form
                          (cdr clauses))))
               (when rest
                 `(if ,pred ,body ,rest)))))))))
 
-(defun nelisp-phase47-compiler--aot-logic-branch-form (op args)
+(defun nelisp-aot-compiler--aot-logic-branch-form (op args)
   "Return OP ARGS normalized to an if tree, or nil when unsupported."
   (cond
    ((null args) nil)
    ((null (cdr args)) (car args))
-   ((not (nelisp-phase47-compiler--aot-branch-dup-safe-form-p
+   ((not (nelisp-aot-compiler--aot-branch-dup-safe-form-p
           (car args)))
     nil)
    ((eq op 'and)
-    (let ((rest (nelisp-phase47-compiler--aot-logic-branch-form
+    (let ((rest (nelisp-aot-compiler--aot-logic-branch-form
                  op (cdr args))))
       (when rest
         `(if ,(car args) ,rest ,(car args)))))
    ((eq op 'or)
-    (let ((rest (nelisp-phase47-compiler--aot-logic-branch-form
+    (let ((rest (nelisp-aot-compiler--aot-logic-branch-form
                  op (cdr args))))
       (when rest
         `(if ,(car args) ,(car args) ,rest))))
    (t nil)))
 
-(defun nelisp-phase47-compiler--aot-branch-tree-form (sexp)
+(defun nelisp-aot-compiler--aot-branch-tree-form (sexp)
   "Return SEXP normalized to the if-tree shape used by exception lowering."
   (cond
    ((and (consp sexp) (eq (car sexp) 'cond))
-    (nelisp-phase47-compiler--aot-cond-branch-form (cdr sexp)))
+    (nelisp-aot-compiler--aot-cond-branch-form (cdr sexp)))
    ((and (consp sexp) (memq (car sexp) '(and or)))
-    (nelisp-phase47-compiler--aot-logic-branch-form
+    (nelisp-aot-compiler--aot-logic-branch-form
      (car sexp) (cdr sexp)))
    (t sexp)))
 
-(defun nelisp-phase47-compiler--aot-protected-body-forms (sexp)
+(defun nelisp-aot-compiler--aot-protected-body-forms (sexp)
   "Return source-level protected body SEXP as flattened `progn' / `seq' forms."
   (if (and (consp sexp)
            (memq (car sexp) '(progn seq)))
       (apply #'append
              (mapcar
-              #'nelisp-phase47-compiler--aot-protected-body-forms
+              #'nelisp-aot-compiler--aot-protected-body-forms
               (cdr sexp)))
     (list sexp)))
 
-(defun nelisp-phase47-compiler--aot-protected-body-split (sexp)
+(defun nelisp-aot-compiler--aot-protected-body-split (sexp)
   "Return safe protected body split metadata for SEXP.
 The returned plist has `:prefix', `:tail', and `:wrappers'.  Prefix
 forms and wrapper initializers must not contain source non-local forms
@@ -5123,16 +5123,16 @@ because cleanup routing is selected from the tail."
   (cond
    ((and (consp sexp)
          (memq (car sexp) '(progn seq)))
-    (let ((forms (nelisp-phase47-compiler--aot-protected-body-forms
+    (let ((forms (nelisp-aot-compiler--aot-protected-body-forms
                   sexp)))
       (when forms
         (let* ((prefix (butlast forms))
                (tail-split
-                (nelisp-phase47-compiler--aot-protected-body-split
+                (nelisp-aot-compiler--aot-protected-body-split
                  (car (last forms)))))
           (when (and tail-split
                      (not (cl-some
-                           #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                           #'nelisp-aot-compiler--aot-nonlocal-source-form-p
                            prefix)))
             (plist-put
              tail-split
@@ -5147,19 +5147,19 @@ because cleanup routing is selected from the tail."
                  (not (cl-some
                        (lambda (binding)
                          (let ((pair
-                                (nelisp-phase47-compiler--validate-let-binding
+                                (nelisp-aot-compiler--validate-let-binding
                                  binding)))
-                           (or (nelisp-phase47-compiler--special-var-p
+                           (or (nelisp-aot-compiler--special-var-p
                                 (nth 0 pair))
-                               (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                               (nelisp-aot-compiler--aot-nonlocal-source-form-p
                                 (nth 1 pair)))))
                        bindings)))
         (let ((body-split
-               (nelisp-phase47-compiler--aot-protected-body-split body)))
+               (nelisp-aot-compiler--aot-protected-body-split body)))
           (when body-split
             (if bindings
                 (progn
-                  (nelisp-phase47-compiler--check-let-vars-unique bindings)
+                  (nelisp-aot-compiler--check-let-vars-unique bindings)
                   (plist-put
                    body-split
                    :wrappers
@@ -5170,7 +5170,7 @@ because cleanup routing is selected from the tail."
    (t
     (list :prefix nil :tail sexp :wrappers nil))))
 
-(defun nelisp-phase47-compiler--aot-protected-body-with-prefix
+(defun nelisp-aot-compiler--aot-protected-body-with-prefix
     (split tail)
   "Return TAIL preceded by protected-body SPLIT prefix and wrappers."
   (let ((form tail))
@@ -5187,7 +5187,7 @@ because cleanup routing is selected from the tail."
           `(seq ,@prefix ,form)
         form))))
 
-(defun nelisp-phase47-compiler--aot-catch-direct-throw-form (tag body-forms)
+(defun nelisp-aot-compiler--aot-catch-direct-throw-form (tag body-forms)
   "Return BODY-FORMS' direct throw form when it targets TAG, or nil."
   (when (and (= (length body-forms) 1)
              (consp (car body-forms))
@@ -5196,15 +5196,15 @@ because cleanup routing is selected from the tail."
              (equal (nth 1 (car body-forms)) tag))
     (car body-forms)))
 
-(defun nelisp-phase47-compiler--aot-catch-direct-dynamic-throw-form
+(defun nelisp-aot-compiler--aot-catch-direct-dynamic-throw-form
     (body-forms)
   "Return BODY-FORMS' direct throw form for descriptor routing."
   (when (and (= (length body-forms) 1)
-             (nelisp-phase47-compiler--aot-direct-throw-form
+             (nelisp-aot-compiler--aot-direct-throw-form
               (car body-forms)))
     (car body-forms)))
 
-(defun nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+(defun nelisp-aot-compiler--aot-catch-direct-throw-branch-p
     (tag branch)
   "Return non-nil when BRANCH is a direct throw targeting TAG."
   (and (consp branch)
@@ -5212,138 +5212,138 @@ because cleanup routing is selected from the tail."
        (= (length branch) 3)
        (equal (nth 1 branch) tag)))
 
-(defun nelisp-phase47-compiler--aot-catch-conditional-throw-form
+(defun nelisp-aot-compiler--aot-catch-conditional-throw-form
     (tag body-forms)
   "Return a conditional direct throw body tree for TAG, or nil.
 The accepted shape is a single `(if TEST THEN ELSE)' tree whose throwing
 leaves are direct `(throw TAG VALUE)' forms and whose non-throwing leaves
 contain no unresolved non-local source form."
   (when (= (length body-forms) 1)
-    (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form
+    (let ((tree (nelisp-aot-compiler--aot-branch-tree-form
                  (car body-forms))))
-      (when (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+      (when (nelisp-aot-compiler--aot-catch-throw-tree-form-p
              tag tree)
         tree))))
 
-(defun nelisp-phase47-compiler--aot-catch-throw-tree-form-p (tag sexp)
+(defun nelisp-aot-compiler--aot-catch-throw-tree-form-p (tag sexp)
   "Return non-nil when SEXP is a safe conditional catch/throw tree."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
+     ((nelisp-aot-compiler--aot-catch-direct-throw-branch-p tag sexp)
       t)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
       (let ((then (nth 2 sexp))
             (else (nth 3 sexp)))
-        (and (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+        (and (or (nelisp-aot-compiler--aot-catch-throw-tree-form-p
                   tag then)
-                 (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                 (nelisp-aot-compiler--aot-catch-throw-tree-form-p
                   tag else))
-             (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+             (or (nelisp-aot-compiler--aot-catch-throw-tree-form-p
                   tag then)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        then)))
-             (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+             (or (nelisp-aot-compiler--aot-catch-throw-tree-form-p
                   tag else)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        else))))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-catch-throw-leaf-count (tag sexp)
+(defun nelisp-aot-compiler--aot-catch-throw-leaf-count (tag sexp)
   "Return the number of direct THROW leaves in catch tree SEXP."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
+     ((nelisp-aot-compiler--aot-catch-direct-throw-branch-p tag sexp)
       1)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4))
-      (+ (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+      (+ (nelisp-aot-compiler--aot-catch-throw-leaf-count
           tag (nth 2 sexp))
-         (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+         (nelisp-aot-compiler--aot-catch-throw-leaf-count
           tag (nth 3 sexp))))
      (t 0))))
 
-(defun nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p (tag sexp)
+(defun nelisp-aot-compiler--aot-catch-all-throw-tree-form-p (tag sexp)
   "Return non-nil when every leaf in SEXP throws to TAG."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag sexp)
+     ((nelisp-aot-compiler--aot-catch-direct-throw-branch-p tag sexp)
       t)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
-      (and (nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p
+      (and (nelisp-aot-compiler--aot-catch-all-throw-tree-form-p
             tag (nth 2 sexp))
-           (nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p
+           (nelisp-aot-compiler--aot-catch-all-throw-tree-form-p
             tag (nth 3 sexp))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-direct-quoted-throw-form (sexp)
+(defun nelisp-aot-compiler--aot-direct-quoted-throw-form (sexp)
   "Return SEXP when it is a direct throw to a quoted symbol tag."
   (when (and (consp sexp)
              (eq (car sexp) 'throw)
              (= (length sexp) 3)
-             (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 sexp)))
+             (nelisp-aot-compiler--aot-quoted-symbol (nth 1 sexp)))
     sexp))
 
-(defun nelisp-phase47-compiler--aot-direct-throw-form (sexp)
+(defun nelisp-aot-compiler--aot-direct-throw-form (sexp)
   "Return SEXP when it is a direct throw form."
   (when (and (consp sexp)
              (eq (car sexp) 'throw)
              (= (length sexp) 3))
     sexp))
 
-(defun nelisp-phase47-compiler--aot-conditional-quoted-throw-form (sexp)
+(defun nelisp-aot-compiler--aot-conditional-quoted-throw-form (sexp)
   "Return a conditional direct quoted throw tree, or nil."
-  (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
-    (when (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p tree)
+  (let ((tree (nelisp-aot-compiler--aot-branch-tree-form sexp)))
+    (when (nelisp-aot-compiler--aot-quoted-throw-tree-form-p tree)
       tree)))
 
-(defun nelisp-phase47-compiler--aot-quoted-throw-tree-form-p (sexp)
+(defun nelisp-aot-compiler--aot-quoted-throw-tree-form-p (sexp)
   "Return non-nil when SEXP is a safe conditional quoted-throw tree."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-quoted-throw-form sexp) t)
+     ((nelisp-aot-compiler--aot-direct-quoted-throw-form sexp) t)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
       (let ((then (nth 2 sexp))
             (else (nth 3 sexp)))
-        (and (or (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+        (and (or (nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                   then)
-                 (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                 (nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                   else))
-             (or (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+             (or (nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                   then)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        then)))
-             (or (nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+             (or (nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                   else)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        else))))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-direct-condition-tag (body)
+(defun nelisp-aot-compiler--aot-direct-condition-tag (body)
   "Return BODY's static condition tag, or nil when it is not direct."
   (when (consp body)
     (pcase (car body)
       ('signal
        (when (= (length body) 3)
-         (nelisp-phase47-compiler--aot-quoted-symbol (nth 1 body))))
+         (nelisp-aot-compiler--aot-quoted-symbol (nth 1 body))))
       ('error
        (when (>= (length body) 2)
          'error))
       (_ nil))))
 
-(defun nelisp-phase47-compiler--aot-direct-condition-form (body)
+(defun nelisp-aot-compiler--aot-direct-condition-form (body)
   "Return BODY when it is a direct signal/error form."
   (when (consp body)
     (pcase (car body)
@@ -5355,16 +5355,16 @@ contain no unresolved non-local source form."
          body))
       (_ nil))))
 
-(defun nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form (sexp)
+(defun nelisp-aot-compiler--aot-direct-cleanup-nonlocal-form (sexp)
   "Return SEXP when it is a standalone cleanup-routed non-local form."
-  (or (nelisp-phase47-compiler--aot-direct-throw-form sexp)
-      (nelisp-phase47-compiler--aot-direct-condition-form sexp)))
+  (or (nelisp-aot-compiler--aot-direct-throw-form sexp)
+      (nelisp-aot-compiler--aot-direct-condition-form sexp)))
 
-(defun nelisp-phase47-compiler--aot-cleanup-wrapper-split (sexp)
+(defun nelisp-aot-compiler--aot-cleanup-wrapper-split (sexp)
   "Return cleanup-local wrapper split metadata for SEXP, or nil.
 The split is only returned when SEXP actually contributes a local prefix
 or lexical wrapper around the selected cleanup tail."
-  (let ((split (nelisp-phase47-compiler--aot-protected-body-split sexp)))
+  (let ((split (nelisp-aot-compiler--aot-protected-body-split sexp)))
     (when (and split
                (or (plist-get split :prefix)
                    (plist-get split :wrappers)
@@ -5373,61 +5373,61 @@ or lexical wrapper around the selected cleanup tail."
                         (null (nth 1 sexp)))))
       split)))
 
-(defun nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+(defun nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
     (sexp)
   "Return non-nil for safe standalone unwind cleanup branch trees."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
+     ((nelisp-aot-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
      ((let ((split
-             (nelisp-phase47-compiler--aot-cleanup-wrapper-split sexp)))
+             (nelisp-aot-compiler--aot-cleanup-wrapper-split sexp)))
         (and split
-             (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+             (nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
               (plist-get split :tail)))))
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
       (let ((then (nth 2 sexp))
             (else (nth 3 sexp)))
-        (and (or (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+        (and (or (nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
                   then)
-                 (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                 (nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
                   else))
-             (or (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+             (or (nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
                   then)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        then)))
-             (or (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+             (or (nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
                   else)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        else))))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+(defun nelisp-aot-compiler--aot-cleanup-tree-all-nonlocal-p
     (sexp)
   "Return non-nil when every leaf in cleanup tree SEXP exits non-locally."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
+     ((nelisp-aot-compiler--aot-direct-cleanup-nonlocal-form sexp) t)
      ((let ((split
-             (nelisp-phase47-compiler--aot-cleanup-wrapper-split sexp)))
+             (nelisp-aot-compiler--aot-cleanup-wrapper-split sexp)))
         (and split
-             (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+             (nelisp-aot-compiler--aot-cleanup-tree-all-nonlocal-p
               (plist-get split :tail)))))
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
-      (and (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+      (and (nelisp-aot-compiler--aot-cleanup-tree-all-nonlocal-p
             (nth 2 sexp))
-           (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+           (nelisp-aot-compiler--aot-cleanup-tree-all-nonlocal-p
             (nth 3 sexp))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+(defun nelisp-aot-compiler--aot-cleanup-sequence-flatten
     (cleanups)
   "Return CLEANUPS with cleanup-local `progn' / `seq' wrappers flattened."
   (apply #'append
@@ -5435,165 +5435,165 @@ or lexical wrapper around the selected cleanup tail."
           (lambda (form)
             (if (and (consp form)
                      (memq (car form) '(progn seq)))
-                (nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+                (nelisp-aot-compiler--aot-cleanup-sequence-flatten
                  (cdr form))
               (list form)))
           cleanups)))
 
-(defun nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+(defun nelisp-aot-compiler--aot-cleanup-sequence-safe-p
     (cleanups)
   "Return non-nil when CLEANUPS can be routed by cleanup-body lowering."
   (catch 'unsafe
     (let ((forms
-           (nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+           (nelisp-aot-compiler--aot-cleanup-sequence-flatten
             cleanups)))
       (while forms
         (let ((form (car forms)))
           (cond
-           ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+           ((nelisp-aot-compiler--aot-direct-cleanup-nonlocal-form
              form)
             (setq forms nil))
-           ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+           ((nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
              form)
             (unless
-                (or (nelisp-phase47-compiler--aot-cleanup-tree-all-nonlocal-p
+                (or (nelisp-aot-compiler--aot-cleanup-tree-all-nonlocal-p
                      form)
-                    (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+                    (nelisp-aot-compiler--aot-cleanup-sequence-safe-p
                      (cdr forms)))
               (throw 'unsafe nil))
             (setq forms nil))
-           ((nelisp-phase47-compiler--aot-nonlocal-source-form-p form)
+           ((nelisp-aot-compiler--aot-nonlocal-source-form-p form)
             (throw 'unsafe nil))
            (t
             (setq forms (cdr forms))))))
       t)))
 
-(defun nelisp-phase47-compiler--aot-cleanup-sequence-nonlocal-p
+(defun nelisp-aot-compiler--aot-cleanup-sequence-nonlocal-p
     (cleanups)
   "Return non-nil when CLEANUPS may exit non-locally through safe lowering."
   (catch 'found
-    (dolist (form (nelisp-phase47-compiler--aot-cleanup-sequence-flatten
+    (dolist (form (nelisp-aot-compiler--aot-cleanup-sequence-flatten
                    cleanups)
                   nil)
-      (when (or (nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+      (when (or (nelisp-aot-compiler--aot-direct-cleanup-nonlocal-form
                  form)
-                (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+                (nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
                  form))
         (throw 'found t)))))
 
-(defun nelisp-phase47-compiler--aot-cleanup-tree-body-form
+(defun nelisp-aot-compiler--aot-cleanup-tree-body-form
     (cleanup-form continuation-form)
   "Return CLEANUP-FORM with local leaves falling through to CONTINUATION-FORM."
-  (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form cleanup-form)))
+  (let ((tree (nelisp-aot-compiler--aot-branch-tree-form cleanup-form)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form tree)
+     ((nelisp-aot-compiler--aot-direct-cleanup-nonlocal-form tree)
       tree)
      ((let ((split
-             (nelisp-phase47-compiler--aot-cleanup-wrapper-split tree)))
+             (nelisp-aot-compiler--aot-cleanup-wrapper-split tree)))
         (and split
-             (nelisp-phase47-compiler--aot-protected-body-with-prefix
+             (nelisp-aot-compiler--aot-protected-body-with-prefix
               split
-              (nelisp-phase47-compiler--aot-cleanup-tree-body-form
+              (nelisp-aot-compiler--aot-cleanup-tree-body-form
                (plist-get split :tail) continuation-form)))))
      ((and (consp tree)
            (eq (car tree) 'if)
            (= (length tree) 4))
       `(if ,(nth 1 tree)
-           ,(nelisp-phase47-compiler--aot-cleanup-tree-body-form
+           ,(nelisp-aot-compiler--aot-cleanup-tree-body-form
              (nth 2 tree) continuation-form)
-         ,(nelisp-phase47-compiler--aot-cleanup-tree-body-form
+         ,(nelisp-aot-compiler--aot-cleanup-tree-body-form
            (nth 3 tree) continuation-form)))
      (t
       `(seq
         ,tree
         ,continuation-form)))))
 
-(defun nelisp-phase47-compiler--aot-cleanup-body-form
+(defun nelisp-aot-compiler--aot-cleanup-body-form
     (cleanups resume-form)
   "Return cleanup sequence for CLEANUPS, falling through to RESUME-FORM.
 When a cleanup exits non-locally, it replaces RESUME-FORM."
   (let ((cleanups
-         (nelisp-phase47-compiler--aot-cleanup-sequence-flatten cleanups)))
+         (nelisp-aot-compiler--aot-cleanup-sequence-flatten cleanups)))
     (if cleanups
         (let ((form (car cleanups)))
           (cond
-           ((nelisp-phase47-compiler--aot-direct-cleanup-nonlocal-form
+           ((nelisp-aot-compiler--aot-direct-cleanup-nonlocal-form
              form)
             form)
-           ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+           ((nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
              form)
-            (nelisp-phase47-compiler--aot-cleanup-tree-body-form
+            (nelisp-aot-compiler--aot-cleanup-tree-body-form
              form
-             (nelisp-phase47-compiler--aot-cleanup-body-form
+             (nelisp-aot-compiler--aot-cleanup-body-form
               (cdr cleanups) resume-form)))
            (t
             `(seq
               ,form
-              ,(nelisp-phase47-compiler--aot-cleanup-body-form
+              ,(nelisp-aot-compiler--aot-cleanup-body-form
                 (cdr cleanups) resume-form)))))
       resume-form)))
 
-(defun nelisp-phase47-compiler--aot-conditional-condition-case-form
+(defun nelisp-aot-compiler--aot-conditional-condition-case-form
     (body clauses)
   "Return a conditional condition-case signal descriptor.
 The accepted shape is an `(if TEST THEN ELSE)' tree where signal/error
 leaves use a single direct condition tag, can be statically matched to
 one HANDLER clause, and normal leaves contain no unresolved non-local
 source form."
-  (let ((body (nelisp-phase47-compiler--aot-branch-tree-form body)))
+  (let ((body (nelisp-aot-compiler--aot-branch-tree-form body)))
     (when (and (consp body)
                (eq (car body) 'if)
                (= (length body) 4))
-      (let ((tag (nelisp-phase47-compiler--aot-condition-tree-tag body)))
+      (let ((tag (nelisp-aot-compiler--aot-condition-tree-tag body)))
       (when tag
         (let ((handler
-               (nelisp-phase47-compiler--aot-condition-case-direct-handler
+               (nelisp-aot-compiler--aot-condition-case-direct-handler
                 tag clauses)))
           (when handler
             (list :tag tag :handler handler :form body))))))))
 
-(defun nelisp-phase47-compiler--aot-condition-tree-tag (sexp)
+(defun nelisp-aot-compiler--aot-condition-tree-tag (sexp)
   "Return the unique direct signal/error tag in SEXP's safe if tree."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-condition-tag sexp))
+     ((nelisp-aot-compiler--aot-direct-condition-tag sexp))
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
       (let* ((then (nth 2 sexp))
              (else (nth 3 sexp))
              (then-tag
-              (nelisp-phase47-compiler--aot-condition-tree-tag then))
+              (nelisp-aot-compiler--aot-condition-tree-tag then))
              (else-tag
-              (nelisp-phase47-compiler--aot-condition-tree-tag else)))
+              (nelisp-aot-compiler--aot-condition-tree-tag else)))
         (when (and (or then-tag else-tag)
                    (or (not then-tag) (not else-tag) (eq then-tag else-tag))
                    (or then-tag
-                       (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                       (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                              then)))
                    (or else-tag
-                       (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                       (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                              else))))
           (or then-tag else-tag))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-condition-tree-leaf-count (sexp)
+(defun nelisp-aot-compiler--aot-condition-tree-leaf-count (sexp)
   "Return the number of direct signal/error leaves in condition tree SEXP."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-condition-tag sexp) 1)
+     ((nelisp-aot-compiler--aot-direct-condition-tag sexp) 1)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4))
-      (+ (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+      (+ (nelisp-aot-compiler--aot-condition-tree-leaf-count
           (nth 2 sexp))
-         (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+         (nelisp-aot-compiler--aot-condition-tree-leaf-count
           (nth 3 sexp))))
      (t 0))))
 
-(defun nelisp-phase47-compiler--aot-static-landing-form
+(defun nelisp-aot-compiler--aot-static-landing-form
     (nonlocal-form landing-label landing-body)
   "Return NONLOCAL-FORM followed by a static native jump to LANDING-LABEL."
   `(seq
@@ -5601,7 +5601,7 @@ source form."
     (aot-machine-landing-jump (aot-current-sp) ,landing-label)
     (aot-landing-label ,landing-label ,landing-body)))
 
-(defun nelisp-phase47-compiler--aot-catch-direct-unwind-throw-form
+(defun nelisp-aot-compiler--aot-catch-direct-unwind-throw-form
     (tag body-forms)
   "Return a single unwind-protect form whose BODY throws to TAG."
   (when (and (= (length body-forms) 1)
@@ -5609,88 +5609,88 @@ source form."
              (eq (caar body-forms) 'unwind-protect)
              (>= (length (car body-forms)) 2))
     (let ((split
-           (nelisp-phase47-compiler--aot-protected-body-split
+           (nelisp-aot-compiler--aot-protected-body-split
             (nth 1 (car body-forms)))))
       (when (and split
-                 (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+                 (nelisp-aot-compiler--aot-catch-direct-throw-branch-p
                   tag (plist-get split :tail)))
         (car body-forms)))))
 
-(defun nelisp-phase47-compiler--aot-catch-conditional-unwind-throw-form
+(defun nelisp-aot-compiler--aot-catch-conditional-unwind-throw-form
     (tag body-forms)
   "Return a single unwind-protect form whose BODY always throws to TAG."
   (when (and (= (length body-forms) 1)
              (consp (car body-forms))
              (eq (caar body-forms) 'unwind-protect)
              (>= (length (car body-forms)) 2))
-    (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form
+    (let ((tree (nelisp-aot-compiler--aot-branch-tree-form
                  (plist-get
-                  (nelisp-phase47-compiler--aot-protected-body-split
+                  (nelisp-aot-compiler--aot-protected-body-split
                    (nth 1 (car body-forms)))
                   :tail))))
       (when (and tree
-                 (nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p
+                 (nelisp-aot-compiler--aot-catch-all-throw-tree-form-p
                   tag tree))
         (car body-forms)))))
 
-(defun nelisp-phase47-compiler--aot-catch-conditional-unwind-form
+(defun nelisp-aot-compiler--aot-catch-conditional-unwind-form
     (tag body-forms)
   "Return a single unwind-protect form whose BODY has safe throws to TAG."
   (when (and (= (length body-forms) 1)
              (consp (car body-forms))
              (eq (caar body-forms) 'unwind-protect)
              (>= (length (car body-forms)) 2))
-    (let ((tree (nelisp-phase47-compiler--aot-branch-tree-form
+    (let ((tree (nelisp-aot-compiler--aot-branch-tree-form
                  (plist-get
-                  (nelisp-phase47-compiler--aot-protected-body-split
+                  (nelisp-aot-compiler--aot-protected-body-split
                    (nth 1 (car body-forms)))
                   :tail))))
       (when (and tree
-                 (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+                 (or (nelisp-aot-compiler--aot-catch-throw-tree-form-p
                       tag tree)
-                     (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                     (nelisp-aot-compiler--aot-catch-mixed-throw-tree-form-p
                       tag tree)))
         (car body-forms)))))
 
-(defun nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+(defun nelisp-aot-compiler--aot-catch-mixed-throw-tree-form-p
     (tag sexp)
   "Return non-nil when SEXP is a safe catch cleanup throw tree."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-throw-form sexp) t)
-     ((nelisp-phase47-compiler--aot-direct-condition-form sexp) t)
+     ((nelisp-aot-compiler--aot-direct-throw-form sexp) t)
+     ((nelisp-aot-compiler--aot-direct-condition-form sexp) t)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
       (let ((then (nth 2 sexp))
             (else (nth 3 sexp)))
-        (and (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+        (and (or (nelisp-aot-compiler--aot-catch-throw-tree-form-p
                   tag then)
-                 (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                 (nelisp-aot-compiler--aot-catch-mixed-throw-tree-form-p
                   tag then)
-                 (nelisp-phase47-compiler--aot-direct-condition-form then)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (nelisp-aot-compiler--aot-direct-condition-form then)
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        then)))
-             (or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+             (or (nelisp-aot-compiler--aot-catch-throw-tree-form-p
                   tag else)
-                 (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                 (nelisp-aot-compiler--aot-catch-mixed-throw-tree-form-p
                   tag else)
-                 (nelisp-phase47-compiler--aot-direct-condition-form else)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (nelisp-aot-compiler--aot-direct-condition-form else)
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        else)))
-             (or (nelisp-phase47-compiler--aot-direct-throw-form then)
-                 (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+             (or (nelisp-aot-compiler--aot-direct-throw-form then)
+                 (nelisp-aot-compiler--aot-catch-mixed-throw-tree-form-p
                   tag then)
-                 (nelisp-phase47-compiler--aot-direct-condition-form then)
-                 (nelisp-phase47-compiler--aot-direct-throw-form else)
-                 (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+                 (nelisp-aot-compiler--aot-direct-condition-form then)
+                 (nelisp-aot-compiler--aot-direct-throw-form else)
+                 (nelisp-aot-compiler--aot-catch-mixed-throw-tree-form-p
                   tag else)
-                 (nelisp-phase47-compiler--aot-direct-condition-form else)))))
+                 (nelisp-aot-compiler--aot-direct-condition-form else)))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
+(defun nelisp-aot-compiler--aot-condition-case-direct-unwind-form
     (body clauses)
   "Return BODY's direct condition-signalling unwind descriptor, or nil."
   (when (and (consp body)
@@ -5698,18 +5698,18 @@ source form."
              (>= (length body) 2))
     (let* ((protected-body (nth 1 body))
            (split
-            (nelisp-phase47-compiler--aot-protected-body-split
+            (nelisp-aot-compiler--aot-protected-body-split
              protected-body))
-           (tag (nelisp-phase47-compiler--aot-direct-condition-tag
+           (tag (nelisp-aot-compiler--aot-direct-condition-tag
                  (plist-get split :tail)))
            (handler
             (and tag
-                 (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                 (nelisp-aot-compiler--aot-condition-case-direct-handler
                   tag clauses))))
       (when handler
         (list :tag tag :handler handler :form body)))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-direct-dynamic-unwind-form
+(defun nelisp-aot-compiler--aot-condition-case-direct-dynamic-unwind-form
     (body clauses)
   "Return BODY's direct dynamic condition unwind descriptor, or nil."
   (when (and (consp body)
@@ -5717,85 +5717,85 @@ source form."
              (>= (length body) 2))
     (let* ((protected-body (nth 1 body))
            (split
-            (nelisp-phase47-compiler--aot-protected-body-split
+            (nelisp-aot-compiler--aot-protected-body-split
              protected-body))
            (tail (plist-get split :tail)))
       (when (and tail
-                 (nelisp-phase47-compiler--aot-direct-condition-form
+                 (nelisp-aot-compiler--aot-direct-condition-form
                   tail)
-                 (not (nelisp-phase47-compiler--aot-direct-condition-tag
+                 (not (nelisp-aot-compiler--aot-direct-condition-tag
                        tail)))
         (dolist (handler clauses)
-          (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+          (nelisp-aot-compiler--aot-condition-case-clause-selectors
            handler))
         (list :handlers clauses :form body)))))
 
-(defun nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+(defun nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
     (sexp)
   "Return non-nil when SEXP is a safe dynamic condition if tree."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((and (nelisp-phase47-compiler--aot-direct-condition-form sexp)
-           (not (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+     ((and (nelisp-aot-compiler--aot-direct-condition-form sexp)
+           (not (nelisp-aot-compiler--aot-direct-condition-tag sexp)))
       t)
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
       (let ((then (nth 2 sexp))
             (else (nth 3 sexp)))
-        (and (or (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+        (and (or (nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
                   then)
-                 (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+                 (nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
                   else))
-             (or (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+             (or (nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
                   then)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        then)))
-             (or (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+             (or (nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
                   else)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        else))))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-dynamic-tree-form
+(defun nelisp-aot-compiler--aot-condition-case-dynamic-tree-form
     (body clauses)
   "Return BODY's dynamic condition tree descriptor, or nil."
-  (let ((body (nelisp-phase47-compiler--aot-branch-tree-form body)))
-    (when (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+  (let ((body (nelisp-aot-compiler--aot-branch-tree-form body)))
+    (when (nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
            body)
       (dolist (handler clauses)
-        (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+        (nelisp-aot-compiler--aot-condition-case-clause-selectors
          handler))
       (list :handlers clauses :form body))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-dynamic-tree-unwind-form
+(defun nelisp-aot-compiler--aot-condition-case-dynamic-tree-unwind-form
     (body clauses)
   "Return BODY's dynamic condition unwind tree descriptor, or nil."
   (when (and (consp body)
              (eq (car body) 'unwind-protect)
              (>= (length body) 2))
     (let ((protected-body
-           (nelisp-phase47-compiler--aot-branch-tree-form
+           (nelisp-aot-compiler--aot-branch-tree-form
             (plist-get
-             (nelisp-phase47-compiler--aot-protected-body-split
+             (nelisp-aot-compiler--aot-protected-body-split
               (nth 1 body))
              :tail))))
-      (when (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+      (when (nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
              protected-body)
         (dolist (handler clauses)
-          (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+          (nelisp-aot-compiler--aot-condition-case-clause-selectors
            handler))
         (list :handlers clauses :form body)))))
 
-(defun nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+(defun nelisp-aot-compiler--aot-dynamic-condition-tree-landing-form
     (sexp)
   "Return SEXP with direct dynamic condition leaves landing through OUT."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((and (nelisp-phase47-compiler--aot-direct-condition-form sexp)
-           (not (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+     ((and (nelisp-aot-compiler--aot-direct-condition-form sexp)
+           (not (nelisp-aot-compiler--aot-direct-condition-tag sexp)))
       `(seq
         ,sexp
         (aot-landing-jump out)))
@@ -5803,76 +5803,76 @@ source form."
            (eq (car sexp) 'if)
            (= (length sexp) 4))
       `(if ,(nth 1 sexp)
-           ,(nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+           ,(nelisp-aot-compiler--aot-dynamic-condition-tree-landing-form
              (nth 2 sexp))
-         ,(nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+         ,(nelisp-aot-compiler--aot-dynamic-condition-tree-landing-form
            (nth 3 sexp))))
      (t sexp))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
+(defun nelisp-aot-compiler--aot-condition-case-conditional-unwind-form
     (body clauses)
   "Return BODY's conditional condition-signalling unwind descriptor."
   (when (and (consp body)
              (eq (car body) 'unwind-protect)
              (>= (length body) 2))
     (let* ((protected-body
-            (nelisp-phase47-compiler--aot-branch-tree-form
+            (nelisp-aot-compiler--aot-branch-tree-form
              (plist-get
-              (nelisp-phase47-compiler--aot-protected-body-split
+              (nelisp-aot-compiler--aot-protected-body-split
                (nth 1 body))
               :tail)))
-           (tag (nelisp-phase47-compiler--aot-condition-tree-tag
+           (tag (nelisp-aot-compiler--aot-condition-tree-tag
                  protected-body))
            (handler
             (and tag
-                 (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                 (nelisp-aot-compiler--aot-condition-case-direct-handler
                   tag clauses))))
       (when handler
         (list :tag tag
               :handler handler
               :form body)))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
+(defun nelisp-aot-compiler--aot-condition-case-mixed-unwind-form
     (body clauses)
   "Return BODY's mixed handled/unhandled condition unwind descriptor."
   (when (and (consp body)
              (eq (car body) 'unwind-protect)
              (>= (length body) 2))
     (let* ((protected-body
-            (nelisp-phase47-compiler--aot-branch-tree-form
+            (nelisp-aot-compiler--aot-branch-tree-form
              (plist-get
-              (nelisp-phase47-compiler--aot-protected-body-split
+              (nelisp-aot-compiler--aot-protected-body-split
                (nth 1 body))
               :tail)))
            (tags
-            (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+            (nelisp-aot-compiler--aot-condition-case-handled-tags-in-tree
              protected-body clauses)))
       (when (and tags
-                 (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                 (nelisp-aot-compiler--aot-condition-case-mixed-tree-form-p
                   protected-body tags clauses))
         (list :tag (car tags)
               :handler
-              (nelisp-phase47-compiler--aot-condition-case-direct-handler
+              (nelisp-aot-compiler--aot-condition-case-direct-handler
                (car tags) clauses)
               :tags tags
               :handlers
               (mapcar
                (lambda (tag)
                  (cons tag
-                       (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                       (nelisp-aot-compiler--aot-condition-case-direct-handler
                         tag clauses)))
               tags)
               :form body)))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+(defun nelisp-aot-compiler--aot-condition-case-handled-tags-in-tree
     (sexp clauses)
   "Return unique static condition tags in SEXP that CLAUSES handle."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-condition-form sexp)
-      (let ((tag (nelisp-phase47-compiler--aot-direct-condition-tag sexp)))
+     ((nelisp-aot-compiler--aot-direct-condition-form sexp)
+      (let ((tag (nelisp-aot-compiler--aot-direct-condition-tag sexp)))
         (if (and tag
-                 (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                 (nelisp-aot-compiler--aot-condition-case-direct-handler
                   tag clauses))
             (list tag)
           nil)))
@@ -5881,48 +5881,48 @@ source form."
            (= (length sexp) 4))
       (delete-dups
        (append
-        (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+        (nelisp-aot-compiler--aot-condition-case-handled-tags-in-tree
          (nth 2 sexp) clauses)
-        (nelisp-phase47-compiler--aot-condition-case-handled-tags-in-tree
+        (nelisp-aot-compiler--aot-condition-case-handled-tags-in-tree
          (nth 3 sexp) clauses))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+(defun nelisp-aot-compiler--aot-condition-case-mixed-tree-form-p
     (sexp selected-tags clauses)
   "Return non-nil when SEXP is safe for mixed condition cleanup lowering."
-  (let ((sexp (nelisp-phase47-compiler--aot-branch-tree-form sexp)))
+  (let ((sexp (nelisp-aot-compiler--aot-branch-tree-form sexp)))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-condition-form sexp)
-      (let ((tag (nelisp-phase47-compiler--aot-direct-condition-tag sexp))
+     ((nelisp-aot-compiler--aot-direct-condition-form sexp)
+      (let ((tag (nelisp-aot-compiler--aot-direct-condition-tag sexp))
             (selected
-             (nelisp-phase47-compiler--aot-condition-cleanup-selected-tags
+             (nelisp-aot-compiler--aot-condition-cleanup-selected-tags
               selected-tags)))
         (or (null tag)
             (memq tag selected)
-            (not (nelisp-phase47-compiler--aot-condition-case-direct-handler
+            (not (nelisp-aot-compiler--aot-condition-case-direct-handler
                   tag clauses)))))
      ((and (consp sexp)
            (eq (car sexp) 'if)
            (= (length sexp) 4)
-           (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+           (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                  (nth 1 sexp))))
       (let ((then (nth 2 sexp))
             (else (nth 3 sexp)))
-        (and (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+        (and (or (nelisp-aot-compiler--aot-condition-case-mixed-tree-form-p
                   then selected-tags clauses)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        then)))
-             (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+             (or (nelisp-aot-compiler--aot-condition-case-mixed-tree-form-p
                   else selected-tags clauses)
-                 (not (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                 (not (nelisp-aot-compiler--aot-nonlocal-source-form-p
                        else)))
-             (or (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+             (or (nelisp-aot-compiler--aot-condition-case-mixed-tree-form-p
                   then selected-tags clauses)
-                 (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+                 (nelisp-aot-compiler--aot-condition-case-mixed-tree-form-p
                   else selected-tags clauses)))))
      (t nil))))
 
-(defun nelisp-phase47-compiler--aot-condition-cleanup-selected-tags
+(defun nelisp-aot-compiler--aot-condition-cleanup-selected-tags
     (selection)
   "Return condition tags selected by cleanup landing SELECTION."
   (cond
@@ -5934,7 +5934,7 @@ source form."
    ((listp selection) selection)
    (t nil)))
 
-(defun nelisp-phase47-compiler--aot-condition-cleanup-landing-label
+(defun nelisp-aot-compiler--aot-condition-cleanup-landing-label
     (tag default-label selection)
   "Return cleanup landing label for condition TAG under SELECTION."
   (cond
@@ -5948,116 +5948,116 @@ source form."
     (and (memq tag selection) default-label))
    (t nil)))
 
-(defun nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
+(defun nelisp-aot-compiler--aot-unwind-static-cleanup-branch-form
     (tag branch cleanups landing-label value-slot)
   "Return BRANCH with unwind cleanup jumping to LANDING-LABEL."
   (let* ((split
-          (nelisp-phase47-compiler--aot-protected-body-split branch))
+          (nelisp-aot-compiler--aot-protected-body-split branch))
          (branch
-          (nelisp-phase47-compiler--aot-branch-tree-form
+          (nelisp-aot-compiler--aot-branch-tree-form
            (plist-get split :tail))))
     (cond
-     ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag branch)
+     ((nelisp-aot-compiler--aot-catch-direct-throw-branch-p tag branch)
     (let ((cleanup-label
-           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+           (nelisp-aot-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-        ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+        ,(nelisp-aot-compiler--aot-protected-body-with-prefix
           split
           `(let (((,value-slot :type sexp) ,(nth 2 branch)))
              (seq
               (throw ,(nth 1 branch) ,value-slot)
               (aot-landing-label ,cleanup-label
-                ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                ,(nelisp-aot-compiler--aot-cleanup-body-form
                   cleanups
                   `(aot-machine-landing-jump
                     (aot-current-sp) ,landing-label)))))))))
-     ((nelisp-phase47-compiler--aot-catch-all-throw-tree-form-p tag branch)
-      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+     ((nelisp-aot-compiler--aot-catch-all-throw-tree-form-p tag branch)
+      (nelisp-aot-compiler--aot-protected-body-with-prefix
        split
        `(if ,(nth 1 branch)
-            ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
+            ,(nelisp-aot-compiler--aot-unwind-static-cleanup-branch-form
               tag (nth 2 branch) cleanups landing-label value-slot)
-          ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
+          ,(nelisp-aot-compiler--aot-unwind-static-cleanup-branch-form
             tag (nth 3 branch) cleanups landing-label value-slot))))
      (t
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-catch-unwind-conditional-shape branch))))))
 
-(defun nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+(defun nelisp-aot-compiler--aot-unwind-catch-cleanup-branch-form
     (tag branch cleanups landing-label value-slot)
   "Return BRANCH for mixed catch-targeted unwind cleanup lowering."
   (let* ((split
-          (nelisp-phase47-compiler--aot-protected-body-split branch))
+          (nelisp-aot-compiler--aot-protected-body-split branch))
          (branch
-          (nelisp-phase47-compiler--aot-branch-tree-form
+          (nelisp-aot-compiler--aot-branch-tree-form
            (plist-get split :tail))))
     (cond
-     ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p tag branch)
-    (nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
-     tag (nelisp-phase47-compiler--aot-protected-body-with-prefix
+     ((nelisp-aot-compiler--aot-catch-direct-throw-branch-p tag branch)
+    (nelisp-aot-compiler--aot-unwind-static-cleanup-branch-form
+     tag (nelisp-aot-compiler--aot-protected-body-with-prefix
           split branch)
      cleanups landing-label value-slot))
-     ((nelisp-phase47-compiler--aot-direct-throw-form branch)
+     ((nelisp-aot-compiler--aot-direct-throw-form branch)
     (let ((cleanup-label
-           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+           (nelisp-aot-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-        ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+        ,(nelisp-aot-compiler--aot-protected-body-with-prefix
           split
           `(let (((,value-slot :type sexp) ,(nth 2 branch)))
              (seq
               (throw ,(nth 1 branch) ,value-slot)
               (aot-landing-label ,cleanup-label
-                ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                ,(nelisp-aot-compiler--aot-cleanup-body-form
                   cleanups
                   '(aot-landing-jump out)))))))))
-     ((nelisp-phase47-compiler--aot-direct-condition-form branch)
+     ((nelisp-aot-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
-           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+           (nelisp-aot-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-        ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+        ,(nelisp-aot-compiler--aot-protected-body-with-prefix
           split
           branch)
         (aot-landing-label ,cleanup-label
-          ,(nelisp-phase47-compiler--aot-cleanup-body-form
+          ,(nelisp-aot-compiler--aot-cleanup-body-form
             cleanups
             '(aot-landing-jump out))))))
-     ((or (nelisp-phase47-compiler--aot-catch-throw-tree-form-p tag branch)
-          (nelisp-phase47-compiler--aot-catch-mixed-throw-tree-form-p
+     ((or (nelisp-aot-compiler--aot-catch-throw-tree-form-p tag branch)
+          (nelisp-aot-compiler--aot-catch-mixed-throw-tree-form-p
            tag branch))
-      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+      (nelisp-aot-compiler--aot-protected-body-with-prefix
        split
        `(if ,(nth 1 branch)
-            ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+            ,(nelisp-aot-compiler--aot-unwind-catch-cleanup-branch-form
               tag (nth 2 branch) cleanups landing-label value-slot)
-          ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+          ,(nelisp-aot-compiler--aot-unwind-catch-cleanup-branch-form
             tag (nth 3 branch) cleanups landing-label value-slot))))
      (t
       `(let (((,value-slot :type sexp)
-              ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+              ,(nelisp-aot-compiler--aot-protected-body-with-prefix
                 split branch)))
-         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+         ,(nelisp-aot-compiler--aot-cleanup-body-form
            cleanups
            `(seq
              (aot-pop-handler 'catch)
              ,value-slot)))))))
 
-(defun nelisp-phase47-compiler--aot-unwind-static-cleanup-form
+(defun nelisp-aot-compiler--aot-unwind-static-cleanup-form
     (unwind-form landing-label landing-body tag)
   "Return UNWIND-FORM with cleanup jumping statically to LANDING-LABEL."
   (let ((body-form (nth 1 unwind-form))
         (cleanups (nthcdr 2 unwind-form))
         (value-slot
-         (nelisp-phase47-compiler--gensym "aot-unwind-value"))
+         (nelisp-aot-compiler--gensym "aot-unwind-value"))
         (cleanup-label
-         (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
-    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+         (nelisp-aot-compiler--gensym "aot-unwind-cleanup")))
+    (when (not (nelisp-aot-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
-    (if (nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+    (if (nelisp-aot-compiler--aot-catch-direct-throw-branch-p
          tag body-form)
         `(seq
           (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
@@ -6065,210 +6065,210 @@ source form."
             (seq
              (throw ,(nth 1 body-form) ,value-slot)
              (aot-landing-label ,cleanup-label
-               ,(nelisp-phase47-compiler--aot-cleanup-body-form
+               ,(nelisp-aot-compiler--aot-cleanup-body-form
                  cleanups
                  `(aot-machine-landing-jump
                    (aot-current-sp) ,landing-label)))
              (aot-landing-label ,landing-label ,landing-body))))
       `(seq
-        ,(nelisp-phase47-compiler--aot-unwind-static-cleanup-branch-form
+        ,(nelisp-aot-compiler--aot-unwind-static-cleanup-branch-form
           tag body-form cleanups landing-label value-slot)
         (aot-landing-label ,landing-label ,landing-body)))))
 
-(defun nelisp-phase47-compiler--aot-unwind-catch-cleanup-form
+(defun nelisp-aot-compiler--aot-unwind-catch-cleanup-form
     (unwind-form landing-label landing-body tag)
   "Return mixed UNWIND-FORM cleanup for a statically-known catch target."
   (let ((body-form (nth 1 unwind-form))
         (cleanups (nthcdr 2 unwind-form))
         (value-slot
-         (nelisp-phase47-compiler--gensym "aot-unwind-value")))
-    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+         (nelisp-aot-compiler--gensym "aot-unwind-value")))
+    (when (not (nelisp-aot-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     `(seq
-      ,(nelisp-phase47-compiler--aot-unwind-catch-cleanup-branch-form
+      ,(nelisp-aot-compiler--aot-unwind-catch-cleanup-branch-form
         tag body-form cleanups landing-label value-slot)
       (aot-landing-label ,landing-label ,landing-body))))
 
-(defun nelisp-phase47-compiler--aot-unwind-condition-cleanup-form
+(defun nelisp-aot-compiler--aot-unwind-condition-cleanup-form
     (unwind-form landing-label landing-body)
   "Return direct condition UNWIND-FORM cleanup for static LANDING-LABEL."
   (let ((body-form (nth 1 unwind-form))
         (cleanups (nthcdr 2 unwind-form))
         (cleanup-label
-         (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
-    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+         (nelisp-aot-compiler--gensym "aot-unwind-cleanup")))
+    (when (not (nelisp-aot-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     `(seq
       (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
       ,body-form
       (aot-landing-label ,cleanup-label
-        ,(nelisp-phase47-compiler--aot-cleanup-body-form
+        ,(nelisp-aot-compiler--aot-cleanup-body-form
           cleanups
           `(aot-machine-landing-jump (aot-current-sp) ,landing-label)))
       (aot-landing-label ,landing-label ,landing-body))))
 
-(defun nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
+(defun nelisp-aot-compiler--aot-unwind-condition-cleanup-branch-form
     (branch cleanups landing-label value-slot &optional selected-tag clauses)
   "Return BRANCH for mixed condition-targeted unwind cleanup lowering."
   (let* ((split
-          (nelisp-phase47-compiler--aot-protected-body-split branch))
+          (nelisp-aot-compiler--aot-protected-body-split branch))
          (branch
-          (nelisp-phase47-compiler--aot-branch-tree-form
+          (nelisp-aot-compiler--aot-branch-tree-form
            (plist-get split :tail))))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-condition-form branch)
+     ((nelisp-aot-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
-           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup"))
+           (nelisp-aot-compiler--gensym "aot-unwind-cleanup"))
           (branch-tag
-           (nelisp-phase47-compiler--aot-direct-condition-tag branch)))
+           (nelisp-aot-compiler--aot-direct-condition-tag branch)))
       (let ((target-label
-             (nelisp-phase47-compiler--aot-condition-cleanup-landing-label
+             (nelisp-aot-compiler--aot-condition-cleanup-landing-label
               branch-tag landing-label selected-tag)))
         (if target-label
             `(seq
               (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-              ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+              ,(nelisp-aot-compiler--aot-protected-body-with-prefix
                 split
                 branch)
               (aot-landing-label ,cleanup-label
-                ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                ,(nelisp-aot-compiler--aot-cleanup-body-form
                   cleanups
                   `(aot-machine-landing-jump
                     (aot-current-sp) ,target-label))))
           `(seq
             (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-            ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+            ,(nelisp-aot-compiler--aot-protected-body-with-prefix
               split
               branch)
             (aot-landing-label ,cleanup-label
-              ,(nelisp-phase47-compiler--aot-cleanup-body-form
+              ,(nelisp-aot-compiler--aot-cleanup-body-form
                 cleanups
                 '(aot-landing-jump out))))))))
-     ((or (nelisp-phase47-compiler--aot-condition-tree-tag branch)
-          (nelisp-phase47-compiler--aot-dynamic-condition-tree-form-p
+     ((or (nelisp-aot-compiler--aot-condition-tree-tag branch)
+          (nelisp-aot-compiler--aot-dynamic-condition-tree-form-p
            branch)
           (and selected-tag
                clauses
-               (nelisp-phase47-compiler--aot-condition-case-mixed-tree-form-p
+               (nelisp-aot-compiler--aot-condition-case-mixed-tree-form-p
                 branch selected-tag clauses)))
-      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+      (nelisp-aot-compiler--aot-protected-body-with-prefix
        split
        `(if ,(nth 1 branch)
-            ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
+            ,(nelisp-aot-compiler--aot-unwind-condition-cleanup-branch-form
               (nth 2 branch) cleanups landing-label value-slot
               selected-tag clauses)
-          ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
+          ,(nelisp-aot-compiler--aot-unwind-condition-cleanup-branch-form
             (nth 3 branch) cleanups landing-label value-slot
             selected-tag clauses))))
      (t
       `(let (((,value-slot :type sexp)
-              ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+              ,(nelisp-aot-compiler--aot-protected-body-with-prefix
                 split branch)))
-         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+         ,(nelisp-aot-compiler--aot-cleanup-body-form
            cleanups
            `(seq
              (aot-pop-handler 'condition)
              ,value-slot)))))))
 
-(defun nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+(defun nelisp-aot-compiler--aot-unwind-condition-conditional-cleanup-form
     (unwind-form landing-label landing-body &optional selected-tag clauses
                  landing-forms)
   "Return conditional condition cleanup for static LANDING-LABEL."
   (let ((body-form (nth 1 unwind-form))
         (cleanups (nthcdr 2 unwind-form))
         (value-slot
-         (nelisp-phase47-compiler--gensym "aot-unwind-value")))
-    (when (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+         (nelisp-aot-compiler--gensym "aot-unwind-value")))
+    (when (not (nelisp-aot-compiler--aot-cleanup-sequence-safe-p
                 cleanups))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-unwind-protect-nonlocal-cleanup unwind-form)))
     `(seq
-      ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-branch-form
+      ,(nelisp-aot-compiler--aot-unwind-condition-cleanup-branch-form
         body-form cleanups landing-label value-slot selected-tag clauses)
       ,@(or landing-forms
             (list `(aot-landing-label ,landing-label ,landing-body))))))
 
-(defun nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+(defun nelisp-aot-compiler--aot-unwind-standalone-cleanup-branch-form
     (branch cleanups value-slot)
   "Return BRANCH with standalone unwind cleanup descriptor routing."
   (let* ((split
-          (nelisp-phase47-compiler--aot-protected-body-split branch))
+          (nelisp-aot-compiler--aot-protected-body-split branch))
          (branch
-          (nelisp-phase47-compiler--aot-branch-tree-form
+          (nelisp-aot-compiler--aot-branch-tree-form
            (plist-get split :tail))))
     (cond
-     ((nelisp-phase47-compiler--aot-direct-throw-form branch)
+     ((nelisp-aot-compiler--aot-direct-throw-form branch)
     (let ((cleanup-label
-           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+           (nelisp-aot-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-        ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+        ,(nelisp-aot-compiler--aot-protected-body-with-prefix
           split
           `(let (((,value-slot :type sexp) ,(nth 2 branch)))
              (seq
               (throw ,(nth 1 branch) ,value-slot)
               (aot-landing-label ,cleanup-label
-                ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                ,(nelisp-aot-compiler--aot-cleanup-body-form
                   cleanups
                   '(aot-landing-jump out)))))))))
-     ((nelisp-phase47-compiler--aot-direct-condition-form branch)
+     ((nelisp-aot-compiler--aot-direct-condition-form branch)
     (let ((cleanup-label
-           (nelisp-phase47-compiler--gensym "aot-unwind-cleanup")))
+           (nelisp-aot-compiler--gensym "aot-unwind-cleanup")))
       `(seq
         (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-        ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+        ,(nelisp-aot-compiler--aot-protected-body-with-prefix
           split
           branch)
         (aot-landing-label ,cleanup-label
-          ,(nelisp-phase47-compiler--aot-cleanup-body-form
+          ,(nelisp-aot-compiler--aot-cleanup-body-form
             cleanups
             '(aot-landing-jump out))))))
-     ((nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p branch)
-      (nelisp-phase47-compiler--aot-protected-body-with-prefix
+     ((nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p branch)
+      (nelisp-aot-compiler--aot-protected-body-with-prefix
        split
        `(if ,(nth 1 branch)
-            ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+            ,(nelisp-aot-compiler--aot-unwind-standalone-cleanup-branch-form
               (nth 2 branch) cleanups value-slot)
-          ,(nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
+          ,(nelisp-aot-compiler--aot-unwind-standalone-cleanup-branch-form
             (nth 3 branch) cleanups value-slot))))
      (t
       `(let (((,value-slot :type sexp)
-              ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+              ,(nelisp-aot-compiler--aot-protected-body-with-prefix
                 split branch)))
-         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+         ,(nelisp-aot-compiler--aot-cleanup-body-form
            cleanups
            value-slot))))))
 
-(defun nelisp-phase47-compiler--aot-catch-landing-branch-form
+(defun nelisp-aot-compiler--aot-catch-landing-branch-form
     (tag branch landing-label value-slot leaf-count)
   "Return a source form for one conditional catch BRANCH."
   (cond
-   ((nelisp-phase47-compiler--aot-catch-direct-throw-branch-p
+   ((nelisp-aot-compiler--aot-catch-direct-throw-branch-p
      tag branch)
     (if landing-label
-        (nelisp-phase47-compiler--aot-static-landing-form
+        (nelisp-aot-compiler--aot-static-landing-form
          branch landing-label '(aot-landing-value out))
       (let ((branch-label
-             (nelisp-phase47-compiler--gensym
+             (nelisp-aot-compiler--gensym
               "aot-catch-landing")))
         `(seq
           (aot-push-catch
            ,tag
            ',branch-label
            (aot-current-sp))
-          ,(nelisp-phase47-compiler--aot-static-landing-form
+          ,(nelisp-aot-compiler--aot-static-landing-form
             branch branch-label
             '(aot-landing-value out))))))
-   ((nelisp-phase47-compiler--aot-catch-throw-tree-form-p
+   ((nelisp-aot-compiler--aot-catch-throw-tree-form-p
      tag branch)
     `(if ,(nth 1 branch)
-         ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+         ,(nelisp-aot-compiler--aot-catch-landing-branch-form
            tag (nth 2 branch) landing-label value-slot leaf-count)
-       ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+       ,(nelisp-aot-compiler--aot-catch-landing-branch-form
          tag (nth 3 branch) landing-label value-slot leaf-count)))
    ((> leaf-count 1)
     branch)
@@ -6278,30 +6278,30 @@ source form."
         (aot-pop-handler 'catch)
         ,value-slot)))))
 
-(defun nelisp-phase47-compiler--aot-condition-landing-branch-form
+(defun nelisp-aot-compiler--aot-condition-landing-branch-form
     (tag branch landing-label handled-form value-slot leaf-count)
   "Return a source form for one conditional condition-case BRANCH."
   (cond
-   ((nelisp-phase47-compiler--aot-direct-condition-tag branch)
+   ((nelisp-aot-compiler--aot-direct-condition-tag branch)
     (if landing-label
-        (nelisp-phase47-compiler--aot-static-landing-form
+        (nelisp-aot-compiler--aot-static-landing-form
          branch landing-label handled-form)
       (let ((branch-label
-             (nelisp-phase47-compiler--gensym
+             (nelisp-aot-compiler--gensym
               "aot-condition-landing")))
         `(seq
           (aot-push-condition
            ',tag
            ',branch-label
            (aot-current-sp))
-          ,(nelisp-phase47-compiler--aot-static-landing-form
+          ,(nelisp-aot-compiler--aot-static-landing-form
             branch branch-label handled-form)))))
-   ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
+   ((nelisp-aot-compiler--aot-condition-tree-tag branch)
     `(if ,(nth 1 branch)
-         ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+         ,(nelisp-aot-compiler--aot-condition-landing-branch-form
            tag (nth 2 branch) landing-label handled-form
            value-slot leaf-count)
-       ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+       ,(nelisp-aot-compiler--aot-condition-landing-branch-form
          tag (nth 3 branch) landing-label handled-form
          value-slot leaf-count)))
    ((> leaf-count 1)
@@ -6312,7 +6312,7 @@ source form."
         (aot-pop-handler 'condition)
         ,value-slot)))))
 
-(defun nelisp-phase47-compiler--aot-condition-selector-match-p
+(defun nelisp-aot-compiler--aot-condition-selector-match-p
     (selector tag)
   "Return non-nil when source condition-case SELECTOR catches TAG."
   (cond
@@ -6325,25 +6325,25 @@ source form."
    ((and (consp selector)
          (cl-every #'symbolp selector))
     (cl-some (lambda (symbol)
-               (nelisp-phase47-compiler--aot-condition-selector-match-p
+               (nelisp-aot-compiler--aot-condition-selector-match-p
                 symbol tag))
              selector))
    (t nil)))
 
-(defun nelisp-phase47-compiler--aot-condition-case-direct-handler
+(defun nelisp-aot-compiler--aot-condition-case-direct-handler
     (tag clauses)
   "Return the first condition-case clause that catches TAG, or nil."
   (catch 'matched
     (dolist (clause clauses)
       (unless (consp clause)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :aot-condition-case-handler-shape clause)))
-      (when (nelisp-phase47-compiler--aot-condition-selector-match-p
+      (when (nelisp-aot-compiler--aot-condition-selector-match-p
              (car clause) tag)
         (throw 'matched clause)))
     nil))
 
-(defun nelisp-phase47-compiler--aot-condition-case-clause-selectors
+(defun nelisp-aot-compiler--aot-condition-case-clause-selectors
     (clause)
   "Return condition selector symbols for one condition-case CLAUSE."
   (let ((selector (car clause)))
@@ -6354,31 +6354,31 @@ source form."
            (cl-every #'symbolp selector))
       selector)
      (t
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-condition-case-handler-shape clause))))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-direct-dynamic-handler
+(defun nelisp-aot-compiler--aot-condition-case-direct-dynamic-handler
     (body clauses)
   "Return a dynamic condition descriptor for BODY."
-  (when (nelisp-phase47-compiler--aot-direct-condition-form body)
+  (when (nelisp-aot-compiler--aot-direct-condition-form body)
     (dolist (handler clauses)
-      (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+      (nelisp-aot-compiler--aot-condition-case-clause-selectors
        handler))
     (list :handlers clauses :form body)))
 
-(defun nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+(defun nelisp-aot-compiler--aot-condition-case-dynamic-landing-entries
     (handlers var)
   "Return dynamic condition landing entries for HANDLERS and VAR."
   (mapcar
    (lambda (handler)
      (let* ((selectors
-             (nelisp-phase47-compiler--aot-condition-case-clause-selectors
+             (nelisp-aot-compiler--aot-condition-case-clause-selectors
               handler))
             (handler-body
-             (nelisp-phase47-compiler--body->form
+             (nelisp-aot-compiler--body->form
               (cdr handler)))
             (landing-label
-             (nelisp-phase47-compiler--gensym
+             (nelisp-aot-compiler--gensym
               "aot-condition-landing"))
             (handled-form
              (if var
@@ -6392,30 +6392,30 @@ source form."
              :handled-form handled-form)))
    handlers))
 
-(defun nelisp-phase47-compiler--aot-direct-signal-form (sexp)
+(defun nelisp-aot-compiler--aot-direct-signal-form (sexp)
   "Return SEXP when it is a direct signal form."
   (when (and (consp sexp)
              (eq (car sexp) 'signal)
              (= (length sexp) 3))
     sexp))
 
-(defun nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
+(defun nelisp-aot-compiler--aot-special-let-direct-nonlocal-form
     (sexp)
   "Return SEXP when a special let can cleanup-route it directly."
-  (or (nelisp-phase47-compiler--aot-direct-throw-form sexp)
-      (nelisp-phase47-compiler--aot-direct-signal-form sexp)))
+  (or (nelisp-aot-compiler--aot-direct-throw-form sexp)
+      (nelisp-aot-compiler--aot-direct-signal-form sexp)))
 
-(defun nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+(defun nelisp-aot-compiler--aot-special-let-direct-nonlocal-cleanup-form
     (nonlocal-form pop-forms &optional lexical-bindings)
   "Return NONLOCAL-FORM with POP-FORMS run after argument capture."
-  (let ((tag-slot (nelisp-phase47-compiler--gensym
+  (let ((tag-slot (nelisp-aot-compiler--gensym
                    "aot-special-nonlocal-tag"))
-        (value-slot (nelisp-phase47-compiler--gensym
+        (value-slot (nelisp-aot-compiler--gensym
                      "aot-special-nonlocal-value")))
     (let ((form
            (pcase (car nonlocal-form)
              ('throw
-              (if (nelisp-phase47-compiler--aot-quoted-symbol
+              (if (nelisp-aot-compiler--aot-quoted-symbol
                    (nth 1 nonlocal-form))
                   `(let (((,value-slot :type sexp) ,(nth 2 nonlocal-form)))
                      (seq
@@ -6427,7 +6427,7 @@ source form."
                     ,@pop-forms
                     (throw ,tag-slot ,value-slot)))))
              ('signal
-              (if (nelisp-phase47-compiler--aot-quoted-symbol
+              (if (nelisp-aot-compiler--aot-quoted-symbol
                    (nth 1 nonlocal-form))
                   `(let (((,value-slot :type sexp) ,(nth 2 nonlocal-form)))
                      (seq
@@ -6439,14 +6439,14 @@ source form."
                     ,@pop-forms
                     (signal ,tag-slot ,value-slot)))))
              (_
-              (signal 'nelisp-phase47-compiler-error
+              (signal 'nelisp-aot-compiler-error
                       (list :aot-special-let-nonlocal-shape
                             nonlocal-form))))))
       (if lexical-bindings
           `(let ,lexical-bindings ,form)
         form))))
 
-(defun nelisp-phase47-compiler--parse-aot-special-let-normal-exit
+(defun nelisp-aot-compiler--parse-aot-special-let-normal-exit
     (var val-sexp body-sexp env fenv defuns source-form)
   "Lower one source-level special `let' binding for the normal exit path.
 VAR is a top-level special variable.  VAL-SEXP is evaluated before the
@@ -6454,29 +6454,29 @@ push bridge, BODY-SEXP runs while the value cell is rebound, then the
 saved BODY value is returned after the pop bridge.  Non-local exits
 through BODY remain pending on the 129.8 landing-pad path."
   (let ((direct-nonlocal
-         (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
+         (nelisp-aot-compiler--aot-special-let-direct-nonlocal-form
           body-sexp))
         (conditional-throw
-         (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
+         (nelisp-aot-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
-    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+    (when (and (not nelisp-aot-compiler--allow-external-user-calls)
                (not direct-nonlocal)
                (not conditional-throw)
-               (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nelisp-aot-compiler--aot-nonlocal-source-form-p
                 body-sexp))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-special-let-nonlocal-body source-form)))
     ;; Force boundary diagnostics to point at the source `let'.
-    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
-    (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
-    (let ((value-slot (nelisp-phase47-compiler--gensym
+    (nelisp-aot-compiler--aot-exception-boundary-symbols fenv source-form)
+    (nelisp-aot-compiler--aot-name-slot-symbol fenv source-form)
+    (let ((value-slot (nelisp-aot-compiler--gensym
                        "aot-special-value")))
-      (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--parse-value
        (cond
         (direct-nonlocal
          `(seq
            (aot-push-special ',var ,val-sexp)
-           ,(nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+           ,(nelisp-aot-compiler--aot-special-let-direct-nonlocal-cleanup-form
              direct-nonlocal
              '((aot-pop-special 0)))))
         (conditional-throw
@@ -6484,7 +6484,7 @@ through BODY remain pending on the 129.8 landing-pad path."
              ((branch-form
                (branch)
                (let ((branch-throw
-                      (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                      (nelisp-aot-compiler--aot-direct-quoted-throw-form
                        branch)))
                  (cond
                   (branch-throw
@@ -6492,7 +6492,7 @@ through BODY remain pending on the 129.8 landing-pad path."
                       (seq
                        (aot-pop-special 0)
                        (throw ,(nth 1 branch-throw) ,value-slot))))
-                  ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                  ((nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                     branch)
                    `(if ,(nth 1 branch)
                         ,(branch-form (nth 2 branch))
@@ -6516,7 +6516,7 @@ through BODY remain pending on the 129.8 landing-pad path."
               ,value-slot)))))
        env fenv defuns))))
 
-(defun nelisp-phase47-compiler--parse-aot-special-let-n-normal-exit
+(defun nelisp-aot-compiler--parse-aot-special-let-n-normal-exit
     (bindings body-sexp env fenv defuns source-form)
   "Lower an all-special multi-binding source `let' normal exit path.
 Every initializer is evaluated against the original ENV/FENV into a
@@ -6524,48 +6524,48 @@ fresh Sexp temp slot before any special value cell is rebound.  This
 preserves ordinary parallel `let' initializer semantics for the
 all-special subset."
   (let ((direct-throw
-         (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
+         (nelisp-aot-compiler--aot-special-let-direct-nonlocal-form
           body-sexp))
         (conditional-throw
-         (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
+         (nelisp-aot-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
-    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+    (when (and (not nelisp-aot-compiler--allow-external-user-calls)
                (not direct-throw)
                (not conditional-throw)
-               (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nelisp-aot-compiler--aot-nonlocal-source-form-p
                 body-sexp))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-special-let-n-nonlocal-body source-form)))
-    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
-    (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+    (nelisp-aot-compiler--aot-exception-boundary-symbols fenv source-form)
+    (nelisp-aot-compiler--aot-name-slot-symbol fenv source-form)
     (let ((temp-bindings nil)
           (push-forms nil)
           (pop-forms nil)
-          (body-slot (nelisp-phase47-compiler--gensym
+          (body-slot (nelisp-aot-compiler--gensym
                       "aot-special-value")))
       (dolist (binding bindings)
-        (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+        (let* ((pair (nelisp-aot-compiler--validate-let-binding binding))
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
-               (temp (nelisp-phase47-compiler--gensym
+               (temp (nelisp-aot-compiler--gensym
                       "aot-special-init")))
           (push `((,temp :type sexp) ,val-sexp) temp-bindings)
           (push `(aot-push-special ',var ,temp) push-forms)
           (push '(aot-pop-special 0) pop-forms)))
-      (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--parse-value
        `(let ,(nreverse temp-bindings)
           (seq
            ,@(nreverse push-forms)
            ,(cond
              (direct-throw
-              (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+              (nelisp-aot-compiler--aot-special-let-direct-nonlocal-cleanup-form
                direct-throw pop-forms))
              (conditional-throw
               (cl-labels
                   ((branch-form
                     (branch)
                     (let ((branch-throw
-                           (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                           (nelisp-aot-compiler--aot-direct-quoted-throw-form
                             branch)))
                       (cond
                        (branch-throw
@@ -6574,7 +6574,7 @@ all-special subset."
                            (seq
                             ,@pop-forms
                             (throw ,(nth 1 branch-throw) ,body-slot))))
-                       ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                       ((nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                          branch)
                         `(if ,(nth 1 branch)
                              ,(branch-form (nth 2 branch))
@@ -6594,7 +6594,7 @@ all-special subset."
                   ,body-slot))))))
        env fenv defuns))))
 
-(defun nelisp-phase47-compiler--parse-aot-special-let-mixed-normal-exit
+(defun nelisp-aot-compiler--parse-aot-special-let-mixed-normal-exit
     (bindings body-sexp env fenv defuns source-form)
   "Lower a mixed lexical/special source `let' normal exit path.
 Every initializer is evaluated against the original ENV/FENV into a
@@ -6603,34 +6603,34 @@ alias becomes visible.  BODY then runs with all special and lexical
 bindings in scope, and special bindings are popped before returning the
 saved BODY value."
   (let ((direct-throw
-         (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-form
+         (nelisp-aot-compiler--aot-special-let-direct-nonlocal-form
           body-sexp))
         (conditional-throw
-         (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
+         (nelisp-aot-compiler--aot-conditional-quoted-throw-form
           body-sexp)))
-    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+    (when (and (not nelisp-aot-compiler--allow-external-user-calls)
                (not direct-throw)
                (not conditional-throw)
-               (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (nelisp-aot-compiler--aot-nonlocal-source-form-p
                 body-sexp))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-special-let-mixed-nonlocal-body source-form)))
-    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv source-form)
-    (nelisp-phase47-compiler--aot-name-slot-symbol fenv source-form)
+    (nelisp-aot-compiler--aot-exception-boundary-symbols fenv source-form)
+    (nelisp-aot-compiler--aot-name-slot-symbol fenv source-form)
     (let ((temp-bindings nil)
           (lexical-bindings nil)
           (push-forms nil)
           (pop-forms nil)
-          (body-slot (nelisp-phase47-compiler--gensym
+          (body-slot (nelisp-aot-compiler--gensym
                       "aot-special-value")))
       (dolist (binding bindings)
-        (let* ((pair (nelisp-phase47-compiler--validate-let-binding binding))
+        (let* ((pair (nelisp-aot-compiler--validate-let-binding binding))
                (var-form (car binding))
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
                (root-p (nth 2 pair))
-               (special-p (nelisp-phase47-compiler--special-var-p var))
-               (temp (nelisp-phase47-compiler--gensym
+               (special-p (nelisp-aot-compiler--special-var-p var))
+               (temp (nelisp-aot-compiler--gensym
                       "aot-let-init"))
                (temp-form (if (or special-p root-p)
                               `(,temp :type sexp)
@@ -6645,20 +6645,20 @@ saved BODY value."
              (scoped-body (if lexical-bindings*
                               `(let ,lexical-bindings* ,body-sexp)
                             body-sexp)))
-        (nelisp-phase47-compiler--parse-value
+        (nelisp-aot-compiler--parse-value
          `(let ,(nreverse temp-bindings)
             (seq
              ,@(nreverse push-forms)
              ,(cond
                (direct-throw
-                (nelisp-phase47-compiler--aot-special-let-direct-nonlocal-cleanup-form
+                (nelisp-aot-compiler--aot-special-let-direct-nonlocal-cleanup-form
                  direct-throw pop-forms lexical-bindings*))
                (conditional-throw
                 (cl-labels
                     ((branch-form
                       (branch)
                       (let ((branch-throw
-                             (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                             (nelisp-aot-compiler--aot-direct-quoted-throw-form
                               branch)))
                         (cond
                          (branch-throw
@@ -6667,7 +6667,7 @@ saved BODY value."
                              (seq
                               ,@pop-forms
                               (throw ,(nth 1 branch-throw) ,body-slot))))
-                         ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                         ((nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                            branch)
                           `(if ,(nth 1 branch)
                                ,(branch-form (nth 2 branch))
@@ -6691,38 +6691,38 @@ saved BODY value."
                     ,body-slot))))))
          env fenv defuns)))))
 
-(defun nelisp-phase47-compiler--parse-aot-catch-normal-exit
+(defun nelisp-aot-compiler--parse-aot-catch-normal-exit
     (sexp env fenv defuns)
   "Lower a source-level `(catch TAG BODY...)' path."
   (unless (>= (length sexp) 3)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-catch-arity sexp)))
   (let* ((tag (nth 1 sexp))
          (body-forms (cddr sexp))
          (direct-throw
-          (nelisp-phase47-compiler--aot-catch-direct-throw-form
+          (nelisp-aot-compiler--aot-catch-direct-throw-form
            tag body-forms))
          (conditional-throw
           (and (not direct-throw)
-               (nelisp-phase47-compiler--aot-catch-conditional-throw-form
+               (nelisp-aot-compiler--aot-catch-conditional-throw-form
                 tag body-forms)))
          (direct-dynamic-throw
           (and (not direct-throw)
                (not conditional-throw)
-               (nelisp-phase47-compiler--aot-catch-direct-dynamic-throw-form
+               (nelisp-aot-compiler--aot-catch-direct-dynamic-throw-form
                 body-forms)))
          (direct-unwind-throw
           (and (not direct-throw)
                (not conditional-throw)
                (not direct-dynamic-throw)
-               (nelisp-phase47-compiler--aot-catch-direct-unwind-throw-form
+               (nelisp-aot-compiler--aot-catch-direct-unwind-throw-form
                 tag body-forms)))
          (conditional-unwind-throw
           (and (not direct-throw)
                (not conditional-throw)
                (not direct-dynamic-throw)
                (not direct-unwind-throw)
-               (nelisp-phase47-compiler--aot-catch-conditional-unwind-throw-form
+               (nelisp-aot-compiler--aot-catch-conditional-unwind-throw-form
                 tag body-forms)))
          (conditional-unwind
           (and (not direct-throw)
@@ -6730,37 +6730,37 @@ saved BODY value."
                (not direct-dynamic-throw)
                (not direct-unwind-throw)
                (not conditional-unwind-throw)
-               (nelisp-phase47-compiler--aot-catch-conditional-unwind-form
+               (nelisp-aot-compiler--aot-catch-conditional-unwind-form
                 tag body-forms))))
-    (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+    (when (and (not nelisp-aot-compiler--allow-external-user-calls)
                (not direct-throw)
                (not conditional-throw)
                (not direct-dynamic-throw)
                (not direct-unwind-throw)
                (not conditional-unwind-throw)
                (not conditional-unwind)
-               (cl-some #'nelisp-phase47-compiler--aot-nonlocal-source-form-p
+               (cl-some #'nelisp-aot-compiler--aot-nonlocal-source-form-p
                         body-forms))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-catch-nonlocal-body sexp)))
     ;; Force the boundary diagnostics to point at the source `catch'
     ;; instead of the generated `aot-*' forms.
-    (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
-    (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
+    (nelisp-aot-compiler--aot-exception-boundary-symbols fenv sexp)
+    (nelisp-aot-compiler--aot-name-slot-symbol fenv sexp)
     (cond
      (direct-throw
       (let ((landing-label
-             (nelisp-phase47-compiler--gensym "aot-catch-landing")))
-        (nelisp-phase47-compiler--parse-value
+             (nelisp-aot-compiler--gensym "aot-catch-landing")))
+        (nelisp-aot-compiler--parse-value
          `(seq
            (aot-push-catch ,tag ',landing-label (aot-current-sp))
-           ,(nelisp-phase47-compiler--aot-static-landing-form
+           ,(nelisp-aot-compiler--aot-static-landing-form
              direct-throw landing-label '(aot-landing-value out)))
          env fenv defuns)))
      (direct-dynamic-throw
       (let ((landing-label
-             (nelisp-phase47-compiler--gensym "aot-catch-landing")))
-        (nelisp-phase47-compiler--parse-value
+             (nelisp-aot-compiler--gensym "aot-catch-landing")))
+        (nelisp-aot-compiler--parse-value
          `(seq
            (aot-push-catch ,tag ',landing-label (aot-current-sp))
            ,direct-dynamic-throw
@@ -6770,40 +6770,40 @@ saved BODY value."
          env fenv defuns)))
      ((or direct-unwind-throw conditional-unwind-throw conditional-unwind)
       (let ((landing-label
-             (nelisp-phase47-compiler--gensym "aot-catch-landing")))
-        (nelisp-phase47-compiler--parse-value
+             (nelisp-aot-compiler--gensym "aot-catch-landing")))
+        (nelisp-aot-compiler--parse-value
          `(seq
            (aot-push-catch ,tag ',landing-label (aot-current-sp))
            ,(if conditional-unwind
-                (nelisp-phase47-compiler--aot-unwind-catch-cleanup-form
+                (nelisp-aot-compiler--aot-unwind-catch-cleanup-form
                  conditional-unwind
                  landing-label
                  '(aot-landing-value out)
                  tag)
-              (nelisp-phase47-compiler--aot-unwind-static-cleanup-form
+              (nelisp-aot-compiler--aot-unwind-static-cleanup-form
                (or direct-unwind-throw conditional-unwind-throw)
                landing-label
                '(aot-landing-value out)
                tag)))
          env fenv defuns)))
      (conditional-throw
-      (let* ((value-slot (nelisp-phase47-compiler--gensym
+      (let* ((value-slot (nelisp-aot-compiler--gensym
                           "aot-catch-value"))
              (test (nth 1 conditional-throw))
              (leaf-count
-              (nelisp-phase47-compiler--aot-catch-throw-leaf-count
+              (nelisp-aot-compiler--aot-catch-throw-leaf-count
                tag conditional-throw))
              (landing-label
               (when (= leaf-count 1)
-                (nelisp-phase47-compiler--gensym
+                (nelisp-aot-compiler--gensym
                  "aot-catch-landing"))))
-        (nelisp-phase47-compiler--parse-value
+        (nelisp-aot-compiler--parse-value
          (let ((body-form
                 `(if ,test
-                     ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+                     ,(nelisp-aot-compiler--aot-catch-landing-branch-form
                        tag (nth 2 conditional-throw)
                        landing-label value-slot leaf-count)
-                   ,(nelisp-phase47-compiler--aot-catch-landing-branch-form
+                   ,(nelisp-aot-compiler--aot-catch-landing-branch-form
                      tag (nth 3 conditional-throw)
                      landing-label value-slot leaf-count))))
            (if landing-label
@@ -6816,10 +6816,10 @@ saved BODY value."
              body-form))
          env fenv defuns)))
      (t
-      (let ((value-slot (nelisp-phase47-compiler--gensym
+      (let ((value-slot (nelisp-aot-compiler--gensym
                          "aot-catch-value"))
-            (body (nelisp-phase47-compiler--body->form body-forms)))
-        (nelisp-phase47-compiler--parse-value
+            (body (nelisp-aot-compiler--body->form body-forms)))
+        (nelisp-aot-compiler--parse-value
          `(seq
            (aot-push-catch ,tag 0 0)
            (let (((,value-slot :type sexp) ,body))
@@ -6828,7 +6828,7 @@ saved BODY value."
               ,value-slot)))
          env fenv defuns))))))
 
-(defun nelisp-phase47-compiler--aot-condition-case-selectors (sexp)
+(defun nelisp-aot-compiler--aot-condition-case-selectors (sexp)
   "Return condition symbols handled by source condition-case SEXP.
 Doc 129.8F started with the common `(condition BODY...)' handler shape;
 Doc 129.8J also accepts `(CONDITION...)' list specs by installing one
@@ -6837,7 +6837,7 @@ condition handler per symbol with the same landing metadata.  Doc
 handler-body dispatch still waits for native landing pads."
   (let ((clauses (nthcdr 3 sexp)))
     (unless clauses
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :aot-condition-case-no-handlers sexp)))
     (apply
      #'append
@@ -6851,12 +6851,12 @@ handler-body dispatch still waits for native landing pads."
                  (cl-every #'symbolp selector))
             selector)
            (t
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :aot-condition-case-handler-shape
                           clause))))))
       clauses))))
 
-(defun nelisp-phase47-compiler--parse-aot-condition-case-normal-exit
+(defun nelisp-aot-compiler--parse-aot-condition-case-normal-exit
     (sexp env fenv defuns)
   "Lower source `(condition-case VAR BODY HANDLER...)'.
 The MVP installs a condition handler, evaluates BODY, saves BODY's
@@ -6866,7 +6866,7 @@ condition-targeted unwind cleanup can branch to a static condition
 landing.  Broader multi-leaf cleanup landing selection remains later
 Doc 129.8 work."
   (unless (>= (length sexp) 4)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-condition-case-arity sexp)))
 	  (let ((var (nth 1 sexp))
 	        (body (nth 2 sexp))
@@ -6874,35 +6874,35 @@ Doc 129.8 work."
 	    (when (eq var 0)
 	      (setq var nil))
 	    (unless (or (null var) (symbolp var))
-	      (signal 'nelisp-phase47-compiler-error
+	      (signal 'nelisp-aot-compiler-error
 	              (list :aot-condition-case-var-shape var)))
     (let* ((direct-tag
-            (nelisp-phase47-compiler--aot-direct-condition-tag body))
+            (nelisp-aot-compiler--aot-direct-condition-tag body))
            (direct-handler
             (and direct-tag
-                 (nelisp-phase47-compiler--aot-condition-case-direct-handler
+                 (nelisp-aot-compiler--aot-condition-case-direct-handler
                   direct-tag clauses)))
            (conditional-handler
             (and (not direct-handler)
-                 (nelisp-phase47-compiler--aot-conditional-condition-case-form
+                 (nelisp-aot-compiler--aot-conditional-condition-case-form
                   body clauses)))
            (direct-dynamic-handler
             (and (not direct-handler)
                  (not conditional-handler)
-                 (nelisp-phase47-compiler--aot-condition-case-direct-dynamic-handler
+                 (nelisp-aot-compiler--aot-condition-case-direct-dynamic-handler
                   body clauses)))
            (dynamic-tree-handler
             (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
-                 (nelisp-phase47-compiler--aot-condition-case-dynamic-tree-form
+                 (nelisp-aot-compiler--aot-condition-case-dynamic-tree-form
                   body clauses)))
            (direct-unwind-handler
             (and (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
                  (not dynamic-tree-handler)
-                 (nelisp-phase47-compiler--aot-condition-case-direct-unwind-form
+                 (nelisp-aot-compiler--aot-condition-case-direct-unwind-form
                   body clauses)))
            (direct-dynamic-unwind-handler
             (and (not direct-handler)
@@ -6910,7 +6910,7 @@ Doc 129.8 work."
                  (not direct-dynamic-handler)
                  (not dynamic-tree-handler)
                  (not direct-unwind-handler)
-                 (nelisp-phase47-compiler--aot-condition-case-direct-dynamic-unwind-form
+                 (nelisp-aot-compiler--aot-condition-case-direct-dynamic-unwind-form
                   body clauses)))
            (dynamic-tree-unwind-handler
             (and (not direct-handler)
@@ -6919,7 +6919,7 @@ Doc 129.8 work."
                  (not dynamic-tree-handler)
                  (not direct-unwind-handler)
                  (not direct-dynamic-unwind-handler)
-                 (nelisp-phase47-compiler--aot-condition-case-dynamic-tree-unwind-form
+                 (nelisp-aot-compiler--aot-condition-case-dynamic-tree-unwind-form
                   body clauses)))
            (conditional-unwind-handler
             (and (not direct-handler)
@@ -6929,7 +6929,7 @@ Doc 129.8 work."
                  (not direct-unwind-handler)
                  (not direct-dynamic-unwind-handler)
                  (not dynamic-tree-unwind-handler)
-                 (nelisp-phase47-compiler--aot-condition-case-conditional-unwind-form
+                 (nelisp-aot-compiler--aot-condition-case-conditional-unwind-form
                   body clauses)))
            (mixed-unwind-handler
             (and (not direct-handler)
@@ -6940,9 +6940,9 @@ Doc 129.8 work."
                  (not direct-dynamic-unwind-handler)
                  (not dynamic-tree-unwind-handler)
                  (not conditional-unwind-handler)
-                 (nelisp-phase47-compiler--aot-condition-case-mixed-unwind-form
+                 (nelisp-aot-compiler--aot-condition-case-mixed-unwind-form
                   body clauses))))
-      (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+      (when (and (not nelisp-aot-compiler--allow-external-user-calls)
                  (not direct-handler)
                  (not conditional-handler)
                  (not direct-dynamic-handler)
@@ -6952,19 +6952,19 @@ Doc 129.8 work."
                  (not dynamic-tree-unwind-handler)
                  (not conditional-unwind-handler)
                  (not mixed-unwind-handler)
-                 (nelisp-phase47-compiler--aot-nonlocal-source-form-p body))
-        (signal 'nelisp-phase47-compiler-error
+                 (nelisp-aot-compiler--aot-nonlocal-source-form-p body))
+        (signal 'nelisp-aot-compiler-error
                 (list :aot-condition-case-nonlocal-body sexp)))
       ;; Force diagnostics to point at the source form.
-      (nelisp-phase47-compiler--aot-exception-boundary-symbols fenv sexp)
-      (nelisp-phase47-compiler--aot-name-slot-symbol fenv sexp)
+      (nelisp-aot-compiler--aot-exception-boundary-symbols fenv sexp)
+      (nelisp-aot-compiler--aot-name-slot-symbol fenv sexp)
       (cond
        (direct-handler
         (let* ((handler-body
-                (nelisp-phase47-compiler--body->form
+                (nelisp-aot-compiler--body->form
                  (cdr direct-handler)))
                (landing-label
-                (nelisp-phase47-compiler--gensym
+                (nelisp-aot-compiler--gensym
                  "aot-condition-landing"))
                (handled-form
                 (if var
@@ -6973,19 +6973,19 @@ Doc 129.8 work."
                   `(seq
                     (aot-landing-error out)
                     ,handler-body))))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              (aot-push-condition ',direct-tag
                                  ',landing-label
                                  (aot-current-sp))
-             ,(nelisp-phase47-compiler--aot-static-landing-form
+             ,(nelisp-aot-compiler--aot-static-landing-form
                body landing-label handled-form))
            env fenv defuns)))
        (direct-dynamic-handler
         (let* ((handlers (plist-get direct-dynamic-handler :handlers))
                (condition-form (plist-get direct-dynamic-handler :form))
                (entries
-                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                (nelisp-aot-compiler--aot-condition-case-dynamic-landing-entries
                  handlers var))
                (landing-forms
                 (mapcar
@@ -6994,7 +6994,7 @@ Doc 129.8 work."
                      ,(plist-get entry :landing-label)
                      ,(plist-get entry :handled-form)))
                  entries)))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              ,@(mapcan
                 (lambda (entry)
@@ -7014,7 +7014,7 @@ Doc 129.8 work."
         (let* ((handlers (plist-get dynamic-tree-handler :handlers))
                (condition-form (plist-get dynamic-tree-handler :form))
                (entries
-                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                (nelisp-aot-compiler--aot-condition-case-dynamic-landing-entries
                  handlers var))
                (landing-forms
                 (mapcar
@@ -7024,9 +7024,9 @@ Doc 129.8 work."
                      ,(plist-get entry :handled-form)))
                  entries))
                (value-slot
-                (nelisp-phase47-compiler--gensym
+                (nelisp-aot-compiler--gensym
                  "aot-condition-value")))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              ,@(mapcan
                 (lambda (entry)
@@ -7039,7 +7039,7 @@ Doc 129.8 work."
                    (plist-get entry :selectors)))
                 entries)
              (let (((,value-slot :type sexp)
-                    ,(nelisp-phase47-compiler--aot-dynamic-condition-tree-landing-form
+                    ,(nelisp-aot-compiler--aot-dynamic-condition-tree-landing-form
                       condition-form)))
                (seq
                 (aot-pop-handler 'condition)
@@ -7051,10 +7051,10 @@ Doc 129.8 work."
                (handler (plist-get direct-unwind-handler :handler))
                (unwind-form (plist-get direct-unwind-handler :form))
                (handler-body
-                (nelisp-phase47-compiler--body->form
+                (nelisp-aot-compiler--body->form
                  (cdr handler)))
                (landing-label
-                (nelisp-phase47-compiler--gensym
+                (nelisp-aot-compiler--gensym
                  "aot-condition-landing"))
                (handled-form
                 (if var
@@ -7063,12 +7063,12 @@ Doc 129.8 work."
                   `(seq
                     (aot-landing-error out)
                     ,handler-body))))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              (aot-push-condition ',tag
                                  ',landing-label
                                  (aot-current-sp))
-             ,(nelisp-phase47-compiler--aot-unwind-condition-cleanup-form
+             ,(nelisp-aot-compiler--aot-unwind-condition-cleanup-form
                unwind-form landing-label handled-form))
            env fenv defuns)))
        (direct-dynamic-unwind-handler
@@ -7076,7 +7076,7 @@ Doc 129.8 work."
                (unwind-form
                 (plist-get direct-dynamic-unwind-handler :form))
                (entries
-                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                (nelisp-aot-compiler--aot-condition-case-dynamic-landing-entries
                  handlers var))
                (landing-forms
                 (mapcar
@@ -7085,7 +7085,7 @@ Doc 129.8 work."
                      ,(plist-get entry :landing-label)
                      ,(plist-get entry :handled-form)))
                  entries)))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              ,@(mapcan
                 (lambda (entry)
@@ -7097,7 +7097,7 @@ Doc 129.8 work."
                        (aot-current-sp)))
                    (plist-get entry :selectors)))
                 entries)
-             ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+             ,(nelisp-aot-compiler--aot-unwind-condition-conditional-cleanup-form
                unwind-form nil nil nil nil
                landing-forms))
            env fenv defuns)))
@@ -7106,7 +7106,7 @@ Doc 129.8 work."
                (unwind-form
                 (plist-get dynamic-tree-unwind-handler :form))
                (entries
-                (nelisp-phase47-compiler--aot-condition-case-dynamic-landing-entries
+                (nelisp-aot-compiler--aot-condition-case-dynamic-landing-entries
                  handlers var))
                (landing-forms
                 (mapcar
@@ -7115,7 +7115,7 @@ Doc 129.8 work."
                      ,(plist-get entry :landing-label)
                      ,(plist-get entry :handled-form)))
                  entries)))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              ,@(mapcan
                 (lambda (entry)
@@ -7127,7 +7127,7 @@ Doc 129.8 work."
                        (aot-current-sp)))
                    (plist-get entry :selectors)))
                 entries)
-             ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+             ,(nelisp-aot-compiler--aot-unwind-condition-conditional-cleanup-form
                unwind-form nil nil nil nil
                landing-forms))
            env fenv defuns)))
@@ -7136,10 +7136,10 @@ Doc 129.8 work."
                (handler (plist-get conditional-unwind-handler :handler))
                (unwind-form (plist-get conditional-unwind-handler :form))
                (handler-body
-                (nelisp-phase47-compiler--body->form
+                (nelisp-aot-compiler--body->form
                  (cdr handler)))
                (landing-label
-                (nelisp-phase47-compiler--gensym
+                (nelisp-aot-compiler--gensym
                  "aot-condition-landing"))
                (handled-form
                 (if var
@@ -7148,12 +7148,12 @@ Doc 129.8 work."
                   `(seq
                     (aot-landing-error out)
                     ,handler-body))))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              (aot-push-condition ',tag
                                  ',landing-label
                                  (aot-current-sp))
-             ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+             ,(nelisp-aot-compiler--aot-unwind-condition-conditional-cleanup-form
                unwind-form landing-label handled-form))
            env fenv defuns)))
        (mixed-unwind-handler
@@ -7165,10 +7165,10 @@ Doc 129.8 work."
                    (let* ((tag (car entry))
                           (handler (cdr entry))
                           (handler-body
-                           (nelisp-phase47-compiler--body->form
+                           (nelisp-aot-compiler--body->form
                             (cdr handler)))
                           (landing-label
-                           (nelisp-phase47-compiler--gensym
+                           (nelisp-aot-compiler--gensym
                             "aot-condition-landing"))
                           (handled-form
                            (if var
@@ -7195,7 +7195,7 @@ Doc 129.8 work."
                      ,(plist-get entry :landing-label)
                      ,(plist-get entry :handled-form)))
                  entries)))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            `(seq
              ,@(mapcar
                 (lambda (entry)
@@ -7204,7 +7204,7 @@ Doc 129.8 work."
                     ',(plist-get entry :landing-label)
                     (aot-current-sp)))
                 entries)
-             ,(nelisp-phase47-compiler--aot-unwind-condition-conditional-cleanup-form
+             ,(nelisp-aot-compiler--aot-unwind-condition-conditional-cleanup-form
                unwind-form nil nil landing-map clauses landing-forms))
            env fenv defuns)))
        (conditional-handler
@@ -7212,7 +7212,7 @@ Doc 129.8 work."
                (handler (plist-get conditional-handler :handler))
                (conditional-form (plist-get conditional-handler :form))
                (handler-body
-                (nelisp-phase47-compiler--body->form
+                (nelisp-aot-compiler--body->form
                  (cdr handler)))
                (handled-form
                 (if var
@@ -7222,22 +7222,22 @@ Doc 129.8 work."
                   `(seq
                     (aot-landing-error out)
                     ,handler-body)))
-               (value-slot (nelisp-phase47-compiler--gensym
+               (value-slot (nelisp-aot-compiler--gensym
                             "aot-condition-value"))
                (leaf-count
-                (nelisp-phase47-compiler--aot-condition-tree-leaf-count
+                (nelisp-aot-compiler--aot-condition-tree-leaf-count
                  conditional-form))
                (landing-label
                 (when (= leaf-count 1)
-                  (nelisp-phase47-compiler--gensym
+                  (nelisp-aot-compiler--gensym
                    "aot-condition-landing"))))
-          (nelisp-phase47-compiler--parse-value
+          (nelisp-aot-compiler--parse-value
            (let ((body-form
                   `(if ,(nth 1 conditional-form)
-                       ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+                       ,(nelisp-aot-compiler--aot-condition-landing-branch-form
                          tag (nth 2 conditional-form) landing-label
                          handled-form value-slot leaf-count)
-                     ,(nelisp-phase47-compiler--aot-condition-landing-branch-form
+                     ,(nelisp-aot-compiler--aot-condition-landing-branch-form
                        tag (nth 3 conditional-form) landing-label
                        handled-form value-slot leaf-count))))
              (if landing-label
@@ -7250,11 +7250,11 @@ Doc 129.8 work."
                body-form))
            env fenv defuns)))
        (t
-        (let ((value-slot (nelisp-phase47-compiler--gensym
+        (let ((value-slot (nelisp-aot-compiler--gensym
                            "aot-condition-value"))
               (selectors
-               (nelisp-phase47-compiler--aot-condition-case-selectors sexp)))
-          (nelisp-phase47-compiler--parse-value
+               (nelisp-aot-compiler--aot-condition-case-selectors sexp)))
+          (nelisp-aot-compiler--parse-value
            `(seq
              ,@(mapcar (lambda (selector)
                          `(aot-push-condition ',selector 0 0))
@@ -7266,88 +7266,88 @@ Doc 129.8 work."
                 ,value-slot)))
            env fenv defuns)))))))
 
-(defun nelisp-phase47-compiler--parse-aot-unwind-protect-normal-exit
+(defun nelisp-aot-compiler--parse-aot-unwind-protect-normal-exit
     (sexp env fenv defuns)
   "Lower source `(unwind-protect BODY CLEANUP...)'.
 The MVP evaluates BODY, saves its result in a runtime Sexp slot, runs
 CLEANUP forms, then returns the saved BODY result.  Non-local exits
 crossing the protected body still require cleanup landing-pad lowering."
   (unless (>= (length sexp) 2)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :aot-unwind-protect-arity sexp)))
   (let* ((body (nth 1 sexp))
          (body-split
-          (nelisp-phase47-compiler--aot-protected-body-split body))
+          (nelisp-aot-compiler--aot-protected-body-split body))
          (body-tail (plist-get body-split :tail))
          (body-tree
-          (nelisp-phase47-compiler--aot-branch-tree-form body-tail))
+          (nelisp-aot-compiler--aot-branch-tree-form body-tail))
          (cleanups (nthcdr 2 sexp)))
     (let ((direct-throw
-           (nelisp-phase47-compiler--aot-direct-quoted-throw-form body-tail))
+           (nelisp-aot-compiler--aot-direct-quoted-throw-form body-tail))
           (direct-condition
-           (nelisp-phase47-compiler--aot-direct-condition-tag body-tail))
+           (nelisp-aot-compiler--aot-direct-condition-tag body-tail))
           (conditional-throw
            (and (consp body-tree)
                 (eq (car body-tree) 'if)
-                (nelisp-phase47-compiler--aot-conditional-quoted-throw-form
+                (nelisp-aot-compiler--aot-conditional-quoted-throw-form
                  body-tree)))
           (conditional-condition
            (and (consp body-tree)
                 (eq (car body-tree) 'if)
                 (= (length body-tree) 4)
-                (nelisp-phase47-compiler--aot-condition-tree-tag
+                (nelisp-aot-compiler--aot-condition-tree-tag
                  body-tree)
                 body-tree))
          (standalone-cleanup-tree
-           (and (nelisp-phase47-compiler--aot-standalone-cleanup-tree-form-p
+           (and (nelisp-aot-compiler--aot-standalone-cleanup-tree-form-p
                  body-tree)
                 body-tree))
           (cleanup-nonlocal
-           (nelisp-phase47-compiler--aot-cleanup-sequence-nonlocal-p
+           (nelisp-aot-compiler--aot-cleanup-sequence-nonlocal-p
             cleanups)))
-      (when (and (not nelisp-phase47-compiler--allow-external-user-calls)
+      (when (and (not nelisp-aot-compiler--allow-external-user-calls)
                  (or (and (not direct-throw)
                           (not direct-condition)
                           (not conditional-throw)
                           (not conditional-condition)
                           (not standalone-cleanup-tree)
                           (or (not body-split)
-                              (nelisp-phase47-compiler--aot-nonlocal-source-form-p
+                              (nelisp-aot-compiler--aot-nonlocal-source-form-p
                                body-tail)))
-                     (not (nelisp-phase47-compiler--aot-cleanup-sequence-safe-p
+                     (not (nelisp-aot-compiler--aot-cleanup-sequence-safe-p
                            cleanups))))
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :aot-unwind-protect-nonlocal-form sexp)))
-      (let ((value-slot (nelisp-phase47-compiler--gensym
+      (let ((value-slot (nelisp-aot-compiler--gensym
                          "aot-unwind-value")))
-        (nelisp-phase47-compiler--parse-value
+        (nelisp-aot-compiler--parse-value
          (cond
           (direct-throw
            (let ((cleanup-label
-                  (nelisp-phase47-compiler--gensym
+                  (nelisp-aot-compiler--gensym
                    "aot-unwind-cleanup")))
              `(seq
                (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-               ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+               ,(nelisp-aot-compiler--aot-protected-body-with-prefix
                  body-split
                  `(let (((,value-slot :type sexp) ,(nth 2 direct-throw)))
                     (seq
                      (throw ,(nth 1 direct-throw) ,value-slot)
                      (aot-landing-label ,cleanup-label
-                       ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                       ,(nelisp-aot-compiler--aot-cleanup-body-form
                          cleanups
                          '(aot-landing-jump out)))))))))
           (direct-condition
            (let ((cleanup-label
-                  (nelisp-phase47-compiler--gensym
+                  (nelisp-aot-compiler--gensym
                    "aot-unwind-cleanup")))
              `(seq
                (aot-push-unwind 0 ',cleanup-label (aot-current-sp))
-               ,(nelisp-phase47-compiler--aot-protected-body-with-prefix
+               ,(nelisp-aot-compiler--aot-protected-body-with-prefix
                  body-split
                  body-tail)
                (aot-landing-label ,cleanup-label
-                 ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                 ,(nelisp-aot-compiler--aot-cleanup-body-form
                    cleanups
                    '(aot-landing-jump out))))))
           (conditional-throw
@@ -7355,12 +7355,12 @@ crossing the protected body still require cleanup landing-pad lowering."
                ((branch-form
                  (branch)
                  (let ((branch-throw
-                        (nelisp-phase47-compiler--aot-direct-quoted-throw-form
+                        (nelisp-aot-compiler--aot-direct-quoted-throw-form
                          branch)))
                    (cond
                     (branch-throw
                      (let ((cleanup-label
-                            (nelisp-phase47-compiler--gensym
+                            (nelisp-aot-compiler--gensym
                              "aot-unwind-cleanup")))
                        `(seq
                          (aot-push-unwind
@@ -7371,20 +7371,20 @@ crossing the protected body still require cleanup landing-pad lowering."
                             (throw ,(nth 1 branch-throw)
                                    ,value-slot)
                             (aot-landing-label ,cleanup-label
-                              ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                              ,(nelisp-aot-compiler--aot-cleanup-body-form
                                 cleanups
                                 '(aot-landing-jump out))))))))
-                    ((nelisp-phase47-compiler--aot-quoted-throw-tree-form-p
+                    ((nelisp-aot-compiler--aot-quoted-throw-tree-form-p
                       branch)
                      `(if ,(nth 1 branch)
                           ,(branch-form (nth 2 branch))
                         ,(branch-form (nth 3 branch))))
                     (t
                      `(let (((,value-slot :type sexp) ,branch))
-                        ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                        ,(nelisp-aot-compiler--aot-cleanup-body-form
                           cleanups
                           value-slot)))))))
-             (nelisp-phase47-compiler--aot-protected-body-with-prefix
+             (nelisp-aot-compiler--aot-protected-body-with-prefix
               body-split
               `(if ,(nth 1 conditional-throw)
                    ,(branch-form (nth 2 conditional-throw))
@@ -7394,40 +7394,40 @@ crossing the protected body still require cleanup landing-pad lowering."
                ((branch-form
                  (branch)
                  (cond
-                  ((nelisp-phase47-compiler--aot-direct-condition-tag branch)
+                  ((nelisp-aot-compiler--aot-direct-condition-tag branch)
                    (let ((cleanup-label
-                          (nelisp-phase47-compiler--gensym
+                          (nelisp-aot-compiler--gensym
                            "aot-unwind-cleanup")))
                      `(seq
                        (aot-push-unwind
                         0 ',cleanup-label (aot-current-sp))
                        ,branch
                        (aot-landing-label ,cleanup-label
-                         ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                         ,(nelisp-aot-compiler--aot-cleanup-body-form
                            cleanups
                            '(aot-landing-jump out))))))
-                  ((nelisp-phase47-compiler--aot-condition-tree-tag branch)
+                  ((nelisp-aot-compiler--aot-condition-tree-tag branch)
                    `(if ,(nth 1 branch)
                         ,(branch-form (nth 2 branch))
                       ,(branch-form (nth 3 branch))))
                   (t
                    `(let (((,value-slot :type sexp) ,branch))
-                      ,(nelisp-phase47-compiler--aot-cleanup-body-form
+                      ,(nelisp-aot-compiler--aot-cleanup-body-form
                         cleanups
                         value-slot))))))
-             (nelisp-phase47-compiler--aot-protected-body-with-prefix
+             (nelisp-aot-compiler--aot-protected-body-with-prefix
               body-split
               `(if ,(nth 1 conditional-condition)
                    ,(branch-form (nth 2 conditional-condition))
                  ,(branch-form (nth 3 conditional-condition))))))
           (standalone-cleanup-tree
-           (nelisp-phase47-compiler--aot-unwind-standalone-cleanup-branch-form
-            (nelisp-phase47-compiler--aot-protected-body-with-prefix
+           (nelisp-aot-compiler--aot-unwind-standalone-cleanup-branch-form
+            (nelisp-aot-compiler--aot-protected-body-with-prefix
              body-split standalone-cleanup-tree)
             cleanups value-slot))
           (cleanup-nonlocal
            `(let (((,value-slot :type sexp) ,body))
-              ,(nelisp-phase47-compiler--aot-cleanup-body-form
+              ,(nelisp-aot-compiler--aot-cleanup-body-form
                 cleanups
                 value-slot)))
           (t
@@ -7437,7 +7437,7 @@ crossing the protected body still require cleanup landing-pad lowering."
                ,value-slot))))
          env fenv defuns)))))
 
-(defun nelisp-phase47-compiler--normalize-defun-params (param-forms sexp)
+(defun nelisp-aot-compiler--normalize-defun-params (param-forms sexp)
   "Normalize PARAM-FORMS, accepting `&optional' and a single `&rest' marker.
 The returned plist contains `:params' with the marker removed,
 `:required-count', `:optional-count', `:fixed-count', and `:rest-p'.
@@ -7445,7 +7445,7 @@ The current native ABI still receives the rest list as one ordinary
 final argument; call-site rest-list construction is handled separately
 for direct calls."
   (unless (listp param-forms)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :defun-params-not-list param-forms)))
   (let ((required nil)
         (optional nil)
@@ -7458,7 +7458,7 @@ for direct calls."
         (cond
          ((eq param '&optional)
           (when optional-p
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :defun-optional-param-shape sexp)))
           (setq optional-p t))
          ((eq param '&rest)
@@ -7473,7 +7473,7 @@ for direct calls."
           (setq rest-p t)
           (unless (and (= (length tail) 2)
                        (not (memq (cadr tail) '(&optional &rest))))
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :defun-rest-param-shape sexp)))
           (setq rest-form (cadr tail)))
       (setq rest-p nil))
@@ -7488,9 +7488,9 @@ for direct calls."
             :fixed-count (length fixed)
             :rest-p rest-p))))
 
-(defun nelisp-phase47-compiler--defun-signature (param-forms sexp)
+(defun nelisp-aot-compiler--defun-signature (param-forms sexp)
   "Return call-site signature metadata for DEFUN PARAM-FORMS."
-  (let* ((norm (nelisp-phase47-compiler--normalize-defun-params
+  (let* ((norm (nelisp-aot-compiler--normalize-defun-params
                 param-forms sexp))
          (params (plist-get norm :params)))
     (if (plist-get norm :rest-p)
@@ -7507,23 +7507,23 @@ for direct calls."
                 :rest-p nil)
         (length params)))))
 
-(defun nelisp-phase47-compiler--defun-signature-arity (signature)
+(defun nelisp-aot-compiler--defun-signature-arity (signature)
   "Return the ABI arity for SIGNATURE."
   (if (integerp signature)
       signature
     (plist-get signature :arity)))
 
-(defun nelisp-phase47-compiler--defun-signature-rest-p (signature)
+(defun nelisp-aot-compiler--defun-signature-rest-p (signature)
   "Return non-nil when SIGNATURE describes a rest-param defun."
   (and (consp signature) (plist-get signature :rest-p)))
 
-(defun nelisp-phase47-compiler--defun-signature-fixed-count (signature)
+(defun nelisp-aot-compiler--defun-signature-fixed-count (signature)
   "Return the source fixed argument count for SIGNATURE."
   (if (integerp signature)
       signature
     (plist-get signature :fixed-count)))
 
-(defun nelisp-phase47-compiler--defun-signature-min-count (signature)
+(defun nelisp-aot-compiler--defun-signature-min-count (signature)
   "Return the minimum source argument count for SIGNATURE."
   (if (integerp signature)
       signature
@@ -7531,7 +7531,7 @@ for direct calls."
         (plist-get signature :fixed-count)
         (plist-get signature :arity))))
 
-(defun nelisp-phase47-compiler--parse-value (sexp env fenv defuns)
+(defun nelisp-aot-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
   (:kind imm   :value N)
@@ -7552,26 +7552,26 @@ nil at top level), DEFUNS is the alist of already-defined
 functions `((NAME . ARITY) ...)'."
   (cond
 	   ;; Compile-time foldable -> immediate.
-	   ((nelisp-phase47-compiler--int-foldable-p sexp env fenv)
-	    (nelisp-phase47-compiler--make-ir 'imm
-	          :value (nelisp-phase47-compiler--fold-int sexp env)))
+	   ((nelisp-aot-compiler--int-foldable-p sexp env fenv)
+	    (nelisp-aot-compiler--make-ir 'imm
+	          :value (nelisp-aot-compiler--fold-int sexp env)))
 	   ;; Object compatibility: common timeout math uses float literals
 	   ;; such as 1000.0 and 0.005.  Keep these in the integer IR surface
 	   ;; until full boxed float literals are wired.
-	   ((and nelisp-phase47-compiler--allow-external-user-calls
+	   ((and nelisp-aot-compiler--allow-external-user-calls
 	         (floatp sexp))
-	    (nelisp-phase47-compiler--make-ir 'imm
+	    (nelisp-aot-compiler--make-ir 'imm
 	          :value (truncate sexp)))
 	   ;; Doc 129.7AU: boxed AOT helpers may need literal Sexp values in
    ;; ordinary value position, e.g. `(kbd "RET")' or quoted symbols
    ;; passed through dynamic top-level initializers.
-   ((nelisp-phase47-compiler--runtime-sexp-literal-value sexp)
+   ((nelisp-aot-compiler--runtime-sexp-literal-value sexp)
     (let ((lowered
-           (nelisp-phase47-compiler--runtime-sexp-literal-form sexp fenv)))
+           (nelisp-aot-compiler--runtime-sexp-literal-form sexp fenv)))
       (unless lowered
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :aot-literal-unsupported sexp)))
-      (nelisp-phase47-compiler--parse-value lowered env fenv defuns)))
+      (nelisp-aot-compiler--parse-value lowered env fenv defuns)))
    ;; Parameter reference.
    ((symbolp sexp)
     (let ((pcell (assq sexp fenv)))
@@ -7583,30 +7583,30 @@ functions `((NAME . ARITY) ...)'."
           ;; stable copy) and the reg class (= gp or f64, picks the
           ;; load instruction MOV vs MOVSD).
           (let ((info (cdr pcell)))
-            (nelisp-phase47-compiler--make-ir 'ref :var sexp
+            (nelisp-aot-compiler--make-ir 'ref :var sexp
                   :reg (plist-get info :reg)
                   :slot (plist-get info :slot)
                   :class (or (plist-get info :class) 'gp)
                   :root-p (plist-get info :root-p)))
-        (if (and nelisp-phase47-compiler--allow-external-user-calls
-                 (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'out)
-                 (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'mirror)
-                 (nelisp-phase47-compiler--fenv-has-symbol-p fenv 'frames)
-                 (or (nelisp-phase47-compiler--fenv-has-symbol-p
+        (if (and nelisp-aot-compiler--allow-external-user-calls
+                 (nelisp-aot-compiler--fenv-has-symbol-p fenv 'out)
+                 (nelisp-aot-compiler--fenv-has-symbol-p fenv 'mirror)
+                 (nelisp-aot-compiler--fenv-has-symbol-p fenv 'frames)
+                 (or (nelisp-aot-compiler--fenv-has-symbol-p
                       fenv 'name-slot)
-                     (nelisp-phase47-compiler--fenv-has-symbol-p
+                     (nelisp-aot-compiler--fenv-has-symbol-p
                       fenv 'name_slot)))
             (let ((name-slot
-                   (nelisp-phase47-compiler--aot-name-slot-symbol
+                   (nelisp-aot-compiler--aot-name-slot-symbol
                     fenv sexp)))
-              (nelisp-phase47-compiler--parse-value
+              (nelisp-aot-compiler--parse-value
                `(seq
                  (sexp-write-symbol-lit ,name-slot ,(symbol-name sexp))
                  (extern-call nelisp_env_lookup_value
                               mirror frames ,name-slot out)
                  out)
                env fenv defuns))
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :free-symbol sexp
                         :env-keys (mapcar #'car env)
                         :params (mapcar #'car fenv)))))))
@@ -7635,9 +7635,9 @@ functions `((NAME . ARITY) ...)'."
         (let* ((var (car pairs))
                (pcell (assq var fenv))
                (slot (plist-get (cdr pcell) :slot))
-               (value-ir (nelisp-phase47-compiler--parse-value
+               (value-ir (nelisp-aot-compiler--parse-value
                           (cadr pairs) env fenv defuns)))
-          (push (nelisp-phase47-compiler--make-ir 'setq-local
+          (push (nelisp-aot-compiler--make-ir 'setq-local
                        :var var
                        :slot slot
                        :value-ir value-ir)
@@ -7646,15 +7646,15 @@ functions `((NAME . ARITY) ...)'."
       (let ((ordered (nreverse forms)))
         (if (= (length ordered) 1)
             (car ordered)
-          (nelisp-phase47-compiler--make-ir 'value-seq
+          (nelisp-aot-compiler--make-ir 'value-seq
                 :forms ordered)))))
    ;; Doc 129.7AX: object-mode global/special `setq' in value context.
    ;; Local frame-slot updates are handled above.  Remaining symbol
    ;; writes go through the env value-cell bridge and return the last
    ;; assigned boxed value, matching Elisp `setq' result shape.
    ((and (consp sexp) (memq (car sexp) '(setq setq-default))
-         nelisp-phase47-compiler--allow-external-user-calls
-         (nelisp-phase47-compiler--aot-builtin-boundary-available-p fenv)
+         nelisp-aot-compiler--allow-external-user-calls
+         (nelisp-aot-compiler--aot-builtin-boundary-available-p fenv)
          (let ((pairs (cdr sexp))
                (ok (consp (cdr sexp))))
            (while (and ok pairs)
@@ -7663,17 +7663,17 @@ functions `((NAME . ARITY) ...)'."
              (setq pairs (cddr pairs)))
            ok))
     (let ((pairs (cdr sexp))
-          (name-slot (nelisp-phase47-compiler--aot-name-slot-symbol
+          (name-slot (nelisp-aot-compiler--aot-name-slot-symbol
                       fenv sexp))
           (forms nil))
       (while pairs
         (let* ((var (car pairs))
                (rhs (cadr pairs))
                (value-slot
-                (nelisp-phase47-compiler--gensym "aot-setq-value")))
+                (nelisp-aot-compiler--gensym "aot-setq-value")))
           (push
            `(let (((,value-slot :type sexp)
-                   ,(nelisp-phase47-compiler--runtime-boxed-sexp-form
+                   ,(nelisp-aot-compiler--runtime-boxed-sexp-form
                      rhs fenv)))
               (seq
                (sexp-write-symbol-lit ,name-slot ,(symbol-name var))
@@ -7682,7 +7682,7 @@ functions `((NAME . ARITY) ...)'."
                ,value-slot))
            forms))
         (setq pairs (cddr pairs)))
-      (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--parse-value
        (cons 'seq (nreverse forms))
        env fenv defuns)))
    ;; Common vararg arithmetic forms from user elisp.  The backend IR is
@@ -7693,11 +7693,11 @@ functions `((NAME . ARITY) ...)'."
           (args (cdr sexp)))
       (cond
        ((null args)
-        (nelisp-phase47-compiler--parse-value
+        (nelisp-aot-compiler--parse-value
          (if (eq op '*) 1 0)
          env fenv defuns))
        ((null (cdr args))
-        (nelisp-phase47-compiler--parse-value
+        (nelisp-aot-compiler--parse-value
          (pcase op
            ('- `(- 0 ,(car args)))
            (_ (car args)))
@@ -7706,20 +7706,20 @@ functions `((NAME . ARITY) ...)'."
         (let ((tree (list op (car args) (cadr args))))
           (dolist (arg (cddr args))
             (setq tree (list op tree arg)))
-          (nelisp-phase47-compiler--parse-value tree env fenv defuns))))))
+          (nelisp-aot-compiler--parse-value tree env fenv defuns))))))
    ;; Arithmetic with at least one non-constant operand.  Doc 100
    ;; §100.D extends the op set with 3 bitwise binops (logior /
    ;; logand / logxor) for the `nl_jit_arith_log*' swap; they share
    ;; the same MR-form emit shape so no new IR kind is needed.
    ((and (consp sexp) (memq (car sexp) '(+ - * / mod logior logand logxor)))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :arith-arity (car sexp) sexp)))
-    (nelisp-phase47-compiler--make-ir 'arith
+    (nelisp-aot-compiler--make-ir 'arith
           :op (car sexp)
-          :a (nelisp-phase47-compiler--parse-value
+          :a (nelisp-aot-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
-          :b (nelisp-phase47-compiler--parse-value
+          :b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
    ;; Doc 110 §110.E.1 f64 arithmetic — flat binop form only
    ;; (`f64-add' / `f64-sub' / `f64-mul' / `f64-div').  Each arm
@@ -7729,13 +7729,13 @@ functions `((NAME . ARITY) ...)'."
    ;; = f64; produced in xmm0 by `--emit-f64-binop'.
    ((and (consp sexp) (memq (car sexp) '(f64-add f64-sub f64-mul f64-div)))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :f64-binop-arity (car sexp) sexp)))
-    (nelisp-phase47-compiler--make-ir 'f64-binop
+    (nelisp-aot-compiler--make-ir 'f64-binop
           :op (car sexp)
-          :a (nelisp-phase47-compiler--parse-value
+          :a (nelisp-aot-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
-          :b (nelisp-phase47-compiler--parse-value
+          :b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
    ;; Doc 110 §110.C.2.a — flat f64 ordered comparison (NaN →
    ;; false matching Rust's `<' / `>' / `<=' / `>=' semantics).
@@ -7749,13 +7749,13 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (memq (car sexp) '(f64-lt f64-gt f64-le f64-ge f64-eq-eps)))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :f64-cmp-arity (car sexp) sexp)))
-    (nelisp-phase47-compiler--make-ir 'f64-cmp
+    (nelisp-aot-compiler--make-ir 'f64-cmp
           :op (car sexp)
-          :a (nelisp-phase47-compiler--parse-value
+          :a (nelisp-aot-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
-          :b (nelisp-phase47-compiler--parse-value
+          :b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
    ;; Doc 100 §100.D shifts — variable count goes through CL, so the
    ;; emit shape differs from `arith' (= an extra mov rcx, r10 before
@@ -7766,17 +7766,17 @@ functions `((NAME . ARITY) ...)'."
    ;; so unsigned-right (`shr') is not required.
    ((and (consp sexp) (memq (car sexp) '(shl sar)))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :shift-arity (car sexp) sexp)))
-    (nelisp-phase47-compiler--make-ir 'shift
+    (nelisp-aot-compiler--make-ir 'shift
           :op (car sexp)
-          :a (nelisp-phase47-compiler--parse-value
+          :a (nelisp-aot-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
-          :b (nelisp-phase47-compiler--parse-value
+          :b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
 	   ;; Comparison op (= < > <= >= =).
 	   ((and (consp sexp)
-	         (memq (car sexp) nelisp-phase47-compiler--cmp-ops)
+	         (memq (car sexp) nelisp-aot-compiler--cmp-ops)
 	         (> (length sexp) 3))
 	    (let* ((op (car sexp))
 	           (args (cdr sexp))
@@ -7784,95 +7784,95 @@ functions `((NAME . ARITY) ...)'."
 	      (while (cdr args)
 	        (push (list op (car args) (cadr args)) pairs)
 	        (setq args (cdr args)))
-	      (nelisp-phase47-compiler--parse-value
+	      (nelisp-aot-compiler--parse-value
 	       (cons 'and (nreverse pairs))
 	       env fenv defuns)))
-	   ((and (consp sexp) (memq (car sexp) nelisp-phase47-compiler--cmp-ops))
+	   ((and (consp sexp) (memq (car sexp) nelisp-aot-compiler--cmp-ops))
 	    (unless (= (length sexp) 3)
-	      (signal 'nelisp-phase47-compiler-error
+	      (signal 'nelisp-aot-compiler-error
 	              (list :cmp-arity (car sexp) sexp)))
-    (nelisp-phase47-compiler--make-ir 'cmp
+    (nelisp-aot-compiler--make-ir 'cmp
           :op (car sexp)
-          :a (nelisp-phase47-compiler--parse-value
+          :a (nelisp-aot-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
-          :b (nelisp-phase47-compiler--parse-value
+          :b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
    ;; (if TEST THEN ELSE) — control-flow value form.
    ((and (consp sexp) (eq (car sexp) 'if))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :if-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'if
-          :id (nelisp-phase47-compiler--gensym "if")
-          :test (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'if
+          :id (nelisp-aot-compiler--gensym "if")
+          :test (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :then (nelisp-phase47-compiler--parse-value
+          :then (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)
-          :else (nelisp-phase47-compiler--parse-value
+          :else (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)))
    ;; (while TEST BODY...) — returns 0 after loop exit.
    ((and (consp sexp) (eq (car sexp) 'while))
     (unless (>= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :while-arity sexp)))
-    (let ((test (nelisp-phase47-compiler--parse-value
+    (let ((test (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns))
           ;; Multiple body forms wrap as an implicit seq of value
           ;; forms; each result is discarded except the last (=
           ;; rax) which `while' itself overwrites with 0 on exit.
           (body-forms (mapcar
                        (lambda (e)
-                         (nelisp-phase47-compiler--parse-value
+                         (nelisp-aot-compiler--parse-value
                           e env fenv defuns))
                        (cddr sexp))))
-      (nelisp-phase47-compiler--make-ir 'while
-            :id (nelisp-phase47-compiler--gensym "while")
+      (nelisp-aot-compiler--make-ir 'while
+            :id (nelisp-aot-compiler--gensym "while")
             :test test
             :body body-forms)))
    ;; `(ignore ...)' is vararg and only evaluates its arguments for
    ;; side-effects before returning nil.
    ((and (consp sexp) (eq (car sexp) 'ignore)
          (not (assq 'ignore defuns)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      (cons 'seq (append (cdr sexp) (list 0)))
      env fenv defuns))
    ;; (cond (PRED1 BODY1) ... (t BODY-N)).
    ((and (consp sexp) (eq (car sexp) 'cond))
     (let ((raw-clauses (cdr sexp)))
       (when (null raw-clauses)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :cond-empty sexp)))
       (let ((clauses
              (mapcar
               (lambda (cl)
                 (unless (and (consp cl) (= (length cl) 2))
-                  (signal 'nelisp-phase47-compiler-error
+                  (signal 'nelisp-aot-compiler-error
                           (list :cond-clause-shape cl)))
                 (let ((pred (car cl))
                       (body (cadr cl)))
                   (cons
                    (if (eq pred t)
                        'always
-                     (nelisp-phase47-compiler--parse-value
+                     (nelisp-aot-compiler--parse-value
                       pred env fenv defuns))
-                   (nelisp-phase47-compiler--parse-value
+                   (nelisp-aot-compiler--parse-value
                     body env fenv defuns))))
               raw-clauses)))
-        (nelisp-phase47-compiler--make-ir 'cond
-              :id (nelisp-phase47-compiler--gensym "cond")
+        (nelisp-aot-compiler--make-ir 'cond
+              :id (nelisp-aot-compiler--gensym "cond")
               :clauses clauses))))
    ;; (and EXPR ...) / (or EXPR ...) short-circuit.
    ((and (consp sexp) (memq (car sexp) '(and or)))
     (let ((op (car sexp))
           (args (cdr sexp)))
       (when (null args)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :logic-empty sexp)))
-      (nelisp-phase47-compiler--make-ir 'logic
+      (nelisp-aot-compiler--make-ir 'logic
             :op op
-            :id (nelisp-phase47-compiler--gensym (symbol-name op))
+            :id (nelisp-aot-compiler--gensym (symbol-name op))
             :forms (mapcar (lambda (e)
-                             (nelisp-phase47-compiler--parse-value
+                             (nelisp-aot-compiler--parse-value
                               e env fenv defuns))
                            args))))
    ;; Doc 129.1: value-context sequence, produced by macro-expanded
@@ -7882,56 +7882,56 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp) (eq (car sexp) 'seq))
     (let ((children (cdr sexp)))
       (when (null children)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :empty-value-seq sexp)))
-      (nelisp-phase47-compiler--make-ir 'value-seq
+      (nelisp-aot-compiler--make-ir 'value-seq
             :forms (mapcar (lambda (e)
-                             (nelisp-phase47-compiler--parse-value
+                             (nelisp-aot-compiler--parse-value
                               e env fenv defuns))
                            children))))
    ;; Doc 129.7X: escaping literal lambda values materialize as
    ;; canonical runtime heap closures, not synthetic defun symbols.
    ((and (consp sexp) (eq (car sexp) 'aot-closure-lambda))
-    (nelisp-phase47-compiler--parse-aot-closure-lambda
+    (nelisp-aot-compiler--parse-aot-closure-lambda
      sexp env fenv defuns))
    ;; Doc 129.7AB: materialize a runtime capture cell before passing it
    ;; into a heap closure descriptor.
    ((and (consp sexp) (eq (car sexp) 'aot-capture-cell))
-    (nelisp-phase47-compiler--parse-aot-capture-cell
+    (nelisp-aot-compiler--parse-aot-capture-cell
      sexp env fenv defuns))
    ;; Doc 129.7AG: explicit compiler-side access to the hash-FRAMES
    ;; slot ABI used by native object frame writers.
    ((and (consp sexp) (eq (car sexp) 'aot-frame-slot-ref))
-    (nelisp-phase47-compiler--parse-aot-frame-slot-ref
+    (nelisp-aot-compiler--parse-aot-frame-slot-ref
      sexp env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'aot-frame-slot-set))
-    (nelisp-phase47-compiler--parse-aot-frame-slot-set
+    (nelisp-aot-compiler--parse-aot-frame-slot-set
      sexp env fenv defuns))
    ;; Doc 129.8L: internal bridge for source `catch' landing values.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-value))
-    (nelisp-phase47-compiler--parse-aot-landing-value
+    (nelisp-aot-compiler--parse-aot-landing-value
      sexp env fenv defuns))
    ;; Doc 129.8M: internal bridge for source `condition-case' landing
    ;; condition data.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-error))
-    (nelisp-phase47-compiler--parse-aot-landing-error
+    (nelisp-aot-compiler--parse-aot-landing-error
      sexp env fenv defuns))
    ;; Doc 129.8S: internal bridge for preparing native stack restore and
    ;; branch-to-landing-pad state from a landing descriptor.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-jump))
-    (nelisp-phase47-compiler--parse-aot-landing-jump
+    (nelisp-aot-compiler--parse-aot-landing-jump
      sexp env fenv defuns))
    ;; Doc 129.8T: backend-native landing labels and stack-restoring
    ;; machine jumps.  These are internal forms used by source exception
    ;; lowering once landing descriptors carry concrete labels.
    ((and (consp sexp) (eq (car sexp) 'aot-landing-label))
-    (nelisp-phase47-compiler--parse-aot-landing-label
+    (nelisp-aot-compiler--parse-aot-landing-label
      sexp env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'aot-machine-landing-jump))
-    (nelisp-phase47-compiler--parse-aot-machine-landing-jump
+    (nelisp-aot-compiler--parse-aot-machine-landing-jump
      sexp env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'aot-current-sp))
-    (nelisp-phase47-compiler--parse-aot-current-sp sexp))
+    (nelisp-aot-compiler--parse-aot-current-sp sexp))
    ;; Doc 129.6AT (fix) — `(not RAW-BOOL)' must lower to a raw boolean
    ;; negation, never to the builtin1 dispatcher.  When the AOT builtin
    ;; boundary IS available the boundary-free tag-predicate branch below
@@ -7953,10 +7953,10 @@ functions `((NAME . ARITY) ...)'."
          (eq (car sexp) 'not)
          (= (length sexp) 2)
          (not (assq 'not defuns))
-         (nelisp-phase47-compiler--aot-builtin-boundary-available-p fenv)
-         (nelisp-phase47-compiler--aot-boundary-raw-bool-form-p
+         (nelisp-aot-compiler--aot-builtin-boundary-available-p fenv)
+         (nelisp-aot-compiler--aot-boundary-raw-bool-form-p
           (cadr sexp)))
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      `(= ,(cadr sexp) 0) env fenv defuns))
    ;; Doc 129.6AT — boundary-free tag predicate lowering.  Ordinary
    ;; helper functions in user .el often call `(consp x)' / `(not ...)'
@@ -7964,16 +7964,16 @@ functions `((NAME . ARITY) ...)'."
    ;; simple predicates can lower directly to `sexp-tag' comparisons.
    ((and (consp sexp)
          (memq (car sexp)
-               nelisp-phase47-compiler--aot-direct-tag-predicate-symbols)
+               nelisp-aot-compiler--aot-direct-tag-predicate-symbols)
          (not (assq (car sexp) defuns))
-         (not (nelisp-phase47-compiler--aot-builtin-boundary-available-p
+         (not (nelisp-aot-compiler--aot-builtin-boundary-available-p
                fenv)))
     (let ((lowered
-           (nelisp-phase47-compiler--aot-direct-tag-predicate-form sexp)))
+           (nelisp-aot-compiler--aot-direct-tag-predicate-form sexp)))
       (unless lowered
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :aot-direct-predicate-shape sexp)))
-      (nelisp-phase47-compiler--parse-value lowered env fenv defuns)))
+      (nelisp-aot-compiler--parse-value lowered env fenv defuns)))
    ;; Doc 129.6D — first direct user-call lowering for one-argument
    ;; builtins.  The surrounding defun must expose the boxed-boundary
    ;; slots used by the 129.6B helper, so ordinary `(symbol-name arg)'
@@ -7981,14 +7981,14 @@ functions `((NAME . ARITY) ...)'."
    ;; form.
    ((and (consp sexp)
          (memq (car sexp)
-               nelisp-phase47-compiler--aot-builtin1-delegation-symbols)
+               nelisp-aot-compiler--aot-builtin1-delegation-symbols)
          (not (assq (car sexp) defuns))
          (or (= (length sexp) 2)
-             (not nelisp-phase47-compiler--allow-external-user-calls))
-         (or (not nelisp-phase47-compiler--allow-external-user-calls)
-             (nelisp-phase47-compiler--aot-builtin-boundary-available-p
+             (not nelisp-aot-compiler--allow-external-user-calls))
+         (or (not nelisp-aot-compiler--allow-external-user-calls)
+             (nelisp-aot-compiler--aot-builtin-boundary-available-p
               fenv)))
-    (nelisp-phase47-compiler--parse-aot-builtin1-call
+    (nelisp-aot-compiler--parse-aot-builtin1-call
      sexp env fenv defuns))
    ;; Doc 129.6F — direct vararg builtin calls lower to the calln
    ;; dispatcher.  This uses the same boundary/name-slot convention as
@@ -7996,12 +7996,12 @@ functions `((NAME . ARITY) ...)'."
    ;; fixed ABI prefix plus user args exceeds six GP arguments.
    ((and (consp sexp)
          (memq (car sexp)
-               nelisp-phase47-compiler--aot-builtinn-delegation-symbols)
+               nelisp-aot-compiler--aot-builtinn-delegation-symbols)
          (not (assq (car sexp) defuns))
-         (or (not nelisp-phase47-compiler--allow-external-user-calls)
-             (nelisp-phase47-compiler--aot-builtin-boundary-available-p
+         (or (not nelisp-aot-compiler--allow-external-user-calls)
+             (nelisp-aot-compiler--aot-builtin-boundary-available-p
               fenv)))
-    (nelisp-phase47-compiler--parse-aot-builtinn-call
+    (nelisp-aot-compiler--parse-aot-builtinn-call
      sexp env fenv defuns))
    ;; Doc 129.7A — first higher-order dispatch surface.  This does not
    ;; build closures yet; it delegates an already-materialized function
@@ -8010,31 +8010,31 @@ functions `((NAME . ARITY) ...)'."
          (eq (car sexp) 'funcall)
          (not (assq 'funcall defuns))
          (or (>= (length sexp) 3)
-             (not nelisp-phase47-compiler--allow-external-user-calls))
-         (or (not nelisp-phase47-compiler--allow-external-user-calls)
-             (nelisp-phase47-compiler--aot-funcall-boundary-available-p
+             (not nelisp-aot-compiler--allow-external-user-calls))
+         (or (not nelisp-aot-compiler--allow-external-user-calls)
+             (nelisp-aot-compiler--aot-funcall-boundary-available-p
               fenv)))
     (pcase (length sexp)
-      (3 (nelisp-phase47-compiler--parse-aot-funcall1
+      (3 (nelisp-aot-compiler--parse-aot-funcall1
           sexp env fenv defuns))
-      (4 (nelisp-phase47-compiler--parse-aot-funcall2
+      (4 (nelisp-aot-compiler--parse-aot-funcall2
           sexp env fenv defuns))
-      (5 (nelisp-phase47-compiler--parse-aot-funcall3
+      (5 (nelisp-aot-compiler--parse-aot-funcall3
           sexp env fenv defuns))
       (_ (if (> (length sexp) 5)
-             (nelisp-phase47-compiler--parse-aot-funcalln
+             (nelisp-aot-compiler--parse-aot-funcalln
               sexp env fenv defuns)
-           (signal 'nelisp-phase47-compiler-error
+           (signal 'nelisp-aot-compiler-error
                    (list :aot-funcall-arity sexp))))))
    ;; Doc 129.7C — `apply' delegates a function designator/value plus an
    ;; already-materialized argument list to the runtime dispatcher.
    ((and (consp sexp)
          (eq (car sexp) 'apply)
          (not (assq 'apply defuns))
-         (or (not nelisp-phase47-compiler--allow-external-user-calls)
-             (nelisp-phase47-compiler--aot-funcall-boundary-available-p
+         (or (not nelisp-aot-compiler--allow-external-user-calls)
+             (nelisp-aot-compiler--aot-funcall-boundary-available-p
               fenv)))
-    (nelisp-phase47-compiler--parse-aot-apply
+    (nelisp-aot-compiler--parse-aot-apply
      sexp env fenv defuns))
    ;; Doc 129.8B — first compiler surface for non-local exit forms.
    ;; These are still dispatcher bridges: the runtime returns a landing
@@ -8043,12 +8043,12 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (eq (car sexp) 'throw)
          (not (assq 'throw defuns)))
-    (nelisp-phase47-compiler--parse-aot-throw
+    (nelisp-aot-compiler--parse-aot-throw
      sexp env fenv defuns))
    ((and (consp sexp)
          (eq (car sexp) 'signal)
          (not (assq 'signal defuns)))
-    (nelisp-phase47-compiler--parse-aot-signal
+    (nelisp-aot-compiler--parse-aot-signal
      sexp env fenv defuns))
    ;; Doc 129.8H/I — user-facing `error' is a specialised signal with
    ;; the standard `error' condition tag.  Multi-argument formatted
@@ -8056,7 +8056,7 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (eq (car sexp) 'error)
          (not (assq 'error defuns)))
-    (nelisp-phase47-compiler--parse-aot-error
+    (nelisp-aot-compiler--parse-aot-error
      sexp env fenv defuns))
    ;; Doc 129.8E — first source-level handler synthesis.  This covers
    ;; normal-exit `catch' bodies only: the compiler emits balanced
@@ -8065,21 +8065,21 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (eq (car sexp) 'catch)
          (not (assq 'catch defuns)))
-    (nelisp-phase47-compiler--parse-aot-catch-normal-exit
+    (nelisp-aot-compiler--parse-aot-catch-normal-exit
      sexp env fenv defuns))
    ;; Doc 129.8F — source-level condition-case normal path.  Real
    ;; handler landing pads for signalled conditions remain pending.
    ((and (consp sexp)
          (eq (car sexp) 'condition-case)
          (not (assq 'condition-case defuns)))
-    (nelisp-phase47-compiler--parse-aot-condition-case-normal-exit
+    (nelisp-aot-compiler--parse-aot-condition-case-normal-exit
      sexp env fenv defuns))
    ;; Doc 129.8G — source-level unwind-protect normal path.  Cleanup
    ;; forms run after BODY and the saved BODY value remains the result.
    ((and (consp sexp)
          (eq (car sexp) 'unwind-protect)
          (not (assq 'unwind-protect defuns)))
-    (nelisp-phase47-compiler--parse-aot-unwind-protect-normal-exit
+    (nelisp-aot-compiler--parse-aot-unwind-protect-normal-exit
      sexp env fenv defuns))
    ;; Doc 129.8C — explicit bridge forms for installing handler-stack
    ;; records.  These are internal AOT forms used to make the native
@@ -8088,33 +8088,33 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp)
          (memq (car sexp)
                '(aot-push-catch aot-push-condition aot-push-unwind)))
-    (nelisp-phase47-compiler--parse-aot-push-handler
+    (nelisp-aot-compiler--parse-aot-push-handler
      sexp env fenv defuns))
    ((and (consp sexp)
          (eq (car sexp) 'aot-pop-handler))
-    (nelisp-phase47-compiler--parse-aot-pop-handler
+    (nelisp-aot-compiler--parse-aot-pop-handler
      sexp env fenv defuns))
    ;; Doc 129.5E — explicit native root-frame push/pop bridge forms.
    ;; Automatic prologue/epilogue insertion is a later backend step;
    ;; these internal forms make the ABI and relocations visible now.
    ((and (consp sexp)
          (eq (car sexp) 'aot-push-roots))
-    (nelisp-phase47-compiler--parse-aot-push-roots
+    (nelisp-aot-compiler--parse-aot-push-roots
      sexp env fenv defuns))
    ((and (consp sexp)
          (eq (car sexp) 'aot-pop-roots))
-    (nelisp-phase47-compiler--parse-aot-pop-roots
+    (nelisp-aot-compiler--parse-aot-pop-roots
      sexp env fenv defuns))
    ;; Doc 129.4C — explicit special binding push/pop bridge forms.
    ;; Source `let' lowering still waits for full dynamic binding, but
    ;; the native ABI and object relocs are visible through these forms.
    ((and (consp sexp)
          (eq (car sexp) 'aot-push-special))
-    (nelisp-phase47-compiler--parse-aot-push-special
+    (nelisp-aot-compiler--parse-aot-push-special
      sexp env fenv defuns))
    ((and (consp sexp)
          (eq (car sexp) 'aot-pop-special))
-    (nelisp-phase47-compiler--parse-aot-pop-special
+    (nelisp-aot-compiler--parse-aot-pop-special
      sexp env fenv defuns))
    ;; Doc 100 v2 §100.B Sexp ABI direct-access ops.  Each maps to a
    ;; fixed instruction template against `[base]' / `[base + 8]', with
@@ -8146,35 +8146,35 @@ functions `((NAME . ARITY) ...)'."
    ;; `(nelisp_ht_helpers-source)' source which depends on str-eq.
    ((and (consp sexp) (eq (car sexp) 'hash-table-make))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :hash-table-make-arity sexp)))
-    (nelisp-phase47-compiler--parse-value
-     (nelisp-phase47-compiler--ht-desugar-make
+    (nelisp-aot-compiler--parse-value
+     (nelisp-aot-compiler--ht-desugar-make
       (nth 2 sexp) (nth 3 sexp) (nth 1 sexp))
      env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'hash-table-put))
     (unless (= (length sexp) 6)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :hash-table-put-arity sexp)))
-    (nelisp-phase47-compiler--parse-value
-     (nelisp-phase47-compiler--ht-desugar-put
+    (nelisp-aot-compiler--parse-value
+     (nelisp-aot-compiler--ht-desugar-put
       (nth 1 sexp) (nth 2 sexp) (nth 3 sexp)
       (nth 4 sexp) (nth 5 sexp))
      env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'hash-table-get))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :hash-table-get-arity sexp)))
-    (nelisp-phase47-compiler--parse-value
-     (nelisp-phase47-compiler--ht-desugar-get
+    (nelisp-aot-compiler--parse-value
+     (nelisp-aot-compiler--ht-desugar-get
       (nth 1 sexp) (nth 2 sexp) (nth 3 sexp))
      env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'hash-table-contains-p))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :hash-table-contains-p-arity sexp)))
-    (nelisp-phase47-compiler--parse-value
-     (nelisp-phase47-compiler--ht-desugar-contains-p
+    (nelisp-aot-compiler--parse-value
+     (nelisp-aot-compiler--ht-desugar-contains-p
       (nth 1 sexp) (nth 2 sexp) (nth 3 sexp))
      env fenv defuns))
    ;; Doc 49 Wave 11.1: (static-imm32-table-lookup NAME INDEX-EXPR)
@@ -8187,22 +8187,22 @@ functions `((NAME . ARITY) ...)'."
    ;; add a safe variant).
    ((and (consp sexp) (eq (car sexp) 'static-imm32-table-lookup))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :static-imm32-table-lookup-arity sexp)))
     (let ((name (nth 1 sexp)))
       (unless (stringp name)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :static-imm32-table-lookup-name-not-string name)))
-      (nelisp-phase47-compiler--make-ir 'table-lookup
+      (nelisp-aot-compiler--make-ir 'table-lookup
             :name name
-            :index (nelisp-phase47-compiler--parse-value
+            :index (nelisp-aot-compiler--parse-value
                     (nth 2 sexp) env fenv defuns))))
    ((and (consp sexp) (eq (car sexp) 'sexp-tag))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-tag-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-tag
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-tag
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; (i64-to-f64 INT-EXPR) — G6 grammar bridge.  Converts a gp-class
    ;; signed i64 to an f64-class value via `CVTSI2SD xmm-dst, rax'.
@@ -8210,11 +8210,11 @@ functions `((NAME . ARITY) ...)'."
    ;; in f64-call / sexp-write-float / f64-to-i64-trunc contexts.
    ((and (consp sexp) (eq (car sexp) 'i64-to-f64))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :i64-to-f64-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'i64-to-f64
+    (nelisp-aot-compiler--make-ir 'i64-to-f64
           :class 'f64
-          :int-expr (nelisp-phase47-compiler--parse-value
+          :int-expr (nelisp-aot-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
    ;; (bits-to-f64 INT-EXPR) — G5 grammar bridge.  Lifts a gp-class
    ;; i64 (= raw bit pattern, typically from `sexp-float-unwrap') into
@@ -8223,11 +8223,11 @@ functions `((NAME . ARITY) ...)'."
    ;; contexts; using it as a plain gp-class value-expr is an error.
    ((and (consp sexp) (eq (car sexp) 'bits-to-f64))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :bits-to-f64-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'bits-to-f64
+    (nelisp-aot-compiler--make-ir 'bits-to-f64
           :class 'f64
-          :int-expr (nelisp-phase47-compiler--parse-value
+          :int-expr (nelisp-aot-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
    ;; (f64-to-i64-trunc F64-EXPR) — G5 grammar bridge.  Truncates an
    ;; f64-class value to a signed i64 in rax via `CVTTSD2SI'.  F64-EXPR
@@ -8235,10 +8235,10 @@ functions `((NAME . ARITY) ...)'."
    ;; f64-call, etc.).  Result class: gp.
    ((and (consp sexp) (eq (car sexp) 'f64-to-i64-trunc))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :f64-to-i64-trunc-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'f64-to-i64-trunc
-          :f64-expr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'f64-to-i64-trunc
+          :f64-expr (nelisp-aot-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)))
    ;; (sexp-float-unwrap PTR) — read the 8-byte f64 payload of a
    ;; `Sexp::Float(f)' as raw bits, returned as i64 in rax (= xmm0
@@ -8250,167 +8250,167 @@ functions `((NAME . ARITY) ...)'."
    ;; `sexp-write-float SLOT VALUE' op (Doc 122.G).  G4 grammar.
    ((and (consp sexp) (eq (car sexp) 'sexp-float-unwrap))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-float-unwrap-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-float-unwrap
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-float-unwrap
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-int-unwrap))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-int-unwrap-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-int-unwrap
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-int-unwrap
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-int-make))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-int-make-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-int-make
-          :slot (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-int-make
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :val (nelisp-phase47-compiler--parse-value
+          :val (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.B Cons read ops ----
    ((and (consp sexp) (eq (car sexp) 'cons-null-p))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-null-p-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-null-p
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-null-p
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cons-car))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-car-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-car
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-car
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cons-cdr))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-cdr-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-cdr
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-cdr
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (memq (car sexp) '(cons-cdr-raw cons-cdr-raw-from-box)))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-cdr-raw-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-cdr-raw
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-cdr-raw
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
           :from-box (eq (car sexp) 'cons-cdr-raw-from-box)))
    ((and (consp sexp) (eq (car sexp) 'sexp-payload-ptr))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-payload-ptr-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-payload-ptr
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-payload-ptr
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-payload-ptr-record))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-payload-ptr-record-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-payload-ptr-record
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-payload-ptr-record
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; ---- Doc 111 §111.B Record read+write ops ----
    ((and (consp sexp) (eq (car sexp) 'record-type-tag))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :record-type-tag-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'record-type-tag
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'record-type-tag
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'record-slot-count))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :record-slot-count-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'record-slot-count
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'record-slot-count
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'record-slot-ref))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :record-slot-ref-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'record-slot-ref
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'record-slot-ref
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'record-slot-ref-ptr))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :record-slot-ref-ptr-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'record-slot-ref-ptr
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'record-slot-ref-ptr
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'record-slot-set))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :record-slot-set-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'record-slot-set
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'record-slot-set
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)
-          :val-ptr (nelisp-phase47-compiler--parse-value
+          :val-ptr (nelisp-aot-compiler--parse-value
                     (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 111 §111.C Vector read ops ----
    ((and (consp sexp) (eq (car sexp) 'vector-len))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :vector-len-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'vector-len
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'vector-len
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'vector-ref))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :vector-ref-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'vector-ref
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'vector-ref
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'vector-ref-ptr))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :vector-ref-ptr-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'vector-ref-ptr
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'vector-ref-ptr
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
    ;; Doc 111 §111.E — `(vector-slot-set H N VAL-PTR)' refcount-safe
    ;; vector element overwrite.  Parallel to `record-slot-set' (§111.B).
    ;; Delegates to the Rust extern `nl_vector_set_slot' which drops the
    ;; old slot value (refcount-aware) then writes the new one.  Used by
-   ;; `mirror_install_entry' (= Phase 47 helper #12) to prepend a fresh
+   ;; `mirror_install_entry' (= AOT helper #12) to prepend a fresh
    ;; cons cell onto a bucket without leaking the prior bucket head.
    ((and (consp sexp) (eq (car sexp) 'vector-slot-set))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :vector-slot-set-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'vector-slot-set
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'vector-slot-set
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)
-          :val-ptr (nelisp-phase47-compiler--parse-value
+          :val-ptr (nelisp-aot-compiler--parse-value
                     (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 111 §111.D Cell read+write ops ----
    ;; (cell-value H SLOT)     — copy the cell's current value (inline
@@ -8428,37 +8428,37 @@ functions `((NAME . ARITY) ...)'."
    ;;                           currently holds `Sexp::Nil', else 0.
    ((and (consp sexp) (eq (car sexp) 'cell-value))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cell-value-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cell-value
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cell-value
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cell-set-value))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cell-set-value-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cell-set-value
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cell-set-value
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :val-ptr (nelisp-phase47-compiler--parse-value
+          :val-ptr (nelisp-aot-compiler--parse-value
                     (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cell-make))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cell-make-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cell-make
-          :val-ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cell-make
+          :val-ptr (nelisp-aot-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cell-null-p))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cell-null-p-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cell-null-p
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cell-null-p
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; Doc 115 §115.1 — `(vector-make CAP SLOT)' allocates a fresh
    ;; `NlVector' via `nl_alloc_vector(CAP)' (Doc 111 §111.E) and
@@ -8469,12 +8469,12 @@ functions `((NAME . ARITY) ...)'."
    ;; `Sexp::Nil' elements by `nl_alloc_vector'.
    ((and (consp sexp) (eq (car sexp) 'vector-make))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :vector-make-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'vector-make
-          :cap (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'vector-make
+          :cap (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ;; Doc 115 §115.3 — `(record-make TAG-PTR SLOT-COUNT SLOT)' allocates
    ;; a fresh `NlRecord' via `nl_alloc_record(TAG-PTR, SLOT-COUNT)' (Doc
@@ -8497,25 +8497,25 @@ functions `((NAME . ARITY) ...)'."
    ;;   trampoline (= -24 LOC `build-tool/src/jit/cons.rs').
    ((and (consp sexp) (eq (car sexp) 'cons-make-with-clone))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-make-with-clone-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-make-with-clone
-          :car-ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-make-with-clone
+          :car-ptr (nelisp-aot-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
-          :cdr-ptr (nelisp-phase47-compiler--parse-value
+          :cdr-ptr (nelisp-aot-compiler--parse-value
                     (nth 2 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'record-make))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :record-make-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'record-make
-          :tag-ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'record-make
+          :tag-ptr (nelisp-aot-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
-          :slot-count (nelisp-phase47-compiler--parse-value
+          :slot-count (nelisp-aot-compiler--parse-value
                        (nth 2 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.C Symbol/Str read ops ----
    ;; (str-len H)       — read String::len at offset 24 from a
@@ -8531,17 +8531,17 @@ functions `((NAME . ARITY) ...)'."
    ;;                     result slot and return the slot pointer.
    ((and (consp sexp) (eq (car sexp) 'str-len))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-len-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-len
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-len
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'str-bytes))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-bytes-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-bytes
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-bytes
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; Doc 122 §122.H — `(str-bytes-ptr STR-PTR)' returns the raw
    ;; `*const u8' data pointer of a Sexp::Str / Sexp::Symbol /
@@ -8556,39 +8556,39 @@ functions `((NAME . ARITY) ...)'."
    ;; `read_stdin' / `read_file' / `write_file' family).
    ((and (consp sexp) (eq (car sexp) 'str-bytes-ptr))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-bytes-ptr-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-bytes-ptr
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-bytes-ptr
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'str-byte-at))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-byte-at-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-byte-at
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-byte-at
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'str-eq))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-eq-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-eq
-          :id (nelisp-phase47-compiler--gensym "str-eq")
-          :a (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-eq
+          :id (nelisp-aot-compiler--gensym "str-eq")
+          :a (nelisp-aot-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
-          :b (nelisp-phase47-compiler--parse-value
+          :b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'symbol-eq))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :symbol-eq-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'symbol-eq
-          :id (nelisp-phase47-compiler--gensym "symbol-eq")
-          :a (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'symbol-eq
+          :id (nelisp-aot-compiler--gensym "symbol-eq")
+          :a (nelisp-aot-compiler--parse-value
               (nth 1 sexp) env fenv defuns)
-          :b (nelisp-phase47-compiler--parse-value
+          :b (nelisp-aot-compiler--parse-value
               (nth 2 sexp) env fenv defuns)))
    ;; (symbol-name-eq SYM_PTR LITERAL_STR)
    ;;   — Tag-check SYM_PTR == `Sexp::Symbol' (offset 0 byte),
@@ -8602,15 +8602,15 @@ functions `((NAME . ARITY) ...)'."
    ;;   payload byte.
    ((and (consp sexp) (eq (car sexp) 'symbol-name-eq))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :symbol-name-eq-arity sexp)))
     (let ((lit (nth 2 sexp)))
       (unless (stringp lit)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :symbol-name-eq-literal-must-be-string sexp)))
-      (nelisp-phase47-compiler--make-ir 'symbol-name-eq
-            :id (nelisp-phase47-compiler--gensym "symbol-name-eq")
-            :ptr (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--make-ir 'symbol-name-eq
+            :id (nelisp-aot-compiler--gensym "symbol-name-eq")
+            :ptr (nelisp-aot-compiler--parse-value
                   (nth 1 sexp) env fenv defuns)
             :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
    ;; (sexp-name-eq SEXP_PTR LITERAL_STR)
@@ -8620,30 +8620,30 @@ functions `((NAME . ARITY) ...)'."
    ;;     or as unquoted string literals.
    ((and (consp sexp) (eq (car sexp) 'sexp-name-eq))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-name-eq-arity sexp)))
     (let ((lit (nth 2 sexp)))
       (unless (stringp lit)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :sexp-name-eq-literal-must-be-string sexp)))
-      (nelisp-phase47-compiler--make-ir 'sexp-name-eq
-            :id (nelisp-phase47-compiler--gensym "sexp-name-eq")
-            :ptr (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--make-ir 'sexp-name-eq
+            :id (nelisp-aot-compiler--gensym "sexp-name-eq")
+            :ptr (nelisp-aot-compiler--parse-value
                   (nth 1 sexp) env fenv defuns)
             :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
    ((and (consp sexp) (eq (car sexp) 'sexp-write-nil))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-write-nil-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-write-nil
-          :slot (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-write-nil
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'sexp-write-t))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-write-t-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-write-t
-          :slot (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-write-t
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)))
    ;; Doc 122 §122.A — `(sexp-write-str SLOT BYTES-PTR LEN)' allocates a
    ;; fresh `Sexp::Str(String)' via the Rust extern `nl_alloc_str' (=
@@ -8658,14 +8658,14 @@ functions `((NAME . ARITY) ...)'."
    ;; `nl_alloc_str' in `build-tool/src/eval/nlstr.rs').
    ((and (consp sexp) (eq (car sexp) 'sexp-write-str))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-write-str-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-write-str
-          :slot (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-write-str
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :bytes-ptr (nelisp-phase47-compiler--parse-value
+          :bytes-ptr (nelisp-aot-compiler--parse-value
                       (nth 2 sexp) env fenv defuns)
-          :len (nelisp-phase47-compiler--parse-value
+          :len (nelisp-aot-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
    ;; Doc 122 §122.A — `(sexp-write-symbol SLOT BYTES-PTR LEN)' — same
    ;; shape as `sexp-write-str' but the allocator extern is
@@ -8674,14 +8674,14 @@ functions `((NAME . ARITY) ...)'."
    ;; 122 §5 open question.
    ((and (consp sexp) (eq (car sexp) 'sexp-write-symbol))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-write-symbol-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-write-symbol
-          :slot (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-write-symbol
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :bytes-ptr (nelisp-phase47-compiler--parse-value
+          :bytes-ptr (nelisp-aot-compiler--parse-value
                       (nth 2 sexp) env fenv defuns)
-          :len (nelisp-phase47-compiler--parse-value
+          :len (nelisp-aot-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
    ;; Doc 129.3B — `(sexp-write-symbol-lit SLOT LITERAL)' materializes
    ;; a `Sexp::Symbol' from compile-time UTF-8 bytes without using
@@ -8689,14 +8689,14 @@ functions `((NAME . ARITY) ...)'."
    ;; object-mode ET_REL output can still link cleanly.
    ((and (consp sexp) (eq (car sexp) 'sexp-write-symbol-lit))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-write-symbol-lit-arity sexp)))
     (let ((lit (nth 2 sexp)))
       (unless (stringp lit)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :sexp-write-symbol-lit-literal lit)))
-      (nelisp-phase47-compiler--make-ir 'sexp-write-symbol-lit
-            :slot (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--make-ir 'sexp-write-symbol-lit
+            :slot (nelisp-aot-compiler--parse-value
                    (nth 1 sexp) env fenv defuns)
             :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
    ;; Doc 129.8I — `(sexp-write-str-lit SLOT LITERAL)' is the string
@@ -8705,14 +8705,14 @@ functions `((NAME . ARITY) ...)'."
    ;; the allocator.
    ((and (consp sexp) (eq (car sexp) 'sexp-write-str-lit))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-write-str-lit-arity sexp)))
     (let ((lit (nth 2 sexp)))
       (unless (stringp lit)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :sexp-write-str-lit-literal lit)))
-      (nelisp-phase47-compiler--make-ir 'sexp-write-str-lit
-            :slot (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--make-ir 'sexp-write-str-lit
+            :slot (nelisp-aot-compiler--parse-value
                    (nth 1 sexp) env fenv defuns)
             :bytes (string-to-list (encode-coding-string lit 'utf-8 t)))))
    ;; Doc 122 §122.G — `(sexp-write-float SLOT VALUE)' allocates a
@@ -8727,12 +8727,12 @@ functions `((NAME . ARITY) ...)'."
    ;; rather than three i64 args.
    ((and (consp sexp) (eq (car sexp) 'sexp-write-float))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :sexp-write-float-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'sexp-write-float
-          :slot (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'sexp-write-float
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :value (nelisp-phase47-compiler--parse-value
+          :value (nelisp-aot-compiler--parse-value
                   (nth 2 sexp) env fenv defuns)))
    ;; Doc 122 §122.B — Mutable string builder grammar.
    ;; ------------------------------------------------
@@ -8742,12 +8742,12 @@ functions `((NAME . ARITY) ...)'."
    ;; offset 8) into the caller-owned SLOT.  Returns SLOT in rax.
    ((and (consp sexp) (eq (car sexp) 'mut-str-make-empty))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :mut-str-make-empty-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'mut-str-make-empty
-          :slot (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'mut-str-make-empty
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :cap (nelisp-phase47-compiler--parse-value
+          :cap (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
    ;; `(mut-str-push-byte PTR BYTE)' — append a single byte (low 8
    ;; bits of BYTE) to the MutStr at PTR (= `*mut Sexp' slot
@@ -8755,33 +8755,33 @@ functions `((NAME . ARITY) ...)'."
    ;; composes cleanly in `(and SIDE-EFFECT VALUE)' chains.
    ((and (consp sexp) (eq (car sexp) 'mut-str-push-byte))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :mut-str-push-byte-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'mut-str-push-byte
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'mut-str-push-byte
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :byte (nelisp-phase47-compiler--parse-value
+          :byte (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ;; `(mut-str-push-codepoint PTR CP)' — UTF-8 encode CP into 1-4
    ;; bytes and append.  Out-of-range / surrogate codepoints clamp
    ;; to U+FFFD inside the Rust extern.  Returns rax = 1 sentinel.
    ((and (consp sexp) (eq (car sexp) 'mut-str-push-codepoint))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :mut-str-push-codepoint-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'mut-str-push-codepoint
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'mut-str-push-codepoint
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :cp (nelisp-phase47-compiler--parse-value
+          :cp (nelisp-aot-compiler--parse-value
                (nth 2 sexp) env fenv defuns)))
    ;; `(mut-str-len PTR)' — current byte length of the MutStr at
    ;; PTR.  Returns the i64 length in rax (= `String::len').
    ((and (consp sexp) (eq (car sexp) 'mut-str-len))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :mut-str-len-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'mut-str-len
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'mut-str-len
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; `(mut-str-finalize PTR SLOT)' — clone the MutStr's current
    ;; bytes into a fresh `Sexp::Str(String)' and write to the
@@ -8790,12 +8790,12 @@ functions `((NAME . ARITY) ...)'."
    ;; intermediate token snapshots.  Returns SLOT in rax.
    ((and (consp sexp) (eq (car sexp) 'mut-str-finalize))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :mut-str-finalize-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'mut-str-finalize
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'mut-str-finalize
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)))
    ;; Doc 122 §122.D — UTF-8 helper grammar.
    ;; ---------------------------------------
@@ -8806,10 +8806,10 @@ functions `((NAME . ARITY) ...)'."
    ;; not 6).
    ((and (consp sexp) (eq (car sexp) 'str-char-count))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-char-count-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-char-count
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-char-count
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)))
    ;; `(str-codepoint-at STR I CP-SLOT WIDTH-SLOT)' — decode the
    ;; codepoint at byte index I in STR and write codepoint /
@@ -8819,16 +8819,16 @@ functions `((NAME . ARITY) ...)'."
    ;; Sexps for the common (cp, width) decode case.
    ((and (consp sexp) (eq (car sexp) 'str-codepoint-at))
     (unless (= (length sexp) 5)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-codepoint-at-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-codepoint-at
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-codepoint-at
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)
-          :cp-slot (nelisp-phase47-compiler--parse-value
+          :cp-slot (nelisp-aot-compiler--parse-value
                     (nth 3 sexp) env fenv defuns)
-          :width-slot (nelisp-phase47-compiler--parse-value
+          :width-slot (nelisp-aot-compiler--parse-value
                        (nth 4 sexp) env fenv defuns)))
    ;; `(str-is-alphanumeric-at STR I)' — predicate.  ASCII fast
    ;; path checks the byte at I directly; multi-byte slow path
@@ -8837,12 +8837,12 @@ functions `((NAME . ARITY) ...)'."
    ;; / Reader lexer char-class checks.
    ((and (consp sexp) (eq (car sexp) 'str-is-alphanumeric-at))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :str-is-alphanumeric-at-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'str-is-alphanumeric-at
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'str-is-alphanumeric-at
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :idx (nelisp-phase47-compiler--parse-value
+          :idx (nelisp-aot-compiler--parse-value
                 (nth 2 sexp) env fenv defuns)))
    ;; Doc 122 §122.E — Atomic + raw memory primitives.
    ;; ------------------------------------------------
@@ -8852,75 +8852,75 @@ functions `((NAME . ARITY) ...)'."
    ;; Substrate gate for Doc 123 refcount elisp化.
    ((and (consp sexp) (eq (car sexp) 'atomic-fetch-add))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :atomic-fetch-add-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'atomic-fetch-add
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'atomic-fetch-add
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :delta (nelisp-phase47-compiler--parse-value
+          :delta (nelisp-aot-compiler--parse-value
                   (nth 2 sexp) env fenv defuns)))
    ;; `(atomic-compare-exchange PTR EXPECTED NEW)' — SeqCst CAS on
    ;; the `*mut i64' slot at PTR.  Returns 1 on success / 0 on
    ;; mismatch.  Substrate gate for Doc 123 Bacon-Rajan promote.
    ((and (consp sexp) (eq (car sexp) 'atomic-compare-exchange))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :atomic-compare-exchange-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'atomic-compare-exchange
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'atomic-compare-exchange
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :expected (nelisp-phase47-compiler--parse-value
+          :expected (nelisp-aot-compiler--parse-value
                      (nth 2 sexp) env fenv defuns)
-          :new-val (nelisp-phase47-compiler--parse-value
+          :new-val (nelisp-aot-compiler--parse-value
                     (nth 3 sexp) env fenv defuns)))
    ;; `(ptr-read-u64 PTR OFFSET)' — raw `u64' read at `*(u64*)(ptr +
    ;; offset)'.  Returns the value re-cast to `i64' in rax.
    ;; Substrate gate for Doc 124 nl*.rs header walks.
    ((and (consp sexp) (eq (car sexp) 'ptr-read-u64))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-read-u64-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-read-u64
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-read-u64
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)))
    ;; `(ptr-write-u64 PTR OFFSET VAL)' — raw `u64' store at
    ;; `*(u64*)(ptr + offset)'.  Returns rax = 1 sentinel.
    ((and (consp sexp) (eq (car sexp) 'ptr-write-u64))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-write-u64-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-write-u64
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-write-u64
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)
-          :val (nelisp-phase47-compiler--parse-value
+          :val (nelisp-aot-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
    ;; `(ptr-read-u8 PTR OFFSET)' — raw `u8' read; zero-extends to i64
    ;; (= no sign extension).
    ((and (consp sexp) (eq (car sexp) 'ptr-read-u8))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-read-u8-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-read-u8
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-read-u8
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)))
    ;; `(ptr-write-u8 PTR OFFSET VAL)' — raw `u8' store.  Returns 1
    ;; sentinel.
    ((and (consp sexp) (eq (car sexp) 'ptr-write-u8))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-write-u8-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-write-u8
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-write-u8
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)
-          :val (nelisp-phase47-compiler--parse-value
+          :val (nelisp-aot-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
    ;; Doc 122 §122.J — width-{2,4} raw-mem primitives.  Fill the SIZE
    ;; gap between `_u8' and `_u64' for marshalling libc structs whose
@@ -8932,43 +8932,43 @@ functions `((NAME . ARITY) ...)'."
    ;; naturally aligned inside a raw byte buffer).
    ((and (consp sexp) (eq (car sexp) 'ptr-read-u16))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-read-u16-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-read-u16
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-read-u16
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'ptr-write-u16))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-write-u16-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-write-u16
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-write-u16
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)
-          :val (nelisp-phase47-compiler--parse-value
+          :val (nelisp-aot-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'ptr-read-u32))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-read-u32-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-read-u32
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-read-u32
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'ptr-write-u32))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-write-u32-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'ptr-write-u32
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'ptr-write-u32
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 2 sexp) env fenv defuns)
-          :val (nelisp-phase47-compiler--parse-value
+          :val (nelisp-aot-compiler--parse-value
                 (nth 3 sexp) env fenv defuns)))
    ;; `(ptr-read-sN PTR OFFSET)' — signed N-bit read; sign-extends to i64.
    ;; Desugars at parse time to the unsigned read of the same width plus a
@@ -8979,7 +8979,7 @@ functions `((NAME . ARITY) ...)'."
    ((and (consp sexp) (memq (car sexp)
                             '(ptr-read-s8 ptr-read-s16 ptr-read-s32 ptr-read-s64)))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :ptr-read-sN-arity sexp)))
     (let* ((spec (pcase (car sexp)
                    ('ptr-read-s8  '(ptr-read-u8  . 56))
@@ -8988,7 +8988,7 @@ functions `((NAME . ARITY) ...)'."
                    ('ptr-read-s64 '(ptr-read-u64 . 0))))
            (raw (list (car spec) (nth 1 sexp) (nth 2 sexp)))
            (shift (cdr spec)))
-      (nelisp-phase47-compiler--parse-value
+      (nelisp-aot-compiler--parse-value
        (if (zerop shift) raw (list 'sar (list 'shl raw shift) shift))
        env fenv defuns)))
    ;; Doc 122 §122.J — struct-by-value sugar.  Desugar to existing
@@ -9011,50 +9011,50 @@ functions `((NAME . ARITY) ...)'."
    ;; libc struct's layout — no runtime check.
    ((and (consp sexp) (eq (car sexp) 'struct-make))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :struct-make-arity sexp)))
     ;; TAG (nth 1) is ignored at code-gen — diagnostic only.  We don't
     ;; validate it past arity to keep the surface forgiving (callers
     ;; routinely pass quoted symbols like ''sigaction).
-    (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--parse-value
      (list 'alloc-bytes (nth 2 sexp) (nth 3 sexp))
      env fenv defuns))
    ((and (consp sexp) (eq (car sexp) 'struct-field-set))
     (unless (= (length sexp) 5)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :struct-field-set-arity sexp)))
     (let ((size (nth 3 sexp)))
-      (unless (nelisp-phase47-compiler--int-foldable-p size env fenv)
-        (signal 'nelisp-phase47-compiler-error
+      (unless (nelisp-aot-compiler--int-foldable-p size env fenv)
+        (signal 'nelisp-aot-compiler-error
                 (list :struct-field-set-size-not-const sexp)))
-      (let* ((size-val (nelisp-phase47-compiler--fold-int size env))
+      (let* ((size-val (nelisp-aot-compiler--fold-int size env))
              (op (pcase size-val
                    (1 'ptr-write-u8)
                    (2 'ptr-write-u16)
                    (4 'ptr-write-u32)
                    (8 'ptr-write-u64)
-                   (_ (signal 'nelisp-phase47-compiler-error
+                   (_ (signal 'nelisp-aot-compiler-error
                               (list :struct-field-bad-size size-val sexp))))))
-        (nelisp-phase47-compiler--parse-value
+        (nelisp-aot-compiler--parse-value
          (list op (nth 1 sexp) (nth 2 sexp) (nth 4 sexp))
          env fenv defuns))))
    ((and (consp sexp) (eq (car sexp) 'struct-field-get))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :struct-field-get-arity sexp)))
     (let ((size (nth 3 sexp)))
-      (unless (nelisp-phase47-compiler--int-foldable-p size env fenv)
-        (signal 'nelisp-phase47-compiler-error
+      (unless (nelisp-aot-compiler--int-foldable-p size env fenv)
+        (signal 'nelisp-aot-compiler-error
                 (list :struct-field-get-size-not-const sexp)))
-      (let* ((size-val (nelisp-phase47-compiler--fold-int size env))
+      (let* ((size-val (nelisp-aot-compiler--fold-int size env))
              (op (pcase size-val
                    (1 'ptr-read-u8)
                    (2 'ptr-read-u16)
                    (4 'ptr-read-u32)
                    (8 'ptr-read-u64)
-                   (_ (signal 'nelisp-phase47-compiler-error
+                   (_ (signal 'nelisp-aot-compiler-error
                               (list :struct-field-bad-size size-val sexp))))))
-        (nelisp-phase47-compiler--parse-value
+        (nelisp-aot-compiler--parse-value
          (list op (nth 1 sexp) (nth 2 sexp))
          env fenv defuns))))
    ;; Doc 125 §125.A — alloc / dealloc grammar primitives.
@@ -9067,12 +9067,12 @@ functions `((NAME . ARITY) ...)'."
    ;; per-type §125.B-F externs instead.
    ((and (consp sexp) (eq (car sexp) 'alloc-bytes))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :alloc-bytes-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'alloc-bytes
-          :size (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'alloc-bytes
+          :size (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :align (nelisp-phase47-compiler--parse-value
+          :align (nelisp-aot-compiler--parse-value
                   (nth 2 sexp) env fenv defuns)))
    ;; `(dealloc-bytes PTR SIZE ALIGN)' — generic byte-level deallocator
    ;; wrapping `std::alloc::dealloc(ptr, Layout::from_size_align(size,
@@ -9082,14 +9082,14 @@ functions `((NAME . ARITY) ...)'."
    ;; `alloc-bytes' call; mismatch is UB per `std::alloc::dealloc'.
    ((and (consp sexp) (eq (car sexp) 'dealloc-bytes))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :dealloc-bytes-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'dealloc-bytes
-          :ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'dealloc-bytes
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 1 sexp) env fenv defuns)
-          :size (nelisp-phase47-compiler--parse-value
+          :size (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)
-          :align (nelisp-phase47-compiler--parse-value
+          :align (nelisp-aot-compiler--parse-value
                   (nth 3 sexp) env fenv defuns)))
    ;; Doc 125 §125.B — inline Linux syscall.
    ;; `(syscall-direct NR A0 A1 A2 A3 A4 A5)' — emit inline SYSCALL
@@ -9100,22 +9100,22 @@ functions `((NAME . ARITY) ...)'."
    ;; Rust's global allocator entirely.  Linux x86_64 only.
    ((and (consp sexp) (eq (car sexp) 'syscall-direct))
     (unless (= (length sexp) 8)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :syscall-direct-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'syscall-direct
-          :nr   (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'syscall-direct
+          :nr   (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :a0   (nelisp-phase47-compiler--parse-value
+          :a0   (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)
-          :a1   (nelisp-phase47-compiler--parse-value
+          :a1   (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)
-          :a2   (nelisp-phase47-compiler--parse-value
+          :a2   (nelisp-aot-compiler--parse-value
                  (nth 4 sexp) env fenv defuns)
-          :a3   (nelisp-phase47-compiler--parse-value
+          :a3   (nelisp-aot-compiler--parse-value
                  (nth 5 sexp) env fenv defuns)
-          :a4   (nelisp-phase47-compiler--parse-value
+          :a4   (nelisp-aot-compiler--parse-value
                  (nth 6 sexp) env fenv defuns)
-          :a5   (nelisp-phase47-compiler--parse-value
+          :a5   (nelisp-aot-compiler--parse-value
                  (nth 7 sexp) env fenv defuns)))
    ;; `(syscall-direct-store-x1 NR A0 A1 A2 A3 A4 A5 PTR OFFSET)' — like
    ;; `syscall-direct', but stores the second arm64 kernel return register
@@ -9123,26 +9123,26 @@ functions `((NAME . ARITY) ...)'."
    ;; the second return register to distinguish parent from child.
    ((and (consp sexp) (eq (car sexp) 'syscall-direct-store-x1))
     (unless (= (length sexp) 10)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :syscall-direct-store-x1-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'syscall-direct-store-x1
-          :nr   (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'syscall-direct-store-x1
+          :nr   (nelisp-aot-compiler--parse-value
                  (nth 1 sexp) env fenv defuns)
-          :a0   (nelisp-phase47-compiler--parse-value
+          :a0   (nelisp-aot-compiler--parse-value
                  (nth 2 sexp) env fenv defuns)
-          :a1   (nelisp-phase47-compiler--parse-value
+          :a1   (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)
-          :a2   (nelisp-phase47-compiler--parse-value
+          :a2   (nelisp-aot-compiler--parse-value
                  (nth 4 sexp) env fenv defuns)
-          :a3   (nelisp-phase47-compiler--parse-value
+          :a3   (nelisp-aot-compiler--parse-value
                  (nth 5 sexp) env fenv defuns)
-          :a4   (nelisp-phase47-compiler--parse-value
+          :a4   (nelisp-aot-compiler--parse-value
                  (nth 6 sexp) env fenv defuns)
-          :a5   (nelisp-phase47-compiler--parse-value
+          :a5   (nelisp-aot-compiler--parse-value
                  (nth 7 sexp) env fenv defuns)
-          :ptr  (nelisp-phase47-compiler--parse-value
+          :ptr  (nelisp-aot-compiler--parse-value
                  (nth 8 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 9 sexp) env fenv defuns)))
    ;; ---- Doc 101 §101.D Cons construction ops ----
    ;; MVP refcount note: these ops byte-copy whole 32-byte `Sexp'
@@ -9152,32 +9152,32 @@ functions `((NAME . ARITY) ...)'."
    ;; lands in a follow-up §101.D.2 stage if needed.
    ((and (consp sexp) (eq (car sexp) 'cons-make))
     (unless (= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-make-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-make
-          :car-ptr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-make
+          :car-ptr (nelisp-aot-compiler--parse-value
                     (nth 1 sexp) env fenv defuns)
-          :cdr-ptr (nelisp-phase47-compiler--parse-value
+          :cdr-ptr (nelisp-aot-compiler--parse-value
                     (nth 2 sexp) env fenv defuns)
-          :slot (nelisp-phase47-compiler--parse-value
+          :slot (nelisp-aot-compiler--parse-value
                  (nth 3 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cons-set-car))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-set-car-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-set-car
-          :handle (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-set-car
+          :handle (nelisp-aot-compiler--parse-value
                    (nth 1 sexp) env fenv defuns)
-          :val-ptr (nelisp-phase47-compiler--parse-value
+          :val-ptr (nelisp-aot-compiler--parse-value
                     (nth 2 sexp) env fenv defuns)))
    ((and (consp sexp) (eq (car sexp) 'cons-set-cdr))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :cons-set-cdr-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'cons-set-cdr
-          :handle (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'cons-set-cdr
+          :handle (nelisp-aot-compiler--parse-value
                    (nth 1 sexp) env fenv defuns)
-          :val-ptr (nelisp-phase47-compiler--parse-value
+          :val-ptr (nelisp-aot-compiler--parse-value
                     (nth 2 sexp) env fenv defuns)))
    ;; (f64-call SYM ARG) — Doc 110 §110.E.2 / Doc 110 §3.F.
    ;; 1-arg f64→f64 extern call (= the shape `exp' / `log' / other
@@ -9189,16 +9189,16 @@ functions `((NAME . ARITY) ...)'."
    ;; static archive entry.
    ((and (consp sexp) (eq (car sexp) 'f64-call))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :f64-call-arity sexp)))
     (let ((name (nth 1 sexp))
           (arg (nth 2 sexp)))
       (unless (symbolp name)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :f64-call-name-not-symbol name)))
-      (nelisp-phase47-compiler--make-ir 'f64-call
+      (nelisp-aot-compiler--make-ir 'f64-call
             :name name
-            :arg (nelisp-phase47-compiler--parse-value
+            :arg (nelisp-aot-compiler--parse-value
                   arg env fenv defuns))))
    ;; (extern-call SYM ARG...) — Doc 100 §100.A / Doc 122 §122.C call
    ;; into a C-callable extern symbol.  SYM becomes an SHN_UNDEF entry
@@ -9226,14 +9226,14 @@ functions `((NAME . ARITY) ...)'."
    ;; `--emit-call' branches on `:fn-value'.
    ((and (consp sexp) (eq (car sexp) 'call-ptr))
     (when (< (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :call-ptr-needs-fn sexp)))
-    (nelisp-phase47-compiler--make-ir 'call
+    (nelisp-aot-compiler--make-ir 'call
           :name nil
-          :fn-value (nelisp-phase47-compiler--parse-value
+          :fn-value (nelisp-aot-compiler--parse-value
                      (nth 1 sexp) env fenv defuns)
           :args (mapcar (lambda (a)
-                          (nelisp-phase47-compiler--parse-value
+                          (nelisp-aot-compiler--parse-value
                            a env fenv defuns))
                         (nthcdr 2 sexp))))
    ;; (addr-of NAME) — load the runtime address of function NAME as an
@@ -9242,9 +9242,9 @@ functions `((NAME . ARITY) ...)'."
    ;; called indirectly.  x86_64 only (RIP-relative LEA).
    ((and (consp sexp) (eq (car sexp) 'addr-of))
     (unless (and (= (length sexp) 2) (symbolp (nth 1 sexp)))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :addr-of-needs-symbol sexp)))
-    (nelisp-phase47-compiler--make-ir 'addr-of :name (nth 1 sexp)))
+    (nelisp-aot-compiler--make-ir 'addr-of :name (nth 1 sexp)))
    ;; (data-addr NAME) — load the runtime address of an EXTERNAL data/bss
    ;; symbol (Doc 140 Stage 8).  Unlike `addr-of' (which resolves an
    ;; intra-object function label through the per-object fixup pass),
@@ -9254,22 +9254,22 @@ functions `((NAME . ARITY) ...)'."
    ;; immediate, no arena base constant.
    ((and (consp sexp) (eq (car sexp) 'data-addr))
     (unless (and (= (length sexp) 2) (symbolp (nth 1 sexp)))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :data-addr-needs-symbol sexp)))
-    (nelisp-phase47-compiler--make-ir 'data-addr :name (nth 1 sexp)))
+    (nelisp-aot-compiler--make-ir 'data-addr :name (nth 1 sexp)))
    ((and (consp sexp) (memq (car sexp) '(extern-call extern-call-f64)))
     (when (< (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :extern-call-needs-symbol sexp)))
     (let* ((op (car sexp))
            (name (nth 1 sexp))
            (raw-args (nthcdr 2 sexp))
-           (parsed (nelisp-phase47-compiler--parse-extern-call-args
+           (parsed (nelisp-aot-compiler--parse-extern-call-args
                     op name raw-args env fenv defuns)))
       (unless (symbolp name)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :extern-call-name-not-symbol name)))
-      (nelisp-phase47-compiler--make-ir 'extern-call
+      (nelisp-aot-compiler--make-ir 'extern-call
             :name name
             :ret-class (if (eq op 'extern-call-f64) 'f64 'gp)
             :args (plist-get parsed :args)
@@ -9291,79 +9291,79 @@ functions `((NAME . ARITY) ...)'."
    ;; + 7 × pop + SYSCALL = deterministic sizes independent of arg content.
    ((and (consp sexp) (eq (car sexp) 'syscall-direct))
     (unless (= (length sexp) 8)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :syscall-direct-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'syscall-direct
-          :nr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'syscall-direct
+          :nr (nelisp-aot-compiler--parse-value
                (nth 1 sexp) env fenv defuns)
-          :a0 (nelisp-phase47-compiler--parse-value
+          :a0 (nelisp-aot-compiler--parse-value
                (nth 2 sexp) env fenv defuns)
-          :a1 (nelisp-phase47-compiler--parse-value
+          :a1 (nelisp-aot-compiler--parse-value
                (nth 3 sexp) env fenv defuns)
-          :a2 (nelisp-phase47-compiler--parse-value
+          :a2 (nelisp-aot-compiler--parse-value
                (nth 4 sexp) env fenv defuns)
-          :a3 (nelisp-phase47-compiler--parse-value
+          :a3 (nelisp-aot-compiler--parse-value
                (nth 5 sexp) env fenv defuns)
-          :a4 (nelisp-phase47-compiler--parse-value
+          :a4 (nelisp-aot-compiler--parse-value
                (nth 6 sexp) env fenv defuns)
-          :a5 (nelisp-phase47-compiler--parse-value
+          :a5 (nelisp-aot-compiler--parse-value
                (nth 7 sexp) env fenv defuns)))
    ;; Darwin arm64 helper: preserve x0 while storing the second return
    ;; register.  This remains unavailable to x86_64 codegen.
    ((and (consp sexp) (eq (car sexp) 'syscall-direct-store-x1))
     (unless (= (length sexp) 10)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :syscall-direct-store-x1-arity sexp)))
-    (nelisp-phase47-compiler--make-ir 'syscall-direct-store-x1
-          :nr (nelisp-phase47-compiler--parse-value
+    (nelisp-aot-compiler--make-ir 'syscall-direct-store-x1
+          :nr (nelisp-aot-compiler--parse-value
                (nth 1 sexp) env fenv defuns)
-          :a0 (nelisp-phase47-compiler--parse-value
+          :a0 (nelisp-aot-compiler--parse-value
                (nth 2 sexp) env fenv defuns)
-          :a1 (nelisp-phase47-compiler--parse-value
+          :a1 (nelisp-aot-compiler--parse-value
                (nth 3 sexp) env fenv defuns)
-          :a2 (nelisp-phase47-compiler--parse-value
+          :a2 (nelisp-aot-compiler--parse-value
                (nth 4 sexp) env fenv defuns)
-          :a3 (nelisp-phase47-compiler--parse-value
+          :a3 (nelisp-aot-compiler--parse-value
                (nth 5 sexp) env fenv defuns)
-          :a4 (nelisp-phase47-compiler--parse-value
+          :a4 (nelisp-aot-compiler--parse-value
                (nth 6 sexp) env fenv defuns)
-          :a5 (nelisp-phase47-compiler--parse-value
+          :a5 (nelisp-aot-compiler--parse-value
                (nth 7 sexp) env fenv defuns)
-          :ptr (nelisp-phase47-compiler--parse-value
+          :ptr (nelisp-aot-compiler--parse-value
                 (nth 8 sexp) env fenv defuns)
-          :offset (nelisp-phase47-compiler--parse-value
+          :offset (nelisp-aot-compiler--parse-value
                    (nth 9 sexp) env fenv defuns)))
    ;; Function call (= head is a defined function name).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
     (let* ((name (car sexp))
            (signature (cdr (assq name defuns)))
-           (arity (nelisp-phase47-compiler--defun-signature-arity
+           (arity (nelisp-aot-compiler--defun-signature-arity
                    signature))
            (args (cdr sexp)))
       (when (> arity
-               (if (or (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                            (memq nelisp-phase47-compiler--abi '(sysv win64)))
-                       (eq nelisp-phase47-compiler--arch 'aarch64))
+               (if (or (and (eq nelisp-aot-compiler--arch 'x86_64)
+                            (memq nelisp-aot-compiler--abi '(sysv win64)))
+                       (eq nelisp-aot-compiler--arch 'aarch64))
                    14
-                 (length (nelisp-phase47-compiler--current-arg-regs))))
-        (signal 'nelisp-phase47-compiler-error
+                 (length (nelisp-aot-compiler--current-arg-regs))))
+        (signal 'nelisp-aot-compiler-error
                 (list :too-many-args name arity)))
-      (if (nelisp-phase47-compiler--defun-signature-rest-p signature)
+      (if (nelisp-aot-compiler--defun-signature-rest-p signature)
           (let* ((fixed-count
-                  (nelisp-phase47-compiler--defun-signature-fixed-count
+                  (nelisp-aot-compiler--defun-signature-fixed-count
                    signature))
                  (min-count
-                  (nelisp-phase47-compiler--defun-signature-min-count
+                  (nelisp-aot-compiler--defun-signature-min-count
                    signature))
                  (given (length args)))
             (when (< given min-count)
-              (signal 'nelisp-phase47-compiler-error
+              (signal 'nelisp-aot-compiler-error
                       (list :call-arity-mismatch name
                             :expected-at-least min-count
                             :got given)))
             (let* ((boundary
-                    (nelisp-phase47-compiler--aot-funcall1-boundary-symbols
+                    (nelisp-aot-compiler--aot-funcall1-boundary-symbols
                      fenv sexp))
                    (out (plist-get boundary :out))
                    (mirror (plist-get boundary :mirror))
@@ -9375,33 +9375,33 @@ functions `((NAME . ARITY) ...)'."
                             (make-list (- fixed-count given-fixed) 0)))
                    (rest-args (nthcdr fixed-count args))
                    (list-node
-                    (nelisp-phase47-compiler--parse-value
+                    (nelisp-aot-compiler--parse-value
                      `(extern-call nelisp_aot_listn
                                    ,mirror ,frames ,(length rest-args)
                                    ,scratch ,out ,@rest-args)
                      env fenv defuns))
                    (call-node
-                    (nelisp-phase47-compiler--make-ir 'call
+                    (nelisp-aot-compiler--make-ir 'call
                           :name name
                           :args (mapcar
                                  (lambda (a)
-                                   (nelisp-phase47-compiler--parse-value
+                                   (nelisp-aot-compiler--parse-value
                                     a env fenv defuns))
                                  (append fixed-args (list scratch))))))
-              (nelisp-phase47-compiler--make-ir 'value-seq
+              (nelisp-aot-compiler--make-ir 'value-seq
                     :forms (list list-node call-node))))
         (let ((min-count
-               (nelisp-phase47-compiler--defun-signature-min-count
+               (nelisp-aot-compiler--defun-signature-min-count
                 signature)))
           (unless (and (<= min-count (length args))
                        (<= (length args) arity))
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :call-arity-mismatch name
                           :expected arity :got (length args)))))
-        (nelisp-phase47-compiler--make-ir 'call
+        (nelisp-aot-compiler--make-ir 'call
               :name name
               :args (mapcar (lambda (a)
-                              (nelisp-phase47-compiler--parse-value
+                              (nelisp-aot-compiler--parse-value
                                a env fenv defuns))
                             (append args
                                     (make-list (- arity (length args))
@@ -9410,17 +9410,17 @@ functions `((NAME . ARITY) ...)'."
    ;; in other `.el' objects.  Same-unit calls still take the `call' IR
    ;; path above; this fallback emits a PLT relocation so the final
    ;; module link can resolve the cross-object function symbol.
-   ((and nelisp-phase47-compiler--allow-external-user-calls
+   ((and nelisp-aot-compiler--allow-external-user-calls
          (consp sexp)
          (symbolp (car sexp))
          (not (keywordp (car sexp)))
          (not (memq (car sexp)
-                    nelisp-phase47-compiler--external-user-call-reserved-ops)))
+                    nelisp-aot-compiler--external-user-call-reserved-ops)))
     (let* ((name (car sexp))
            (raw-args (cdr sexp))
-           (parsed (nelisp-phase47-compiler--parse-extern-call-args
+           (parsed (nelisp-aot-compiler--parse-extern-call-args
                     'extern-call name raw-args env fenv defuns)))
-      (nelisp-phase47-compiler--make-ir 'extern-call
+      (nelisp-aot-compiler--make-ir 'extern-call
             :name name
             :ret-class 'gp
             :args (plist-get parsed :args)
@@ -9434,57 +9434,57 @@ functions `((NAME . ARITY) ...)'."
    ;; `defun' parse to have established `--next-rt-let-slot'.
    ((and (consp sexp) (eq (car sexp) 'let))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :let-arity sexp)))
     (let ((bindings (nth 1 sexp))
           (body-sexp (nth 2 sexp)))
       (if (not (and (consp bindings) (= (length bindings) 1)))
-          (nelisp-phase47-compiler--parse-multi-let
+          (nelisp-aot-compiler--parse-multi-let
            bindings body-sexp env fenv defuns
-           #'nelisp-phase47-compiler--parse-value)
-        (let* ((pair (nelisp-phase47-compiler--validate-let-binding
+           #'nelisp-aot-compiler--parse-value)
+        (let* ((pair (nelisp-aot-compiler--validate-let-binding
                       (car bindings)))
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
                (root-p (nth 2 pair)))
-          (if (nelisp-phase47-compiler--special-var-p var)
-              (nelisp-phase47-compiler--parse-aot-special-let-normal-exit
+          (if (nelisp-aot-compiler--special-var-p var)
+              (nelisp-aot-compiler--parse-aot-special-let-normal-exit
                var val-sexp body-sexp env fenv defuns sexp)
-            (nelisp-phase47-compiler--check-let-var-lexical var)
-            (if (and (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
-                     (not (nelisp-phase47-compiler--form-setqs-var-p
+            (nelisp-aot-compiler--check-let-var-lexical var)
+            (if (and (nelisp-aot-compiler--int-foldable-p val-sexp env fenv)
+                     (not (nelisp-aot-compiler--form-setqs-var-p
                            body-sexp var)))
               ;; Compile-time path: fold and extend ENV as before.
-              (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
+              (let* ((val (nelisp-aot-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env)))
-                (nelisp-phase47-compiler--parse-value
+                (nelisp-aot-compiler--parse-value
                  body-sexp new-env fenv defuns))
             ;; Runtime path: allocate a frame slot, emit a `let-rt' node.
-            (unless nelisp-phase47-compiler--next-rt-let-slot
-              (signal 'nelisp-phase47-compiler-error
+            (unless nelisp-aot-compiler--next-rt-let-slot
+              (signal 'nelisp-aot-compiler-error
                       (list :let-rt-requires-defun-context var)))
-            (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
-                   (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
+            (let* ((slot (car nelisp-aot-compiler--next-rt-let-slot))
+                   (_ (setcar nelisp-aot-compiler--next-rt-let-slot
                               (1+ slot)))
-                   (val-ir (nelisp-phase47-compiler--parse-value
+                   (val-ir (nelisp-aot-compiler--parse-value
                             val-sexp env fenv defuns))
                    ;; Extend FENV: var → slot (gp class, no reg = not
                    ;; a param but loads via the same `ref' mechanism).
                    (new-fenv (cons (cons var (list :slot slot :class 'gp
                                                    :root-p root-p))
                                    fenv))
-                   (body-ir (nelisp-phase47-compiler--parse-value
+                   (body-ir (nelisp-aot-compiler--parse-value
                              body-sexp env new-fenv defuns)))
-              (nelisp-phase47-compiler--make-ir 'let-rt
+              (nelisp-aot-compiler--make-ir 'let-rt
                     :var var
                     :slot slot
                     :value-ir val-ir
                     :body body-ir))))))))
    (t
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :not-value-expr sexp)))))
 
-(defun nelisp-phase47-compiler--parse-stmt (sexp env fenv defuns)
+(defun nelisp-aot-compiler--parse-stmt (sexp env fenv defuns)
   "Parse SEXP as a statement-form into Doc 97 IR.
 ENV is the let-alist of constants, FENV is the param->register
 alist for the enclosing function (= nil at top level), DEFUNS is
@@ -9500,13 +9500,13 @@ Returns one of:
    ;; (write "STRING")
    ((and (consp sexp) (eq (car sexp) 'write))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :write-arity sexp)))
     (let ((arg (nth 1 sexp)))
       (unless (stringp arg)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :write-not-string arg)))
-      (nelisp-phase47-compiler--make-ir 'write :str arg)))
+      (nelisp-aot-compiler--make-ir 'write :str arg)))
    ;; Doc 49 Wave 11.1: (static-imm32-table-define NAME (E1 E2 ...))
    ;;
    ;; Declares a build-time u32 array in .rodata, indexable by NAME.
@@ -9517,43 +9517,43 @@ Returns one of:
    ;; declaration.  Statement-only (= no value-producing form).
    ((and (consp sexp) (eq (car sexp) 'static-imm32-table-define))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :static-imm32-table-define-arity sexp)))
     (let ((name (nth 1 sexp))
           (elements (nth 2 sexp)))
       (unless (stringp name)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :static-imm32-table-define-name-not-string name)))
       (unless (and (listp elements) (consp elements))
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :static-imm32-table-define-elements-not-list
                       elements)))
       (dolist (e elements)
         (unless (and (integerp e)
                      (<= (- (ash 1 31)) e (1- (ash 1 32))))
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :static-imm32-table-define-element-out-of-range
                         e))))
-      (nelisp-phase47-compiler--make-ir 'table-define :name name :elements elements)))
+      (nelisp-aot-compiler--make-ir 'table-define :name name :elements elements)))
    ;; (exit VALUE-EXPR)
    ((and (consp sexp) (eq (car sexp) 'exit))
     (unless (= (length sexp) 2)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :exit-arity sexp)))
     (let* ((arg (nth 1 sexp))
            (vnode
-            (nelisp-phase47-compiler--parse-value arg env fenv defuns)))
-      (when (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm)
-        (let ((n (nelisp-phase47-compiler--ir-get vnode :value)))
+            (nelisp-aot-compiler--parse-value arg env fenv defuns)))
+      (when (eq (nelisp-aot-compiler--ir-kind vnode) 'imm)
+        (let ((n (nelisp-aot-compiler--ir-get vnode :value)))
           (unless (and (integerp n) (<= 0 n 255))
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :status-out-of-range n)))))
-      (nelisp-phase47-compiler--make-ir 'exit :value vnode)))
+      (nelisp-aot-compiler--make-ir 'exit :value vnode)))
    ;; (seq EXPR...)
    ((and (consp sexp) (eq (car sexp) 'seq))
     (let ((children (cdr sexp)))
       (when (null children)
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :empty-seq sexp)))
       ;; Pre-scan for defun forms so later children can call them.
       ;; Defun bodies parse with the same updated defuns table so
@@ -9563,73 +9563,73 @@ Returns one of:
         (dolist (c children)
           (when (and (consp c) (eq (car c) 'defun))
             (unless (>= (length c) 4)
-              (signal 'nelisp-phase47-compiler-error
+              (signal 'nelisp-aot-compiler-error
                       (list :defun-arity c)))
             (let ((nm (nth 1 c))
                   (ps (nth 2 c)))
               (unless (symbolp nm)
-                (signal 'nelisp-phase47-compiler-error
+                (signal 'nelisp-aot-compiler-error
                         (list :defun-name-not-symbol nm)))
               (unless (listp ps)
-                (signal 'nelisp-phase47-compiler-error
+                (signal 'nelisp-aot-compiler-error
                         (list :defun-params-not-list ps)))
               (when (assq nm cur-defuns)
-                (signal 'nelisp-phase47-compiler-error
+                (signal 'nelisp-aot-compiler-error
                         (list :duplicate-defun nm)))
               (setq cur-defuns
                     (cons (cons nm
-                                (nelisp-phase47-compiler--defun-signature
+                                (nelisp-aot-compiler--defun-signature
                                  ps c))
                           cur-defuns)))))
         (dolist (c children)
-          (push (nelisp-phase47-compiler--parse-stmt
+          (push (nelisp-aot-compiler--parse-stmt
                  c env fenv cur-defuns)
                 acc))
-        (nelisp-phase47-compiler--make-ir 'seq :forms (nreverse acc)))))
+        (nelisp-aot-compiler--make-ir 'seq :forms (nreverse acc)))))
    ;; (let ((VAR VAL)) BODY)
    ((and (consp sexp) (eq (car sexp) 'let))
     (unless (= (length sexp) 3)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :let-arity sexp)))
     (let ((bindings (nth 1 sexp))
           (body (nth 2 sexp)))
       (if (not (and (consp bindings) (= (length bindings) 1)))
-          (nelisp-phase47-compiler--parse-multi-let
+          (nelisp-aot-compiler--parse-multi-let
            bindings body env fenv defuns
-           #'nelisp-phase47-compiler--parse-stmt)
-        (let* ((pair (nelisp-phase47-compiler--validate-let-binding
+           #'nelisp-aot-compiler--parse-stmt)
+        (let* ((pair (nelisp-aot-compiler--validate-let-binding
                       (car bindings)))
                (var (nth 0 pair))
                (val-sexp (nth 1 pair))
                (root-p (nth 2 pair)))
-          (if (nelisp-phase47-compiler--special-var-p var)
-              (nelisp-phase47-compiler--parse-aot-special-let-normal-exit
+          (if (nelisp-aot-compiler--special-var-p var)
+              (nelisp-aot-compiler--parse-aot-special-let-normal-exit
                var val-sexp body env fenv defuns sexp)
-            (nelisp-phase47-compiler--check-let-var-lexical var)
-            (if (and (nelisp-phase47-compiler--int-foldable-p val-sexp env fenv)
-                     (not (nelisp-phase47-compiler--form-setqs-var-p
+            (nelisp-aot-compiler--check-let-var-lexical var)
+            (if (and (nelisp-aot-compiler--int-foldable-p val-sexp env fenv)
+                     (not (nelisp-aot-compiler--form-setqs-var-p
                            body var)))
-              (let* ((val (nelisp-phase47-compiler--fold-int val-sexp env))
+              (let* ((val (nelisp-aot-compiler--fold-int val-sexp env))
                      (new-env (cons (cons var val) env))
-                     (body-ir (nelisp-phase47-compiler--parse-stmt
+                     (body-ir (nelisp-aot-compiler--parse-stmt
                                body new-env fenv defuns)))
-                (nelisp-phase47-compiler--make-ir 'let :var var :value val :body body-ir))
+                (nelisp-aot-compiler--make-ir 'let :var var :value val :body body-ir))
             ;; Runtime path: mirrors the `--parse-value' `let-rt' path.
             ;; Statement-context `let-rt' also requires an enclosing defun.
-            (unless nelisp-phase47-compiler--next-rt-let-slot
-              (signal 'nelisp-phase47-compiler-error
+            (unless nelisp-aot-compiler--next-rt-let-slot
+              (signal 'nelisp-aot-compiler-error
                       (list :let-rt-requires-defun-context var)))
-            (let* ((slot (car nelisp-phase47-compiler--next-rt-let-slot))
-                   (_ (setcar nelisp-phase47-compiler--next-rt-let-slot
+            (let* ((slot (car nelisp-aot-compiler--next-rt-let-slot))
+                   (_ (setcar nelisp-aot-compiler--next-rt-let-slot
                               (1+ slot)))
-                   (val-ir (nelisp-phase47-compiler--parse-value
+                   (val-ir (nelisp-aot-compiler--parse-value
                             val-sexp env fenv defuns))
                    (new-fenv (cons (cons var (list :slot slot :class 'gp
                                                    :root-p root-p))
                                    fenv))
-                   (body-ir (nelisp-phase47-compiler--parse-stmt
+                   (body-ir (nelisp-aot-compiler--parse-stmt
                              body env new-fenv defuns)))
-              (nelisp-phase47-compiler--make-ir 'let-rt
+              (nelisp-aot-compiler--make-ir 'let-rt
                     :var var
                     :slot slot
                     :value-ir val-ir
@@ -9643,10 +9643,10 @@ Returns one of:
    ;; window, assigned by argument position.
    ((and (consp sexp) (eq (car sexp) 'defun))
     (unless (>= (length sexp) 4)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :defun-arity sexp)))
     (let* ((name (nth 1 sexp))
-           (param-info (nelisp-phase47-compiler--normalize-defun-params
+           (param-info (nelisp-aot-compiler--normalize-defun-params
                         (nth 2 sexp) sexp))
            (param-forms (plist-get param-info :params))
            (body (nth 3 sexp))
@@ -9667,7 +9667,7 @@ Returns one of:
                  (list (car p)
                        (if (eq (nth 2 p) 'sexp) 'gp (nth 2 p))
                        (eq (nth 2 p) 'sexp)))
-                (t (signal 'nelisp-phase47-compiler-error
+                (t (signal 'nelisp-aot-compiler-error
                            (list :defun-param-shape p)))))
              param-forms))
            (params (mapcar #'car param-pairs))
@@ -9680,42 +9680,42 @@ Returns one of:
           (unless (eq (car cs) uniform-class) (setq all-uniform nil))
           (setq cs (cdr cs)))
         (unless all-uniform
-          (if (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                   (eq nelisp-phase47-compiler--abi 'win64))
+          (if (and (eq nelisp-aot-compiler--arch 'x86_64)
+                   (eq nelisp-aot-compiler--abi 'win64))
               (setq mixed-win64-p t)
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :defun-mixed-param-classes name classes)))))
       (let* ((max-arity
               (cond
-               ((and (eq nelisp-phase47-compiler--arch 'x86_64)
-                     (eq nelisp-phase47-compiler--abi 'win64))
+               ((and (eq nelisp-aot-compiler--arch 'x86_64)
+                     (eq nelisp-aot-compiler--abi 'win64))
                 ;; Win64 register args cover slots 0..3 and stack args
                 ;; start at slot 4.  Keep the existing disp8 local-slot
                 ;; cap used by the SysV 7+ GP path.
                 14)
                ((eq uniform-class 'f64)
-                (length (nelisp-phase47-compiler--current-xmm-arg-regs)))
+                (length (nelisp-aot-compiler--current-xmm-arg-regs)))
                ((and (eq uniform-class 'gp)
-                     (eq nelisp-phase47-compiler--arch 'x86_64)
-                     (eq nelisp-phase47-compiler--abi 'sysv))
+                     (eq nelisp-aot-compiler--arch 'x86_64)
+                     (eq nelisp-aot-compiler--abi 'sysv))
                 ;; GP ref loads use an rbp+disp8 local slot.  Slot 13
                 ;; is the current compiler-wide upper bound.
                 14)
                ((and (eq uniform-class 'gp)
-                     (eq nelisp-phase47-compiler--arch 'aarch64))
+                     (eq nelisp-aot-compiler--arch 'aarch64))
                 ;; AAPCS64 gives x0..x7; standalone reader defuns use a
                 ;; small stack-argument tail beyond that.  Keep the same
                 ;; compiler-wide cap as the x86_64 extended GP surface.
                 14)
                (t
-                (length (nelisp-phase47-compiler--current-arg-regs))))))
+                (length (nelisp-aot-compiler--current-arg-regs))))))
         (when (> arity max-arity)
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :defun-too-many-params name arity uniform-class))))
       (let* ((param-class (if mixed-win64-p 'mixed uniform-class))
              (reg-pool (if (eq uniform-class 'f64)
-                           (nelisp-phase47-compiler--current-xmm-arg-regs)
-                         (nelisp-phase47-compiler--current-arg-regs)))
+                           (nelisp-aot-compiler--current-xmm-arg-regs)
+                         (nelisp-aot-compiler--current-arg-regs)))
              (reg-budget (length reg-pool))
              (param-regs
               (cond
@@ -9725,29 +9725,29 @@ Returns one of:
                          collect
                          (if (< i 4)
                              (if (eq cls 'f64)
-                                 (nth i (nelisp-phase47-compiler--current-xmm-arg-regs))
-                               (nth i (nelisp-phase47-compiler--current-arg-regs)))
+                                 (nth i (nelisp-aot-compiler--current-xmm-arg-regs))
+                               (nth i (nelisp-aot-compiler--current-arg-regs)))
                            (list :stack (- i 4)))))
-               ((and (eq nelisp-phase47-compiler--arch 'x86_64)
-                     (eq nelisp-phase47-compiler--abi 'win64))
+               ((and (eq nelisp-aot-compiler--arch 'x86_64)
+                     (eq nelisp-aot-compiler--abi 'win64))
                 (cl-loop for cls in classes
                          for i from 0
                          collect
                          (if (< i 4)
                              (if (eq cls 'f64)
-                                 (nth i (nelisp-phase47-compiler--current-xmm-arg-regs))
-                               (nth i (nelisp-phase47-compiler--current-arg-regs)))
+                                 (nth i (nelisp-aot-compiler--current-xmm-arg-regs))
+                               (nth i (nelisp-aot-compiler--current-arg-regs)))
                            (list :stack (- i 4)))))
                ((and (eq uniform-class 'gp)
-                     (eq nelisp-phase47-compiler--arch 'x86_64)
-                     (eq nelisp-phase47-compiler--abi 'sysv)
+                     (eq nelisp-aot-compiler--arch 'x86_64)
+                     (eq nelisp-aot-compiler--abi 'sysv)
                      (> arity reg-budget))
                 (cl-loop for i below arity
                          collect (if (< i reg-budget)
                                      (nth i reg-pool)
                                    (list :stack (- i reg-budget)))))
                ((and (eq uniform-class 'gp)
-                     (eq nelisp-phase47-compiler--arch 'aarch64)
+                     (eq nelisp-aot-compiler--arch 'aarch64)
                      (> arity reg-budget))
                 (cl-loop for i below arity
                          collect (if (< i reg-budget)
@@ -9772,7 +9772,7 @@ Returns one of:
                                  :root-p (nth idx root-flags))))
                  params param-regs classes)))
              (hidden-boundary
-              (nelisp-phase47-compiler--object-hidden-boundary-fenv
+              (nelisp-aot-compiler--object-hidden-boundary-fenv
                new-fenv arity))
              (parse-fenv (plist-get hidden-boundary :fenv))
              (hidden-boundary-count (plist-get hidden-boundary :count))
@@ -9782,17 +9782,17 @@ Returns one of:
              ;; The slot counter is a mutable cons cell; the final value
              ;; gives us `rt-slot-count = (car cell) - arity'.
              (rt-slot-cell (list (+ arity hidden-boundary-count)))
-             (body-ir (let ((nelisp-phase47-compiler--next-rt-let-slot
+             (body-ir (let ((nelisp-aot-compiler--next-rt-let-slot
                              rt-slot-cell))
-                        (nelisp-phase47-compiler--parse-value
+                        (nelisp-aot-compiler--parse-value
                          body env parse-fenv defuns)))
              (rt-slot-count (- (car rt-slot-cell) arity))
              (gc-root-slots
-              (nelisp-phase47-compiler--gc-root-slots-for-defun body-ir))
+              (nelisp-aot-compiler--gc-root-slots-for-defun body-ir))
              (root-managed-body-ir
-              (nelisp-phase47-compiler--maybe-wrap-aot-root-scope
+              (nelisp-aot-compiler--maybe-wrap-aot-root-scope
                body-ir gc-root-slots env parse-fenv defuns)))
-        (nelisp-phase47-compiler--make-ir 'defun
+        (nelisp-aot-compiler--make-ir 'defun
               :name name
               :params params
               :param-regs param-regs
@@ -9806,7 +9806,7 @@ Returns one of:
    ;; Bare call in statement position (= side-effect; value discarded).
    ((and (consp sexp) (symbolp (car sexp))
          (assq (car sexp) defuns))
-    (nelisp-phase47-compiler--parse-value sexp env fenv defuns))
+    (nelisp-aot-compiler--parse-value sexp env fenv defuns))
    ;; §97.c control-flow forms as statements (= value discarded).
    ;; `while' in statement position is the common case (= loop with
    ;; side-effects).  `if'/`cond'/`and'/`or' compute a value that
@@ -9816,7 +9816,7 @@ Returns one of:
                '(if while cond and or
                     aot-landing-label aot-machine-landing-jump
                     aot-current-sp)))
-    (nelisp-phase47-compiler--parse-value sexp env fenv defuns))
+    (nelisp-aot-compiler--parse-value sexp env fenv defuns))
    ;; Doc 49 Wave 11.2 hash-table primitives in statement position.
    ;; Each desugars to a value-producing form whose result the stmt
    ;; context discards (= same shape as the `if'/`while' arm above).
@@ -9824,19 +9824,19 @@ Returns one of:
          (memq (car sexp)
                '(hash-table-make hash-table-put
                                  hash-table-get hash-table-contains-p)))
-    (nelisp-phase47-compiler--parse-value sexp env fenv defuns))
+    (nelisp-aot-compiler--parse-value sexp env fenv defuns))
    (t
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :unknown-form sexp)))))
 
-(defun nelisp-phase47-compiler--parse (sexp &optional env)
+(defun nelisp-aot-compiler--parse (sexp &optional env)
   "Public parser entry: parse SEXP into a top-level IR node.
 ENV is the optional let-environment for testing helpers."
-  (let ((nelisp-phase47-compiler--special-vars
-         (plist-get (nelisp-phase47-compiler--extract-defmacros sexp)
+  (let ((nelisp-aot-compiler--special-vars
+         (plist-get (nelisp-aot-compiler--extract-defmacros sexp)
                     :special-vars)))
-    (nelisp-phase47-compiler--parse-stmt
-     (nelisp-phase47-compiler--prepare-source sexp)
+    (nelisp-aot-compiler--parse-stmt
+     (nelisp-aot-compiler--prepare-source sexp)
      env nil nil)))
 
 ;; ---- §97.2 string collector ----
@@ -9845,7 +9845,7 @@ ENV is the optional let-environment for testing helpers."
 ;; literal referenced by a `write' node.  Assigns each a byte offset
 ;; within the eventual .rodata buffer.
 
-(defun nelisp-phase47-compiler--collect-strings (ir)
+(defun nelisp-aot-compiler--collect-strings (ir)
   "Walk IR, return alist `((STR . (:offset N :len L)) ...)' + bytes.
 The return shape is (STR-OFFSETS . RODATA-BYTES).  Walks through
 defun bodies too so functions can call `write'."
@@ -9858,10 +9858,10 @@ defun bodies too so functions can call `write'."
              ;; A33.3 — integer-tag dispatch (= `pcase' arms turned into a
              ;; `cond' over `--ir-kind-tag'); behaviour-preserving so the
              ;; emitted `.o' bytes are unchanged.
-             (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+             (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
               (cond
                ((= tag 87)            ; write
-                (let ((s (nelisp-phase47-compiler--ir-get node :str)))
+                (let ((s (nelisp-aot-compiler--ir-get node :str)))
                   (unless (assoc s offsets)
                     (let ((bs (encode-coding-string s 'utf-8 t)))
                       (setq offsets
@@ -9872,58 +9872,58 @@ defun bodies too so functions can call `write'."
                       (setq rodata (concat rodata bs))
                       (setq cursor (+ cursor (length bs)))))))
                ((= tag 22)            ; exit
-                (walk (nelisp-phase47-compiler--ir-get node :value)))
+                (walk (nelisp-aot-compiler--ir-get node :value)))
                ((= tag 54)            ; seq
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))
                ((= tag 31)            ; let
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 21)            ; defun
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 1)             ; arith
-                (walk (nelisp-phase47-compiler--ir-get node :a))
-                (walk (nelisp-phase47-compiler--ir-get node :b)))
+                (walk (nelisp-aot-compiler--ir-get node :a))
+                (walk (nelisp-aot-compiler--ir-get node :b)))
                ((= tag 67)            ; shift
-                (walk (nelisp-phase47-compiler--ir-get node :a))
-                (walk (nelisp-phase47-compiler--ir-get node :b)))
+                (walk (nelisp-aot-compiler--ir-get node :a))
+                (walk (nelisp-aot-compiler--ir-get node :b)))
                ((= tag 5)             ; call
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :args)))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :args)))
                ((= tag 10)            ; cmp
-                (walk (nelisp-phase47-compiler--ir-get node :a))
-                (walk (nelisp-phase47-compiler--ir-get node :b)))
+                (walk (nelisp-aot-compiler--ir-get node :a))
+                (walk (nelisp-aot-compiler--ir-get node :b)))
                ((= tag 29)            ; if
-                (walk (nelisp-phase47-compiler--ir-get node :test))
-                (walk (nelisp-phase47-compiler--ir-get node :then))
-                (walk (nelisp-phase47-compiler--ir-get node :else)))
+                (walk (nelisp-aot-compiler--ir-get node :test))
+                (walk (nelisp-aot-compiler--ir-get node :then))
+                (walk (nelisp-aot-compiler--ir-get node :else)))
                ((= tag 86)            ; while
-                (walk (nelisp-phase47-compiler--ir-get node :test))
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :test))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 11)            ; cond
-                (dolist (cl (nelisp-phase47-compiler--ir-get node :clauses))
+                (dolist (cl (nelisp-aot-compiler--ir-get node :clauses))
                   (unless (eq (car cl) 'always)
                     (walk (car cl)))
                   (walk (cdr cl))))
                ((= tag 33)            ; logic
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))
                ((= tag 88)            ; value-seq
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))
                ((= tag 96)            ; setq-local
-                (walk (nelisp-phase47-compiler--ir-get node :value-ir)))
+                (walk (nelisp-aot-compiler--ir-get node :value-ir)))
                ((= tag 93)            ; aot-landing-label
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 94)            ; aot-machine-landing-jump
-                (walk (nelisp-phase47-compiler--ir-get node :saved-sp)))
+                (walk (nelisp-aot-compiler--ir-get node :saved-sp)))
                ((= tag 92)            ; aot-root-scope
-                (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :push-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :body))
-                (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
+                (walk (nelisp-aot-compiler--ir-get node :materialize-ir))
+                (walk (nelisp-aot-compiler--ir-get node :push-ir))
+                (walk (nelisp-aot-compiler--ir-get node :body))
+                (walk (nelisp-aot-compiler--ir-get node :pop-ir)))
                ((= tag 32)            ; let-rt
-                (walk (nelisp-phase47-compiler--ir-get node :value-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :value-ir))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 89)            ; let-rt-n
-                (dolist (binding (nelisp-phase47-compiler--ir-get node :bindings))
+                (dolist (binding (nelisp-aot-compiler--ir-get node :bindings))
                   (walk (nth 2 binding)))
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                (t nil))))))
       (walk ir))
     (cons offsets rodata)))
@@ -9937,7 +9937,7 @@ defun bodies too so functions can call `write'."
 ;; u32 zero-extended to i64 at runtime by `MOV EAX, [RDI+RSI]').
 ;; Duplicate names raise an error.  No-op when no defines exist.
 
-(defun nelisp-phase47-compiler--collect-tables (ir)
+(defun nelisp-aot-compiler--collect-tables (ir)
   "Walk IR, return alist `((NAME . (:offset N :len L)) ...)' + bytes.
 The return shape is (TABLE-OFFSETS . TABLE-BYTES).  Each NAME
 maps to a plist with :offset (= byte offset within TABLE-BYTES,
@@ -9947,7 +9947,7 @@ in declaration-encounter order.
 
 Walks through `defun' bodies, `let' bodies, `seq' children, etc.
 recursively to mirror `--collect-strings'.  Signals
-`nelisp-phase47-compiler-error' with `:duplicate-static-imm32-table'
+`nelisp-aot-compiler-error' with `:duplicate-static-imm32-table'
 when two `table-define' nodes share a NAME."
   (let ((offsets nil)
         (bytes "")
@@ -9963,13 +9963,13 @@ when two `table-define' nodes share a NAME."
            (when node
              ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
              ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-             (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+             (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
               (cond
                ((= tag 79)            ; table-define
-                (let ((name (nelisp-phase47-compiler--ir-get node :name))
-                      (elements (nelisp-phase47-compiler--ir-get node :elements)))
+                (let ((name (nelisp-aot-compiler--ir-get node :name))
+                      (elements (nelisp-aot-compiler--ir-get node :elements)))
                   (when (assoc name offsets)
-                    (signal 'nelisp-phase47-compiler-error
+                    (signal 'nelisp-aot-compiler-error
                             (list :duplicate-static-imm32-table name)))
                   (let ((blob ""))
                     (dolist (e elements)
@@ -9982,37 +9982,37 @@ when two `table-define' nodes share a NAME."
                     (setq bytes (concat bytes blob))
                     (setq cursor (+ cursor (length blob))))))
                ((= tag 54)            ; seq
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))
                ((= tag 31)            ; let
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 21)            ; defun
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 32)            ; let-rt
-                (walk (nelisp-phase47-compiler--ir-get node :value-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :value-ir))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 89)            ; let-rt-n
-                (dolist (binding (nelisp-phase47-compiler--ir-get node :bindings))
+                (dolist (binding (nelisp-aot-compiler--ir-get node :bindings))
                   (walk (nth 2 binding)))
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 88)            ; value-seq
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))
                ((= tag 96)            ; setq-local
-                (walk (nelisp-phase47-compiler--ir-get node :value-ir)))
+                (walk (nelisp-aot-compiler--ir-get node :value-ir)))
                ((= tag 93)            ; aot-landing-label
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 94)            ; aot-machine-landing-jump
-                (walk (nelisp-phase47-compiler--ir-get node :saved-sp)))
+                (walk (nelisp-aot-compiler--ir-get node :saved-sp)))
                ((= tag 92)            ; aot-root-scope
-                (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :push-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :body))
-                (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
+                (walk (nelisp-aot-compiler--ir-get node :materialize-ir))
+                (walk (nelisp-aot-compiler--ir-get node :push-ir))
+                (walk (nelisp-aot-compiler--ir-get node :body))
+                (walk (nelisp-aot-compiler--ir-get node :pop-ir)))
                ;; table-lookup is value-producing; the `:index' child
                ;; is itself an IR node walked for nested defines (=
                ;; defensive, normal source has table-define at top
                ;; level only).
                ((= tag 80)            ; table-lookup
-                (walk (nelisp-phase47-compiler--ir-get node :index)))
+                (walk (nelisp-aot-compiler--ir-get node :index)))
                (t nil))))))
       (walk ir))
     (cons offsets bytes)))
@@ -10024,7 +10024,7 @@ when two `table-define' nodes share a NAME."
 ;; Order matters because pass-1/pass-2 byte invariance depends on
 ;; consistent walk order.
 
-(defun nelisp-phase47-compiler--collect-defuns (ir)
+(defun nelisp-aot-compiler--collect-defuns (ir)
   "Walk IR returning a list of defun IR nodes in encounter order.
 Defuns are pulled out so the emitter can place them sequentially
 after the main `_start' body.  Defuns are removed from the inline
@@ -10035,31 +10035,31 @@ walk; the emitter substitutes a no-op for the original site."
            (when node
              ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
              ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-             (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+             (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
               (cond
                ((= tag 21) (push node acc)) ; defun
-               ((= tag 54) (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms))) ; seq
-               ((= tag 31) (walk (nelisp-phase47-compiler--ir-get node :body))) ; let
+               ((= tag 54) (mapc #'walk (nelisp-aot-compiler--ir-get node :forms))) ; seq
+               ((= tag 31) (walk (nelisp-aot-compiler--ir-get node :body))) ; let
                ((= tag 32)            ; let-rt
-                (walk (nelisp-phase47-compiler--ir-get node :value-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :value-ir))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 89)            ; let-rt-n
-                (dolist (binding (nelisp-phase47-compiler--ir-get node :bindings))
+                (dolist (binding (nelisp-aot-compiler--ir-get node :bindings))
                   (walk (nth 2 binding)))
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 88)            ; value-seq
-                (mapc #'walk (nelisp-phase47-compiler--ir-get node :forms)))
+                (mapc #'walk (nelisp-aot-compiler--ir-get node :forms)))
                ((= tag 96)            ; setq-local
-                (walk (nelisp-phase47-compiler--ir-get node :value-ir)))
+                (walk (nelisp-aot-compiler--ir-get node :value-ir)))
                ((= tag 92)            ; aot-root-scope
-                (walk (nelisp-phase47-compiler--ir-get node :materialize-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :push-ir))
-                (walk (nelisp-phase47-compiler--ir-get node :body))
-                (walk (nelisp-phase47-compiler--ir-get node :pop-ir)))
+                (walk (nelisp-aot-compiler--ir-get node :materialize-ir))
+                (walk (nelisp-aot-compiler--ir-get node :push-ir))
+                (walk (nelisp-aot-compiler--ir-get node :body))
+                (walk (nelisp-aot-compiler--ir-get node :pop-ir)))
                ((= tag 93)            ; aot-landing-label
-                (walk (nelisp-phase47-compiler--ir-get node :body)))
+                (walk (nelisp-aot-compiler--ir-get node :body)))
                ((= tag 94)            ; aot-machine-landing-jump
-                (walk (nelisp-phase47-compiler--ir-get node :saved-sp)))
+                (walk (nelisp-aot-compiler--ir-get node :saved-sp)))
                (t nil))))))
       (walk ir))
     (nreverse acc)))
@@ -10069,7 +10069,7 @@ walk; the emitter substitutes a no-op for the original site."
 ;; Every emit-value variant computes its result into rax.  Callers
 ;; that need the result elsewhere `mov-reg-reg' from rax.
 
-(defun nelisp-phase47-compiler--imul-rax-imm32 (buf imm)
+(defun nelisp-aot-compiler--imul-rax-imm32 (buf imm)
   "Emit `imul rax, rax, imm32' (= REX.W 0x69 /0 + imm32 = 7 bytes).
 Uses `emit-bytes' because Doc 92 has no imul helper; the encoding
 is fixed-width so the pass-1/pass-2 invariant holds."
@@ -10078,7 +10078,7 @@ is fixed-width so the pass-1/pass-2 invariant holds."
    buf (concat (unibyte-string #x48 #x69 #xC0)
                (nelisp-asm-x86_64--imm32-bytes imm))))
 
-(defun nelisp-phase47-compiler--imul-reg-reg (buf dst src)
+(defun nelisp-aot-compiler--imul-reg-reg (buf dst src)
   "Emit `imul DST, SRC' (= REX.W 0x0F 0xAF /r = 4 bytes).
 DST is the destination = ModR/M.reg; SRC is the source = ModR/M.rm.
 Uses `emit-bytes' for the 0F-prefix opcode form."
@@ -10094,7 +10094,7 @@ Uses `emit-bytes' for the 0F-prefix opcode form."
     (nelisp-asm-x86_64-emit-bytes
      buf (unibyte-string rex #x0F #xAF modrm))))
 
-(defun nelisp-phase47-compiler--emit-x86_64-mod-r10 (buf)
+(defun nelisp-aot-compiler--emit-x86_64-mod-r10 (buf)
   "Emit signed integer remainder for RAX mod R10, leaving result in RAX."
   ;; MVP uses x86 IDIV's truncating remainder.  This is sufficient for
   ;; the positive divisors used by the nelisp-emacs numeric bootstrap
@@ -10105,7 +10105,7 @@ Uses `emit-bytes' for the 0F-prefix opcode form."
                        #x49 #xF7 #xFA))  ; idiv r10
   (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdx))
 
-(defun nelisp-phase47-compiler--emit-x86_64-div-r10 (buf)
+(defun nelisp-aot-compiler--emit-x86_64-div-r10 (buf)
   "Emit signed integer quotient RAX / R10, leaving the result in RAX.
 Mirrors `--emit-x86_64-mod-r10' but keeps IDIV's quotient (rax) rather
 than the remainder (rdx) — so no trailing `mov rax, rdx'.  Truncating
@@ -10114,48 +10114,48 @@ than the remainder (rdx) — so no trailing `mov rax, rdx'.  Truncating
    buf (unibyte-string #x48 #x99          ; cqo
                        #x49 #xF7 #xFA)))  ; idiv r10  (quotient stays in rax)
 
-(defun nelisp-phase47-compiler--emit-aarch64-unsupported (kind &optional detail)
-  "Signal that KIND is not yet emitted on aarch64 in Phase 47.
+(defun nelisp-aot-compiler--emit-aarch64-unsupported (kind &optional detail)
+  "Signal that KIND is not yet emitted on aarch64 in AOT.
 DETAIL carries the offending IR node or operator when useful."
-  (signal 'nelisp-phase47-compiler-error
+  (signal 'nelisp-aot-compiler-error
           (list :unsupported-aarch64-emit kind
                 :detail detail)))
 
-(defun nelisp-phase47-compiler--arm64-emit-word (buf word)
+(defun nelisp-aot-compiler--arm64-emit-word (buf word)
   "Append one 32-bit little-endian instruction WORD to arm64 BUF."
   (nelisp-asm-arm64--emit-word buf word))
 
-(defun nelisp-phase47-compiler--arm64-emit-ldur (buf dst base imm9)
+(defun nelisp-aot-compiler--arm64-emit-ldur (buf dst base imm9)
   "Emit `LDUR DST, [BASE, #IMM9]' into BUF.
 IMM9 is a signed unscaled byte offset in the range -256..255."
   (unless (and (integerp imm9) (<= -256 imm9) (<= imm9 255))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :arm64-ldur-imm9-out-of-range imm9)))
   (let* ((t-reg (logand (nelisp-asm-arm64--reg-num dst) #x1F))
          (n-reg (logand (nelisp-asm-arm64--reg-num base) #x1F))
          (imm9-u (logand imm9 #x1FF)))
-    (nelisp-phase47-compiler--arm64-emit-word
+    (nelisp-aot-compiler--arm64-emit-word
      buf (logior #xF8400000
                  (ash imm9-u 12)
                  (ash n-reg 5)
                  t-reg))))
 
-(defun nelisp-phase47-compiler--arm64-emit-stur (buf src base imm9)
+(defun nelisp-aot-compiler--arm64-emit-stur (buf src base imm9)
   "Emit `STUR SRC, [BASE, #IMM9]' into BUF.
 IMM9 is a signed unscaled byte offset in the range -256..255."
   (unless (and (integerp imm9) (<= -256 imm9) (<= imm9 255))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :arm64-stur-imm9-out-of-range imm9)))
   (let* ((t-reg (logand (nelisp-asm-arm64--reg-num src) #x1F))
          (n-reg (logand (nelisp-asm-arm64--reg-num base) #x1F))
          (imm9-u (logand imm9 #x1FF)))
-    (nelisp-phase47-compiler--arm64-emit-word
+    (nelisp-aot-compiler--arm64-emit-word
      buf (logior #xF8000000
                  (ash imm9-u 12)
                  (ash n-reg 5)
                  t-reg))))
 
-(defun nelisp-phase47-compiler--arm64-emit-slot-address (buf slot)
+(defun nelisp-aot-compiler--arm64-emit-slot-address (buf slot)
   "Emit address of 16-byte frame SLOT into x9 for large arm64 frames."
   (let ((off (* 16 (1+ slot))))
     (if (<= off 4095)
@@ -10164,30 +10164,30 @@ IMM9 is a signed unscaled byte offset in the range -256..255."
         (nelisp-asm-arm64-mov-imm64 buf 'x9 off)
         (nelisp-asm-arm64-sub-reg-reg buf 'x9 'x29 'x9)))))
 
-(defun nelisp-phase47-compiler--arm64-emit-frame-load (buf dst slot)
+(defun nelisp-aot-compiler--arm64-emit-frame-load (buf dst slot)
   "Load GP frame SLOT into DST on arm64, supporting large standalone frames."
   (let ((disp (- (* 16 (1+ slot)))))
     (if (<= -256 disp 255)
-        (nelisp-phase47-compiler--arm64-emit-ldur buf dst 'x29 disp)
+        (nelisp-aot-compiler--arm64-emit-ldur buf dst 'x29 disp)
       (progn
-        (nelisp-phase47-compiler--arm64-emit-slot-address buf slot)
+        (nelisp-aot-compiler--arm64-emit-slot-address buf slot)
         (nelisp-asm-arm64-ldr-imm buf dst 'x9 0)))))
 
-(defun nelisp-phase47-compiler--arm64-emit-frame-store (buf src slot)
+(defun nelisp-aot-compiler--arm64-emit-frame-store (buf src slot)
   "Store SRC into GP frame SLOT on arm64, supporting large standalone frames."
   (let ((disp (- (* 16 (1+ slot)))))
     (if (<= -256 disp 255)
-        (nelisp-phase47-compiler--arm64-emit-stur buf src 'x29 disp)
+        (nelisp-aot-compiler--arm64-emit-stur buf src 'x29 disp)
       (progn
-        (nelisp-phase47-compiler--arm64-emit-slot-address buf slot)
+        (nelisp-aot-compiler--arm64-emit-slot-address buf slot)
         (nelisp-asm-arm64-str-imm buf src 'x9 0)))))
 
-(defun nelisp-phase47-compiler--arm64-emit-sp-adjust (buf op bytes)
+(defun nelisp-aot-compiler--arm64-emit-sp-adjust (buf op bytes)
   "Emit `sp = sp OP BYTES' on arm64, splitting large immediates.
 OP is `add' or `sub'.  BYTES must preserve AAPCS64's 16-byte stack
 alignment."
   (unless (and (integerp bytes) (<= 0 bytes) (zerop (logand bytes 15)))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :arm64-sp-adjust-bytes bytes)))
   (let ((remaining bytes))
     (while (> remaining 0)
@@ -10195,15 +10195,15 @@ alignment."
         (pcase op
           ('add (nelisp-asm-arm64-add-imm buf 'sp 'sp chunk))
           ('sub (nelisp-asm-arm64-sub-imm buf 'sp 'sp chunk))
-          (_ (signal 'nelisp-phase47-compiler-error
+          (_ (signal 'nelisp-aot-compiler-error
                      (list :arm64-sp-adjust-op op))))
         (setq remaining (- remaining chunk))))))
 
-(defun nelisp-phase47-compiler--arm64-emit-sp-offset-address
+(defun nelisp-aot-compiler--arm64-emit-sp-offset-address
     (buf dst offset)
   "Emit DST = SP + OFFSET on arm64, supporting large positive offsets."
   (unless (and (integerp offset) (<= 0 offset))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :arm64-sp-offset offset)))
   (if (<= offset 4095)
       (nelisp-asm-arm64-add-imm buf dst 'sp offset)
@@ -10211,38 +10211,38 @@ alignment."
       (nelisp-asm-arm64-mov-imm64 buf dst offset)
       (nelisp-asm-arm64-add-reg-reg buf dst 'sp dst))))
 
-(defun nelisp-phase47-compiler--arm64-emit-str-sp (buf src offset)
+(defun nelisp-aot-compiler--arm64-emit-str-sp (buf src offset)
   "Store SRC at `[sp + OFFSET]' on arm64, supporting large offsets."
   (if (and (<= 0 offset 32760) (zerop (logand offset 7)))
       (nelisp-asm-arm64-str-imm buf src 'sp offset)
     (progn
-      (nelisp-phase47-compiler--arm64-emit-sp-offset-address
+      (nelisp-aot-compiler--arm64-emit-sp-offset-address
        buf 'x11 offset)
       (nelisp-asm-arm64-str-imm buf src 'x11 0))))
 
-(defun nelisp-phase47-compiler--arm64-emit-ldr-sp (buf dst offset)
+(defun nelisp-aot-compiler--arm64-emit-ldr-sp (buf dst offset)
   "Load DST from `[sp + OFFSET]' on arm64, supporting large offsets."
   (if (and (<= 0 offset 32760) (zerop (logand offset 7)))
       (nelisp-asm-arm64-ldr-imm buf dst 'sp offset)
     (progn
-      (nelisp-phase47-compiler--arm64-emit-sp-offset-address
+      (nelisp-aot-compiler--arm64-emit-sp-offset-address
        buf 'x11 offset)
       (nelisp-asm-arm64-ldr-imm buf dst 'x11 0))))
 
-(defun nelisp-phase47-compiler--emit-ref-load (buf slot)
+(defun nelisp-aot-compiler--emit-ref-load (buf slot)
   "Emit `mov rax, [rbp - 8*(SLOT+1)]'.
 Used by `:kind ref' (GP class) to load a spilled parameter off
 the local frame.  x86_64 uses disp8 for compact slots and disp32 for
 larger Doc 129 object-mode scratch/let frames."
   (unless (and (integerp slot) (<= 0 slot))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :ref-slot-out-of-range slot)))
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (nelisp-phase47-compiler--arm64-emit-frame-load buf 'x0 slot)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
+      (nelisp-aot-compiler--arm64-emit-frame-load buf 'x0 slot)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'rbp (- (* 8 (1+ slot))))))
 
-(defun nelisp-phase47-compiler--emit-f64-ref-load (buf slot fp-dst)
+(defun nelisp-aot-compiler--emit-f64-ref-load (buf slot fp-dst)
   "Emit code that loads a spilled f64 parameter into FP-DST.
 Doc 110 §110.E.1 / §110.D — `FP-DST' is `xmm0' / `xmm1' on
 x86_64 (= MOVSD load from `[rbp - 8*(slot+1)]') and `d0' / `d1'
@@ -10250,15 +10250,15 @@ on aarch64 (= LDUR D load from `[x29 - 16*(slot+1)]', 16-byte
 stride matching the GP path that uses `str-pre-sp-16').  SLOT
 must be in 0..7 (= f64 ABI arity cap)."
   (unless (and (integerp slot) (<= 0 slot 7))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :f64-ref-slot-out-of-range slot)))
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
       (let ((disp (- (* 16 (1+ slot)))))
         (nelisp-asm-arm64-ldur-d-base-disp buf fp-dst 'x29 disp))
     (let ((disp (- (* 8 (1+ slot)))))
       (nelisp-asm-x86_64-movsd-xmm-mem-disp8 buf fp-dst 'rbp disp))))
 
-(defun nelisp-phase47-compiler--emit-f64-binop (node buf)
+(defun nelisp-aot-compiler--emit-f64-binop (node buf)
   "Emit a flat f64-class binop NODE (Doc 110 §110.E.1).
 Result lands in xmm0 — bypassing the rax convention used by the
 GP `--emit-value' contract.  Strategy at MVP scope is `flat-only':
@@ -10274,14 +10274,14 @@ This avoids the xmm spill / fill dance the GP path uses
 opcode + would force a 16-byte stack alignment per call.  Doc
 112 (= xmm spill) re-enables nested binops; until then the
 parser must reject anything that would force xmm spill."
-  (let* ((op (nelisp-phase47-compiler--ir-get node :op))
-         (a (nelisp-phase47-compiler--ir-get node :a))
-         (b (nelisp-phase47-compiler--ir-get node :b))
-         (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64))
+  (let* ((op (nelisp-aot-compiler--ir-get node :op))
+         (a (nelisp-aot-compiler--ir-get node :a))
+         (b (nelisp-aot-compiler--ir-get node :b))
+         (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64))
          (xmm0 (if aarch64-p 'd0 'xmm0))
          (xmm1 (if aarch64-p 'd1 'xmm1)))
-    (nelisp-phase47-compiler--emit-f64-leaf-into b buf xmm1)
-    (nelisp-phase47-compiler--emit-f64-leaf-into a buf xmm0)
+    (nelisp-aot-compiler--emit-f64-leaf-into b buf xmm1)
+    (nelisp-aot-compiler--emit-f64-leaf-into a buf xmm0)
     (if aarch64-p
         (cond
          ((eq op 'f64-add)
@@ -10293,7 +10293,7 @@ parser must reject anything that would force xmm spill."
          ((eq op 'f64-div)
           (nelisp-asm-arm64-fdiv-reg-reg buf 'd0 'd0 'd1))
          (t
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :unknown-f64-binop op))))
       (cond
        ((eq op 'f64-add)
@@ -10305,10 +10305,10 @@ parser must reject anything that would force xmm spill."
        ((eq op 'f64-div)
         (nelisp-asm-x86_64-divsd-reg-reg buf 'xmm0 'xmm1))
        (t
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :unknown-f64-binop op)))))))
 
-(defun nelisp-phase47-compiler--emit-f64-call (node buf)
+(defun nelisp-aot-compiler--emit-f64-call (node buf)
   "Emit a 1-arg `f64 → f64' extern call (Doc 110 §110.E.2 / §3.F).
 NODE is `:kind f64-call :name SYM :arg IR-NODE'.  Strategy:
 
@@ -10327,10 +10327,10 @@ Stack alignment: the prologue rounds the f64 frame to 16-byte
 multiples so rsp / sp at the moment of CALL / BL satisfies the
 SysV / AAPCS alignment contract (= rsp % 16 == 0 just before
 the call instruction)."
-  (let ((name (nelisp-phase47-compiler--ir-get node :name))
-        (arg (nelisp-phase47-compiler--ir-get node :arg))
-        (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64)))
-    (nelisp-phase47-compiler--emit-f64-leaf-into
+  (let ((name (nelisp-aot-compiler--ir-get node :name))
+        (arg (nelisp-aot-compiler--ir-get node :arg))
+        (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64)))
+    (nelisp-aot-compiler--emit-f64-leaf-into
      arg buf (if aarch64-p 'd0 'xmm0))
     (if aarch64-p
         (progn
@@ -10349,49 +10349,49 @@ the call instruction)."
       (nelisp-asm-x86_64-reloc-plt32-here
        buf (symbol-name name) -4 'text))))
 
-(defun nelisp-phase47-compiler--emit-f64-leaf-into (node buf xmm-dst)
+(defun nelisp-aot-compiler--emit-f64-leaf-into (node buf xmm-dst)
   "Emit code that places f64-class NODE into XMM-DST.
 MVP flat-only constraint: NODE must be `:kind ref' with `:class
 f64' (= a direct f64 parameter reference).  Nested f64-binops /
 f64-cmps are rejected so the xmm0/xmm1 register schedule stays
 trivial until xmm spill machinery lands."
-  (let ((kind (nelisp-phase47-compiler--ir-kind node)))
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
     (cond
-     ((and (eq kind 'ref) (eq (nelisp-phase47-compiler--ir-get node :class) 'f64))
-      (nelisp-phase47-compiler--emit-f64-ref-load
-       buf (nelisp-phase47-compiler--ir-get node :slot) xmm-dst))
+     ((and (eq kind 'ref) (eq (nelisp-aot-compiler--ir-get node :class) 'f64))
+      (nelisp-aot-compiler--emit-f64-ref-load
+       buf (nelisp-aot-compiler--ir-get node :slot) xmm-dst))
      ((eq kind 'bits-to-f64)
       ;; Evaluate INT-EXPR → rax (= gp-class), then MOVQ xmm-dst, rax.
-      (nelisp-phase47-compiler--emit-value
-       (nelisp-phase47-compiler--ir-get node :int-expr) buf)
-      (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (nelisp-aot-compiler--emit-value
+       (nelisp-aot-compiler--ir-get node :int-expr) buf)
+      (if (eq nelisp-aot-compiler--arch 'aarch64)
           (nelisp-asm-arm64-fmov-d-from-x buf xmm-dst 'x0)
         (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax)))
      ((eq kind 'i64-to-f64)
       ;; Evaluate INT-EXPR → rax (= gp-class signed i64), then
       ;; CVTSI2SD xmm-dst, rax (= f64 representation of the int).
-      (nelisp-phase47-compiler--emit-value
-       (nelisp-phase47-compiler--ir-get node :int-expr) buf)
-      (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (nelisp-aot-compiler--emit-value
+       (nelisp-aot-compiler--ir-get node :int-expr) buf)
+      (if (eq nelisp-aot-compiler--arch 'aarch64)
           (nelisp-asm-arm64-scvtf-d-from-x buf xmm-dst 'x0)
         (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf xmm-dst 'rax)))
      ((eq kind 'f64-call)
       ;; Existing f64-call ABI lands its result in xmm0.  If XMM-DST is
       ;; xmm0, just emit the call; otherwise pre-call-shuffle is
       ;; needed (= not implemented at MVP, signal error).
-      (unless (eq xmm-dst (if (eq nelisp-phase47-compiler--arch 'aarch64)
+      (unless (eq xmm-dst (if (eq nelisp-aot-compiler--arch 'aarch64)
                               'd0 'xmm0))
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :f64-call-leaf-into-nonzero-dst xmm-dst)))
-      (nelisp-phase47-compiler--emit-f64-call node buf))
+      (nelisp-aot-compiler--emit-f64-call node buf))
      ((memq kind '(f64-binop f64-cmp))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :nested-f64-binop-needs-doc-112 node)))
      (t
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :f64-leaf-shape-unsupported kind node))))))
 
-(defun nelisp-phase47-compiler--emit-f64-cmp (node buf)
+(defun nelisp-aot-compiler--emit-f64-cmp (node buf)
   "Emit a flat f64-class ordered comparison NODE (Doc 110 §110.C.2.a).
 Result is `0' or `1' in rax via the canonical 10-byte sequence:
 
@@ -10414,21 +10414,21 @@ SETA tests `CF=0 AND ZF=0' → 0; SETAE tests `CF=0' → 0.  Both
 yield 0, matching Rust's `(NaN OP x) = false' rule.  NaN-aware
 EQ-EPS is more involved (needs PF mask AND-ed with SETB) and
 ships in §110.C.2.b."
-  (let* ((op (nelisp-phase47-compiler--ir-get node :op))
-         (a (nelisp-phase47-compiler--ir-get node :a))
-         (b (nelisp-phase47-compiler--ir-get node :b))
-         (aarch64-p (eq nelisp-phase47-compiler--arch 'aarch64))
+  (let* ((op (nelisp-aot-compiler--ir-get node :op))
+         (a (nelisp-aot-compiler--ir-get node :a))
+         (b (nelisp-aot-compiler--ir-get node :b))
+         (aarch64-p (eq nelisp-aot-compiler--arch 'aarch64))
          (fp0 (if aarch64-p 'd0 'xmm0))
          (fp1 (if aarch64-p 'd1 'xmm1)))
     ;; Operand placement: A → fp0, B → fp1 (= same convention as
     ;; `--emit-f64-binop').  Comparison ops then swap operand order
     ;; for LT / LE (= the AArch64 / x86_64 trick that makes SETA /
     ;; CSET-GT inherently NaN-correct).
-    (nelisp-phase47-compiler--emit-f64-leaf-into b buf fp1)
-    (nelisp-phase47-compiler--emit-f64-leaf-into a buf fp0)
+    (nelisp-aot-compiler--emit-f64-leaf-into b buf fp1)
+    (nelisp-aot-compiler--emit-f64-leaf-into a buf fp0)
     (cond
      ((eq op 'f64-eq-eps)
-      (nelisp-phase47-compiler--emit-f64-eq-eps buf))
+      (nelisp-aot-compiler--emit-f64-eq-eps buf))
      (aarch64-p
       ;; FCMP + CSET with operand-swap for LT / LE — same NaN-mask
       ;; trick as x86_64 (= compare b vs a, materialise via GT / GE
@@ -10438,13 +10438,13 @@ ships in §110.C.2.b."
              (cond
               ((memq op '(f64-lt f64-le)) (list fp1 fp0))  ; swap
               ((memq op '(f64-gt f64-ge)) (list fp0 fp1))  ; direct
-              (t (signal 'nelisp-phase47-compiler-error
+              (t (signal 'nelisp-aot-compiler-error
                          (list :unknown-f64-cmp-op op)))))
             (cset-cond
              (cond
               ((memq op '(f64-lt f64-gt)) 'gt)
               ((memq op '(f64-le f64-ge)) 'ge)
-              (t (signal 'nelisp-phase47-compiler-error
+              (t (signal 'nelisp-aot-compiler-error
                          (list :unknown-f64-cmp-op op))))))
         (nelisp-asm-arm64-fcmp-reg-reg
          buf (nth 0 fcmp-args) (nth 1 fcmp-args))
@@ -10457,13 +10457,13 @@ ships in §110.C.2.b."
               ((memq op '(f64-lt f64-le)) (list 'xmm1 'xmm0))
               ;; GT / GE: compare a vs b directly.
               ((memq op '(f64-gt f64-ge)) (list 'xmm0 'xmm1))
-              (t (signal 'nelisp-phase47-compiler-error
+              (t (signal 'nelisp-aot-compiler-error
                          (list :unknown-f64-cmp-op op)))))
             (setcc-mnemonic
              (cond
               ((memq op '(f64-lt f64-gt)) 'seta)   ; strict ordered above
               ((memq op '(f64-le f64-ge)) 'setae)  ; ordered above-or-equal
-              (t (signal 'nelisp-phase47-compiler-error
+              (t (signal 'nelisp-aot-compiler-error
                          (list :unknown-f64-cmp-op op))))))
         (nelisp-asm-x86_64-ucomisd-reg-reg
          buf (nth 0 ucomisd-args) (nth 1 ucomisd-args))
@@ -10477,14 +10477,14 @@ ships in §110.C.2.b."
 ;; Verified by `tests/elisp_cc_jit_float_probe.rs::float_eq_eps_*' against
 ;; Rust's own `1e-15_f64' so any drift between the two surfaces in CI.
 
-(defconst nelisp-phase47-compiler--f64-1e-15-bits
+(defconst nelisp-aot-compiler--f64-1e-15-bits
   #x3CD203AF9EE75616
   "IEEE 754 double-precision bit pattern for the f64 literal `1e-15'.
 Sign=0, biased exponent = 0x3CD (= 973 unbiased -50, so 2^-50 *
 mantissa), mantissa = 0x203AF9EE75616.  Cross-verified against
 Rust's `1e-15_f64.to_bits()' by the §110.C.2.b probe.")
 
-(defconst nelisp-phase47-compiler--f64-abs-mask
+(defconst nelisp-aot-compiler--f64-abs-mask
   #x7FFFFFFFFFFFFFFF
   "IEEE 754 double-precision sign-clear mask (= clear bit 63).
 ANDed against `(a - b)' produces `|a - b|' for the EQ-EPS
@@ -10492,7 +10492,7 @@ predicate.  NaN inputs propagate through (= NaN bit pattern with
 sign cleared is still NaN), so the subsequent UCOMISD against
 1e-15 sets PF=1 → the SETNP cl branch masks the result to 0.")
 
-(defun nelisp-phase47-compiler--emit-f64-eq-eps (buf)
+(defun nelisp-aot-compiler--emit-f64-eq-eps (buf)
   "Emit the EQ-EPS body sequence (Doc 110 §110.C.2.b / §110.D).
 Pre: xmm0 (x86_64) / d0 (aarch64) holds A, xmm1 / d1 holds B
 (caller is `--emit-f64-cmp').  Post: rax / x0 holds 1 iff
@@ -10519,12 +10519,12 @@ mask is needed):
   FMOV d1, x10               ; d1 = 1e-15
   FCMP d1, d0                ; flags reflect 1e-15 vs |a-b|
   CSET x0, gt                ; x0 = 1 iff 1e-15 > |a-b| ordered"
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
       (progn
         (nelisp-asm-arm64-fsub-reg-reg buf 'd0 'd0 'd1)
         (nelisp-asm-arm64-fabs-reg-reg buf 'd0 'd0)
         (nelisp-asm-arm64-mov-imm64
-         buf 'x10 nelisp-phase47-compiler--f64-1e-15-bits)
+         buf 'x10 nelisp-aot-compiler--f64-1e-15-bits)
         (nelisp-asm-arm64-fmov-d-from-x buf 'd1 'x10)
         ;; FCMP d1, d0 then CSET x0, gt (= 1 iff 1e-15 > |a-b|
         ;; ordered, with NaN giving V=1 → GT cond false).
@@ -10532,11 +10532,11 @@ mask is needed):
         (nelisp-asm-arm64-cset buf 'x0 'gt))
     (nelisp-asm-x86_64-subsd-reg-reg buf 'xmm0 'xmm1)
     (nelisp-asm-x86_64-mov-imm64 buf 'r10
-                                  nelisp-phase47-compiler--f64-abs-mask)
+                                  nelisp-aot-compiler--f64-abs-mask)
     (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
     (nelisp-asm-x86_64-andpd-reg-reg buf 'xmm0 'xmm1)
     (nelisp-asm-x86_64-mov-imm64 buf 'r10
-                                  nelisp-phase47-compiler--f64-1e-15-bits)
+                                  nelisp-aot-compiler--f64-1e-15-bits)
     (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'r10)
     (nelisp-asm-x86_64-ucomisd-reg-reg buf 'xmm0 'xmm1)
     (nelisp-asm-x86_64-setcc-al buf 'setb)
@@ -10544,74 +10544,74 @@ mask is needed):
     (nelisp-asm-x86_64-and-r8-r8 buf 'al 'cl)
     (nelisp-asm-x86_64-movzx-eax-al buf)))
 
-(defun nelisp-phase47-compiler--emit-let-rt-n-bindings (node buf)
+(defun nelisp-aot-compiler--emit-let-rt-n-bindings (node buf)
   "Emit NODE's runtime `let-rt-n' initializers and spill them to slots.
 aarch64 spills to `[x29 - 16*(slot+1)]' (STUR); x86_64 to
 `[rbp - 8*(slot+1)]'.  The defun prologue reserves the slot frame."
-  (dolist (binding (nelisp-phase47-compiler--ir-get node :bindings))
+  (dolist (binding (nelisp-aot-compiler--ir-get node :bindings))
     (let* ((slot (nth 1 binding))
            (value-ir (nth 2 binding)))
-      (nelisp-phase47-compiler--emit-value value-ir buf)
-      (nelisp-phase47-compiler--emit-frame-slot-store-from-value buf slot))))
+      (nelisp-aot-compiler--emit-value value-ir buf)
+      (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot))))
 
-(defun nelisp-phase47-compiler--emit-frame-slot-into-reg (buf slot reg)
+(defun nelisp-aot-compiler--emit-frame-slot-into-reg (buf slot reg)
   "Emit a GP load from frame SLOT into REG."
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (nelisp-phase47-compiler--arm64-emit-frame-load buf reg slot)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
+      (nelisp-aot-compiler--arm64-emit-frame-load buf reg slot)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf reg 'rbp (- (* 8 (1+ slot))))))
 
-(defun nelisp-phase47-compiler--emit-frame-slot-store-from-value (buf slot)
+(defun nelisp-aot-compiler--emit-frame-slot-store-from-value (buf slot)
   "Store the current GP value register into frame SLOT.
 On aarch64 the value is in x0 and slots use 16-byte frame stride; on
 x86_64 the value is in rax and slots use the existing 8-byte stride."
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
-      (nelisp-phase47-compiler--arm64-emit-frame-store buf 'x0 slot)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
+      (nelisp-aot-compiler--arm64-emit-frame-store buf 'x0 slot)
     (nelisp-asm-x86_64-mov-mem-reg-disp8
      buf 'rbp (- (* 8 (1+ slot))) 'rax)))
 
-(defun nelisp-phase47-compiler--emit-aot-root-bridge-call
+(defun nelisp-aot-compiler--emit-aot-root-bridge-call
     (node name buf &optional roots-rsp-disp)
   "Emit a direct call to Doc 129.5 root bridge NAME for NODE.
 When ROOTS-RSP-DISP is non-nil, load the roots argument from
 `[rsp + ROOTS-RSP-DISP]' / `[sp + ROOTS-RSP-DISP]' instead of
 NODE's `roots' boundary slot."
-  (unless (or (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                   (eq nelisp-phase47-compiler--abi 'sysv))
-              (eq nelisp-phase47-compiler--arch 'aarch64))
-    (signal 'nelisp-phase47-compiler-error
+  (unless (or (and (eq nelisp-aot-compiler--arch 'x86_64)
+                   (eq nelisp-aot-compiler--abi 'sysv))
+              (eq nelisp-aot-compiler--arch 'aarch64))
+    (signal 'nelisp-aot-compiler-error
             (list :aot-root-scope-unsupported-target
-                  nelisp-phase47-compiler--arch
-                  nelisp-phase47-compiler--abi)))
-  (let* ((slots (nelisp-phase47-compiler--ir-get node :boundary-slots))
+                  nelisp-aot-compiler--arch
+                  nelisp-aot-compiler--abi)))
+  (let* ((slots (nelisp-aot-compiler--ir-get node :boundary-slots))
          (slot-of (lambda (sym)
                     (or (cdr (assq sym slots))
-                        (signal 'nelisp-phase47-compiler-error
+                        (signal 'nelisp-aot-compiler-error
                                 (list :aot-root-scope-missing-slot
                                       sym slots))))))
     ;; nelisp_aot_{push,pop}_roots(mirror, frames, roots, out, scratch)
-    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+    (nelisp-aot-compiler--emit-frame-slot-into-reg
      buf (funcall slot-of 'mirror)
-     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x0 'rdi))
-    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+     (if (eq nelisp-aot-compiler--arch 'aarch64) 'x0 'rdi))
+    (nelisp-aot-compiler--emit-frame-slot-into-reg
      buf (funcall slot-of 'frames)
-     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x1 'rsi))
+     (if (eq nelisp-aot-compiler--arch 'aarch64) 'x1 'rsi))
     (if roots-rsp-disp
-        (if (eq nelisp-phase47-compiler--arch 'aarch64)
+        (if (eq nelisp-aot-compiler--arch 'aarch64)
             (nelisp-asm-arm64-ldr-imm buf 'x2 'sp roots-rsp-disp)
           (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
            buf 'rdx roots-rsp-disp))
-      (nelisp-phase47-compiler--emit-frame-slot-into-reg
+      (nelisp-aot-compiler--emit-frame-slot-into-reg
        buf (funcall slot-of 'roots)
-       (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x2 'rdx)))
-    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+       (if (eq nelisp-aot-compiler--arch 'aarch64) 'x2 'rdx)))
+    (nelisp-aot-compiler--emit-frame-slot-into-reg
      buf (funcall slot-of 'out)
-     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x3 'rcx))
-    (nelisp-phase47-compiler--emit-frame-slot-into-reg
+     (if (eq nelisp-aot-compiler--arch 'aarch64) 'x3 'rcx))
+    (nelisp-aot-compiler--emit-frame-slot-into-reg
      buf (funcall slot-of 'scratch)
-     (if (eq nelisp-phase47-compiler--arch 'aarch64) 'x4 'r8))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
-        (if nelisp-phase47-compiler--allow-external-user-calls
+     (if (eq nelisp-aot-compiler--arch 'aarch64) 'x4 'r8))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        (if nelisp-aot-compiler--allow-external-user-calls
             (progn
               (nelisp-asm-arm64-emit-reloc buf 'b26-pc (symbol-name name))
               (nelisp-asm-arm64--emit-word buf #x94000000))
@@ -10620,40 +10620,40 @@ NODE's `roots' boundary slot."
       (nelisp-asm-x86_64-reloc-plt32-here
        buf (symbol-name name) -4 'text))))
 
-(defun nelisp-phase47-compiler--emit-aot-root-scope (node buf)
+(defun nelisp-aot-compiler--emit-aot-root-scope (node buf)
   "Emit automatic Doc 129.5 root push/pop around NODE's body."
   (let* ((materialize-ir
-          (nelisp-phase47-compiler--ir-get node :materialize-ir))
-         (slots (nelisp-phase47-compiler--ir-get node :boundary-slots))
+          (nelisp-aot-compiler--ir-get node :materialize-ir))
+         (slots (nelisp-aot-compiler--ir-get node :boundary-slots))
          (root-storage
-          (or (nelisp-phase47-compiler--ir-get node :root-storage)
+          (or (nelisp-aot-compiler--ir-get node :root-storage)
               'slot))
          (roots-slot (cdr (assq 'roots slots))))
-    (nelisp-phase47-compiler--emit-value materialize-ir buf)
+    (nelisp-aot-compiler--emit-value materialize-ir buf)
     (pcase root-storage
       ('slot
        (unless roots-slot
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :aot-root-scope-missing-slot 'roots slots)))
-       (if (eq nelisp-phase47-compiler--arch 'aarch64)
+       (if (eq nelisp-aot-compiler--arch 'aarch64)
            (let ((disp (- (* 16 (1+ roots-slot)))))
              (unless (<= -256 disp 255)
-               (signal 'nelisp-phase47-compiler-error
+               (signal 'nelisp-aot-compiler-error
                        (list :aot-root-scope-missing-slot 'roots slots)))
-             (nelisp-phase47-compiler--arm64-emit-stur buf 'x0 'x29 disp))
+             (nelisp-aot-compiler--arm64-emit-stur buf 'x0 'x29 disp))
          (nelisp-asm-x86_64-mov-mem-reg-disp8
           buf 'rbp (- (* 8 (1+ roots-slot))) 'rax))
-       (nelisp-phase47-compiler--emit-aot-root-bridge-call
+       (nelisp-aot-compiler--emit-aot-root-bridge-call
         node 'nelisp_aot_push_roots buf)
-       (nelisp-phase47-compiler--emit-value
-        (nelisp-phase47-compiler--ir-get node :body)
+       (nelisp-aot-compiler--emit-value
+        (nelisp-aot-compiler--ir-get node :body)
         buf)
-       (if (eq nelisp-phase47-compiler--arch 'aarch64)
+       (if (eq nelisp-aot-compiler--arch 'aarch64)
            (progn
              ;; Preserve the body's GP return value across the pop bridge.
              ;; AAPCS64 stack alignment stays valid with a 16-byte spill.
              (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-             (nelisp-phase47-compiler--emit-aot-root-bridge-call
+             (nelisp-aot-compiler--emit-aot-root-bridge-call
               node 'nelisp_aot_pop_roots buf)
              (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))
          ;; Preserve the body's GP return value across the pop bridge.
@@ -10662,26 +10662,26 @@ NODE's `roots' boundary slot."
          ;; remove it before restoring rax.
          (nelisp-asm-x86_64-push buf 'rax)
          (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
-         (nelisp-phase47-compiler--emit-aot-root-bridge-call
+         (nelisp-aot-compiler--emit-aot-root-bridge-call
           node 'nelisp_aot_pop_roots buf)
          (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
          (nelisp-asm-x86_64-pop buf 'rax)))
       ('stack
        ;; Keep the materialized roots in an aligned stack temporary for
        ;; the whole body.
-       (if (eq nelisp-phase47-compiler--arch 'aarch64)
+       (if (eq nelisp-aot-compiler--arch 'aarch64)
            (progn
              ;; [sp] = roots vector.  A single 16-byte spill preserves
              ;; the AAPCS64 call alignment.
              (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-             (nelisp-phase47-compiler--emit-aot-root-bridge-call
+             (nelisp-aot-compiler--emit-aot-root-bridge-call
               node 'nelisp_aot_push_roots buf 0)
-             (nelisp-phase47-compiler--emit-value
-              (nelisp-phase47-compiler--ir-get node :body)
+             (nelisp-aot-compiler--emit-value
+              (nelisp-aot-compiler--ir-get node :body)
               buf)
              ;; Before pop bridge: [sp] = saved result, [sp+16] = roots.
              (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-             (nelisp-phase47-compiler--emit-aot-root-bridge-call
+             (nelisp-aot-compiler--emit-aot-root-bridge-call
               node 'nelisp_aot_pop_roots buf 16)
              (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
              (nelisp-asm-arm64-add-imm buf 'sp 'sp 16))
@@ -10689,23 +10689,23 @@ NODE's `roots' boundary slot."
          ;; alignment; the first copy at [rsp+8] is the roots vector.
          (nelisp-asm-x86_64-push buf 'rax)
          (nelisp-asm-x86_64-push buf 'rax)
-         (nelisp-phase47-compiler--emit-aot-root-bridge-call
+         (nelisp-aot-compiler--emit-aot-root-bridge-call
           node 'nelisp_aot_push_roots buf 8)
-         (nelisp-phase47-compiler--emit-value
-          (nelisp-phase47-compiler--ir-get node :body)
+         (nelisp-aot-compiler--emit-value
+          (nelisp-aot-compiler--ir-get node :body)
           buf)
          ;; Layout before the pop bridge after `push rax; sub rsp, 8':
          ;; [rsp+8] = saved result, [rsp+16] = alignment copy,
          ;; [rsp+24] = roots vector.
          (nelisp-asm-x86_64-push buf 'rax)
          (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 8)
-         (nelisp-phase47-compiler--emit-aot-root-bridge-call
+         (nelisp-aot-compiler--emit-aot-root-bridge-call
           node 'nelisp_aot_pop_roots buf 24)
          (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)
          (nelisp-asm-x86_64-pop buf 'rax)
          (nelisp-asm-x86_64-add-imm32 buf 'rsp 16)))
       (_
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :aot-root-scope-unknown-storage
                      root-storage))))))
 
@@ -10713,7 +10713,7 @@ NODE's `roots' boundary slot."
 ;;
 ;; On standalone NeLisp (= `nl-jit-call-out-2' bound) the two leaf hot
 ;; arms of `--emit-value' (= `imm' and GP-class `ref') dispatch into the
-;; Phase 47-compiled `nelisp_emit_value_imm' / `nelisp_emit_value_ref_gp'
+;; AOT-compiled `nelisp_emit_value_imm' / `nelisp_emit_value_ref_gp'
 ;; kernels (`lisp/nelisp-cc-bi-emit-value.el').  Each kernel reads the IR
 ;; node's integer field at its A33.4 fixed vector offset, writes the
 ;; fixed-layout opcode + imm/disp bytes into a caller-preallocated out-
@@ -10727,7 +10727,7 @@ NODE's `roots' boundary slot."
 ;; A `condition-case' guards the bridge: on dlsym miss / arity mismatch
 ;; the wrapper falls back to the legacy arm rather than mis-emitting.
 
-(defvar nelisp-phase47-compiler--native-emit-enabled nil
+(defvar nelisp-aot-compiler--native-emit-enabled nil
   "When non-nil, route `imm'/`ref' value emit through the standalone
 NeLisp JIT kernels (`nl-jit-call-out-2', A33.N).  Default nil: that JIT
 bridge corrupts interpreter eval/arena state on the self-host path — the
@@ -10739,8 +10739,8 @@ Re-enable once the bridge corruption is root-caused.  No effect on host
 Emacs (where `nl-jit-call-out-2' is unbound and the legacy arm already
 runs).")
 
-(defun nelisp-phase47-compiler--emit-value-native-bytes (kernel node n-slots)
-  "Dispatch the Phase 47 leaf-arm KERNEL for IR NODE; return the bytes.
+(defun nelisp-aot-compiler--emit-value-native-bytes (kernel node n-slots)
+  "Dispatch the AOT leaf-arm KERNEL for IR NODE; return the bytes.
 KERNEL is the extern symbol name string (= `\"nelisp_emit_value_imm\"'
 or `\"nelisp_emit_value_ref_gp\"').  Allocates an N-SLOTS output vector
 (= the kernel's fixed emit length), calls the bridge with NODE + the
@@ -10751,7 +10751,7 @@ the caller falls back to the legacy elisp arm.
 
 A33.N — only invoked on standalone NeLisp; the host-Emacs reference
 build never reaches here, keeping the produced `.o' bytes unchanged."
-  (when (and nelisp-phase47-compiler--native-emit-enabled
+  (when (and nelisp-aot-compiler--native-emit-enabled
              (fboundp 'nl-jit-call-out-2))
     (condition-case _err
         (let* ((out-vec (make-vector n-slots 0))
@@ -10763,10 +10763,10 @@ build never reaches here, keeping the produced `.o' bytes unchanged."
               (while (< i count)
                 (aset bytes i (logand (aref out-vec i) #xFF))
                 (setq i (1+ i)))
-              (nelisp-phase47-compiler--byte-vec->string bytes))))
+              (nelisp-aot-compiler--byte-vec->string bytes))))
       (error nil))))
 
-(defun nelisp-phase47-compiler--emit-value (node buf)
+(defun nelisp-aot-compiler--emit-value (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
 NODE is one of `imm' / `ref' / `arith' / `call' / `cmp' / `if' /
 `while' / `cond' / `logic' / `f64-binop'.  Most variants preserve
@@ -10775,246 +10775,246 @@ and the arg regs rdi..r9 which are caller-saved anyway).
 Doc 110 §110.E.1 f64 nodes (`f64-binop' + `ref' with :class f64)
 return their result in xmm0 instead of rax — caller must know
 the node's class to consume the result correctly."
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
       ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
       ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-      (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+      (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
        (cond
         ((= tag 30)             ; imm
-         (nelisp-asm-arm64-mov-imm64 buf 'x0 (nelisp-phase47-compiler--ir-get node :value)))
+         (nelisp-asm-arm64-mov-imm64 buf 'x0 (nelisp-aot-compiler--ir-get node :value)))
         ((= tag 53)             ; ref
          ;; GP class → LDUR Xn (existing path); f64 class → LDUR Dn
          ;; into d0 (= default destination for top-level body ref).
-         (if (eq (nelisp-phase47-compiler--ir-get node :class) 'f64)
-             (nelisp-phase47-compiler--emit-f64-ref-load
-              buf (nelisp-phase47-compiler--ir-get node :slot) 'd0)
-           (nelisp-phase47-compiler--emit-ref-load
-            buf (nelisp-phase47-compiler--ir-get node :slot))))
+         (if (eq (nelisp-aot-compiler--ir-get node :class) 'f64)
+             (nelisp-aot-compiler--emit-f64-ref-load
+              buf (nelisp-aot-compiler--ir-get node :slot) 'd0)
+           (nelisp-aot-compiler--emit-ref-load
+            buf (nelisp-aot-compiler--ir-get node :slot))))
         ((= tag 1)              ; arith
-         (nelisp-phase47-compiler--emit-arith node buf))
+         (nelisp-aot-compiler--emit-arith node buf))
         ((= tag 67)             ; shift
-         (nelisp-phase47-compiler--emit-shift node buf))
+         (nelisp-aot-compiler--emit-shift node buf))
         ((= tag 10)             ; cmp
-         (nelisp-phase47-compiler--emit-cmp node buf))
+         (nelisp-aot-compiler--emit-cmp node buf))
         ((= tag 29)             ; if
-         (nelisp-phase47-compiler--emit-if node buf))
+         (nelisp-aot-compiler--emit-if node buf))
         ((= tag 88)             ; value-seq
-         (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
-           (nelisp-phase47-compiler--emit-value child buf)))
+         (dolist (child (nelisp-aot-compiler--ir-get node :forms))
+           (nelisp-aot-compiler--emit-value child buf)))
         ((= tag 96)             ; setq-local
-         (let ((slot (nelisp-phase47-compiler--ir-get node :slot)))
-           (nelisp-phase47-compiler--emit-value
-            (nelisp-phase47-compiler--ir-get node :value-ir) buf)
-           (nelisp-phase47-compiler--emit-frame-slot-store-from-value
+         (let ((slot (nelisp-aot-compiler--ir-get node :slot)))
+           (nelisp-aot-compiler--emit-value
+            (nelisp-aot-compiler--ir-get node :value-ir) buf)
+           (nelisp-aot-compiler--emit-frame-slot-store-from-value
             buf slot)))
         ((= tag 93)             ; aot-landing-label
-         (nelisp-phase47-compiler--emit-aot-landing-label node buf))
+         (nelisp-aot-compiler--emit-aot-landing-label node buf))
         ((= tag 94)             ; aot-machine-landing-jump
-         (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
+         (nelisp-aot-compiler--emit-aot-machine-landing-jump node buf))
         ((= tag 95)             ; aot-current-sp
-         (nelisp-phase47-compiler--emit-aot-current-sp node buf))
+         (nelisp-aot-compiler--emit-aot-current-sp node buf))
         ((= tag 24)             ; f64-binop
-         (nelisp-phase47-compiler--emit-f64-binop node buf))
+         (nelisp-aot-compiler--emit-f64-binop node buf))
         ((= tag 26)             ; f64-cmp
-         (nelisp-phase47-compiler--emit-f64-cmp node buf))
+         (nelisp-aot-compiler--emit-f64-cmp node buf))
         ((= tag 25)             ; f64-call
-         (nelisp-phase47-compiler--emit-f64-call node buf))
+         (nelisp-aot-compiler--emit-f64-call node buf))
         ((= tag 28)             ; i64-to-f64 — result in d0
-         (nelisp-phase47-compiler--emit-value
-          (nelisp-phase47-compiler--ir-get node :int-expr) buf)
+         (nelisp-aot-compiler--emit-value
+          (nelisp-aot-compiler--ir-get node :int-expr) buf)
          (nelisp-asm-arm64-scvtf-d-from-x buf 'd0 'x0))
         ((= tag 78)             ; syscall-direct — aarch64 raw SVC (Linux/Darwin)
-         (nelisp-phase47-compiler--emit-syscall-direct-arm64 node buf))
+         (nelisp-aot-compiler--emit-syscall-direct-arm64 node buf))
         ((= tag 98)             ; syscall-direct-store-x1 — Darwin fork helper
-         (nelisp-phase47-compiler--emit-syscall-direct-store-x1-arm64 node buf))
+         (nelisp-aot-compiler--emit-syscall-direct-store-x1-arm64 node buf))
         ((= tag 41)             ; ptr-read-u64 — aarch64 LDR x0,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-read-u64-arm64 node buf))
+         (nelisp-aot-compiler--emit-ptr-read-u64-arm64 node buf))
         ((= tag 45)             ; ptr-write-u64 — aarch64 STR x3,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-write-u64-arm64 node buf))
+         (nelisp-aot-compiler--emit-ptr-write-u64-arm64 node buf))
         ((= tag 3)              ; atomic-fetch-add — aarch64 LDADDAL
-         (nelisp-phase47-compiler--emit-atomic-fetch-add-arm64 node buf))
+         (nelisp-aot-compiler--emit-atomic-fetch-add-arm64 node buf))
         ((= tag 2)              ; atomic-compare-exchange — aarch64 CASAL
-         (nelisp-phase47-compiler--emit-atomic-compare-exchange-arm64 node buf))
+         (nelisp-aot-compiler--emit-atomic-compare-exchange-arm64 node buf))
         ((= tag 86)             ; while — aarch64 loop (cmp/b.eq/b)
-         (nelisp-phase47-compiler--emit-while node buf))
+         (nelisp-aot-compiler--emit-while node buf))
         ((= tag 5)              ; call — aarch64 direct BL (fixed arity)
-         (nelisp-phase47-compiler--emit-call-arm64 node buf))
+         (nelisp-aot-compiler--emit-call-arm64 node buf))
         ((= tag 0)              ; alloc-bytes — aarch64 BL nl_alloc_bytes
-         (nelisp-phase47-compiler--emit-alloc-bytes-arm64 node buf))
+         (nelisp-aot-compiler--emit-alloc-bytes-arm64 node buf))
         ((= tag 56)             ; sexp-int-make — aarch64 slot writer
-         (nelisp-phase47-compiler--emit-sexp-int-make-arm64 node buf))
+         (nelisp-aot-compiler--emit-sexp-int-make-arm64 node buf))
         ((= tag 17)             ; cons-null-p — aarch64 tag==Nil
-         (nelisp-phase47-compiler--emit-cons-null-p-arm64 node buf))
+         (nelisp-aot-compiler--emit-cons-null-p-arm64 node buf))
         ((= tag 12)             ; cons-car — aarch64 boxed-slot copy
-         (nelisp-phase47-compiler--emit-cons-slot-copy-arm64
+         (nelisp-aot-compiler--emit-cons-slot-copy-arm64
           node buf nelisp-nlconsbox--offset-car))
         ((= tag 13)             ; cons-cdr — aarch64 boxed-slot copy
-         (nelisp-phase47-compiler--emit-cons-slot-copy-arm64
+         (nelisp-aot-compiler--emit-cons-slot-copy-arm64
           node buf nelisp-nlconsbox--offset-cdr))
         ((= tag 15)             ; cons-make — aarch64 box alloc + copy
-         (nelisp-phase47-compiler--emit-cons-make-arm64 node buf))
+         (nelisp-aot-compiler--emit-cons-make-arm64 node buf))
         ((= tag 16)             ; cons-make-with-clone — aarch64 box + 2 clones
-         (nelisp-phase47-compiler--emit-cons-make-with-clone-arm64 node buf))
+         (nelisp-aot-compiler--emit-cons-make-with-clone-arm64 node buf))
         ((= tag 59)             ; sexp-payload-ptr — aarch64 Cons->box
-         (nelisp-phase47-compiler--emit-sexp-payload-ptr-arm64 node buf))
+         (nelisp-aot-compiler--emit-sexp-payload-ptr-arm64 node buf))
         ((= tag 61)             ; sexp-tag — aarch64 LDRB tag byte
-         (nelisp-phase47-compiler--emit-sexp-tag-arm64 node buf))
+         (nelisp-aot-compiler--emit-sexp-tag-arm64 node buf))
         ((= tag 57)             ; sexp-int-unwrap — aarch64 LDR payload
-         (nelisp-phase47-compiler--emit-sexp-int-unwrap-arm64 node buf))
+         (nelisp-aot-compiler--emit-sexp-int-unwrap-arm64 node buf))
         ((= tag 75)             ; str-len — aarch64 LDR [ptr+24]
-         (nelisp-phase47-compiler--emit-str-len-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-len-arm64 node buf))
         ((= tag 68)             ; str-byte-at — aarch64 buf[idx] LDRB
-         (nelisp-phase47-compiler--emit-str-byte-at-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-byte-at-arm64 node buf))
         ((= tag 89)             ; let-rt-n — spill bindings to slots, emit body
-         (nelisp-phase47-compiler--emit-let-rt-n-bindings node buf)
-         (nelisp-phase47-compiler--emit-value
-          (nelisp-phase47-compiler--ir-get node :body) buf))
+         (nelisp-aot-compiler--emit-let-rt-n-bindings node buf)
+         (nelisp-aot-compiler--emit-value
+          (nelisp-aot-compiler--ir-get node :body) buf))
         ((= tag 32)             ; let-rt — single runtime binding then body
-         (nelisp-phase47-compiler--emit-value
-          (nelisp-phase47-compiler--ir-get node :value-ir) buf)
-         (nelisp-phase47-compiler--arm64-emit-frame-store
-          buf 'x0 (nelisp-phase47-compiler--ir-get node :slot))
-         (nelisp-phase47-compiler--emit-value
-          (nelisp-phase47-compiler--ir-get node :body) buf))
+         (nelisp-aot-compiler--emit-value
+          (nelisp-aot-compiler--ir-get node :value-ir) buf)
+         (nelisp-aot-compiler--arm64-emit-frame-store
+          buf 'x0 (nelisp-aot-compiler--ir-get node :slot))
+         (nelisp-aot-compiler--emit-value
+          (nelisp-aot-compiler--ir-get node :body) buf))
         ((= tag 42)             ; ptr-read-u8 — aarch64 LDRB w0,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-read-width-arm64
+         (nelisp-aot-compiler--emit-ptr-read-width-arm64
           node buf #'nelisp-asm-arm64-ldrb-reg-reg))
         ((= tag 39)             ; ptr-read-u16 — aarch64 LDRH w0,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-read-width-arm64
+         (nelisp-aot-compiler--emit-ptr-read-width-arm64
           node buf #'nelisp-asm-arm64-ldrh-reg-reg))
         ((= tag 40)             ; ptr-read-u32 — aarch64 LDR w0,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-read-width-arm64
+         (nelisp-aot-compiler--emit-ptr-read-width-arm64
           node buf #'nelisp-asm-arm64-ldrw-reg-reg))
         ((= tag 46)             ; ptr-write-u8 — aarch64 STRB w3,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-write-width-arm64
+         (nelisp-aot-compiler--emit-ptr-write-width-arm64
           node buf #'nelisp-asm-arm64-strb-reg-reg))
         ((= tag 43)             ; ptr-write-u16 — aarch64 STRH w3,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-write-width-arm64
+         (nelisp-aot-compiler--emit-ptr-write-width-arm64
           node buf #'nelisp-asm-arm64-strh-reg-reg))
         ((= tag 44)             ; ptr-write-u32 — aarch64 STR w3,[x1,x2]
-         (nelisp-phase47-compiler--emit-ptr-write-width-arm64
+         (nelisp-aot-compiler--emit-ptr-write-width-arm64
           node buf #'nelisp-asm-arm64-strw-reg-reg))
         ((= tag 20)             ; dealloc-bytes — aarch64 BL nl_dealloc_bytes
-         (nelisp-phase47-compiler--emit-dealloc-bytes-arm64 node buf))
+         (nelisp-aot-compiler--emit-dealloc-bytes-arm64 node buf))
         ((= tag 18)             ; cons-set-car — aarch64 BL nl_consbox_set_car
-         (nelisp-phase47-compiler--emit-cons-set-slot-arm64
+         (nelisp-aot-compiler--emit-cons-set-slot-arm64
           node buf 'nl_consbox_set_car))
         ((= tag 19)             ; cons-set-cdr — aarch64 BL nl_consbox_set_cdr
-         (nelisp-phase47-compiler--emit-cons-set-slot-arm64
+         (nelisp-aot-compiler--emit-cons-set-slot-arm64
           node buf 'nl_consbox_set_cdr))
         ((= tag 11)             ; cond — aarch64 first-match dispatch
-         (nelisp-phase47-compiler--emit-cond node buf))
+         (nelisp-aot-compiler--emit-cond node buf))
         ((= tag 33)             ; logic — aarch64 and/or short-circuit
-         (nelisp-phase47-compiler--emit-logic node buf))
+         (nelisp-aot-compiler--emit-logic node buf))
         ((= tag 97)             ; addr-of — aarch64 ADR x0,<name>
-         (nelisp-phase47-compiler--emit-addr-of node buf))
+         (nelisp-aot-compiler--emit-addr-of node buf))
         ((= tag 99)             ; data-addr — external data/bss symbol addr
-         (nelisp-phase47-compiler--emit-data-addr node buf))
+         (nelisp-aot-compiler--emit-data-addr node buf))
         ((= tag 80)             ; static-imm32-table-lookup — u32 in x0
-         (nelisp-phase47-compiler--emit-table-lookup node buf))
+         (nelisp-aot-compiler--emit-table-lookup node buf))
         ((= tag 14)             ; cons-cdr-raw — aarch64 boxed cdr walk
-         (nelisp-phase47-compiler--emit-cons-cdr-raw-arm64 node buf))
+         (nelisp-aot-compiler--emit-cons-cdr-raw-arm64 node buf))
         ((= tag 60)             ; sexp-payload-ptr-record — Record payload guard
-         (nelisp-phase47-compiler--emit-sexp-payload-ptr-record-arm64 node buf))
+         (nelisp-aot-compiler--emit-sexp-payload-ptr-record-arm64 node buf))
         ((= tag 52)             ; record-type-tag — copy inline type tag
-         (nelisp-phase47-compiler--emit-record-type-tag-arm64 node buf))
+         (nelisp-aot-compiler--emit-record-type-tag-arm64 node buf))
         ((= tag 48)             ; record-slot-count — read NlRecord.slots.len
-         (nelisp-phase47-compiler--emit-record-slot-count-arm64 node buf))
+         (nelisp-aot-compiler--emit-record-slot-count-arm64 node buf))
         ((= tag 49)             ; record-slot-ref — clone record slot into dst
-         (nelisp-phase47-compiler--emit-record-slot-ref-arm64 node buf))
+         (nelisp-aot-compiler--emit-record-slot-ref-arm64 node buf))
         ((= tag 50)             ; record-slot-ref-ptr — borrow record slot ptr
-         (nelisp-phase47-compiler--emit-record-slot-ref-ptr-arm64 node buf))
+         (nelisp-aot-compiler--emit-record-slot-ref-ptr-arm64 node buf))
         ((= tag 51)             ; record-slot-set — BL nl_record_set_slot
-         (nelisp-phase47-compiler--emit-record-slot-set-arm64 node buf))
+         (nelisp-aot-compiler--emit-record-slot-set-arm64 node buf))
         ((= tag 81)             ; vector-len — read NlVector.value.len
-         (nelisp-phase47-compiler--emit-vector-len-arm64 node buf))
+         (nelisp-aot-compiler--emit-vector-len-arm64 node buf))
         ((= tag 83)             ; vector-ref — clone vector element into dst
-         (nelisp-phase47-compiler--emit-vector-ref-arm64 node buf))
+         (nelisp-aot-compiler--emit-vector-ref-arm64 node buf))
         ((= tag 84)             ; vector-ref-ptr — borrow vector element ptr
-         (nelisp-phase47-compiler--emit-vector-ref-ptr-arm64 node buf))
+         (nelisp-aot-compiler--emit-vector-ref-ptr-arm64 node buf))
         ((= tag 85)             ; vector-slot-set — BL nl_vector_set_slot
-         (nelisp-phase47-compiler--emit-vector-slot-set-arm64 node buf))
+         (nelisp-aot-compiler--emit-vector-slot-set-arm64 node buf))
         ((= tag 82)             ; vector-make — BL nl_alloc_vector + tag slot
-         (nelisp-phase47-compiler--emit-vector-make-arm64 node buf))
+         (nelisp-aot-compiler--emit-vector-make-arm64 node buf))
         ((= tag 47)             ; record-make — BL nl_alloc_record + tag slot
-         (nelisp-phase47-compiler--emit-record-make-arm64 node buf))
+         (nelisp-aot-compiler--emit-record-make-arm64 node buf))
         ((= tag 9)              ; cell-value — copy NlCell.value into dst
-         (nelisp-phase47-compiler--emit-cell-value-arm64 node buf))
+         (nelisp-aot-compiler--emit-cell-value-arm64 node buf))
         ((= tag 8)              ; cell-set-value — BL nl_cell_set_value
-         (nelisp-phase47-compiler--emit-cell-set-value-arm64 node buf))
+         (nelisp-aot-compiler--emit-cell-set-value-arm64 node buf))
         ((= tag 6)              ; cell-make — BL nl_alloc_cell + tag slot
-         (nelisp-phase47-compiler--emit-cell-make-arm64 node buf))
+         (nelisp-aot-compiler--emit-cell-make-arm64 node buf))
         ((= tag 7)              ; cell-null-p — NlCell.value tag == Nil
-         (nelisp-phase47-compiler--emit-cell-null-p-arm64 node buf))
+         (nelisp-aot-compiler--emit-cell-null-p-arm64 node buf))
         ((= tag 69)             ; str-bytes — read String ptr
-         (nelisp-phase47-compiler--emit-str-bytes-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-bytes-arm64 node buf))
         ((= tag 70)             ; str-bytes-ptr — BL nl_str_bytes_ptr
-         (nelisp-phase47-compiler--emit-str-bytes-ptr-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-bytes-ptr-arm64 node buf))
         ((= tag 73)             ; str-eq — inline String byte equality
-         (nelisp-phase47-compiler--emit-str-eq-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-eq-arm64 node buf))
         ((= tag 76)             ; symbol-eq — Symbol tag + byte equality
-         (nelisp-phase47-compiler--emit-symbol-eq-arm64 node buf))
+         (nelisp-aot-compiler--emit-symbol-eq-arm64 node buf))
         ((= tag 77)             ; symbol-name-eq — Symbol vs literal name
-         (nelisp-phase47-compiler--emit-symbol-name-eq-arm64 node buf))
+         (nelisp-aot-compiler--emit-symbol-name-eq-arm64 node buf))
         ((= tag 58)             ; sexp-name-eq — Symbol/Str vs literal name
-         (nelisp-phase47-compiler--emit-sexp-name-eq-arm64 node buf))
+         (nelisp-aot-compiler--emit-sexp-name-eq-arm64 node buf))
         ((= tag 63)             ; sexp-write-nil — write Nil tag byte
-         (nelisp-phase47-compiler--emit-sexp-write-tag-arm64
+         (nelisp-aot-compiler--emit-sexp-write-tag-arm64
           node buf nelisp-sexp--tag-nil))
         ((= tag 66)             ; sexp-write-t — write T tag byte
-         (nelisp-phase47-compiler--emit-sexp-write-tag-arm64
+         (nelisp-aot-compiler--emit-sexp-write-tag-arm64
           node buf nelisp-sexp--tag-t))
         ((= tag 64)             ; sexp-write-str — BL nl_alloc_str
-         (nelisp-phase47-compiler--emit-sexp-write-alloc-arm64
+         (nelisp-aot-compiler--emit-sexp-write-alloc-arm64
           node buf 'nl_alloc_str))
         ((= tag 65)             ; sexp-write-symbol — BL nl_alloc_symbol
-         (nelisp-phase47-compiler--emit-sexp-write-alloc-arm64
+         (nelisp-aot-compiler--emit-sexp-write-alloc-arm64
           node buf 'nl_alloc_symbol))
         ((= tag 90)             ; sexp-write-symbol-lit — stack bytes + BL nl_alloc_symbol
-         (nelisp-phase47-compiler--emit-sexp-write-lit-arm64
+         (nelisp-aot-compiler--emit-sexp-write-lit-arm64
           node buf 'nl_alloc_symbol))
         ((= tag 91)             ; sexp-write-str-lit — stack bytes + BL nl_alloc_str
-         (nelisp-phase47-compiler--emit-sexp-write-lit-arm64
+         (nelisp-aot-compiler--emit-sexp-write-lit-arm64
           node buf 'nl_alloc_str))
         ((= tag 36)             ; mut-str-make-empty — BL nl_alloc_mut_str
-         (nelisp-phase47-compiler--emit-mut-str-make-empty-arm64 node buf))
+         (nelisp-aot-compiler--emit-mut-str-make-empty-arm64 node buf))
         ((= tag 37)             ; mut-str-push-byte — BL nl_mut_str_push_byte
-         (nelisp-phase47-compiler--emit-mut-str-push-2arg-arm64
+         (nelisp-aot-compiler--emit-mut-str-push-2arg-arm64
           node buf 'nl_mut_str_push_byte :byte))
         ((= tag 38)             ; mut-str-push-codepoint — BL nl_mut_str_push_codepoint
-         (nelisp-phase47-compiler--emit-mut-str-push-2arg-arm64
+         (nelisp-aot-compiler--emit-mut-str-push-2arg-arm64
           node buf 'nl_mut_str_push_codepoint :cp))
         ((= tag 35)             ; mut-str-len — BL nl_mut_str_len
-         (nelisp-phase47-compiler--emit-mut-str-len-arm64 node buf))
+         (nelisp-aot-compiler--emit-mut-str-len-arm64 node buf))
         ((= tag 34)             ; mut-str-finalize — BL nl_mut_str_finalize
-         (nelisp-phase47-compiler--emit-mut-str-finalize-arm64 node buf))
+         (nelisp-aot-compiler--emit-mut-str-finalize-arm64 node buf))
         ((= tag 71)             ; str-char-count — BL nl_str_char_count
-         (nelisp-phase47-compiler--emit-str-char-count-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-char-count-arm64 node buf))
         ((= tag 72)             ; str-codepoint-at — BL nl_str_codepoint_at
-         (nelisp-phase47-compiler--emit-str-codepoint-at-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-codepoint-at-arm64 node buf))
         ((= tag 74)             ; str-is-alphanumeric-at — BL nl_str_is_alphanumeric_at
-         (nelisp-phase47-compiler--emit-str-is-alphanumeric-at-arm64 node buf))
+         (nelisp-aot-compiler--emit-str-is-alphanumeric-at-arm64 node buf))
         ((= tag 23)             ; extern-call — aarch64 GP-only direct/reloc BL
-         (nelisp-phase47-compiler--emit-extern-call-arm64 node buf))
+         (nelisp-aot-compiler--emit-extern-call-arm64 node buf))
         ((= tag 94)             ; aot-machine-landing-jump — restore sp + branch
-         (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
+         (nelisp-aot-compiler--emit-aot-machine-landing-jump node buf))
         ((= tag 95)             ; aot-current-sp — expose native sp
-         (nelisp-phase47-compiler--emit-aot-current-sp node buf))
+         (nelisp-aot-compiler--emit-aot-current-sp node buf))
         ((= tag 92)             ; aot-root-scope — root bridge push/pop
-         (nelisp-phase47-compiler--emit-aot-root-scope node buf))
+         (nelisp-aot-compiler--emit-aot-root-scope node buf))
         ((= tag 55)             ; sexp-float-unwrap — raw payload bits
-         (nelisp-phase47-compiler--emit-sexp-float-unwrap node buf))
+         (nelisp-aot-compiler--emit-sexp-float-unwrap node buf))
         ((= tag 27)             ; f64-to-i64-trunc — FCVTZS
-         (nelisp-phase47-compiler--emit-f64-to-i64-trunc node buf))
+         (nelisp-aot-compiler--emit-f64-to-i64-trunc node buf))
         ((= tag 62)             ; sexp-write-float — BL nl_sexp_write_float
-         (nelisp-phase47-compiler--emit-sexp-write-float node buf))
+         (nelisp-aot-compiler--emit-sexp-write-float node buf))
         (t
-         (let ((kind (nelisp-phase47-compiler--ir-kind node)))
-           (signal 'nelisp-phase47-compiler-error
+         (let ((kind (nelisp-aot-compiler--ir-kind node)))
+           (signal 'nelisp-aot-compiler-error
                    (list :unknown-value-kind kind))))))
     ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
     ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-    (let ((tag (nelisp-phase47-compiler--ir-kind-tag node)))
+    (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
      (cond
       ((= tag 30)               ; imm
        ;; Value-dependent emit: small values (fits mov-imm32 range
@@ -11025,10 +11025,10 @@ the node's class to consume the result correctly."
        ;; given node — the byte-length invariant is preserved.
        ;; A33.N — `nelisp_emit_value_imm' kernel covers only the small
        ;; (7-byte) arm; the large arm skips the native kernel entirely.
-       (let ((v (nelisp-phase47-compiler--ir-get node :value)))
+       (let ((v (nelisp-aot-compiler--ir-get node :value)))
          (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 32)))
              ;; Small: 7-byte mov rax, imm32 — native kernel or legacy.
-             (let ((native (nelisp-phase47-compiler--emit-value-native-bytes
+             (let ((native (nelisp-aot-compiler--emit-value-native-bytes
                             "nelisp_emit_value_imm" node 7)))
                (if native
                    (nelisp-asm-x86_64-emit-bytes buf native)
@@ -11040,28 +11040,28 @@ the node's class to consume the result correctly."
        ;; `movsd xmm0, [rbp - 8*(slot+1)]'.  Both read the spilled
        ;; param from the frame slot allocated by the prologue;
        ;; `:class' on the ref node dispatches the instruction.
-       (if (eq (nelisp-phase47-compiler--ir-get node :class) 'f64)
-           (nelisp-phase47-compiler--emit-f64-ref-load
-            buf (nelisp-phase47-compiler--ir-get node :slot) 'xmm0)
+       (if (eq (nelisp-aot-compiler--ir-get node :class) 'f64)
+           (nelisp-aot-compiler--emit-f64-ref-load
+            buf (nelisp-aot-compiler--ir-get node :slot) 'xmm0)
          ;; A33.N — on standalone NeLisp emit the GP-class 4 bytes via the
-         ;; Phase 47 `nelisp_emit_value_ref_gp' kernel; fall back to the
+         ;; AOT `nelisp_emit_value_ref_gp' kernel; fall back to the
          ;; legacy `--emit-ref-load' on host Emacs / bridge miss.  The
          ;; legacy path also range-checks slot (0..13) and signals on
          ;; overflow; that guard runs before native dispatch is reached
          ;; in practice since the parser never produces an out-of-range
          ;; slot, so the byte sequences are identical when both fire.
-         (let ((native (nelisp-phase47-compiler--emit-value-native-bytes
+         (let ((native (nelisp-aot-compiler--emit-value-native-bytes
                         "nelisp_emit_value_ref_gp" node 4)))
            (if native
                (nelisp-asm-x86_64-emit-bytes buf native)
-             (nelisp-phase47-compiler--emit-ref-load
-              buf (nelisp-phase47-compiler--ir-get node :slot))))))
+             (nelisp-aot-compiler--emit-ref-load
+              buf (nelisp-aot-compiler--ir-get node :slot))))))
       ((= tag 24)               ; f64-binop
-       (nelisp-phase47-compiler--emit-f64-binop node buf))
+       (nelisp-aot-compiler--emit-f64-binop node buf))
       ((= tag 26)               ; f64-cmp
-       (nelisp-phase47-compiler--emit-f64-cmp node buf))
+       (nelisp-aot-compiler--emit-f64-cmp node buf))
       ((= tag 25)               ; f64-call
-       (nelisp-phase47-compiler--emit-f64-call node buf))
+       (nelisp-aot-compiler--emit-f64-call node buf))
       ((= tag 28)               ; i64-to-f64 — CVTSI2SD xmm0, rax (result in xmm0)
        ;; Doc 136: allow i64-to-f64 as a top-level value expression (= if-arm
        ;; result, function return, or call arg).  The int-expr is evaluated into
@@ -11069,236 +11069,236 @@ the node's class to consume the result correctly."
        ;; expect rax (gp path) will read stale rax — this is Approximation Flag
        ;; [D] (= f64 ABI mismatch for call-arg position).  Correct for if-arm /
        ;; function-return contexts where the caller knows the result is f64.
-       (nelisp-phase47-compiler--emit-value
-        (nelisp-phase47-compiler--ir-get node :int-expr) buf)
+       (nelisp-aot-compiler--emit-value
+        (nelisp-aot-compiler--ir-get node :int-expr) buf)
        (nelisp-asm-x86_64-cvtsi2sd-xmm-r64 buf 'xmm0 'rax))
       ((= tag 1)                ; arith
-       (nelisp-phase47-compiler--emit-arith node buf))
+       (nelisp-aot-compiler--emit-arith node buf))
       ((= tag 67)               ; shift
-       (nelisp-phase47-compiler--emit-shift node buf))
+       (nelisp-aot-compiler--emit-shift node buf))
       ((= tag 97)               ; addr-of
-       (nelisp-phase47-compiler--emit-addr-of node buf))
+       (nelisp-aot-compiler--emit-addr-of node buf))
       ((= tag 99)               ; data-addr — external data/bss symbol addr
-       (nelisp-phase47-compiler--emit-data-addr node buf))
+       (nelisp-aot-compiler--emit-data-addr node buf))
       ((= tag 5)                ; call
-       (nelisp-phase47-compiler--emit-call node buf))
+       (nelisp-aot-compiler--emit-call node buf))
       ((= tag 23)               ; extern-call
-       (nelisp-phase47-compiler--emit-extern-call node buf))
+       (nelisp-aot-compiler--emit-extern-call node buf))
       ((= tag 61)               ; sexp-tag
-       (nelisp-phase47-compiler--emit-sexp-tag node buf))
+       (nelisp-aot-compiler--emit-sexp-tag node buf))
       ((= tag 57)               ; sexp-int-unwrap
-       (nelisp-phase47-compiler--emit-sexp-int-unwrap node buf))
+       (nelisp-aot-compiler--emit-sexp-int-unwrap node buf))
       ((= tag 55)               ; sexp-float-unwrap
-       (nelisp-phase47-compiler--emit-sexp-float-unwrap node buf))
+       (nelisp-aot-compiler--emit-sexp-float-unwrap node buf))
       ((= tag 27)               ; f64-to-i64-trunc
-       (nelisp-phase47-compiler--emit-f64-to-i64-trunc node buf))
+       (nelisp-aot-compiler--emit-f64-to-i64-trunc node buf))
       ((= tag 56)               ; sexp-int-make
-       (nelisp-phase47-compiler--emit-sexp-int-make node buf))
+       (nelisp-aot-compiler--emit-sexp-int-make node buf))
       ((= tag 17)               ; cons-null-p
-       (nelisp-phase47-compiler--emit-cons-null-p node buf))
+       (nelisp-aot-compiler--emit-cons-null-p node buf))
       ((= tag 12)               ; cons-car
-       (nelisp-phase47-compiler--emit-cons-slot-copy
+       (nelisp-aot-compiler--emit-cons-slot-copy
         node buf nelisp-nlconsbox--offset-car))
       ((= tag 13)               ; cons-cdr
-       (nelisp-phase47-compiler--emit-cons-slot-copy
+       (nelisp-aot-compiler--emit-cons-slot-copy
         node buf nelisp-nlconsbox--offset-cdr))
       ((= tag 14)               ; cons-cdr-raw
-       (nelisp-phase47-compiler--emit-cons-cdr-raw node buf))
+       (nelisp-aot-compiler--emit-cons-cdr-raw node buf))
       ((= tag 59)               ; sexp-payload-ptr
-       (nelisp-phase47-compiler--emit-sexp-payload-ptr node buf))
+       (nelisp-aot-compiler--emit-sexp-payload-ptr node buf))
       ((= tag 60)               ; sexp-payload-ptr-record
-       (nelisp-phase47-compiler--emit-sexp-payload-ptr-record node buf))
+       (nelisp-aot-compiler--emit-sexp-payload-ptr-record node buf))
       ((= tag 52)               ; record-type-tag
-       (nelisp-phase47-compiler--emit-record-type-tag node buf))
+       (nelisp-aot-compiler--emit-record-type-tag node buf))
       ((= tag 48)               ; record-slot-count
-       (nelisp-phase47-compiler--emit-record-slot-count node buf))
+       (nelisp-aot-compiler--emit-record-slot-count node buf))
       ((= tag 49)               ; record-slot-ref
-       (nelisp-phase47-compiler--emit-record-slot-ref node buf))
+       (nelisp-aot-compiler--emit-record-slot-ref node buf))
       ((= tag 50)               ; record-slot-ref-ptr
-       (nelisp-phase47-compiler--emit-record-slot-ref-ptr node buf))
+       (nelisp-aot-compiler--emit-record-slot-ref-ptr node buf))
       ((= tag 51)               ; record-slot-set
-       (nelisp-phase47-compiler--emit-record-slot-set node buf))
+       (nelisp-aot-compiler--emit-record-slot-set node buf))
       ((= tag 81)               ; vector-len
-       (nelisp-phase47-compiler--emit-vector-len node buf))
+       (nelisp-aot-compiler--emit-vector-len node buf))
       ((= tag 83)               ; vector-ref
-       (nelisp-phase47-compiler--emit-vector-ref node buf))
+       (nelisp-aot-compiler--emit-vector-ref node buf))
       ((= tag 84)               ; vector-ref-ptr
-       (nelisp-phase47-compiler--emit-vector-ref-ptr node buf))
+       (nelisp-aot-compiler--emit-vector-ref-ptr node buf))
       ((= tag 85)               ; vector-slot-set
-       (nelisp-phase47-compiler--emit-vector-slot-set node buf))
+       (nelisp-aot-compiler--emit-vector-slot-set node buf))
       ((= tag 82)               ; vector-make
-       (nelisp-phase47-compiler--emit-vector-make node buf))
+       (nelisp-aot-compiler--emit-vector-make node buf))
       ((= tag 47)               ; record-make
-       (nelisp-phase47-compiler--emit-record-make node buf))
+       (nelisp-aot-compiler--emit-record-make node buf))
       ((= tag 9)                ; cell-value
-       (nelisp-phase47-compiler--emit-cell-value node buf))
+       (nelisp-aot-compiler--emit-cell-value node buf))
       ((= tag 8)                ; cell-set-value
-       (nelisp-phase47-compiler--emit-cell-set-value node buf))
+       (nelisp-aot-compiler--emit-cell-set-value node buf))
       ((= tag 6)                ; cell-make
-       (nelisp-phase47-compiler--emit-cell-make node buf))
+       (nelisp-aot-compiler--emit-cell-make node buf))
       ((= tag 7)                ; cell-null-p
-       (nelisp-phase47-compiler--emit-cell-null-p node buf))
+       (nelisp-aot-compiler--emit-cell-null-p node buf))
       ((= tag 75)               ; str-len
-       (nelisp-phase47-compiler--emit-str-len node buf))
+       (nelisp-aot-compiler--emit-str-len node buf))
       ((= tag 69)               ; str-bytes
-       (nelisp-phase47-compiler--emit-str-bytes node buf))
+       (nelisp-aot-compiler--emit-str-bytes node buf))
       ((= tag 70)               ; str-bytes-ptr
-       (nelisp-phase47-compiler--emit-str-bytes-ptr node buf))
+       (nelisp-aot-compiler--emit-str-bytes-ptr node buf))
       ((= tag 68)               ; str-byte-at
-       (nelisp-phase47-compiler--emit-str-byte-at node buf))
+       (nelisp-aot-compiler--emit-str-byte-at node buf))
       ((= tag 73)               ; str-eq
-       (nelisp-phase47-compiler--emit-str-eq node buf))
+       (nelisp-aot-compiler--emit-str-eq node buf))
       ((= tag 76)               ; symbol-eq
-       (nelisp-phase47-compiler--emit-symbol-eq node buf))
+       (nelisp-aot-compiler--emit-symbol-eq node buf))
       ((= tag 77)               ; symbol-name-eq
-       (nelisp-phase47-compiler--emit-symbol-name-eq node buf))
+       (nelisp-aot-compiler--emit-symbol-name-eq node buf))
       ((= tag 58)               ; sexp-name-eq
-       (nelisp-phase47-compiler--emit-sexp-name-eq node buf))
+       (nelisp-aot-compiler--emit-sexp-name-eq node buf))
       ((= tag 63)               ; sexp-write-nil
-       (nelisp-phase47-compiler--emit-sexp-write-tag
+       (nelisp-aot-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-nil))
       ((= tag 66)               ; sexp-write-t
-       (nelisp-phase47-compiler--emit-sexp-write-tag
+       (nelisp-aot-compiler--emit-sexp-write-tag
         node buf nelisp-sexp--tag-t))
       ((= tag 64)               ; sexp-write-str
-       (nelisp-phase47-compiler--emit-sexp-write-alloc
+       (nelisp-aot-compiler--emit-sexp-write-alloc
         node buf "nl_alloc_str"))
       ((= tag 65)               ; sexp-write-symbol
-       (nelisp-phase47-compiler--emit-sexp-write-alloc
+       (nelisp-aot-compiler--emit-sexp-write-alloc
         node buf "nl_alloc_symbol"))
       ((= tag 90)               ; sexp-write-symbol-lit
-       (nelisp-phase47-compiler--emit-sexp-write-symbol-lit node buf))
+       (nelisp-aot-compiler--emit-sexp-write-symbol-lit node buf))
       ((= tag 91)               ; sexp-write-str-lit
-       (nelisp-phase47-compiler--emit-sexp-write-str-lit node buf))
+       (nelisp-aot-compiler--emit-sexp-write-str-lit node buf))
       ((= tag 62)               ; sexp-write-float
-       (nelisp-phase47-compiler--emit-sexp-write-float node buf))
+       (nelisp-aot-compiler--emit-sexp-write-float node buf))
       ((= tag 36)               ; mut-str-make-empty
-       (nelisp-phase47-compiler--emit-mut-str-make-empty node buf))
+       (nelisp-aot-compiler--emit-mut-str-make-empty node buf))
       ((= tag 37)               ; mut-str-push-byte
-       (nelisp-phase47-compiler--emit-mut-str-push-2arg
+       (nelisp-aot-compiler--emit-mut-str-push-2arg
         node buf "nl_mut_str_push_byte" :byte))
       ((= tag 38)               ; mut-str-push-codepoint
-       (nelisp-phase47-compiler--emit-mut-str-push-2arg
+       (nelisp-aot-compiler--emit-mut-str-push-2arg
         node buf "nl_mut_str_push_codepoint" :cp))
       ((= tag 35)               ; mut-str-len
-       (nelisp-phase47-compiler--emit-mut-str-len node buf))
+       (nelisp-aot-compiler--emit-mut-str-len node buf))
       ((= tag 34)               ; mut-str-finalize
-       (nelisp-phase47-compiler--emit-mut-str-finalize node buf))
+       (nelisp-aot-compiler--emit-mut-str-finalize node buf))
       ((= tag 71)               ; str-char-count
-       (nelisp-phase47-compiler--emit-str-char-count node buf))
+       (nelisp-aot-compiler--emit-str-char-count node buf))
       ((= tag 72)               ; str-codepoint-at
-       (nelisp-phase47-compiler--emit-str-codepoint-at node buf))
+       (nelisp-aot-compiler--emit-str-codepoint-at node buf))
       ((= tag 74)               ; str-is-alphanumeric-at
-       (nelisp-phase47-compiler--emit-str-is-alphanumeric-at node buf))
+       (nelisp-aot-compiler--emit-str-is-alphanumeric-at node buf))
       ((= tag 3)                ; atomic-fetch-add
-       (nelisp-phase47-compiler--emit-atomic-fetch-add node buf))
+       (nelisp-aot-compiler--emit-atomic-fetch-add node buf))
       ((= tag 2)                ; atomic-compare-exchange
-       (nelisp-phase47-compiler--emit-atomic-compare-exchange node buf))
+       (nelisp-aot-compiler--emit-atomic-compare-exchange node buf))
       ((= tag 41)               ; ptr-read-u64
-       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u64"))
+       (nelisp-aot-compiler--emit-ptr-read node buf "nl_ptr_read_u64"))
       ((= tag 45)               ; ptr-write-u64
-       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u64"))
+       (nelisp-aot-compiler--emit-ptr-write node buf "nl_ptr_write_u64"))
       ((= tag 42)               ; ptr-read-u8
-       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u8"))
+       (nelisp-aot-compiler--emit-ptr-read node buf "nl_ptr_read_u8"))
       ((= tag 46)               ; ptr-write-u8
-       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u8"))
+       (nelisp-aot-compiler--emit-ptr-write node buf "nl_ptr_write_u8"))
       ((= tag 39)               ; ptr-read-u16
-       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u16"))
+       (nelisp-aot-compiler--emit-ptr-read node buf "nl_ptr_read_u16"))
       ((= tag 43)               ; ptr-write-u16
-       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u16"))
+       (nelisp-aot-compiler--emit-ptr-write node buf "nl_ptr_write_u16"))
       ((= tag 40)               ; ptr-read-u32
-       (nelisp-phase47-compiler--emit-ptr-read node buf "nl_ptr_read_u32"))
+       (nelisp-aot-compiler--emit-ptr-read node buf "nl_ptr_read_u32"))
       ((= tag 44)               ; ptr-write-u32
-       (nelisp-phase47-compiler--emit-ptr-write node buf "nl_ptr_write_u32"))
+       (nelisp-aot-compiler--emit-ptr-write node buf "nl_ptr_write_u32"))
       ((= tag 0)                ; alloc-bytes
-       (nelisp-phase47-compiler--emit-alloc-bytes node buf))
+       (nelisp-aot-compiler--emit-alloc-bytes node buf))
       ((= tag 20)               ; dealloc-bytes
-       (nelisp-phase47-compiler--emit-dealloc-bytes node buf))
+       (nelisp-aot-compiler--emit-dealloc-bytes node buf))
       ((= tag 78)               ; syscall-direct
-       (nelisp-phase47-compiler--emit-syscall-direct node buf))
+       (nelisp-aot-compiler--emit-syscall-direct node buf))
       ((= tag 98)               ; syscall-direct-store-x1
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :syscall-direct-store-x1-x86_64-unsupported)))
       ((= tag 15)               ; cons-make
-       (nelisp-phase47-compiler--emit-cons-make node buf))
+       (nelisp-aot-compiler--emit-cons-make node buf))
       ((= tag 16)               ; cons-make-with-clone
-       (nelisp-phase47-compiler--emit-cons-make-with-clone node buf))
+       (nelisp-aot-compiler--emit-cons-make-with-clone node buf))
       ((= tag 18)               ; cons-set-car
-       (nelisp-phase47-compiler--emit-cons-set-slot
+       (nelisp-aot-compiler--emit-cons-set-slot
         node buf 'nl_consbox_set_car))
       ((= tag 19)               ; cons-set-cdr
-       (nelisp-phase47-compiler--emit-cons-set-slot
+       (nelisp-aot-compiler--emit-cons-set-slot
         node buf 'nl_consbox_set_cdr))
       ((= tag 10)               ; cmp
-       (nelisp-phase47-compiler--emit-cmp node buf))
+       (nelisp-aot-compiler--emit-cmp node buf))
       ((= tag 29)               ; if
-       (nelisp-phase47-compiler--emit-if node buf))
+       (nelisp-aot-compiler--emit-if node buf))
       ((= tag 88)               ; value-seq
-       (dolist (child (nelisp-phase47-compiler--ir-get node :forms))
-         (nelisp-phase47-compiler--emit-value child buf)))
+       (dolist (child (nelisp-aot-compiler--ir-get node :forms))
+         (nelisp-aot-compiler--emit-value child buf)))
       ((= tag 96)               ; setq-local
        ;; Evaluate RHS into the target ABI's value register, spill it back
        ;; into the local frame slot, and leave the value register live so
        ;; `(setq x v)' is itself value-producing.
-       (let ((slot (nelisp-phase47-compiler--ir-get node :slot)))
-         (nelisp-phase47-compiler--emit-value
-          (nelisp-phase47-compiler--ir-get node :value-ir) buf)
-         (nelisp-phase47-compiler--emit-frame-slot-store-from-value
+       (let ((slot (nelisp-aot-compiler--ir-get node :slot)))
+         (nelisp-aot-compiler--emit-value
+          (nelisp-aot-compiler--ir-get node :value-ir) buf)
+         (nelisp-aot-compiler--emit-frame-slot-store-from-value
           buf slot)))
       ((= tag 93)               ; aot-landing-label
-       (nelisp-phase47-compiler--emit-aot-landing-label node buf))
+       (nelisp-aot-compiler--emit-aot-landing-label node buf))
       ((= tag 94)               ; aot-machine-landing-jump
-       (nelisp-phase47-compiler--emit-aot-machine-landing-jump node buf))
+       (nelisp-aot-compiler--emit-aot-machine-landing-jump node buf))
       ((= tag 95)               ; aot-current-sp
-       (nelisp-phase47-compiler--emit-aot-current-sp node buf))
+       (nelisp-aot-compiler--emit-aot-current-sp node buf))
       ((= tag 86)               ; while
-       (nelisp-phase47-compiler--emit-while node buf))
+       (nelisp-aot-compiler--emit-while node buf))
       ((= tag 11)               ; cond
-       (nelisp-phase47-compiler--emit-cond node buf))
+       (nelisp-aot-compiler--emit-cond node buf))
       ((= tag 33)               ; logic
-       (nelisp-phase47-compiler--emit-logic node buf))
+       (nelisp-aot-compiler--emit-logic node buf))
       ((= tag 32)               ; let-rt
        ;; Runtime let in value context: evaluate value-ir → rax, spill
        ;; to frame slot, then evaluate body → rax (= function return).
-       (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
-              (value-ir (nelisp-phase47-compiler--ir-get node :value-ir))
+       (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
+              (value-ir (nelisp-aot-compiler--ir-get node :value-ir))
               (disp (- (* 8 (1+ slot)))))
-         (nelisp-phase47-compiler--emit-value value-ir buf)
+         (nelisp-aot-compiler--emit-value value-ir buf)
          (nelisp-asm-x86_64-mov-mem-reg-disp8 buf 'rbp disp 'rax)
-         (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :body) buf)))
+         (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :body) buf)))
       ((= tag 89)               ; let-rt-n
        ;; Parallel multi-binding `let': initializer IR was parsed in
        ;; the original env/fenv, then the body sees all spilled slots.
-       (nelisp-phase47-compiler--emit-let-rt-n-bindings node buf)
-       (nelisp-phase47-compiler--emit-value
-        (nelisp-phase47-compiler--ir-get node :body) buf))
+       (nelisp-aot-compiler--emit-let-rt-n-bindings node buf)
+       (nelisp-aot-compiler--emit-value
+        (nelisp-aot-compiler--ir-get node :body) buf))
       ((= tag 92)               ; aot-root-scope
-       (nelisp-phase47-compiler--emit-aot-root-scope node buf))
+       (nelisp-aot-compiler--emit-aot-root-scope node buf))
       ;; (tag 78 syscall-direct already handled above; duplicate `pcase'
       ;; arm was dead, dropped under `cond' first-match semantics)
       ((= tag 80)               ; table-lookup
        ;; Doc 49 Wave 11.1: static-imm32-table-lookup → u32 in rax.
-       (nelisp-phase47-compiler--emit-table-lookup node buf))
+       (nelisp-aot-compiler--emit-table-lookup node buf))
       (t
-       (let ((kind (nelisp-phase47-compiler--ir-kind node)))
-         (signal 'nelisp-phase47-compiler-error
+       (let ((kind (nelisp-aot-compiler--ir-kind node)))
+         (signal 'nelisp-aot-compiler-error
                  (list :unknown-value-kind kind))))))))
 
-(defun nelisp-phase47-compiler--emit-arith (node buf)
+(defun nelisp-aot-compiler--emit-arith (node buf)
   "Emit a runtime arithmetic op, result in rax.
 Strategy: evaluate B into rax, push, evaluate A into rax, pop into
 r10, then OP rax, r10.  Push/pop are byte-fixed so pass invariance
 holds.  r10 is caller-saved per SysV AND not in the arg-reg list so
   the scratch never aliases a parameter register (= the bug seen in
 chained calls where rcx held both `d' param and a scratch value)."
-  (let ((op (nelisp-phase47-compiler--ir-get node :op))
-        (a (nelisp-phase47-compiler--ir-get node :a))
-        (b (nelisp-phase47-compiler--ir-get node :b)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((op (nelisp-aot-compiler--ir-get node :op))
+        (a (nelisp-aot-compiler--ir-get node :a))
+        (b (nelisp-aot-compiler--ir-get node :b)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
-          (nelisp-phase47-compiler--emit-value b buf)
+          (nelisp-aot-compiler--emit-value b buf)
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-phase47-compiler--emit-value a buf)
+          (nelisp-aot-compiler--emit-value a buf)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
           (cond
            ((eq op '+) (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x9))
@@ -11312,35 +11312,35 @@ chained calls where rcx held both `d' param and a scratch value)."
            ((eq op 'logand) (nelisp-asm-arm64-and-reg-reg buf 'x0 'x0 'x9))
            ((eq op 'logxor) (nelisp-asm-arm64-eor-reg-reg buf 'x0 'x0 'x9))
            (t
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :unknown-arith-op op)))))
       ;; Compute B -> rax.
-      (nelisp-phase47-compiler--emit-value b buf)
+      (nelisp-aot-compiler--emit-value b buf)
       ;; push rax (save B on stack).
       (nelisp-asm-x86_64-push buf 'rax)
       ;; Compute A -> rax.
-      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-aot-compiler--emit-value a buf)
       ;; pop r10 (= recover B into r10; r10 not in arg-regs).
       (nelisp-asm-x86_64-pop buf 'r10)
       (cond
        ((eq op '+) (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10))
        ((eq op '-) (nelisp-asm-x86_64-sub-reg-reg buf 'rax 'r10))
        ((eq op '*)
-        (nelisp-phase47-compiler--imul-reg-reg buf 'rax 'r10))
+        (nelisp-aot-compiler--imul-reg-reg buf 'rax 'r10))
        ((eq op '/)
-        (nelisp-phase47-compiler--emit-x86_64-div-r10 buf))
+        (nelisp-aot-compiler--emit-x86_64-div-r10 buf))
        ((eq op 'mod)
-        (nelisp-phase47-compiler--emit-x86_64-mod-r10 buf))
+        (nelisp-aot-compiler--emit-x86_64-mod-r10 buf))
        ;; Doc 100 §100.D bitwise binops.  Same MR-form shape as ADD/SUB,
        ;; just a different opcode byte.
        ((eq op 'logior) (nelisp-asm-x86_64-or-reg-reg buf 'rax 'r10))
        ((eq op 'logand) (nelisp-asm-x86_64-and-reg-reg buf 'rax 'r10))
        ((eq op 'logxor) (nelisp-asm-x86_64-xor-reg-reg buf 'rax 'r10))
        (t
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :unknown-arith-op op)))))))
 
-(defun nelisp-phase47-compiler--emit-shift (node buf)
+(defun nelisp-aot-compiler--emit-shift (node buf)
   "Emit a variable-count shift NODE; result in rax (Doc 100 §100.D).
 Strategy mirrors `--emit-arith' for the operand evaluation but
 diverges at the final op: x86_64 SHL / SAR by a variable count
@@ -11356,27 +11356,27 @@ require the count to live in CL (= low 8 bits of RCX).  Sequence:
 RCX is caller-saved per SysV and not in the arg-reg list (= same
 property `--emit-arith' relies on for r10), so it cannot alias a
 live parameter register in the surrounding defun."
-  (let ((op (nelisp-phase47-compiler--ir-get node :op))
-        (a (nelisp-phase47-compiler--ir-get node :a))
-        (b (nelisp-phase47-compiler--ir-get node :b)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((op (nelisp-aot-compiler--ir-get node :op))
+        (a (nelisp-aot-compiler--ir-get node :a))
+        (b (nelisp-aot-compiler--ir-get node :b)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
-          (nelisp-phase47-compiler--emit-value b buf)
+          (nelisp-aot-compiler--emit-value b buf)
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-phase47-compiler--emit-value a buf)
+          (nelisp-aot-compiler--emit-value a buf)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
           (cond
            ((eq op 'shl) (nelisp-asm-arm64-lslv buf 'x0 'x0 'x9))
            ((eq op 'sar) (nelisp-asm-arm64-asrv buf 'x0 'x0 'x9))
            (t
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :unknown-shift-op op)))))
       ;; Compute B -> rax.
-      (nelisp-phase47-compiler--emit-value b buf)
+      (nelisp-aot-compiler--emit-value b buf)
       ;; push rax (save B on stack).
       (nelisp-asm-x86_64-push buf 'rax)
       ;; Compute A -> rax.
-      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-aot-compiler--emit-value a buf)
       ;; pop r10 (= recover B into r10).
       (nelisp-asm-x86_64-pop buf 'r10)
       ;; mov rcx, r10 (= count into rcx; cl = rcx[0:8]).
@@ -11385,11 +11385,11 @@ live parameter register in the surrounding defun."
        ((eq op 'shl) (nelisp-asm-x86_64-shl-rax-cl buf))
        ((eq op 'sar) (nelisp-asm-x86_64-sar-rax-cl buf))
        (t
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :unknown-shift-op op)))))))
 
-(defun nelisp-phase47-compiler--call-arg-trivial-p (node)
-  "Return non-nil if NODE is a Phase 47 IR value that emits to a GP reg
+(defun nelisp-aot-compiler--call-arg-trivial-p (node)
+  "Return non-nil if NODE is a AOT IR value that emits to a GP reg
 without clobbering any other register.
 
 A `trivial' arg is one whose `--emit-value' realization in `rax' is
@@ -11409,10 +11409,10 @@ Byte-length invariance (Doc 92): pass1 and pass2 see identical
 parse-time-fixed `:kind' / `:value' / `:slot' / `:class' fields, so
 the classification is deterministic and emits the same byte count
 across both passes for the same NODE."
-  (let ((kind (nelisp-phase47-compiler--ir-kind node)))
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
     (cond
      ((eq kind 'imm)
-      (let ((v (nelisp-phase47-compiler--ir-get node :value)))
+      (let ((v (nelisp-aot-compiler--ir-get node :value)))
         ;; mov-imm32 accepts signed [-2^31, 2^31-1] or unsigned [0, 2^32-1];
         ;; reject out-of-range integers conservatively (fall back to the
         ;; existing emit-value path which may use a wider form).
@@ -11420,14 +11420,14 @@ across both passes for the same NODE."
              (>= v (- (ash 1 31)))
              (< v (ash 1 32)))))
      ((eq kind 'ref)
-      (and (memq (or (nelisp-phase47-compiler--ir-get node :class) 'gp) '(gp nil))
-           (let ((s (nelisp-phase47-compiler--ir-get node :slot)))
+      (and (memq (or (nelisp-aot-compiler--ir-get node :class) 'gp) '(gp nil))
+           (let ((s (nelisp-aot-compiler--ir-get node :slot)))
              (and (integerp s) (<= 0 s 13))))))))
 
-(defun nelisp-phase47-compiler--emit-trivial-into-reg (node target buf)
+(defun nelisp-aot-compiler--emit-trivial-into-reg (node target buf)
   "Emit NODE's value directly into TARGET register (no spill).
-NODE must satisfy `nelisp-phase47-compiler--call-arg-trivial-p'."
-  (let ((kind (nelisp-phase47-compiler--ir-kind node)))
+NODE must satisfy `nelisp-aot-compiler--call-arg-trivial-p'."
+  (let ((kind (nelisp-aot-compiler--ir-kind node)))
     (cond
      ((eq kind 'imm)
       ;; Value-dependent: small → 7-byte mov TARGET, imm32;
@@ -11435,30 +11435,30 @@ NODE must satisfy `nelisp-phase47-compiler--call-arg-trivial-p'."
       ;; `--call-arg-trivial-p' already gates large values out, so the
       ;; large arm is a safety net only — byte-length invariant holds
       ;; because both passes see the same :value for the same node.
-      (let ((v (nelisp-phase47-compiler--ir-get node :value)))
+      (let ((v (nelisp-aot-compiler--ir-get node :value)))
         (if (and (integerp v) (>= v (- (ash 1 31))) (< v (ash 1 32)))
             (nelisp-asm-x86_64-mov-imm32 buf target v)
           (nelisp-asm-x86_64-mov-imm64 buf target v))))
      ((eq kind 'ref)
       ;; mov TARGET, [rbp - 8*(slot+1)]  = 4 bytes (REX.W + 0x8B + ModR/M + disp8)
-      (let ((disp (- (* 8 (1+ (nelisp-phase47-compiler--ir-get node :slot))))))
+      (let ((disp (- (* 8 (1+ (nelisp-aot-compiler--ir-get node :slot))))))
         (nelisp-asm-x86_64-mov-reg-mem-disp8 buf target 'rbp disp)))
      (t
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :trivial-emit-unexpected-kind kind))))))
 
-(defun nelisp-phase47-compiler--emit-addr-of (node buf)
+(defun nelisp-aot-compiler--emit-addr-of (node buf)
   "Emit a code-pointer load for function NAME (Doc 133 Phase 0 `addr-of').
 Produces an i64 value (a code pointer) that `call-ptr' can invoke.
 x86_64: `LEA rax, [rip + NAME]'.  aarch64: `ADR x0, NAME' — a single
 PC-relative byte-offset load (±1 MiB), sufficient for the intra-text
 self-host section (no GOT, no ADRP+ADD page split needed)."
-  (let ((name (nelisp-phase47-compiler--ir-get node :name)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((name (nelisp-aot-compiler--ir-get node :name)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (nelisp-asm-arm64-adr buf 'x0 name)
       (nelisp-asm-x86_64-lea-reg-rip-label buf 'rax name))))
 
-(defun nelisp-phase47-compiler--emit-data-addr (node buf)
+(defun nelisp-aot-compiler--emit-data-addr (node buf)
   "Emit a load of EXTERNAL data/bss symbol NAME's runtime address into the
 value register (Doc 140 Stage 8 `data-addr').
 
@@ -11478,8 +11478,8 @@ addend -4 (the CPU's RIP base = the byte after the disp32).  aarch64:
 R_AARCH64_ADR_PREL_PG_HI21 / R_AARCH64_ADD_ABS_LO12_NC relocation
 pair, giving GOT-less ±4 GiB page-relative materialization of an
 external data symbol."
-  (let ((name (symbol-name (nelisp-phase47-compiler--ir-get node :name))))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((name (symbol-name (nelisp-aot-compiler--ir-get node :name))))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
           (nelisp-asm-arm64-adrp buf 'x0 name)
           (nelisp-asm-arm64-add-abs-lo12-nc buf 'x0 'x0 name))
@@ -11488,7 +11488,7 @@ external data symbol."
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8D #x05))
       (nelisp-asm-x86_64-reloc-pc32-here buf name -4))))
 
-(defun nelisp-phase47-compiler--emit-call (node buf)
+(defun nelisp-aot-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.
 
 Strategy (ABI-agnostic), with W7.6a trivial-suffix optimization:
@@ -11513,26 +11513,26 @@ unaffected.  Byte-length invariance holds (Doc 92): for any given
 NODE, pass1 and pass2 traverse the same branch (each arg's kind /
 class / slot / value is parse-time fixed) and emit the same byte
 count."
-  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
-         (fn-value (nelisp-phase47-compiler--ir-get node :fn-value))
-         (args (nelisp-phase47-compiler--ir-get node :args))
+  (let* ((name (nelisp-aot-compiler--ir-get node :name))
+         (fn-value (nelisp-aot-compiler--ir-get node :fn-value))
+         (args (nelisp-aot-compiler--ir-get node :args))
          (n (length args))
-         (cur-arg-regs (nelisp-phase47-compiler--current-arg-regs))
+         (cur-arg-regs (nelisp-aot-compiler--current-arg-regs))
          (reg-budget (length cur-arg-regs)))
     ;; Doc 133 P0: indirect (fn-ptr) calls only support register-args
     ;; (nelisp-sys caps functions at 6 params anyway).
     (when (and fn-value (> n reg-budget))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :call-ptr-stack-args-unsupported n)))
     (if (> n reg-budget)
         (progn
-          (unless (and (eq nelisp-phase47-compiler--arch 'x86_64)
-                       (memq nelisp-phase47-compiler--abi '(sysv win64)))
-            (signal 'nelisp-phase47-compiler-error
+          (unless (and (eq nelisp-aot-compiler--arch 'x86_64)
+                       (memq nelisp-aot-compiler--abi '(sysv win64)))
+            (signal 'nelisp-aot-compiler-error
                     (list :call-stack-args-unsupported name n)))
           (let* ((stack-count (- n reg-budget))
-                 (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-                 (win64-p (eq nelisp-phase47-compiler--abi 'win64))
+                 (arity (or nelisp-aot-compiler--current-defun-arity 0))
+                 (win64-p (eq nelisp-aot-compiler--abi 'win64))
                  (needs-align
                   (if win64-p
                       (= (logand (+ n stack-count) 1) 1)
@@ -11544,7 +11544,7 @@ count."
             ;; Save every arg left-to-right so complex args cannot clobber
             ;; earlier register-bound values while later args are evaluated.
             (dolist (a args)
-              (nelisp-phase47-compiler--emit-value a buf)
+              (nelisp-aot-compiler--emit-value a buf)
               (nelisp-asm-x86_64-push buf 'rax))
             ;; Load register arguments from the temporary save area.
             (cl-loop for idx below reg-budget
@@ -11588,11 +11588,11 @@ count."
             (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 n))))
       (let* ((regs (cl-subseq cur-arg-regs 0 n))
          ;; Stack alignment correction (Doc 111 §111.E fix).
-         (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (and (not (eq nelisp-phase47-compiler--abi 'win64))
+         (arity (or nelisp-aot-compiler--current-defun-arity 0))
+         (needs-align (and (not (eq nelisp-aot-compiler--abi 'win64))
                            (= (logand arity 1) 1)))
          ;; Win64 shadow space: 32 bytes reserved by caller before CALL.
-         (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0))
+         (shadow (if (eq nelisp-aot-compiler--abi 'win64) 32 0))
          ;; W7.6a: split args into [complex-prefix | trivial-suffix].
          ;; Count trailing trivial args (right-to-left, stop at first
          ;; complex).  Walking the reverse of args lets us count
@@ -11602,7 +11602,7 @@ count."
                 (rest (reverse args))
                 (done nil))
             (while (and rest (not done))
-              (if (nelisp-phase47-compiler--call-arg-trivial-p (car rest))
+              (if (nelisp-aot-compiler--call-arg-trivial-p (car rest))
                   (progn (setq count (1+ count))
                          (setq rest (cdr rest)))
                 (setq done t)))
@@ -11616,11 +11616,11 @@ count."
     ;; on the stack BELOW the args, so the arg-reg shuffle below cannot
     ;; clobber it.  Net rsp change stays zero (popped at step 2b).
     (when fn-value
-      (nelisp-phase47-compiler--emit-value fn-value buf)
+      (nelisp-aot-compiler--emit-value fn-value buf)
       (nelisp-asm-x86_64-push buf 'rax))
     ;; (1) Complex prefix: evaluate -> push rax.
     (dolist (a complex-args)
-      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-aot-compiler--emit-value a buf)
       (nelisp-asm-x86_64-push buf 'rax))
     ;; (2) Pop complex args into their target regs in reverse order.
     (dolist (r (reverse complex-regs))
@@ -11634,7 +11634,7 @@ count."
     ;; Order is free since trivial emits never clobber other arg regs;
     ;; we walk source order for deterministic byte layout.
     (cl-mapc (lambda (a r)
-               (nelisp-phase47-compiler--emit-trivial-into-reg a r buf))
+               (nelisp-aot-compiler--emit-trivial-into-reg a r buf))
              trivial-args trivial-regs)
     (when needs-align
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
@@ -11652,7 +11652,7 @@ count."
 	    (when needs-align
 	      (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))))
 
-(defun nelisp-phase47-compiler--emit-extern-call (node buf)
+(defun nelisp-aot-compiler--emit-extern-call (node buf)
   "Emit a SysV AMD64 call to an extern symbol NODE.
 Doc 100 §100.A introduced the all-i64 form; Doc 122 §122.C extends
 this to mixed i64 / f64 args (= per-arg `:cls' tag) + f64 return
@@ -11707,28 +11707,28 @@ Byte-length invariance (Doc 92): the suffix-vs-prefix split is
 deterministic from parse-time-fixed fields (`:cls', `:kind',
 `:value', `:slot', `:class') so pass1 and pass2 traverse the
 same branch and emit the same byte count."
-  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
-         (args (nelisp-phase47-compiler--ir-get node :args))
-         (ret-class (or (nelisp-phase47-compiler--ir-get node :ret-class) 'gp))
-         (varargs-p (nelisp-phase47-compiler--ir-get node :varargs-p))
-         (f64-count (or (nelisp-phase47-compiler--ir-get node :f64-count) 0))
+  (let* ((name (nelisp-aot-compiler--ir-get node :name))
+         (args (nelisp-aot-compiler--ir-get node :args))
+         (ret-class (or (nelisp-aot-compiler--ir-get node :ret-class) 'gp))
+         (varargs-p (nelisp-aot-compiler--ir-get node :varargs-p))
+         (f64-count (or (nelisp-aot-compiler--ir-get node :f64-count) 0))
          (arg-count (length args))
-         (win64-p (eq nelisp-phase47-compiler--abi 'win64))
-         (sysv-p (eq nelisp-phase47-compiler--abi 'sysv))
+         (win64-p (eq nelisp-aot-compiler--abi 'win64))
+         (sysv-p (eq nelisp-aot-compiler--abi 'sysv))
          ;; Per-class register pools.  SysV indexes both pools
          ;; independently.  Win64 uses positional slots for register
          ;; args and sends arg4+ to the outgoing stack area.
          (gp-args (cl-remove-if-not
-                   (lambda (a) (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp))
+                   (lambda (a) (eq (nelisp-aot-compiler--ir-get a :cls) 'gp))
                    args))
          (f64-args (cl-remove-if-not
-                    (lambda (a) (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64))
+                    (lambda (a) (eq (nelisp-aot-compiler--ir-get a :cls) 'f64))
                     args))
-         (gp-arg-regs (nelisp-phase47-compiler--current-arg-regs))
+         (gp-arg-regs (nelisp-aot-compiler--current-arg-regs))
          (gp-reg-budget (length gp-arg-regs))
          (gp-regs (cl-subseq gp-arg-regs
                              0 (min (length gp-args) gp-reg-budget)))
-         (xmm-arg-regs (nelisp-phase47-compiler--current-xmm-arg-regs))
+         (xmm-arg-regs (nelisp-aot-compiler--current-xmm-arg-regs))
          (xmm-reg-budget (length xmm-arg-regs))
          (xmm-regs (cl-subseq xmm-arg-regs
                               0 (min (length f64-args) xmm-reg-budget)))
@@ -11743,14 +11743,14 @@ same branch and emit the same byte count."
                        for idx from 0
                        collect
                        (if (< idx 4)
-                           (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+                           (if (eq (nelisp-aot-compiler--ir-get a :cls) 'f64)
                                (nth idx xmm-arg-regs)
                              (nth idx gp-arg-regs))
                          (list :stack (- idx 4))))
             (let ((gp-cursor 0)
                   (f64-cursor 0))
               (mapcar (lambda (a)
-                        (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+                        (if (eq (nelisp-aot-compiler--ir-get a :cls) 'f64)
                             (let ((r (nth f64-cursor xmm-regs)))
                               (setq f64-cursor (1+ f64-cursor))
                               r)
@@ -11791,8 +11791,8 @@ same branch and emit the same byte count."
                 (done nil))
             (while (and rest (not done))
               (let ((a (car rest)))
-                (if (and (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
-                         (nelisp-phase47-compiler--call-arg-trivial-p a))
+                (if (and (eq (nelisp-aot-compiler--ir-get a :cls) 'gp)
+                         (nelisp-aot-compiler--call-arg-trivial-p a))
                     (progn (setq count (1+ count))
                            (setq rest (cdr rest)))
                   (setq done t))))
@@ -11809,7 +11809,7 @@ same branch and emit the same byte count."
          ;; f64-class defuns round to even arity in the prologue so
          ;; rsp is already aligned post-spill (= see `--emit-defun');
          ;; only gp-class defuns need the runtime correction below.
-         (arity (or nelisp-phase47-compiler--current-defun-arity 0))
+         (arity (or nelisp-aot-compiler--current-defun-arity 0))
          (needs-align
           (if win64-p
               ;; Win64 defun prologues round the local frame so body calls start
@@ -11819,7 +11819,7 @@ same branch and emit the same byte count."
          (general-stack-spill-p
           (cl-some
            (lambda (a)
-             (not (nelisp-phase47-compiler--call-arg-trivial-p a)))
+             (not (nelisp-aot-compiler--call-arg-trivial-p a)))
            stack-args))
          (spill-needs-align
           (if win64-p
@@ -11829,20 +11829,20 @@ same branch and emit the same byte count."
          (call-needs-align needs-align))
     (when (and (not win64-p)
                (> (length f64-args) xmm-reg-budget))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :extern-call-too-many-f64-args name
                     (length f64-args))))
     (when (and stack-args
-               (not (and (eq nelisp-phase47-compiler--arch 'x86_64)
+               (not (and (eq nelisp-aot-compiler--arch 'x86_64)
                          (or sysv-p win64-p))))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :extern-call-stack-gp-args-unsupported name
-                    nelisp-phase47-compiler--arch
-                    nelisp-phase47-compiler--abi)))
+                    nelisp-aot-compiler--arch
+                    nelisp-aot-compiler--abi)))
     (unless win64-p
       (dolist (a stack-args)
-        (unless (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
-          (signal 'nelisp-phase47-compiler-error
+        (unless (eq (nelisp-aot-compiler--ir-get a :cls) 'gp)
+          (signal 'nelisp-aot-compiler-error
                   (list :extern-call-stack-arg-not-trivial name)))))
     (if general-stack-spill-p
         (progn
@@ -11853,10 +11853,10 @@ same branch and emit the same byte count."
           ;; CALL returns; only the actual outgoing stack args are pushed
           ;; below them.
           (dolist (a args)
-            (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
-                (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
-              (nelisp-phase47-compiler--emit-value a buf))
-            (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+            (if (eq (nelisp-aot-compiler--ir-get a :cls) 'f64)
+                (nelisp-aot-compiler--emit-f64-leaf-into a buf 'xmm0)
+              (nelisp-aot-compiler--emit-value a buf))
+            (when (eq (nelisp-aot-compiler--ir-get a :cls) 'f64)
               (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
             (nelisp-asm-x86_64-push buf 'rax))
           (cl-loop for target in arg-targets
@@ -11888,17 +11888,17 @@ same branch and emit the same byte count."
                   (nelisp-asm-x86_64-push buf 'r10)
                   (setq pushed-stack (1+ pushed-stack)))))))
       (dolist (a stack-args)
-        (unless (nelisp-phase47-compiler--call-arg-trivial-p a)
-          (signal 'nelisp-phase47-compiler-error
+        (unless (nelisp-aot-compiler--call-arg-trivial-p a)
+          (signal 'nelisp-aot-compiler-error
                   (list :extern-call-stack-arg-not-trivial name))))
       ;; (1) Complex prefix: push each evaluated arg.  f64 args are
       ;; evaluated into xmm0 via `--emit-f64-leaf-into', then transferred
       ;; to rax before the unified push.
       (dolist (a complex-args)
-        (if (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
-            (nelisp-phase47-compiler--emit-f64-leaf-into a buf 'xmm0)
-          (nelisp-phase47-compiler--emit-value a buf))
-        (when (eq (nelisp-phase47-compiler--ir-get a :cls) 'f64)
+        (if (eq (nelisp-aot-compiler--ir-get a :cls) 'f64)
+            (nelisp-aot-compiler--emit-f64-leaf-into a buf 'xmm0)
+          (nelisp-aot-compiler--emit-value a buf))
+        (when (eq (nelisp-aot-compiler--ir-get a :cls) 'f64)
           ;; xmm0 → rax (64-bit bit pattern, preserves the f64 value).
           (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
         (nelisp-asm-x86_64-push buf 'rax))
@@ -11916,7 +11916,7 @@ same branch and emit the same byte count."
       ;; we walk source order for deterministic byte layout.  All targets
       ;; here are gp-regs (suffix gating restricts to :cls gp).
       (cl-mapc (lambda (a r)
-                 (nelisp-phase47-compiler--emit-trivial-into-reg a r buf))
+                 (nelisp-aot-compiler--emit-trivial-into-reg a r buf))
                trivial-args trivial-targets)
       ;; Insert the 8-byte alignment correction before stack args are
       ;; pushed.  That keeps the first stack arg at the ABI-visible top
@@ -11927,7 +11927,7 @@ same branch and emit the same byte count."
       ;; stack arg ends up closest to the return address in the callee.
       (when sysv-p
         (dolist (a (reverse stack-args))
-          (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
+          (nelisp-aot-compiler--emit-trivial-into-reg a 'rax buf)
           (nelisp-asm-x86_64-push buf 'rax))))
     ;; Materialise AL = f64-count for variadic calls (SysV ABI §3.5.7).
     ;; `mov eax, imm32' is a 5-byte sequence (= REX-less; the imm32
@@ -11965,7 +11965,7 @@ same branch and emit the same byte count."
                    (target (nth 2 entry))
                    (stack-slot (cadr target))
                    (dest-disp (+ shadow (* 8 stack-slot))))
-              (nelisp-phase47-compiler--emit-trivial-into-reg a 'rax buf)
+              (nelisp-aot-compiler--emit-trivial-into-reg a 'rax buf)
               (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
                buf dest-disp 'rax)))))
       ;; Emit the `call rel32' opcode (0xE8) + 4-byte zero placeholder
@@ -11992,7 +11992,7 @@ same branch and emit the same byte count."
     ;; return register convention for scalar values.
     (ignore ret-class)))
 
-(defun nelisp-phase47-compiler--emit-syscall-direct (node buf)
+(defun nelisp-aot-compiler--emit-syscall-direct (node buf)
   "Emit a Linux x86_64 raw SYSCALL instruction for NODE into BUF.
 NODE is a `:kind syscall-direct' IR node with keys :nr, :a0, :a1,
 :a2, :a3, :a4, :a5 (all value-producing sub-nodes returning i64).
@@ -12014,16 +12014,16 @@ Byte-count is fixed per pass so the pass-1/pass-2 invariant holds:
 
 x86_64 only — callers should gate with `:requires-arch x86_64' in
 the compile-elisp-objects manifest."
-  (let ((nr (nelisp-phase47-compiler--ir-get node :nr))
-        (a0 (nelisp-phase47-compiler--ir-get node :a0))
-        (a1 (nelisp-phase47-compiler--ir-get node :a1))
-        (a2 (nelisp-phase47-compiler--ir-get node :a2))
-        (a3 (nelisp-phase47-compiler--ir-get node :a3))
-        (a4 (nelisp-phase47-compiler--ir-get node :a4))
-        (a5 (nelisp-phase47-compiler--ir-get node :a5)))
+  (let ((nr (nelisp-aot-compiler--ir-get node :nr))
+        (a0 (nelisp-aot-compiler--ir-get node :a0))
+        (a1 (nelisp-aot-compiler--ir-get node :a1))
+        (a2 (nelisp-aot-compiler--ir-get node :a2))
+        (a3 (nelisp-aot-compiler--ir-get node :a3))
+        (a4 (nelisp-aot-compiler--ir-get node :a4))
+        (a5 (nelisp-aot-compiler--ir-get node :a5)))
     ;; 1. Evaluate and push each arg onto the stack (NR first = deepest).
     (dolist (arg (list nr a0 a1 a2 a3 a4 a5))
-      (nelisp-phase47-compiler--emit-value arg buf)
+      (nelisp-aot-compiler--emit-value arg buf)
       (nelisp-asm-x86_64-push buf 'rax))
     ;; 2. Pop into Linux SYSCALL ABI regs (reverse order = TOS = A5 first).
     ;;    Linux SYSCALL: rax=nr, rdi=a0, rsi=a1, rdx=a2, r10=a3, r8=a4, r9=a5.
@@ -12039,18 +12039,18 @@ the compile-elisp-objects manifest."
 
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
 
-(defun nelisp-phase47-compiler--emit-sexp-tag (node buf)
+(defun nelisp-aot-compiler--emit-sexp-tag (node buf)
   "Emit `movzx rax, byte ptr [rdi]' after computing NODE's :ptr into rdi.
 Result: the tag byte at offset `nelisp-sexp--offset-tag' (= 0)
 zero-extended to a 64-bit value in rax.  See `docs/arch/sexp-abi.md'
 §5.1."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
     ;; Compute :ptr into rax, then move into rdi as the base register.
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)))
 
-(defun nelisp-phase47-compiler--emit-f64-to-i64-trunc (node buf)
+(defun nelisp-aot-compiler--emit-f64-to-i64-trunc (node buf)
   "Emit `CVTTSD2SI rax, xmm0' after computing NODE's :f64-expr into xmm0.
 Result: signed i64 truncation of the f64 value, returned in rax (= gp
 class).  Per Intel SDM, out-of-range f64 inputs (NaN / +- inf /
@@ -12061,15 +12061,15 @@ semantic differs from this default.
 
 F64-EXPR is emitted via `--emit-f64-leaf-into' which now accepts
 `bits-to-f64' / `f64-call' / `ref :class f64' as valid producers."
-  (let ((f64-expr (nelisp-phase47-compiler--ir-get node :f64-expr)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((f64-expr (nelisp-aot-compiler--ir-get node :f64-expr)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
-          (nelisp-phase47-compiler--emit-f64-leaf-into f64-expr buf 'd0)
+          (nelisp-aot-compiler--emit-f64-leaf-into f64-expr buf 'd0)
           (nelisp-asm-arm64-fcvtzs-x-from-d buf 'x0 'd0))
-      (nelisp-phase47-compiler--emit-f64-leaf-into f64-expr buf 'xmm0)
+      (nelisp-aot-compiler--emit-f64-leaf-into f64-expr buf 'xmm0)
       (nelisp-asm-x86_64-cvttsd2si-r64-xmm buf 'rax 'xmm0))))
 
-(defun nelisp-phase47-compiler--emit-sexp-float-unwrap (node buf)
+(defun nelisp-aot-compiler--emit-sexp-float-unwrap (node buf)
   "Emit f64-payload read for a `Sexp::Float(f)' value, returning the
 raw 8-byte bit pattern as i64 in rax.
 
@@ -12089,30 +12089,30 @@ the bit-cast internally.  No tag check — caller responsibility.
 Mirror of `--emit-sexp-int-unwrap' (= same byte sequence, same
 offset); separated as a distinct op for emit-time class clarity
 and for future f64-class composition with `--emit-f64-leaf-into'."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
-          (nelisp-phase47-compiler--emit-value ptr buf)
+          (nelisp-aot-compiler--emit-value ptr buf)
           (nelisp-asm-arm64-ldr-imm
            buf 'x0 'x0 nelisp-sexp--offset-payload))
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
       (nelisp-asm-x86_64-mov-reg-mem-disp8
        buf 'rax 'rdi nelisp-sexp--offset-payload))))
 
-(defun nelisp-phase47-compiler--emit-sexp-int-unwrap (node buf)
+(defun nelisp-aot-compiler--emit-sexp-int-unwrap (node buf)
   "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr into rdi.
 Result: the i64 payload of a `Sexp::Int(n)' value, read from offset
 `nelisp-sexp--offset-int-payload' (= 8).  No tag check — caller
 must ensure :ptr points at a `Sexp::Int' variant.  See
 `docs/arch/sexp-abi.md' §5.2."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-sexp--offset-int-payload)))
 
-(defun nelisp-phase47-compiler--emit-sexp-int-make (node buf)
+(defun nelisp-aot-compiler--emit-sexp-int-make (node buf)
   "Emit the 3-instruction `Sexp::Int' constructor sequence into a caller slot.
 NODE's :slot is the `*mut Sexp' destination, :val is the i64 payload.
 Both sub-expressions are evaluated in turn and pushed; the saved
@@ -12128,15 +12128,15 @@ The bytes at `[rdi + 1, rdi + 8)' (= padding) and
 left unmodified — `Sexp::Int' does not use them and Rust's drop
 glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
 §5.3."
-  (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
-        (val (nelisp-phase47-compiler--ir-get node :val)))
+  (let ((slot (nelisp-aot-compiler--ir-get node :slot))
+        (val (nelisp-aot-compiler--ir-get node :val)))
     ;; Evaluate :slot then :val and push each result so the standard
     ;; pop-into-arg-reg dance places slot in rdi, val in rsi.  This
     ;; mirrors `--emit-call' / `--emit-extern-call' so future arg
     ;; expressions that themselves clobber rdi/rsi don't race.
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value val buf)
+    (nelisp-aot-compiler--emit-value val buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Pop in reverse push order: last pushed (= val) → rsi, first
     ;; pushed (= slot) → rdi.
@@ -12150,19 +12150,19 @@ glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
 
 ;; ---- Doc 101 §101.B Cons read ops emit ----
 
-(defun nelisp-phase47-compiler--emit-cons-null-p (node buf)
+(defun nelisp-aot-compiler--emit-cons-null-p (node buf)
   "Emit a tag==Nil predicate for NODE's `:ptr' Sexp pointer.
 Returns 1 in rax iff the tag byte at `[ptr + 0]' equals
 `nelisp-sexp--tag-nil'; else returns 0."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-nil)
     (nelisp-asm-x86_64-setcc-al buf 'sete)
     (nelisp-asm-x86_64-movzx-eax-al buf)))
 
-(defun nelisp-phase47-compiler--emit-cons-slot-copy (node buf field-off)
+(defun nelisp-aot-compiler--emit-cons-slot-copy (node buf field-off)
   "Emit the Doc 101 §2.1 boxed-slot copy for `car' / `cdr'.
 NODE carries `:ptr' (= `*const Sexp') and `:slot' (= `*mut Sexp').
 FIELD-OFF is 0 for `car' and 32 for `cdr'.  The emitted x86_64 path:
@@ -12173,11 +12173,11 @@ FIELD-OFF is 0 for `car' and 32 for `cdr'.  The emitted x86_64 path:
   3. Returns SLOT in rax.
 
 Caller must guarantee PTR points at `Sexp::Cons(_)'."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
@@ -12189,7 +12189,7 @@ Caller must guarantee PTR points at `Sexp::Cons(_)'."
     (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-cons-cdr-raw (node buf)
+(defun nelisp-aot-compiler--emit-cons-cdr-raw (node buf)
   "Emit the Doc 101 §2.1 raw cdr walker primitive.
 If NODE's `:from-box' is nil, `:ptr' is a `*const Sexp' and we first
 load the `NlConsBox*' payload from `[ptr + 8]'.  If `:from-box' is t,
@@ -12202,12 +12202,12 @@ load the `NlConsBox*' payload from `[ptr + 8]'.  If `:from-box' is t,
 
 Used by the §101.B `length' list walk to follow proper-list cons
 chains without materialising intermediate `Sexp' values."
-  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-         (from-box (nelisp-phase47-compiler--ir-get node :from-box))
-         (id (nelisp-phase47-compiler--gensym "cons-cdr-raw"))
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (from-box (nelisp-aot-compiler--ir-get node :from-box))
+         (id (nelisp-aot-compiler--gensym "cons-cdr-raw"))
          (nil-lbl (intern (format "%s-nil" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (if from-box
         (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
       (progn
@@ -12226,16 +12226,16 @@ chains without materialising intermediate `Sexp' values."
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-sexp-payload-ptr (node buf)
+(defun nelisp-aot-compiler--emit-sexp-payload-ptr (node buf)
   "Emit a boxed-payload pointer read for NODE's `:ptr' Sexp pointer.
 Doc 101 §2.3 uses this for list walks: `Cons' returns the
 `NlConsBox*'; `Nil' returns 0.  Other tags also return 0 so the op is
 safe to use as the loop seed in the length walker."
-  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-         (id (nelisp-phase47-compiler--gensym "sexp-payload-ptr"))
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (id (nelisp-aot-compiler--gensym "sexp-payload-ptr"))
          (zero-lbl (intern (format "%s-zero" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-cons)
@@ -12247,17 +12247,17 @@ safe to use as the loop seed in the length walker."
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-sexp-payload-ptr-record (node buf)
+(defun nelisp-aot-compiler--emit-sexp-payload-ptr-record (node buf)
   "Emit a Record-only boxed-payload pointer read for NODE's `:ptr' Sexp pointer.
 Doc 49 R6g (Gate-segv fix): identical to `--emit-sexp-payload-ptr' but
 tag-guards on `Sexp::Record' (tag=12) instead of `Sexp::Cons' (tag=7).
 Non-Record inputs return 0 (NULL) - caller must tag-check before
 deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
-  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-         (id (nelisp-phase47-compiler--gensym "sexp-payload-ptr-record"))
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (id (nelisp-aot-compiler--gensym "sexp-payload-ptr-record"))
          (zero-lbl (intern (format "%s-zero" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-record)
@@ -12271,7 +12271,7 @@ deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
 
 ;; ---- Doc 111 §111.B Record read+write ops emit ----
 
-(defun nelisp-phase47-compiler--emit-record-slot-ptr-core (ptr idx buf)
+(defun nelisp-aot-compiler--emit-record-slot-ptr-core (ptr idx buf)
   "Leave the raw `*const Sexp' for record slot IDX in rax.
 
 Doc 111 §111.E #1 fix (two bugs uncovered by the first user of
@@ -12296,12 +12296,12 @@ the NlVector path which has its own correctly-named offset
 constants.  The first composer of `record-slot-ref-ptr'
 (= `mirror_lookup_entry') is the first caller to exercise this
 code, so the test there is the regression gate."
-  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-aot-compiler--emit-value idx buf)
   (nelisp-asm-x86_64-push buf 'rax)
   (nelisp-asm-x86_64-pop buf 'rax)
-  (nelisp-phase47-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
+  (nelisp-aot-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
   (nelisp-asm-x86_64-pop buf 'rdi)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'r10 'rdi nelisp-sexp--offset-payload)
@@ -12314,13 +12314,13 @@ code, so the test there is the regression gate."
    buf 'r10 'r10 nelisp-nlrecord--offset-slots-capacity)
   (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10))
 
-(defun nelisp-phase47-compiler--emit-record-type-tag (node buf)
+(defun nelisp-aot-compiler--emit-record-type-tag (node buf)
   "Copy a record's inline `type_tag' Sexp into the caller-owned slot."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
@@ -12334,21 +12334,21 @@ code, so the test there is the regression gate."
     (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-record-slot-count (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-count (node buf)
   "Read `record.slots.len' into rax."
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'rdi 'rdi nelisp-sexp--offset-payload)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'rax 'rdi nelisp-nlrecord--offset-slots-length))
 
-(defun nelisp-phase47-compiler--emit-record-slot-ref-ptr (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-ref-ptr (node buf)
   "Leave the raw `*const Sexp' for NODE's record slot in rax."
-  (nelisp-phase47-compiler--emit-record-slot-ptr-core
-   (nelisp-phase47-compiler--ir-get node :ptr) (nelisp-phase47-compiler--ir-get node :idx) buf))
+  (nelisp-aot-compiler--emit-record-slot-ptr-core
+   (nelisp-aot-compiler--ir-get node :ptr) (nelisp-aot-compiler--ir-get node :idx) buf))
 
-(defun nelisp-phase47-compiler--emit-record-slot-ref (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-ref (node buf)
   "Copy a record slot into the caller-owned destination slot.
 
 Doc 111 §111.C v3 fix: the previous inline SIMD 32-byte slot copy
@@ -12361,18 +12361,18 @@ at the same `NlXxx' heap object with refcount=1, so subsequent
 The slot copy now delegates to the `nl_sexp_clone_into' Rust helper
 which performs a refcount-aware `Sexp::clone' before writing into
 the destination.  The destination is treated as uninitialized
-(`core::ptr::write' without Drop), matching the Phase 47 invariant
+(`core::ptr::write' without Drop), matching the AOT invariant
 that result slots start as `Sexp::Nil' bit-pattern."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
     ;; Compute the source `*const Sexp' pointer for record slot N.
-    (nelisp-phase47-compiler--emit-record-slot-ptr-core ptr idx buf)
+    (nelisp-aot-compiler--emit-record-slot-ptr-core ptr idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Compute the destination `*mut Sexp' pointer (= result_slot).
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-pop buf 'rdx) ; dst
           (nelisp-asm-x86_64-pop buf 'rcx) ; src
@@ -12407,26 +12407,26 @@ that result slots start as `Sexp::Nil' bit-pattern."
       ;; pointer they just wrote into).
       (nelisp-asm-x86_64-pop buf 'rax))))
 
-(defun nelisp-phase47-compiler--emit-record-slot-set (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-set (node buf)
   "Call the Rust helper that refcount-safely overwrites a record slot.
 
 Dynamic rsp alignment around the call: `nl_record_set_slot' uses
 `Vec::index_mut' which dispatches through SSE on some Rust targets
 and requires `rsp ≡ 0 mod 16' at the `call' site per SysV AMD64.
-Phase 47 callers can have either body-entry alignment (= depends
+AOT callers can have either body-entry alignment (= depends
 on outer-defun param count: even → 0 mod 16, odd → 8 mod 16), so
 this op aligns rsp via `mov rbx, rsp; and rsp, -16; ...; mov rsp,
 rbx' regardless of inbound state.
 
 `rbx' is callee-saved in SysV AMD64, so its value across our `call'
 is preserved by `nl_record_set_slot'.  Pre-existing emits that
-depend on `rbx' (= currently none in Phase 47) would need updating;
+depend on `rbx' (= currently none in AOT) would need updating;
 the constraint is documented here as the local convention for this
 op.
 
 After the helper call, materialise `rax = 1' so this op composes
 cleanly inside `(and SIDE-EFFECT VALUE)' value-form chains (= the
-Phase 47 idiom for sequencing side effects when no `progn'-shape
+AOT idiom for sequencing side effects when no `progn'-shape
 value form exists).  `nl_record_set_slot' returns Rust unit, which
 leaves rax in an unspecified state across the call boundary; the
 explicit `mov rax, 1' makes the op produce a stable truthy value.
@@ -12435,16 +12435,16 @@ This is a Doc 111 §111.E #7-#12 enabler: those helpers chain
 `record-slot-set' with `(and ... 1)' to express \"overwrite slot
 then return 1 on hit\".  No callers depended on the prior
 undefined-rax behaviour."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx))
-        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx))
+        (val-ptr (nelisp-aot-compiler--ir-get node :val-ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-aot-compiler--emit-value idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-aot-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-pop buf 'r8)
           (nelisp-asm-x86_64-pop buf 'rdx)
@@ -12477,14 +12477,14 @@ undefined-rax behaviour."
 
 ;; ---- Doc 111 §111.C Vector read ops emit ----
 
-(defun nelisp-phase47-compiler--emit-vector-slot-ptr-core (ptr idx buf)
+(defun nelisp-aot-compiler--emit-vector-slot-ptr-core (ptr idx buf)
   "Leave the raw `*const Sexp' for vector element IDX in rax."
-  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-aot-compiler--emit-value idx buf)
   (nelisp-asm-x86_64-push buf 'rax)
   (nelisp-asm-x86_64-pop buf 'rax)
-  (nelisp-phase47-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
+  (nelisp-aot-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
   (nelisp-asm-x86_64-pop buf 'rdi)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'rsi 'rdi nelisp-sexp--offset-payload)
@@ -12493,21 +12493,21 @@ undefined-rax behaviour."
    buf 'rcx 'rsi nelisp-nlvector--offset-value-capacity)
   (nelisp-asm-x86_64-add-reg-reg buf 'rax 'rcx))
 
-(defun nelisp-phase47-compiler--emit-vector-len (node buf)
+(defun nelisp-aot-compiler--emit-vector-len (node buf)
   "Read `vector.value.len' into rax."
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'rsi 'rdi nelisp-sexp--offset-payload)
   (nelisp-asm-x86_64-mov-reg-mem-disp8
    buf 'rax 'rsi nelisp-nlvector--offset-value-length))
 
-(defun nelisp-phase47-compiler--emit-vector-ref-ptr (node buf)
+(defun nelisp-aot-compiler--emit-vector-ref-ptr (node buf)
   "Leave the raw `*const Sexp' for NODE's vector element in rax."
-  (nelisp-phase47-compiler--emit-vector-slot-ptr-core
-   (nelisp-phase47-compiler--ir-get node :ptr) (nelisp-phase47-compiler--ir-get node :idx) buf))
+  (nelisp-aot-compiler--emit-vector-slot-ptr-core
+   (nelisp-aot-compiler--ir-get node :ptr) (nelisp-aot-compiler--ir-get node :idx) buf))
 
-(defun nelisp-phase47-compiler--emit-vector-slot-set (node buf)
+(defun nelisp-aot-compiler--emit-vector-slot-set (node buf)
   "Call the Rust helper that refcount-safely overwrites a vector slot.
 
 Doc 111 §111.E — parallel to `--emit-record-slot-set' (§111.B); the
@@ -12523,16 +12523,16 @@ matching the convention `--emit-record-slot-set' established for
 §111.B's record overwrite (= `Vec::index_mut' leaves rax in an
 unspecified state across the call boundary; explicit `mov rax, 1'
 yields a stable truthy value)."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx))
-        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx))
+        (val-ptr (nelisp-aot-compiler--ir-get node :val-ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-aot-compiler--emit-value idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-aot-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-pop buf 'r8)
           (nelisp-asm-x86_64-pop buf 'rdx)
@@ -12555,7 +12555,7 @@ yields a stable truthy value)."
     ;; rax = 1 (truthy sentinel for value-form chaining).
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
-(defun nelisp-phase47-compiler--emit-vector-ref (node buf)
+(defun nelisp-aot-compiler--emit-vector-ref (node buf)
   "Copy a vector element into the caller-owned destination slot.
 
 Doc 111 §111.C v3 fix: the previous inline SIMD 32-byte slot copy
@@ -12569,16 +12569,16 @@ caller's result slot holding the same `NlStr' pointer at refcount
 The slot copy now delegates to the `nl_sexp_clone_into' Rust helper
 which performs a refcount-aware `Sexp::clone' (= one `fetch_add'
 on box-tagged variants) before writing into the destination."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
     ;; Compute source `*const Sexp' (vec_ptr + offset + idx*32) -> rax.
-    (nelisp-phase47-compiler--emit-vector-slot-ptr-core ptr idx buf)
+    (nelisp-aot-compiler--emit-vector-slot-ptr-core ptr idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Compute destination `*mut Sexp' -> rax.
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-pop buf 'rdx)
           (nelisp-asm-x86_64-pop buf 'rcx)
@@ -12625,7 +12625,7 @@ on box-tagged variants) before writing into the destination."
 ;; the consumer holds the cell pointer for the entire lifetime of the
 ;; copied SLOT, which is the §111.E env_lexframe usage pattern.
 
-(defun nelisp-phase47-compiler--emit-cell-value (node buf)
+(defun nelisp-aot-compiler--emit-cell-value (node buf)
   "Emit `cell-value' — copy NlCell.value into NODE's caller-owned SLOT.
 NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)') and
 `:slot' (= `*mut Sexp').  Strategy:
@@ -12642,11 +12642,11 @@ extern lands on main, replace the inline `movdqu' pair with a
 this op symmetric with `cell-set-value' (= no double-free on
 boxed-tagged values).  Tracking the safety constraint here so the
 diff is obvious at swap time."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
@@ -12662,18 +12662,18 @@ diff is obvious at swap time."
     (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-cell-set-value (node buf)
+(defun nelisp-aot-compiler--emit-cell-set-value (node buf)
   "Emit `cell-set-value' — delegate to `nl_cell_set_value' extern.
 NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)') and
 `:val-ptr' (= `*const Sexp').  The Rust helper does refcount-aware
 drop-then-write on `NlCell.value' (= matches `cons-set-car' /
 `cons-set-cdr' delegation pattern from Doc 101 §101.D).  Returns the
 original H pointer in rax."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (val-ptr (nelisp-aot-compiler--ir-get node :val-ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-aot-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
@@ -12683,7 +12683,7 @@ original H pointer in rax."
     ;; boundary at the call site (SysV AMD64 alignment).
     (nelisp-asm-x86_64-push buf 'rdi)
     (nelisp-asm-x86_64-push buf 'rsi)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
           ;; rcx = NlCell* (= payload pointer at offset 8 of the Sexp slot).
@@ -12696,12 +12696,12 @@ original H pointer in rax."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_cell_set_value" -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'rax)))
 
-(defun nelisp-phase47-compiler--emit-vector-make (node buf)
+(defun nelisp-aot-compiler--emit-vector-make (node buf)
   "Emit `vector-make' — allocate fresh NlVector and write Sexp::Vector into SLOT.
 NODE carries `:cap' (= i64 capacity) and `:slot' (= `*mut Sexp').
 
@@ -12721,16 +12721,16 @@ The exact push/pop balancing follows `cell-make' so SysV AMD64
 alignment holds.  The new vector is pre-filled with `Sexp::Nil'
 elements by `nl_alloc_vector' (= refcount-1 box, ready for
 `vector-slot-set'-based copy-fill)."
-  (let ((cap (nelisp-phase47-compiler--ir-get node :cap))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value cap buf)
+  (let ((cap (nelisp-aot-compiler--ir-get node :cap))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value cap buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Mirror cell-make's "one extra scratch slot" alignment pad.
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'r11)        ; r11 = pad (discard)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-pop buf 'rsi)  ; slot
           (nelisp-asm-x86_64-pop buf 'rcx)  ; cap
@@ -12764,7 +12764,7 @@ elements by `nl_alloc_vector' (= refcount-1 box, ready for
      buf 'rsi nelisp-sexp--offset-payload 'r10)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-record-make (node buf)
+(defun nelisp-aot-compiler--emit-record-make (node buf)
   "Emit `record-make' — allocate fresh NlRecord and write Sexp::Record into SLOT.
 NODE carries `:tag-ptr' (= `*const Sexp', the type-tag symbol),
 `:slot-count' (= i64 number of slots) and `:slot' (= `*mut Sexp').
@@ -12787,19 +12787,19 @@ The push/pop balancing follows `vector-make' / `cons-make' so SysV
 AMD64 alignment holds.  The new record has SLOT-COUNT slots all pre-
 filled with `Sexp::Nil' by `nl_alloc_record', and refcount = 1 ready
 for `record-slot-set'-based init."
-  (let ((tag-ptr (nelisp-phase47-compiler--ir-get node :tag-ptr))
-        (slot-count (nelisp-phase47-compiler--ir-get node :slot-count))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value tag-ptr buf)
+  (let ((tag-ptr (nelisp-aot-compiler--ir-get node :tag-ptr))
+        (slot-count (nelisp-aot-compiler--ir-get node :slot-count))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value tag-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot-count buf)
+    (nelisp-aot-compiler--emit-value slot-count buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Pop in reverse push order: slot -> rax (will save), slot-count ->
     ;; rsi (= arg 1), tag-ptr -> rdi (= arg 0).
     (nelisp-asm-x86_64-pop buf 'rax)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-pop buf 'rdx)
           (nelisp-asm-x86_64-pop buf 'rcx)
@@ -12833,7 +12833,7 @@ for `record-slot-set'-based init."
      buf 'rsi nelisp-sexp--offset-payload 'r10)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-cell-make (node buf)
+(defun nelisp-aot-compiler--emit-cell-make (node buf)
   "Emit `cell-make' — allocate fresh NlCell and write Sexp::Cell into SLOT.
 NODE carries `:val-ptr' (= `*const Sexp', the initial value) and
 `:slot' (= `*mut Sexp').
@@ -12853,11 +12853,11 @@ Strategy (= literal mirror of `cons-make' alignment idiom):
 The exact push/pop balancing follows `cons-make' / `cons-set-slot' so
 SysV AMD64 alignment holds whatever the wrapper arity ends up being.
 See `cons-make' comment for the alignment rationale."
-  (let ((val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value val-ptr buf)
+  (let ((val-ptr (nelisp-aot-compiler--ir-get node :val-ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Mirror cons-make's "one extra scratch slot" alignment pad.  The
     ;; `nl_alloc_cell' helper only takes 1 arg, so we don't need
@@ -12876,13 +12876,13 @@ See `cons-make' comment for the alignment rationale."
     ;; cons-make / cons-set-slot's idiom.
     (nelisp-asm-x86_64-push buf 'rsi)
     (nelisp-asm-x86_64-push buf 'rsi)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_alloc_cell" -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     ;; rax = NlCell*.  Move to r10.
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
@@ -12897,7 +12897,7 @@ See `cons-make' comment for the alignment rationale."
      buf 'rsi nelisp-sexp--offset-payload 'r10)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-cell-null-p (node buf)
+(defun nelisp-aot-compiler--emit-cell-null-p (node buf)
   "Emit `cell-null-p' — read NlCell.value's tag byte, compare to Nil.
 NODE carries `:ptr' (= `*const Sexp' pointing at a `Sexp::Cell(_)').
 Returns 1 in rax iff `NlCell.value.tag == SEXP_TAG_NIL'; else 0.
@@ -12908,8 +12908,8 @@ Strategy (= inline tag check, no extern call):
   2. rdi = NlCell* via `mov rdi, [rdi + 8]'.
   3. Load tag byte at `[rdi + 0]' (= NlCell.value tag at offset 0).
   4. Compare to `SEXP_TAG_NIL', setCC AL, movzx to materialise."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     ;; rdi = NlCell* via payload load.
     (nelisp-asm-x86_64-mov-reg-mem-disp8
@@ -12923,23 +12923,23 @@ Strategy (= inline tag check, no extern call):
 
 ;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
 
-(defun nelisp-phase47-compiler--emit-str-len (node buf)
+(defun nelisp-aot-compiler--emit-str-len (node buf)
   "Emit `mov rax, qword ptr [rdi + 24]' after computing NODE's :ptr."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-length)))
 
-(defun nelisp-phase47-compiler--emit-str-bytes (node buf)
+(defun nelisp-aot-compiler--emit-str-bytes (node buf)
   "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-ptr)))
 
-(defun nelisp-phase47-compiler--emit-str-bytes-ptr (node buf)
+(defun nelisp-aot-compiler--emit-str-bytes-ptr (node buf)
   "Emit Doc 122 §122.H `str-bytes-ptr' — 1-arg call to `nl_str_bytes_ptr'.
 
 Layout-safe sibling of `str-bytes': dispatches through the Rust extern
@@ -12956,11 +12956,11 @@ Strategy (= 1-arg extern call, mirrors §122.D `mut-str-len' /
   2. Push one alignment pad to keep rsp 16-byte aligned at call site.
   3. Call `nl_str_bytes_ptr' — rax = `*const u8' data pointer.
   4. Pop the alignment pad."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list ptr) buf "nl_str_bytes_ptr")
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
@@ -12968,14 +12968,14 @@ Strategy (= 1-arg extern call, mirrors §122.D `mut-str-len' /
        buf "nl_str_bytes_ptr" -4 'text)
       (nelisp-asm-x86_64-pop buf 'r11))))
 
-(defun nelisp-phase47-compiler--emit-str-byte-at (node buf)
+(defun nelisp-aot-compiler--emit-str-byte-at (node buf)
   "Emit byte load from a `Sexp::Str' / `Sexp::Symbol' String buffer.
 Result: the selected UTF-8 byte zero-extended into rax."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value idx buf)
+    (nelisp-aot-compiler--emit-value idx buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'r10)
     (nelisp-asm-x86_64-pop buf 'rdi)
@@ -12984,7 +12984,7 @@ Result: the selected UTF-8 byte zero-extended into rax."
     (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10)
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rax)))
 
-(defun nelisp-phase47-compiler--emit-string-eq-core (buf left right id)
+(defun nelisp-aot-compiler--emit-string-eq-core (buf left right id)
   "Emit length-first byte-loop equality for two String-header slots.
 LEFT and RIGHT are GP registers holding `*const Sexp' addresses of
 values whose payload layout matches Rust `String' (=`Sexp::Str' or
@@ -13025,21 +13025,21 @@ values whose payload layout matches Rust `String' (=`Sexp::Str' or
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-str-eq (node buf)
+(defun nelisp-aot-compiler--emit-str-eq (node buf)
   "Emit `str-eq' using a byte loop over the two String payloads."
-  (let ((a (nelisp-phase47-compiler--ir-get node :a))
-        (b (nelisp-phase47-compiler--ir-get node :b))
-        (id (nelisp-phase47-compiler--ir-get node :id)))
-    (nelisp-phase47-compiler--emit-value a buf)
+  (let ((a (nelisp-aot-compiler--ir-get node :a))
+        (b (nelisp-aot-compiler--ir-get node :b))
+        (id (nelisp-aot-compiler--ir-get node :id)))
+    (nelisp-aot-compiler--emit-value a buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value b buf)
+    (nelisp-aot-compiler--emit-value b buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; last pushed (= b) → rsi, first pushed (= a) → rdi
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
-    (nelisp-phase47-compiler--emit-string-eq-core buf 'rdi 'rsi id)))
+    (nelisp-aot-compiler--emit-string-eq-core buf 'rdi 'rsi id)))
 
-(defun nelisp-phase47-compiler--emit-symbol-name-eq (node buf)
+(defun nelisp-aot-compiler--emit-symbol-name-eq (node buf)
   "Emit `symbol-name-eq': tag-check SYM_PTR == Sexp::Symbol, length
 check against LITERAL_LEN, then byte-loop compare against compile-time
 literal bytes.  Returns i64 0/1 in rax.
@@ -13052,13 +13052,13 @@ Register usage:
 No PLT calls — entirely inline; the literal bytes are encoded as
 `cmp imm32' immediates so each byte costs ~10 bytes of code.  A 4-byte
 literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
-  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
-         (id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (bytes (nelisp-aot-compiler--ir-get node :bytes))
+         (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     ;; Tag check: byte [rdi] == Sexp::Symbol tag (= 4).
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
@@ -13088,7 +13088,7 @@ literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-sexp-name-eq (node buf)
+(defun nelisp-aot-compiler--emit-sexp-name-eq (node buf)
   "Emit `sexp-name-eq': tag-check SEXP_PTR == Symbol (4) OR Str (5), length
 check against LITERAL_LEN, then byte-loop compare against compile-time
 literal bytes.  Returns i64 0/1 in rax.
@@ -13104,14 +13104,14 @@ Sexp::Str (tag 5) inputs.  The tag check emits:
 
 Register usage matches `symbol-name-eq' exactly; only the tag-check block
 differs (adds one cmp+jnz for the Str arm)."
-  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
-         (id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (bytes (nelisp-aot-compiler--ir-get node :bytes))
+         (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
          (bytes-check-lbl (intern (format "%s-bytes" id)))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     ;; Tag check: byte [rdi] == 4 (Symbol) → bytes_check
     ;;            byte [rdi] == 5 (Str)    → bytes_check
@@ -13143,16 +13143,16 @@ differs (adds one cmp+jnz for the Str arm)."
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-symbol-eq (node buf)
+(defun nelisp-aot-compiler--emit-symbol-eq (node buf)
   "Emit `symbol-eq': tag-check both inputs, then compare name bytes."
-  (let ((a (nelisp-phase47-compiler--ir-get node :a))
-        (b (nelisp-phase47-compiler--ir-get node :b))
-        (id (nelisp-phase47-compiler--ir-get node :id))
-        (tag-false-lbl (intern (format "%s-tag-false" (nelisp-phase47-compiler--ir-get node :id))))
-        (end-lbl (intern (format "%s-tag-end" (nelisp-phase47-compiler--ir-get node :id)))))
-    (nelisp-phase47-compiler--emit-value a buf)
+  (let ((a (nelisp-aot-compiler--ir-get node :a))
+        (b (nelisp-aot-compiler--ir-get node :b))
+        (id (nelisp-aot-compiler--ir-get node :id))
+        (tag-false-lbl (intern (format "%s-tag-false" (nelisp-aot-compiler--ir-get node :id))))
+        (end-lbl (intern (format "%s-tag-end" (nelisp-aot-compiler--ir-get node :id)))))
+    (nelisp-aot-compiler--emit-value a buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value b buf)
+    (nelisp-aot-compiler--emit-value b buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
@@ -13162,21 +13162,21 @@ differs (adds one cmp+jnz for the Str arm)."
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rsi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
     (nelisp-asm-x86_64-jnz-rel32 buf tag-false-lbl)
-    (nelisp-phase47-compiler--emit-string-eq-core buf 'rdi 'rsi id)
+    (nelisp-aot-compiler--emit-string-eq-core buf 'rdi 'rsi id)
     (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
     (nelisp-asm-x86_64-define-label buf tag-false-lbl)
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 0)
     (nelisp-asm-x86_64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-tag (node buf tag)
+(defun nelisp-aot-compiler--emit-sexp-write-tag (node buf tag)
   "Emit `mov byte ptr [rdi], TAG; mov rax, rdi' for NODE's :slot."
-  (let ((slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value slot buf)
+  (let ((slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-asm-x86_64-mov-mem-imm8 buf 'rdi tag)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-alloc (node buf helper-name)
+(defun nelisp-aot-compiler--emit-sexp-write-alloc (node buf helper-name)
   "Emit `sexp-write-str' / `sexp-write-symbol' — call alloc HELPER-NAME.
 NODE carries `:slot' (= `*mut Sexp'), `:bytes-ptr' (= `*const u8'),
 and `:len' (= i64).  HELPER-NAME is `\"nl_alloc_str\"' or
@@ -13199,23 +13199,23 @@ Strategy (= 3-arg extern call, mirrors `record-make' alignment idiom):
   7. Pop the alignment pad.
 
 The helper's return value (= SLOT pointer) is left in rax, which is
-exactly the contract for value-returning Phase 47 ops.  No
+exactly the contract for value-returning AOT ops.  No
 post-call tag/payload writes are needed because the extern
 populates the full slot inline (= the key divergence from
 `vector-make' / `cell-make' / `record-make' which return a `*mut
 NlXXX' and require the emit code to write tag + payload offset
 separately)."
-  (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
-        (bytes-ptr (nelisp-phase47-compiler--ir-get node :bytes-ptr))
-        (len (nelisp-phase47-compiler--ir-get node :len)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((slot (nelisp-aot-compiler--ir-get node :slot))
+        (bytes-ptr (nelisp-aot-compiler--ir-get node :bytes-ptr))
+        (len (nelisp-aot-compiler--ir-get node :len)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list bytes-ptr len slot) buf helper-name)
-      (nelisp-phase47-compiler--emit-value bytes-ptr buf)
+      (nelisp-aot-compiler--emit-value bytes-ptr buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value len buf)
+      (nelisp-aot-compiler--emit-value len buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value slot buf)
+      (nelisp-aot-compiler--emit-value slot buf)
       (nelisp-asm-x86_64-push buf 'rax)
       ;; Pop in reverse push order: slot -> rdx (= arg 2), len -> rsi
       ;; (= arg 1), bytes-ptr -> rdi (= arg 0).
@@ -13236,7 +13236,7 @@ separately)."
       ;; alignment pad; rax is already the desired return value.
       (nelisp-asm-x86_64-pop buf 'r11))))
 
-(defun nelisp-phase47-compiler--bytes->u64-chunks (bytes)
+(defun nelisp-aot-compiler--bytes->u64-chunks (bytes)
   "Pack BYTES into little-endian u64 chunks for stack materialization."
   (let ((rest bytes)
         (chunks nil))
@@ -13252,17 +13252,17 @@ separately)."
         (push value chunks)))
     (nreverse chunks)))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-lit (node buf helper-name)
+(defun nelisp-aot-compiler--emit-sexp-write-lit (node buf helper-name)
   "Emit a literal string/symbol allocation through HELPER-NAME.
 This uses a temporary stack byte buffer and avoids `.rodata' so the
 form remains valid in ET_REL object mode."
-  (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
-         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
-         (chunks (nelisp-phase47-compiler--bytes->u64-chunks bytes))
+  (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
+         (bytes (nelisp-aot-compiler--ir-get node :bytes))
+         (chunks (nelisp-aot-compiler--bytes->u64-chunks bytes))
          (chunk-count (length chunks))
          (pad-p (= 1 (logand chunk-count 1)))
          (stack-slots (+ chunk-count (if pad-p 1 0))))
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     (when pad-p
       (nelisp-asm-x86_64-push buf 'rax))
@@ -13272,7 +13272,7 @@ form remains valid in ET_REL object mode."
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rsp)
     (nelisp-asm-x86_64-mov-imm32 buf 'rsi (length bytes))
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r10)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-mov-reg-reg buf 'r8 'rdx)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
@@ -13280,22 +13280,22 @@ form remains valid in ET_REL object mode."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf helper-name -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (when (> stack-slots 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-slots)))))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-symbol-lit (node buf)
+(defun nelisp-aot-compiler--emit-sexp-write-symbol-lit (node buf)
   "Emit `sexp-write-symbol-lit' using a temporary stack byte buffer."
-  (nelisp-phase47-compiler--emit-sexp-write-lit
+  (nelisp-aot-compiler--emit-sexp-write-lit
    node buf "nl_alloc_symbol"))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-str-lit (node buf)
+(defun nelisp-aot-compiler--emit-sexp-write-str-lit (node buf)
   "Emit `sexp-write-str-lit' using a temporary stack byte buffer."
-  (nelisp-phase47-compiler--emit-sexp-write-lit
+  (nelisp-aot-compiler--emit-sexp-write-lit
    node buf "nl_alloc_str"))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-float (node buf)
+(defun nelisp-aot-compiler--emit-sexp-write-float (node buf)
   "Emit `sexp-write-float' — call `nl_sexp_write_float(slot, val: f64)'.
 NODE carries `:slot' (= `*mut Sexp', supplied as either gp-class or
 f64-class bit-cast pointer) and `:value' (= f64-class flat-leaf
@@ -13320,32 +13320,32 @@ f64 arg, balanced pushes for stack alignment):
   6. Call `nl_sexp_write_float' — rax = slot pointer on return.
   7. Pop the alignment pad.
 
-SLOT f64-class is the workaround for the Phase 47 MVP requirement
+SLOT f64-class is the workaround for the AOT MVP requirement
 that defun params be uniform-class.  Test harnesses bit-cast the
 pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
   param alongside VALUE; the bit pattern survives unchanged through
   the xmm0 spill / unspill round trip."
-  (let ((slot (nelisp-phase47-compiler--ir-get node :slot))
-        (value (nelisp-phase47-compiler--ir-get node :value)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((slot (nelisp-aot-compiler--ir-get node :slot))
+        (value (nelisp-aot-compiler--ir-get node :value)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
           ;; VALUE -> d0, spill raw bits in one aligned stack slot.
-          (nelisp-phase47-compiler--emit-f64-leaf-into value buf 'd0)
+          (nelisp-aot-compiler--emit-f64-leaf-into value buf 'd0)
           (nelisp-asm-arm64-fmov-x-from-d buf 'x10 'd0)
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x10)
           ;; SLOT -> x0.  A f64-class slot parameter carries pointer
           ;; bits in a D register, mirroring the x86_64 workaround.
-          (if (and (eq (nelisp-phase47-compiler--ir-kind slot) 'ref)
-                   (eq (nelisp-phase47-compiler--ir-get slot :class) 'f64))
+          (if (and (eq (nelisp-aot-compiler--ir-kind slot) 'ref)
+                   (eq (nelisp-aot-compiler--ir-get slot :class) 'f64))
               (progn
-                (nelisp-phase47-compiler--emit-f64-leaf-into slot buf 'd1)
+                (nelisp-aot-compiler--emit-f64-leaf-into slot buf 'd1)
                 (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd1))
-            (nelisp-phase47-compiler--emit-value slot buf))
+            (nelisp-aot-compiler--emit-value slot buf))
           ;; Restore VALUE into d0 and call AAPCS64 helper:
           ;;   x0 = slot, d0 = value.  Helper returns slot in x0.
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x10)
           (nelisp-asm-arm64-fmov-d-from-x buf 'd0 'x10)
-          (if nelisp-phase47-compiler--allow-external-user-calls
+          (if nelisp-aot-compiler--allow-external-user-calls
               (progn
                 (nelisp-asm-arm64-emit-reloc
                  buf 'b26-pc "nl_sexp_write_float")
@@ -13354,23 +13354,23 @@ pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
       ;; Step 1-2: VALUE → xmm0, then xmm0 → rax, push.  The
       ;; `emit-f64-leaf-into' helper enforces the flat-ref shape so
       ;; this op composes only at the same MVP level as `f64-call'.
-      (nelisp-phase47-compiler--emit-f64-leaf-into value buf 'xmm0)
+      (nelisp-aot-compiler--emit-f64-leaf-into value buf 'xmm0)
       (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
       (nelisp-asm-x86_64-push buf 'rax)
       ;; Step 3: SLOT.  If the IR node is an f64-class ref, the
       ;; emit-value path lands the bit pattern in xmm0; transfer to
       ;; rax via MOVQ.  Otherwise (= gp-class ref / imm / call), the
       ;; result is already in rax.
-      (nelisp-phase47-compiler--emit-value slot buf)
-      (when (and (eq (nelisp-phase47-compiler--ir-kind slot) 'ref)
-                 (eq (nelisp-phase47-compiler--ir-get slot :class) 'f64))
+      (nelisp-aot-compiler--emit-value slot buf)
+      (when (and (eq (nelisp-aot-compiler--ir-kind slot) 'ref)
+                 (eq (nelisp-aot-compiler--ir-get slot :class) 'f64))
         (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0))
       (nelisp-asm-x86_64-push buf 'rax)
       ;; Step 4: pop in reverse — slot (last pushed) → rdi, then
       ;; value (first pushed) → rax → xmm0.
       (nelisp-asm-x86_64-pop buf 'rdi)
       (nelisp-asm-x86_64-pop buf 'rax)
-      (if (eq nelisp-phase47-compiler--abi 'win64)
+      (if (eq nelisp-aot-compiler--abi 'win64)
           (progn
             (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
             (nelisp-asm-x86_64-movq-xmm-r64 buf 'xmm1 'rax)
@@ -13384,7 +13384,7 @@ pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
        buf "nl_sexp_write_float" -4 'text)
       ;; Step 7: discard the alignment pad.  rax = slot pointer is
       ;; the value-form result.
-      (if (eq nelisp-phase47-compiler--abi 'win64)
+      (if (eq nelisp-aot-compiler--abi 'win64)
           (progn
             (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
         (nelisp-asm-x86_64-pop buf 'r11)))))
@@ -13392,7 +13392,7 @@ pointer via `f64::from_bits(ptr as u64)' and pass it as an f64
 
 ;; ---- Doc 122 §122.B — Mutable string builder grammar emit ----
 
-(defun nelisp-phase47-compiler--emit-mut-str-make-empty (node buf)
+(defun nelisp-aot-compiler--emit-mut-str-make-empty (node buf)
   "Emit `mut-str-make-empty' — call `nl_alloc_mut_str(cap, slot)'.
 NODE carries `:cap' (= i64 byte-capacity) and `:slot' (= `*mut Sexp').
 The Rust extern allocates a fresh `NlStrRef::new(String::with_capacity(cap))'
@@ -13407,14 +13407,14 @@ Strategy (= 2-arg extern call, mirrors `sexp-write-alloc' shape):
   4. Push one alignment pad to keep rsp 16-byte aligned at call site.
   5. Call `nl_alloc_mut_str' — rax = slot pointer.
   6. Pop the alignment pad."
-  (let ((cap (nelisp-phase47-compiler--ir-get node :cap))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((cap (nelisp-aot-compiler--ir-get node :cap))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list cap slot) buf "nl_alloc_mut_str")
-      (nelisp-phase47-compiler--emit-value cap buf)
+      (nelisp-aot-compiler--emit-value cap buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value slot buf)
+      (nelisp-aot-compiler--emit-value slot buf)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-pop buf 'rsi)
       (nelisp-asm-x86_64-pop buf 'rdi)
@@ -13426,7 +13426,7 @@ Strategy (= 2-arg extern call, mirrors `sexp-write-alloc' shape):
        buf "nl_alloc_mut_str" -4 'text)
       (nelisp-asm-x86_64-pop buf 'r11))))
 
-(defun nelisp-phase47-compiler--emit-mut-str-push-2arg (node buf helper-name arg-key)
+(defun nelisp-aot-compiler--emit-mut-str-push-2arg (node buf helper-name arg-key)
   "Emit a 2-arg in-place push op — `nl_mut_str_push_byte' / `_push_codepoint'.
 NODE carries `:ptr' (= `*mut Sexp' slot for MutStr) and ARG-KEY's
 value (= i64 byte or codepoint).  HELPER-NAME selects the extern.
@@ -13443,14 +13443,14 @@ Strategy (= 2-arg extern call, no return value):
   4. Push one alignment pad.
   5. Call HELPER-NAME — clobbers rax (= `void' return).
   6. Pop pad, set rax = 1 sentinel."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (arg (nelisp-phase47-compiler--ir-get node arg-key)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (arg (nelisp-aot-compiler--ir-get node arg-key)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list ptr arg) buf helper-name)
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value arg buf)
+      (nelisp-aot-compiler--emit-value arg buf)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-pop buf 'rsi)
       (nelisp-asm-x86_64-pop buf 'rdi)
@@ -13462,7 +13462,7 @@ Strategy (= 2-arg extern call, no return value):
     ;; rax = 1 sentinel (helper return is `void').
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
-(defun nelisp-phase47-compiler--emit-mut-str-len (node buf)
+(defun nelisp-aot-compiler--emit-mut-str-len (node buf)
   "Emit `mut-str-len' — call `nl_mut_str_len(ptr) -> i64' extern.
 NODE carries `:ptr' (= `*const Sexp' slot for MutStr).  Returns the
 i64 byte length in rax (= `String::len' on the MutStr's inner value).
@@ -13473,11 +13473,11 @@ Strategy (= 1-arg extern call with i64 return):
   2. Push one alignment pad to keep rsp 16-byte aligned at call site.
   3. Call `nl_mut_str_len' — rax = i64 length.
   4. Pop the alignment pad."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list ptr) buf "nl_mut_str_len")
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
@@ -13485,7 +13485,7 @@ Strategy (= 1-arg extern call with i64 return):
        buf "nl_mut_str_len" -4 'text)
       (nelisp-asm-x86_64-pop buf 'r11))))
 
-(defun nelisp-phase47-compiler--emit-mut-str-finalize (node buf)
+(defun nelisp-aot-compiler--emit-mut-str-finalize (node buf)
   "Emit `mut-str-finalize' — call `nl_mut_str_finalize(ptr, slot)' extern.
 NODE carries `:ptr' (= `*const Sexp' source MutStr slot) and `:slot'
 (= `*mut Sexp' destination Str slot).  The Rust extern clones the
@@ -13500,14 +13500,14 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
   4. Push one alignment pad.
   5. Call `nl_mut_str_finalize' — rax = slot pointer.
   6. Pop the alignment pad."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list ptr slot) buf "nl_mut_str_finalize")
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value slot buf)
+      (nelisp-aot-compiler--emit-value slot buf)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-pop buf 'rsi)
       (nelisp-asm-x86_64-pop buf 'rdi)
@@ -13520,13 +13520,13 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 
 ;; ---- Doc 122 §122.D — UTF-8 helper grammar emit ----
 
-(defun nelisp-phase47-compiler--emit-str-char-count (node buf)
+(defun nelisp-aot-compiler--emit-str-char-count (node buf)
   "Emit `str-char-count' — call `nl_str_char_count(str_ptr) -> i64'."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list ptr) buf "nl_str_char_count")
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
@@ -13534,22 +13534,22 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
        buf "nl_str_char_count" -4 'text)
       (nelisp-asm-x86_64-pop buf 'r11))))
 
-(defun nelisp-phase47-compiler--emit-str-codepoint-at (node buf)
+(defun nelisp-aot-compiler--emit-str-codepoint-at (node buf)
   "Emit `str-codepoint-at' — 4-arg call to `nl_str_codepoint_at'."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx))
-        (cp-slot (nelisp-phase47-compiler--ir-get node :cp-slot))
-        (width-slot (nelisp-phase47-compiler--ir-get node :width-slot)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx))
+        (cp-slot (nelisp-aot-compiler--ir-get node :cp-slot))
+        (width-slot (nelisp-aot-compiler--ir-get node :width-slot)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list ptr idx cp-slot width-slot) buf "nl_str_codepoint_at")
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value idx buf)
+      (nelisp-aot-compiler--emit-value idx buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value cp-slot buf)
+      (nelisp-aot-compiler--emit-value cp-slot buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value width-slot buf)
+      (nelisp-aot-compiler--emit-value width-slot buf)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-pop buf 'rcx)
       (nelisp-asm-x86_64-pop buf 'rdx)
@@ -13561,16 +13561,16 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
        buf "nl_str_codepoint_at" -4 'text)
       (nelisp-asm-x86_64-pop buf 'r11))))
 
-(defun nelisp-phase47-compiler--emit-str-is-alphanumeric-at (node buf)
+(defun nelisp-aot-compiler--emit-str-is-alphanumeric-at (node buf)
   "Emit `str-is-alphanumeric-at' — 2-arg call to `nl_str_is_alphanumeric_at'."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx)))
-    (if (eq nelisp-phase47-compiler--abi 'win64)
-        (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx)))
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (nelisp-aot-compiler--emit-runtime-call-args
          (list ptr idx) buf "nl_str_is_alphanumeric_at")
-      (nelisp-phase47-compiler--emit-value ptr buf)
+      (nelisp-aot-compiler--emit-value ptr buf)
       (nelisp-asm-x86_64-push buf 'rax)
-      (nelisp-phase47-compiler--emit-value idx buf)
+      (nelisp-aot-compiler--emit-value idx buf)
       (nelisp-asm-x86_64-push buf 'rax)
       (nelisp-asm-x86_64-pop buf 'rsi)
       (nelisp-asm-x86_64-pop buf 'rdi)
@@ -13582,38 +13582,38 @@ Strategy (= 2-arg extern call, mirrors `mut-str-make-empty' shape):
 
 ;; ---- Doc 122 §122.E — Atomic + raw memory primitives emit ----
 
-(defun nelisp-phase47-compiler--emit-atomic-fetch-add (node buf)
+(defun nelisp-aot-compiler--emit-atomic-fetch-add (node buf)
   "Emit `atomic-fetch-add' — inline `LOCK XADD [RDI], RAX' (no PLT call).
 Doc 131 §131.A: ptr → rdi, delta → rax, then LOCK XADD [rdi], rax.
 On exit rax = old [rdi] (= the pre-add value), [rdi] = old+delta."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (delta (nelisp-phase47-compiler--ir-get node :delta)))
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (delta (nelisp-aot-compiler--ir-get node :delta)))
     ;; Evaluate ptr into rax, save it to rdi via push/pop.
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Evaluate delta into rax (= the XADD source operand).
-    (nelisp-phase47-compiler--emit-value delta buf)
+    (nelisp-aot-compiler--emit-value delta buf)
     ;; rdi = ptr, rax = delta (XADD src/dst).
     (nelisp-asm-x86_64-pop buf 'rdi)
     ;; LOCK XADD [rdi], rax  →  rax = old [rdi], [rdi] = old + delta.
     (nelisp-asm-x86_64-lock-xadd-mem-rax-rdi buf)))
 
-(defun nelisp-phase47-compiler--emit-atomic-compare-exchange (node buf)
+(defun nelisp-aot-compiler--emit-atomic-compare-exchange (node buf)
   "Emit `atomic-compare-exchange' — inline `LOCK CMPXCHG [RDI], RDX' (no PLT call).
 Doc 131 §131.A: ptr → rdi, expected → rax, new-val → rdx.
 LOCK CMPXCHG [rdi], rdx: if [rdi]==rax write rdx, set ZF; else clear ZF.
 SETE AL + MOVZX RAX, AL: rax = 1 on success, 0 on failure."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (expected (nelisp-phase47-compiler--ir-get node :expected))
-        (new-val (nelisp-phase47-compiler--ir-get node :new-val)))
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (expected (nelisp-aot-compiler--ir-get node :expected))
+        (new-val (nelisp-aot-compiler--ir-get node :new-val)))
     ;; Evaluate ptr → rax, stash.
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Evaluate expected → rax, stash.
-    (nelisp-phase47-compiler--emit-value expected buf)
+    (nelisp-aot-compiler--emit-value expected buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Evaluate new-val → rax; pop into rdx (new-val), rax (expected), rdi (ptr).
-    (nelisp-phase47-compiler--emit-value new-val buf)
+    (nelisp-aot-compiler--emit-value new-val buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rax)   ; rdx = new-val
     (nelisp-asm-x86_64-pop buf 'rax)                 ; rax = expected
     (nelisp-asm-x86_64-pop buf 'rdi)                 ; rdi = ptr
@@ -13623,7 +13623,7 @@ SETE AL + MOVZX RAX, AL: rax = 1 on success, 0 on failure."
     (nelisp-asm-x86_64-sete-al buf)
     (nelisp-asm-x86_64-movzx-eax-al buf)))
 
-(defun nelisp-phase47-compiler--emit-ptr-read (node buf helper-name)
+(defun nelisp-aot-compiler--emit-ptr-read (node buf helper-name)
   "Emit `ptr-read-u{8,16,32,64}' — inline MOV/MOVZX at [RDI+RSI] (no PLT call).
 Doc 131 §131.A: HELPER-NAME selects the width-specific load instruction:
   nl_ptr_read_u64 → MOV  RAX, QWORD PTR [RDI+RSI]
@@ -13631,12 +13631,12 @@ Doc 131 §131.A: HELPER-NAME selects the width-specific load instruction:
   nl_ptr_read_u16 → MOVZX RAX, WORD  PTR [RDI+RSI]
   nl_ptr_read_u32 → MOV  EAX, DWORD PTR [RDI+RSI]  (CPU zero-extends to RAX)
 Result is zero-extended to i64 in rax in all cases."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (offset (nelisp-phase47-compiler--ir-get node :offset)))
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (offset (nelisp-aot-compiler--ir-get node :offset)))
     ;; Evaluate ptr → rax, save; evaluate offset → rax (= rsi after pop).
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value offset buf)
+    (nelisp-aot-compiler--emit-value offset buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'rax)   ; rsi = offset
     (nelisp-asm-x86_64-pop buf 'rdi)                 ; rdi = ptr
     ;; Inline load — width determined by helper-name.
@@ -13649,10 +13649,10 @@ Result is zero-extended to i64 in rax in all cases."
       (nelisp-asm-x86_64-movzx-rax-word-rdi-rsi buf))
      ((string= helper-name "nl_ptr_read_u32")
       (nelisp-asm-x86_64-mov-eax-dword-rdi-rsi buf))
-     (t (signal 'nelisp-phase47-compiler-error
+     (t (signal 'nelisp-aot-compiler-error
                 (list :unknown-ptr-read-helper helper-name))))))
 
-(defun nelisp-phase47-compiler--emit-ptr-write (node buf helper-name)
+(defun nelisp-aot-compiler--emit-ptr-write (node buf helper-name)
   "Emit `ptr-write-u{8,16,32,64}' — inline MOV store at [RDI+RSI] (no PLT call).
 Doc 131 §131.A: HELPER-NAME selects the width-specific store instruction:
   nl_ptr_write_u64 → MOV QWORD PTR [RDI+RSI], RDX
@@ -13660,15 +13660,15 @@ Doc 131 §131.A: HELPER-NAME selects the width-specific store instruction:
   nl_ptr_write_u16 → MOV WORD  PTR [RDI+RSI], DX
   nl_ptr_write_u32 → MOV DWORD PTR [RDI+RSI], EDX
 Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-extern contract)."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (offset (nelisp-phase47-compiler--ir-get node :offset))
-        (val (nelisp-phase47-compiler--ir-get node :val)))
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (offset (nelisp-aot-compiler--ir-get node :offset))
+        (val (nelisp-aot-compiler--ir-get node :val)))
     ;; Evaluate ptr, offset, val; assign to rdi, rsi, rdx.
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value offset buf)
+    (nelisp-aot-compiler--emit-value offset buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value val buf)
+    (nelisp-aot-compiler--emit-value val buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rax)   ; rdx = val
     (nelisp-asm-x86_64-pop buf 'rsi)                 ; rsi = offset
     (nelisp-asm-x86_64-pop buf 'rdi)                 ; rdi = ptr
@@ -13682,25 +13682,25 @@ Returns rax = 1 sentinel for `and'-chain composition (matches the Rust void-exte
       (nelisp-asm-x86_64-mov-word-rdi-rsi-dx buf))
      ((string= helper-name "nl_ptr_write_u32")
       (nelisp-asm-x86_64-mov-dword-rdi-rsi-edx buf))
-     (t (signal 'nelisp-phase47-compiler-error
+     (t (signal 'nelisp-aot-compiler-error
                 (list :unknown-ptr-write-helper helper-name))))
     ;; rax = 1 sentinel (matches Rust void extern contract for and-chain).
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 ;; ---- Doc 125 §125.A — alloc / dealloc primitives emit ----
 
-(defun nelisp-phase47-compiler--emit-runtime-call-args (args buf name)
+(defun nelisp-aot-compiler--emit-runtime-call-args (args buf name)
   "Emit a runtime helper call to NAME with evaluated ARGS.
 The helper is linked as a normal Phase47 defun, so argument registers,
 shadow space, and call-site alignment must follow the current x86_64 ABI."
   (let* ((n (length args))
-         (regs (cl-subseq (nelisp-phase47-compiler--current-arg-regs) 0 n))
-         (arity (or nelisp-phase47-compiler--current-defun-arity 0))
-         (needs-align (and (not (eq nelisp-phase47-compiler--abi 'win64))
+         (regs (cl-subseq (nelisp-aot-compiler--current-arg-regs) 0 n))
+         (arity (or nelisp-aot-compiler--current-defun-arity 0))
+         (needs-align (and (not (eq nelisp-aot-compiler--abi 'win64))
                            (= (logand arity 1) 1)))
-         (shadow (if (eq nelisp-phase47-compiler--abi 'win64) 32 0)))
+         (shadow (if (eq nelisp-aot-compiler--abi 'win64) 32 0)))
     (dolist (arg args)
-      (nelisp-phase47-compiler--emit-value arg buf)
+      (nelisp-aot-compiler--emit-value arg buf)
       (nelisp-asm-x86_64-push buf 'rax))
     (dolist (reg (reverse regs))
       (nelisp-asm-x86_64-pop buf reg))
@@ -13715,29 +13715,29 @@ shadow space, and call-site alignment must follow the current x86_64 ABI."
     (when needs-align
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 8))))
 
-(defun nelisp-phase47-compiler--emit-alloc-bytes (node buf)
+(defun nelisp-aot-compiler--emit-alloc-bytes (node buf)
   "Emit `alloc-bytes' — 2-arg call to `nl_alloc_bytes(size, align) -> *mut u8'.
 Returns the freshly-allocated pointer re-cast to `i64' in rax (= 0
 on layout error or OOM)."
-  (let ((size (nelisp-phase47-compiler--ir-get node :size))
-        (align (nelisp-phase47-compiler--ir-get node :align)))
-    (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((size (nelisp-aot-compiler--ir-get node :size))
+        (align (nelisp-aot-compiler--ir-get node :align)))
+    (nelisp-aot-compiler--emit-runtime-call-args
      (list size align) buf "nl_alloc_bytes")))
 
-(defun nelisp-phase47-compiler--emit-dealloc-bytes (node buf)
+(defun nelisp-aot-compiler--emit-dealloc-bytes (node buf)
   "Emit `dealloc-bytes' — 3-arg call to `nl_dealloc_bytes(ptr, size, align)'.
 Returns rax = 1 sentinel for `and'-chain composition (= underlying
 extern is `void')."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (size (nelisp-phase47-compiler--ir-get node :size))
-        (align (nelisp-phase47-compiler--ir-get node :align)))
-    (nelisp-phase47-compiler--emit-runtime-call-args
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (size (nelisp-aot-compiler--ir-get node :size))
+        (align (nelisp-aot-compiler--ir-get node :align)))
+    (nelisp-aot-compiler--emit-runtime-call-args
      (list ptr size align) buf "nl_dealloc_bytes")
     (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)))
 
 ;; ---- Doc 125 §125.B inline syscall op ----
 
-(defun nelisp-phase47-compiler--emit-syscall-direct (node buf)
+(defun nelisp-aot-compiler--emit-syscall-direct (node buf)
   "Emit `syscall-direct' — inline SYSCALL with 7 fixed args.
 ABI: rax=NR rdi=A0 rsi=A1 rdx=A2 r10=A3 r8=A4 r9=A5 → rax.
 Strategy: evaluate each arg into rax and push; then pop in reverse
@@ -13746,19 +13746,19 @@ SYSCALL clobbers rcx and r11; the result is left in rax.
 Stack alignment: 7 pushes (= 56 bytes offset); SYSCALL itself does
 not require 16-byte alignment, so no extra pad is needed."
   ;; Push NR first, then A0..A5 (will be popped in reverse).
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :nr) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :nr) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a0) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :a0) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a1) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :a1) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a2) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :a2) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a3) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :a3) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a4) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :a4) buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :a5) buf)
+  (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :a5) buf)
   (nelisp-asm-x86_64-push buf 'rax)
   ;; Pop into syscall registers (reverse of push order).
   (nelisp-asm-x86_64-pop buf 'r9)
@@ -13770,7 +13770,7 @@ not require 16-byte alignment, so no extra pad is needed."
   (nelisp-asm-x86_64-pop buf 'rax)
   (nelisp-asm-x86_64-syscall buf))
 
-(defun nelisp-phase47-compiler--emit-syscall-direct-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-syscall-direct-arm64 (node buf)
   "Emit `syscall-direct' for aarch64 — inline raw SVC with 7 args.
 ABI: x0=A0 x1=A1 x2=A2 x3=A3 x4=A4 x5=A5; syscall number in x8 (Linux,
 `SVC #0') or x16 (Darwin, `SVC #0x80').  The kernel result is left in
@@ -13778,13 +13778,13 @@ x0.  Mirrors the x86_64 path: evaluate NR then A0..A5 into x0 and push
 each (STR Xn,[SP,#-16]!); pop in reverse so A5..A0 land in x5..x0 and
 NR in x8/x16; then SVC.  Push/pop/SVC widths are fixed, so the emitted
 byte count is identical across pass-1 and pass-2."
-  (let* ((darwin (eq nelisp-phase47-compiler--os 'darwin))
+  (let* ((darwin (eq nelisp-aot-compiler--os 'darwin))
          (nr-reg (if darwin 'x16 'x8))
          (svc-imm (if darwin #x80 0)))
     ;; Push NR, then A0..A5 (popped in reverse below).
     (dolist (key '(:nr :a0 :a1 :a2 :a3 :a4 :a5))
-      (nelisp-phase47-compiler--emit-value
-       (nelisp-phase47-compiler--ir-get node key) buf)
+      (nelisp-aot-compiler--emit-value
+       (nelisp-aot-compiler--ir-get node key) buf)
       (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
     ;; Pop into syscall registers (reverse of push order).
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x5)
@@ -13796,118 +13796,118 @@ byte count is identical across pass-1 and pass-2."
     (nelisp-asm-arm64-ldr-post-sp-16 buf nr-reg)
     (nelisp-asm-arm64-svc buf svc-imm)))
 
-(defun nelisp-phase47-compiler--emit-syscall-direct-store-x1-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-syscall-direct-store-x1-arm64 (node buf)
   "Emit `syscall-direct-store-x1' for aarch64.
 The syscall is emitted like `syscall-direct'.  After SVC, x1 is stored to
 *(u64*)(PTR+OFFSET), and x0 is restored as the expression result."
-  (nelisp-phase47-compiler--emit-syscall-direct-arm64 node buf)
+  (nelisp-aot-compiler--emit-syscall-direct-arm64 node buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; save syscall x0
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)           ; save syscall x1
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; save ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :offset) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = offset
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x3)          ; x3 = saved x1
   (nelisp-asm-arm64-str-reg-reg buf 'x3 'x1 'x2)     ; [ptr+offset] = x1
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))         ; restore syscall x0
 
-(defun nelisp-phase47-compiler--emit-ptr-read-u64-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-ptr-read-u64-arm64 (node buf)
   "Emit `ptr-read-u64' for aarch64 — inline `LDR x0, [x1, x2]'.
 ptr → x1, offset → x2; result *(u64*)(ptr+offset) lands in x0."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :offset) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = offset
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
   (nelisp-asm-arm64-ldr-reg-reg buf 'x0 'x1 'x2))    ; x0 = [x1+x2]
 
-(defun nelisp-phase47-compiler--emit-ptr-write-u64-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-ptr-write-u64-arm64 (node buf)
   "Emit `ptr-write-u64' for aarch64 — inline `STR x3, [x1, x2]'.
 ptr → x1, offset → x2, val → x3; stores then leaves x0 = 1 sentinel."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :offset) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push offset
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)         ; x3 = val
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = offset
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
   (nelisp-asm-arm64-str-reg-reg buf 'x3 'x1 'x2)     ; [x1+x2] = x3
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))            ; rax-style sentinel
 
-(defun nelisp-phase47-compiler--emit-ptr-read-width-arm64 (node buf load-fn)
+(defun nelisp-aot-compiler--emit-ptr-read-width-arm64 (node buf load-fn)
   "Emit `ptr-read-u{8,16,32}' for aarch64 — inline `LOAD-FN x0,[x1,x2]'.
 LOAD-FN is one of the width-specific register-offset loaders
 (`nelisp-asm-arm64-ldrb-reg-reg' / `-ldrh-reg-reg' / `-ldrw-reg-reg');
 the Wt destination zero-extends to x0, matching the i64 contract of the
 u64 path.  ptr → x1, offset → x2; result *(uN*)(ptr+offset) lands in x0."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :offset) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = offset
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
   (funcall load-fn buf 'x0 'x1 'x2))                 ; x0 = [x1+x2]
 
-(defun nelisp-phase47-compiler--emit-ptr-write-width-arm64 (node buf store-fn)
+(defun nelisp-aot-compiler--emit-ptr-write-width-arm64 (node buf store-fn)
   "Emit `ptr-write-u{8,16,32}' for aarch64 — inline `STORE-FN x3,[x1,x2]'.
 STORE-FN is one of the width-specific register-offset stores
 (`nelisp-asm-arm64-strb-reg-reg' / `-strh-reg-reg' / `-strw-reg-reg');
 the low byte/half/word of x3 is stored.  ptr → x1, offset → x2,
 val → x3; leaves x0 = 1 sentinel for `and'-chain composition."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :offset) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :offset) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push offset
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)         ; x3 = val
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = offset
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
   (funcall store-fn buf 'x3 'x1 'x2)                 ; [x1+x2] = x3 (low N)
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))            ; rax-style sentinel
 
-(defun nelisp-phase47-compiler--emit-dealloc-bytes-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-dealloc-bytes-arm64 (node buf)
   "Emit `dealloc-bytes' for aarch64 — `BL nl_dealloc_bytes(ptr,size,align)'.
 ptr → x0, size → x1, align → x2.  The underlying defun is `void'
 (arena bump allocator: dealloc is a no-op), so x0 = 1 sentinel is
 returned for `and'-chain composition, matching the x86_64 contract."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :size) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :size) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push size
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :align) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :align) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = align
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = size
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = ptr
   (nelisp-asm-arm64-bl buf 'nl_dealloc_bytes)
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))            ; void → 1 sentinel
 
-(defun nelisp-phase47-compiler--emit-cons-set-slot-arm64 (node buf helper-sym)
+(defun nelisp-aot-compiler--emit-cons-set-slot-arm64 (node buf helper-sym)
   "Emit `cons-set-car'/`cons-set-cdr' for aarch64 via HELPER-SYM.
 NODE carries `:handle' (= a Cons-tagged `Sexp' slot) and `:val-ptr'
 (= a `*const Sexp').  Resolve the `NlConsBox*' payload from the handle
 into x0, forward (box, val-ptr) to the refcount-aware drop-then-write
 helper, and return the original handle in x0 (matches the x86_64 ABI)."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :handle) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :handle) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push handle
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val-ptr) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; x1 = val-ptr (arg2)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = handle
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; preserve handle for return
@@ -13915,32 +13915,32 @@ helper, and return the original handle in x0 (matches the x86_64 ABI)."
   (nelisp-asm-arm64-bl buf helper-sym)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))         ; x0 = handle (return)
 
-(defun nelisp-phase47-compiler--emit-atomic-fetch-add-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-atomic-fetch-add-arm64 (node buf)
   "Emit `atomic-fetch-add' for aarch64 — inline `LDADDAL x2, x0, [x1]'.
 ptr → x1, delta → x2; returns the pre-add value in x0 (SeqCst RMW)."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :delta) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :delta) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; x2 = delta (Xs)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr (Xn)
   (nelisp-asm-arm64-ldaddal buf 'x2 'x0 'x1))        ; x0 = old [x1]
 
-(defun nelisp-phase47-compiler--emit-atomic-compare-exchange-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-atomic-compare-exchange-arm64 (node buf)
   "Emit `atomic-compare-exchange' for aarch64 — inline `CASAL'.
 ptr → x1, expected → x2, new-val → x3.  `CASAL x2,x3,[x1]' overwrites
 x2 with the old memory value; comparing that old value with EXPECTED
 materialises x0 = 1 on success, 0 on failure, matching the x86_64
 `LOCK CMPXCHG' contract."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :expected) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :expected) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push expected
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :new-val) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :new-val) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)         ; x3 = new value (Rt)
   (nelisp-asm-arm64-ldr-imm buf 'x9 'sp 0)           ; x9 = expected snapshot
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = expected / old (Rs)
@@ -13949,17 +13949,17 @@ materialises x0 = 1 on success, 0 on failure, matching the x86_64
   (nelisp-asm-arm64-cmp-reg-reg buf 'x2 'x9)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
-(defun nelisp-phase47-compiler--emit-alloc-bytes-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-alloc-bytes-arm64 (node buf)
   "Emit `alloc-bytes' for aarch64 — call `nl_alloc_bytes(size, align)'.
 size -> x0, align -> x1, BL nl_alloc_bytes; the allocated pointer (or 0
 on OOM) is returned in x0.  `nl_alloc_bytes' is a defun linked into the
 program (the atomic-bump arena allocator), so the BL resolves like any
 intra-text call."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :size) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :size) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push size
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :align) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :align) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push align
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = align
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = size
@@ -13967,14 +13967,14 @@ intra-text call."
 
 ;; ---- §101.B-arm64 Sexp slot ops (cons / int constructor + readers) ----
 
-(defun nelisp-phase47-compiler--emit-sexp-int-make-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-sexp-int-make-arm64 (node buf)
   "Emit `sexp-int-make' for aarch64 — write `Sexp::Int' into :slot.
 slot -> x0, val -> x1; STRB tag-int @[x0+0], STR val @[x0+8]; x0 = slot."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = val (top)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = slot
@@ -13982,23 +13982,23 @@ slot -> x0, val -> x1; STRB tag-int @[x0+0], STR val @[x0+8]; x0 = slot."
   (nelisp-asm-arm64-strb-imm buf 'x2 'x0 0)          ; tag byte
   (nelisp-asm-arm64-str-imm buf 'x1 'x0 nelisp-sexp--offset-payload))
 
-(defun nelisp-phase47-compiler--emit-cons-null-p-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cons-null-p-arm64 (node buf)
   "Emit `cons-null-p' for aarch64 — x0 = (tag byte at [ptr] == Nil)."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 0)          ; x1 = tag byte
   (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-nil)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
-(defun nelisp-phase47-compiler--emit-cons-slot-copy-arm64 (node buf field-off)
+(defun nelisp-aot-compiler--emit-cons-slot-copy-arm64 (node buf field-off)
   "Emit `cons-car'/`cons-cdr' for aarch64 — copy 32-byte boxed Sexp to :slot.
 ptr -> x0, slot -> x1, box = [ptr+8] -> x2; copy [box+FIELD-OFF .. +32)
 into [slot]; x0 = slot.  FIELD-OFF is 0 (car) or 32 (cdr)."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = slot (top)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = ptr
@@ -14008,19 +14008,19 @@ into [slot]; x0 = slot.  FIELD-OFF is 0 (car) or 32 (cdr)."
     (nelisp-asm-arm64-str-imm buf 'x9 'x1 (* i 8)))
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))        ; return slot
 
-(defun nelisp-phase47-compiler--emit-cons-make-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cons-make-arm64 (node buf)
   "Emit `cons-make' for aarch64 — alloc a box, copy car/cdr, tag the slot.
 car-ptr/cdr-ptr/slot pushed; BL nl_alloc_consbox -> box (x10); copy the
 two 32-byte Sexps into box->car (+0) / box->cdr (+32); write tag-cons +
 box pointer into the slot; x0 = slot."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :car-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :car-ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :cdr-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :cdr-ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
   (nelisp-asm-arm64-bl buf 'nl_alloc_consbox)        ; x0 = box
   (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)        ; x10 = box
@@ -14038,7 +14038,7 @@ box pointer into the slot; x0 = slot."
   (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload) ; slot payload = box
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))        ; return slot
 
-(defun nelisp-phase47-compiler--emit-cons-make-with-clone-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cons-make-with-clone-arm64 (node buf)
   "Emit Doc 120.E fused `cons-make-with-clone' for aarch64.
 Parallels `--emit-cons-make-arm64' but deep-clones each field via the
 refcount-aware `nl_sexp_clone_into' instead of a raw 32-byte copy.
@@ -14050,14 +14050,14 @@ two clone BL calls and are read back SP-relative.  Layout after the four
 NlConsBox starts at refcount 1 and the clone bumps refs / deep-copies
 Strings itself, so no extra refcount work is needed here.  Returns the
 slot pointer in x0 (matches the `cons-make' ABI)."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :car-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :car-ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push car-ptr  -> [SP+48]
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :cdr-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :cdr-ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push cdr-ptr  -> [SP+32]
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push slot     -> [SP+16]
   (nelisp-asm-arm64-bl buf 'nl_alloc_consbox)        ; x0 = box
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push box      -> [SP+0]
@@ -14079,13 +14079,13 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1)         ; return slot
   (nelisp-asm-arm64-add-imm buf 'sp 'sp 64))         ; pop the 4 spill slots
 
-(defun nelisp-phase47-compiler--emit-sexp-payload-ptr-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-sexp-payload-ptr-arm64 (node buf)
   "Emit `sexp-payload-ptr' for aarch64 — Cons -> box ptr, else 0."
-  (let* ((id (nelisp-phase47-compiler--gensym "sexp-payload-ptr-a64"))
+  (let* ((id (nelisp-aot-compiler--gensym "sexp-payload-ptr-a64"))
          (zero-lbl (intern (format "%s-zero" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value
-     (nelisp-phase47-compiler--ir-get node :ptr) buf)
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf)
     (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 0)        ; tag byte
     (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-cons)
     (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
@@ -14095,7 +14095,7 @@ slot pointer in x0 (matches the `cons-make' ABI)."
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-copy-sexp32-arm64
+(defun nelisp-aot-compiler--emit-copy-sexp32-arm64
     (buf src dst &optional src-off dst-off)
   "Copy one 32-byte Sexp slot from SRC+SRC-OFF to DST+DST-OFF."
   (dotimes (i 4)
@@ -14104,14 +14104,14 @@ slot pointer in x0 (matches the `cons-make' ABI)."
     (nelisp-asm-arm64-str-imm
      buf 'x9 dst (+ (or dst-off 0) (* i 8)))))
 
-(defun nelisp-phase47-compiler--emit-cons-cdr-raw-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cons-cdr-raw-arm64 (node buf)
   "Emit `cons-cdr-raw' for aarch64 — follow cdr if it is a Cons."
-  (let* ((id (nelisp-phase47-compiler--gensym "cons-cdr-raw-a64"))
+  (let* ((id (nelisp-aot-compiler--gensym "cons-cdr-raw-a64"))
          (nil-lbl (intern (format "%s-nil" id)))
          (end-lbl (intern (format "%s-end" id)))
-         (from-box (nelisp-phase47-compiler--ir-get node :from-box)))
-    (nelisp-phase47-compiler--emit-value
-     (nelisp-phase47-compiler--ir-get node :ptr) buf)
+         (from-box (nelisp-aot-compiler--ir-get node :from-box)))
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf)
     (unless from-box
       (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload))
     (nelisp-asm-arm64-add-imm buf 'x1 'x0 nelisp-nlconsbox--offset-cdr)
@@ -14124,13 +14124,13 @@ slot pointer in x0 (matches the `cons-make' ABI)."
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-sexp-payload-ptr-record-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-sexp-payload-ptr-record-arm64 (node buf)
   "Emit `sexp-payload-ptr-record' for aarch64 — Record -> box ptr, else 0."
-  (let* ((id (nelisp-phase47-compiler--gensym "sexp-payload-ptr-record-a64"))
+  (let* ((id (nelisp-aot-compiler--gensym "sexp-payload-ptr-record-a64"))
          (zero-lbl (intern (format "%s-zero" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value
-     (nelisp-phase47-compiler--ir-get node :ptr) buf)
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf)
     (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 nelisp-sexp--offset-tag)
     (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-record)
     (nelisp-asm-arm64-b-cond buf 'ne zero-lbl)
@@ -14140,11 +14140,11 @@ slot pointer in x0 (matches the `cons-make' ABI)."
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-record-slot-ptr-core-arm64 (ptr idx buf)
+(defun nelisp-aot-compiler--emit-record-slot-ptr-core-arm64 (ptr idx buf)
   "Leave the raw record slot pointer for PTR/IDX in x0."
-  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-aot-compiler--emit-value idx buf)
   (nelisp-asm-arm64-mov-imm64 buf 'x9 nelisp-sexp--slot-size)
   (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
@@ -14153,59 +14153,59 @@ slot pointer in x0 (matches the `cons-make' ABI)."
    buf 'x2 'x2 nelisp-nlrecord--offset-slots-capacity)
   (nelisp-asm-arm64-add-reg-reg buf 'x0 'x2 'x0))
 
-(defun nelisp-phase47-compiler--emit-record-type-tag-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-record-type-tag-arm64 (node buf)
   "Emit `record-type-tag' for aarch64 — copy inline type tag to :slot."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
     (nelisp-asm-arm64-ldr-imm buf 'x2 'x0 nelisp-sexp--offset-payload)
-    (nelisp-phase47-compiler--emit-copy-sexp32-arm64
+    (nelisp-aot-compiler--emit-copy-sexp32-arm64
      buf 'x2 'x1 nelisp-nlrecord--offset-type-tag 0)
     (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1)))
 
-(defun nelisp-phase47-compiler--emit-record-slot-count-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-count-arm64 (node buf)
   "Emit `record-slot-count' for aarch64 — read NlRecord.slots.length."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
   (nelisp-asm-arm64-ldr-imm
    buf 'x0 'x0 nelisp-nlrecord--offset-slots-length))
 
-(defun nelisp-phase47-compiler--emit-record-slot-ref-ptr-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-ref-ptr-arm64 (node buf)
   "Emit `record-slot-ref-ptr' for aarch64."
-  (nelisp-phase47-compiler--emit-record-slot-ptr-core-arm64
-   (nelisp-phase47-compiler--ir-get node :ptr)
-   (nelisp-phase47-compiler--ir-get node :idx)
+  (nelisp-aot-compiler--emit-record-slot-ptr-core-arm64
+   (nelisp-aot-compiler--ir-get node :ptr)
+   (nelisp-aot-compiler--ir-get node :idx)
    buf))
 
-(defun nelisp-phase47-compiler--emit-record-slot-ref-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-ref-arm64 (node buf)
   "Emit `record-slot-ref' for aarch64 via `nl_sexp_clone_into'."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-record-slot-ptr-core-arm64 ptr idx buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-record-slot-ptr-core-arm64 ptr idx buf)
     (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)         ; src
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)       ; dst
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)        ; src
     (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)         ; preserve dst
     (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)))      ; return dst
 
-(defun nelisp-phase47-compiler--emit-record-slot-set-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-record-slot-set-arm64 (node buf)
   "Emit `record-slot-set' for aarch64 via `nl_record_set_slot'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :idx) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val-ptr) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
@@ -14213,11 +14213,11 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-bl buf 'nl_record_set_slot)
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
 
-(defun nelisp-phase47-compiler--emit-vector-slot-ptr-core-arm64 (ptr idx buf)
+(defun nelisp-aot-compiler--emit-vector-slot-ptr-core-arm64 (ptr idx buf)
   "Leave the raw vector element pointer for PTR/IDX in x0."
-  (nelisp-phase47-compiler--emit-value ptr buf)
+  (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value idx buf)
+  (nelisp-aot-compiler--emit-value idx buf)
   (nelisp-asm-arm64-mov-imm64 buf 'x9 nelisp-sexp--slot-size)
   (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
@@ -14226,45 +14226,45 @@ slot pointer in x0 (matches the `cons-make' ABI)."
    buf 'x2 'x2 nelisp-nlvector--offset-value-capacity)
   (nelisp-asm-arm64-add-reg-reg buf 'x0 'x2 'x0))
 
-(defun nelisp-phase47-compiler--emit-vector-len-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-vector-len-arm64 (node buf)
   "Emit `vector-len' for aarch64 — read NlVector.value.length."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
   (nelisp-asm-arm64-ldr-imm
    buf 'x0 'x0 nelisp-nlvector--offset-value-length))
 
-(defun nelisp-phase47-compiler--emit-vector-ref-ptr-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-vector-ref-ptr-arm64 (node buf)
   "Emit `vector-ref-ptr' for aarch64."
-  (nelisp-phase47-compiler--emit-vector-slot-ptr-core-arm64
-   (nelisp-phase47-compiler--ir-get node :ptr)
-   (nelisp-phase47-compiler--ir-get node :idx)
+  (nelisp-aot-compiler--emit-vector-slot-ptr-core-arm64
+   (nelisp-aot-compiler--ir-get node :ptr)
+   (nelisp-aot-compiler--ir-get node :idx)
    buf))
 
-(defun nelisp-phase47-compiler--emit-vector-ref-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-vector-ref-arm64 (node buf)
   "Emit `vector-ref' for aarch64 via `nl_sexp_clone_into'."
-  (let ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-        (idx (nelisp-phase47-compiler--ir-get node :idx))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-vector-slot-ptr-core-arm64 ptr idx buf)
+  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+        (idx (nelisp-aot-compiler--ir-get node :idx))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-vector-slot-ptr-core-arm64 ptr idx buf)
     (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)         ; src
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)       ; dst
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)        ; src
     (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)         ; preserve dst
     (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)))      ; return dst
 
-(defun nelisp-phase47-compiler--emit-vector-slot-set-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-vector-slot-set-arm64 (node buf)
   "Emit `vector-slot-set' for aarch64 via `nl_vector_set_slot'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :idx) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val-ptr) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
@@ -14272,13 +14272,13 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-bl buf 'nl_vector_set_slot)
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
 
-(defun nelisp-phase47-compiler--emit-vector-make-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-vector-make-arm64 (node buf)
   "Emit `vector-make' for aarch64 via `nl_alloc_vector'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :cap) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :cap) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; slot
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; cap
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)           ; preserve slot
@@ -14290,16 +14290,16 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload)
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
 
-(defun nelisp-phase47-compiler--emit-record-make-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-record-make-arm64 (node buf)
   "Emit `record-make' for aarch64 via `nl_alloc_record'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :tag-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :tag-ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot-count) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot-count) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)         ; slot
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; count
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; tag-ptr
@@ -14312,27 +14312,27 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload)
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
 
-(defun nelisp-phase47-compiler--emit-cell-value-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cell-value-arm64 (node buf)
   "Emit `cell-value' for aarch64 — copy NlCell.value into :slot."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-ldr-imm buf 'x2 'x0 nelisp-sexp--offset-payload)
-  (nelisp-phase47-compiler--emit-copy-sexp32-arm64
+  (nelisp-aot-compiler--emit-copy-sexp32-arm64
    buf 'x2 'x1 nelisp-nlcell--offset-value 0)
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
 
-(defun nelisp-phase47-compiler--emit-cell-set-value-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cell-set-value-arm64 (node buf)
   "Emit `cell-set-value' for aarch64 via `nl_cell_set_value'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val-ptr) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; return handle
@@ -14340,13 +14340,13 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-bl buf 'nl_cell_set_value)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0))
 
-(defun nelisp-phase47-compiler--emit-cell-make-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cell-make-arm64 (node buf)
   "Emit `cell-make' for aarch64 via `nl_alloc_cell'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :val-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :val-ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)         ; slot
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; val-ptr
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x1)           ; preserve slot
@@ -14358,43 +14358,43 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload)
   (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))
 
-(defun nelisp-phase47-compiler--emit-cell-null-p-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-cell-null-p-arm64 (node buf)
   "Emit `cell-null-p' for aarch64 — x0 = NlCell.value tag is Nil."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload)
   (nelisp-asm-arm64-ldrb-imm buf 'x1 'x0 nelisp-nlcell--offset-value)
   (nelisp-asm-arm64-cmp-imm buf 'x1 nelisp-sexp--tag-nil)
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
-(defun nelisp-phase47-compiler--emit-sexp-tag-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-sexp-tag-arm64 (node buf)
   "Emit `sexp-tag' for aarch64 — x0 = zero-extended tag byte at [ptr]."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldrb-imm buf 'x0 'x0 nelisp-sexp--offset-tag))
 
-(defun nelisp-phase47-compiler--emit-sexp-int-unwrap-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-sexp-int-unwrap-arm64 (node buf)
   "Emit `sexp-int-unwrap' for aarch64 — x0 = i64 payload at [ptr+8].
 No tag check; caller guarantees :ptr is a `Sexp::Int'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-int-payload))
 
-(defun nelisp-phase47-compiler--emit-str-len-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-len-arm64 (node buf)
   "Emit `str-len' for aarch64 — x0 = i64 length at [ptr+24]."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-length))
 
-(defun nelisp-phase47-compiler--emit-str-byte-at-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-byte-at-arm64 (node buf)
   "Emit `str-byte-at' for aarch64 — byte at index IDX of a String buffer.
 ptr -> x1, idx -> x2; load buffer ptr from [ptr+16], add idx, LDRB;
 result (zero-extended byte) in x0."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :idx) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push idx
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = idx (top)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
@@ -14402,7 +14402,7 @@ result (zero-extended byte) in x0."
   (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x2)     ; x0 = buf + idx
   (nelisp-asm-arm64-ldrb-imm buf 'x0 'x0 0))         ; x0 = byte
 
-(defun nelisp-phase47-compiler--emit-cmp-reg-imm64-arm64 (buf reg imm)
+(defun nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 (buf reg imm)
   "Emit a compare of REG against IMM, using CMP #imm12 when possible."
   (if (and (integerp imm) (>= imm 0) (< imm #x1000))
       (nelisp-asm-arm64-cmp-imm buf reg imm)
@@ -14410,19 +14410,19 @@ result (zero-extended byte) in x0."
       (nelisp-asm-arm64-mov-imm64 buf 'x12 imm)
       (nelisp-asm-arm64-cmp-reg-reg buf reg 'x12))))
 
-(defun nelisp-phase47-compiler--emit-str-bytes-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-bytes-arm64 (node buf)
   "Emit `str-bytes' for aarch64 — x0 = String data pointer at +16."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-ptr))
 
-(defun nelisp-phase47-compiler--emit-str-bytes-ptr-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-bytes-ptr-arm64 (node buf)
   "Emit `str-bytes-ptr' for aarch64 via `nl_str_bytes_ptr'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-bl buf 'nl_str_bytes_ptr))
 
-(defun nelisp-phase47-compiler--emit-string-eq-core-arm64
+(defun nelisp-aot-compiler--emit-string-eq-core-arm64
     (buf left right id)
   "Emit length-first byte equality for two string-like Sexp slots."
   (let ((false-lbl (intern (format "%s-false" id)))
@@ -14454,33 +14454,33 @@ result (zero-extended byte) in x0."
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-str-eq-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-eq-arm64 (node buf)
   "Emit `str-eq' for aarch64."
-  (let ((id (nelisp-phase47-compiler--ir-get node :id)))
-    (nelisp-phase47-compiler--emit-value
-     (nelisp-phase47-compiler--ir-get node :a) buf)
+  (let ((id (nelisp-aot-compiler--ir-get node :id)))
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :a) buf)
     (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-    (nelisp-phase47-compiler--emit-value
-     (nelisp-phase47-compiler--ir-get node :b) buf)
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :b) buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
-    (nelisp-phase47-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)))
+    (nelisp-aot-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)))
 
-(defun nelisp-phase47-compiler--emit-symbol-name-eq-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-symbol-name-eq-arm64 (node buf)
   "Emit `symbol-name-eq' for aarch64 — Symbol tag + literal byte compare."
-  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
-         (id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (bytes (nelisp-aot-compiler--ir-get node :bytes))
+         (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
     (nelisp-asm-arm64-ldrb-imm buf 'x0 'x1 nelisp-sexp--offset-tag)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
     (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
     (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-length)
-    (nelisp-phase47-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
+    (nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
     (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
     (nelisp-asm-arm64-ldr-imm buf 'x9 'x1 nelisp-string--offset-ptr)
     (dolist (b bytes)
@@ -14494,16 +14494,16 @@ result (zero-extended byte) in x0."
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-sexp-name-eq-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-sexp-name-eq-arm64 (node buf)
   "Emit `sexp-name-eq' for aarch64 — Symbol/Str tag + literal byte compare."
-  (let* ((ptr (nelisp-phase47-compiler--ir-get node :ptr))
-         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
-         (id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (bytes (nelisp-aot-compiler--ir-get node :bytes))
+         (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
          (bytes-lbl (intern (format "%s-bytes" id)))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (nelisp-phase47-compiler--emit-value ptr buf)
+    (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
     (nelisp-asm-arm64-ldrb-imm buf 'x0 'x1 nelisp-sexp--offset-tag)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
@@ -14512,7 +14512,7 @@ result (zero-extended byte) in x0."
     (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
     (nelisp-asm-arm64-define-label buf bytes-lbl)
     (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-length)
-    (nelisp-phase47-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
+    (nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
     (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
     (nelisp-asm-arm64-ldr-imm buf 'x9 'x1 nelisp-string--offset-ptr)
     (dolist (b bytes)
@@ -14526,16 +14526,16 @@ result (zero-extended byte) in x0."
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-symbol-eq-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-symbol-eq-arm64 (node buf)
   "Emit `symbol-eq' for aarch64 — both tags Symbol, then byte equality."
-  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((id (nelisp-aot-compiler--ir-get node :id))
          (tag-false-lbl (intern (format "%s-tag-false" id)))
          (end-lbl (intern (format "%s-tag-end" id))))
-    (nelisp-phase47-compiler--emit-value
-     (nelisp-phase47-compiler--ir-get node :a) buf)
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :a) buf)
     (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-    (nelisp-phase47-compiler--emit-value
-     (nelisp-phase47-compiler--ir-get node :b) buf)
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :b) buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
     (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
     (nelisp-asm-arm64-ldrb-imm buf 'x0 'x1 nelisp-sexp--offset-tag)
@@ -14544,160 +14544,160 @@ result (zero-extended byte) in x0."
     (nelisp-asm-arm64-ldrb-imm buf 'x0 'x2 nelisp-sexp--offset-tag)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
     (nelisp-asm-arm64-b-cond buf 'ne tag-false-lbl)
-    (nelisp-phase47-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)
+    (nelisp-aot-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)
     (nelisp-asm-arm64-b buf end-lbl)
     (nelisp-asm-arm64-define-label buf tag-false-lbl)
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-tag-arm64 (node buf tag)
+(defun nelisp-aot-compiler--emit-sexp-write-tag-arm64 (node buf tag)
   "Emit aarch64 `sexp-write-nil' / `sexp-write-t' tag write."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-imm64 buf 'x1 tag)
   (nelisp-asm-arm64-strb-imm buf 'x1 'x0 nelisp-sexp--offset-tag))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-alloc-arm64
+(defun nelisp-aot-compiler--emit-sexp-write-alloc-arm64
     (node buf helper-sym)
   "Emit `sexp-write-str' / `sexp-write-symbol' for aarch64."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :bytes-ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :bytes-ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :len) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :len) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-bl buf helper-sym))
 
-(defun nelisp-phase47-compiler--emit-sexp-write-lit-arm64
+(defun nelisp-aot-compiler--emit-sexp-write-lit-arm64
     (node buf helper-sym)
   "Emit a literal string/symbol allocation through HELPER-SYM on aarch64."
-  (let* ((slot (nelisp-phase47-compiler--ir-get node :slot))
-         (bytes (nelisp-phase47-compiler--ir-get node :bytes))
-         (chunks (nelisp-phase47-compiler--bytes->u64-chunks bytes))
+  (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
+         (bytes (nelisp-aot-compiler--ir-get node :bytes))
+         (chunks (nelisp-aot-compiler--bytes->u64-chunks bytes))
          (stack-bytes (* 16 (/ (+ (* 8 (length chunks)) 15) 16)))
          (off 0))
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)      ; x10 = slot
     (when (> stack-bytes 0)
-      (nelisp-phase47-compiler--arm64-emit-sp-adjust buf 'sub stack-bytes))
+      (nelisp-aot-compiler--arm64-emit-sp-adjust buf 'sub stack-bytes))
     (dolist (chunk chunks)
       (nelisp-asm-arm64-mov-imm64 buf 'x9 chunk)
-      (nelisp-phase47-compiler--arm64-emit-str-sp buf 'x9 off)
+      (nelisp-aot-compiler--arm64-emit-str-sp buf 'x9 off)
       (setq off (+ off 8)))
     (nelisp-asm-arm64-add-imm buf 'x0 'sp 0)         ; bytes-ptr
     (nelisp-asm-arm64-mov-imm64 buf 'x1 (length bytes))
     (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x10)      ; slot
     (nelisp-asm-arm64-bl buf helper-sym)
     (when (> stack-bytes 0)
-      (nelisp-phase47-compiler--arm64-emit-sp-adjust buf 'add stack-bytes))))
+      (nelisp-aot-compiler--arm64-emit-sp-adjust buf 'add stack-bytes))))
 
-(defun nelisp-phase47-compiler--emit-mut-str-make-empty-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-mut-str-make-empty-arm64 (node buf)
   "Emit `mut-str-make-empty' for aarch64 via `nl_alloc_mut_str'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :cap) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :cap) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-bl buf 'nl_alloc_mut_str))
 
-(defun nelisp-phase47-compiler--emit-mut-str-push-2arg-arm64
+(defun nelisp-aot-compiler--emit-mut-str-push-2arg-arm64
     (node buf helper-sym arg-key)
   "Emit a two-arg mut-str in-place helper call for aarch64."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node arg-key) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node arg-key) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-bl buf helper-sym)
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
 
-(defun nelisp-phase47-compiler--emit-mut-str-len-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-mut-str-len-arm64 (node buf)
   "Emit `mut-str-len' for aarch64 via `nl_mut_str_len'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-bl buf 'nl_mut_str_len))
 
-(defun nelisp-phase47-compiler--emit-mut-str-finalize-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-mut-str-finalize-arm64 (node buf)
   "Emit `mut-str-finalize' for aarch64 via `nl_mut_str_finalize'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-bl buf 'nl_mut_str_finalize))
 
-(defun nelisp-phase47-compiler--emit-str-char-count-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-char-count-arm64 (node buf)
   "Emit `str-char-count' for aarch64 via `nl_str_char_count'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-bl buf 'nl_str_char_count))
 
-(defun nelisp-phase47-compiler--emit-str-codepoint-at-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-codepoint-at-arm64 (node buf)
   "Emit `str-codepoint-at' for aarch64 via `nl_str_codepoint_at'."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :idx) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :cp-slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :cp-slot) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :width-slot) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :width-slot) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x3 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-bl buf 'nl_str_codepoint_at))
 
-(defun nelisp-phase47-compiler--emit-str-is-alphanumeric-at-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-str-is-alphanumeric-at-arm64 (node buf)
   "Emit `str-is-alphanumeric-at' for aarch64."
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :ptr) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-phase47-compiler--emit-value
-   (nelisp-phase47-compiler--ir-get node :idx) buf)
+  (nelisp-aot-compiler--emit-value
+   (nelisp-aot-compiler--ir-get node :idx) buf)
   (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
   (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)
   (nelisp-asm-arm64-bl buf 'nl_str_is_alphanumeric_at))
 
-(defun nelisp-phase47-compiler--emit-extern-call-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-extern-call-arm64 (node buf)
   "Emit a GP-only `extern-call' for aarch64.
 This matches the existing fixed-arity AAPCS64 call path: evaluate args
 left-to-right, spill them in 16-byte stack slots, pop into x0..x7, then
 BL the target.  f64 and stack arguments remain explicitly unsupported
 on this arm64 path."
-  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
-         (args (nelisp-phase47-compiler--ir-get node :args))
-         (gp-regs nelisp-phase47-compiler--aarch64-arg-regs)
+  (let* ((name (nelisp-aot-compiler--ir-get node :name))
+         (args (nelisp-aot-compiler--ir-get node :args))
+         (gp-regs nelisp-aot-compiler--aarch64-arg-regs)
          (n (length args)))
     (when (> n (length gp-regs))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :extern-call-too-many-args-aarch64 name n)))
     (dolist (a args)
-      (unless (eq (nelisp-phase47-compiler--ir-get a :cls) 'gp)
-        (signal 'nelisp-phase47-compiler-error
+      (unless (eq (nelisp-aot-compiler--ir-get a :cls) 'gp)
+        (signal 'nelisp-aot-compiler-error
                 (list :extern-call-f64-arg-unsupported-aarch64 name))))
     (dolist (a args)
-      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-aot-compiler--emit-value a buf)
       (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
     (cl-loop for i from (1- n) downto 0
              do (nelisp-asm-arm64-ldr-post-sp-16 buf (nth i gp-regs)))
     ;; Executable/selfhost smoke resolves helper defuns as in-buffer labels,
     ;; possibly forward-defined.  Relocatable object mode records externs.
-    (if nelisp-phase47-compiler--allow-external-user-calls
+    (if nelisp-aot-compiler--allow-external-user-calls
         (progn
           (nelisp-asm-arm64-emit-reloc buf 'b26-pc (symbol-name name))
           (nelisp-asm-arm64--emit-word buf #x94000000))
@@ -14705,7 +14705,7 @@ on this arm64 path."
       (nelisp-asm-arm64-emit-fixup
        buf (- (nelisp-asm-arm64-buffer-pos buf) 4) name 'bl26))))
 
-(defun nelisp-phase47-compiler--emit-call-arm64 (node buf)
+(defun nelisp-aot-compiler--emit-call-arm64 (node buf)
   "Emit a fixed-arity call for aarch64 (AAPCS64), direct or indirect.
 Each arg is evaluated left-to-right into x0 and spilled (STR
 [SP,#-16]!); the n spills are then popped into x0..x(n-1) so later
@@ -14718,22 +14718,22 @@ Indirect (`:fn-value') calls (Doc 133 P0 `call-ptr'): the function
 pointer is evaluated first and spilled BELOW the args, so the arg-reg
 shuffle cannot clobber it; after the args are in place it is popped
 into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
-  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
-         (fn-value (nelisp-phase47-compiler--ir-get node :fn-value))
-         (args (nelisp-phase47-compiler--ir-get node :args))
+  (let* ((name (nelisp-aot-compiler--ir-get node :name))
+         (fn-value (nelisp-aot-compiler--ir-get node :fn-value))
+         (args (nelisp-aot-compiler--ir-get node :args))
          (n (length args))
-         (gp-arg-regs nelisp-phase47-compiler--aarch64-arg-regs)
+         (gp-arg-regs nelisp-aot-compiler--aarch64-arg-regs)
          (reg-budget (length gp-arg-regs)))
     (when (> n (length gp-arg-regs))
       (when fn-value
-        (signal 'nelisp-phase47-compiler-error
+        (signal 'nelisp-aot-compiler-error
                 (list :call-ptr-stack-args-unsupported-aarch64 n))))
     ;; Indirect: stash the fn-ptr below the args (popped into x9 last).
     (when fn-value
-      (nelisp-phase47-compiler--emit-value fn-value buf)
+      (nelisp-aot-compiler--emit-value fn-value buf)
       (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
     (dolist (a args)
-      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-aot-compiler--emit-value a buf)
       (nelisp-asm-arm64-str-pre-sp-16 buf 'x0))
     (if (<= n reg-budget)
         (progn
@@ -14754,27 +14754,27 @@ into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
              (stack-rounded (if (zerop (logand stack-bytes 15))
                                 stack-bytes
                               (+ stack-bytes (- 16 (logand stack-bytes 15))))))
-        (nelisp-phase47-compiler--arm64-emit-sp-adjust
+        (nelisp-aot-compiler--arm64-emit-sp-adjust
          buf 'sub stack-rounded)
         (cl-loop for idx from reg-budget below n
                  for stack-slot from 0
                  do
-                 (nelisp-phase47-compiler--arm64-emit-ldr-sp
+                 (nelisp-aot-compiler--arm64-emit-ldr-sp
                   buf 'x9 (+ stack-rounded (* 16 (- (1- n) idx))))
-                 (nelisp-phase47-compiler--arm64-emit-str-sp
+                 (nelisp-aot-compiler--arm64-emit-str-sp
                   buf 'x9 (* 8 stack-slot)))
         (cl-loop for idx below reg-budget
                  for reg in gp-arg-regs
                  do
-                 (nelisp-phase47-compiler--arm64-emit-ldr-sp
+                 (nelisp-aot-compiler--arm64-emit-ldr-sp
                   buf reg (+ stack-rounded (* 16 (- (1- n) idx)))))
         (nelisp-asm-arm64-bl buf name)
-        (nelisp-phase47-compiler--arm64-emit-sp-adjust
+        (nelisp-aot-compiler--arm64-emit-sp-adjust
          buf 'add (+ stack-rounded (* 16 n)))))))
 
 ;; ---- Doc 101 §101.D Cons construction ops ----
 
-(defun nelisp-phase47-compiler--emit-cons-make (node buf)
+(defun nelisp-aot-compiler--emit-cons-make (node buf)
   "Emit a `Sexp::Cons' constructor into NODE's caller-owned slot.
 Strategy:
 
@@ -14790,25 +14790,25 @@ Strategy:
 MVP ownership constraint: the copied `Sexp' payloads are assumed to
 already be caller-owned / cloned; this op does not yet perform
 refcount-aware nested-box increments."
-  (let ((car-ptr (nelisp-phase47-compiler--ir-get node :car-ptr))
-        (cdr-ptr (nelisp-phase47-compiler--ir-get node :cdr-ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
-    (nelisp-phase47-compiler--emit-value car-ptr buf)
+  (let ((car-ptr (nelisp-aot-compiler--ir-get node :car-ptr))
+        (cdr-ptr (nelisp-aot-compiler--ir-get node :cdr-ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
+    (nelisp-aot-compiler--emit-value car-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value cdr-ptr buf)
+    (nelisp-aot-compiler--emit-value cdr-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Keep rsp 16-byte aligned across the extern call: 3 saved
     ;; values would misalign the call site, so reserve one extra
     ;; scratch slot and discard it after the call.
     (nelisp-asm-x86_64-push buf 'rax)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_alloc_consbox" -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     (nelisp-asm-x86_64-pop buf 'r11)
@@ -14832,7 +14832,7 @@ refcount-aware nested-box increments."
      buf 'rsi nelisp-sexp--offset-payload 'r10)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-cons-make-with-clone (node buf)
+(defun nelisp-aot-compiler--emit-cons-make-with-clone (node buf)
   "Emit Doc 120.E fused `cons-make-with-clone' constructor.
 Strategy parallels `--emit-cons-make' but replaces the two 32-byte
 `movdqu' pairs with two `nl_sexp_clone_into' PLT calls so refcounted
@@ -14859,24 +14859,24 @@ Stack discipline matches `--emit-cons-make':
 No refcount bumps are needed at this layer — `nl_sexp_clone_into'
 performs the variant-aware refcount inc / String deep copy itself,
 and the fresh NlConsBox already starts at refcount = 1."
-  (let ((car-ptr (nelisp-phase47-compiler--ir-get node :car-ptr))
-        (cdr-ptr (nelisp-phase47-compiler--ir-get node :cdr-ptr))
-        (slot (nelisp-phase47-compiler--ir-get node :slot)))
+  (let ((car-ptr (nelisp-aot-compiler--ir-get node :car-ptr))
+        (cdr-ptr (nelisp-aot-compiler--ir-get node :cdr-ptr))
+        (slot (nelisp-aot-compiler--ir-get node :slot)))
     ;; Step 1: spill the 3 input pointers + 1 alignment scratch.
-    (nelisp-phase47-compiler--emit-value car-ptr buf)
+    (nelisp-aot-compiler--emit-value car-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value cdr-ptr buf)
+    (nelisp-aot-compiler--emit-value cdr-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value slot buf)
+    (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-push buf 'rax)
     ;; Step 2: call nl_alloc_consbox -> rax; stash in r10.
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_alloc_consbox" -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
     ;; Step 3: restore alignment / slot / cdr-ptr / car-ptr.
@@ -14891,7 +14891,7 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-push buf 'rdx)
     (nelisp-asm-x86_64-push buf 'r10)
     (nelisp-asm-x86_64-push buf 'rax)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
           (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r10)
@@ -14900,7 +14900,7 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_sexp_clone_into" -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'r10)
@@ -14913,7 +14913,7 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-push buf 'r10)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-push buf 'rax)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdx)
           (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'r10)
@@ -14925,7 +14925,7 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf "nl_sexp_clone_into" -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'r11)
@@ -14938,18 +14938,18 @@ and the fresh NlConsBox already starts at refcount = 1."
     ;; Step 7: return slot in rax (matches cons-make ABI).
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
 
-(defun nelisp-phase47-compiler--emit-cons-set-slot (node buf helper-name)
+(defun nelisp-aot-compiler--emit-cons-set-slot (node buf helper-name)
   "Emit `cons-set-car' / `cons-set-cdr' via Rust HELPER-NAME.
 NODE carries `:handle' (= `*const Sexp' pointing at a Cons slot) and
 `:val-ptr' (= `*const Sexp').  The helper does the drop-then-write
 mutation on the boxed field; this op only resolves the `NlConsBox*'
 payload from the handle and forwards the two pointers.  Returns the
 original handle pointer in rax."
-  (let ((handle (nelisp-phase47-compiler--ir-get node :handle))
-        (val-ptr (nelisp-phase47-compiler--ir-get node :val-ptr)))
-    (nelisp-phase47-compiler--emit-value handle buf)
+  (let ((handle (nelisp-aot-compiler--ir-get node :handle))
+        (val-ptr (nelisp-aot-compiler--ir-get node :val-ptr)))
+    (nelisp-aot-compiler--emit-value handle buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-phase47-compiler--emit-value val-ptr buf)
+    (nelisp-aot-compiler--emit-value val-ptr buf)
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdi)
@@ -14959,7 +14959,7 @@ original handle pointer in rax."
     ;; Same alignment rule as `cons-make': two extra pushes keep the
     ;; call site at a 16-byte boundary.
     (nelisp-asm-x86_64-push buf 'rsi)
-    (if (eq nelisp-phase47-compiler--abi 'win64)
+    (if (eq nelisp-aot-compiler--abi 'win64)
         (progn
           (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
           (nelisp-asm-x86_64-mov-reg-mem-disp8
@@ -14970,14 +14970,14 @@ original handle pointer in rax."
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
      buf (symbol-name helper-name) -4 'text)
-    (when (eq nelisp-phase47-compiler--abi 'win64)
+    (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'rax)))
 
 ;; ---- §97.c emit — comparisons + control flow ----
 
-(defconst nelisp-phase47-compiler--cmp-setcc
+(defconst nelisp-aot-compiler--cmp-setcc
   '((< . setl)
     (> . setg)
     (<= . setle)
@@ -14988,20 +14988,20 @@ Signed comparisons match SBCL/Elisp integer semantics; the
 underlying `cmp' instruction sets SF/OF/ZF and the setCC
 opcode reads the right combination.")
 
-(defun nelisp-phase47-compiler--emit-cmp (node buf)
+(defun nelisp-aot-compiler--emit-cmp (node buf)
   "Emit signed comparison NODE; result (0 or 1) in rax.
 Strategy: compute B -> rax -> push, compute A -> rax, pop r10 (=
 B), cmp rax, r10 (= computes A - B flag set), then setCC al +
 movzx eax, al to materialise the boolean into rax.  Uses r10 to
   avoid arg-reg aliasing inside chained calls, mirroring the
   Doc 97.b arith convention."
-  (let* ((op (nelisp-phase47-compiler--ir-get node :op))
-         (a (nelisp-phase47-compiler--ir-get node :a))
-         (b (nelisp-phase47-compiler--ir-get node :b))
-         (cc (cdr (or (assq op nelisp-phase47-compiler--cmp-setcc)
-                      (signal 'nelisp-phase47-compiler-error
+  (let* ((op (nelisp-aot-compiler--ir-get node :op))
+         (a (nelisp-aot-compiler--ir-get node :a))
+         (b (nelisp-aot-compiler--ir-get node :b))
+         (cc (cdr (or (assq op nelisp-aot-compiler--cmp-setcc)
+                      (signal 'nelisp-aot-compiler-error
                               (list :unknown-cmp-op op))))))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (let ((arm64-cc
                (pcase op
                  ('= 'eq)
@@ -15009,17 +15009,17 @@ movzx eax, al to materialise the boolean into rax.  Uses r10 to
                  ('> 'gt)
                  ('<= 'le)
                  ('>= 'ge))))
-          (nelisp-phase47-compiler--emit-value b buf)
+          (nelisp-aot-compiler--emit-value b buf)
           (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-          (nelisp-phase47-compiler--emit-value a buf)
+          (nelisp-aot-compiler--emit-value a buf)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9)
           (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'x9)
           (nelisp-asm-arm64-cset buf 'x0 arm64-cc))
       ;; Compute B -> rax, save on stack.
-      (nelisp-phase47-compiler--emit-value b buf)
+      (nelisp-aot-compiler--emit-value b buf)
       (nelisp-asm-x86_64-push buf 'rax)
       ;; Compute A -> rax.
-      (nelisp-phase47-compiler--emit-value a buf)
+      (nelisp-aot-compiler--emit-value a buf)
       ;; Recover B into r10.
       (nelisp-asm-x86_64-pop buf 'r10)
       ;; cmp rax, r10                          (= A - B sets flags)
@@ -15029,7 +15029,7 @@ movzx eax, al to materialise the boolean into rax.  Uses r10 to
       ;; movzx eax, al                         (= zero-extends to rax)
       (nelisp-asm-x86_64-movzx-eax-al buf))))
 
-(defun nelisp-phase47-compiler--emit-if (node buf)
+(defun nelisp-aot-compiler--emit-if (node buf)
   "Emit `if' branching code; result in rax.
 Layout (= each emitter call is byte-fixed so pass invariance
 holds across the two-pass orchestration):
@@ -15041,29 +15041,29 @@ holds across the two-pass orchestration):
   else-LABEL:
     <emit ELSE>                  -> rax
   end-LABEL:"
-  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((id (nelisp-aot-compiler--ir-get node :id))
          (else-lbl (intern (format "%s-else" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
-          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
+          (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
           (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
           (nelisp-asm-arm64-b-cond buf 'eq else-lbl)
-          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :then) buf)
+          (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :then) buf)
           (nelisp-asm-arm64-b buf end-lbl)
           (nelisp-asm-arm64-define-label buf else-lbl)
-          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :else) buf)
+          (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :else) buf)
           (nelisp-asm-arm64-define-label buf end-lbl))
-      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
+      (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
       (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
       (nelisp-asm-x86_64-jz-rel32 buf else-lbl)
-      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :then) buf)
+      (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :then) buf)
       (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
       (nelisp-asm-x86_64-define-label buf else-lbl)
-      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :else) buf)
+      (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :else) buf)
       (nelisp-asm-x86_64-define-label buf end-lbl))))
 
-(defun nelisp-phase47-compiler--emit-while (node buf)
+(defun nelisp-aot-compiler--emit-while (node buf)
   "Emit `while' loop; result = 0 (in rax) after loop exits.
 Layout:
   start-LABEL:
@@ -15074,27 +15074,27 @@ Layout:
     jmp  start-LABEL
   end-LABEL:
     mov  rax, 0                  -> return 0 sentinel"
-  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((id (nelisp-aot-compiler--ir-get node :id))
          (start-lbl (intern (format "%s-start" id)))
          (end-lbl (intern (format "%s-end" id))))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         ;; aarch64: cmp x0,xzr / b.eq end / ... / b start ; x0 = 0 sentinel.
         (progn
           (nelisp-asm-arm64-define-label buf start-lbl)
-          (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
+          (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
           (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
           (nelisp-asm-arm64-b-cond buf 'eq end-lbl)
-          (dolist (form (nelisp-phase47-compiler--ir-get node :body))
-            (nelisp-phase47-compiler--emit-value form buf))
+          (dolist (form (nelisp-aot-compiler--ir-get node :body))
+            (nelisp-aot-compiler--emit-value form buf))
           (nelisp-asm-arm64-b buf start-lbl)
           (nelisp-asm-arm64-define-label buf end-lbl)
           (nelisp-asm-arm64-mov-imm64 buf 'x0 0))
       (nelisp-asm-x86_64-define-label buf start-lbl)
-      (nelisp-phase47-compiler--emit-value (nelisp-phase47-compiler--ir-get node :test) buf)
+      (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :test) buf)
       (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
       (nelisp-asm-x86_64-jz-rel32 buf end-lbl)
-      (dolist (form (nelisp-phase47-compiler--ir-get node :body))
-        (nelisp-phase47-compiler--emit-value form buf))
+      (dolist (form (nelisp-aot-compiler--ir-get node :body))
+        (nelisp-aot-compiler--emit-value form buf))
       (nelisp-asm-x86_64-jmp-rel32 buf start-lbl)
       (nelisp-asm-x86_64-define-label buf end-lbl)
       ;; mov rax, 0 — 7 bytes, fixed; cheaper to use xor in real
@@ -15102,7 +15102,7 @@ Layout:
       ;; rest of the chain in lockstep.
       (nelisp-asm-x86_64-mov-imm32 buf 'rax 0))))
 
-(defun nelisp-phase47-compiler--emit-cond (node buf)
+(defun nelisp-aot-compiler--emit-cond (node buf)
   "Emit `cond' first-match-wins dispatch; result in rax.
 Clauses with predicate `t' (= already lowered to symbol `always'
 during parse) emit their body unconditionally.  Layout per non-
@@ -15115,11 +15115,11 @@ trivial clause:
   next-K:
 The final `t' clause (= always) elides the cmp/jz and emits the
 body straight; `end-LABEL' is then defined immediately after."
-  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
+  (let* ((id (nelisp-aot-compiler--ir-get node :id))
          (end-lbl (intern (format "%s-end" id)))
-         (clauses (nelisp-phase47-compiler--ir-get node :clauses))
+         (clauses (nelisp-aot-compiler--ir-get node :clauses))
          (k 0))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         ;; aarch64: cmp x0,xzr / b.eq next / ... / b end ; x0 = 0 sentinel.
         (progn
           (dolist (cl clauses)
@@ -15128,13 +15128,13 @@ body straight; `end-LABEL' is then defined immediately after."
                   (body (cdr cl)))
               (cond
                ((eq pred 'always)
-                (nelisp-phase47-compiler--emit-value body buf))
+                (nelisp-aot-compiler--emit-value body buf))
                (t
                 (let ((next-lbl (intern (format "%s-next-%d" id k))))
-                  (nelisp-phase47-compiler--emit-value pred buf)
+                  (nelisp-aot-compiler--emit-value pred buf)
                   (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
                   (nelisp-asm-arm64-b-cond buf 'eq next-lbl)
-                  (nelisp-phase47-compiler--emit-value body buf)
+                  (nelisp-aot-compiler--emit-value body buf)
                   (nelisp-asm-arm64-b buf end-lbl)
                   (nelisp-asm-arm64-define-label buf next-lbl))))))
           (unless (eq (car (car (last clauses))) 'always)
@@ -15147,13 +15147,13 @@ body straight; `end-LABEL' is then defined immediately after."
           (cond
            ((eq pred 'always)
             ;; Unconditional clause (= t / fallthrough).
-            (nelisp-phase47-compiler--emit-value body buf))
+            (nelisp-aot-compiler--emit-value body buf))
            (t
             (let ((next-lbl (intern (format "%s-next-%d" id k))))
-              (nelisp-phase47-compiler--emit-value pred buf)
+              (nelisp-aot-compiler--emit-value pred buf)
               (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
               (nelisp-asm-x86_64-jz-rel32 buf next-lbl)
-              (nelisp-phase47-compiler--emit-value body buf)
+              (nelisp-aot-compiler--emit-value body buf)
               (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
               (nelisp-asm-x86_64-define-label buf next-lbl))))))
       ;; If no `always' clause and every predicate failed, fall
@@ -15162,7 +15162,7 @@ body straight; `end-LABEL' is then defined immediately after."
         (nelisp-asm-x86_64-mov-imm32 buf 'rax 0))
       (nelisp-asm-x86_64-define-label buf end-lbl))))
 
-(defun nelisp-phase47-compiler--emit-logic (node buf)
+(defun nelisp-aot-compiler--emit-logic (node buf)
   "Emit `and'/`or' short-circuit evaluation; result in rax.
 For `and': each form is evaluated; if it produces 0 jump to
 fail-end (with rax = 0).  If all forms produced non-0 the last
@@ -15172,16 +15172,16 @@ win-end (= rax already holds the winning value).  If every form
 returned 0 the last rax (= 0) stays.
 Final emit:
   end-LABEL:"
-  (let* ((id (nelisp-phase47-compiler--ir-get node :id))
-         (op (nelisp-phase47-compiler--ir-get node :op))
+  (let* ((id (nelisp-aot-compiler--ir-get node :id))
+         (op (nelisp-aot-compiler--ir-get node :op))
          (end-lbl (intern (format "%s-end" id)))
-         (forms (nelisp-phase47-compiler--ir-get node :forms)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+         (forms (nelisp-aot-compiler--ir-get node :forms)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         ;; aarch64: cmp x0,xzr ; `and' short-circuits on eq (= 0),
         ;; `or' on ne (non-zero); x0 holds the live value at end.
         (progn
           (dolist (f forms)
-            (nelisp-phase47-compiler--emit-value f buf)
+            (nelisp-aot-compiler--emit-value f buf)
             (nelisp-asm-arm64-cmp-reg-reg buf 'x0 'xzr)
             (cond
              ((eq op 'and)
@@ -15189,11 +15189,11 @@ Final emit:
              ((eq op 'or)
               (nelisp-asm-arm64-b-cond buf 'ne end-lbl))
              (t
-              (signal 'nelisp-phase47-compiler-error
+              (signal 'nelisp-aot-compiler-error
                       (list :unknown-logic-op op)))))
           (nelisp-asm-arm64-define-label buf end-lbl))
       (dolist (f forms)
-        (nelisp-phase47-compiler--emit-value f buf)
+        (nelisp-aot-compiler--emit-value f buf)
         ;; Short-circuit test: cmp rax, 0; then jump on the
         ;; condition that ends the eval chain.
         (nelisp-asm-x86_64-cmp-imm32 buf 'rax 0)
@@ -15205,28 +15205,28 @@ Final emit:
           ;; rax non-zero means success; jump to end with rax kept.
           (nelisp-asm-x86_64-jnz-rel32 buf end-lbl))
          (t
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :unknown-logic-op op)))))
       ;; If no early-exit fired, fall through: rax holds the last
       ;; evaluated value (= last operand for `and' = non-zero last,
       ;; for `or' = 0 last).  No additional emit needed.
       (nelisp-asm-x86_64-define-label buf end-lbl))))
 
-(defun nelisp-phase47-compiler--emit-aot-landing-label (node buf)
+(defun nelisp-aot-compiler--emit-aot-landing-label (node buf)
   "Define NODE's landing label and emit its value body."
-  (let ((label (nelisp-phase47-compiler--ir-get node :label))
-        (body (nelisp-phase47-compiler--ir-get node :body)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((label (nelisp-aot-compiler--ir-get node :label))
+        (body (nelisp-aot-compiler--ir-get node :body)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (nelisp-asm-arm64-define-label buf label)
       (nelisp-asm-x86_64-define-label buf label))
-    (nelisp-phase47-compiler--emit-value body buf)))
+    (nelisp-aot-compiler--emit-value body buf)))
 
-(defun nelisp-phase47-compiler--emit-aot-machine-landing-jump (node buf)
+(defun nelisp-aot-compiler--emit-aot-machine-landing-jump (node buf)
   "Emit a native stack-pointer restore and branch to NODE's target."
-  (let ((saved-sp (nelisp-phase47-compiler--ir-get node :saved-sp))
-        (target (nelisp-phase47-compiler--ir-get node :target)))
-    (nelisp-phase47-compiler--emit-value saved-sp buf)
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (let ((saved-sp (nelisp-aot-compiler--ir-get node :saved-sp))
+        (target (nelisp-aot-compiler--ir-get node :target)))
+    (nelisp-aot-compiler--emit-value saved-sp buf)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
           ;; x0 holds the saved stack pointer.  Keep the actual `sp'
           ;; rewrite as the final move before the branch.
@@ -15240,21 +15240,21 @@ Final emit:
       (nelisp-asm-x86_64-mov-reg-reg buf 'rsp 'r10)
       (nelisp-asm-x86_64-jmp-rel32 buf target))))
 
-(defun nelisp-phase47-compiler--emit-aot-current-sp (_node buf)
+(defun nelisp-aot-compiler--emit-aot-current-sp (_node buf)
   "Emit the current native stack pointer as a value in rax."
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
       (nelisp-asm-arm64-add-imm buf 'x0 'sp 0)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsp)))
 
 ;; ---- §97.5 emit walker — statements ----
 
-(defun nelisp-phase47-compiler--emit-arm64-mov-imm64-fixed (buf reg imm64)
+(defun nelisp-aot-compiler--emit-arm64-mov-imm64-fixed (buf reg imm64)
   "Emit a fixed 16-byte MOVZ/MOVK chain loading IMM64 into REG.
 Unlike `nelisp-asm-arm64-mov-imm64', this always emits four words so
 pass-1 placeholder addresses and pass-2 real addresses have identical
 text size."
   (unless (integerp imm64)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :arm64-fixed-imm-not-integer imm64)))
   (let ((u (logand imm64 #xFFFFFFFFFFFFFFFF)))
     (nelisp-asm-arm64-mov-imm-z buf reg (logand u #xFFFF))
@@ -15262,7 +15262,7 @@ text size."
     (nelisp-asm-arm64-mov-imm-k buf reg (logand (ash u -32) #xFFFF) 32)
     (nelisp-asm-arm64-mov-imm-k buf reg (logand (ash u -48) #xFFFF) 48)))
 
-(defun nelisp-phase47-compiler--emit-table-lookup (node buf)
+(defun nelisp-aot-compiler--emit-table-lookup (node buf)
   "Emit `static-imm32-table-lookup' value op, result u32 → rax/x0.
 NODE is `(:kind table-lookup :name NAME :index INDEX-IR)'.
 BUF is the asm buffer.  x86_64 sequence (= fixed 20 bytes after INDEX-IR):
@@ -15273,26 +15273,26 @@ BUF is the asm buffer.  x86_64 sequence (= fixed 20 bytes after INDEX-IR):
   mov eax, [rdi+rsi]        ; 3 bytes (8B 04 37)        = u32 load
 The CPU zero-extends EAX to RAX on the 32-bit load, so the high
 32 bits are guaranteed clear.  TABLE_VADDR is resolved via
-`nelisp-phase47-compiler--table-vaddrs' (= bound by `--pass').
+`nelisp-aot-compiler--table-vaddrs' (= bound by `--pass').
 Pass-1 sees vaddr=0 (= sentinel); pass-2 sees the real .rodata
 absolute address.  Byte width is identical in both passes (= the
 imm64 size is fixed) so the byte invariant holds."
-  (let* ((name (nelisp-phase47-compiler--ir-get node :name))
-         (index-ir (nelisp-phase47-compiler--ir-get node :index))
+  (let* ((name (nelisp-aot-compiler--ir-get node :name))
+         (index-ir (nelisp-aot-compiler--ir-get node :index))
          (vaddr (or (cdr (assoc name
-                                nelisp-phase47-compiler--table-vaddrs))
+                                nelisp-aot-compiler--table-vaddrs))
                     ;; Missing entry only legal during pre-collector
                     ;; invocation (= shouldn't happen at emit time).
-                    (signal 'nelisp-phase47-compiler-error
+                    (signal 'nelisp-aot-compiler-error
                             (list :static-imm32-table-vaddr-missing
                                   name)))))
-    (nelisp-phase47-compiler--emit-value index-ir buf)
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
+    (nelisp-aot-compiler--emit-value index-ir buf)
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
         (progn
           ;; x2 = index * 4, x1 = table base, x0 = zero-extended u32 load.
           (nelisp-asm-arm64-add-reg-reg buf 'x2 'x0 'x0)
           (nelisp-asm-arm64-add-reg-reg buf 'x2 'x2 'x2)
-          (nelisp-phase47-compiler--emit-arm64-mov-imm64-fixed buf 'x1 vaddr)
+          (nelisp-aot-compiler--emit-arm64-mov-imm64-fixed buf 'x1 vaddr)
           (nelisp-asm-arm64-ldrw-reg-reg buf 'x0 'x1 'x2))
       ;; 2. mov rsi, rax (= snapshot index into rsi).
       (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'rax)
@@ -15303,20 +15303,20 @@ imm64 size is fixed) so the byte invariant holds."
       ;; 5. mov eax, [rdi+rsi] (= load u32, zero-extends to rax).
       (nelisp-asm-x86_64-mov-eax-dword-rdi-rsi buf))))
 
-(defun nelisp-phase47-compiler--emit-write (buf str str-offsets rodata-vaddr)
+(defun nelisp-aot-compiler--emit-write (buf str str-offsets rodata-vaddr)
   "Emit a write(1, addr, len) syscall for STR to BUF.
 STR-OFFSETS is the alist from `--collect-strings'.  RODATA-VADDR is
 the absolute virtual address of byte 0 of .rodata."
   (let* ((entry (cdr (or (assoc str str-offsets)
-                         (signal 'nelisp-phase47-compiler-error
+                         (signal 'nelisp-aot-compiler-error
                                  (list :missing-string-entry str)))))
          (offset (plist-get entry :offset))
          (len    (plist-get entry :len))
          (addr   (+ rodata-vaddr offset)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
-        (let ((darwin (eq nelisp-phase47-compiler--os 'darwin)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        (let ((darwin (eq nelisp-aot-compiler--os 'darwin)))
           (nelisp-asm-arm64-mov-imm64 buf 'x0 1)
-          (nelisp-phase47-compiler--emit-arm64-mov-imm64-fixed buf 'x1 addr)
+          (nelisp-aot-compiler--emit-arm64-mov-imm64-fixed buf 'x1 addr)
           (nelisp-asm-arm64-mov-imm64 buf 'x2 len)
           (nelisp-asm-arm64-mov-imm64 buf (if darwin 'x16 'x8)
                                           (if darwin 4 64))
@@ -15327,37 +15327,37 @@ the absolute virtual address of byte 0 of .rodata."
       (nelisp-asm-x86_64-mov-imm32 buf 'rdx len)
       (nelisp-asm-x86_64-syscall buf))))
 
-(defun nelisp-phase47-compiler--emit-exit (buf value-node)
+(defun nelisp-aot-compiler--emit-exit (buf value-node)
   "Emit an exit(STATUS) syscall to BUF.
 VALUE-NODE is a value-producing IR node.  If it's an `imm', emit
 the legacy fixed-status path (= 16 bytes).  Otherwise compute the
 value into rax then `mov rdi, rax' + syscall."
-  (if (eq nelisp-phase47-compiler--arch 'aarch64)
+  (if (eq nelisp-aot-compiler--arch 'aarch64)
       ;; aarch64: status -> x0 (already the syscall arg0); NR -> x8
       ;; (Linux exit=93, SVC #0) or x16 (Darwin exit=1, SVC #0x80).
-      (let ((darwin (eq nelisp-phase47-compiler--os 'darwin)))
-        (nelisp-phase47-compiler--emit-value value-node buf)
+      (let ((darwin (eq nelisp-aot-compiler--os 'darwin)))
+        (nelisp-aot-compiler--emit-value value-node buf)
         (nelisp-asm-arm64-mov-imm64 buf (if darwin 'x16 'x8) (if darwin 1 93))
         (nelisp-asm-arm64-svc buf (if darwin #x80 0)))
     ;; A33.3 — integer-tag dispatch (`pcase' arm → `cond' over
     ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-    (let ((tag (nelisp-phase47-compiler--ir-kind-tag value-node)))
+    (let ((tag (nelisp-aot-compiler--ir-kind-tag value-node)))
      (cond
       ((= tag 30)                 ; imm
-       (let ((status (nelisp-phase47-compiler--ir-get value-node :value)))
+       (let ((status (nelisp-aot-compiler--ir-get value-node :value)))
          (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
          (nelisp-asm-x86_64-mov-imm32 buf 'rdi status)
          (nelisp-asm-x86_64-syscall buf)))
       (t
        ;; Compute value into rax (= might call functions).
-       (nelisp-phase47-compiler--emit-value value-node buf)
+       (nelisp-aot-compiler--emit-value value-node buf)
        ;; mov rdi, rax (= exit status from computed value).
        (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
        ;; mov rax, 60 (SYS_exit).
        (nelisp-asm-x86_64-mov-imm32 buf 'rax 60)
        (nelisp-asm-x86_64-syscall buf))))))
 
-(defun nelisp-phase47-compiler--emit-stmt (ir buf str-offsets rodata-vaddr)
+(defun nelisp-aot-compiler--emit-stmt (ir buf str-offsets rodata-vaddr)
   "Walk statement IR appending instructions to BUF.
 STR-OFFSETS maps literal string -> (:offset N :len L).
 RODATA-VADDR is the absolute vaddr of byte 0 of .rodata (= 0 during
@@ -15366,35 +15366,35 @@ skipped here — they're emitted separately by the orchestrator."
   (when ir
     ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
     ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-    (let ((tag (nelisp-phase47-compiler--ir-kind-tag ir)))
+    (let ((tag (nelisp-aot-compiler--ir-kind-tag ir)))
      (cond
       ((= tag 87)               ; write
-       (nelisp-phase47-compiler--emit-write
-        buf (nelisp-phase47-compiler--ir-get ir :str) str-offsets rodata-vaddr))
+       (nelisp-aot-compiler--emit-write
+        buf (nelisp-aot-compiler--ir-get ir :str) str-offsets rodata-vaddr))
       ((= tag 22)               ; exit
-       (nelisp-phase47-compiler--emit-exit
-        buf (nelisp-phase47-compiler--ir-get ir :value)))
+       (nelisp-aot-compiler--emit-exit
+        buf (nelisp-aot-compiler--ir-get ir :value)))
       ((= tag 54)               ; seq
-       (dolist (child (nelisp-phase47-compiler--ir-get ir :forms))
-         (nelisp-phase47-compiler--emit-stmt
+       (dolist (child (nelisp-aot-compiler--ir-get ir :forms))
+         (nelisp-aot-compiler--emit-stmt
           child buf str-offsets rodata-vaddr)))
       ((= tag 31)               ; let
-       (nelisp-phase47-compiler--emit-stmt
-        (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr))
+       (nelisp-aot-compiler--emit-stmt
+        (nelisp-aot-compiler--ir-get ir :body) buf str-offsets rodata-vaddr))
       ((= tag 32)               ; let-rt
        ;; Runtime let: evaluate value-ir → rax, spill to frame slot,
        ;; then walk body as statement.
-       (let* ((slot (nelisp-phase47-compiler--ir-get ir :slot))
-              (value-ir (nelisp-phase47-compiler--ir-get ir :value-ir)))
-         (nelisp-phase47-compiler--emit-value value-ir buf)
-         (nelisp-phase47-compiler--emit-frame-slot-store-from-value
+       (let* ((slot (nelisp-aot-compiler--ir-get ir :slot))
+              (value-ir (nelisp-aot-compiler--ir-get ir :value-ir)))
+         (nelisp-aot-compiler--emit-value value-ir buf)
+         (nelisp-aot-compiler--emit-frame-slot-store-from-value
           buf slot)
-         (nelisp-phase47-compiler--emit-stmt
-          (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr)))
+         (nelisp-aot-compiler--emit-stmt
+          (nelisp-aot-compiler--ir-get ir :body) buf str-offsets rodata-vaddr)))
       ((= tag 89)               ; let-rt-n
-       (nelisp-phase47-compiler--emit-let-rt-n-bindings ir buf)
-       (nelisp-phase47-compiler--emit-stmt
-        (nelisp-phase47-compiler--ir-get ir :body) buf str-offsets rodata-vaddr))
+       (nelisp-aot-compiler--emit-let-rt-n-bindings ir buf)
+       (nelisp-aot-compiler--emit-stmt
+        (nelisp-aot-compiler--ir-get ir :body) buf str-offsets rodata-vaddr))
       ((= tag 21)               ; defun
        ;; Skip — handled by `--emit-defun' separately.
        nil)
@@ -15405,22 +15405,22 @@ skipped here — they're emitted separately by the orchestrator."
       ((= tag 80)               ; table-lookup
        ;; Statement-context lookup discards rax (= side-effect free,
        ;; but we still emit so any address-of-table refs land).
-       (nelisp-phase47-compiler--emit-table-lookup ir buf))
+       (nelisp-aot-compiler--emit-table-lookup ir buf))
       ((= tag 5)                ; call
        ;; Statement-context call discards rax.
-       (nelisp-phase47-compiler--emit-call ir buf))
+       (nelisp-aot-compiler--emit-call ir buf))
       ((memq tag '(29 86 11 33 88 96 10 1 67 90 91 93 94 95)) ; if while cond logic value-seq setq-local cmp arith shift sexp-write-symbol-lit sexp-write-str-lit aot-landing-label aot-machine-landing-jump aot-current-sp
        ;; §97.c: value-producing control-flow / comparison form
        ;; reached statement position (= `seq' child, top-level).
        ;; Emit the value compute; rax is discarded by the
        ;; surrounding context.
-       (nelisp-phase47-compiler--emit-value ir buf))
+       (nelisp-aot-compiler--emit-value ir buf))
       (t
-       (let ((kind (nelisp-phase47-compiler--ir-kind ir)))
-         (signal 'nelisp-phase47-compiler-error
+       (let ((kind (nelisp-aot-compiler--ir-kind ir)))
+         (signal 'nelisp-aot-compiler-error
                  (list :unknown-ir-kind kind))))))))
 
-(defun nelisp-phase47-compiler--emit-defun (defun-ir buf)
+(defun nelisp-aot-compiler--emit-defun (defun-ir buf)
   "Emit a single function definition into BUF.
 The function's label is defined at the entry point; the prologue
 saves rbp + every incoming param register onto the stack, the
@@ -15446,12 +15446,12 @@ prologue allocates the full spill area in one `SUB rsp, 8*N'
 rbp; pop rbp; ret' tears the frame down identically to the GP
 path.  Return value lands in xmm0 implicitly (= the SysV f64
 return reg, untouched by epilogue)."
-  (let* ((name (nelisp-phase47-compiler--ir-get defun-ir :name))
-         (param-regs (nelisp-phase47-compiler--ir-get defun-ir :param-regs))
-         (param-class (or (nelisp-phase47-compiler--ir-get defun-ir :param-class) 'gp))
-         (param-classes (nelisp-phase47-compiler--ir-get defun-ir :param-classes))
-         (body (nelisp-phase47-compiler--ir-get defun-ir :body))
-         (rt-slot-count (or (nelisp-phase47-compiler--ir-get defun-ir :rt-slot-count) 0))
+  (let* ((name (nelisp-aot-compiler--ir-get defun-ir :name))
+         (param-regs (nelisp-aot-compiler--ir-get defun-ir :param-regs))
+         (param-class (or (nelisp-aot-compiler--ir-get defun-ir :param-class) 'gp))
+         (param-classes (nelisp-aot-compiler--ir-get defun-ir :param-classes))
+         (body (nelisp-aot-compiler--ir-get defun-ir :body))
+         (rt-slot-count (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0))
          (param-slot-rounded (if (zerop (logand (length param-regs) 1))
                                  (length param-regs)
                                (1+ (length param-regs))))
@@ -15472,9 +15472,9 @@ return reg, untouched by epilogue)."
          ;; For rt-let: by the time the body runs rsp is already aligned
          ;; (= param pad + rt-let pad both applied below), so arity here
          ;; still reflects the param count for the extern-call pad calc.
-         (nelisp-phase47-compiler--current-defun-arity (length param-regs)))
-    (if (eq nelisp-phase47-compiler--arch 'aarch64)
-        (let ((gp-arg-regs nelisp-phase47-compiler--aarch64-arg-regs)
+         (nelisp-aot-compiler--current-defun-arity (length param-regs)))
+    (if (eq nelisp-aot-compiler--arch 'aarch64)
+        (let ((gp-arg-regs nelisp-aot-compiler--aarch64-arg-regs)
               (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))
           (nelisp-asm-arm64-define-label buf name)
           ;; Save LR for forward compatibility, then establish x29.
@@ -15501,7 +15501,7 @@ return reg, untouched by epilogue)."
             ;; (let slots are numbered from param-count).  Each slot is
             ;; 16 bytes, so SP stays 16-byte aligned without rounding.
             (when (> rt-slot-count 0)
-              (nelisp-phase47-compiler--arm64-emit-sp-adjust
+              (nelisp-aot-compiler--arm64-emit-sp-adjust
                buf 'sub (* 16 rt-slot-count))))
            ((eq param-class 'f64)
             ;; Allocate `arity*16' bytes (= 16-byte slot per f64
@@ -15512,7 +15512,7 @@ return reg, untouched by epilogue)."
             (let* ((arity (length param-regs))
                    (frame-bytes (* 16 arity)))
               (when (> arity 0)
-                (nelisp-phase47-compiler--arm64-emit-sp-adjust
+                (nelisp-aot-compiler--arm64-emit-sp-adjust
                  buf 'sub frame-bytes))
               (dotimes (i arity)
                 (let ((slot-idx i)
@@ -15520,9 +15520,9 @@ return reg, untouched by epilogue)."
                   (nelisp-asm-arm64-stur-d-base-disp
                    buf dreg 'x29 (- (* 16 (1+ slot-idx))))))))
            (t
-            (signal 'nelisp-phase47-compiler-error
+            (signal 'nelisp-aot-compiler-error
                     (list :unknown-defun-param-class param-class))))
-          (nelisp-phase47-compiler--emit-value body buf)
+          (nelisp-aot-compiler--emit-value body buf)
           ;; sp = x29 : same SP-vs-XZR caveat — use `ADD sp, x29, #0'.
           (nelisp-asm-arm64-add-imm buf 'sp 'x29 0)
           (nelisp-asm-arm64-ldr-post-sp-16 buf 'x29)
@@ -15538,7 +15538,7 @@ return reg, untouched by epilogue)."
       ;; Prologue: push rbp; mov rbp, rsp; spill each param reg.
       (nelisp-asm-x86_64--push-inline buf 'rbp)
       (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rbp 'rsp)
-      (if (eq nelisp-phase47-compiler--abi 'win64)
+      (if (eq nelisp-aot-compiler--abi 'win64)
           (progn
             ;; ---- Win64 ABI prologue ----
             ;;
@@ -15646,7 +15646,7 @@ return reg, untouched by epilogue)."
                           buf 'rbp disp preg)))))
                  param-regs param-classes)))
              (t
-              (signal 'nelisp-phase47-compiler-error
+              (signal 'nelisp-aot-compiler-error
                       (list :unknown-defun-param-class param-class))))
             ;; Reserve runtime let-rt slots, then two private Win64
             ;; callee-save slots for RDI/RSI below every public frame slot.
@@ -15753,14 +15753,14 @@ return reg, untouched by epilogue)."
               (nelisp-asm-x86_64-movsd-mem-disp8-xmm
                buf 'rbp (- (* 8 (1+ slot-idx))) xreg))))
          (t
-          (signal 'nelisp-phase47-compiler-error
+          (signal 'nelisp-aot-compiler-error
                   (list :unknown-defun-param-class param-class)))))
       ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
-      (nelisp-phase47-compiler--emit-value body buf)
+      (nelisp-aot-compiler--emit-value body buf)
       ;; Epilogue: restore Win64 GP callee-saves, then deallocate param
       ;; spill via mov rsp, rbp; pop rbp; ret.
       ;; Wave 20: same hand-inline rationale as the prologue above.
-      (when (eq nelisp-phase47-compiler--abi 'win64)
+      (when (eq nelisp-aot-compiler--abi 'win64)
         (cl-loop for xreg in win64-xmm-callee-save-regs
                  for idx from 0
                  do
@@ -15779,7 +15779,7 @@ return reg, untouched by epilogue)."
 
 ;; ---- §97.6 orchestrator ----
 
-(defun nelisp-phase47-compiler--pass (ir defuns str-offsets rodata-vaddr
+(defun nelisp-aot-compiler--pass (ir defuns str-offsets rodata-vaddr
                                          &optional table-vaddrs)
   "Run a fresh emit pass returning the buffer.
 IR is the parsed program (= main body, with defuns inlined too
@@ -15792,16 +15792,16 @@ finalizes via `resolve-fixups' after measuring.
 Doc 49 Wave 11.1: TABLE-VADDRS is an alist `((NAME . VADDR) ...)'
 that resolves `static-imm32-table-lookup' name lookups to
 absolute virtual addresses.  Bound dynamically as
-`nelisp-phase47-compiler--table-vaddrs' so deeply-nested value-
+`nelisp-aot-compiler--table-vaddrs' so deeply-nested value-
 emit dispatchers can read it without plumbing it through every
 helper signature.  Pass nil when no static-imm32 tables exist.
 
 Doc 101 §101.B Wave 5: buffer is created with the current
-`nelisp-phase47-compiler--abi' so Win64 callers get a 'win64 buffer."
-  (let ((nelisp-phase47-compiler--table-vaddrs table-vaddrs)
-        (buf (nelisp-asm-x86_64-make-buffer nelisp-phase47-compiler--abi)))
+`nelisp-aot-compiler--abi' so Win64 callers get a 'win64 buffer."
+  (let ((nelisp-aot-compiler--table-vaddrs table-vaddrs)
+        (buf (nelisp-asm-x86_64-make-buffer nelisp-aot-compiler--abi)))
     ;; Main `_start' body first (= the program's entry point).
-    (nelisp-phase47-compiler--emit-stmt
+    (nelisp-aot-compiler--emit-stmt
      ir buf str-offsets rodata-vaddr)
     ;; Each defun appended after main; their labels become forward-
     ;; resolved by `resolve-fixups'.  The main body must end with a
@@ -15809,11 +15809,11 @@ Doc 101 §101.B Wave 5: buffer is created with the current
     ;; function's prologue; the parser doesn't enforce this beyond
     ;; the legacy v1 demand that the program eventually `exit'.
     (dolist (d defuns)
-      (nelisp-phase47-compiler--emit-defun d buf))
+      (nelisp-aot-compiler--emit-defun d buf))
     buf))
 
 ;;;###autoload
-(cl-defun nelisp-phase47-compile-sexp
+(cl-defun nelisp-aot-compile-sexp
     (sexp file-path &key (arch 'x86_64) (entry-sym "_start"))
   "Compile SEXP to a static-linked ELF64 executable at FILE-PATH.
 
@@ -15839,7 +15839,7 @@ FILE-PATH is the output binary path.  The file is written with mode
 #o755 (= +x bit set) by `nelisp-elf-write-binary'.
 
 ARCH defaults to `x86_64'.  v1 signals
-`nelisp-phase47-compiler-error' for any other ARCH (= aarch64
+`nelisp-aot-compiler-error' for any other ARCH (= aarch64
 deferred to Doc 97.b).
 
 ENTRY-SYM defaults to `_start' (= the kernel-recognised entry name).
@@ -15848,12 +15848,12 @@ Returns FILE-PATH on success.  Signals on parse error, free symbol
 reference, out-of-range integer, or any pass-1/pass-2 byte-length
 drift (= a Doc 92 emitter invariant violation)."
   (unless (eq arch 'x86_64)
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :unsupported-arch arch)))
-  (let* ((nelisp-phase47-compiler--label-counter 0)
-         (nelisp-phase47-compiler--arch arch)
-         (ir (nelisp-phase47-compiler--parse sexp nil))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
+  (let* ((nelisp-aot-compiler--label-counter 0)
+         (nelisp-aot-compiler--arch arch)
+         (ir (nelisp-aot-compiler--parse sexp nil))
+         (collected (nelisp-aot-compiler--collect-strings ir))
          (str-offsets (car collected))
          (str-rodata-bytes (cdr collected))
          ;; Doc 49 Wave 11.1: collect static-imm32 tables; their bytes
@@ -15861,12 +15861,12 @@ drift (= a Doc 92 emitter invariant violation)."
          ;; vaddrs are unchanged (= zero regression for non-table
          ;; programs).  Table offsets are relative to the table sub-
          ;; buffer base, not the overall .rodata buffer.
-         (table-collected (nelisp-phase47-compiler--collect-tables ir))
+         (table-collected (nelisp-aot-compiler--collect-tables ir))
          (table-offsets (car table-collected))
          (table-bytes (cdr table-collected))
          (str-rodata-len (length str-rodata-bytes))
          (rodata-bytes (concat str-rodata-bytes table-bytes))
-         (defuns (nelisp-phase47-compiler--collect-defuns ir))
+         (defuns (nelisp-aot-compiler--collect-defuns ir))
          ;; Pass 1 placeholder table-vaddrs: every table maps to 0.
          ;; Byte width of the emit sequence is independent of the
          ;; vaddr value (= mov-imm64 is fixed 10 bytes regardless),
@@ -15874,10 +15874,10 @@ drift (= a Doc 92 emitter invariant violation)."
          (pass1-table-vaddrs
           (mapcar (lambda (entry) (cons (car entry) 0)) table-offsets))
          ;; Pass 1: dry size measurement.
-         (pass1 (nelisp-phase47-compiler--pass
+         (pass1 (nelisp-aot-compiler--pass
                  ir defuns str-offsets 0 pass1-table-vaddrs))
          (text-size (nelisp-asm-x86_64-buffer-pos pass1))
-         (rodata-vaddr (+ nelisp-phase47-compiler--text-vaddr text-size))
+         (rodata-vaddr (+ nelisp-aot-compiler--text-vaddr text-size))
          ;; Resolve each table's absolute vaddr.  Tables live in
          ;; .rodata after the string sub-section, so each table's
          ;; vaddr is `rodata-vaddr + str-rodata-len + table-offset'.
@@ -15889,14 +15889,14 @@ drift (= a Doc 92 emitter invariant violation)."
                       (cons name (+ rodata-vaddr str-rodata-len offset))))
                   table-offsets))
          ;; Pass 2: real emit with the resolved address.
-         (pass2 (nelisp-phase47-compiler--pass
+         (pass2 (nelisp-aot-compiler--pass
                  ir defuns str-offsets rodata-vaddr table-vaddrs))
          (text-bytes (nelisp-asm-x86_64-resolve-fixups pass2)))
     ;; Pass-1's fixups remain unresolved (= we never inspect them);
     ;; only pass-2's resolved bytes ship to the ELF writer.
     (ignore pass1)
     (unless (= (length text-bytes) text-size)
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :pass-length-mismatch
                     :pass1 text-size
                     :pass2 (length text-bytes))))
@@ -15923,7 +15923,7 @@ drift (= a Doc 92 emitter invariant violation)."
 
 ;; ---- Doc 99 §99.B: ET_REL emit path (= elisp → .o for C linkage) ----
 ;;
-;; `nelisp-phase47-compile-to-object' is the sibling of `-compile-sexp'
+;; `nelisp-aot-compile-to-object' is the sibling of `-compile-sexp'
 ;; that emits a relocatable object instead of a static-linked executable.
 ;; The defun names become global STT_FUNC symbols callable from C via
 ;; the SysV AMD64 ABI (= return value in rax).  No `_start' is emitted.
@@ -15935,7 +15935,7 @@ drift (= a Doc 92 emitter invariant violation)."
 ;; pure-int return values to prove the cargo-build wiring end-to-end.
 
 ;;;###autoload
-(cl-defun nelisp-phase47-compile-to-link-unit
+(cl-defun nelisp-aot-compile-to-link-unit
     (sexp &key (arch 'x86_64) (format 'elf) auto-frame-roots)
   "Compile SEXP to the in-memory pre-ELF object unit consumed by writers.
 
@@ -15954,38 +15954,38 @@ FORMAT is consulted only for ABI-sensitive parse/emit setup (not for the
 returned plist shape), so callers that later write COFF still get Win64
 register budgeting while ELF/Mach-O keep SysV."
   (unless (memq arch '(x86_64 aarch64))
-    (signal 'nelisp-phase47-compiler-error
+    (signal 'nelisp-aot-compiler-error
             (list :unsupported-arch arch)))
-  (let* ((nelisp-phase47-compiler--label-counter 0)
-         (nelisp-phase47-compiler--arch arch)
+  (let* ((nelisp-aot-compiler--label-counter 0)
+         (nelisp-aot-compiler--arch arch)
          ;; Doc 101 §101.B Wave 5: COFF/Windows targets bind --abi to
          ;; 'win64 before parsing, so arity validation and emission both
          ;; see Win64 register budgets.
-         (nelisp-phase47-compiler--abi
+         (nelisp-aot-compiler--abi
           (if (and (eq arch 'x86_64) (eq format 'coff)) 'win64 'sysv))
-         (nelisp-phase47-compiler--allow-external-user-calls t)
+         (nelisp-aot-compiler--allow-external-user-calls t)
          (source (if auto-frame-roots
-                     (nelisp-phase47-compiler--select-auto-frame-roots
+                     (nelisp-aot-compiler--select-auto-frame-roots
                       sexp)
                    sexp))
          (extracted
-          (nelisp-phase47-compiler--extract-defmacros source))
+          (nelisp-aot-compiler--extract-defmacros source))
          (empty-source-p
           (equal (plist-get extracted :source)
                  '(seq)))
          (ir (unless empty-source-p
-               (nelisp-phase47-compiler--parse source nil)))
-         (collected (and ir (nelisp-phase47-compiler--collect-strings ir)))
+               (nelisp-aot-compiler--parse source nil)))
+         (collected (and ir (nelisp-aot-compiler--collect-strings ir)))
          (rodata-bytes (cdr collected))
          (object-metadata
           (and (not empty-source-p)
                (eq format 'elf)
-               (nelisp-phase47-compiler--object-module-init-metadata source)))
-         (defuns (and ir (nelisp-phase47-compiler--collect-defuns ir))))
+               (nelisp-aot-compiler--object-module-init-metadata source)))
+         (defuns (and ir (nelisp-aot-compiler--collect-defuns ir))))
     (when empty-source-p
       (dolist (form (plist-get extracted :module-forms))
-        (nelisp-phase47-compiler--eval-top-level-module-form form))
-      (cl-return-from nelisp-phase47-compile-to-link-unit
+        (nelisp-aot-compiler--eval-top-level-module-form form))
+      (cl-return-from nelisp-aot-compile-to-link-unit
         (list :text (unibyte-string)
               :rodata (unibyte-string)
               :symbols nil
@@ -15994,28 +15994,28 @@ register budgeting while ELF/Mach-O keep SysV."
               :defuns nil
               :extern-symbols nil)))
     (unless (zerop (length rodata-bytes))
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :object-mode-no-strings
                     :rodata-bytes (length rodata-bytes))))
     (unless defuns
-      (signal 'nelisp-phase47-compiler-error
+      (signal 'nelisp-aot-compiler-error
               (list :object-mode-needs-defuns source)))
     ;; Validate top-level shape: either a single defun, or a seq of
     ;; defun forms (the parser tolerates seq + main body, but for
     ;; object output we reject anything that would emit a `_start'.)
     ;; A33.3 — integer-tag dispatch (`pcase' arms → `cond' over
     ;; `--ir-kind-tag'); behaviour-preserving, `.o' bytes unchanged.
-    (let ((tag (nelisp-phase47-compiler--ir-kind-tag ir)))
+    (let ((tag (nelisp-aot-compiler--ir-kind-tag ir)))
       (cond
        ((= tag 21) nil)          ; defun
        ((= tag 54)               ; seq
-        (dolist (f (nelisp-phase47-compiler--ir-get ir :forms))
-          (unless (eq (nelisp-phase47-compiler--ir-kind f) 'defun)
-            (signal 'nelisp-phase47-compiler-error
+        (dolist (f (nelisp-aot-compiler--ir-get ir :forms))
+          (unless (eq (nelisp-aot-compiler--ir-kind f) 'defun)
+            (signal 'nelisp-aot-compiler-error
                     (list :object-mode-non-defun-form f)))))
        (t
-        (let ((other (nelisp-phase47-compiler--ir-kind ir)))
-          (signal 'nelisp-phase47-compiler-error
+        (let ((other (nelisp-aot-compiler--ir-kind ir)))
+          (signal 'nelisp-aot-compiler-error
                   (list :object-mode-bad-top-form other))))))
     ;; Emit pass: only the defuns, no main `_start' body.  We reuse
     ;; the existing emit-defun helper and call `resolve-fixups' so
@@ -16028,9 +16028,9 @@ register budgeting while ELF/Mach-O keep SysV."
     (let* ((buf (if (eq arch 'aarch64)
                     (nelisp-asm-arm64-make-buffer)
                   (nelisp-asm-x86_64-make-buffer
-                   nelisp-phase47-compiler--abi))))
+                   nelisp-aot-compiler--abi))))
       (dolist (d defuns)
-        (nelisp-phase47-compiler--emit-defun d buf))
+        (nelisp-aot-compiler--emit-defun d buf))
       (let* ((text-bytes (if (eq arch 'aarch64)
                              (nelisp-asm-arm64-resolve-fixups buf)
                            (nelisp-asm-x86_64-resolve-fixups buf)))
@@ -16077,7 +16077,7 @@ register budgeting while ELF/Mach-O keep SysV."
              ;; same label-counter value.
              (exported-names
               (mapcar (lambda (d)
-                        (let ((nm (nelisp-phase47-compiler--ir-get d :name)))
+                        (let ((nm (nelisp-aot-compiler--ir-get d :name)))
                           (if (stringp nm) nm (symbol-name nm))))
                       defuns))
              (label-positions
@@ -16106,7 +16106,7 @@ register budgeting while ELF/Mach-O keep SysV."
                         (ir-node
                          (cl-find-if
                           (lambda (d)
-                            (equal (let ((nm (nelisp-phase47-compiler--ir-get d :name)))
+                            (equal (let ((nm (nelisp-aot-compiler--ir-get d :name)))
                                      (if (stringp nm) nm (symbol-name nm)))
                                    name))
                           defuns)))
@@ -16114,19 +16114,19 @@ register budgeting while ELF/Mach-O keep SysV."
                          :offset (cdr cell)
                          :size (or (cdr (assoc name label-size-map)) 0)
                          :arity (length (or (and ir-node
-                                                 (nelisp-phase47-compiler--ir-get
+                                                 (nelisp-aot-compiler--ir-get
                                                   ir-node :params))
                                             nil))
                          :param-class (or (and ir-node
-                                               (nelisp-phase47-compiler--ir-get
+                                               (nelisp-aot-compiler--ir-get
                                                 ir-node :param-class))
                                           'gp)
                          :rt-slot-count (or (and ir-node
-                                                 (nelisp-phase47-compiler--ir-get
+                                                 (nelisp-aot-compiler--ir-get
                                                   ir-node :rt-slot-count))
                                             0)
                          :body-offset (and ir-node
-                                           (nelisp-phase47-compiler--object-defun-body-offset
+                                           (nelisp-aot-compiler--object-defun-body-offset
                                             ir-node)))))
                label-positions))
              (symbols
@@ -16173,7 +16173,7 @@ register budgeting while ELF/Mach-O keep SysV."
               :extern-symbols extern-names)))))
 
 ;;;###autoload
-(cl-defun nelisp-phase47-compile-to-object
+(cl-defun nelisp-aot-compile-to-object
     (sexp file-path &key (arch 'x86_64) (format 'elf) auto-frame-roots)
   "Compile SEXP (= one or more defuns) to an ET_REL .o at FILE-PATH.
 
@@ -16183,11 +16183,11 @@ becomes a GLOBAL STT_FUNC symbol named after the defun (= symbol-name
 of the elisp identifier, with underscores preserved for C linkage).
 
 ARCH defaults to `x86_64'.  v1 signals
-`nelisp-phase47-compiler-error' for any other ARCH outside
+`nelisp-aot-compiler-error' for any other ARCH outside
 `(x86_64 aarch64)'.
 
 Spike scope: defun bodies must not reference strings.  Signals
-`nelisp-phase47-compiler-error' with `:object-mode-no-strings' if
+`nelisp-aot-compiler-error' with `:object-mode-no-strings' if
 the IR contains a `write' node, because rodata vaddr baking does
 not survive linker relocation in v1.
 
@@ -16198,7 +16198,7 @@ eligible non-boundary defuns before parsing.
 Returns FILE-PATH on success.  Signals on parse error, free symbol
 reference, out-of-range integer, or any pass-1/pass-2 byte-length
 drift (= a Doc 92 emitter invariant violation)."
-  (let* ((unit (nelisp-phase47-compile-to-link-unit
+  (let* ((unit (nelisp-aot-compile-to-link-unit
                 sexp :arch arch :format format
                 :auto-frame-roots auto-frame-roots))
          (text-bytes (plist-get unit :text))
@@ -16220,10 +16220,10 @@ drift (= a Doc 92 emitter invariant violation)."
        ;; Reloc surface trimmed because Mach-O writer v1 does not emit
        ;; relocation entries.
        (unless (memq arch '(aarch64 x86_64))
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :mach-o-unsupported-arch arch)))
        (when relocs
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :mach-o-no-reloc-support relocs)))
        (require 'nelisp-mach-o-write)
        (nelisp-mach-o-write-binary
@@ -16235,7 +16235,7 @@ drift (= a Doc 92 emitter invariant violation)."
        ;; Doc 101 §101.A: Windows uses PE32+/COFF instead of ELF.
        ;; Only x86_64 is supported in v1; aarch64 COFF is deferred.
        (unless (eq arch 'x86_64)
-         (signal 'nelisp-phase47-compiler-error
+         (signal 'nelisp-aot-compiler-error
                  (list :coff-only-supports-x86_64 arch)))
        (require 'nelisp-pe-write)
        (nelisp-pe-write-binary
@@ -16245,10 +16245,10 @@ drift (= a Doc 92 emitter invariant violation)."
               :relocs relocs
               :machine arch)))
       (other
-       (signal 'nelisp-phase47-compiler-error
+       (signal 'nelisp-aot-compiler-error
                (list :unknown-output-format other))))
     file-path))
 
-(provide 'nelisp-phase47-compiler)
+(provide 'nelisp-aot-compiler)
 
-;;; nelisp-phase47-compiler.el ends here
+;;; nelisp-aot-compiler.el ends here

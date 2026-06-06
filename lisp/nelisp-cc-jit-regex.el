@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-regex.el --- Phase 47 body for nl_jit_string_match_p  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-regex.el --- AOT body for nl_jit_string_match_p  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 migration of `nl_jit_string_match_p' from
+;; AOT migration of `nl_jit_string_match_p' from
 ;; `build-tool/src/jit/regex.rs'.
 ;;
 ;; Trampoline signature: `(*const Sexp, *const Sexp, *mut Sexp) -> i64'
@@ -54,7 +54,7 @@
 ;;   `build-tool/src/jit/regex.rs': body deleted (empty file).
 ;;   `build-tool/src/jit/mod.rs': `mod regex;' removed.
 ;;
-;; Max-arity discipline (Phase 47 GP limit = 6):
+;; Max-arity discipline (AOT GP limit = 6):
 ;;   All defuns have ≤6 parameters.  No extern-call in any helper
 ;;   (only nl_jit_string_match_p is an extern target); the odd-arity
 ;;   stack-alignment footgun does not apply to internal calls.
@@ -370,10 +370,10 @@
            (nl_smp_str_len text-ptr)
            out)))))
 
-  "Phase 47 source for `nl_jit_string_match_p' (regex.rs migration).
+  "AOT source for `nl_jit_string_match_p' (regex.rs migration).
 
 Implements the literal / anchored fast-path table from
-`build-tool/src/jit/regex.rs' in pure Phase 47 elisp.  Pattern
+`build-tool/src/jit/regex.rs' in pure AOT elisp.  Pattern
 dispatch is by unique byte-length.  Seven hard-coded patterns map to
 specific checkers; all other patterns use a no-alloc inline fallback
 (byte-by-byte comparison with escape processing, avoids heap

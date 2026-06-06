@@ -8,12 +8,12 @@
 
 ;;; Commentary:
 
-;; Doc 116 §116.B — pure-elisp Phase 47 implementation of the
+;; Doc 116 §116.B — pure-elisp AOT implementation of the
 ;; recursive-descent s-expression parser in
 ;; `build-tool/src/reader/parser.rs' (~485 LOC Rust → ~500 LOC elisp).
 ;; Consumes the Token stream emitted by §116.A's
 ;; `nelisp_reader_lex_one' and produces final `Sexp' values via the
-;; existing Phase 47 grammar primitives (cons-make-with-clone /
+;; existing AOT grammar primitives (cons-make-with-clone /
 ;; sexp-write-symbol / sexp-write-str / sexp-int-make + the §122.E
 ;; raw-mem ops for String header decoding).
 ;;
@@ -1048,7 +1048,7 @@
       (nelisp_reader_p_parse_at
        str-ptr cursor-slot result-slot slot-pool depth)))
 
-  "Phase 47 source for Doc 116 §116.B pure-elisp Reader parser.
+  "AOT source for Doc 116 §116.B pure-elisp Reader parser.
 
 Implements the recursive-descent parser in `reader/parser.rs' as a
 collection of mutually-recursive tail-call helpers + one public

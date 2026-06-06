@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-function.el --- Phase 47 nl_sf_function swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-function.el --- AOT nl_sf_function swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_function' Rust body in
+;; AOT replacement for the `sf_function' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -25,7 +25,7 @@
 ;; `args' is the raw unevaluated argument list for `(function FORM)' —
 ;; a Sexp::Cons with car=FORM, cdr=Nil.
 ;;
-;; The Phase 47 body:
+;; The AOT body:
 ;;   1. Checks args is Cons (tag 7).
 ;;   2. Gets form-ptr = nl_cons_car_ptr(args).
 ;;   3. If form is not Cons: clone form into out (return it as-is).
@@ -112,7 +112,7 @@
            args env out s1 0)
         1)))
 
-  "Phase 47 source for `nl_sf_function' (eval/special_forms.rs sf_function → elisp).
+  "AOT source for `nl_sf_function' (eval/special_forms.rs sf_function → elisp).
 
 Five defuns (seq form).  CPS chain with extern-call at arg-0 each step.
 

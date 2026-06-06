@@ -41,11 +41,11 @@
 ;; `Env::set_value' before invoking `nelisp-cli-main'.  If unset (=
 ;; test path, REPL), `nelisp-cli-main' falls back to "unknown".
 ;;
-;; Wave A25.3 (Phase 47 meta-driver bootstrap).  When the standalone
+;; Wave A25.3 (AOT meta-driver bootstrap).  When the standalone
 ;; NeLisp binary is invoked with `--setenv NELISP_USE_META_DRIVER=1' (or
 ;; equivalent OS env when host Emacs is the runtime), the batch dispatch
 ;; short-circuits the legacy `compile-elisp-objects-emit-range' elisp
-;; iteration chain and invokes the Phase 47-friendly static-manifest
+;; iteration chain and invokes the AOT-friendly static-manifest
 ;; walker from `scripts/compile-elisp-objects-meta.el' through the new
 ;; `nelisp--cli-meta-driver-main' entry point.  Output `.o' files share
 ;; the production filenames so a `cmp' against the host-Emacs reference
@@ -311,18 +311,18 @@ This split (inline stub first, proper load after -L) means
               nil)))))
 
 ;; ---------------------------------------------------------------------------
-;; Wave A25.3 — Phase 47 meta-driver bootstrap (env-var dispatch).
+;; Wave A25.3 — AOT meta-driver bootstrap (env-var dispatch).
 ;; ---------------------------------------------------------------------------
 ;;
 ;; When the standalone NeLisp binary is invoked with `NELISP_USE_META_DRIVER=1'
 ;; in its environment, the batch dispatcher short-circuits the legacy elisp
 ;; iteration chain (= `compile-elisp-objects-emit-range' walking the manifest
 ;; with `dolist' + `plist-get' + `(require feature)') and instead drives the
-;; Phase 47-friendly static-manifest walker from `scripts/compile-elisp-
+;; AOT-friendly static-manifest walker from `scripts/compile-elisp-
 ;; objects-meta.el'.
 ;;
 ;; The host-Emacs and standalone NeLisp paths share the same `.o' emit kernel
-;; (`nelisp-phase47-compile-to-object'), so a successful standalone-mode run
+;; (`nelisp-aot-compile-to-object'), so a successful standalone-mode run
 ;; produces byte-identical output to the host-Emacs reference.  Wave A25.2's
 ;; `nelisp_meta_should_rebuild' kernel is reachable from the meta-driver via
 ;; the existing `compile-elisp-objects-meta--should-rebuild' host-shim today;
@@ -334,9 +334,9 @@ This split (inline stub first, proper load after -L) means
 ;; is unchanged; the new env-var branch lives entirely in elisp).
 
 (defun nelisp--cli-meta-driver-load-deps ()
-  "Pre-load the Phase 47 meta-driver dependency chain.
+  "Pre-load the AOT meta-driver dependency chain.
 
-Standalone NeLisp's `require' resolves `(require 'nelisp-phase47-compiler)'
+Standalone NeLisp's `require' resolves `(require 'nelisp-aot-compiler)'
 through the elisp `load' shim defined in `lisp/nelisp-stdlib-misc.el'.
 That shim sets `default-directory' to the loaded file's parent dir, so
 nested `(require ...)' calls executed during the load body resolve their
@@ -346,7 +346,7 @@ the inner `locate-library' walks `default-directory' first and only then
 the `load-path' list.  We sidestep that by hoisting the dep chain to
 top-level requires before the meta-driver's own load runs.
 
-Order matches `nelisp-phase47-compiler.el's own require chain (lines 92-96).
+Order matches `nelisp-aot-compiler.el's own require chain (lines 92-96).
 Returns t on full success, signals on the first missing feature.
 
 Also installs a `locate-file' polyfill when the standalone runtime is
@@ -359,7 +359,7 @@ polyfill is added through `defalias' only if `locate-file' is unbound
   (require 'nelisp-asm-x86_64)
   (require 'nelisp-elf-write)
   (require 'nelisp-sexp-layout)
-  (require 'nelisp-phase47-compiler)
+  (require 'nelisp-aot-compiler)
   (require 'nelisp-cc-meta-driver)
   (unless (fboundp 'locate-file)
     (defalias 'locate-file
@@ -415,15 +415,15 @@ on-disk file."
      (t (expand-file-name hit)))))
 
 (defun nelisp--cli-meta-driver-main ()
-  "Wave A25.3 — Phase 47 meta-driver bootstrap entry point.
+  "Wave A25.3 — AOT meta-driver bootstrap entry point.
 
 Drives the standalone-NeLisp branch that bypasses the legacy elisp
 manifest walker in `compile-elisp-objects-emit-all' / `-emit-range' and
-instead invokes the Phase 47-friendly static-manifest walker from
+instead invokes the AOT-friendly static-manifest walker from
 `scripts/compile-elisp-objects-meta.el'.
 
 Steps:
-  1. Pre-load the phase47-compiler dep chain via
+  1. Pre-load the aot-compiler dep chain via
      `nelisp--cli-meta-driver-load-deps' (= works around standalone
      NeLisp's nested-require / default-directory interaction).
   2. Locate `compile-elisp-objects.el' on `load-path' (= the caller must
@@ -504,7 +504,7 @@ ARGS is a list of strings.  We walk it left-to-right:
 Wave A25.3 — when `NELISP_USE_META_DRIVER=1' is set in the environment,
 the dispatcher walks ARGS as usual up through `-L' / `--setenv' setup,
 then short-circuits the remaining `-l' / `-f' chain by invoking
-`nelisp--cli-meta-driver-main' which drives the Phase 47-friendly
+`nelisp--cli-meta-driver-main' which drives the AOT-friendly
 static-manifest walker directly.  This bypasses the legacy elisp
 iteration chain (= `dolist' + `plist-get' + `(require feature)') while
 keeping the per-entry `.o' emit byte-identical to the host-Emacs
@@ -638,7 +638,7 @@ Returns an integer exit code (0 = success, 1 = error, 2 = bad args)."
            (format "unrecognized batch flag: %s" flag))
           (setq exit-code 2)))))
     ;; Wave A25.3 — after argv setup (= -L / --setenv etc.) completes
-    ;; cleanly, if `NELISP_USE_META_DRIVER' is set drive the Phase 47
+    ;; cleanly, if `NELISP_USE_META_DRIVER' is set drive the AOT
     ;; meta-driver directly.  This replaces whatever `-l' / `-f' chain
     ;; the caller passed (we already skipped them above) — the meta-
     ;; driver's iteration kernel is the unit of work for this batch run.

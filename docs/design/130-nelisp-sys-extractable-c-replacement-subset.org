@@ -23,7 +23,7 @@
 
 =nelisp-sys= should start inside this repository as
 =packages/nelisp-sys/=, not as a separate repository. The package uses the
-existing Phase 47 compiler, assemblers, object writers, Sexp ABI tests, and
+existing AOT compiler, assemblers, object writers, Sexp ABI tests, and
 test harness while the design is still moving.
 
 However, it must be written as an extractable subproject from day one:
@@ -43,7 +43,7 @@ without requiring callers to know NeLisp's internal compiler modules.
 Starting in this repository is the lowest-risk path because the first
 implementation needs tight iteration against:
 
-- =lisp/nelisp-phase47-compiler.el=
+- =lisp/nelisp-aot-compiler.el=
 - =lisp/nelisp-sexp-layout.el=
 - =lisp/nelisp-asm-x86_64.el=
 - =lisp/nelisp-asm-arm64.el=
@@ -131,7 +131,7 @@ When the package is extracted, this adapter becomes either:
 All public symbols use the =nelisp-sys-= prefix. Internal symbols use
 =nelisp-sys--=.
 
-Do not expose =nelisp-cc-=, =nelisp-phase47-=, or =nelisp-asm-= details in the
+Do not expose =nelisp-cc-=, =nelisp-aot-=, or =nelisp-asm-= details in the
 package API. Those are backend implementation details.
 
 ** Dependencies
@@ -144,7 +144,7 @@ Allowed direct dependencies outside the package:
 
 Forbidden outside the adapter:
 
-- direct calls to Phase 47 lowering internals;
+- direct calls to AOT lowering internals;
 - direct construction of backend-specific instruction streams;
 - direct references to private Sexp layout constants;
 - direct calls to package-external CLI scripts.
@@ -557,8 +557,8 @@ split.
   package namespace?
 - Should type checking be strict from the first stage, or should the first MVP
   infer only integer widths?
-- Is the initial backend a direct Phase 47 lowering path, or a separate
-  typed IR that Phase 47 consumes?
+- Is the initial backend a direct AOT lowering path, or a separate
+  typed IR that AOT consumes?
 - Should freestanding mode be designed before or after C ABI object export?
 - How much Rust/Zig/C bootstrap code is acceptable for the eventual
   standalone toolchain?

@@ -277,24 +277,24 @@ Emacs を要求しない」状態に一歩近付く。
 - T8 と T7 の 200x 差 (0.6ms vs 142ms) は =while= body が既に深い call
   stack 内で動くため。表面的 quick win ではない。
 - per-form コストは eval 経由ディスパッチ 10 段の累積:
-  : Phase 47 progn body
+  : AOT progn body
   :   → extern-call nelisp_eval_call (FFI)
   :     → Rust eval()
-  :       → eval_inner_call (Phase 47 native, tag dispatch)
+  :       → eval_inner_call (AOT native, tag dispatch)
   :         → nl_eval_inner_cons (Rust extern)
   :           → apply_special / funcall + delegate gate
   :             → elisp nelisp--apply-fn (cond + predicates)
   :               → nelisp--apply-lambda (elisp)
   :                 → lambda body eval (再帰)
-- =nelisp-phase47-compiler.el= は 5463 行 / 103 defun + 多数 defconst +
+- =nelisp-aot-compiler.el= は 5463 行 / 103 defun + 多数 defconst +
   各 defun に 50-200 body form。total form 数 = 数千 〜 数万。140ms ×
   10000 = ~30 分 (実測タイムアウト推定と一致)。
 
 ** 短期 quick win 候補の検証結果 (すべて却下)
 
-*** Option A: nelisp-phase47-compiler.el 自身を manifest 経由 .o 化
+*** Option A: nelisp-aot-compiler.el 自身を manifest 経由 .o 化
 
-却下。Phase 47 grammar は =seq= / =let= (compile-time const のみ) /
+却下。AOT grammar は =seq= / =let= (compile-time const のみ) /
 =defun= / =if= / =while= / =cond= / 比較 / =+/-/*= / =and= / =or= の
 最小集合。compiler 本体は =cl-lib= / =pcase= / =seq.el= /
 =make-hash-table= / =cl-defstruct= / =cl-loop= / =signal= を計 163 箇所
@@ -314,7 +314,7 @@ nil)= で turn off して T7 再実行 → 142s で変化なし。delegate は
 
 ** 長期解 (Option F)
 
-*** Phase 47 grammar 拡張
+*** AOT grammar 拡張
 
 compiler の subset (= seq + defun + cond + while + integer + symbol +
 比較 + arith) で書ける ~hot fn~ だけ self-host し、richer な部分
@@ -350,7 +350,7 @@ compiler の subset (= seq + defun + cond + while + integer + symbol +
 
 ** R6a 配線 (SHIPPED 2026-05-22)
 
-未配線だった Phase 47 native reader (= Doc 116 §116.A =nelisp_reader_lex_one=
+未配線だった AOT native reader (= Doc 116 §116.A =nelisp_reader_lex_one=
 + §116.B =nelisp_reader_parse_one=) を runtime =load= 経路に wire:
 
 - =build-tool/src/eval/mod.rs= の =builtin_dispatch!= に 1 entry 追加
@@ -375,7 +375,7 @@ compiler の subset (= seq + defun + cond + while + integer + symbol +
 | cargo test       | 10/10   | 10/10   | -       |
 | Reader ERT       | 67/75   | 67/75   | (8 pre-existing failures unchanged) |
 
-Phase 47 native reader は元々 binary に baked (= =crate::reader::read_all=
+AOT native reader は元々 binary に baked (= =crate::reader::read_all=
 が boot 時に既使用)、runtime に dispatch entry 1 行が抜けていただけ。
 
 ** 残存 BLOCKER (Wave 7 完全 unblock のために必要な次の作業)
@@ -391,13 +391,13 @@ reader (R6a) に続いて cl-lib BLOCKER を着地:
     plain =defun= と意味的に等価)
   - =(provide 'cl-lib)= で =(require 'cl-lib)= を featurep 経由で
     解決
-- =lisp/nelisp-phase47-compiler.el= で =cl-incf= / =cl-every= を inline
+- =lisp/nelisp-aot-compiler.el= で =cl-incf= / =cl-every= を inline
   書き換え (= 上記 stub 経由でも動くが、依存を減らす方向のクリーンアップ)
 
 実測:
 - =(require 'cl-lib)= → t (cl-lib feature 解決)
 - =(load "lisp/nelisp-asm-arm64.el")= → t (defsubst も解決)
-- =(load "lisp/nelisp-phase47-compiler.el")= → 次の missing feature
+- =(load "lisp/nelisp-aot-compiler.el")= → 次の missing feature
   (=nelisp-sexp-layout=) で fail
 
 *** backquote macro SHIPPED (R6c, 2026-05-22)
@@ -429,7 +429,7 @@ R6c に続いて Gate 2 (=wrong-number-of-arguments lambda 3=) を着地
   =(defalias 'cl-mapcar 'mapcar)= の手抜き stub。NeLisp の
   =mapc= / =mapcar= は 2-arg only、=cl-mapcar= が (FN SEQ1 SEQ2 ...)
   variadic を期待する箇所
-  (=lisp/nelisp-phase47-compiler.el:1767= 2-seq parallel walk) で
+  (=lisp/nelisp-aot-compiler.el:1767= 2-seq parallel walk) で
   lambda 引数不一致で死んでいた
 - =lisp/nelisp-cl-macros.el= line 503-504 を実 variadic 実装に差替
   (+40/-2 LOC、Rust 0 LOC)
@@ -456,7 +456,7 @@ scope 外):
   (n) (= n 0)))= を =nelisp-cl-macros.el= 末尾に追加。
 - **Gate-segv**: RESOLVED R6g SHIPPED 2026-05-22 (commit =56a7c575=
   main、+43/-11 LOC、Rust 0 LOC、codex 経由 trivial variant)。
-  Record 専用 sibling op =sexp-payload-ptr-record= を Phase 47
+  Record 専用 sibling op =sexp-payload-ptr-record= を AOT
   grammar に追加 (parser + dispatch + emit、3 箇所)。既存
   =sexp-payload-ptr= の Cons-only 意味論は維持 (= list walk 用
   caller ~20 ファイルに回帰なし)。
@@ -475,13 +475,13 @@ scope 外):
 
 *** 次 gate (R6g 後): Wrong type argument — R6h 試行で regression
 
-R6g 後の =compile-elisp-objects-emit-all= 実行で =nelisp-phase47-
+R6g 後の =compile-elisp-objects-emit-all= 実行で =nelisp-aot-
 compile-to-object= 呼出が =Wrong type argument= で死ぬ。subagent
 (=wave-7-r6h-wta-trace=) trace で root cause 特定:
 
 - 真因: =lisp/nelisp-jit-strategy.el:344-388= の =nelisp--record-{type,
   length,ref,set}= helper が =(nl-jit-call-out-1 "nl_jit_record_type" ...)=
-  を呼ぶが、Phase 47 .o emit は =nelisp_jit_record_*= 命名 (Doc 120 §120.B
+  を呼ぶが、AOT .o emit は =nelisp_jit_record_*= 命名 (Doc 120 §120.B
   + =scripts/compile-elisp-objects.el:458-472=)、=dlsym= miss で
   =EvalError::internal= → inner =(error ...)= 経由で再 signal
   → 外側 =condition-case= を escape (secondary bug:
@@ -497,16 +497,16 @@ compile-to-object= 呼出が =Wrong type argument= で死ぬ。subagent
   equal nil)=)、=(puthash "foo" 1 h)= → ok
 - だが =(require 'nelisp-asm-arm64)= が 非決定的に hang (form 28-59
   のどこか、re-run で位置変化、CPU 99% 19+min stuck)
-- 仮説: Phase-47-emitted =nelisp_jit_record_*= の semantics が
+- 仮説: AOT-emitted =nelisp_jit_record_*= の semantics が
   Rust extern =nl_jit_record_*= と微妙に違う、もしくは loader 経路で
   recursion / table 競合あり
 - subagent option (b) (~80 LOC alias-dispatch arms) もしくは別 path が
   正解候補、ただし regression の原因特定が先
 
 **R6k トレース結果 (subagent =a9a8d383ca101c117=、2026-05-23 00:11 完了)** —
-**R6h〜R6j の「Phase 47 emit bug」の前提を完全に覆す**:
+**R6h〜R6j の「AOT emit bug」の前提を完全に覆す**:
 
-- **trampoline は correct**: =lisp/nelisp-phase47-compiler.el:3335-3399= の
+- **trampoline は correct**: =lisp/nelisp-aot-compiler.el:3335-3399= の
   =record-slot-set= rsp-alignment dance (=mov r10, rsp; and rsp, -16;
   push r10; sub rsp, 8; call; add rsp, 8; pop r10; mov rsp, r10=) は
   balanced + correct。disassembly =nelisp_jit_record_set.o= offset
@@ -529,7 +529,7 @@ compile-to-object= 呼出が =Wrong type argument= で死ぬ。subagent
     hang (reject)
   - (c) Rust thin wrappers (=#[no_mangle] nl_jit_record_*=、~30 LOC) →
     "Rust LOC never increase" hard rule 違反 (reject)
-  - (d) Phase-47 emit deep fix → ~days scope、session 内不可 (defer)
+  - (d) AOT emit deep fix → ~days scope、session 内不可 (defer)
 - **Verification 確認**:
   - rename 後単体 probe =(prin1-to-string (make-hash-table))= ok
   - =(require 'nelisp-asm-arm64)= で form 19 (defun) hang 再現
@@ -571,7 +571,7 @@ wave でブレイクダウン)。
 ** Deferral 判断 (更新)
 
 - Wave 7 reader BLOCKER: **RESOLVED** (R6a SHIPPED 2026-05-22, 1 line Rust
-  + 1 line elisp、Phase 47 swap = elisp reader path elided in production
+  + 1 line elisp、AOT swap = elisp reader path elided in production
   load, retained as legacy fallback for non-native Emacs test runs).
 - Wave 7 cl-lib BLOCKER: **RESOLVED** (R6b SHIPPED 2026-05-22).
 - Wave 7 backquote BLOCKER: **RESOLVED** (R6c SHIPPED 2026-05-22、
@@ -586,7 +586,7 @@ wave でブレイクダウン)。
   variant、+43/-11 LOC、commit =56a7c575=)。
 - Wave 7 次 gate (Wrong type argument): **root cause 特定済、fix 未着手**
   — subagent trace で =nl_jit_record_*= naming mismatch (=
-  caller=Rust extern 名、actual=Phase-47 =nelisp_jit_record_*=) 判明。
+  caller=Rust extern 名、actual=AOT =nelisp_jit_record_*=) 判明。
   trivial 6-string rename は uncommitted で試行→ arm64 load 中
   non-deterministic hang regression、reverted。option (b) alias-arms
   または別 path を次 session 検討。
@@ -599,7 +599,7 @@ wave でブレイクダウン)。
 - =c7302830= — Wave 7 partial SHIPPED (BLOCKER 注記つき commit)
 - =449d2b96= / =9c97fd47= — W7.6a/b emit 最適化
 - =1fa1f579= — §7 BLOCKER deferred (誤診の「真因」分析含む)
-- =637f08ff= — R6a: Phase 47 native reader wired, reader BLOCKER RESOLVED
+- =637f08ff= — R6a: AOT native reader wired, reader BLOCKER RESOLVED
 - =9615c134= — R6b: cl-lib subset + defsubst stubs, cl-lib BLOCKER RESOLVED
 - =239f18ed= — R6c: backquote macro (+85 LOC、Rust 0 LOC)、
   backquote BLOCKER RESOLVED → 次 gate = cl-mapcar variadic
@@ -630,6 +630,6 @@ wave でブレイクダウン)。
 - (this commit) — R6h regression triage、次 session の punch list 記録
 - =scripts/compile-elisp-objects.el= — 既存 build orchestrator
 - =lisp/nelisp-cc-reader-lexer.el= / =-parser.el= — Doc 116 §116.A/B
-  Phase 47 native reader (= 既 built、R6a で runtime に配線)
+  AOT native reader (= 既 built、R6a で runtime に配線)
 - =build-tool/build.rs= の =link_elisp_cc_spike()= — =emacs --batch=
   起動箇所

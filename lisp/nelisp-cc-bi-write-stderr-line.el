@@ -11,7 +11,7 @@
 ;; Doc 117 §117.B / Doc 122 §122.H — moves the byte-write algorithmic
 ;; body of the `(nelisp--write-stderr-line STR)' builtin from Rust
 ;; (`build-tool/src/eval/builtins.rs::bi_write_stderr_line') into a
-;; Phase 47 elisp object.  The Rust shim keeps:
+;; AOT elisp object.  The Rust shim keeps:
 ;;
 ;;   * arity validation                      (1 arg)
 ;;   * `WrongType' dispatch                  (`Sexp::Str' / `Sexp::MutStr')
@@ -27,13 +27,13 @@
 ;;
 ;; This is the first I/O syscall sweep that consumes the Doc 122 §122.H
 ;; `str-bytes-ptr' grammar op (= outward `Sexp::Str' → `*const u8'
-;; dispatch via the Rust `nl_str_bytes_ptr' extern).  Phase 47's
+;; dispatch via the Rust `nl_str_bytes_ptr' extern).  AOT's
 ;; pre-§122.H `str-bytes' op is layout-coupled and only worked on the
 ;; inline-String `Sexp::Str' / `Sexp::Symbol' variants; the `str-bytes-
 ;; ptr' op covers `Sexp::MutStr' too which makes it usable for the full
 ;; Tier B sweep without a per-variant tag-check upstream.
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   §122.H  `str-bytes-ptr'  — `*const u8' data pointer of a string-y
 ;;                              Sexp (via Rust `nl_str_bytes_ptr' extern).
 ;;   §101.C  `str-len'        — `String::len' byte count (= `mov rax,
@@ -69,10 +69,10 @@
      ;; body silently ignored errors via `let _ = ...' so the new
      ;; dispatch keeps the same observable error-suppression.
      (extern-call write 2 (str-bytes-ptr str-ptr) (str-len str-ptr)))
-  "Phase 47 source for the Doc 117 §117.B / Doc 122 §122.H
+  "AOT source for the Doc 117 §117.B / Doc 122 §122.H
 `(nelisp--write-stderr-line STR)' algorithmic body swap.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills
+Single-arg function — AOT's SysV AMD64 prologue spills
 `str-ptr' (= `*const Sexp' to a `Sexp::Str' / `Sexp::Symbol' /
 `Sexp::MutStr') into the rbp-relative slot 0.  The body is one
 composed value form: a 3-arg `extern-call' to libc `write' with
@@ -91,7 +91,7 @@ The trailing newline + best-effort flush stay in the Rust shim so
 the elisp body is exactly the algorithmic core (= the bytes the
 user payload contributes).  This split mirrors `bi_set_quit_flag'
 (Doc 117 §117.B): elisp owns the kernel operation, Rust owns the
-caller-side bookkeeping that cannot be expressed inside Phase 47's
+caller-side bookkeeping that cannot be expressed inside AOT's
 current I/O grammar surface.
 
 No allocation, no Rust helpers beyond `nl_str_bytes_ptr' (Doc 122

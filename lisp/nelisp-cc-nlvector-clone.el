@@ -61,7 +61,7 @@
       (nelisp_nlvector_clone_prog2
        (atomic-fetch-add (+ box-ptr 24) 1)
        box-ptr)))
-  "Phase 47 source for the Doc 124 §124.B NlVector Clone kernel.
+  "AOT source for the Doc 124 §124.B NlVector Clone kernel.
 
 Mechanical port of §124.A modulo the REFCOUNT_OFFSET literal (= 24
 for `NlVector', which puts an `AtomicUsize' immediately after the

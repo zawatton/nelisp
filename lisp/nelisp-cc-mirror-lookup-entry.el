@@ -8,12 +8,12 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group A helper #1 — `mirror_lookup_entry'.  Phase 47
+;; Doc 111 §111.E Group A helper #1 — `mirror_lookup_entry'.  AOT
 ;; reimplementation of the env-mirror hash-bucket walk that currently
 ;; lives in Rust at `build-tool/src/eval/env_mirror.rs::mirror_lookup_entry'.
 ;; This object replaces the inner walk; the Rust impl is kept alive
 ;; alongside until all Group A/B helpers ship (= the extern wrapper
-;; that dispatches into the Phase 47 `.o' replaces the Rust function
+;; that dispatches into the AOT `.o' replaces the Rust function
 ;; body in a follow-up commit after the full Group lands).
 ;;
 ;; Layout (= `lisp/nelisp-env.el' + `nelisp-stdlib-fast-hash.el'):
@@ -105,7 +105,7 @@
               (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 0))
              1))))
        sym-ptr)))
-  "Phase 47 source for Doc 111 §111.E #1 `mirror_lookup_entry'.
+  "AOT source for Doc 111 §111.E #1 `mirror_lookup_entry'.
 
 Composes record-slot-ref-ptr (§111.B) + vector-ref-ptr (§111.C) +
 cons-walk primitives (§101.B) + str-eq (§101.C) + extern-call into

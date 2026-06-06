@@ -57,7 +57,7 @@
 ;; TRAMPOLINE_OK = 0, TRAMPOLINE_ERR = 1 (confirmed from lib.rs jit module).
 ;;
 ;; Helper-chain param threading:
-;;   Phase 47 / nelisp-sys `let' is compile-time constant folding only.
+;;   AOT / nelisp-sys `let' is compile-time constant folding only.
 ;;   Runtime pointer values (alloc results, peek results) are threaded as
 ;;   extra function parameters -- the same pattern used in nl_alloc_mut_str,
 ;;   nl_mut_str_finalize, nl_alloc_str, nl_jit_str_codepoint_at_walk, etc.

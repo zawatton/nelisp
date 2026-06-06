@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.D — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.D — AOT-compiled replacement for the Rust
 ;; `nl_jit_access_length' trampoline in `build-tool/src/jit/access.rs'.
 ;; Same `(*const Sexp, *mut Sexp) -> i64' contract:
 ;;
@@ -36,7 +36,7 @@
          (if (= (sexp-tag arg) 5)
              (and (sexp-int-make out (str-char-count arg)) 0)
            1))))
-  "Phase 47 source for the §120.D `nl_jit_access_length' swap.
+  "AOT source for the §120.D `nl_jit_access_length' swap.
 
 Three guard arms: (1) Nil → write Int(0) inline, (2) Vector →
 inline `vector-len' + `sexp-int-make' compose, (3) Str →

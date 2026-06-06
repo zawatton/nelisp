@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 92 §92.b — freestanding pure-elisp AArch64 (arm64) macro
-;; assembler for the Phase 47 AOT compile chain, sibling of §92.a's
+;; assembler for the AOT AOT compile chain, sibling of §92.a's
 ;; `lisp/nelisp-asm-x86_64.el'.
 ;;
 ;; This is intentionally separate from `src/nelisp-cc-arm64.el' (=
@@ -612,7 +612,7 @@ emitted byte count is the smallest multiple of 4 >= NBYTES
 
 ;; ---- Doc 100 §100.D Stage 2 reg-reg / cmp / cset / bitwise / shift ----
 ;;
-;; The 10 helpers below cover the AArch64 instructions Phase 47 needs
+;; The 10 helpers below cover the AArch64 instructions AOT needs
 ;; to emit a defun whose body is one of the 12 elisp `nelisp_jit_*'
 ;; trampoline sources (= add2 / sub2 / mul2 / 5 signed comparisons /
 ;; 3 bitwise / `ash').  Encoding strategy mirrors the existing

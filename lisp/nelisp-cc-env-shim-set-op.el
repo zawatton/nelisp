@@ -8,12 +8,12 @@
 
 ;;; Commentary:
 
-;; Wave c+ — Phase 47 reimplementation of the
+;; Wave c+ — AOT reimplementation of the
 ;; `nelisp--env-globals-op' set-value / set-function / set-constant
 ;; dispatch arms.  Replaces 3 Rust match arms in
 ;; `build-tool/src/eval/env_shim.rs::bi_globals_op' with a thin
 ;; elisp .o that reads the op symbol, calls the appropriate
-;; `_or_insert' Phase-47 helper, then clones the stored value back
+;; `_or_insert' AOT helper, then clones the stored value back
 ;; into the caller-supplied result slot.
 ;;
 ;; Handled OPs:
@@ -87,7 +87,7 @@
     ;; nelisp_env_shim_set_op
     ;;
     ;; Dispatch on op-ptr for set-value / set-function / set-constant.
-    ;; Each arm calls the matching `_or_insert' Phase-47 helper then
+    ;; Each arm calls the matching `_or_insert' AOT helper then
     ;; delegates to `nelisp_env_shim_setop_finish' with the correct
     ;; scratch slot index.
     ;;
@@ -126,7 +126,7 @@
             ;; Unknown OP — Rust pre-validates; should not reach here.
             -3))))
     )
-  "Phase 47 source for Wave c+ `nelisp_env_shim_set_op'.
+  "AOT source for Wave c+ `nelisp_env_shim_set_op'.
 
 Two-defun CPS composition:
   `nelisp_env_shim_set_op' (6 args, even) — op dispatch.

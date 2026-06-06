@@ -19,7 +19,7 @@
 ;;
 ;; All three bodies are deleted; `install_empty_mirror_rust_direct'
 ;; becomes a 5-LOC thin wrapper that sets `unbound_marker' in Rust and
-;; then calls this Phase-47-compiled object.
+;; then calls this AOT-compiled object.
 ;;
 ;; Algorithm implemented by `nelisp_env_install_empty_globals_frames':
 ;;
@@ -147,11 +147,11 @@
       (record-slot-set frames-out
                        1
                        (vector-ref-ptr scratch-ptr 5))))
-  "Phase 47 source for Wave h `nelisp_env_install_empty_globals_frames'.
+  "AOT source for Wave h `nelisp_env_install_empty_globals_frames'.
 
 Builds a fresh empty globals mirror (nelisp-env Record with a 1024-bucket
 fast-hash-table) and empty frame stack (nelisp-lexframe-stack Record with
-8-element backing vector) in a single Phase-47-compiled call.
+8-element backing vector) in a single AOT-compiled call.
 
 Replaces three deleted Rust helpers:
   - `Env::make_fast_hash_table' (6 LOC)
@@ -160,7 +160,7 @@ Replaces three deleted Rust helpers:
 
 Net Rust delta: -22 LOC deleted + 5 LOC thin-wrapper additions = -17 LOC.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `record-make'      — §115.3 fresh NlRecord allocator (3 calls).
   `vector-make'      — §115.1 fresh NlVector allocator (2 calls).
   `record-slot-set'  — §111.B refcount-safe slot install (6 calls).

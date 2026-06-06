@@ -82,7 +82,7 @@ for ((i=0; i<JOBS; i++)); do SHARD_LOAD[i]=0; SHARD_FILES[i]=""; done
 # not make the reader tests stand out, so keep the 2-3 largest `test/' files on
 # dedicated shards first and let the size balancer place everything else.
 KNOWN_SLOW_FILES=(
-  test/nelisp-phase47-doc129-test.el
+  test/nelisp-aot-doc129-test.el
   test/nelisp-stdlib-os-test.el
   test/nelisp-cc-test.el
 )

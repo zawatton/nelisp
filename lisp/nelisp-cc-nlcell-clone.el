@@ -53,7 +53,7 @@
       (nelisp_nlcell_clone_prog2
        (atomic-fetch-add (+ box-ptr 32) 1)
        box-ptr)))
-  "Phase 47 source for the Doc 124 §124.C NlCell Clone kernel.
+  "AOT source for the Doc 124 §124.C NlCell Clone kernel.
 
 Mechanical port of §124.A modulo the REFCOUNT_OFFSET literal (= 32
 for `NlCell', which puts an `AtomicUsize' immediately after the

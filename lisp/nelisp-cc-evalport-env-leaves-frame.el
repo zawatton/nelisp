@@ -1,4 +1,4 @@
-;;; nelisp-cc-evalport-env-leaves-frame.el --- Phase 47 env-leaf frame-compose ctx-accessors  -*- lexical-binding: t; -*-
+;;; nelisp-cc-evalport-env-leaves-frame.el --- AOT env-leaf frame-compose ctx-accessors  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -135,7 +135,7 @@
         (seq (nl_frame_build_push_scratch push_scratch)
              (nelisp_frame_push frames_ptr push_scratch)
              (nl_push_captured_walk alist_ptr mirror_ptr frames_ptr unbound_ptr)))))
-  "Doc 135 Stage 135.C Phase 47 source for frame-compose env-leaf ctx-accessors.
+  "Doc 135 Stage 135.C AOT source for frame-compose env-leaf ctx-accessors.
 
 Multi-entry `(seq DEFUN ...)' manifest.
 

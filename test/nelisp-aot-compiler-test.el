@@ -1,4 +1,4 @@
-;;; nelisp-phase47-compiler-test.el --- ert + e2e for Doc 97 compiler  -*- lexical-binding: t; -*-
+;;; nelisp-aot-compiler-test.el --- ert + e2e for Doc 97 compiler  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; ert + end-to-end smoke for `nelisp-phase47-compile-sexp'.
+;; ert + end-to-end smoke for `nelisp-aot-compile-sexp'.
 ;;
 ;; Three concerns covered:
 ;;
@@ -26,11 +26,11 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-cc-jit-arith)
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
 ;; ---- §T.0 helpers ----
 
-(defun nelisp-phase47-compiler-test--linux-p ()
+(defun nelisp-aot-compiler-test--linux-p ()
   "Return non-nil when the host kernel can exec x86_64 ELF64 binaries."
   (and (eq system-type 'gnu/linux)
        (let ((arch (and (boundp 'system-configuration)
@@ -38,7 +38,7 @@
          (and (stringp arch)
               (string-match-p "x86_64\\|amd64" arch)))))
 
-(defun nelisp-phase47-compiler-test--run-binary (path)
+(defun nelisp-aot-compiler-test--run-binary (path)
   "Exec PATH, return a plist `(:exit N :stdout S :stderr E)'."
   (let ((stdout-buf (generate-new-buffer " *nl97-stdout*"))
         (stderr-file (make-temp-file "nl97-stderr"))
@@ -62,149 +62,149 @@
       (when (buffer-live-p stdout-buf) (kill-buffer stdout-buf))
       (when (file-exists-p stderr-file) (delete-file stderr-file)))))
 
-(defun nelisp-phase47-compiler-test--tmp-binary (suffix)
+(defun nelisp-aot-compiler-test--tmp-binary (suffix)
   "Return a fresh /tmp/nelisp-doc97-SUFFIX-NNNN path.
-The file is not created — `nelisp-phase47-compile-sexp' creates it.
+The file is not created — `nelisp-aot-compile-sexp' creates it.
 Caller is responsible for `delete-file' on cleanup."
   (make-temp-file (format "nelisp-doc97-%s-" suffix)))
 
 ;; ---- §T.1 parser unit tests ----
 
-(ert-deftest nelisp-phase47-compiler/parse-exit-literal ()
+(ert-deftest nelisp-aot-compiler/parse-exit-literal ()
   "Parse `(exit 0)' to an exit IR wrapping an imm value node."
-  (let ((ir (nelisp-phase47-compiler--parse '(exit 0))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'exit))
-    (let ((v (nelisp-phase47-compiler--ir-get ir :value)))
-      (should (eq (nelisp-phase47-compiler--ir-kind v) 'imm))
-      (should (= (nelisp-phase47-compiler--ir-get v :value) 0)))))
+  (let ((ir (nelisp-aot-compiler--parse '(exit 0))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'exit))
+    (let ((v (nelisp-aot-compiler--ir-get ir :value)))
+      (should (eq (nelisp-aot-compiler--ir-kind v) 'imm))
+      (should (= (nelisp-aot-compiler--ir-get v :value) 0)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-write-literal ()
+(ert-deftest nelisp-aot-compiler/parse-write-literal ()
   "Parse `(write \"hi\")' to a write IR node."
-  (let ((ir (nelisp-phase47-compiler--parse '(write "hi"))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'write))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :str) "hi"))))
+  (let ((ir (nelisp-aot-compiler--parse '(write "hi"))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'write))
+    (should (equal (nelisp-aot-compiler--ir-get ir :str) "hi"))))
 
-(ert-deftest nelisp-phase47-compiler/parse-seq ()
+(ert-deftest nelisp-aot-compiler/parse-seq ()
   "Parse a `seq' of two children into nested IR."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(seq (write "x") (exit 0)))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (should (= (length (nelisp-phase47-compiler--ir-get ir :forms)) 2))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (car (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (should (= (length (nelisp-aot-compiler--ir-get ir :forms)) 2))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (car (nelisp-aot-compiler--ir-get ir :forms)))
                 'write))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (cadr (nelisp-phase47-compiler--ir-get ir :forms)))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (cadr (nelisp-aot-compiler--ir-get ir :forms)))
                 'exit))))
 
-(ert-deftest nelisp-phase47-compiler/parse-let-arith-fold ()
+(ert-deftest nelisp-aot-compiler/parse-let-arith-fold ()
   "Parse `(let ((x (+ 3 4))) (exit x))' folds arith + lookup."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(let ((x (+ 3 4))) (exit x)))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'let))
-    (should (eq (nelisp-phase47-compiler--ir-get ir :var) 'x))
-    (should (= (nelisp-phase47-compiler--ir-get ir :value) 7))
-    (let* ((body (nelisp-phase47-compiler--ir-get ir :body))
-           (vnode (nelisp-phase47-compiler--ir-get body :value)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'exit))
-      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
-      (should (= (nelisp-phase47-compiler--ir-get vnode :value) 7)))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'let))
+    (should (eq (nelisp-aot-compiler--ir-get ir :var) 'x))
+    (should (= (nelisp-aot-compiler--ir-get ir :value) 7))
+    (let* ((body (nelisp-aot-compiler--ir-get ir :body))
+           (vnode (nelisp-aot-compiler--ir-get body :value)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'exit))
+      (should (eq (nelisp-aot-compiler--ir-kind vnode) 'imm))
+      (should (= (nelisp-aot-compiler--ir-get vnode :value) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-nested-let-arith ()
+(ert-deftest nelisp-aot-compiler/parse-nested-let-arith ()
   "Nested let + chained arithmetic resolves to a single integer."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(let ((a 2)) (let ((b (* a 5))) (exit (+ b 1)))))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'let))
-    (let* ((body (nelisp-phase47-compiler--ir-get ir :body))
-           (inner (nelisp-phase47-compiler--ir-get body :body))
-           (vnode (nelisp-phase47-compiler--ir-get inner :value)))
-      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
-      (should (= (nelisp-phase47-compiler--ir-get vnode :value) 11)))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'let))
+    (let* ((body (nelisp-aot-compiler--ir-get ir :body))
+           (inner (nelisp-aot-compiler--ir-get body :body))
+           (vnode (nelisp-aot-compiler--ir-get inner :value)))
+      (should (eq (nelisp-aot-compiler--ir-kind vnode) 'imm))
+      (should (= (nelisp-aot-compiler--ir-get vnode :value) 11)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-free-symbol-errors ()
-  "A free symbol reference signals `nelisp-phase47-compiler-error'."
+(ert-deftest nelisp-aot-compiler/parse-free-symbol-errors ()
+  "A free symbol reference signals `nelisp-aot-compiler-error'."
   (should-error
-   (nelisp-phase47-compiler--parse '(exit y))
-   :type 'nelisp-phase47-compiler-error))
+   (nelisp-aot-compiler--parse '(exit y))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-unknown-form-errors ()
+(ert-deftest nelisp-aot-compiler/parse-unknown-form-errors ()
   "An unrecognised form head signals an error."
   (should-error
-   (nelisp-phase47-compiler--parse '(exit (unknown-form 1)))
-   :type 'nelisp-phase47-compiler-error))
+   (nelisp-aot-compiler--parse '(exit (unknown-form 1)))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-status-out-of-range ()
+(ert-deftest nelisp-aot-compiler/parse-status-out-of-range ()
   "An exit status outside 0..255 signals."
   (should-error
-   (nelisp-phase47-compiler--parse '(exit 300))
-   :type 'nelisp-phase47-compiler-error))
+   (nelisp-aot-compiler--parse '(exit 300))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-doc129-when-macro ()
-  "Doc 129.1: host `when' macro expands to Phase 47 `if'."
-  (let* ((ir (nelisp-phase47-compiler--parse
+(ert-deftest nelisp-aot-compiler/parse-doc129-when-macro ()
+  "Doc 129.1: host `when' macro expands to AOT `if'."
+  (let* ((ir (nelisp-aot-compiler--parse
               '(exit (when (= 1 1) 7))))
-         (vnode (nelisp-phase47-compiler--ir-get ir :value)))
-    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'if))
-    (should (= (nelisp-phase47-compiler--ir-get
-                (nelisp-phase47-compiler--ir-get vnode :else) :value)
+         (vnode (nelisp-aot-compiler--ir-get ir :value)))
+    (should (eq (nelisp-aot-compiler--ir-kind vnode) 'if))
+    (should (= (nelisp-aot-compiler--ir-get
+                (nelisp-aot-compiler--ir-get vnode :else) :value)
                0))))
 
-(ert-deftest nelisp-phase47-compiler/parse-doc129-let*-desugar ()
-  "Doc 129.1: `let*' desugars to nested Phase 47 `let' forms."
-  (let* ((ir (nelisp-phase47-compiler--parse
+(ert-deftest nelisp-aot-compiler/parse-doc129-let*-desugar ()
+  "Doc 129.1: `let*' desugars to nested AOT `let' forms."
+  (let* ((ir (nelisp-aot-compiler--parse
               '(let* ((a 2) (b (+ a 5))) (exit b))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (exit-node (nelisp-phase47-compiler--ir-get body :body))
-         (exit-value (nelisp-phase47-compiler--ir-get exit-node :value)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'let))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let))
-    (should (= (nelisp-phase47-compiler--ir-get exit-value :value) 7))))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (exit-node (nelisp-aot-compiler--ir-get body :body))
+         (exit-value (nelisp-aot-compiler--ir-get exit-node :value)))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'let))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let))
+    (should (= (nelisp-aot-compiler--ir-get exit-value :value) 7))))
 
-(ert-deftest nelisp-phase47-compiler/parse-doc129-top-level-defmacro ()
+(ert-deftest nelisp-aot-compiler/parse-doc129-top-level-defmacro ()
   "Doc 129.1: top-level `defmacro' is compile-time-only."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq
                 (defmacro inc (x) (list '+ x 1))
                 (exit (inc 6)))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (exit-node (car forms))
-         (vnode (nelisp-phase47-compiler--ir-get exit-node :value)))
+         (vnode (nelisp-aot-compiler--ir-get exit-node :value)))
     (should (= (length forms) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get vnode :value) 7))))
+    (should (eq (nelisp-aot-compiler--ir-kind vnode) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get vnode :value) 7))))
 
 ;; ---- §T.2 emit / byte-length tests ----
 
-(ert-deftest nelisp-phase47-compiler/emit-exit-is-16-bytes ()
+(ert-deftest nelisp-aot-compiler/emit-exit-is-16-bytes ()
   "`(exit 0)' emits exactly 16 bytes of .text (= Doc 92 fixed length)."
-  (let* ((ir (nelisp-phase47-compiler--parse '(exit 0)))
-         (buf (nelisp-phase47-compiler--pass ir nil nil 0)))
+  (let* ((ir (nelisp-aot-compiler--parse '(exit 0)))
+         (buf (nelisp-aot-compiler--pass ir nil nil 0)))
     (should (= (nelisp-asm-x86_64-buffer-pos buf) 16))))
 
-(ert-deftest nelisp-phase47-compiler/emit-write-is-33-bytes ()
+(ert-deftest nelisp-aot-compiler/emit-write-is-33-bytes ()
   "`(write \"hi\")' emits exactly 33 bytes of .text."
-  (let* ((ir (nelisp-phase47-compiler--parse '(write "hi")))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
+  (let* ((ir (nelisp-aot-compiler--parse '(write "hi")))
+         (collected (nelisp-aot-compiler--collect-strings ir))
          (offsets (car collected))
-         (buf (nelisp-phase47-compiler--pass ir nil offsets #x401000)))
+         (buf (nelisp-aot-compiler--pass ir nil offsets #x401000)))
     (should (= (nelisp-asm-x86_64-buffer-pos buf) 33))))
 
-(ert-deftest nelisp-phase47-compiler/strings-dedup ()
+(ert-deftest nelisp-aot-compiler/strings-dedup ()
   "Two `(write \"x\")' forms share a single .rodata slot."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (write "x") (write "x") (exit 0))))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
+         (collected (nelisp-aot-compiler--collect-strings ir))
          (offsets (car collected))
          (rodata (cdr collected)))
     (should (= (length offsets) 1))
     (should (= (length rodata) 1))
     (should (equal (substring rodata 0 1) "x"))))
 
-(ert-deftest nelisp-phase47-compiler/strings-distinct ()
+(ert-deftest nelisp-aot-compiler/strings-distinct ()
   "Two distinct strings get distinct offsets summing to total length."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (write "ab") (write "cd") (exit 0))))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
+         (collected (nelisp-aot-compiler--collect-strings ir))
          (offsets (car collected))
          (rodata (cdr collected)))
     (should (= (length offsets) 2))
@@ -213,317 +213,317 @@ Caller is responsible for `delete-file' on cleanup."
     (should (= (plist-get (cdr (assoc "ab" offsets)) :offset) 0))
     (should (= (plist-get (cdr (assoc "cd" offsets)) :offset) 2))))
 
-(ert-deftest nelisp-phase47-compiler/pass1-pass2-byte-length-parity ()
+(ert-deftest nelisp-aot-compiler/pass1-pass2-byte-length-parity ()
   "Pass-1 and pass-2 emit must agree on .text byte length."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (write "hi") (exit 0))))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
+         (collected (nelisp-aot-compiler--collect-strings ir))
          (offsets (car collected))
-         (pass1 (nelisp-phase47-compiler--pass ir nil offsets 0))
+         (pass1 (nelisp-aot-compiler--pass ir nil offsets 0))
          (size1 (nelisp-asm-x86_64-buffer-pos pass1))
-         (pass2 (nelisp-phase47-compiler--pass ir nil offsets
+         (pass2 (nelisp-aot-compiler--pass ir nil offsets
                                                (+ #x400000 size1 #x78)))
          (size2 (nelisp-asm-x86_64-buffer-pos pass2)))
     (should (= size1 size2))))
 
 ;; ---- §T.3 e2e smoke (= the production engagement gate) ----
 
-(ert-deftest nelisp-phase47-compiler/e2e-hello-world ()
+(ert-deftest nelisp-aot-compiler/e2e-hello-world ()
   "Compile `(seq (write \"hello\\n\") (exit 0))', exec, observe."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "hello")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "hello")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq (write "hello\n") (exit 0)) path)
           (should (file-executable-p path))
-          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+          (let ((result (nelisp-aot-compiler-test--run-binary path)))
             (should (equal (plist-get result :stdout) "hello\n"))
             (should (= (plist-get result :exit) 0))))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-exit-42 ()
+(ert-deftest nelisp-aot-compiler/e2e-exit-42 ()
   "Compile `(exit 42)', exec, observe exit code 42."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "exit42")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "exit42")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp '(exit 42) path)
-          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+          (nelisp-aot-compile-sexp '(exit 42) path)
+          (let ((result (nelisp-aot-compiler-test--run-binary path)))
             (should (= (plist-get result :exit) 42))
             (should (equal (plist-get result :stdout) ""))))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-let-exit ()
+(ert-deftest nelisp-aot-compiler/e2e-let-exit ()
   "Compile `(seq (let ((x 7)) (exit x)))', exec, observe exit code 7."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "let-exit")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "let-exit")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq (let ((x 7)) (exit x))) path)
-          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+          (let ((result (nelisp-aot-compiler-test--run-binary path)))
             (should (= (plist-get result :exit) 7))))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-arith-exit ()
+(ert-deftest nelisp-aot-compiler/e2e-arith-exit ()
   "Compile `(exit (+ 1 2))', exec, observe exit code 3."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "arith-exit")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "arith-exit")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp '(exit (+ 1 2)) path)
-          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+          (nelisp-aot-compile-sexp '(exit (+ 1 2)) path)
+          (let ((result (nelisp-aot-compiler-test--run-binary path)))
             (should (= (plist-get result :exit) 3))))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-doc129-macroexpand-front ()
+(ert-deftest nelisp-aot-compiler/e2e-doc129-macroexpand-front ()
   "Doc 129.1: compile host macros and `let*' after frontend expansion."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "doc129-macro")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "doc129-macro")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defmacro inc (x) (list '+ x 1))
              (let* ((a 3)
                     (b (inc a)))
                (exit (unless (= b 0) b))))
            path)
-          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+          (let ((result (nelisp-aot-compiler-test--run-binary path)))
             (should (= (plist-get result :exit) 4))))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-multi-write ()
+(ert-deftest nelisp-aot-compiler/e2e-multi-write ()
   "Compile two-write seq, observe concatenated stdout + exit 0."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "multi-write")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "multi-write")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq (write "hi") (write " there\n") (exit 0)) path)
-          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+          (let ((result (nelisp-aot-compiler-test--run-binary path)))
             (should (equal (plist-get result :stdout) "hi there\n"))
             (should (= (plist-get result :exit) 0))))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-string-dedup-execs ()
+(ert-deftest nelisp-aot-compiler/e2e-string-dedup-execs ()
   "Duplicated string survives dedup + runs."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "dedup")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "dedup")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq (write "ab") (write "ab") (exit 0)) path)
-          (let ((result (nelisp-phase47-compiler-test--run-binary path)))
+          (let ((result (nelisp-aot-compiler-test--run-binary path)))
             (should (equal (plist-get result :stdout) "abab"))
             (should (= (plist-get result :exit) 0))))
       (when (file-exists-p path) (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-arch-rejects-non-x86_64 ()
+(ert-deftest nelisp-aot-compiler/e2e-arch-rejects-non-x86_64 ()
   "Asking for `:arch 'aarch64' signals (= v1 OOS)."
-  (let ((path (nelisp-phase47-compiler-test--tmp-binary "arch-rej")))
+  (let ((path (nelisp-aot-compiler-test--tmp-binary "arch-rej")))
     (unwind-protect
         (should-error
-         (nelisp-phase47-compile-sexp '(exit 0) path :arch 'aarch64)
-         :type 'nelisp-phase47-compiler-error)
+         (nelisp-aot-compile-sexp '(exit 0) path :arch 'aarch64)
+         :type 'nelisp-aot-compiler-error)
       (when (file-exists-p path) (delete-file path)))))
 
 ;; ---- §T.4 §97.b defun + call parser tests ----
 
-(ert-deftest nelisp-phase47-compiler/parse-defun-zero-arg ()
+(ert-deftest nelisp-aot-compiler/parse-defun-zero-arg ()
   "Parse `(defun seven () 7)' to a defun IR node with no params."
-  (let ((ir (nelisp-phase47-compiler--parse '(defun seven () 7))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get ir :name) 'seven))
-    (should (null (nelisp-phase47-compiler--ir-get ir :params)))
-    (should (null (nelisp-phase47-compiler--ir-get ir :param-regs)))
-    (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
-      (should (= (nelisp-phase47-compiler--ir-get body :value) 7)))))
+  (let ((ir (nelisp-aot-compiler--parse '(defun seven () 7))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get ir :name) 'seven))
+    (should (null (nelisp-aot-compiler--ir-get ir :params)))
+    (should (null (nelisp-aot-compiler--ir-get ir :param-regs)))
+    (let ((body (nelisp-aot-compiler--ir-get ir :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'imm))
+      (should (= (nelisp-aot-compiler--ir-get body :value) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-defun-docstring-metadata ()
+(ert-deftest nelisp-aot-compiler/parse-defun-docstring-metadata ()
   "Parse defun docstrings and metadata as non-runtime forms."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(defun seven ()
                 "Return seven."
                 (declare (pure t))
                 (interactive)
                 7))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
-      (should (= (nelisp-phase47-compiler--ir-get body :value) 7)))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (let ((body (nelisp-aot-compiler--ir-get ir :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'imm))
+      (should (= (nelisp-aot-compiler--ir-get body :value) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-defun-param-ref ()
+(ert-deftest nelisp-aot-compiler/parse-defun-param-ref ()
   "Parse `(defun id (x) x)' — body becomes a `:kind ref' node."
-  (let ((ir (nelisp-phase47-compiler--parse '(defun id (x) x))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :params) '(x)))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :param-regs) '(rdi)))
-    (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'ref))
-      (should (eq (nelisp-phase47-compiler--ir-get body :reg) 'rdi)))))
+  (let ((ir (nelisp-aot-compiler--parse '(defun id (x) x))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (equal (nelisp-aot-compiler--ir-get ir :params) '(x)))
+    (should (equal (nelisp-aot-compiler--ir-get ir :param-regs) '(rdi)))
+    (let ((body (nelisp-aot-compiler--ir-get ir :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'ref))
+      (should (eq (nelisp-aot-compiler--ir-get body :reg) 'rdi)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-doc129-sexp-param-root-map ()
+(ert-deftest nelisp-aot-compiler/parse-doc129-sexp-param-root-map ()
   "Doc 129.5A: `:type sexp' params become static GC root slots when allocating."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun make-str ((slot :type sexp) bytes len)
                  (sexp-write-str slot bytes len))))
-         (body (nelisp-phase47-compiler--ir-get ir :body))
-         (slot-ref (nelisp-phase47-compiler--ir-get body :slot))
-         (bytes-ref (nelisp-phase47-compiler--ir-get body :bytes-ptr)))
-    (should (eq (nelisp-phase47-compiler--ir-get ir :param-class) 'gp))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :gc-root-slots) '(0)))
-    (should (nelisp-phase47-compiler--ir-get slot-ref :root-p))
-    (should-not (nelisp-phase47-compiler--ir-get bytes-ref :root-p))))
+         (body (nelisp-aot-compiler--ir-get ir :body))
+         (slot-ref (nelisp-aot-compiler--ir-get body :slot))
+         (bytes-ref (nelisp-aot-compiler--ir-get body :bytes-ptr)))
+    (should (eq (nelisp-aot-compiler--ir-get ir :param-class) 'gp))
+    (should (equal (nelisp-aot-compiler--ir-get ir :gc-root-slots) '(0)))
+    (should (nelisp-aot-compiler--ir-get slot-ref :root-p))
+    (should-not (nelisp-aot-compiler--ir-get bytes-ref :root-p))))
 
-(ert-deftest nelisp-phase47-compiler/parse-doc129-no-allocation-no-root-map ()
+(ert-deftest nelisp-aot-compiler/parse-doc129-no-allocation-no-root-map ()
   "Doc 129.5A: annotated Sexp refs do not create a root map without allocation."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(defun tag-of ((x :type sexp)) (sexp-tag x)))))
-    (should (null (nelisp-phase47-compiler--ir-get ir :gc-root-slots)))))
+    (should (null (nelisp-aot-compiler--ir-get ir :gc-root-slots)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-defun-too-many-params ()
+(ert-deftest nelisp-aot-compiler/parse-defun-too-many-params ()
   "Defun still rejects params beyond the current disp8 local-slot cap."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun fifteen-arg (a b c d e f g h i j k l m n o) a))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-call-arity-mismatch ()
+(ert-deftest nelisp-aot-compiler/parse-call-arity-mismatch ()
   "Calling a defun with wrong arg count signals."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(seq (defun id (x) x) (exit (id 1 2))))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-runtime-arith ()
+(ert-deftest nelisp-aot-compiler/parse-runtime-arith ()
   "Parse `(+ a b)' inside a defun yields a `:kind arith' node."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun add (a b) (+ a b))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
-    (should (eq (nelisp-phase47-compiler--ir-get body :op) '+))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get body :a))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'arith))
+    (should (eq (nelisp-aot-compiler--ir-get body :op) '+))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get body :a))
                 'ref))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get body :b))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get body :b))
                 'ref))))
 
-(ert-deftest nelisp-phase47-compiler/parse-runtime-mod ()
+(ert-deftest nelisp-aot-compiler/parse-runtime-mod ()
   "Parse `(mod a b)' inside a defun yields a `:kind arith' node."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun rem2 (a b) (mod a b))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
-    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'mod))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'arith))
+    (should (eq (nelisp-aot-compiler--ir-get body :op) 'mod))))
 
-(ert-deftest nelisp-phase47-compiler/parse-call-in-exit ()
+(ert-deftest nelisp-aot-compiler/parse-call-in-exit ()
   "Parse `(exit (id 7))' yields an exit IR wrapping a call value."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(seq (defun id (x) x) (exit (id 7))))))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'seq))
-    (let* ((forms (nelisp-phase47-compiler--ir-get ir :forms))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'seq))
+    (let* ((forms (nelisp-aot-compiler--ir-get ir :forms))
            (exit-node (nth 1 forms))
-           (vnode (nelisp-phase47-compiler--ir-get exit-node :value)))
-      (should (eq (nelisp-phase47-compiler--ir-kind exit-node) 'exit))
-      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'call))
-      (should (eq (nelisp-phase47-compiler--ir-get vnode :name) 'id)))))
+           (vnode (nelisp-aot-compiler--ir-get exit-node :value)))
+      (should (eq (nelisp-aot-compiler--ir-kind exit-node) 'exit))
+      (should (eq (nelisp-aot-compiler--ir-kind vnode) 'call))
+      (should (eq (nelisp-aot-compiler--ir-get vnode :name) 'id)))))
 
-(ert-deftest nelisp-phase47-compiler/collect-defuns ()
+(ert-deftest nelisp-aot-compiler/collect-defuns ()
   "`--collect-defuns' extracts every defun in encounter order."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (defun a () 1) (defun b (x) x) (exit (a)))))
-         (defuns (nelisp-phase47-compiler--collect-defuns ir)))
+         (defuns (nelisp-aot-compiler--collect-defuns ir)))
     (should (= (length defuns) 2))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 0 defuns) :name) 'a))
-    (should (eq (nelisp-phase47-compiler--ir-get (nth 1 defuns) :name) 'b))))
+    (should (eq (nelisp-aot-compiler--ir-get (nth 0 defuns) :name) 'a))
+    (should (eq (nelisp-aot-compiler--ir-get (nth 1 defuns) :name) 'b))))
 
-(ert-deftest nelisp-phase47-compiler/parse-duplicate-defun-errors ()
+(ert-deftest nelisp-aot-compiler/parse-duplicate-defun-errors ()
   "Two `(defun NAME ...)` with the same name signals."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(seq (defun f () 1) (defun f () 2) (exit (f))))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 ;; ---- §T.5 §97.b e2e smoke ----
 
-(defmacro nelisp-phase47-compiler-test--with-tmp-binary
+(defmacro nelisp-aot-compiler-test--with-tmp-binary
     (var suffix &rest body)
   "Bind VAR to a fresh tmp binary path for SUFFIX, run BODY, clean up."
   (declare (indent 2))
-  `(let ((,var (nelisp-phase47-compiler-test--tmp-binary ,suffix)))
+  `(let ((,var (nelisp-aot-compiler-test--tmp-binary ,suffix)))
      (unwind-protect
          (progn ,@body)
        (when (file-exists-p ,var) (delete-file ,var)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-zero-arg ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-zero-arg ()
   "`(seq (defun seven () 7) (exit (seven)))' exits 7."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "seven"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "seven"
+    (nelisp-aot-compile-sexp
      '(seq (defun seven () 7) (exit (seven))) path)
     (should (file-executable-p path))
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-one-arg ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-one-arg ()
   "`(seq (defun id (x) x) (exit (id 42)))' exits 42."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "id"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "id"
+    (nelisp-aot-compile-sexp
      '(seq (defun id (x) x) (exit (id 42))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-add-two ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-add-two ()
   "`(seq (defun add (a b) (+ a b)) (exit (add 3 4)))' exits 7."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "add2"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "add2"
+    (nelisp-aot-compile-sexp
      '(seq (defun add (a b) (+ a b)) (exit (add 3 4))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-call-ptr-via-addr-of ()
+(ert-deftest nelisp-aot-compiler/e2e-call-ptr-via-addr-of ()
   "Doc 133 Phase 0: indirect call through a function pointer.
 `via' receives `target's address (via `addr-of') and calls it
 through `call-ptr'.  target(5) = 5 + 100 = 105 -> exit 105."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "callptr"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "callptr"
+    (nelisp-aot-compile-sexp
      '(seq (defun target (x) (+ x 100))
            (defun via (p x) (call-ptr p x))
            (exit (via (addr-of target) 5)))
      path)
     (should (file-executable-p path))
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 105)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-native-exec-mmap-call-ptr ()
+(ert-deftest nelisp-aot-compiler/e2e-native-exec-mmap-call-ptr ()
   "Doc 142 §6.4 gate 6 — general native EXEC mechanism in the standalone
 runtime: mmap a RWX page, memcpy a reloc-free function's machine code
 into it, then CALL THE COPIED CODE through a runtime-computed pointer via
 `call-ptr'.  This is the core of dynamically loading a `.neln' artifact's
 native object in-process (no static link): the code is moved to a fresh
 executable page and run.  target(9) = 9*9 = 81 -> exit 81."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "native-exec"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "native-exec"
+    (nelisp-aot-compile-sexp
      '(seq
        (defun target (x) (* x x))      ; reloc-free leaf, position-independent
        (defun memcpy8 (dst src n)
@@ -542,10 +542,10 @@ executable page and run.  target(9) = 9*9 = 81 -> exit 81."
        (exit (native-exec 9)))
      path)
     (should (file-executable-p path))
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 81)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-native-exec-neln-artifact-in-process ()
+(ert-deftest nelisp-aot-compiler/e2e-native-exec-neln-artifact-in-process ()
   "Doc 142 §6.4 gate 6 — load a REAL reloc-free `.neln' artifact's native
 code into an mmap'd RWX page and run it IN-PROCESS via `call-ptr', with no
 static link and no host harness.  Generalizes `e2e-native-exec-mmap-call-ptr'
@@ -553,7 +553,7 @@ from in-binary `addr-of' code to bytes sourced from a compiled artifact file:
 compile (defun sq (x) (* x x)) to a .neln, extract its reloc-free `.text',
 copy it byte-for-byte into a fresh executable page, and `call-ptr' the entry.
 sq(9) = 81 -> exit 81."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
   (require 'nelisp-artifact)
   (let* ((dir (make-temp-file "neln-inproc-" t))
@@ -573,7 +573,7 @@ sq(9) = 81 -> exit 81."
             ;; no symbol resolution and no boundary trampoline.
             (should (null (plist-get native :relocs)))
             (should (null (plist-get native :extern-symbols)))
-            (nelisp-phase47-compiler-test--with-tmp-binary path "neln-inproc"
+            (nelisp-aot-compiler-test--with-tmp-binary path "neln-inproc"
               (let* ((i -1)
                      (writes (mapcar (lambda (b)
                                        (setq i (1+ i))
@@ -588,13 +588,13 @@ sq(9) = 81 -> exit 81."
                                    (seq ,@writes
                                         (call-ptr (+ page ,offset) x)))))
                              (exit (native-exec 9)))))
-                (nelisp-phase47-compile-sexp sexp path)
+                (nelisp-aot-compile-sexp sexp path)
                 (should (file-executable-p path))
-                (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+                (let ((r (nelisp-aot-compiler-test--run-binary path)))
                   (should (= (plist-get r :exit) 81)))))))
       (delete-directory dir t))))
 
-(defun nelisp-phase47-compiler-test--u32le-bytes (value)
+(defun nelisp-aot-compiler-test--u32le-bytes (value)
   "Return VALUE as 4 little-endian bytes."
   (let ((u (logand value #xffffffff)))
     (list (logand u #xff)
@@ -602,11 +602,11 @@ sq(9) = 81 -> exit 81."
           (logand (ash u -16) #xff)
           (logand (ash u -24) #xff))))
 
-(defun nelisp-phase47-compiler-test--native-trampoline-slot-disp (slot-index)
+(defun nelisp-aot-compiler-test--native-trampoline-slot-disp (slot-index)
   "Return the rbp-relative spill displacement for SLOT-INDEX."
   (- (* 8 (1+ slot-index))))
 
-(defun nelisp-phase47-compiler-test--native-mov-rbp-disp-reg-bytes (reg disp)
+(defun nelisp-aot-compiler-test--native-mov-rbp-disp-reg-bytes (reg disp)
   "Return `mov [rbp+DISP], REG' bytes for the x86_64 SysV trampoline."
   (let ((spec (alist-get reg '((rax . (#x48 #x45 #x85))
                                (rcx . (#x48 #x4d #x8d))
@@ -621,9 +621,9 @@ sq(9) = 81 -> exit 81."
       (append (list rex #x89 (if (<= -128 disp 127) modrm8 modrm32))
               (if (<= -128 disp 127)
                   (list (logand disp #xff))
-                (nelisp-phase47-compiler-test--u32le-bytes disp))))))
+                (nelisp-aot-compiler-test--u32le-bytes disp))))))
 
-(defun nelisp-phase47-compiler-test--ptr-write-u8-forms (base-sym bytes)
+(defun nelisp-aot-compiler-test--ptr-write-u8-forms (base-sym bytes)
   "Return `(ptr-write-u8 ...)' forms that copy BYTES into BASE-SYM."
   (let ((idx -1))
     (mapcar (lambda (byte)
@@ -631,7 +631,7 @@ sq(9) = 81 -> exit 81."
               `(ptr-write-u8 ,base-sym ,idx ,byte))
             bytes)))
 
-(defun nelisp-phase47-compiler-test--native-trampoline-bytes (meta)
+(defun nelisp-aot-compiler-test--native-trampoline-bytes (meta)
   "Return raw trampoline bytes and imm64 patch offsets for META."
   (let* ((arity (or (plist-get meta :arity) 0))
          (frame-bytes (nelisp-artifact--native-trampoline-frame-bytes meta))
@@ -649,25 +649,25 @@ sq(9) = 81 -> exit 81."
       (emit '(#x55 #x48 #x89 #xe5))
       (when (> frame-bytes 0)
         (emit (append '(#x48 #x81 #xec)
-                      (nelisp-phase47-compiler-test--u32le-bytes frame-bytes))))
+                      (nelisp-aot-compiler-test--u32le-bytes frame-bytes))))
       (dotimes (i arity)
         (emit
-         (nelisp-phase47-compiler-test--native-mov-rbp-disp-reg-bytes
+         (nelisp-aot-compiler-test--native-mov-rbp-disp-reg-bytes
           (nth i arg-regs)
-          (nelisp-phase47-compiler-test--native-trampoline-slot-disp i))))
+          (nelisp-aot-compiler-test--native-trampoline-slot-disp i))))
       (dotimes (i (+ 5 12))
         (emit-imm64-placeholder)
         (emit
-         (nelisp-phase47-compiler-test--native-mov-rbp-disp-reg-bytes
+         (nelisp-aot-compiler-test--native-mov-rbp-disp-reg-bytes
           'rax
-          (nelisp-phase47-compiler-test--native-trampoline-slot-disp
+          (nelisp-aot-compiler-test--native-trampoline-slot-disp
            (+ arity i)))))
       (emit-imm64-placeholder)
       (emit '(#xff #xe0)))
     (list :bytes bytes
           :imm64-offsets (nreverse imm64-offsets))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-native-exec-neln-artifact-call1-in-process ()
+(ert-deftest nelisp-aot-compiler/e2e-native-exec-neln-artifact-call1-in-process ()
   "Doc 142 §6.4 gate 6 (in-process MECHANISM) — load a builtin-calling
 `.neln' artifact and execute it in-process.  The standalone program copies
 the artifact `.text' into an mmap'd RX page, builds absolute-jump stubs
@@ -678,14 +678,14 @@ ABI (args + the out/mirror/frames/scratch/name_slot + 12 callback boundary
 slots), then `call-ptr's the entry so `inc1(41)' -> 42.
 
 NOTE: the extern helpers `nl_alloc_symbol' / `nelisp_aot_builtin_call1' here
-are TEST-LOCAL subset shims, because `nelisp-phase47-compile-sexp' builds a
+are TEST-LOCAL subset shims, because `nelisp-aot-compile-sexp' builds a
 MINIMAL binary with no runtime env.  This proves the in-process loader
 MECHANISM end-to-end (trampoline bytes, reloc patching via abs-stubs,
 boundary slots, call-ptr, boxed-result decode).  Wiring the loader to the
 REAL reader-linked `nelisp_aot_builtin_call1' (which `nelisp-standalone--reader-units'
 already links) inside the full standalone reader is the remaining gate-6
 integration step."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
   (require 'nelisp-artifact)
   (let* ((dir (make-temp-file "neln-inproc-call1-" t))
@@ -705,7 +705,7 @@ integration step."
                  (relocs (plist-get native :relocs))
                  (externs (plist-get native :extern-symbols))
                  (trampoline
-                  (nelisp-phase47-compiler-test--native-trampoline-bytes defun0))
+                  (nelisp-aot-compiler-test--native-trampoline-bytes defun0))
                  (trampoline-bytes (plist-get trampoline :bytes))
                  (imm64-offsets (plist-get trampoline :imm64-offsets))
                  (stub-template-bytes '(#x48 #xb8 0 0 0 0 0 0 0 0 #xff #xe0))
@@ -726,7 +726,7 @@ integration step."
                            '(plt32 plt32)))
             (should (= (length imm64-offsets) 18))
             (let* ((text-writes
-                    (nelisp-phase47-compiler-test--ptr-write-u8-forms
+                    (nelisp-aot-compiler-test--ptr-write-u8-forms
                      'codepage text-bytes))
                    (reloc-forms
                     (mapcar
@@ -751,7 +751,7 @@ integration step."
                      #'append
                      (mapcar
                       (lambda (spec)
-                        (nelisp-phase47-compiler-test--ptr-write-u8-forms
+                        (nelisp-aot-compiler-test--ptr-write-u8-forms
                          `(+ codepage ,(plist-get spec :offset))
                          stub-template-bytes))
                       stub-specs)))
@@ -763,7 +763,7 @@ integration step."
                                        (addr-of ,(intern (plist-get spec :name)))))
                      stub-specs))
                    (trampoline-writes
-                    (nelisp-phase47-compiler-test--ptr-write-u8-forms
+                    (nelisp-aot-compiler-test--ptr-write-u8-forms
                      'trampage trampoline-bytes))
                    (slot-values
                     (append
@@ -846,498 +846,498 @@ integration step."
                       ,read-int-slot-def
                       ,native-exec-def
                       (exit (native-exec 41)))))
-              (nelisp-phase47-compiler-test--with-tmp-binary path
+              (nelisp-aot-compiler-test--with-tmp-binary path
                   "neln-inproc-call1"
-                (nelisp-phase47-compile-sexp sexp path)
+                (nelisp-aot-compile-sexp sexp path)
                 (should (file-executable-p path))
-                (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+                (let ((r (nelisp-aot-compiler-test--run-binary path)))
                   (should (= (plist-get r :exit) 42))))))
       (delete-directory dir t)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-call-ptr-zero-arg ()
+(ert-deftest nelisp-aot-compiler/e2e-call-ptr-zero-arg ()
   "Doc 133 Phase 0: indirect call with no args.
 `via' calls a zero-arg `answer' through its address. answer() = 42."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "callptr0"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "callptr0"
+    (nelisp-aot-compile-sexp
      '(seq (defun answer () 42)
            (defun via (p) (call-ptr p))
            (exit (via (addr-of answer))))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-sub-two ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-sub-two ()
   "`(seq (defun sub (a b) (- a b)) (exit (sub 10 3)))' exits 7."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "sub2"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "sub2"
+    (nelisp-aot-compile-sexp
      '(seq (defun sub (a b) (- a b)) (exit (sub 10 3))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-mul-two ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-mul-two ()
   "`(seq (defun mul (a b) (* a b)) (exit (mul 6 7)))' exits 42."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "mul2"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "mul2"
+    (nelisp-aot-compile-sexp
      '(seq (defun mul (a b) (* a b)) (exit (mul 6 7))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
-(ert-deftest nelisp-phase47-compiler/e2e-defun-div-two ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-div-two ()
   "`(seq (defun dv (a b) (/ a b)) (exit (dv 84 2)))' exits 42.
 Doc 133: integer division (/) emits as a value expression (idiv, keeping
 the quotient in rax — the companion of the `mod' remainder path)."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "div2"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "div2"
+    (nelisp-aot-compile-sexp
      '(seq (defun dv (a b) (/ a b)) (exit (dv 84 2))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
 
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-six-arg ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-six-arg ()
   "6-arg call exercises all SysV AMD64 arg registers — sum = 21."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "sum6"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "sum6"
+    (nelisp-aot-compile-sexp
      '(seq (defun sum6 (a b c d e f)
              (+ (+ (+ a b) (+ c d)) (+ e f)))
            (exit (sum6 1 2 3 4 5 6)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 21)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-nested-call ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-nested-call ()
   "`f` called twice via `g` returns 7 (= ((5+1)+1))."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "nested"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "nested"
+    (nelisp-aot-compile-sexp
      '(seq (defun f (x) (+ x 1))
            (defun g (x) (f (f x)))
            (exit (g 5)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-double ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-double ()
   "The Doc 97.b §6 smoke: `(double 21)' returns 42 via `(* x 2)'."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "double"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "double"
+    (nelisp-aot-compile-sexp
      '(seq (defun double (x) (* x 2)) (exit (double 21))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-arith-runtime ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-arith-runtime ()
   "Compose runtime arithmetic with calls: `(add (mul 3 4) 5)' = 17."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "compose"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "compose"
+    (nelisp-aot-compile-sexp
      '(seq (defun mul (a b) (* a b))
            (defun add (a b) (+ a b))
            (exit (add (mul 3 4) 5)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 17)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-mod-runtime ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-mod-runtime ()
   "Compile runtime `(mod n 4)' and observe the remainder."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "mod-runtime"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "mod-runtime"
+    (nelisp-aot-compile-sexp
      '(seq (defun rem4 (n) (mod n 4))
            (exit (rem4 11)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 3)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-call-chain ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-call-chain ()
   "Three-deep call chain: a→b→c, each adds 1, returns 13 from 10."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "chain"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "chain"
+    (nelisp-aot-compile-sexp
      '(seq (defun c (x) (+ x 1))
            (defun b (x) (c (+ x 1)))
            (defun a (x) (b (+ x 1)))
            (exit (a 10)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 13)))))
 ;; ---- Doc 100 §100.D bitwise + shift grammar ----
 
-(ert-deftest nelisp-phase47-compiler/parse-bitwise-ops ()
+(ert-deftest nelisp-aot-compiler/parse-bitwise-ops ()
   "Each of `logior logand logxor' parses to a `:kind arith' node."
   (dolist (op '(logior logand logxor))
-    (let* ((ir (nelisp-phase47-compiler--parse
+    (let* ((ir (nelisp-aot-compiler--parse
                 (list 'defun 'f '(a b) (list op 'a 'b))))
-           (body (nelisp-phase47-compiler--ir-get ir :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
-      (should (eq (nelisp-phase47-compiler--ir-get body :op) op)))))
+           (body (nelisp-aot-compiler--ir-get ir :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'arith))
+      (should (eq (nelisp-aot-compiler--ir-get body :op) op)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-shift-ops ()
+(ert-deftest nelisp-aot-compiler/parse-shift-ops ()
   "`(shl N C)' / `(sar N C)' parse to a `:kind shift' node."
   (dolist (op '(shl sar))
-    (let* ((ir (nelisp-phase47-compiler--parse
+    (let* ((ir (nelisp-aot-compiler--parse
                 (list 'defun 'f '(n c) (list op 'n 'c))))
-           (body (nelisp-phase47-compiler--ir-get ir :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'shift))
-      (should (eq (nelisp-phase47-compiler--ir-get body :op) op)))))
+           (body (nelisp-aot-compiler--ir-get ir :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'shift))
+      (should (eq (nelisp-aot-compiler--ir-get body :op) op)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-shift-arity ()
+(ert-deftest nelisp-aot-compiler/parse-shift-arity ()
   "Shift with wrong arg count signals."
   (should-error
-   (nelisp-phase47-compiler--parse '(exit (shl 1)))
-   :type 'nelisp-phase47-compiler-error))
+   (nelisp-aot-compiler--parse '(exit (shl 1)))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-logior ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-logior ()
   "Doc 100 §100.D — `(logior 12 3)' = 15 via or-reg-reg inline emit."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "ior"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "ior"
+    (nelisp-aot-compile-sexp
      '(seq (defun ior (a b) (logior a b)) (exit (ior 12 3))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 15)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-logand ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-logand ()
   "Doc 100 §100.D — `(logand 14 7)' = 6 via and-reg-reg inline emit."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "iand"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "iand"
+    (nelisp-aot-compile-sexp
      '(seq (defun iand (a b) (logand a b)) (exit (iand 14 7))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 6)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-logxor ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-logxor ()
   "Doc 100 §100.D — `(logxor 12 10)' = 6 via xor-reg-reg inline emit."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "ixor"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "ixor"
+    (nelisp-aot-compile-sexp
      '(seq (defun ixor (a b) (logxor a b)) (exit (ixor 12 10))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 6)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-shl ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-shl ()
   "Doc 100 §100.D — `(shl 1 3)' = 8 via shl rax, cl after mov rcx, r10."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "shleft"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "shleft"
+    (nelisp-aot-compile-sexp
      '(seq (defun shleft (n c) (shl n c)) (exit (shleft 1 3))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 8)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-sar ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-sar ()
   "Doc 100 §100.D — `(sar 256 4)' = 16 via sar rax, cl after mov rcx, r10."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "shright"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "shright"
+    (nelisp-aot-compile-sexp
      '(seq (defun shright (n c) (sar n c)) (exit (shright 256 4))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 16)))))
 
 
-(ert-deftest nelisp-phase47-compiler/e2e-defun-write-and-exit ()
+(ert-deftest nelisp-aot-compiler/e2e-defun-write-and-exit ()
   "Function with side-effect `write' + computed exit code."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "fn-write"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "fn-write"
+    (nelisp-aot-compile-sexp
      '(seq (defun two () 2)
            (write "fn\n")
            (exit (two)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (equal (plist-get r :stdout) "fn\n"))
       (should (= (plist-get r :exit) 2)))))
 
 ;; ---- §T.6 §97.c parser tests — control flow + comparisons ----
 
-(ert-deftest nelisp-phase47-compiler/parse-if-imm-branches ()
+(ert-deftest nelisp-aot-compiler/parse-if-imm-branches ()
   "Parse `(if 1 7 9)' to an if IR node with imm THEN/ELSE."
-  (let ((ir (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
-    (let* ((vnode (nelisp-phase47-compiler--ir-get ir :value)))
-      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'if))
-      (should (eq (nelisp-phase47-compiler--ir-kind
-                   (nelisp-phase47-compiler--ir-get vnode :test))
+  (let ((ir (nelisp-aot-compiler--parse '(exit (if 1 7 9)))))
+    (let* ((vnode (nelisp-aot-compiler--ir-get ir :value)))
+      (should (eq (nelisp-aot-compiler--ir-kind vnode) 'if))
+      (should (eq (nelisp-aot-compiler--ir-kind
+                   (nelisp-aot-compiler--ir-get vnode :test))
                   'imm))
-      (should (= (nelisp-phase47-compiler--ir-get
-                  (nelisp-phase47-compiler--ir-get vnode :then) :value)
+      (should (= (nelisp-aot-compiler--ir-get
+                  (nelisp-aot-compiler--ir-get vnode :then) :value)
                  7))
-      (should (= (nelisp-phase47-compiler--ir-get
-                  (nelisp-phase47-compiler--ir-get vnode :else) :value)
+      (should (= (nelisp-aot-compiler--ir-get
+                  (nelisp-aot-compiler--ir-get vnode :else) :value)
                  9)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-cmp-ops ()
+(ert-deftest nelisp-aot-compiler/parse-cmp-ops ()
   "Each of `< > <= >= =' parses to a `:kind cmp' node with right op."
   (dolist (op '(< > <= >= =))
-    (let* ((ir (nelisp-phase47-compiler--parse
+    (let* ((ir (nelisp-aot-compiler--parse
                 (list 'exit (list op 3 5))))
-           (vnode (nelisp-phase47-compiler--ir-get ir :value)))
-      (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'cmp))
-      (should (eq (nelisp-phase47-compiler--ir-get vnode :op) op)))))
+           (vnode (nelisp-aot-compiler--ir-get ir :value)))
+      (should (eq (nelisp-aot-compiler--ir-kind vnode) 'cmp))
+      (should (eq (nelisp-aot-compiler--ir-get vnode :op) op)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-cmp-arity ()
+(ert-deftest nelisp-aot-compiler/parse-cmp-arity ()
   "Comparison with wrong arg count signals."
   (should-error
-   (nelisp-phase47-compiler--parse '(exit (< 1)))
-   :type 'nelisp-phase47-compiler-error))
+   (nelisp-aot-compiler--parse '(exit (< 1)))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-while-body-list ()
+(ert-deftest nelisp-aot-compiler/parse-while-body-list ()
   "`(while T B1 B2 B3)' captures all three body forms."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (while 1 0 0 0) (exit 0))))
-         (forms (nelisp-phase47-compiler--ir-get ir :forms))
+         (forms (nelisp-aot-compiler--ir-get ir :forms))
          (while-node (car forms)))
-    (should (eq (nelisp-phase47-compiler--ir-kind while-node) 'while))
-    (should (= (length (nelisp-phase47-compiler--ir-get while-node :body)) 3))))
+    (should (eq (nelisp-aot-compiler--ir-kind while-node) 'while))
+    (should (= (length (nelisp-aot-compiler--ir-get while-node :body)) 3))))
 
-(ert-deftest nelisp-phase47-compiler/parse-cond-clauses ()
+(ert-deftest nelisp-aot-compiler/parse-cond-clauses ()
   "`(cond (P1 B1) (t B2))' parses with `always' sentinel."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(exit (cond ((= 1 2) 9) (t 5)))))
-         (vnode (nelisp-phase47-compiler--ir-get ir :value))
-         (clauses (nelisp-phase47-compiler--ir-get vnode :clauses)))
-    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'cond))
+         (vnode (nelisp-aot-compiler--ir-get ir :value))
+         (clauses (nelisp-aot-compiler--ir-get vnode :clauses)))
+    (should (eq (nelisp-aot-compiler--ir-kind vnode) 'cond))
     (should (= (length clauses) 2))
-    (should (eq (nelisp-phase47-compiler--ir-kind (car (car clauses))) 'cmp))
+    (should (eq (nelisp-aot-compiler--ir-kind (car (car clauses))) 'cmp))
     (should (eq (car (cadr clauses)) 'always))))
 
-(ert-deftest nelisp-phase47-compiler/parse-cond-empty-errors ()
+(ert-deftest nelisp-aot-compiler/parse-cond-empty-errors ()
   "`(cond)' with no clauses folds to nil/0."
-  (let* ((ir (nelisp-phase47-compiler--parse '(exit (cond))))
-         (vnode (nelisp-phase47-compiler--ir-get ir :value)))
-    (should (eq (nelisp-phase47-compiler--ir-kind vnode) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get vnode :value) 0))))
+  (let* ((ir (nelisp-aot-compiler--parse '(exit (cond))))
+         (vnode (nelisp-aot-compiler--ir-get ir :value)))
+    (should (eq (nelisp-aot-compiler--ir-kind vnode) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get vnode :value) 0))))
 
-(ert-deftest nelisp-phase47-compiler/parse-logic-and-or ()
+(ert-deftest nelisp-aot-compiler/parse-logic-and-or ()
   "`(and 1 2)' and `(or 0 5)' both parse to `:kind logic' nodes."
-  (let* ((ir1 (nelisp-phase47-compiler--parse '(exit (and 1 2))))
-         (ir2 (nelisp-phase47-compiler--parse '(exit (or 0 5)))))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get ir1 :value))
+  (let* ((ir1 (nelisp-aot-compiler--parse '(exit (and 1 2))))
+         (ir2 (nelisp-aot-compiler--parse '(exit (or 0 5)))))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get ir1 :value))
                 'logic))
-    (should (eq (nelisp-phase47-compiler--ir-get
-                 (nelisp-phase47-compiler--ir-get ir1 :value) :op)
+    (should (eq (nelisp-aot-compiler--ir-get
+                 (nelisp-aot-compiler--ir-get ir1 :value) :op)
                 'and))
-    (should (eq (nelisp-phase47-compiler--ir-get
-                 (nelisp-phase47-compiler--ir-get ir2 :value) :op)
+    (should (eq (nelisp-aot-compiler--ir-get
+                 (nelisp-aot-compiler--ir-get ir2 :value) :op)
                 'or))))
 
-(ert-deftest nelisp-phase47-compiler/parse-logic-empty-errors ()
+(ert-deftest nelisp-aot-compiler/parse-logic-empty-errors ()
   "`(and)' / `(or)' with no operands fold to their Elisp identities."
-  (let* ((and-ir (nelisp-phase47-compiler--parse '(exit (and))))
-         (or-ir (nelisp-phase47-compiler--parse '(exit (or))))
-         (and-v (nelisp-phase47-compiler--ir-get and-ir :value))
-         (or-v (nelisp-phase47-compiler--ir-get or-ir :value)))
-    (should (eq (nelisp-phase47-compiler--ir-kind and-v) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get and-v :value) 1))
-    (should (eq (nelisp-phase47-compiler--ir-kind or-v) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get or-v :value) 0))))
+  (let* ((and-ir (nelisp-aot-compiler--parse '(exit (and))))
+         (or-ir (nelisp-aot-compiler--parse '(exit (or))))
+         (and-v (nelisp-aot-compiler--ir-get and-ir :value))
+         (or-v (nelisp-aot-compiler--ir-get or-ir :value)))
+    (should (eq (nelisp-aot-compiler--ir-kind and-v) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get and-v :value) 1))
+    (should (eq (nelisp-aot-compiler--ir-kind or-v) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get or-v :value) 0))))
 
-(ert-deftest nelisp-phase47-compiler/parse-control-flow-stable-ids ()
+(ert-deftest nelisp-aot-compiler/parse-control-flow-stable-ids ()
   "Two compiles in a row reset the label counter (= deterministic)."
-  (let ((nelisp-phase47-compiler--label-counter 0))
-    (let* ((ir1 (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
-      (should (eq (nelisp-phase47-compiler--ir-get
-                   (nelisp-phase47-compiler--ir-get ir1 :value) :id)
+  (let ((nelisp-aot-compiler--label-counter 0))
+    (let* ((ir1 (nelisp-aot-compiler--parse '(exit (if 1 7 9)))))
+      (should (eq (nelisp-aot-compiler--ir-get
+                   (nelisp-aot-compiler--ir-get ir1 :value) :id)
                   'if-1))))
-  (let ((nelisp-phase47-compiler--label-counter 0))
-    (let* ((ir2 (nelisp-phase47-compiler--parse '(exit (if 1 7 9)))))
-      (should (eq (nelisp-phase47-compiler--ir-get
-                   (nelisp-phase47-compiler--ir-get ir2 :value) :id)
+  (let ((nelisp-aot-compiler--label-counter 0))
+    (let* ((ir2 (nelisp-aot-compiler--parse '(exit (if 1 7 9)))))
+      (should (eq (nelisp-aot-compiler--ir-get
+                   (nelisp-aot-compiler--ir-get ir2 :value) :id)
                   'if-1)))))
 
 ;; ---- §T.7 §97.c emit pass-1/pass-2 invariance ----
 
-(ert-deftest nelisp-phase47-compiler/emit-if-pass-parity ()
+(ert-deftest nelisp-aot-compiler/emit-if-pass-parity ()
   "if/else byte-length is identical across pass-1 and pass-2."
-  (let* ((nelisp-phase47-compiler--label-counter 0)
-         (ir (nelisp-phase47-compiler--parse '(exit (if 1 7 9))))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
-         (pass1 (nelisp-phase47-compiler--pass ir nil (car collected) 0))
+  (let* ((nelisp-aot-compiler--label-counter 0)
+         (ir (nelisp-aot-compiler--parse '(exit (if 1 7 9))))
+         (collected (nelisp-aot-compiler--collect-strings ir))
+         (pass1 (nelisp-aot-compiler--pass ir nil (car collected) 0))
          (size1 (nelisp-asm-x86_64-buffer-pos pass1)))
-    (setq nelisp-phase47-compiler--label-counter 0)
-    (let* ((ir2 (nelisp-phase47-compiler--parse '(exit (if 1 7 9))))
-           (pass2 (nelisp-phase47-compiler--pass
+    (setq nelisp-aot-compiler--label-counter 0)
+    (let* ((ir2 (nelisp-aot-compiler--parse '(exit (if 1 7 9))))
+           (pass2 (nelisp-aot-compiler--pass
                    ir2 nil (car collected) #x401000))
            (size2 (nelisp-asm-x86_64-buffer-pos pass2)))
       (should (= size1 size2)))))
 
-(ert-deftest nelisp-phase47-compiler/emit-while-pass-parity ()
+(ert-deftest nelisp-aot-compiler/emit-while-pass-parity ()
   "while loop emits the same byte-count across both passes."
-  (let* ((nelisp-phase47-compiler--label-counter 0)
-         (ir (nelisp-phase47-compiler--parse
+  (let* ((nelisp-aot-compiler--label-counter 0)
+         (ir (nelisp-aot-compiler--parse
               '(seq (while 0 0) (exit 0))))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
-         (pass1 (nelisp-phase47-compiler--pass ir nil (car collected) 0))
+         (collected (nelisp-aot-compiler--collect-strings ir))
+         (pass1 (nelisp-aot-compiler--pass ir nil (car collected) 0))
          (size1 (nelisp-asm-x86_64-buffer-pos pass1)))
-    (setq nelisp-phase47-compiler--label-counter 0)
-    (let* ((ir2 (nelisp-phase47-compiler--parse
+    (setq nelisp-aot-compiler--label-counter 0)
+    (let* ((ir2 (nelisp-aot-compiler--parse
                  '(seq (while 0 0) (exit 0))))
-           (pass2 (nelisp-phase47-compiler--pass
+           (pass2 (nelisp-aot-compiler--pass
                    ir2 nil (car collected) #x401000))
            (size2 (nelisp-asm-x86_64-buffer-pos pass2)))
       (should (= size1 size2)))))
 
 ;; ---- §T.8 §97.c e2e smoke (= the production gate) ----
 
-(ert-deftest nelisp-phase47-compiler/e2e-if-then ()
+(ert-deftest nelisp-aot-compiler/e2e-if-then ()
   "`(exit (if 1 7 0))' exits 7."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "if-then"
-    (nelisp-phase47-compile-sexp '(seq (exit (if 1 7 0))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "if-then"
+    (nelisp-aot-compile-sexp '(seq (exit (if 1 7 0))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-if-else ()
+(ert-deftest nelisp-aot-compiler/e2e-if-else ()
   "`(exit (if 0 7 99))' exits 99."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "if-else"
-    (nelisp-phase47-compile-sexp '(seq (exit (if 0 7 99))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "if-else"
+    (nelisp-aot-compile-sexp '(seq (exit (if 0 7 99))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 99)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-cmp-lt ()
+(ert-deftest nelisp-aot-compiler/e2e-cmp-lt ()
   "`(exit (if (< 3 5) 1 2))' exits 1."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "cmp-lt"
-    (nelisp-phase47-compile-sexp '(seq (exit (if (< 3 5) 1 2))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "cmp-lt"
+    (nelisp-aot-compile-sexp '(seq (exit (if (< 3 5) 1 2))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 1)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-cmp-gt-false ()
+(ert-deftest nelisp-aot-compiler/e2e-cmp-gt-false ()
   "`(exit (if (> 3 5) 1 2))' exits 2."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "cmp-gt"
-    (nelisp-phase47-compile-sexp '(seq (exit (if (> 3 5) 1 2))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "cmp-gt"
+    (nelisp-aot-compile-sexp '(seq (exit (if (> 3 5) 1 2))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 2)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-cmp-eq ()
+(ert-deftest nelisp-aot-compiler/e2e-cmp-eq ()
   "`(exit (if (= 4 4) 11 22))' exits 11."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "cmp-eq"
-    (nelisp-phase47-compile-sexp '(seq (exit (if (= 4 4) 11 22))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "cmp-eq"
+    (nelisp-aot-compile-sexp '(seq (exit (if (= 4 4) 11 22))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 11)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-and-all-truthy ()
+(ert-deftest nelisp-aot-compiler/e2e-and-all-truthy ()
   "`(exit (and 1 2 3))' exits 3 (= last operand)."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "and"
-    (nelisp-phase47-compile-sexp '(seq (exit (and 1 2 3))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "and"
+    (nelisp-aot-compile-sexp '(seq (exit (and 1 2 3))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 3)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-and-short-circuit ()
+(ert-deftest nelisp-aot-compiler/e2e-and-short-circuit ()
   "`(exit (and 1 0 3))' exits 0 (= short-circuit at 2nd term)."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "and-sc"
-    (nelisp-phase47-compile-sexp '(seq (exit (and 1 0 3))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "and-sc"
+    (nelisp-aot-compile-sexp '(seq (exit (and 1 0 3))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 0)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-or-first-truthy ()
+(ert-deftest nelisp-aot-compiler/e2e-or-first-truthy ()
   "`(exit (or 0 5 7))' exits 5 (= first non-zero short-circuits)."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "or"
-    (nelisp-phase47-compile-sexp '(seq (exit (or 0 5 7))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+  (nelisp-aot-compiler-test--with-tmp-binary path "or"
+    (nelisp-aot-compile-sexp '(seq (exit (or 0 5 7))) path)
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 5)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-cond-second-match ()
+(ert-deftest nelisp-aot-compiler/e2e-cond-second-match ()
   "`(cond ((= 1 2) 9) ((= 3 3) 7) (t 5))' exits 7."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "cond"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "cond"
+    (nelisp-aot-compile-sexp
      '(seq (exit (cond ((= 1 2) 9) ((= 3 3) 7) (t 5)))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-cond-fallthrough ()
+(ert-deftest nelisp-aot-compiler/e2e-cond-fallthrough ()
   "`(cond ((= 1 2) 9) (t 5))' takes the t clause and exits 5."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "cond-t"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "cond-t"
+    (nelisp-aot-compile-sexp
      '(seq (exit (cond ((= 1 2) 9) (t 5)))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 5)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-factorial-recursive ()
+(ert-deftest nelisp-aot-compiler/e2e-factorial-recursive ()
   "Recursive factorial (= the Doc 97.c §6 production gate)."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "fact"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "fact"
+    (nelisp-aot-compile-sexp
      '(seq (defun fact (n)
              (if (= n 0) 1 (* n (fact (- n 1)))))
            (exit (fact 5)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 120)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-nested-if ()
+(ert-deftest nelisp-aot-compiler/e2e-nested-if ()
   "Nested ifs compute (if (< 2 5) (if (= 7 7) 42 1) 0) = 42."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "nested-if"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "nested-if"
+    (nelisp-aot-compile-sexp
      '(seq (exit (if (< 2 5) (if (= 7 7) 42 1) 0))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-if-with-call ()
+(ert-deftest nelisp-aot-compiler/e2e-if-with-call ()
   "`if' inside a defun composes with call returns: max(3,7) = 7."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "max"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "max"
+    (nelisp-aot-compile-sexp
      '(seq (defun maxf (a b) (if (> a b) a b))
            (exit (maxf 3 7)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-cmp-le-ge ()
+(ert-deftest nelisp-aot-compiler/e2e-cmp-le-ge ()
   "`<=' and `>=' boundaries: `(if (<= 5 5) 1 0)' = 1, etc."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "le-eq"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "le-eq"
+    (nelisp-aot-compile-sexp
      '(seq (exit (if (<= 5 5) (if (>= 5 5) 42 0) 0))) path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 42)))))
 
 ;; ====================================================================
-;; Doc 99 §99.B — `nelisp-phase47-compile-to-object' (ET_REL emit)
+;; Doc 99 §99.B — `nelisp-aot-compile-to-object' (ET_REL emit)
 ;; ====================================================================
 
-(defun nelisp-phase47-compiler-test--read-bytes (path)
+(defun nelisp-aot-compiler-test--read-bytes (path)
   "Return raw unibyte bytes of PATH."
   (with-temp-buffer
     (set-buffer-multibyte nil)
@@ -1345,24 +1345,24 @@ the quotient in rax — the companion of the `mod' remainder path)."
       (insert-file-contents-literally path))
     (buffer-substring-no-properties (point-min) (point-max))))
 
-(defun nelisp-phase47-compiler-test--read-le16 (bytes offset)
+(defun nelisp-aot-compiler-test--read-le16 (bytes offset)
   "Read unsigned 16-bit little-endian integer from BYTES at OFFSET."
   (logior (aref bytes offset)
           (ash (aref bytes (+ offset 1)) 8)))
 
-(defun nelisp-phase47-compiler-test--read-le32 (bytes offset)
+(defun nelisp-aot-compiler-test--read-le32 (bytes offset)
   "Read unsigned 32-bit little-endian integer from BYTES at OFFSET."
   (logior (aref bytes offset)
           (ash (aref bytes (+ offset 1)) 8)
           (ash (aref bytes (+ offset 2)) 16)
           (ash (aref bytes (+ offset 3)) 24)))
 
-(defun nelisp-phase47-compiler-test--coff-section-bytes (bytes name)
+(defun nelisp-aot-compiler-test--coff-section-bytes (bytes name)
   "Return raw section bytes for COFF section NAME."
   (let* ((section-count
-          (nelisp-phase47-compiler-test--read-le16 bytes 2))
+          (nelisp-aot-compiler-test--read-le16 bytes 2))
          (optional-size
-          (nelisp-phase47-compiler-test--read-le16 bytes 16))
+          (nelisp-aot-compiler-test--read-le16 bytes 16))
          (section-base (+ 20 optional-size))
          (found nil)
          (idx 0))
@@ -1375,31 +1375,31 @@ the quotient in rax — the companion of the `mod' remainder path)."
                              raw-name)))
         (when (equal section-name name)
           (let ((raw-size
-                 (nelisp-phase47-compiler-test--read-le32 bytes (+ base 16)))
+                 (nelisp-aot-compiler-test--read-le32 bytes (+ base 16)))
                 (raw-ptr
-                 (nelisp-phase47-compiler-test--read-le32 bytes (+ base 20))))
+                 (nelisp-aot-compiler-test--read-le32 bytes (+ base 20))))
             (setq found (substring bytes raw-ptr (+ raw-ptr raw-size))))))
       (setq idx (1+ idx)))
     (or found
         (error "COFF section %s not found" name))))
 
-(defun nelisp-phase47-compiler-test--bytes-contain-p (bytes needle)
+(defun nelisp-aot-compiler-test--bytes-contain-p (bytes needle)
   "Return non-nil when BYTES contains NEEDLE."
   (not (null (cl-search needle bytes :test #'eql))))
 
-(defun nelisp-phase47-compiler-test--coff-text-for (form)
+(defun nelisp-aot-compiler-test--coff-text-for (form)
   "Compile FORM as x86_64 COFF and return its `.text' section bytes."
   (let ((path (make-temp-file "nelisp-win64-text-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            form path :arch 'x86_64 :format 'coff)
-          (nelisp-phase47-compiler-test--coff-section-bytes
-           (nelisp-phase47-compiler-test--read-bytes path)
+          (nelisp-aot-compiler-test--coff-section-bytes
+           (nelisp-aot-compiler-test--read-bytes path)
            ".text"))
       (ignore-errors (delete-file path)))))
 
-(defun nelisp-phase47-compiler-test--elf-section-header (bytes index)
+(defun nelisp-aot-compiler-test--elf-section-header (bytes index)
   "Return plist for section header INDEX in ELF BYTES."
   (let* ((shoff (nelisp-elf--read-le64 bytes 40))
          (shentsize (nelisp-elf--read-le16 bytes 58))
@@ -1411,7 +1411,7 @@ the quotient in rax — the companion of the `mod' remainder path)."
           :link (nelisp-elf--read-le32 bytes (+ base 40))
           :entsize (nelisp-elf--read-le64 bytes (+ base 56)))))
 
-(defun nelisp-phase47-compiler-test--elf-cstring (bytes start)
+(defun nelisp-aot-compiler-test--elf-cstring (bytes start)
   "Read a NUL-terminated string from BYTES at START."
   (let ((end start))
     (while (and (< end (length bytes))
@@ -1419,32 +1419,32 @@ the quotient in rax — the companion of the `mod' remainder path)."
       (setq end (1+ end)))
     (substring bytes start end)))
 
-(defun nelisp-phase47-compiler-test--elf-find-section (bytes name)
+(defun nelisp-aot-compiler-test--elf-find-section (bytes name)
   "Return plist for section NAME in ELF BYTES, or nil."
   (let* ((shnum (nelisp-elf--read-le16 bytes 60))
          (shstrndx (nelisp-elf--read-le16 bytes 62))
-         (shstr (nelisp-phase47-compiler-test--elf-section-header bytes
+         (shstr (nelisp-aot-compiler-test--elf-section-header bytes
                                                                   shstrndx))
          (shstr-off (plist-get shstr :offset))
          (found nil)
          (i 0))
     (while (and (< i shnum) (null found))
-      (let* ((shdr (nelisp-phase47-compiler-test--elf-section-header bytes i))
+      (let* ((shdr (nelisp-aot-compiler-test--elf-section-header bytes i))
              (sec-name
-              (nelisp-phase47-compiler-test--elf-cstring
+              (nelisp-aot-compiler-test--elf-cstring
                bytes (+ shstr-off (plist-get shdr :name-off)))))
         (when (equal sec-name name)
           (setq found shdr)))
       (setq i (1+ i)))
     found))
 
-(defun nelisp-phase47-compiler-test--elf-symbols (bytes)
+(defun nelisp-aot-compiler-test--elf-symbols (bytes)
   "Return the emitted ELF symbol table from BYTES as plists."
-  (let* ((symtab (or (nelisp-phase47-compiler-test--elf-find-section
+  (let* ((symtab (or (nelisp-aot-compiler-test--elf-find-section
                       bytes ".symtab")
                      (error ".symtab not found")))
          (strtab-index (plist-get symtab :link))
-         (strtab (nelisp-phase47-compiler-test--elf-section-header
+         (strtab (nelisp-aot-compiler-test--elf-section-header
                   bytes strtab-index))
          (sym-off (plist-get symtab :offset))
          (sym-size (plist-get symtab :size))
@@ -1456,7 +1456,7 @@ the quotient in rax — the companion of the `mod' remainder path)."
     (while (< i count)
       (let* ((base (+ sym-off (* i ent-size)))
              (name-off (nelisp-elf--read-le32 bytes base))
-             (name (nelisp-phase47-compiler-test--elf-cstring
+             (name (nelisp-aot-compiler-test--elf-cstring
                     bytes (+ str-off name-off))))
         (push (list :name name
                     :value (nelisp-elf--read-le64 bytes (+ base 8))
@@ -1466,21 +1466,21 @@ the quotient in rax — the companion of the `mod' remainder path)."
       (setq i (1+ i)))
     (nreverse acc)))
 
-(defun nelisp-phase47-compiler-test--find-symbol (bytes name)
+(defun nelisp-aot-compiler-test--find-symbol (bytes name)
   "Return symbol plist for NAME in ELF BYTES."
   (or (cl-find-if (lambda (sym)
                     (equal (plist-get sym :name) name))
-                  (nelisp-phase47-compiler-test--elf-symbols bytes))
+                  (nelisp-aot-compiler-test--elf-symbols bytes))
       (error "symbol %s not found" name)))
 
-(defun nelisp-phase47-compiler-test--assert-aarch64-object-symbol (src expected-name)
+(defun nelisp-aot-compiler-test--assert-aarch64-object-symbol (src expected-name)
   "Compile SRC to an aarch64 ELF object and assert EXPECTED-NAME exists."
-  (let ((path (make-temp-file "nelisp-phase47-arm64-" nil ".o")))
+  (let ((path (make-temp-file "nelisp-aot-arm64-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object src path :arch 'aarch64)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (sym (nelisp-phase47-compiler-test--find-symbol
+          (nelisp-aot-compile-to-object src path :arch 'aarch64)
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (sym (nelisp-aot-compiler-test--find-symbol
                        bytes expected-name)))
             (should (equal (substring bytes 0 4)
                            (unibyte-string #x7F #x45 #x4C #x46)))
@@ -1491,16 +1491,16 @@ the quotient in rax — the companion of the `mod' remainder path)."
             (should (zerop (plist-get sym :value)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-smoke ()
+(ert-deftest nelisp-aot-compiler/object-mode-smoke ()
   "Compile `(defun nelisp_spike_noop () 42)' to an ET_REL .o.
 Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
   (let ((path (make-temp-file "nelisp-doc99-obj-smoke-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun nelisp_spike_noop () 42)
            path)
-          (let ((bytes (nelisp-phase47-compiler-test--read-bytes path)))
+          (let ((bytes (nelisp-aot-compiler-test--read-bytes path)))
             ;; ELF magic + class + endian.
             (should (equal (substring bytes 0 4)
                            (unibyte-string #x7F #x45 #x4C #x46)))
@@ -1512,13 +1512,13 @@ Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
             (should (zerop (nelisp-elf--read-le16 bytes 56)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-readelf-s ()
+(ert-deftest nelisp-aot-compiler/object-mode-readelf-s ()
   "`readelf -s' lists `nelisp_spike_noop' as GLOBAL FUNC in the .o."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc99-obj-syms-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun nelisp_spike_noop () 42)
            path)
           (let ((out (with-output-to-string
@@ -1529,13 +1529,13 @@ Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
             (should (string-match-p "GLOBAL" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-multiple-defuns ()
+(ert-deftest nelisp-aot-compiler/object-mode-multiple-defuns ()
   "Multiple defuns inside a `seq' each become a GLOBAL FUNC symbol."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc99-obj-multi-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq (defun answer () 42)
                  (defun negone () (- 0 1)))
            path)
@@ -1546,64 +1546,64 @@ Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
             (should (string-match-p "negone" out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-rejects-write ()
+(ert-deftest nelisp-aot-compiler/object-mode-rejects-write ()
   "`(defun foo () (write \"hi\"))' rejected — spike disallows strings."
   (let ((path (make-temp-file "nelisp-doc99-obj-rej-w-" nil ".o")))
     (unwind-protect
         (should-error
-         (nelisp-phase47-compile-to-object
+         (nelisp-aot-compile-to-object
           '(defun foo () (write "hi"))
           path)
-         :type 'nelisp-phase47-compiler-error)
+         :type 'nelisp-aot-compiler-error)
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-rejects-non-defun ()
+(ert-deftest nelisp-aot-compiler/object-mode-rejects-non-defun ()
   "`(exit 0)' is rejected — top form must be defun or seq-of-defuns."
   (let ((path (make-temp-file "nelisp-doc99-obj-rej-nd-" nil ".o")))
     (unwind-protect
         (should-error
-         (nelisp-phase47-compile-to-object '(exit 0) path)
-         :type 'nelisp-phase47-compiler-error)
+         (nelisp-aot-compile-to-object '(exit 0) path)
+         :type 'nelisp-aot-compiler-error)
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-rejects-mixed-seq ()
+(ert-deftest nelisp-aot-compiler/object-mode-rejects-mixed-seq ()
   "`seq' object mode accepts mixed top-level forms after Doc 129 coverage."
   (let ((path (make-temp-file "nelisp-doc99-obj-rej-mix-" nil ".o")))
     (unwind-protect
         (progn
           (should (equal
-                   (nelisp-phase47-compile-to-object
+                   (nelisp-aot-compile-to-object
                     '(seq (defun foo () 42) (exit 0)) path)
                    path))
           (should (file-exists-p path))
           (should (> (file-attribute-size (file-attributes path)) 0)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-add2 ()
+(ert-deftest nelisp-aot-compiler/object-mode-aarch64-add2 ()
   "AArch64 ET_REL emit: arithmetic trampoline exports `nelisp_jit_add2'."
-  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+  (nelisp-aot-compiler-test--assert-aarch64-object-symbol
    nelisp-cc-jit-arith-add2--source
    "nelisp_jit_add2"))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-eq2 ()
+(ert-deftest nelisp-aot-compiler/object-mode-aarch64-eq2 ()
   "AArch64 ET_REL emit: comparison trampoline exports `nelisp_jit_eq2'."
-  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+  (nelisp-aot-compiler-test--assert-aarch64-object-symbol
    nelisp-cc-jit-arith-eq2--source
    "nelisp_jit_eq2"))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-logior2 ()
+(ert-deftest nelisp-aot-compiler/object-mode-aarch64-logior2 ()
   "AArch64 ET_REL emit: bitwise trampoline exports `nelisp_jit_logior2'."
-  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+  (nelisp-aot-compiler-test--assert-aarch64-object-symbol
    nelisp-cc-jit-arith-logior2--source
    "nelisp_jit_logior2"))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-ash ()
+(ert-deftest nelisp-aot-compiler/object-mode-aarch64-ash ()
   "AArch64 ET_REL emit: if+shift trampoline exports `nelisp_jit_ash'."
-  (nelisp-phase47-compiler-test--assert-aarch64-object-symbol
+  (nelisp-aot-compiler-test--assert-aarch64-object-symbol
    nelisp-cc-jit-arith-ash--source
    "nelisp_jit_ash"))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-all-jit-arith-trampolines ()
+(ert-deftest nelisp-aot-compiler/object-mode-aarch64-all-jit-arith-trampolines ()
   "All 12 Doc 100 §100.D trampoline defuns compile to one aarch64 ET_REL."
   (let ((path (make-temp-file "nelisp-doc100-arm64-jit-all-" nil ".o"))
         (sources (list nelisp-cc-jit-arith-add2--source
@@ -1624,10 +1624,10 @@ Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
                  "nelisp_jit_logand2" "nelisp_jit_logxor2" "nelisp_jit_ash")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            (cons 'seq sources) path :arch 'aarch64)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (symbols (nelisp-phase47-compiler-test--elf-symbols bytes)))
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (symbols (nelisp-aot-compiler-test--elf-symbols bytes)))
             (should (= (nelisp-elf--read-le16 bytes 18) 183))
             (dolist (name names)
               (let ((sym (cl-find-if (lambda (entry)
@@ -1638,31 +1638,31 @@ Verify ehdr: ET_REL, EM_X86_64, e_entry=0, e_phnum=0."
                 (should (<= 0 (plist-get sym :value)))))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/extern-call-rejects-missing-symbol ()
+(ert-deftest nelisp-aot-compiler/extern-call-rejects-missing-symbol ()
   "Doc 100 §100.A: `(extern-call)' without a symbol → parse error."
   (let ((path (make-temp-file "nelisp-doc100-extern-bad-" nil ".o")))
     (unwind-protect
         (should-error
-         (nelisp-phase47-compile-to-object
+         (nelisp-aot-compile-to-object
           '(defun probe () (extern-call))
           path)
-         :type 'nelisp-phase47-compiler-error)
+         :type 'nelisp-aot-compiler-error)
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/extern-call-rejects-non-symbol ()
+(ert-deftest nelisp-aot-compiler/extern-call-rejects-non-symbol ()
   "Doc 100 §100.A: `(extern-call \"name\")' → parse error.
 The extern symbol literal must be a bare symbol so its
 `symbol-name' can become the linker-visible name without quoting."
   (let ((path (make-temp-file "nelisp-doc100-extern-non-sym-" nil ".o")))
     (unwind-protect
         (should-error
-         (nelisp-phase47-compile-to-object
+         (nelisp-aot-compile-to-object
           '(defun probe () (extern-call "ext_helper"))
           path)
-         :type 'nelisp-phase47-compiler-error)
+         :type 'nelisp-aot-compiler-error)
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-extern-call-emits-plt32 ()
+(ert-deftest nelisp-aot-compiler/object-mode-extern-call-emits-plt32 ()
   "Doc 100 §100.A: compile-to-object emits SHN_UNDEF + PLT32 for extern-call.
 End-to-end check that the compiler propagates an `(extern-call SYM)'
 form through emit-extern-call → asm reloc → ELF writer so that
@@ -1672,7 +1672,7 @@ form through emit-extern-call → asm reloc → ELF writer so that
   (let ((path (make-temp-file "nelisp-doc100-extern-emit-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext_helper))
            path)
           (let ((rs-out (with-output-to-string
@@ -1686,7 +1686,7 @@ form through emit-extern-call → asm reloc → ELF writer so that
             (should (string-match-p "UND[ \t]+ext_helper" ss-out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-data-addr-emits-pc32 ()
+(ert-deftest nelisp-aot-compiler/object-mode-data-addr-emits-pc32 ()
   "Doc 140 Stage 8: `(data-addr SYM)' emits a LEA + R_X86_64_PC32 reloc against
 the EXTERNAL data symbol SYM (an UND symbol the static linker resolves to the
 section VA).  This is the address-of-data-symbol primitive that lets the
@@ -1697,7 +1697,7 @@ arena base."
   (let ((path (make-temp-file "nelisp-doc140-data-addr-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (data-addr nl_arena_base))
            path)
           (let ((rs-out (with-output-to-string
@@ -1711,13 +1711,13 @@ arena base."
             (should (string-match-p "UND[ \t]+nl_arena_base" ss-out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/aarch64-data-addr-emits-adrp-add-relocs ()
+(ert-deftest nelisp-aot-compiler/aarch64-data-addr-emits-adrp-add-relocs ()
   "Doc 140 Stage 8: arm64 `data-addr' lowers to ADRP+ADD reloc pair."
-  (let ((nelisp-phase47-compiler--arch 'aarch64)
+  (let ((nelisp-aot-compiler--arch 'aarch64)
         (buf (nelisp-asm-arm64-make-buffer))
-        (node (nelisp-phase47-compiler--make-ir
+        (node (nelisp-aot-compiler--make-ir
                'data-addr :name 'nl_ctrl_block)))
-    (nelisp-phase47-compiler--emit-data-addr node buf)
+    (nelisp-aot-compiler--emit-data-addr node buf)
     (should (equal (nelisp-asm-arm64-buffer-bytes buf)
                    (concat
                     (unibyte-string #x00 #x00 #x00 #x90)
@@ -1737,13 +1737,13 @@ arena base."
                           :addend 0
                           :section 'text))))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-aarch64-data-addr-emits-elf-relocs ()
+(ert-deftest nelisp-aot-compiler/object-mode-aarch64-data-addr-emits-elf-relocs ()
   "AArch64 ET_REL output surfaces ADRP+ADD relocations for `data-addr'."
   (skip-unless (executable-find "readelf"))
   (let ((path (make-temp-file "nelisp-doc140-arm64-data-addr-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (data-addr nl_ctrl_block))
            path :arch 'aarch64)
           (let ((rs-out (with-output-to-string
@@ -1760,9 +1760,9 @@ arena base."
             (should (string-match-p "UND[ \t]+nl_ctrl_block" ss-out))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-extern-call-smoke ()
+(ert-deftest nelisp-aot-compiler/object-mode-extern-call-smoke ()
   "Doc 100 §100.A: (extern-call SYM) → .o + ld + exec end-to-end (= EXIT 99).
-probe.o is generated by the Phase 47 chain and contains a PLT32
+probe.o is generated by the AOT chain and contains a PLT32
 reloc against `ext_99'.  host.o is generated directly by
 `nelisp-elf-write-binary' (= no C / clang dependency in the test)
 and contains both `ext_99' (= returns 99) and `_start' (= calls
@@ -1796,8 +1796,8 @@ correctly."
            (unibyte-string #x0F #x05))))
     (unwind-protect
         (progn
-          ;; Generate probe.o via Phase 47 chain.
-          (nelisp-phase47-compile-to-object
+          ;; Generate probe.o via AOT chain.
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext_99))
            probe-path)
           ;; Generate host.o by hand.
@@ -1829,7 +1829,7 @@ correctly."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-extern-call-7gp-smoke ()
+(ert-deftest nelisp-aot-compiler/object-mode-extern-call-7gp-smoke ()
   "Doc 129.7E: SysV extern-call passes the seventh GP arg on the stack."
   (skip-unless (and (executable-find "ld")
                     (eq system-type 'gnu/linux)))
@@ -1858,7 +1858,7 @@ correctly."
          (start-off (length sum7-text)))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext_sum7 1 2 3 4 5 6 21))
            probe-path)
           (nelisp-elf-write-binary
@@ -1886,7 +1886,7 @@ correctly."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-extern-call-7gp-nontrivial-stack-smoke ()
+(ert-deftest nelisp-aot-compiler/object-mode-extern-call-7gp-nontrivial-stack-smoke ()
   "Doc 129.7F: the first stack GP arg may be a computed value."
   (skip-unless (and (executable-find "ld")
                     (eq system-type 'gnu/linux)))
@@ -1920,7 +1920,7 @@ correctly."
          (host-text (concat sum7-text ext21-text start-text)))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext_sum7 1 2 3 4 5 6 (extern-call ext_21)))
            probe-path)
           (nelisp-elf-write-binary
@@ -1951,7 +1951,7 @@ correctly."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-extern-call-8gp-nontrivial-stack-smoke ()
+(ert-deftest nelisp-aot-compiler/object-mode-extern-call-8gp-nontrivial-stack-smoke ()
   "Doc 129.7G: multiple stack GP args may be computed values."
   (skip-unless (and (executable-find "ld")
                     (eq system-type 'gnu/linux)))
@@ -1993,7 +1993,7 @@ correctly."
          (host-text (concat sum8-text ext7-text ext14-text start-text)))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext_sum8 1 2 3 4 5 6
                                          (extern-call ext_7)
                                          (extern-call ext_14)))
@@ -2029,7 +2029,7 @@ correctly."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-compiler/object-mode-defun-7gp-param-smoke ()
+(ert-deftest nelisp-aot-compiler/object-mode-defun-7gp-param-smoke ()
   "Doc 129.7E: SysV defuns can receive the seventh GP param from the stack."
   (skip-unless (and (executable-find "ld")
                     (eq system-type 'gnu/linux)))
@@ -2055,7 +2055,7 @@ correctly."
          (host-text (concat prefix suffix)))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun sum7 (a b c d e f g)
               (+ (+ (+ (+ (+ (+ a b) c) d) e) f) g))
            sum-path)
@@ -2083,46 +2083,46 @@ correctly."
 
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access ops ----
 
-(ert-deftest nelisp-phase47-compiler/sexp-tag-parse-shape ()
+(ert-deftest nelisp-aot-compiler/sexp-tag-parse-shape ()
   "Doc 100 §100.B: (sexp-tag PTR) parses to (:kind sexp-tag :ptr REF)."
   (let* ((sexp '(defun probe (p) (sexp-tag p)))
-         (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
+         (program (nelisp-aot-compiler--parse (list 'seq sexp))))
     ;; Top-level program is a seq containing one defun.
-    (should (eq (nelisp-phase47-compiler--ir-kind program) 'seq))
-    (let* ((forms (nelisp-phase47-compiler--ir-get program :forms))
+    (should (eq (nelisp-aot-compiler--ir-kind program) 'seq))
+    (let* ((forms (nelisp-aot-compiler--ir-get program :forms))
            (defun-node (car forms))
-           (body (nelisp-phase47-compiler--ir-get defun-node :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-tag))
-      (should (eq (nelisp-phase47-compiler--ir-kind
-                   (nelisp-phase47-compiler--ir-get body :ptr))
+           (body (nelisp-aot-compiler--ir-get defun-node :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'sexp-tag))
+      (should (eq (nelisp-aot-compiler--ir-kind
+                   (nelisp-aot-compiler--ir-get body :ptr))
                   'ref)))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-int-unwrap-parse-shape ()
+(ert-deftest nelisp-aot-compiler/sexp-int-unwrap-parse-shape ()
   "Doc 100 §100.B: (sexp-int-unwrap PTR) parses to (:kind sexp-int-unwrap :ptr REF)."
   (let* ((sexp '(defun probe (p) (sexp-int-unwrap p)))
-         (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
-    (let* ((defun-node (car (nelisp-phase47-compiler--ir-get program :forms)))
-           (body (nelisp-phase47-compiler--ir-get defun-node :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-int-unwrap))
-      (should (eq (nelisp-phase47-compiler--ir-kind
-                   (nelisp-phase47-compiler--ir-get body :ptr))
+         (program (nelisp-aot-compiler--parse (list 'seq sexp))))
+    (let* ((defun-node (car (nelisp-aot-compiler--ir-get program :forms)))
+           (body (nelisp-aot-compiler--ir-get defun-node :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'sexp-int-unwrap))
+      (should (eq (nelisp-aot-compiler--ir-kind
+                   (nelisp-aot-compiler--ir-get body :ptr))
                   'ref)))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-int-make-parse-shape ()
+(ert-deftest nelisp-aot-compiler/sexp-int-make-parse-shape ()
   "Doc 100 §100.B: (sexp-int-make SLOT N) parses to (:kind sexp-int-make :slot :val)."
   (let* ((sexp '(defun probe (slot n) (sexp-int-make slot n)))
-         (program (nelisp-phase47-compiler--parse (list 'seq sexp))))
-    (let* ((defun-node (car (nelisp-phase47-compiler--ir-get program :forms)))
-           (body (nelisp-phase47-compiler--ir-get defun-node :body)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-int-make))
-      (should (eq (nelisp-phase47-compiler--ir-kind
-                   (nelisp-phase47-compiler--ir-get body :slot))
+         (program (nelisp-aot-compiler--parse (list 'seq sexp))))
+    (let* ((defun-node (car (nelisp-aot-compiler--ir-get program :forms)))
+           (body (nelisp-aot-compiler--ir-get defun-node :body)))
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'sexp-int-make))
+      (should (eq (nelisp-aot-compiler--ir-kind
+                   (nelisp-aot-compiler--ir-get body :slot))
                   'ref))
-      (should (eq (nelisp-phase47-compiler--ir-kind
-                   (nelisp-phase47-compiler--ir-get body :val))
+      (should (eq (nelisp-aot-compiler--ir-kind
+                   (nelisp-aot-compiler--ir-get body :val))
                   'ref)))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-abi-ops-reject-bad-arity ()
+(ert-deftest nelisp-aot-compiler/sexp-abi-ops-reject-bad-arity ()
   "Doc 100 §100.B: each Sexp ABI op rejects wrong-arity invocations."
   (dolist (case '(((defun p () (sexp-tag))           :sexp-tag-arity)
                   ((defun p (a b) (sexp-tag a b))    :sexp-tag-arity)
@@ -2133,12 +2133,12 @@ correctly."
           (expected-tag (cadr case)))
       (condition-case err
           (progn
-            (nelisp-phase47-compiler--parse (list 'seq bad))
+            (nelisp-aot-compiler--parse (list 'seq bad))
             (ert-fail (list :expected-error case)))
-        (nelisp-phase47-compiler-error
+        (nelisp-aot-compiler-error
          (should (eq (car (cdr err)) expected-tag)))))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-tag-emit-bytes ()
+(ert-deftest nelisp-aot-compiler/sexp-tag-emit-bytes ()
   "Doc 100 §100.B: (sexp-tag PTR) emits the documented byte sequence.
 The expected tail of the .text body is `48 89 C7 48 0F B6 07' (=
 mov rdi, rax + movzx rax, byte ptr [rdi]) — what `--emit-sexp-tag'
@@ -2147,7 +2147,7 @@ appends after the `:ptr' sub-expression has computed into rax."
          (path (make-temp-file "nelisp-doc100-sexp-tag-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object sexp path)
+          (nelisp-aot-compile-to-object sexp path)
           (let* ((bytes (with-temp-buffer
                           (set-buffer-multibyte nil)
                           (insert-file-contents-literally path)
@@ -2159,14 +2159,14 @@ appends after the `:ptr' sub-expression has computed into rax."
             (should (string-search needle bytes))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-int-unwrap-emit-bytes ()
+(ert-deftest nelisp-aot-compiler/sexp-int-unwrap-emit-bytes ()
   "Doc 100 §100.B: (sexp-int-unwrap PTR) emits `mov rdi,rax + mov rax,[rdi+8]'.
 Expected tail: `48 89 C7 48 8B 47 08'."
   (let* ((sexp '(seq (defun probe (p) (sexp-int-unwrap p))))
          (path (make-temp-file "nelisp-doc100-sexp-unwrap-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object sexp path)
+          (nelisp-aot-compile-to-object sexp path)
           (let* ((bytes (with-temp-buffer
                           (set-buffer-multibyte nil)
                           (insert-file-contents-literally path)
@@ -2176,7 +2176,7 @@ Expected tail: `48 89 C7 48 8B 47 08'."
             (should (string-search needle bytes))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-int-make-emit-bytes ()
+(ert-deftest nelisp-aot-compiler/sexp-int-make-emit-bytes ()
   "Doc 100 §100.B: (sexp-int-make SLOT N) emits the 3-instr writer sequence.
 Expected substring (= the tail before `ret'):
   C6 07 02         mov byte [rdi], 2     (SEXP_TAG_INT)
@@ -2186,7 +2186,7 @@ Expected substring (= the tail before `ret'):
          (path (make-temp-file "nelisp-doc100-sexp-make-" nil ".o")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object sexp path)
+          (nelisp-aot-compile-to-object sexp path)
           (let* ((bytes (with-temp-buffer
                           (set-buffer-multibyte nil)
                           (insert-file-contents-literally path)
@@ -2197,7 +2197,7 @@ Expected substring (= the tail before `ret'):
             (should (string-search needle bytes))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-int-unwrap-e2e-exec ()
+(ert-deftest nelisp-aot-compiler/sexp-int-unwrap-e2e-exec ()
   "Doc 100 §100.B: probe.o reads a host-provided Sexp::Int(42) → EXIT=42.
 
 host.o lays out at `int_value' a 16-byte block:
@@ -2233,7 +2233,7 @@ with rax (= the unwrapped payload) as the status code."
            (unibyte-string #x0F #x05))))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (p) (sexp-int-unwrap p))
            probe-path)
           (nelisp-elf-write-binary
@@ -2267,7 +2267,7 @@ with rax (= the unwrapped payload) as the status code."
       (ignore-errors (delete-file host-path))
       (ignore-errors (delete-file bin-path)))))
 
-(ert-deftest nelisp-phase47-compiler/sexp-int-make-unwrap-e2e-exec ()
+(ert-deftest nelisp-aot-compiler/sexp-int-make-unwrap-e2e-exec ()
   "Doc 100 §100.B: probe writes Sexp::Int(77) into a host slot, reads back → EXIT=77.
 
 probe.o's body is `(sexp-int-unwrap (sexp-int-make slot 77))' (=
@@ -2303,7 +2303,7 @@ with rax (= the round-tripped 77) as status."
           ;; The probe body is a single value form: (sexp-int-unwrap
           ;; (sexp-int-make p 77)) — the slot pointer flows into make,
           ;; make returns slot, unwrap reads back the payload.
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (p) (sexp-int-unwrap (sexp-int-make p 77)))
            probe-path)
           (nelisp-elf-write-binary
@@ -2338,50 +2338,50 @@ with rax (= the round-tripped 77) as status."
 
 ;; ---- §T.symbol-name-eq grammar (G1) ----
 
-(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-encodes-utf8-bytes ()
+(ert-deftest nelisp-aot-compiler/parse-symbol-name-eq-encodes-utf8-bytes ()
   "Literal string in `(symbol-name-eq P LIT)' is UTF-8 byte-encoded at parse."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun probe (p) (symbol-name-eq p "read"))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'symbol-name-eq))
-    (should (equal (nelisp-phase47-compiler--ir-get body :bytes)
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'symbol-name-eq))
+    (should (equal (nelisp-aot-compiler--ir-get body :bytes)
                    '(114 101 97 100)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-rejects-non-string ()
+(ert-deftest nelisp-aot-compiler/parse-symbol-name-eq-rejects-non-string ()
   "Second argument must be a string literal."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun probe (p) (symbol-name-eq p 42)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-arity-error ()
+(ert-deftest nelisp-aot-compiler/parse-symbol-name-eq-arity-error ()
   "`(symbol-name-eq P)' (= 1-arg) raises arity error."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun probe (p) (symbol-name-eq p)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/parse-symbol-name-eq-empty-literal ()
+(ert-deftest nelisp-aot-compiler/parse-symbol-name-eq-empty-literal ()
   "Empty literal string is a legal zero-byte comparison (= length-check only)."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun probe (p) (symbol-name-eq p ""))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'symbol-name-eq))
-    (should (equal (nelisp-phase47-compiler--ir-get body :bytes) '()))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'symbol-name-eq))
+    (should (equal (nelisp-aot-compiler--ir-get body :bytes) '()))))
 
-(ert-deftest nelisp-phase47-compiler/emit-symbol-name-eq-produces-bytes ()
+(ert-deftest nelisp-aot-compiler/emit-symbol-name-eq-produces-bytes ()
   "Emit phase for `symbol-name-eq' produces a non-empty byte string and
 the size grows monotonically with literal length (= longer literals
 inline more `cmp imm32' instructions)."
   (cl-labels ((emit-len (lit)
-                (let* ((path (nelisp-phase47-compiler-test--tmp-binary
+                (let* ((path (nelisp-aot-compiler-test--tmp-binary
                               "symname"))
                        (sexp `(defun probe (p)
                                 (sexp-int-make
                                  p (symbol-name-eq p ,lit)))))
                   (unwind-protect
                       (progn
-                        (nelisp-phase47-compile-to-object sexp path)
+                        (nelisp-aot-compile-to-object sexp path)
                         (let ((sz (nth 7 (file-attributes path))))
                           sz))
                     (ignore-errors (delete-file path))))))
@@ -2393,35 +2393,35 @@ inline more `cmp imm32' instructions)."
 
 ;; ---- §T.sexp-float-unwrap grammar (G4) ----
 
-(ert-deftest nelisp-phase47-compiler/parse-sexp-float-unwrap-shape ()
+(ert-deftest nelisp-aot-compiler/parse-sexp-float-unwrap-shape ()
   "Parse `(sexp-float-unwrap PTR)' to an IR node with :kind sexp-float-unwrap."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun probe (p) (sexp-float-unwrap p))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'sexp-float-unwrap))
-    (let ((ptr (nelisp-phase47-compiler--ir-get body :ptr)))
-      (should (eq (nelisp-phase47-compiler--ir-kind ptr) 'ref))
-      (should (eq (nelisp-phase47-compiler--ir-get ptr :var) 'p)))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'sexp-float-unwrap))
+    (let ((ptr (nelisp-aot-compiler--ir-get body :ptr)))
+      (should (eq (nelisp-aot-compiler--ir-kind ptr) 'ref))
+      (should (eq (nelisp-aot-compiler--ir-get ptr :var) 'p)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-sexp-float-unwrap-arity-error ()
+(ert-deftest nelisp-aot-compiler/parse-sexp-float-unwrap-arity-error ()
   "`(sexp-float-unwrap)' (= no arg) raises arity error."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun probe (p) (sexp-float-unwrap)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/emit-sexp-float-unwrap-produces-bytes ()
+(ert-deftest nelisp-aot-compiler/emit-sexp-float-unwrap-produces-bytes ()
   "Emit phase for `sexp-float-unwrap' compiles to a non-empty .o file
 matching the byte-pattern of `sexp-int-unwrap' (= identical payload
 offset 8 read; only the tag interpretation differs at the type-system
 level, not in the emitted machine code)."
-  (let ((path-fl (nelisp-phase47-compiler-test--tmp-binary "sfu"))
-        (path-in (nelisp-phase47-compiler-test--tmp-binary "siu")))
+  (let ((path-fl (nelisp-aot-compiler-test--tmp-binary "sfu"))
+        (path-in (nelisp-aot-compiler-test--tmp-binary "siu")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (p) (sexp-float-unwrap p)) path-fl)
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (p) (sexp-int-unwrap p)) path-in)
           (let ((sz-fl (nth 7 (file-attributes path-fl)))
                 (sz-in (nth 7 (file-attributes path-in))))
@@ -2433,99 +2433,99 @@ level, not in the emitted machine code)."
 
 ;; ---- §T.let-rt Runtime let tests (Wave 18w+) ----
 
-(ert-deftest nelisp-phase47-compiler/parse-let-rt-call-value ()
+(ert-deftest nelisp-aot-compiler/parse-let-rt-call-value ()
   "Parse `(defun f (x) (let ((y (id x))) y))' — let with a call value.
 The `id' call is not foldable so the `let' becomes a `let-rt' IR node
 with a slot index beyond the param count."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (defun id (x) x)
                     (defun f (x) (let ((y (id x))) y)))))
          ;; `seq' → second form is the `f' defun.
-         (f-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
-         (body (nelisp-phase47-compiler--ir-get f-ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind f-ir) 'defun))
+         (f-ir (nth 1 (nelisp-aot-compiler--ir-get ir :forms)))
+         (body (nelisp-aot-compiler--ir-get f-ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind f-ir) 'defun))
     ;; body is a `let-rt' node (= non-foldable value).
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
-    (should (eq (nelisp-phase47-compiler--ir-get body :var) 'y))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt))
+    (should (eq (nelisp-aot-compiler--ir-get body :var) 'y))
     ;; Slot must be ≥ arity (= 1 for `f (x)').
-    (should (>= (nelisp-phase47-compiler--ir-get body :slot) 1))
+    (should (>= (nelisp-aot-compiler--ir-get body :slot) 1))
     ;; value-ir is a `call' to `id'.
-    (let ((val-ir (nelisp-phase47-compiler--ir-get body :value-ir)))
-      (should (eq (nelisp-phase47-compiler--ir-kind val-ir) 'call))
-      (should (eq (nelisp-phase47-compiler--ir-get val-ir :name) 'id)))
+    (let ((val-ir (nelisp-aot-compiler--ir-get body :value-ir)))
+      (should (eq (nelisp-aot-compiler--ir-kind val-ir) 'call))
+      (should (eq (nelisp-aot-compiler--ir-get val-ir :name) 'id)))
     ;; body body is a `ref' for `y' via the rt slot.
-    (let* ((body-ir (nelisp-phase47-compiler--ir-get body :body))
-           (slot (nelisp-phase47-compiler--ir-get body :slot)))
-      (should (eq (nelisp-phase47-compiler--ir-kind body-ir) 'ref))
-      (should (eq (nelisp-phase47-compiler--ir-get body-ir :var) 'y))
-      (should (= (nelisp-phase47-compiler--ir-get body-ir :slot) slot)))))
+    (let* ((body-ir (nelisp-aot-compiler--ir-get body :body))
+           (slot (nelisp-aot-compiler--ir-get body :slot)))
+      (should (eq (nelisp-aot-compiler--ir-kind body-ir) 'ref))
+      (should (eq (nelisp-aot-compiler--ir-get body-ir :var) 'y))
+      (should (= (nelisp-aot-compiler--ir-get body-ir :slot) slot)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-let-rt-slot-beyond-params ()
+(ert-deftest nelisp-aot-compiler/parse-let-rt-slot-beyond-params ()
   "Runtime let slot is param-count + rt-let-index."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun g (a b) (let ((t1 (+ a b))) t1))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
     ;; `g' has 2 params (slots 0, 1); runtime let must use slot >= 2.
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt))
-    (should (>= (nelisp-phase47-compiler--ir-get body :slot) 2))))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt))
+    (should (>= (nelisp-aot-compiler--ir-get body :slot) 2))))
 
-(ert-deftest nelisp-phase47-compiler/parse-let-rt-rt-slot-count ()
+(ert-deftest nelisp-aot-compiler/parse-let-rt-rt-slot-count ()
   "`defun' IR carries `:rt-slot-count' equal to number of runtime lets."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (defun id (x) x)
                     (defun f (x) (let ((y (id x))) y))))))
-    (let ((f-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms))))
-      (should (= (nelisp-phase47-compiler--ir-get f-ir :rt-slot-count) 1)))))
+    (let ((f-ir (nth 1 (nelisp-aot-compiler--ir-get ir :forms))))
+      (should (= (nelisp-aot-compiler--ir-get f-ir :rt-slot-count) 1)))))
 
-(ert-deftest nelisp-phase47-compiler/parse-let-ct-in-defun-body-no-let-rt ()
+(ert-deftest nelisp-aot-compiler/parse-let-ct-in-defun-body-no-let-rt ()
   "Compile-time `let' inside defun body does NOT produce `let-rt'."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun f (x) (let ((k 7)) (+ x k)))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
     ;; Compile-time fold: body is `arith', no `let-rt'.
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'arith))
-    (should (= (nelisp-phase47-compiler--ir-get ir :rt-slot-count) 0))))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'arith))
+    (should (= (nelisp-aot-compiler--ir-get ir :rt-slot-count) 0))))
 
-(ert-deftest nelisp-phase47-compiler/parse-let-bare-symbol-binding ()
+(ert-deftest nelisp-aot-compiler/parse-let-bare-symbol-binding ()
   "Parse Emacs Lisp `(let (x) ...)' as a nil/zero initialized binding."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(defun f () (let (x) x))))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'imm))
-    (should (= (nelisp-phase47-compiler--ir-get body :value) 0))
-    (should (= (nelisp-phase47-compiler--ir-get ir :rt-slot-count) 0))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'imm))
+    (should (= (nelisp-aot-compiler--ir-get body :value) 0))
+    (should (= (nelisp-aot-compiler--ir-get ir :rt-slot-count) 0))))
 
-(ert-deftest nelisp-phase47-compiler/parse-doc129-multi-let-rt ()
+(ert-deftest nelisp-aot-compiler/parse-doc129-multi-let-rt ()
   "Doc 129.4: multi-binding runtime `let' parses to `let-rt-n'."
-  (let* ((ir (nelisp-phase47-compiler--parse
+  (let* ((ir (nelisp-aot-compiler--parse
               '(seq (defun id (x) x)
                     (defun f (x y)
                       (let ((a (id x))
                             (b (+ y 10)))
                         (+ a b))))))
-         (f-ir (nth 1 (nelisp-phase47-compiler--ir-get ir :forms)))
-         (body (nelisp-phase47-compiler--ir-get f-ir :body))
-         (bindings (nelisp-phase47-compiler--ir-get body :bindings)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'let-rt-n))
+         (f-ir (nth 1 (nelisp-aot-compiler--ir-get ir :forms)))
+         (body (nelisp-aot-compiler--ir-get f-ir :body))
+         (bindings (nelisp-aot-compiler--ir-get body :bindings)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'let-rt-n))
     (should (= (length bindings) 2))
     (should (equal (mapcar #'car bindings) '(a b)))
     (should (equal (mapcar #'cadr bindings) '(2 3)))
-    (should (= (nelisp-phase47-compiler--ir-get f-ir :rt-slot-count) 2))
-    (should (eq (nelisp-phase47-compiler--ir-kind
-                 (nelisp-phase47-compiler--ir-get body :body))
+    (should (= (nelisp-aot-compiler--ir-get f-ir :rt-slot-count) 2))
+    (should (eq (nelisp-aot-compiler--ir-kind
+                 (nelisp-aot-compiler--ir-get body :body))
                 'arith))))
 
-(ert-deftest nelisp-phase47-compiler/parse-doc129-multi-let-is-parallel ()
+(ert-deftest nelisp-aot-compiler/parse-doc129-multi-let-is-parallel ()
   "Doc 129.4: later `let' initializers cannot see earlier bindings."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun f (x)
        (let ((a (+ x 1))
              (b a))
          b)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/let-rt-requires-defun-context ()
+(ert-deftest nelisp-aot-compiler/let-rt-requires-defun-context ()
   "Runtime `let' outside any defun context signals an error."
   ;; Top-level `let' where the value is not foldable (= extern-call ref
   ;; in a synthetic fenv that would block folding).  The easiest way to
@@ -2534,44 +2534,44 @@ with a slot index beyond the param count."
   ;; parser path: a `let' whose value is an extern-call form.
   ;; At top level `--next-rt-let-slot' is nil → should signal.
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     ;; `extern-call' is never compile-time foldable, so this forces
     ;; the runtime path.  At top level (= no enclosing defun parse)
     ;; `--next-rt-let-slot' is nil → error.
     '(let ((x (extern-call getpid))) (exit x)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
-(ert-deftest nelisp-phase47-compiler/e2e-let-rt-call-result ()
+(ert-deftest nelisp-aot-compiler/e2e-let-rt-call-result ()
   "`(let ((y (id x))) (+ y 1))' inside a defun exits with x+1."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "let-rt-call"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "let-rt-call"
+    (nelisp-aot-compile-sexp
      '(seq (defun id (x) x)
            (defun f (x) (let ((y (id x))) (+ y 1)))
            (exit (f 6)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 7)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-let-rt-arith-value ()
+(ert-deftest nelisp-aot-compiler/e2e-let-rt-arith-value ()
   "`(let ((y (+ a b))) (+ y 1))' where a+b is a runtime arith."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "let-rt-arith"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "let-rt-arith"
+    (nelisp-aot-compile-sexp
      '(seq (defun f (a b) (let ((y (+ a b))) (+ y 1)))
            (exit (f 3 4)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 8)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-let-rt-two-bindings ()
+(ert-deftest nelisp-aot-compiler/e2e-let-rt-two-bindings ()
   "Two sequential runtime `let' bindings (= nested) resolve correctly."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "let-rt-two"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "let-rt-two"
+    (nelisp-aot-compile-sexp
      '(seq (defun id (x) x)
            (defun f (x)
              (let ((a (id x)))
@@ -2580,15 +2580,15 @@ with a slot index beyond the param count."
            (exit (f 5)))
      path)
     ;; a = id(5) = 5; b = a + 10 = 15; result = a + b = 20.
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 20)))))
 
-(ert-deftest nelisp-phase47-compiler/e2e-doc129-multi-let-rt ()
+(ert-deftest nelisp-aot-compiler/e2e-doc129-multi-let-rt ()
   "Doc 129.4: multi-binding runtime `let' executes through `let-rt-n'."
-  (unless (nelisp-phase47-compiler-test--linux-p)
+  (unless (nelisp-aot-compiler-test--linux-p)
     (ert-skip "Requires x86_64 Linux"))
-  (nelisp-phase47-compiler-test--with-tmp-binary path "doc129-multi-let"
-    (nelisp-phase47-compile-sexp
+  (nelisp-aot-compiler-test--with-tmp-binary path "doc129-multi-let"
+    (nelisp-aot-compile-sexp
      '(seq (defun id (x) x)
            (defun f (x y)
              (let ((a (id x))
@@ -2596,12 +2596,12 @@ with a slot index beyond the param count."
                (+ a b)))
            (exit (f 5 7)))
      path)
-    (let ((r (nelisp-phase47-compiler-test--run-binary path)))
+    (let ((r (nelisp-aot-compiler-test--run-binary path)))
       (should (= (plist-get r :exit) 22)))))
 
 ;; ---- Doc 101 §101.B Wave 5 — Win64 ABI emit tests ----
 ;;
-;; These tests verify that `nelisp-phase47-compile-to-object' with
+;; These tests verify that `nelisp-aot-compile-to-object' with
 ;; `:format 'coff' (= Windows COFF) emits the Win64 ABI calling
 ;; convention in the generated `.text' bytes.
 ;;
@@ -2614,66 +2614,66 @@ with a slot index beyond the param count."
 ;;
 ;; See Doc 101 §101.B Wave 5 for the full design rationale.
 
-(ert-deftest nelisp-phase47-compiler/win64-abi-arg-regs-dynvar ()
+(ert-deftest nelisp-aot-compiler/win64-abi-arg-regs-dynvar ()
   "Win64 ABI dynvar selects RCX RDX R8 R9 as integer arg registers."
-  (let ((nelisp-phase47-compiler--abi 'win64))
-    (should (equal (nelisp-phase47-compiler--current-arg-regs)
+  (let ((nelisp-aot-compiler--abi 'win64))
+    (should (equal (nelisp-aot-compiler--current-arg-regs)
                    '(rcx rdx r8 r9)))))
 
-(ert-deftest nelisp-phase47-compiler/sysv-abi-arg-regs-dynvar ()
+(ert-deftest nelisp-aot-compiler/sysv-abi-arg-regs-dynvar ()
   "SysV ABI dynvar selects RDI RSI RDX RCX R8 R9 as integer arg registers."
-  (let ((nelisp-phase47-compiler--abi 'sysv))
-    (should (equal (nelisp-phase47-compiler--current-arg-regs)
+  (let ((nelisp-aot-compiler--abi 'sysv))
+    (should (equal (nelisp-aot-compiler--current-arg-regs)
                    '(rdi rsi rdx rcx r8 r9)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-abi-xmm-arg-regs-dynvar ()
+(ert-deftest nelisp-aot-compiler/win64-abi-xmm-arg-regs-dynvar ()
   "Win64 ABI dynvar limits f64 arg registers to XMM0-XMM3."
-  (let ((nelisp-phase47-compiler--arch 'x86_64)
-        (nelisp-phase47-compiler--abi 'win64))
-    (should (equal (nelisp-phase47-compiler--current-xmm-arg-regs)
+  (let ((nelisp-aot-compiler--arch 'x86_64)
+        (nelisp-aot-compiler--abi 'win64))
+    (should (equal (nelisp-aot-compiler--current-xmm-arg-regs)
                    '(xmm0 xmm1 xmm2 xmm3)))))
 
-(ert-deftest nelisp-phase47-compiler/sysv-abi-xmm-arg-regs-dynvar ()
+(ert-deftest nelisp-aot-compiler/sysv-abi-xmm-arg-regs-dynvar ()
   "SysV ABI keeps the existing XMM0-XMM7 f64 arg register budget."
-  (let ((nelisp-phase47-compiler--arch 'x86_64)
-        (nelisp-phase47-compiler--abi 'sysv))
-    (should (equal (nelisp-phase47-compiler--current-xmm-arg-regs)
+  (let ((nelisp-aot-compiler--arch 'x86_64)
+        (nelisp-aot-compiler--abi 'sysv))
+    (should (equal (nelisp-aot-compiler--current-xmm-arg-regs)
                    '(xmm0 xmm1 xmm2 xmm3 xmm4 xmm5 xmm6 xmm7)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-fifth-f64-param-spills-from-stack ()
+(ert-deftest nelisp-aot-compiler/win64-defun-fifth-f64-param-spills-from-stack ()
   "Win64 f64 defuns spill a fifth f64 param from the incoming stack area."
   (let ((path (make-temp-file "nelisp-win64-f64-param5-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe ((a :type f64) (b :type f64) (c :type f64)
                           (d :type f64) (e :type f64))
               e)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp,48
                      (unibyte-string #x48 #x81 #xec #x30 #x00 #x00 #x00)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; movsd xmm0,[rbp+48]; movsd [rbp-40],xmm0
                      (unibyte-string #xf2 #x0f #x10 #x45 #x30
                                      #xf2 #x0f #x11 #x45 #xd8)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; body return: movsd xmm0,[rbp-40]
                      (unibyte-string #xf2 #x0f #x10 #x45 #xd8)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-accepts-four-f64-params ()
+(ert-deftest nelisp-aot-compiler/win64-defun-accepts-four-f64-params ()
   "Win64 f64 defuns accept the XMM0-XMM3 argument window."
   (let ((path (make-temp-file "nelisp-win64-f64-param4-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe ((a :type f64) (b :type f64) (c :type f64)
                           (d :type f64))
               a)
@@ -2681,34 +2681,34 @@ with a slot index beyond the param count."
           (should (file-exists-p path)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-parse-mixed-defun-param-regs ()
+(ert-deftest nelisp-aot-compiler/win64-parse-mixed-defun-param-regs ()
   "Win64 mixed defun params use position-paired GP/XMM registers."
-  (let ((nelisp-phase47-compiler--arch 'x86_64)
-        (nelisp-phase47-compiler--abi 'win64))
-    (let ((ir (nelisp-phase47-compiler--parse
+  (let ((nelisp-aot-compiler--arch 'x86_64)
+        (nelisp-aot-compiler--abi 'win64))
+    (let ((ir (nelisp-aot-compiler--parse
                '(defun probe (a (b :type f64) c (d :type f64)) b))))
-      (should (eq (nelisp-phase47-compiler--ir-get ir :param-class) 'mixed))
-      (should (equal (nelisp-phase47-compiler--ir-get ir :param-classes)
+      (should (eq (nelisp-aot-compiler--ir-get ir :param-class) 'mixed))
+      (should (equal (nelisp-aot-compiler--ir-get ir :param-classes)
                      '(gp f64 gp f64)))
-      (should (equal (nelisp-phase47-compiler--ir-get ir :param-regs)
+      (should (equal (nelisp-aot-compiler--ir-get ir :param-regs)
                      '(rcx xmm1 r8 xmm3)))
-      (let ((body (nelisp-phase47-compiler--ir-get ir :body)))
-        (should (eq (nelisp-phase47-compiler--ir-kind body) 'ref))
-        (should (eq (nelisp-phase47-compiler--ir-get body :class) 'f64))
-        (should (= (nelisp-phase47-compiler--ir-get body :slot) 1))))))
+      (let ((body (nelisp-aot-compiler--ir-get ir :body)))
+        (should (eq (nelisp-aot-compiler--ir-kind body) 'ref))
+        (should (eq (nelisp-aot-compiler--ir-get body :class) 'f64))
+        (should (= (nelisp-aot-compiler--ir-get body :slot) 1))))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-mixed-param-spills ()
+(ert-deftest nelisp-aot-compiler/win64-defun-mixed-param-spills ()
   "Win64 mixed defun params spill GP/XMM registers by argument position."
   (let ((path (make-temp-file "nelisp-win64-mixed-defun-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (a (b :type f64) c (d :type f64)) b)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp,32; mov [rbp-8],rcx; movsd [rbp-16],xmm1;
                      ;; mov [rbp-24],r8; movsd [rbp-32],xmm3
@@ -2717,62 +2717,62 @@ with a slot index beyond the param count."
                                      #xf2 #x0f #x11 #x4d #xf0
                                      #x4c #x89 #x45 #xe8
                                      #xf2 #x0f #x11 #x5d #xe0)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; body return: movsd xmm0,[rbp-16]
                      (unibyte-string #xf2 #x0f #x10 #x45 #xf0)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-mixed-fifth-param-spills-from-stack ()
+(ert-deftest nelisp-aot-compiler/win64-defun-mixed-fifth-param-spills-from-stack ()
   "Win64 mixed defuns spill a fifth param from the incoming stack area."
   (let ((path (make-temp-file "nelisp-win64-mixed-defun5-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (a (b :type f64) c (d :type f64) (e :type f64)) e)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; movsd xmm0,[rbp+48]; movsd [rbp-40],xmm0
                      (unibyte-string #xf2 #x0f #x10 #x45 #x30
                                      #xf2 #x0f #x11 #x45 #xd8)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; body return: movsd xmm0,[rbp-40]
                      (unibyte-string #xf2 #x0f #x10 #x45 #xd8)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-gp-fifth-param-spills-from-stack ()
+(ert-deftest nelisp-aot-compiler/win64-defun-gp-fifth-param-spills-from-stack ()
   "Win64 GP defuns spill a fifth GP param from the incoming stack area."
   (let ((path (make-temp-file "nelisp-win64-gp-defun5-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (a b c d e) e)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; mov rax,[rbp+48]; mov [rbp-40],rax
                      (unibyte-string #x48 #x8b #x45 #x30
                                      #x48 #x89 #x45 #xd8)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; body return: mov rax,[rbp-40]
                      (unibyte-string #x48 #x8b #x45 #xd8)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-places-fifth-f64-arg-on-stack ()
+(ert-deftest nelisp-aot-compiler/win64-extern-call-places-fifth-f64-arg-on-stack ()
   "Win64 extern-call places a fifth f64 arg in the outgoing stack area."
   (let ((path (make-temp-file "nelisp-win64-f64-extern5-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe ()
               (extern-call ext
                            (:f64 (bits-to-f64 1))
@@ -2781,10 +2781,10 @@ with a slot index beyond the param count."
                            (:f64 (bits-to-f64 4))
                            (:f64 (bits-to-f64 5))))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp, 40; mov r10,[rsp+40]; mov [rsp+32],r10;
                      ;; call rel32; add rsp,40.  The copied 8 bytes are
@@ -2796,12 +2796,12 @@ with a slot index beyond the param count."
                                      #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-mixed-f64-slots ()
+(ert-deftest nelisp-aot-compiler/win64-extern-call-mixed-f64-slots ()
   "Win64 mixed extern-call assigns f64 registers by argument position."
   (let ((path (make-temp-file "nelisp-win64-f64-mixed-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe ()
               (extern-call ext
                            1
@@ -2809,28 +2809,28 @@ with a slot index beyond the param count."
                            3
                            (:f64 (bits-to-f64 4))))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; pop rax; movq xmm3,rax
                      (unibyte-string #x58 #x66 #x48 #x0f #x6e #xd8)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; pop r8
                      (unibyte-string #x41 #x58)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; pop rax; movq xmm1,rax
                      (unibyte-string #x58 #x66 #x48 #x0f #x6e #xc8)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; pop rcx
                      (unibyte-string #x59)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-coff-smoke ()
+(ert-deftest nelisp-aot-compiler/win64-coff-smoke ()
   "Compile `(defun foo (a b) (+ a b))' to a COFF .o and check Win64 prologue.
 The first byte of .text must be 0x55 (push rbp).  The frame must NOT
 start with a SysV `push rdi' (0x57) — that would indicate the old
@@ -2838,11 +2838,11 @@ SysV path was taken instead of Win64."
   (let ((path (make-temp-file "nelisp-win64-coff-smoke-" nil ".obj")))
     (unwind-protect
         (progn
-          (require 'nelisp-phase47-compiler)
-          (nelisp-phase47-compile-to-object
+          (require 'nelisp-aot-compiler)
+          (nelisp-aot-compile-to-object
            '(defun foo (a b) (+ a b))
            path :arch 'x86_64 :format 'coff)
-          (let* ((all-bytes (nelisp-phase47-compiler-test--read-bytes path))
+          (let* ((all-bytes (nelisp-aot-compiler-test--read-bytes path))
                  ;; Scan for the `push rbp' byte (0x55) which must be the
                  ;; first instruction of any Win64 function prologue.
                  ;; We scan the COFF rather than hard-coding the file offset
@@ -2863,17 +2863,17 @@ SysV path was taken instead of Win64."
               (should (not (= (aref all-bytes (1- found-push-rbp)) #x57))))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-coff-no-push-rdi ()
+(ert-deftest nelisp-aot-compiler/win64-coff-no-push-rdi ()
   "COFF emit must NOT use `push rdi' (0x57) for arg spill (SysV artifact).
 Win64 spills args via `mov [rbp-disp], reg' instead."
   (let ((path (make-temp-file "nelisp-win64-no-push-rdi-" nil ".obj")))
     (unwind-protect
         (progn
-          (require 'nelisp-phase47-compiler)
-          (nelisp-phase47-compile-to-object
+          (require 'nelisp-aot-compiler)
+          (nelisp-aot-compile-to-object
            '(defun bar (x) x)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
                  ;; Count occurrences of 0x57 (push rdi) in the COFF.
                  ;; A SysV prologue for `(defun bar (x) x)' would have
                  ;; exactly one 0x57 byte; Win64 must have none in .text.
@@ -2890,7 +2890,7 @@ Win64 spills args via `mov [rbp-disp], reg' instead."
             (should (= push-rdi-count 0))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-buffer-abi-is-win64 ()
+(ert-deftest nelisp-aot-compiler/win64-buffer-abi-is-win64 ()
   "compile-to-object with format 'coff binds --abi to 'win64.
 We verify indirectly: the emitted .text for a 1-arg function must
 contain REX.W (0x48) immediately before the MOV spill opcode (0x89),
@@ -2899,11 +2899,11 @@ SysV would emit `push rdi' = 57 instead."
   (let ((path (make-temp-file "nelisp-win64-buf-abi-" nil ".obj")))
     (unwind-protect
         (progn
-          (require 'nelisp-phase47-compiler)
-          (nelisp-phase47-compile-to-object
+          (require 'nelisp-aot-compiler)
+          (nelisp-aot-compile-to-object
            '(defun id (x) x)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
                  ;; Scan for the Win64 spill sequence:
                  ;; 48 89 4D F8 = REX.W MOV [rbp-8], RCX
                  ;; (RCX = first Win64 GP arg reg, disp = -8 = 0xF8 sign-byte).
@@ -2922,23 +2922,23 @@ SysV would emit `push rdi' = 57 instead."
             (should found-win64-spill)))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-preserves-rdi-rsi ()
+(ert-deftest nelisp-aot-compiler/win64-defun-preserves-rdi-rsi ()
   "Win64 defuns preserve RDI/RSI in private callee-save frame slots."
   (let ((path (make-temp-file "nelisp-win64-callee-save-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () 0)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; mov [rbp-152],rdi; mov [rbp-160],rsi
                      (unibyte-string #x48 #x89 #xbd #x68 #xff #xff #xff
                                      #x48 #x89 #xb5 #x60 #xff #xff #xff)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; mov rdi,[rbp-152]; mov rsi,[rbp-160]; mov rsp,rbp; pop rbp; ret
                      (unibyte-string #x48 #x8b #xbd #x68 #xff #xff #xff
@@ -2946,58 +2946,58 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x89 #xec #x5d #xc3)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-preserves-xmm6-xmm15 ()
+(ert-deftest nelisp-aot-compiler/win64-defun-preserves-xmm6-xmm15 ()
   "Win64 defuns preserve callee-saved XMM6-XMM15 in private slots."
   (let ((path (make-temp-file "nelisp-win64-xmm-callee-save-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () 0)
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp,160 for XMM6-XMM15 save area.
                      (unibyte-string #x48 #x81 #xec #xa0 #x00 #x00 #x00)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; movdqu [rbp-176],xmm6
                      (unibyte-string #xf3 #x0f #x7f #xb5 #x50 #xff #xff #xff)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; movdqu [rbp-320],xmm15
                      (unibyte-string #xf3 #x44 #x0f #x7f #xbd
                                      #xc0 #xfe #xff #xff)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; movdqu xmm6,[rbp-176]
                      (unibyte-string #xf3 #x0f #x6f #xb5 #x50 #xff #xff #xff)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; movdqu xmm15,[rbp-320]
                      (unibyte-string #xf3 #x44 #x0f #x6f #xbd
                                      #xc0 #xfe #xff #xff)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-defun-callee-saves-after-frame-slots ()
+(ert-deftest nelisp-aot-compiler/win64-defun-callee-saves-after-frame-slots ()
   "Win64 callee-save slots live below param and runtime let slots."
   (let ((path (make-temp-file "nelisp-win64-callee-save-frame-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (x) (let ((y (extern-call ext_y))) (+ x y)))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; mov [rbp-168],rdi; mov [rbp-176],rsi
                      (unibyte-string #x48 #x89 #xbd #x58 #xff #xff #xff
                                      #x48 #x89 #xb5 #x50 #xff #xff #xff)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; Restore from the same private slots before frame teardown.
                      (unibyte-string #x48 #x8b #xbd #x58 #xff #xff #xff
@@ -3005,25 +3005,25 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x89 #xec #x5d #xc3)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-gp-args-and-shadow ()
+(ert-deftest nelisp-aot-compiler/win64-extern-call-gp-args-and-shadow ()
   "Win64 extern-call uses RCX/RDX/R8/R9 and 32-byte caller shadow space."
   (let ((path (make-temp-file "nelisp-win64-extern-call-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext4 1 2 3 4))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; mov rcx,1; mov rdx,2; mov r8,3; mov r9,4
                      (unibyte-string #x48 #xc7 #xc1 #x01 #x00 #x00 #x00
                                      #x48 #xc7 #xc2 #x02 #x00 #x00 #x00
                                      #x49 #xc7 #xc0 #x03 #x00 #x00 #x00
                                      #x49 #xc7 #xc1 #x04 #x00 #x00 #x00)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp, 32; call rel32; add rsp, 32
                      (unibyte-string #x48 #x81 #xec #x20 #x00 #x00 #x00
@@ -3031,18 +3031,18 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-alloc-bytes-uses-gp-args-and-shadow ()
+(ert-deftest nelisp-aot-compiler/win64-alloc-bytes-uses-gp-args-and-shadow ()
   "Win64 alloc-bytes calls nl_alloc_bytes via RCX/RDX and shadow space."
   (let ((path (make-temp-file "nelisp-win64-alloc-bytes-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (alloc-bytes 32 8))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; mov rax,32; push rax; mov rax,8; push rax;
                      ;; pop rdx; pop rcx; sub rsp,32; call; add rsp,32.
@@ -3054,25 +3054,25 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xec #x20 #x00 #x00 #x00
                                      #xe8 #x00 #x00 #x00 #x00
                                      #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-            (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+            (should-not (nelisp-aot-compiler-test--bytes-contain-p
                          text
                          ;; Old SysV-only sequence: pop rsi; pop rdi;
                          ;; push rax; call.
                          (unibyte-string #x5e #x5f #x50 #xe8)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-dealloc-bytes-uses-gp-args-and-shadow ()
+(ert-deftest nelisp-aot-compiler/win64-dealloc-bytes-uses-gp-args-and-shadow ()
   "Win64 dealloc-bytes calls nl_dealloc_bytes via RCX/RDX/R8 and shadow space."
   (let ((path (make-temp-file "nelisp-win64-dealloc-bytes-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (p) (dealloc-bytes p 32 8))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; pop r8; pop rdx; pop rcx; sub rsp,32 shadow;
                      ;; call; add shadow back.  Win64 prologues leave the
@@ -3081,43 +3081,43 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xec #x20 #x00 #x00 #x00
                                      #xe8 #x00 #x00 #x00 #x00
                                      #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-            (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+            (should-not (nelisp-aot-compiler-test--bytes-contain-p
                          text
                          ;; Old SysV-only sequence: pop rdx; pop rsi;
                          ;; pop rdi; push rax; call.
                          (unibyte-string #x5a #x5e #x5f #x50 #xe8)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-boxed-allocators-use-shadow ()
+(ert-deftest nelisp-aot-compiler/win64-boxed-allocators-use-shadow ()
   "Win64 boxed alloc primitives reserve caller shadow space."
-  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
                '(seq
                  (defun probe_cons () (cons-make 4096 8192 12288))
                  (defun probe_record () (record-make 4096 2 12288))
                  (defun probe_vector () (vector-make 2 12288))
                  (defun probe_cell () (cell-make 4096 12288))))))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; cons-make: 4 saved pushes, then shadow/call/unshadow.
              (unibyte-string #x50
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; record-make: pop slot/count/tag -> RAX/RDX/RCX.
              (unibyte-string #x58 #x5a #x59 #x50 #x50
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; vector-make: pop slot/cap -> RSI/RCX, preserve slot, shadow.
              (unibyte-string #x41 #x5b #x5e #x59 #x56 #x56
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; cell-make: RCX = val-ptr before shadow/call.
              (unibyte-string #x41 #x5b #x5e #x5f #x56 #x56
@@ -3126,15 +3126,15 @@ SysV would emit `push rdi' = 57 instead."
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-boxed-setters-use-gp-args-and-shadow ()
+(ert-deftest nelisp-aot-compiler/win64-boxed-setters-use-gp-args-and-shadow ()
   "Win64 boxed setter primitives use RCX/RDX/R8 and caller shadow space."
-  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
                '(seq
                  (defun probe_cons_set () (cons-set-car 4096 8192))
                  (defun probe_cell_set () (cell-set-value 4096 8192))
                  (defun probe_rec_set () (record-slot-set 4096 0 8192))
                  (defun probe_vec_set () (vector-slot-set 4096 0 8192))))))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; cons-set-car/cell-set-value: RDX = value, RCX = boxed payload.
              (unibyte-string #x5e #x5f #x57 #x56
@@ -3143,7 +3143,7 @@ SysV would emit `push rdi' = 57 instead."
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; record/vector-slot-set: R8 = value, RDX = index, RCX = payload.
              (unibyte-string #x41 #x58 #x5a #x59
@@ -3152,12 +3152,12 @@ SysV would emit `push rdi' = 57 instead."
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-cons-make-with-clone-uses-gp-args ()
+(ert-deftest nelisp-aot-compiler/win64-cons-make-with-clone-uses-gp-args ()
   "Win64 cons-make-with-clone calls clone helper with RCX/RDX."
-  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
                '(defun probe ()
                   (cons-make-with-clone 4096 8192 12288)))))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; car clone: RCX = car-ptr, RDX = box.
              (unibyte-string #x48 #x89 #xf9
@@ -3165,7 +3165,7 @@ SysV would emit `push rdi' = 57 instead."
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; cdr clone: RCX = cdr-ptr, RDX = box + cdr offset.
              (unibyte-string #x48 #x89 #xd1
@@ -3175,20 +3175,20 @@ SysV would emit `push rdi' = 57 instead."
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-sexp-write-helpers-use-gp-args-and-shadow ()
+(ert-deftest nelisp-aot-compiler/win64-sexp-write-helpers-use-gp-args-and-shadow ()
   "Win64 sexp-write string helpers use RCX/RDX/R8 and caller shadow space."
-  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
                '(seq
                  (defun probe_symbol () (sexp-write-symbol 4096 1 12288))
                  (defun probe_symbol_lit () (sexp-write-symbol-lit 12288 "x"))))))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; sexp-write-symbol: pop slot/len/bytes -> R8/RDX/RCX.
              (unibyte-string #x41 #x58 #x5a #x59
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; sexp-write-symbol-lit: remap SysV staging regs to Win64.
              (unibyte-string #x49 #x89 #xd0
@@ -3197,14 +3197,14 @@ SysV would emit `push rdi' = 57 instead."
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+    (should-not (nelisp-aot-compiler-test--bytes-contain-p
                  text
                  ;; Old SysV call pad after RDI/RSI/RDX setup.
                  (unibyte-string #x5a #x5e #x5f #x50 #xe8)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-string-runtime-helpers-use-gp-args-and-shadow ()
+(ert-deftest nelisp-aot-compiler/win64-string-runtime-helpers-use-gp-args-and-shadow ()
   "Win64 mutable string and UTF-8 helpers use Win64 GP args plus shadow space."
-  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
                '(seq
                  (defun probe_make () (mut-str-make-empty 2 12288))
                  (defun probe_push () (mut-str-push-byte 12288 65))
@@ -3213,44 +3213,44 @@ SysV would emit `push rdi' = 57 instead."
                  (defun probe_count () (str-char-count 4096))
                  (defun probe_codepoint () (str-codepoint-at 4096 0 12288 16384))
                  (defun probe_alnum () (str-is-alphanumeric-at 4096 0))))))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; 2-arg helpers: pop RDX/RCX, reserve shadow, call.
              (unibyte-string #x5a #x59
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; 1-arg helpers: pop RCX, reserve shadow, call.
              (unibyte-string #x59
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; str-codepoint-at: pop R9/R8/RDX/RCX, reserve shadow, call.
              (unibyte-string #x41 #x59 #x41 #x58 #x5a #x59
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+    (should-not (nelisp-aot-compiler-test--bytes-contain-p
                  text
                  ;; Old SysV 4-arg helper sequence.
                  (unibyte-string #x59 #x5a #x5e #x5f #x50 #xe8)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-stack-gp-arg ()
+(ert-deftest nelisp-aot-compiler/win64-extern-call-stack-gp-arg ()
   "Win64 extern-call places the fifth GP arg above the shadow space."
   (let ((path (make-temp-file "nelisp-win64-extern-call-stack-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext5 1 2 3 4 5))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp, 48; mov rax,5; mov [rsp+32],rax;
                      ;; call rel32; add rsp,48
@@ -3261,19 +3261,19 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x30 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-seven-gp-stack-args-align ()
+(ert-deftest nelisp-aot-compiler/win64-extern-call-seven-gp-stack-args-align ()
   "Win64 7-arg extern-call reserves aligned shadow plus stack args."
   (let ((path (make-temp-file "nelisp-win64-extern-call-7gp-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe (p)
               (extern-call CreateFileA p 2147483648 1 0 3 128 0))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; 3 stack args => 32-byte shadow + 24 bytes args +
                      ;; 8-byte alignment pad = 64 bytes.
@@ -3288,18 +3288,18 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x40 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-extern-call-nontrivial-stack-gp-arg ()
+(ert-deftest nelisp-aot-compiler/win64-extern-call-nontrivial-stack-gp-arg ()
   "Win64 extern-call can copy a computed fifth GP arg into the outgoing area."
   (let ((path (make-temp-file "nelisp-win64-extern-call-stack-computed-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(defun probe () (extern-call ext5 1 2 3 4 (extern-call ext_arg)))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp, 40; mov r10,[rsp+40]; mov [rsp+32],r10;
                      ;; call rel32; add rsp,40
@@ -3310,61 +3310,61 @@ SysV would emit `push rdi' = 57 instead."
                                      #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-internal-call-stack-gp-arg ()
+(ert-deftest nelisp-aot-compiler/win64-internal-call-stack-gp-arg ()
   "Win64 internal calls place arg5 above shadow space instead of rejecting it."
   (let ((path (make-temp-file "nelisp-win64-call-stack-" nil ".obj")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-to-object
+          (nelisp-aot-compile-to-object
            '(seq
              (defun callee (a b c d e) e)
              (defun probe () (callee 1 2 3 4 5)))
            path :arch 'x86_64 :format 'coff)
-          (let* ((bytes (nelisp-phase47-compiler-test--read-bytes path))
-                 (text (nelisp-phase47-compiler-test--coff-section-bytes
+          (let* ((bytes (nelisp-aot-compiler-test--read-bytes path))
+                 (text (nelisp-aot-compiler-test--coff-section-bytes
                         bytes ".text")))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; sub rsp,40; mov r10,[rsp+40]; mov [rsp+32],r10.
                      (unibyte-string #x48 #x81 #xec #x28 #x00 #x00 #x00
                                      #x4c #x8b #x54 #x24 #x28
                                      #x4c #x89 #x54 #x24 #x20)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; mov r10,[rsp+40]; mov [rsp+32],r10; call rel32.
                      (unibyte-string #x4c #x8b #x54 #x24 #x28
                                      #x4c #x89 #x54 #x24 #x20
                                      #xe8)))
-            (should (nelisp-phase47-compiler-test--bytes-contain-p
+            (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
                      ;; add rsp,40 after the internal call returns.
                      (unibyte-string #x48 #x81 #xc4 #x28 #x00 #x00 #x00)))))
       (ignore-errors (delete-file path)))))
 
-(ert-deftest nelisp-phase47-compiler/win64-internal-call-odd-arity-no-pad ()
+(ert-deftest nelisp-aot-compiler/win64-internal-call-odd-arity-no-pad ()
   "Win64 internal calls do not use SysV arity-based alignment pads."
-  (let ((text (nelisp-phase47-compiler-test--coff-text-for
+  (let ((text (nelisp-aot-compiler-test--coff-text-for
                '(seq
                  (defun callee (a) a)
                  (defun probe (p) (callee p))))))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; ref p -> rcx; sub rsp,32 shadow; call rel32.
              (unibyte-string #x48 #x8b #x4d #xf8
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8)))
-    (should (nelisp-phase47-compiler-test--bytes-contain-p
+    (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; add rsp,32 after the internal call returns.
              (unibyte-string
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))
-    (should-not (nelisp-phase47-compiler-test--bytes-contain-p
+    (should-not (nelisp-aot-compiler-test--bytes-contain-p
                  text
                  ;; Old SysV-style pad for odd arity before shadow space.
                  (unibyte-string #x48 #x81 #xec #x08 #x00 #x00 #x00
                                  #x48 #x81 #xec #x20 #x00 #x00 #x00
                                  #xe8)))))
 
-(provide 'nelisp-phase47-compiler-test)
+(provide 'nelisp-aot-compiler-test)
 
-;;; nelisp-phase47-compiler-test.el ends here
+;;; nelisp-aot-compiler-test.el ends here

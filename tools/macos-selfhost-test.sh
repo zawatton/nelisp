@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # macOS arm64 (Apple Silicon) self-host smoke test.
 #
-# Builds small programs through the pure-elisp Phase-47 aarch64 backend
+# Builds small programs through the pure-elisp AOT aarch64 backend
 # -> Mach-O MH_EXECUTE (nelisp-mach-o-write-executable), ad-hoc signs
 # them with the system codesign (Apple Silicon mandates a signature),
 # runs each, and asserts its exit code.  Run on an M1/M2/... Mac with

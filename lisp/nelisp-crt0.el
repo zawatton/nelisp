@@ -1,4 +1,4 @@
-;;; nelisp-crt0.el --- pure-elisp crt0 (Phase 47 spike)  -*- lexical-binding: t; -*-
+;;; nelisp-crt0.el --- pure-elisp crt0 (AOT spike)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 

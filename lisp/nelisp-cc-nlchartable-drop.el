@@ -111,7 +111,7 @@
         ;; the dealloc-bytes arm's return convention so the caller
         ;; sees a uniform `i64 = 1' on both branches.
         1)))
-  "Phase 47 source for the Doc 124 §124.L+ NlCharTable Drop kernel.
+  "AOT source for the Doc 124 §124.L+ NlCharTable Drop kernel.
 
 Two-entry `(seq DEFUN ...)' manifest mirroring §124.G-K:
 - `nelisp_nlchartable_drop_prog2 (_eff val) -> val' — side-effect
@@ -120,7 +120,7 @@ Two-entry `(seq DEFUN ...)' manifest mirroring §124.G-K:
   dealloc-bytes call.
 - `nelisp_nlchartable_drop (box-ptr) -> i64' — public entry.
 
-Phase 47's SysV AMD64 prologue spills the first arg (`box-ptr' =
+AOT's SysV AMD64 prologue spills the first arg (`box-ptr' =
 raw `*mut NlCharTable' as i64) into the rbp-relative slot 0.
 The public body:
 

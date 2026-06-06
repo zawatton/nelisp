@@ -8,13 +8,13 @@
 ;; Reproducible, INCREMENTAL build of a standalone NeLisp eval binary that
 ;; needs ZERO Rust (no cargo / rustc / target binary).  The REAL NeLisp
 ;; evaluator (nl_eval_inner + the combiner cons/apply cluster + bootstrap
-;; mirror) is compiled by the pure-elisp Phase 47 compiler into relocatable
+;; mirror) is compiled by the pure-elisp AOT compiler into relocatable
 ;; units and linked by the pure-elisp static linker into a freestanding
 ;; static ELF.  The single primitive that was Rust-only (nelisp_apply_function,
 ;; the builtin name -> native op dispatcher) is supplied here in pure elisp.
 ;;
 ;; Toolchain (all pure elisp):
-;;   each unit source -> `nelisp-phase47-compiler' (my-compile-to-unit) ->
+;;   each unit source -> `nelisp-aot-compiler' (my-compile-to-unit) ->
 ;;   in-memory link-unit -> `nelisp-static-linker' (nelisp-link-units) ->
 ;;   ELF64 ET_EXEC at target/nelisp-standalone-eval.
 ;;
@@ -40,7 +40,7 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 (require 'nelisp-static-linker)
 (require 'nelisp-elf-write)
 (require 'nelisp-mach-o-write)
@@ -249,7 +249,7 @@ link-unit names, and build logs."
   "Toolchain source files; any newer than a cache entry forces recompile."
   (delq nil (cons nelisp-standalone--this-file
                   (mapcar #'locate-library
-                          '("nelisp-phase47-compiler" "nelisp-static-linker"
+                          '("nelisp-aot-compiler" "nelisp-static-linker"
                             "nelisp-elf-write" "nelisp-cc-runtime")))))
 
 (defconst nelisp-standalone--arena-rebase-span #x1000
@@ -457,17 +457,17 @@ standalone units can call each other."
          (source (nelisp-standalone--chunk-arena-rewrite source))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
-         (nelisp-phase47-compiler--label-counter 0)
-         (nelisp-phase47-compiler--arch arch)
-         (nelisp-phase47-compiler--os (nelisp-standalone--target-os))
-         (nelisp-phase47-compiler--allow-external-user-calls t)
-         (nelisp-phase47-compiler--abi resolved-abi)
-         (ir (nelisp-phase47-compiler--parse source nil))
-         (defuns (nelisp-phase47-compiler--collect-defuns ir))
+         (nelisp-aot-compiler--label-counter 0)
+         (nelisp-aot-compiler--arch arch)
+         (nelisp-aot-compiler--os (nelisp-standalone--target-os))
+         (nelisp-aot-compiler--allow-external-user-calls t)
+         (nelisp-aot-compiler--abi resolved-abi)
+         (ir (nelisp-aot-compiler--parse source nil))
+         (defuns (nelisp-aot-compiler--collect-defuns ir))
          (buf (if (eq arch 'aarch64)
                   (nelisp-asm-arm64-make-buffer)
                 (nelisp-asm-x86_64-make-buffer resolved-abi))))
-    (dolist (d defuns) (nelisp-phase47-compiler--emit-defun d buf))
+    (dolist (d defuns) (nelisp-aot-compiler--emit-defun d buf))
     (let* ((arm64-linked (when (eq arch 'aarch64)
                            (nelisp-standalone--arm64-link-unit-text+relocs buf)))
            (text (if (eq arch 'aarch64)
@@ -480,7 +480,7 @@ standalone units can call each other."
                         (cdr arm64-linked)
                       (nelisp-asm-x86_64-extract-relocs buf)))
            (exported (mapcar (lambda (d)
-                               (let ((nm (nelisp-phase47-compiler--ir-get d :name)))
+                               (let ((nm (nelisp-aot-compiler--ir-get d :name)))
                                  (if (stringp nm) nm (symbol-name nm))))
                              defuns))
            (symbols (delq nil
@@ -1191,7 +1191,7 @@ addressing by a runtime base, never by a fixed reservation."
     ;; Step over one block: process it, return the NEXT header address
     ;; (hdr + block_total), or 0 to signal "stop" (desync / past end).  All
     ;; reads are within the block; no control state escapes — the loop's
-    ;; setqs stay at its own scope (avoids the Phase-47 nested-let+outer-setq
+    ;; setqs stay at its own scope (avoids the AOT nested-let+outer-setq
     ;; pitfall that silently drops the mutation).
     (defun nl_gc_sweep_step (hdr end)
       (if (= (nl_gc_bt_ok hdr (ptr-read-u64 hdr 0) end) 0)
@@ -2492,7 +2492,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                  ;; parent: wait until the child has captured+acked its box, so
                  ;; the NEXT spawn does not clobber the shared handshake slot.
                  (seq (nl_spin_zero 268435688) (wf_write_int out 1)))))))
-    ;; thread-join: spin until *ADDR >= TARGET.  Uses the COMPILED (phase47,
+    ;; thread-join: spin until *ADDR >= TARGET.  Uses the COMPILED (aot,
     ;; iterative) `while' — NOT the interpreter's recursive `while' that
     ;; overflows the native stack on a long spin — so the parent joins N
     ;; concurrent threads in O(1) stack.
@@ -2617,7 +2617,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; building blocks of an in-interpreter parallel unit compile.  Args and
     ;; results are raw i64 (addresses / syscall numbers / counts), carried as
     ;; Int Sexps via wf_argval / wf_write_int.  The underlying ops are the
-    ;; same Phase-47 grammar ops the compiler emits, so no new Rust.
+    ;; same AOT grammar ops the compiler emits, so no new Rust.
     ((:lit "syscall-direct") . (wf_write_int out (syscall-direct (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
     ((:lit "atomic-fetch-add") . (wf_write_int out (atomic-fetch-add (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-read-u64") . (wf_write_int out (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
@@ -4910,7 +4910,7 @@ correctly."
         ;; GC trigger: collect at a form boundary once the bump offset
         ;; crosses this threshold.  Initial 512 MiB keeps small *and*
         ;; moderate programs GC-free (zero overhead) — crucially the full
-        ;; 14k-line nelisp-phase47-compiler.el load (420 top-level forms,
+        ;; 14k-line nelisp-aot-compiler.el load (420 top-level forms,
         ;; peak arena only ~53 MB) never crosses it, so loading the whole
         ;; AOT toolchain is O(N) (one mark+sweep per form, each over the
         ;; GROWING live set, was O(N^2): a 4 MiB trigger made the load
@@ -5224,7 +5224,7 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
 ;; `(not (= raw-bool 0))' inside a dispatcher-boundary-available defun is routed
 ;; through nelisp_aot_builtin_call1, which reads 32 bytes from the raw i64 boolean
 ;; as a *const Sexp -> NULL deref -> SIGSEGV (the real root cause; see the
-;; compiler gate at nelisp-phase47-compiler ~L7846/7862, a durable fix TODO).
+;; compiler gate at nelisp-aot-compiler ~L7846/7862, a durable fix TODO).
 ;; This rewrite avoids `not', yields rc 0 from the clone arm, and treats the
 ;; setter's 1 as success.  Applied as a build-time sexp patch so lisp/ + golden
 ;; binaries stay untouched.

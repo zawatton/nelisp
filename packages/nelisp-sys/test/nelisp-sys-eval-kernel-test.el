@@ -220,7 +220,7 @@ loop now carries a lexical environment, no Rust runtime."
           (nelisp-sys-compile-executable
            '(;; nl_lookup: recursive scan of the (sym,val) env; -1 if absent.
              ;; p = current pair ptr, n = remaining count, sym = key.  Every
-             ;; `if' sits in tail position (Phase 47 if/cond are tail-only:
+             ;; `if' sits in tail position (AOT if/cond are tail-only:
              ;; they cannot nest as a setq value or call argument).
              (sys:defun nl_lookup ((p usize) (n i64) (sym i64)) i64 (:alloc none)
                (if (= n 0)
@@ -263,7 +263,7 @@ loop now carries a lexical environment, no Rust runtime."
 
 (ert-deftest nelisp-sys-eval-kernel-lower-apply ()
   "A CALL node applies a stored function pointer to an evaluated arg.
-Lowers (sys:call-ptr FN ARG) to the Phase 47 (call-ptr FN ARG) — the
+Lowers (sys:call-ptr FN ARG) to the AOT (call-ptr FN ARG) — the
 Doc 133 Phase 0 indirect-call capability, now driving the eval loop's
 function-application path."
   (should (equal '(defun nl_apply (node)
@@ -470,7 +470,7 @@ exit 42.  text -> Sexp -> native evaluation, no Rust runtime."
              ;; parse a (multi-digit) integer literal -> INT node.  Written as
              ;; tail recursion over an accumulator rather than while+set!: the
              ;; accumulator is a PARAM (always a frame slot), sidestepping the
-             ;; Phase 47 trap where a mutable local with a foldable init (0)
+             ;; AOT trap where a mutable local with a foldable init (0)
              ;; that is only set inside a loop is constant-folded, not slotted.
              (sys:defun nl_pint ((cur usize) (arena usize) (acc i64)) usize
                (:alloc none)
@@ -559,7 +559,7 @@ exit 42.  text -> Sexp -> native evaluation, no Rust runtime."
 (ert-deftest nelisp-sys-eval-kernel-div-runs ()
   "Doc 133 eval-kernel e2e: integer division node DIV=110.
 Builds `(/ 84 2)' (84/2=42) -> exit 42 on a standalone binary.  Enabled
-once the Phase 47 value emitter learned to emit `/' (idiv quotient)."
+once the AOT value emitter learned to emit `/' (idiv quotient)."
   (unless (and (eq system-type 'gnu/linux)
                (string-prefix-p "x86_64" system-configuration))
     (ert-skip "requires x86_64 Linux"))

@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 111 §111.C swaps the Vector arm of `(aref ARR IDX)' to a
-;; Phase 47-compiled elisp object.  Rust pre-validates the Vector
+;; AOT-compiled elisp object.  Rust pre-validates the Vector
 ;; type and bounds, then this body unwraps the integer index and
 ;; copies the selected 32-byte Sexp element into the caller-owned
 ;; result slot.

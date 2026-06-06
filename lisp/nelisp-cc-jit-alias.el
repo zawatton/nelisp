@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-alias.el --- Phase 47 nl_jit_alias: JIT name→canonical map  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-alias.el --- AOT nl_jit_alias: JIT name→canonical map  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 133 §133.A — Phase 47 migration of the `alias' helper from
+;; Doc 133 §133.A — AOT migration of the `alias' helper from
 ;; `build-tool/src/jit/bridge.rs'.  Also migrates `as_name' (inline
 ;; type-guard) into the same object, removing both from Rust.
 ;;
@@ -36,7 +36,7 @@
 ;;   nelisp_jit_syscall_supported_p → nl_jit_syscall_supported_p
 ;;   (other)                     → identity (copy input name)
 ;;
-;; Phase 47 ops consumed (all existing):
+;; AOT ops consumed (all existing):
 ;;   `sexp-name-eq'     — Doc 133 §133.B new op: Symbol(4)/Str(5) tag
 ;;                        + length + byte-loop compare.  Replaces the
 ;;                        Rust `alias(name: &str) -> &str' match logic.
@@ -354,7 +354,7 @@
           (nl_jit_alias_dispatch name out (nl_jit_alias_buf))
         1)))
 
-  "Phase 47 source for the Doc 133 §133.A `nl_jit_alias' trampoline.
+  "AOT source for the Doc 133 §133.A `nl_jit_alias' trampoline.
 
 Thirteen-alias dispatch table mapping user-facing `nelisp_jit_*' names
 to their canonical dlsym-resolvable `nelisp_jit_cons_*' / `nl_jit_*'

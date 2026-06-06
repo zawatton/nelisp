@@ -1,4 +1,4 @@
-;;; nelisp-cc-bi-meta-dispatch-loop.el --- Wave A30 per-entry dispatch loop Phase 47 kernel  -*- lexical-binding: t; -*-
+;;; nelisp-cc-bi-meta-dispatch-loop.el --- Wave A30 per-entry dispatch loop AOT kernel  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,14 +8,14 @@
 
 ;;; Commentary:
 
-;; Wave A30 (Phase 47 self-application — per-entry dispatch loop).
+;; Wave A30 (AOT self-application — per-entry dispatch loop).
 ;; Collapses the 212-iter elisp dispatch loop in
 ;; `compile-elisp-objects-meta--walk' (= the final cached-path
-;; bottleneck after A26-A29 walker chain) into a single Phase 47
+;; bottleneck after A26-A29 walker chain) into a single AOT
 ;; native call.
 ;;
 ;; Background.  After Wave A27 production cutover, the walker dispatch
-;; into `nelisp_meta_walk' is Phase 47 native (= 4 chunks × 64 entries,
+;; into `nelisp_meta_walk' is AOT native (= 4 chunks × 64 entries,
 ;; ceil(212/64)=4 bridge calls), but the elisp dispatch loop that
 ;; iterates entries [0, 212) to do per-entry "emit or skip" decisions
 ;; still runs in the standalone NeLisp elisp interpreter.  Each iter
@@ -23,7 +23,7 @@
 ;; interpreter dispatch overhead per op accumulates: 212 iter × ~6 ops
 ;; × ~300ms/op ≈ 6m30s observed on Debian VM cached-path runs.
 ;;
-;; Wave A30 swaps this elisp loop for a Phase 47 kernel
+;; Wave A30 swaps this elisp loop for a AOT kernel
 ;; `nelisp_meta_dispatch_loop' that walks the per-chunk dirty + arch-
 ;; skip bitmask vectors, computes per-chunk `(dirty AND NOT arch-skip)'
 ;; emit-needed bitmasks + per-chunk `(NOT arch-skip)' accept-bitmasks,
@@ -37,7 +37,7 @@
 ;; on i64 bitmask values via the existing `vector-ref-ptr' +
 ;; `sexp-int-unwrap' read path and `vector-slot-set' + `sexp-int-make'
 ;; write path.  No string / cons / heap-allocated payload crosses the
-;; bridge, so the kernel composes only the already-validated Phase 47
+;; bridge, so the kernel composes only the already-validated AOT
 ;; grammar from §111.C + §100.D + §125.A.
 ;;
 ;; Bridge contract.  The standalone NeLisp interpreter's
@@ -100,7 +100,7 @@
 ;; iter strips one bit and recurses with count+1; stops when n=0.
 ;;
 ;; Linux-x86_64 only — same arch gate as the A25.2 / A26 parents.
-;; Composes only existing Phase 47 grammar (no new opcode, no Rust
+;; Composes only existing AOT grammar (no new opcode, no Rust
 ;; extern added).  Net Rust LOC delta = 0.
 
 ;;; Code:
@@ -109,7 +109,7 @@
   '(seq
     ;; 3-arg side-effect sequencer — `(val _e1 _e2) -> val'.  Used by
     ;; the inner step to thread `dealloc-bytes' cleanup behind the
-    ;; vector-slot-set write.  Odd arity (3) — Phase 47 emits rsp pad.
+    ;; vector-slot-set write.  Odd arity (3) — AOT emits rsp pad.
     (defun nelisp_meta_dispatch_loop_seq3 (val _e1 _e2) val)
 
     ;; 2-arg discard-and-return — `(_x ret) -> ret'.  Used by the
@@ -145,7 +145,7 @@
     ;; per chunk, computes final-mask = dirty AND (arch-skip XOR -1)
     ;; from the per-chunk i64 values, and dispatches into the inner
     ;; writer.  Returns 0 so it composes additively into the iter
-    ;; walker's seq3 sequencer.  Odd arity (5) — Phase 47 emits rsp pad.
+    ;; walker's seq3 sequencer.  Odd arity (5) — AOT emits rsp pad.
     (defun nelisp_meta_dispatch_loop_emit_step
         (c dirty-vec arch-skip-vec emit-vec dirty-val)
       (nelisp_meta_dispatch_loop_emit_step_inner
@@ -231,7 +231,7 @@
     ;; nl-jit-call-out-2 bridge surfaces as the call's return.
     ;;
     ;; Returns TRAMPOLINE_OK (= 0) via the zero2 wrapper.  Odd arity (3)
-    ;; — Phase 47 emits the rsp alignment pad via `--needs-align'.
+    ;; — AOT emits the rsp alignment pad via `--needs-align'.
     (defun nelisp_meta_dispatch_loop (inputs-vec emit-vec result-slot)
       (nelisp_meta_dispatch_loop_zero2
        (nelisp_meta_dispatch_loop_outer
@@ -240,7 +240,7 @@
         emit-vec
         result-slot)
        0)))
-  "Phase 47 source for the Wave A30 per-entry dispatch loop kernel
+  "AOT source for the Wave A30 per-entry dispatch loop kernel
 `(nelisp_meta_dispatch_loop INPUTS-VEC EMIT-VEC RESULT-SLOT)'.
 
 Eight-entry `(seq DEFUN ...)' manifest:
@@ -308,9 +308,9 @@ Caller-side preparation (elisp wrapper):
      pre-A30 dispatch loop would have produced.
   9. emit-vec slots hold per-chunk Sexp::Int(final-mask); the
      wrapper iterates 4 chunks (not 212 entries) to extract set bits
-     and dispatch `nelisp-phase47-compile-to-object'.
+     and dispatch `nelisp-aot-compile-to-object'.
 
-Composes only existing Phase 47 grammar — no new opcode:
+Composes only existing AOT grammar — no new opcode:
 
 - §111.C `vector-len' / `vector-ref-ptr' / `vector-slot-set' — vector
   probe + element pointer extraction + refcount-aware slot write.

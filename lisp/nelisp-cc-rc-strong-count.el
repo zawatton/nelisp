@@ -32,7 +32,7 @@
 ;; inside an `NlConsBox' (= layout-pinned by `#[repr(C)]' per
 ;; `build-tool/src/eval/nlconsbox.rs:56' + the compile-time assert at
 ;; `build-tool/src/eval/nlrc.rs:292').  Same constant as §123.A; the
-;; Phase 47 emitter compiles the literal as an `add rax, 64'
+;; AOT emitter compiles the literal as an `add rax, 64'
 ;; instruction with no relocation before the load.
 ;;
 ;; Ordering: §122.E `ptr-read-u64' performs a plain (relaxed) i64 load
@@ -83,13 +83,13 @@
      ;; Lowers to `mov rax, qword ptr [rdi + 64]' on x86_64 SysV — a
      ;; single load with no PLT call to `nl_ptr_read_u64' because the
      ;; extern is `#[inline(always)]'-equivalent at the assembly
-     ;; level (= the Phase 47 emitter still uses the PLT path for
+     ;; level (= the AOT emitter still uses the PLT path for
      ;; symmetry with the write ops; cost ~2 cycles per call which
      ;; the refcount-snapshot fast path can absorb).
      (ptr-read-u64 box-ptr 64))
-  "Phase 47 source for the Doc 123 §123.C refcount-read kernel.
+  "AOT source for the Doc 123 §123.C refcount-read kernel.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills the
+Single-arg function — AOT's SysV AMD64 prologue spills the
 first arg (`box-ptr' = raw `NlConsBox*' as i64) into the rbp-
 relative slot 0.  The body is one composed value form: pass
 `box-ptr' + offset = 64 (= REFCOUNT_OFFSET, the byte distance from

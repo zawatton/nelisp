@@ -11,7 +11,7 @@
 ;; Doc 111 §111.E Group E helper #21 — `frame_push_rust_direct'.  Doc
 ;; 115 §115.3 — full pure-elisp implementation of the lexframe push.
 ;; Replaces the prior Rust shim `nl_frame_push' (= deleted from
-;; `build-tool/src/eval/env_lexframe_phase47_shims.rs').
+;; `build-tool/src/eval/env_lexframe_aot_shims.rs').
 ;;
 ;; Algorithm (= literal transcription of the Rust `nl_frame_push'
 ;; impl):
@@ -62,7 +62,7 @@
 ;; = 0 mod 16).  `record-slot-set' aligns rsp dynamically (= `and rsp,
 ;; -16' pattern) and thus tolerates either body-entry alignment;
 ;; `extern-call' adds a runtime `sub rsp, 8' when the outer defun's
-;; arity is odd via the `nelisp-phase47-compiler--current-defun-arity'
+;; arity is odd via the `nelisp-aot-compiler--current-defun-arity'
 ;; dynvar.
 ;;
 ;; HISTORY: the original Doc 115 §115.3 ship used arity 3 with a `_pad'
@@ -147,7 +147,7 @@
       (record-slot-set frames-ptr
                        1
                        (vector-ref-ptr scratch-vec-ptr 6))))
-  "Phase 47 source for Doc 111 §111.E #21 / Doc 115 §115.3
+  "AOT source for Doc 111 §111.E #21 / Doc 115 §115.3
 `frame_push_rust_direct'.
 
 Pure-elisp lexframe push.  Composes `record-make' (§115.3 new),
@@ -157,7 +157,7 @@ Pure-elisp lexframe push.  Composes `record-make' (§115.3 new),
 `nelisp_frame_stack_ensure_capacity' (the §115.1 elisp port).
 
 Replaces the ~60 LOC Rust shim `nl_frame_push' which has been removed
-from `env_lexframe_phase47_shims.rs'.  The safe wrapper in
+from `env_lexframe_aot_shims.rs'.  The safe wrapper in
 `build-tool/src/lib.rs::Spike::frame_push' allocates the 7-slot
 scratch vector and the two type-tag symbol Sexps before calling
 this helper; see the file commentary for the slot layout and refcount

@@ -105,10 +105,10 @@ archives it into OUTPUT-PATH with the host `ar'.  Returns OUTPUT-PATH."
       (ignore-errors (delete-directory objdir t)))))
 
 (defun nelisp-sys--entry-program (lowered entry-name)
-  "Reshape a LOWERED module into a Phase 47 standalone program.
+  "Reshape a LOWERED module into a AOT standalone program.
 ENTRY-NAME's defun body becomes the top-level program form; every other
 defun is kept as a helper, emitted before the entry body in a `seq'.
-The Phase 47 standalone emitter generates `_start' from this program."
+The AOT standalone emitter generates `_start' from this program."
   (let* ((defuns (if (eq (car-safe lowered) 'seq) (cdr lowered) (list lowered)))
          (entry-body nil)
          (helpers '()))

@@ -120,7 +120,7 @@ simplest one as proof of concept.
   walks + cons-make to materialize the result list.  Refcount
   bumping for the cloned kids reuses §123.A's atomic-fetch-add.
 - §123.E: `bi_nl_rc_alloc' allocates a fresh NlConsBox via the Rust
-  `alloc::alloc` global allocator.  Phase 47 has no alloc grammar
+  `alloc::alloc` global allocator.  AOT has no alloc grammar
   op as of Doc 122; this is Doc 125 (= alloc/dealloc handlers).
   §123.E ships *after* Doc 125 lands.
 
@@ -183,7 +183,7 @@ simplest one as proof of concept.
 ** §2.5 §123.E — alloc/dealloc/finalize (gated on Doc 125)
 
 - `bi_nl_rc_alloc' / `bi_nl_rc_dealloc' / `bi_nl_gc_finalize' need
-  alloc-grammar ops not yet in Phase 47.  Defer to Doc 125 (=
+  alloc-grammar ops not yet in AOT.  Defer to Doc 125 (=
   alloc / dealloc handlers).
 - Skeleton landed here so the rest of `rc_primitives.rs' is empty
   after §123.D; §123.E completes the file deletion once Doc 125
@@ -193,7 +193,7 @@ simplest one as proof of concept.
 
 - *SHIPPED 2026-05-18*: swaps the Rust algorithmic bodies of the 4
   `bi_nl_*' primitives whose elisp kernels SHIPPED in §123.A-C for
-  thin Phase 47 dispatches.  This is where Rust LOC actually
+  thin AOT dispatches.  This is where Rust LOC actually
   disappears — §123.A-C only landed the kernels + probes alongside
   the existing Rust bodies.
 - Swapped primitives:

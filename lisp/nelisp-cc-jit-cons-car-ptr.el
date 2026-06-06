@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-cons-car-ptr.el --- Phase 47 nl_cons_car_ptr swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-cons-car-ptr.el --- AOT nl_cons_car_ptr swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `nl_cons_car_ptr' Rust extern in
+;; AOT replacement for the `nl_cons_car_ptr' Rust extern in
 ;; `build-tool/src/jit/cons.rs'.  The Rust body was:
 ;;
 ;;   match &*arg {
@@ -19,7 +19,7 @@
 ;; `cons_box_ptr' reads the NonNull<NlConsBox> pointer stored at
 ;; SEXP_PAYLOAD_OFFSET=8 inside the Sexp enum.  Since NlConsBox is
 ;; `#[repr(C)]' with `car' at offset 0, that pointer IS `&car as
-;; *const Sexp' — matching the Phase 47 `sexp-payload-ptr' op which
+;; *const Sexp' — matching the AOT `sexp-payload-ptr' op which
 ;; returns the same box pointer (or 0 for any non-box variant).
 ;;
 ;; ABI constants used (§100.B frozen):
@@ -42,7 +42,7 @@
      (if (= (sexp-tag arg) 7)
          (sexp-payload-ptr arg)
        0))
-  "Phase 47 source for `nl_cons_car_ptr' (jit/cons.rs → elisp).
+  "AOT source for `nl_cons_car_ptr' (jit/cons.rs → elisp).
 
 Returns the NlConsBox* (= &car as *const Sexp, NlConsBox offset 0)
 when arg is Sexp::Cons (tag 7), else 0 (null).  Used via

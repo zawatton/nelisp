@@ -53,7 +53,7 @@
 ;;   nelisp_ptr_write_u8    T 0x0000
 ;;   nelisp_alloc_bytes     T 0x0000
 ;;   nelisp_dealloc_bytes   T 0x0000
-;;   nl_sexp_clone_into     T 0x0472  (Phase 47 compiled; takes (dst, src))
+;;   nl_sexp_clone_into     T 0x0472  (AOT compiled; takes (dst, src))
 ;;
 ;; nl_jit_char_table_aref / nl_jit_char_table_aset status in same archive:
 ;;   T (defined) — call THROUGH to nl_char_table_get_raw / nl_char_table_set_raw
@@ -88,7 +88,7 @@
   (:alloc none :ffi may :unsafe may))
 
 ;; nl_sexp_clone_into(dst, src) -> i64
-;; Phase 47 compiled symbol: refcount-aware clone of *src into *dst.
+;; AOT compiled symbol: refcount-aware clone of *src into *dst.
 ;; Convention in eval-port: first arg = dst, second arg = src.
 (sys:extern nl_sexp_clone_into
   (:symbol "nl_sexp_clone_into" :abi c :unsafe t)

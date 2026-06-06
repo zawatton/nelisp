@@ -494,7 +494,7 @@ Rust `sf_cl_defun' (build-tool/src/eval/special_forms.rs:389)."
 ;;
 ;; `(throw TAG VALUE)' は `(signal 'no-catch (list TAG VALUE))' に展開、
 ;; `(catch TAG BODY)' は `(condition-case e BODY (no-catch ...))' に展開。
-;; Rust 側は `consume_stashed_error' で Phase 47 .o の rc=1 経由でも
+;; Rust 側は `consume_stashed_error' で AOT .o の rc=1 経由でも
 ;; signal data から `EvalError::UserError("no-catch", ...)' を再構築する
 ;; ので、progn / lambda 越えでも throw が tag eq で catch される。
 

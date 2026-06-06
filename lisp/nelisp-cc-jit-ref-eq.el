@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.A — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.A — AOT-compiled replacement for the Rust
 ;; `nl_jit_ref_eq' trampoline in `build-tool/src/jit/predicate.rs'.
 ;; ABI shape `(*const Sexp, *const Sexp, *mut Sexp) -> i64' (=
 ;; `:trampoline-binary-ctor'), reachable via `(nl-jit-call-out-2
@@ -19,7 +19,7 @@
 ;; The Rust impl was a thin pass-through to `sexp_eq' which is
 ;; identical to the path `nl_sexp_eq' takes — see the Doc 87 §10.2
 ;; judgment call in the original Rust trampoline header.  The
-;; Phase 47 body composes the same shape via `extern-call' to
+;; AOT body composes the same shape via `extern-call' to
 ;; `nl_sexp_eq' + conditional `sexp-write-t' / `sexp-write-nil'.
 ;;
 ;; Return-value convention: the trampoline's i64 return is the err-
@@ -39,7 +39,7 @@
      (if (= (extern-call nl_sexp_eq a b) 0)
          (and (sexp-write-nil out) 0)
        (and (sexp-write-t out) 0)))
-  "Phase 47 source for the §120.A `nl_jit_ref_eq' swap.
+  "AOT source for the §120.A `nl_jit_ref_eq' swap.
 
 Delegates to the `nl_sexp_eq' Rust extern (= `#[no_mangle]'
 wrapper around `sexp_eq' in `eval/special_forms.rs') and then

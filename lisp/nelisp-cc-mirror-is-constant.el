@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group A helper #6 — `mirror_is_constant'.  Phase 47
+;; Doc 111 §111.E Group A helper #6 — `mirror_is_constant'.  AOT
 ;; composition of #1 (`mirror_lookup_entry') + §111.B
 ;; `record-slot-ref-ptr' (slot 3) + §100 `sexp-tag' equality against
 ;; `SEXP_TAG_T' (= 1).  Replaces the `Env::mirror_is_constant' Rust
@@ -47,7 +47,7 @@
       (nelisp_mirror_is_constant_check
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        mirror-ptr sym-ptr 0)))
-  "Phase 47 source for Doc 111 §111.E #6 `mirror_is_constant'.
+  "AOT source for Doc 111 §111.E #6 `mirror_is_constant'.
 
 Two defuns (seq form).  Alignment-safe CPS structure.
 

@@ -5,7 +5,7 @@
 ;;; Commentary:
 
 ;; nelisp-sys is a typed, statically checked systems-programming subset
-;; hosted on the NeLisp Phase 47 toolchain.  It is NOT ordinary dynamic
+;; hosted on the NeLisp AOT toolchain.  It is NOT ordinary dynamic
 ;; Elisp: source written in the `sys:' family of forms is type checked,
 ;; ownership/borrow checked, and lowered to native object code through a
 ;; thin adapter over the existing NeLisp compiler/assembler/linker.

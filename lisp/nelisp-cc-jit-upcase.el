@@ -1,4 +1,4 @@
-;;; nelisp-cc-jit-upcase.el --- Phase 47 body for nl_jit_upcase  -*- lexical-binding: t; -*-
+;;; nelisp-cc-jit-upcase.el --- AOT body for nl_jit_upcase  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 elisp migration of `nl_jit_upcase' from
+;; AOT elisp migration of `nl_jit_upcase' from
 ;; `build-tool/src/jit/strings.rs'.
 ;;
 ;; Trampoline signature: `(*const Sexp, *mut Sexp) -> i64'
@@ -103,7 +103,7 @@
                0)
             ;; Any other tag → ERR
             1)))))
-  "Phase 47 source for the `nl_jit_upcase' trampoline.
+  "AOT source for the `nl_jit_upcase' trampoline.
 
 Two-entry `(seq DEFUN ...)' manifest:
   `nl_jit_upcase_walk (src_ptr src_len out idx)' — byte walker.

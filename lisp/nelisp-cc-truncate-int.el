@@ -35,9 +35,9 @@
 (defconst nelisp-cc-truncate-int--source
   '(defun nelisp_truncate_int (arg0 result-slot)
      (sexp-int-make result-slot (sexp-int-unwrap arg0)))
-  "Phase 47 source for the §100.C `bi_truncate' Int swap.
+  "AOT source for the §100.C `bi_truncate' Int swap.
 
-Two-argument function — Phase 47's SysV AMD64 prologue spills the
+Two-argument function — AOT's SysV AMD64 prologue spills the
 first arg (`arg0' = `*const Sexp') into the rbp-relative slot 0 and
 the second arg (`result-slot' = `*mut Sexp') into slot 1.  The body
 is one composed value form: read the i64 payload of `*arg0' via

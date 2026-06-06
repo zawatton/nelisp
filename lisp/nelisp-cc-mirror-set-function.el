@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 111 §111.E Group B helper #8 — `mirror_set_function'.  Phase 47
+;; Doc 111 §111.E Group B helper #8 — `mirror_set_function'.  AOT
 ;; reimplementation of the env-mirror entry function-slot writer (=
 ;; slot 1 instead of slot 0).  Otherwise identical structure to helper
 ;; #7 `mirror_set_value' (see that file for the rationale + ABI deps).
@@ -38,7 +38,7 @@
       (nelisp_mirror_set_function_apply
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        val-ptr)))
-  "Phase 47 source for Doc 111 §111.E #8 `mirror_set_function'.
+  "AOT source for Doc 111 §111.E #8 `mirror_set_function'.
 
 Compose-on-7 with slot index 1 (= the function-cell slot, vs. the
 value-cell slot 0).  Returns i64 1 on hit / 0 on miss.")

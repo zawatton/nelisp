@@ -36,7 +36,7 @@ This document defines the ABI contract that the package-local
 
 * Relationship to existing NeLisp ABI
 
-NeLisp already has a frozen Sexp ABI for Phase 47 elisp-emitted objects:
+NeLisp already has a frozen Sexp ABI for AOT elisp-emitted objects:
 
 - =docs/arch/sexp-abi.md=
 - =lisp/nelisp-sexp-layout.el=

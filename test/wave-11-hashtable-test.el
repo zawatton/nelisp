@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; ert tests for Doc 49 Wave 11.2 `hash-table-make' / `hash-table-put'
-;; / `hash-table-get' / `hash-table-contains-p' Phase 47 primitives.
+;; / `hash-table-get' / `hash-table-contains-p' AOT primitives.
 ;;
 ;; Coverage:
 ;;
@@ -28,7 +28,7 @@
 ;;     looked-up int payload as the exit code.  Skipped on non-Linux.
 ;;
 ;; Rust LOC delta = 0 — the primitives desugar at parse time into
-;; compositions of existing Phase 47 primitives (`record-make' /
+;; compositions of existing AOT primitives (`record-make' /
 ;; `record-slot-set' / `record-slot-ref' / `cons-make-with-clone' /
 ;; `extern-call nelisp_fnv1a' / `nelisp_ht_walk' helper).  All
 ;; runtime allocations re-use the existing `nl_alloc_record' +
@@ -48,7 +48,7 @@
     (add-to-list 'load-path lisp-dir)))
 
 (require 'nelisp-asm-x86_64)
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
 ;; ---- helpers (= mirror wave-11-static-imm32-table-test helpers) ----
 
@@ -91,7 +91,7 @@
 
 (ert-deftest wave-11-hashtable/desugar-make-shape ()
   "`--ht-desugar-make' rewrites to `(record-make TAG-PTR CAP SLOT)'."
-  (let ((s (nelisp-phase47-compiler--ht-desugar-make 16 'slot 'tag-ptr)))
+  (let ((s (nelisp-aot-compiler--ht-desugar-make 16 'slot 'tag-ptr)))
     (should (eq (car s) 'record-make))
     (should (eq (nth 1 s) 'tag-ptr))
     (should (= (nth 2 s) 16))
@@ -99,7 +99,7 @@
 
 (ert-deftest wave-11-hashtable/desugar-bucket-idx-shape ()
   "Bucket index = (logand (extern-call nelisp_fnv1a KEY) (- COUNT 1))."
-  (let ((s (nelisp-phase47-compiler--ht-desugar-bucket-idx 'ht 'key)))
+  (let ((s (nelisp-aot-compiler--ht-desugar-bucket-idx 'ht 'key)))
     (should (eq (car s) 'logand))
     (let ((hash-call (nth 1 s)))
       (should (eq (car hash-call) 'extern-call))
@@ -114,7 +114,7 @@
 
 (ert-deftest wave-11-hashtable/desugar-put-uses-cons-clone ()
   "`--ht-desugar-put' rewrites to record-slot-set of nested cons-make-with-clone."
-  (let ((s (nelisp-phase47-compiler--ht-desugar-put
+  (let ((s (nelisp-aot-compiler--ht-desugar-put
             'ht 'k 'v 'cs 'ps)))
     (should (eq (car s) 'record-slot-set))
     (should (eq (nth 1 s) 'ht))
@@ -134,7 +134,7 @@
 
 (ert-deftest wave-11-hashtable/desugar-get-uses-walk-helper ()
   "`--ht-desugar-get' rewrites to `(nelisp_ht_walk ...)' call."
-  (let ((s (nelisp-phase47-compiler--ht-desugar-get 'ht 'k 'slot)))
+  (let ((s (nelisp-aot-compiler--ht-desugar-get 'ht 'k 'slot)))
     (should (eq (car s) 'nelisp_ht_walk))
     (let ((bucket-payload (nth 1 s)))
       (should (eq (car bucket-payload) 'sexp-payload-ptr))
@@ -146,7 +146,7 @@
 
 (ert-deftest wave-11-hashtable/desugar-contains-p-returns-bool ()
   "`--ht-desugar-contains-p' returns 1 on hit / 0 on miss."
-  (let ((s (nelisp-phase47-compiler--ht-desugar-contains-p
+  (let ((s (nelisp-aot-compiler--ht-desugar-contains-p
             'ht 'k 'slot)))
     (should (eq (car s) 'if))
     ;; The test branch checks the walk result vs 0.
@@ -162,7 +162,7 @@
 
 (ert-deftest wave-11-hashtable/parse-make-inside-defun ()
   "`hash-table-make' parses inside a defun body."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(defun mk (tag-ptr cap slot)
                 (hash-table-make tag-ptr cap slot)))))
     (should (eq (plist-get ir :kind) 'defun))
@@ -174,7 +174,7 @@
   "`hash-table-get' parses inside a defun and resolves the walk helper."
   ;; Seq with the helper defun then the user defun — the helper must
   ;; be declared first so the call site sees it in `defuns'.
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(seq
                (defun nelisp_ht_walk (b k s) 0)
                (defun do-get (ht key slot) (hash-table-get ht key slot))
@@ -186,7 +186,7 @@
   "`hash-table-put' parses inside a defun."
   ;; The extern-call to `nelisp_fnv1a' is resolved at link time (=
   ;; extern symbol), not via the defuns table.
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(defun do-put (ht key val cs ps)
                 (hash-table-put ht key val cs ps)))))
     (should (eq (plist-get ir :kind) 'defun))
@@ -195,7 +195,7 @@
 
 (ert-deftest wave-11-hashtable/parse-contains-p-inside-defun ()
   "`hash-table-contains-p' parses inside a defun."
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(seq
                (defun nelisp_ht_walk (b k s) 0)
                (defun do-has (ht key slot)
@@ -206,22 +206,22 @@
 (ert-deftest wave-11-hashtable/parse-make-rejects-wrong-arity ()
   "`hash-table-make' with wrong arg count signals."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun bad (tag) (hash-table-make tag)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 (ert-deftest wave-11-hashtable/parse-put-rejects-wrong-arity ()
   "`hash-table-put' with wrong arg count signals."
   (should-error
-   (nelisp-phase47-compiler--parse
+   (nelisp-aot-compiler--parse
     '(defun bad (ht k) (hash-table-put ht k)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 (ert-deftest wave-11-hashtable/parse-stmt-position-accepted ()
   "`hash-table-*' forms accepted in statement position too."
   ;; Statement-position dispatch goes through the parse-stmt fallback
   ;; arm that re-routes to parse-value.
-  (let ((ir (nelisp-phase47-compiler--parse
+  (let ((ir (nelisp-aot-compiler--parse
              '(seq
                (defun nelisp_ht_walk (b k s) 0)
                (defun do-put (ht key val cs ps)
@@ -238,7 +238,7 @@
   (let ((tmp (wave-11-hashtable-test--tmp-binary "compile")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun nelisp_fnv1a (k) (sexp-int-unwrap k))
              (defun nelisp_ht_walk (b k s) 0)
@@ -261,7 +261,7 @@
   (let ((tmp (wave-11-hashtable-test--tmp-binary "mk-only")))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp
+          (nelisp-aot-compile-sexp
            '(seq
              (defun do-mk (tag cap slot)
                (hash-table-make tag cap slot))
@@ -293,8 +293,8 @@ the same program twice and checks the output file sizes match."
                 (exit 0))))
     (unwind-protect
         (progn
-          (nelisp-phase47-compile-sexp prog tmp-a)
-          (nelisp-phase47-compile-sexp prog tmp-b)
+          (nelisp-aot-compile-sexp prog tmp-a)
+          (nelisp-aot-compile-sexp prog tmp-b)
           (should (= (file-attribute-size (file-attributes tmp-a))
                      (file-attribute-size (file-attributes tmp-b)))))
       (when (file-exists-p tmp-a) (delete-file tmp-a))
@@ -304,8 +304,8 @@ the same program twice and checks the output file sizes match."
 
 (ert-deftest wave-11-hashtable/ht-helpers-source-parses ()
   "The `--ht-helpers-source' defun source parses cleanly."
-  (let ((ir (nelisp-phase47-compiler--parse
-             nelisp-phase47-compiler--ht-helpers-source)))
+  (let ((ir (nelisp-aot-compiler--parse
+             nelisp-aot-compiler--ht-helpers-source)))
     (should (eq (plist-get ir :kind) 'seq))
     ;; Single defun: nelisp_ht_walk.
     (let ((walk (car (plist-get ir :forms))))

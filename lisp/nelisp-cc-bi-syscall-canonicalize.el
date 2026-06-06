@@ -10,7 +10,7 @@
 
 ;; Doc 117 §117.D.gaps.3 — moves the syscall body of
 ;; `(nelisp--syscall-canonicalize PATH)' (= `build-tool/src/eval/
-;; builtins.rs::bi_syscall_canonicalize') into a Phase 47 elisp
+;; builtins.rs::bi_syscall_canonicalize') into a AOT elisp
 ;; object.  Second handler in the Doc 122 §122.I CString helper
 ;; sweep (after `nelisp_bi_syscall_stat').
 ;;
@@ -78,10 +78,10 @@
        (extern-call nelisp_cstr_from_sexp path-ptr)
        result-buf
        (+ (str-len path-ptr) 1))))
-  "Phase 47 source for the Doc 117 §117.D.gaps.3 `(nelisp--syscall-
+  "AOT source for the Doc 117 §117.D.gaps.3 `(nelisp--syscall-
 canonicalize PATH)' libc syscall body swap.
 
-Composes only existing Phase 47 grammar (same set as the §117.D.3
+Composes only existing AOT grammar (same set as the §117.D.3
 sibling `nelisp-cc-bi-syscall-stat'): §122.I cstr-helpers + §125.A
 dealloc-bytes + §101.C str-len + §100.A extern-call to libc
 `realpath'.

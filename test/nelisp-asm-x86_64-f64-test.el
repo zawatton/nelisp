@@ -812,61 +812,61 @@
                     #x66 #x0F #x2E #xC1
                     #x0F #x9B #xC0)))))
 
-;; ---- §110.E.1 (1) Phase 47 compiler f64 integration smoke ----
+;; ---- §110.E.1 (1) AOT compiler f64 integration smoke ----
 ;;
 ;; End-to-end compile of `(defun fn ((a :type f64) (b :type f64))
 ;;   (f64-add a b))' via parse-stmt + emit-defun.  Pin canonical
 ;; byte layout so the integration's two-pass invariant is locked
 ;; in before §110.E.2 ships the float.rs swap proper.
 
-(require 'nelisp-phase47-compiler)
+(require 'nelisp-aot-compiler)
 
 (defun nelisp-asm-x86_64-f64-test--compile-defun (sexp)
   "Compile SEXP (= a `(defun ...)' form) and return its emitted bytes.
-Uses the Phase 47 compiler entry points directly (= no ELF
+Uses the AOT compiler entry points directly (= no ELF
 wrapping) so byte-level assertions can pin the prologue / body /
 epilogue layout."
-  (let* ((nelisp-phase47-compiler--arch 'x86_64)
-         (nelisp-phase47-compiler--label-counter 0)
-         (ir (nelisp-phase47-compiler--parse-stmt sexp nil nil nil))
+  (let* ((nelisp-aot-compiler--arch 'x86_64)
+         (nelisp-aot-compiler--label-counter 0)
+         (ir (nelisp-aot-compiler--parse-stmt sexp nil nil nil))
          (buf (nelisp-asm-x86_64-make-buffer)))
-    (nelisp-phase47-compiler--emit-defun ir buf)
+    (nelisp-aot-compiler--emit-defun ir buf)
     (nelisp-asm-x86_64-buffer-bytes buf)))
 
 ;; Parser accepts annotated f64 params and tags FENV cells.
 (ert-deftest nelisp-asm-x86_64-f64/parser-accepts-typed-params ()
-    (let ((ir (nelisp-phase47-compiler--parse-stmt
+    (let ((ir (nelisp-aot-compiler--parse-stmt
              '(defun fn ((a :type f64) (b :type f64)) (f64-add a b))
              nil nil nil)))
-    (should (eq (nelisp-phase47-compiler--ir-kind ir) 'defun))
-    (should (eq (nelisp-phase47-compiler--ir-get ir :param-class) 'f64))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :params) '(a b)))
-    (should (equal (nelisp-phase47-compiler--ir-get ir :param-regs) '(xmm0 xmm1)))))
+    (should (eq (nelisp-aot-compiler--ir-kind ir) 'defun))
+    (should (eq (nelisp-aot-compiler--ir-get ir :param-class) 'f64))
+    (should (equal (nelisp-aot-compiler--ir-get ir :params) '(a b)))
+    (should (equal (nelisp-aot-compiler--ir-get ir :param-regs) '(xmm0 xmm1)))))
 
 ;; Parser rejects mixed-class params.
 (ert-deftest nelisp-asm-x86_64-f64/parser-rejects-mixed-class ()
   (should-error
-   (nelisp-phase47-compiler--parse-stmt
+   (nelisp-aot-compiler--parse-stmt
     '(defun fn ((a :type f64) b) (f64-add a b))
     nil nil nil)
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 ;; Parser rejects unknown class (= only `f64' / `gp' / `sexp' supported).
 (ert-deftest nelisp-asm-x86_64-f64/parser-rejects-unknown-class ()
   (should-error
-   (nelisp-phase47-compiler--parse-stmt
+   (nelisp-aot-compiler--parse-stmt
     '(defun fn ((a :type wat)) (f64-add a a))
     nil nil nil)
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 ;; (f64-add) etc. parse to :kind f64-binop.
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-binop-shape ()
-  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+  (let* ((ir (nelisp-aot-compiler--parse-stmt
               '(defun fn ((a :type f64) (b :type f64)) (f64-add a b))
               nil nil nil))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-binop))
-    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'f64-add))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'f64-binop))
+    (should (eq (nelisp-aot-compiler--ir-get body :op) 'f64-add))))
 
 ;; Nested f64-binop rejected at emit time (= MVP scope).
 (ert-deftest nelisp-asm-x86_64-f64/emit-rejects-nested-f64-binop ()
@@ -877,7 +877,7 @@ epilogue layout."
    (nelisp-asm-x86_64-f64-test--compile-defun
     '(defun fn ((a :type f64) (b :type f64))
        (f64-add (f64-add a b) a)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 ;; Canonical byte layout for `(defun fn ((a :type f64) (b :type f64))
 ;;   (f64-add a b))'.
@@ -972,19 +972,19 @@ epilogue layout."
 ;; ---- §110.C.2.a (1) f64-cmp parser ----
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-cmp-lt-shape ()
-  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+  (let* ((ir (nelisp-aot-compiler--parse-stmt
               '(defun fn ((a :type f64) (b :type f64)) (f64-lt a b))
               nil nil nil))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-cmp))
-    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'f64-lt))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'f64-cmp))
+    (should (eq (nelisp-aot-compiler--ir-get body :op) 'f64-lt))))
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-cmp-arity ()
   (should-error
-   (nelisp-phase47-compiler--parse-stmt
+   (nelisp-aot-compiler--parse-stmt
     '(defun fn ((a :type f64) (b :type f64)) (f64-lt a))
     nil nil nil)
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 ;; ---- §110.C.2.a (2) f64-cmp emit canonical bytes ----
 ;;
@@ -1102,7 +1102,7 @@ epilogue layout."
    (nelisp-asm-x86_64-f64-test--compile-defun
     '(defun fn ((a :type f64) (b :type f64))
        (f64-lt (f64-add a b) a)))
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 ;; ---- §110.C.2.b (1) ANDPD reg-reg ----
 ;;
@@ -1242,12 +1242,12 @@ epilogue layout."
 ;; ---- §110.C.2.b f64-eq-eps integration smoke ----
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-eq-eps-shape ()
-  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+  (let* ((ir (nelisp-aot-compiler--parse-stmt
               '(defun fn ((a :type f64) (b :type f64)) (f64-eq-eps a b))
               nil nil nil))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-cmp))
-    (should (eq (nelisp-phase47-compiler--ir-get body :op) 'f64-eq-eps))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'f64-cmp))
+    (should (eq (nelisp-aot-compiler--ir-get body :op) 'f64-eq-eps))))
 
 ;; Total byte length:
 ;;   prologue 21 + body 63 + epilogue 5 = 89 bytes
@@ -1301,31 +1301,31 @@ epilogue layout."
 ;; the prologue's `frame-bytes' rounding-to-even.
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-call-shape ()
-  (let* ((ir (nelisp-phase47-compiler--parse-stmt
+  (let* ((ir (nelisp-aot-compiler--parse-stmt
               '(defun fn ((x :type f64)) (f64-call exp x))
               nil nil nil))
-         (body (nelisp-phase47-compiler--ir-get ir :body)))
-    (should (eq (nelisp-phase47-compiler--ir-kind body) 'f64-call))
-    (should (eq (nelisp-phase47-compiler--ir-get body :name) 'exp))))
+         (body (nelisp-aot-compiler--ir-get ir :body)))
+    (should (eq (nelisp-aot-compiler--ir-kind body) 'f64-call))
+    (should (eq (nelisp-aot-compiler--ir-get body :name) 'exp))))
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-call-arity ()
   (should-error
-   (nelisp-phase47-compiler--parse-stmt
+   (nelisp-aot-compiler--parse-stmt
     '(defun fn ((x :type f64)) (f64-call exp))
     nil nil nil)
-   :type 'nelisp-phase47-compiler-error)
+   :type 'nelisp-aot-compiler-error)
   (should-error
-   (nelisp-phase47-compiler--parse-stmt
+   (nelisp-aot-compiler--parse-stmt
     '(defun fn ((x :type f64)) (f64-call exp x x))
     nil nil nil)
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 (ert-deftest nelisp-asm-x86_64-f64/parser-f64-call-name-not-symbol ()
   (should-error
-   (nelisp-phase47-compiler--parse-stmt
+   (nelisp-aot-compiler--parse-stmt
     '(defun fn ((x :type f64)) (f64-call "exp" x))
     nil nil nil)
-   :type 'nelisp-phase47-compiler-error))
+   :type 'nelisp-aot-compiler-error))
 
 ;; Canonical 31-byte layout for `(defun fn ((x :type f64))
 ;; (f64-call exp x))':

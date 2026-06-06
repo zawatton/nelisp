@@ -615,7 +615,7 @@ Section numbers (1-based, per COFF spec §4):
                   symbols))
 
          ;; Text relocs: all relocs whose :section is 'text (or absent).
-         ;; v1: we map all relocs to .text (= Phase 47 only emits .text code).
+         ;; v1: we map all relocs to .text (= AOT only emits .text code).
          (text-relocs (when have-relocs relocs))
          (num-text-relocs (if text-relocs (length text-relocs) 0))
 

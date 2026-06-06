@@ -1,4 +1,4 @@
-#+TITLE: Doc 96 — Phase 47 build orchestrator (chain demonstrator)
+#+TITLE: Doc 96 — AOT build orchestrator (chain demonstrator)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-11
 
@@ -6,7 +6,7 @@
 
 - *State*: SHIPPED (= chain demonstrator wired, three pre-built demos
   exec on x86_64 Linux, ert tests + smoke runs green)
-- *Parent*: Doc 85 (= Phase 47 feasibility spike).  Doc 96 is the
+- *Parent*: Doc 85 (= AOT feasibility spike).  Doc 96 is the
   capstone that demonstrates the spike chain Doc 91-95 ship a working
   static-linked ELF binary end-to-end with no C / Rust / libc.
 - *Sister docs*:
@@ -19,7 +19,7 @@
     =lisp/nelisp-crt0-arm64.el= 339 LOC)
   - Doc 95 — Sexp layout DSL (=lisp/nelisp-sexp-dsl.el=, 1450 LOC)
 - *Unlocks*: First end-to-end demonstration that 100% pure elisp can
-  emit a static-linked ELF the Linux kernel exec's — = Phase 47 thesis
+  emit a static-linked ELF the Linux kernel exec's — = AOT thesis
   pivot point.  Subsequent docs can use this orchestrator as
   load-bearing demo for further articulation (NeLisp compiler output,
   bootstrap manifest, etc.).
@@ -39,8 +39,8 @@
 
 ** §0.1 What Doc 96 ships
 
-Doc 96 = =lisp/nelisp-phase47-build.el= — *thin chain integrator* that
-binds the five Phase 47 components into a single, callable orchestrator
+Doc 96 = =lisp/nelisp-aot-build.el= — *thin chain integrator* that
+binds the five AOT components into a single, callable orchestrator
 plus three pre-built demo functions that produce runnable Linux
 binaries.
 
@@ -51,7 +51,7 @@ demos that exercise representative shapes (hello-world fixed-message,
 exit-with-status configurable code, argc-printer kernel-stack
 unpack).
 
-** §0.2 The Phase 47 thesis Doc 96 demonstrates
+** §0.2 The AOT thesis Doc 96 demonstrates
 
 #+begin_quote
   Pure elisp can emit a static-linked Linux ELF that the kernel exec's.
@@ -73,7 +73,7 @@ under one second from a fresh elisp invocation.
   Sexp-IR work.
 - *Does not* register in nelisp-baker STDLIB_FILES.  Like Doc 91-95,
   Doc 96 is freestanding spike-chain code; baker integration is
-  deferred to whoever ships Phase 47 production.
+  deferred to whoever ships AOT production.
 - *Does not* introduce a new file format or wire protocol.  Every
   byte that lands on disk is produced by =nelisp-elf-write-binary=,
   which means =readelf= / =objdump= / =strace= all work unchanged.
@@ -92,7 +92,7 @@ under one second from a fresh elisp invocation.
    printer              ASM-FN is a thunk)
 #+end_example
 
-The orchestrator =nelisp-phase47-build-program= takes /one/ caller-
+The orchestrator =nelisp-aot-build-program= takes /one/ caller-
 supplied function (=ASM-FN=) plus a file path + (optional) arch +
 entry symbol.  ASM-FN returns a plist describing the compile units to
 link; the orchestrator threads them through Doc 93 's
@@ -124,20 +124,20 @@ orchestrators)
 Each demo could have been an independent =nelisp-crt0-emit-*= helper
 (= Doc 94 already ships two of them).  Doc 96 's contribution is the
 /uniform top-level API/: every demo is reachable through
-=nelisp-phase47-build-*= so a future tutorial / smoke harness / CI
+=nelisp-aot-build-*= so a future tutorial / smoke harness / CI
 gate can iterate the chain without needing to know which Doc 94
 helper covers which demo.  The orchestrator surface is the public
 landing zone; the helpers stay private to their owning module.
 
 * §2 Source → binary pipeline
 
-Pipeline step-by-step for =nelisp-phase47-build-hello-world=:
+Pipeline step-by-step for =nelisp-aot-build-hello-world=:
 
 1. /Caller/ invokes
-   =(nelisp-phase47-build-hello-world "/tmp/hello")=.
+   =(nelisp-aot-build-hello-world "/tmp/hello")=.
 2. /Doc 96 orchestrator/ dispatches on ARCH (default =x86_64=).
 3. /Doc 96/ calls
-   =nelisp-phase47--build-x86_64-hello-units=, which is currently a
+   =nelisp-aot--build-x86_64-hello-units=, which is currently a
    thin wrapper that delegates to =nelisp-crt0-emit-hello-world=.
 4. /Doc 94 crt0/ computes the .text layout (= 37-byte =_start= stub
    that writes "hello\n" + =SYS_exit(0)=) and the .rodata payload
@@ -162,10 +162,10 @@ decimal ASCII).
 
 * §3 API
 
-** §3.1 =nelisp-phase47-build-program= (= main orchestrator)
+** §3.1 =nelisp-aot-build-program= (= main orchestrator)
 
 #+begin_src elisp
-(nelisp-phase47-build-program ASM-FN FILE-PATH
+(nelisp-aot-build-program ASM-FN FILE-PATH
                               &key (arch 'x86_64) (entry-sym "_start"))
 #+end_src
 
@@ -184,26 +184,26 @@ Arguments:
 - =:entry-sym= : string, name of the entry symbol.  Default =_start=
   matches Doc 94 crt0 convention.
 
-Returns: =FILE-PATH= on success; signals =nelisp-phase47-build-error=
+Returns: =FILE-PATH= on success; signals =nelisp-aot-build-error=
 on missing arch / unresolved entry symbol / writer failure.
 
-** §3.2 =nelisp-phase47-build-hello-world FILE-PATH &key ARCH=
+** §3.2 =nelisp-aot-build-hello-world FILE-PATH &key ARCH=
 
 Builds a static-linked ELF that prints =hello\n= to stdout and exits
 with status 0.  Equivalent to =nelisp-crt0-emit-hello-world= on
 x86_64; signals on aarch64 (= aarch64 hello-world is owned by Doc 94
 §94.b, separate helper).
 
-** §3.3 =nelisp-phase47-build-exit-with-status FILE-PATH STATUS &key ARCH=
+** §3.3 =nelisp-aot-build-exit-with-status FILE-PATH STATUS &key ARCH=
 
 Builds a static-linked ELF that immediately exits with the supplied
 =STATUS= byte (0..255).  Inline emits a 7-byte =_start= stub —
-showcase of the minimum possible binary in the Phase 47 chain.
+showcase of the minimum possible binary in the AOT chain.
 
 Used for smoke-style CI gates: when you want to verify the kernel
 loader picks up a binary at all, this is the cheapest call.
 
-** §3.4 =nelisp-phase47-build-argc-printer FILE-PATH &key ARCH=
+** §3.4 =nelisp-aot-build-argc-printer FILE-PATH &key ARCH=
 
 Builds a static-linked ELF that prints =argc=<N>\n= where <N> is the
 argv count.  Demonstrates the Doc 94 §94.c SysV AMD64 argv-stack
@@ -214,12 +214,12 @@ unpack via =nelisp-crt0-emit-hello-with-argc=.
 ** §4.1 hello-world
 
 #+begin_src bash
-emacs --batch -L lisp -l nelisp-phase47-build \
-  --eval '(nelisp-phase47-build-hello-world "/tmp/h")'
+emacs --batch -L lisp -l nelisp-aot-build \
+  --eval '(nelisp-aot-build-hello-world "/tmp/h")'
 /tmp/h    # → stdout: hello   ; EXIT=0
 #+end_src
 
-The smallest demo that exercises *all four* of the Phase 47 byte-
+The smallest demo that exercises *all four* of the AOT byte-
 emitting components (= ELF header, single PT_LOAD, .text with raw
 syscall, .rodata payload).  108-byte file on disk for a 37-byte
 =_start= routine.
@@ -227,8 +227,8 @@ syscall, .rodata payload).  108-byte file on disk for a 37-byte
 ** §4.2 exit-with-status
 
 #+begin_src bash
-emacs --batch -L lisp -l nelisp-phase47-build \
-  --eval '(nelisp-phase47-build-exit-with-status "/tmp/e" 42)'
+emacs --batch -L lisp -l nelisp-aot-build \
+  --eval '(nelisp-aot-build-exit-with-status "/tmp/e" 42)'
 /tmp/e; echo $?   # → 42
 #+end_src
 
@@ -240,8 +240,8 @@ asserted at the ELF-writer level.
 ** §4.3 argc-printer
 
 #+begin_src bash
-emacs --batch -L lisp -l nelisp-phase47-build \
-  --eval '(nelisp-phase47-build-argc-printer "/tmp/a")'
+emacs --batch -L lisp -l nelisp-aot-build \
+  --eval '(nelisp-aot-build-argc-printer "/tmp/a")'
 /tmp/a              # → argc=1
 /tmp/a x y z        # → argc=4
 #+end_src
@@ -255,27 +255,27 @@ Doc 94 §94.c.
 * §5 Testing
 
 ** §5.1 Chain-level integration tests
-   (=test/nelisp-phase47-build-test.el=)
+   (=test/nelisp-aot-build-test.el=)
 
 At least 8 ert-deftest cases:
 
-1. =nelisp-phase47-build-hello-world-exec= — emit + exec, assert
+1. =nelisp-aot-build-hello-world-exec= — emit + exec, assert
    stdout = "hello\n", exit code = 0.
-2. =nelisp-phase47-build-hello-world-readelf= — emit + invoke
+2. =nelisp-aot-build-hello-world-readelf= — emit + invoke
    =readelf -h=, assert =ELF64=, =EXEC=, =X86-64= strings appear.
-3. =nelisp-phase47-build-exit-with-status-zero= — STATUS=0 → exit 0.
-4. =nelisp-phase47-build-exit-with-status-42= — STATUS=42 → exit 42.
-5. =nelisp-phase47-build-exit-with-status-255= — STATUS=255 → exit
+3. =nelisp-aot-build-exit-with-status-zero= — STATUS=0 → exit 0.
+4. =nelisp-aot-build-exit-with-status-42= — STATUS=42 → exit 42.
+5. =nelisp-aot-build-exit-with-status-255= — STATUS=255 → exit
    255 (= max single-byte status).
-6. =nelisp-phase47-build-argc-printer-no-args= — exec with 0 args
+6. =nelisp-aot-build-argc-printer-no-args= — exec with 0 args
    beyond argv[0] → stdout = "argc=1\n".
-7. =nelisp-phase47-build-argc-printer-three-args= — exec with three
+7. =nelisp-aot-build-argc-printer-three-args= — exec with three
    trailing args → stdout = "argc=4\n".
-8. =nelisp-phase47-build-aarch64-magic= — emit hello-world with
+8. =nelisp-aot-build-aarch64-magic= — emit hello-world with
    ARCH=='aarch64, parse the e_machine field in the resulting ELF
    bytes, assert =EM_AARCH64= = 183.
 
-Each exec test gates on =nelisp-phase47-build-test--x86_64-host-p=,
+Each exec test gates on =nelisp-aot-build-test--x86_64-host-p=,
 which checks =system-type= ∈ {=gnu/linux=, =gnu=} and
 =system-configuration= matches "x86_64\\|amd64".  On non-x86_64 hosts
 the exec tests skip while the emission + byte tests still run.
@@ -325,7 +325,7 @@ The natural next step is a Doc 97 that:
 1. Reads Sexp source via Doc 95 's =nelisp-sexp-dsl-read=.
 2. Lowers each Sexp form to Doc 92 macro-assembler calls.
 3. Returns the resulting compile-unit list to Doc 96's
-   =nelisp-phase47-build-program=.
+   =nelisp-aot-build-program=.
 
 This would close the loop = pure elisp source on disk → pure elisp
 emits a Linux ELF that runs that source.  Doc 96 ships the bottom
@@ -333,7 +333,7 @@ half of the loop; Doc 97 would ship the top half.
 
 * §7 References
 
-** Phase 47 chain (= Doc 96 depends on all of these)
+** AOT chain (= Doc 96 depends on all of these)
 
 - =docs/design/85-phase-47-feasibility-spike.org= — parent design,
   ROI sizing, chain articulation.
@@ -362,9 +362,9 @@ half of the loop; Doc 97 would ship the top half.
 
 ** Status summary (= one-line)
 
-Doc 96 ships =lisp/nelisp-phase47-build.el= (~180 LOC) +
-=test/nelisp-phase47-build-test.el= (~120 LOC) =
+Doc 96 ships =lisp/nelisp-aot-build.el= (~180 LOC) +
+=test/nelisp-aot-build-test.el= (~120 LOC) =
 chain-demonstrator orchestrator + three pre-built demos +
-8 ert-deftest cases.  All five Phase 47 components (Doc 91-95) are
+8 ert-deftest cases.  All five AOT components (Doc 91-95) are
 exercised at least once by the implementation; the three demos
 emit + exec to expected stdout / exit codes on x86_64 Linux.

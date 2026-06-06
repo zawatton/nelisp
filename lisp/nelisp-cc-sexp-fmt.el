@@ -1,4 +1,4 @@
-;;; nelisp-cc-sexp-fmt.el --- Phase 47 Sexp formatter (write_sexp migration) -*- lexical-binding: t; -*-
+;;; nelisp-cc-sexp-fmt.el --- AOT Sexp formatter (write_sexp migration) -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 migration of the `write_sexp' / `fmt_sexp' formatter chain
+;; AOT migration of the `write_sexp' / `fmt_sexp' formatter chain
 ;; from `build-tool/src/eval/sexp.rs' (lines 181-351 at HEAD b1a22d9a).
 ;;
 ;; Migrated functions:
@@ -17,7 +17,7 @@
 ;;   `write_reader_macro'   → `nl_fmt_sexp_try_reader_macro'
 ;;   `list_tag_and_arg'     (inlined into `nl_fmt_sexp_try_reader_macro')
 ;;   `write_list_body'      → `nl_fmt_sexp_write_list_body'
-;;   top-level `fmt_sexp'   → `nelisp_fmt_sexp' (public Phase 47 entry)
+;;   top-level `fmt_sexp'   → `nelisp_fmt_sexp' (public AOT entry)
 ;;
 ;; Additional helpers (not in original but needed for completeness):
 ;;   BoolVector packing: `nl_fmt_sexp_build_bool_chunk' / `write_bool_chunks'
@@ -30,7 +30,7 @@
 ;;   Allocates Sexp::MutStr in result-slot, formats s, finalizes to Str.
 ;;   Rust wrapper: `build-tool/src/lib.rs' cc_wrap! entry.
 ;;
-;; Phase 47 grammar ops consumed:
+;; AOT grammar ops consumed:
 ;;   Sexp ops: sexp-tag, sexp-int-unwrap, sexp-payload-ptr
 ;;   String ops: str-len, str-bytes-ptr, mut-str-make-empty,
 ;;               mut-str-push-byte, mut-str-len, mut-str-finalize
@@ -410,7 +410,7 @@
            (mut-str-finalize result-slot result-slot)
            0)))
 
-  "Phase 47 source for the Doc sexp-fmt migration.
+  "AOT source for the Doc sexp-fmt migration.
 
 Public entry: `nelisp_fmt_sexp (s result-slot)' → i64.
   s: *const Sexp  — the Sexp value to format.

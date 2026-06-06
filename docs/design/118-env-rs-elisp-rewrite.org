@@ -6,7 +6,7 @@
 
 =build-tool/src/eval/env.rs= is 796 LOC.  After Doc 102 §111.E + Doc
 104 Stage 3.b–3.e + Doc 114 Step 5, ~80% of the file is *already*
-thin dispatch shims to either =env_helpers.rs= or Phase 47 helpers.
+thin dispatch shims to either =env_helpers.rs= or AOT helpers.
 
 What remains as Rust-only is structural:
 
@@ -58,7 +58,7 @@ Not Rust削減 but improves Doc 119 readability.
 
 - =Env= struct field count reduction.  =globals_record= and
   =frames_record= are runtime-instantiated elisp Sexp values; the
-  Rust struct pins their addresses for Phase 47 helpers.  We need
+  Rust struct pins their addresses for AOT helpers.  We need
   *some* Rust struct to anchor &mut access; the goal is to shrink
   *bodies*, not the struct.
 

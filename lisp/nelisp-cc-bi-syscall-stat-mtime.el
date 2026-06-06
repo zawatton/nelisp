@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Wave A25.1 (Phase 47 self-application foundation) — pure-elisp
+;; Wave A25.1 (AOT self-application foundation) — pure-elisp
 ;; `(nelisp_bi_syscall_stat_mtime PATH)' helper.  Composes:
 ;;
 ;;   §122.I  `nelisp_cstr_from_sexp'  — build path CString.
@@ -45,7 +45,7 @@
 ;;   returns:     result-slot pointer in rax.
 ;;
 ;; Linux-x86_64 only — same arch gate as the §122.I parent + the existing
-;; `nelisp_bi_syscall_stat' helper.  Composes only existing Phase 47
+;; `nelisp_bi_syscall_stat' helper.  Composes only existing AOT
 ;; grammar — no new opcode.
 
 ;;; Code:
@@ -100,7 +100,7 @@
        (+ (str-len path-ptr) 1)
        result-slot
        0)))
-  "Phase 47 source for the Wave A25.1
+  "AOT source for the Wave A25.1
 `(nelisp_bi_syscall_stat_mtime PATH RESULT-SLOT)' helper.
 
 Three-entry `(seq DEFUN ...)' manifest:
@@ -112,7 +112,7 @@ Three-entry `(seq DEFUN ...)' manifest:
   public 2-arg entry; allocates path CString + stat buffer, dispatches
   to inner driver.
 
-Composes only existing Phase 47 grammar — no new opcode:
+Composes only existing AOT grammar — no new opcode:
 - §122.I `nelisp_cstr_from_sexp' — path CString construction (cross-
   `.o' `extern-call').
 - §125.A `alloc-bytes' / `dealloc-bytes' — stat buffer + path CString
@@ -138,7 +138,7 @@ not depend on high-bit sign-extension behaviour.
 
 Linux-x86_64 only — `struct stat' layout (= offset 88 for st_mtim.
 tv_sec, sizeof = 144) is glibc-x86_64-specific.  aarch64 + musl
-will land with the rest of the Phase 47 aarch64 sweep.")
+will land with the rest of the AOT aarch64 sweep.")
 
 (provide 'nelisp-cc-bi-syscall-stat-mtime)
 

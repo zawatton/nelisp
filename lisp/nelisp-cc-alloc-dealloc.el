@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 125 §125.A introduces two new Phase 47 grammar ops for raw
+;; Doc 125 §125.A introduces two new AOT grammar ops for raw
 ;; byte-level heap allocation + free.  These are the substrate gating
 ;; layer for Doc 124.G-K (= NlBox Drop kernels' if-zero-refcount free
 ;; branch) and Doc 126-128 (= bridge GC arena code that frees opaque
@@ -30,13 +30,13 @@
 ;;       is UB on layout mismatch.  Calls
 ;;       `nl_dealloc_bytes(ptr, size, align)'.
 ;;
-;; This file packages each op as a standalone Phase 47-compiled
+;; This file packages each op as a standalone AOT-compiled
 ;; `defun' so the `tests/elisp_cc_alloc_dealloc_probe.rs' integration
 ;; test can probe each round-trip independently.  Pattern mirrors
 ;; `nelisp-cc-atomic-raw-mem.el' (§122.E) — same module classification
 ;; (= layer 2 / OS primitive), same one-defconst-per-op packaging,
 ;; same Linux-x86_64 gate (aarch64 emit will land with the rest of
-;; the Phase 47 aarch64 sweep).
+;; the AOT aarch64 sweep).
 ;;
 ;; Unlocks Doc 124.G-L (= NlBox Drop elisp化) + Doc 117 Tier C
 ;; partial (= `bi_*' handlers that today wrap `Box::new(NlT { … })'
@@ -54,7 +54,7 @@
      ;; the Doc 126-128 bridge GC arena allocator.  Doc 124 NlBox
      ;; Drop kernels use the §125.B-F per-type externs instead.
      (alloc-bytes size align))
-  "Phase 47 source for the Doc 125 §125.A `alloc-bytes' op probe.")
+  "AOT source for the Doc 125 §125.A `alloc-bytes' op probe.")
 
 (defconst nelisp-cc-alloc-dealloc--dealloc-bytes-source
   '(defun nelisp_dealloc_bytes (ptr size align)
@@ -68,7 +68,7 @@
      ;; per `std::alloc::dealloc' — caller must track `(size, align)'
      ;; per allocation.
      (dealloc-bytes ptr size align))
-  "Phase 47 source for the Doc 125 §125.A `dealloc-bytes' op probe.")
+  "AOT source for the Doc 125 §125.A `dealloc-bytes' op probe.")
 
 (provide 'nelisp-cc-alloc-dealloc)
 

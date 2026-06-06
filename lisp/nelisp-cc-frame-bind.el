@@ -13,7 +13,7 @@
 ;; Doc 115 §115.5 — full pure-elisp implementation of the innermost-
 ;; frame name → cell bind.  Replaces the prior Rust shim
 ;; `nl_frame_bind' (+ private `bind_into_frame', ~95 LOC) deleted from
-;; `build-tool/src/eval/env_lexframe_phase47_shims.rs'.
+;; `build-tool/src/eval/env_lexframe_aot_shims.rs'.
 ;;
 ;; Layout (= bootstrap-installed by `nl_frame_push'):
 ;;   frames-record  = Sexp::Record(`nelisp-lexframe-stack')
@@ -157,7 +157,7 @@
       ;; Refcount discipline (= the critical invariant for crash-free
       ;; cross-`fn nl_frame_bind' boundary handoff):
       ;;
-      ;;   The Phase 47 `cons-make' op uses MVP byte-copy semantics (=
+      ;;   The AOT `cons-make' op uses MVP byte-copy semantics (=
       ;;   it does NOT bump refcounts on box-tagged car/cdr inputs, per
       ;;   the §101.D `nelisp-cc-cons-construct.el' commentary).  Using
       ;;   `cons-make' with the live `name-ptr' / `cell-ptr' caller
@@ -218,7 +218,7 @@
       ;; The two `record-slot-ref-ptr ht-ptr 1' calls evaluate to the
       ;; same Sexp slot pointer (= the buckets `Sexp::Vector' slot in
       ;; the HT record); no caching needed because the pointer is
-      ;; cheap to recompute and the Phase 47 grammar lacks let-binding
+      ;; cheap to recompute and the AOT grammar lacks let-binding
       ;; for pointer values across calls anyway.
       (if (= (nelisp_frame_bind_walk_update
               (sexp-payload-ptr
@@ -268,7 +268,7 @@
           0)
          name-ptr cell-ptr
          scratch-pair-slot scratch-outer-slot scratch-count-slot))))
-  "Phase 47 source for Doc 111 §111.E #23 / Doc 115 §115.5
+  "AOT source for Doc 111 §111.E #23 / Doc 115 §115.5
 `frame_bind_rust_direct'.
 
 Pure-elisp innermost-frame bind.  Composes `record-slot-ref-ptr'
@@ -281,7 +281,7 @@ pure-elisp 32-bit FNV-1a; historically routed through the now-
 deleted `nl_mirror_fnv1a_sexp' extern wrapper).
 
 Replaces the ~95 LOC Rust shim `nl_frame_bind' + private helper
-`bind_into_frame' which have been removed from `env_lexframe_phase47_shims.rs'.")
+`bind_into_frame' which have been removed from `env_lexframe_aot_shims.rs'.")
 
 (provide 'nelisp-cc-frame-bind)
 

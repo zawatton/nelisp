@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 122 §122.A introduces two new Phase 47 grammar ops:
+;; Doc 122 §122.A introduces two new AOT grammar ops:
 ;;
 ;;   (sexp-write-str SLOT BYTES-PTR LEN)
 ;;     — Call `nl_alloc_str(bytes_ptr, len, slot)' which copies LEN
@@ -20,7 +20,7 @@
 ;;     — Same shape with `nl_alloc_symbol' instead — produces
 ;;       `Sexp::Symbol(s)' (no intern-table consult — see Doc 122 §5).
 ;;
-;; This file packages each op as a standalone Phase 47-compiled
+;; This file packages each op as a standalone AOT-compiled
 ;; `defun' so the `tests/elisp_cc_sexp_write_str_probe.rs' integration
 ;; test can probe the round-trip end-to-end without any user-visible
 ;; swap.  Pattern mirrors `nelisp-cc-cell-ops.el' for §111.D's
@@ -44,7 +44,7 @@
      ;; `Sexp::Str(s)' into `*slot'.  The extern returns SLOT in rax;
      ;; this op's body is just the grammar form (no extra ops needed).
      (sexp-write-str slot bytes-ptr len))
-  "Phase 47 source for the Doc 122 §122.A `sexp-write-str' op probe.")
+  "AOT source for the Doc 122 §122.A `sexp-write-str' op probe.")
 
 (defconst nelisp-cc-sexp-write-str--symbol-source
   '(defun nelisp_sexp_write_symbol (slot bytes-ptr len)
@@ -57,7 +57,7 @@
      ;; Does NOT consult any intern table — caller is responsible for
      ;; symbol identity when needed (Doc 122 §5 open question).
      (sexp-write-symbol slot bytes-ptr len))
-  "Phase 47 source for the Doc 122 §122.A `sexp-write-symbol' op probe.")
+  "AOT source for the Doc 122 §122.A `sexp-write-symbol' op probe.")
 
 (defconst nelisp-cc-jit-intern--source
   '(defun nl_jit_intern (arg out)
@@ -68,7 +68,7 @@
        (if (= (sexp-tag arg) 6)
            (and (sexp-write-symbol out (str-bytes-ptr arg) (str-len arg)) 0)
          1)))
-  "Phase 47 source for the `nl_jit_intern' trampoline.
+  "AOT source for the `nl_jit_intern' trampoline.
 
 Reuses the existing `sexp-write-symbol' allocator op plus the
 `str-bytes-ptr' / `str-len' string-view ops.  Keeps the original

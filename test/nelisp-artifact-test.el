@@ -404,7 +404,7 @@ lane; the CLI compile/eval surface works end-to-end for .neln."
 (ert-deftest nelisp-artifact/gate-6-4-neln-native-object-executes ()
   "Doc 142 §6.4 native EXEC: the native object embedded in a `.neln'
 actually executes and returns the correct result — end-to-end elisp ->
-Phase-47 native .o -> embed -> extract -> link -> run.  Covers the
+AOT native .o -> embed -> extract -> link -> run.  Covers the
 reloc-free leaf arithmetic subset (plain C integer ABI).  Skipped
 without a host C toolchain."
   (skip-unless (and (executable-find "cc") (executable-find "objcopy")))

@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 93 §93.a — relocation core for the Phase 47 static linker.
+;; Doc 93 §93.a — relocation core for the AOT static linker.
 ;;
 ;; Consumes relocation markers emitted by Doc 92's macro assembler
 ;; (`nelisp-asm-x86_64-emit-reloc') and patches the raw byte stream
@@ -28,7 +28,7 @@
 ;;   `add-abs-lo12-nc'  = R_AARCH64_ADD_ABS_LO12_NC   (277)
 ;;                      -- (S + A) & 0xFFF into ADD imm12.
 ;;
-;; For ET_EXEC + static link (= Phase 47 scope), `plt32' is
+;; For ET_EXEC + static link (= AOT scope), `plt32' is
 ;; semantically identical to `pc32' (= no PLT trampoline needed).
 ;;
 ;; §93.a ships the relocation-core slice (= byte-stream patch math +

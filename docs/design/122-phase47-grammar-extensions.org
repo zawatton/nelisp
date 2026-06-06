@@ -1,4 +1,4 @@
-#+TITLE: Doc 122 — Phase 47 grammar extensions for substrate elisp化 + jit/* trampoline swap unlock
+#+TITLE: Doc 122 — AOT grammar extensions for substrate elisp化 + jit/* trampoline swap unlock
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-18
 
@@ -16,12 +16,12 @@
 - *Dependents*: Doc 123-128 = substrate Rust 削減 chain (= `rc_primitives'
   / nl*.rs Clone/Drop / alloc/dealloc / ELF loader / bridge GC).  Most
   of these handlers need atomic / raw-mem / extern-call extensions
-  that do not yet exist in the Phase 47 grammar.  Doc 122 is the
+  that do not yet exist in the AOT grammar.  Doc 122 is the
   *single point* where every missing primitive is catalogued, so each
   downstream doc can cite a specific Doc 122 §X.Y stage as its
   unblock.  Doc 117.B (= Tier B syscall sweep) also names Doc 122 as
   prerequisite.
-- *Scope*: 6 clusters of Phase 47 grammar primitives identified via
+- *Scope*: 6 clusters of AOT grammar primitives identified via
   the Doc 120 audit + the Doc 123-128 substrate plan.  *Design only*
   — no implementation, no test, no commit beyond this DRAFT doc.
   Each cluster lands as a sub-stage (§122.A through §122.F) and is
@@ -35,7 +35,7 @@ After Doc 120.A/B/C (= the predicate / box-accessor / strings swap
 sweep) landed on main =d8adf4a7=, *11 of 24 surveyed trampolines*
 across the three `build-tool/src/jit/*' files remained SKIPPED.  The
 SKIP rationale is uniform: each trampoline allocates a fresh
-`Sexp::Str' / `Sexp::Symbol' / `Sexp::MutStr' (= no Phase 47
+`Sexp::Str' / `Sexp::Symbol' / `Sexp::MutStr' (= no AOT
 allocator), or it walks UTF-8 codepoints (= no decoder), or it
 calls into a libc f64-returning / variadic function (=
 `extern-call' is limited to 6 fixed i64 args), or it requires
@@ -44,7 +44,7 @@ A).  These gaps do not overlap — they form *4 priority clusters*
 that, once filled in, unblock the entire SKIPPED set and also
 enable the Doc 123-128 substrate sweep.
 
-The Doc 117 Tier B audit independently named "Phase 47 syscall
+The Doc 117 Tier B audit independently named "AOT syscall
 grammar + atomic ops" (= "Doc 122") as the gate for ~25 syscall
 handlers.  The substrate Doc 123 plan (= refcount internalization)
 needs `atomic-fetch-add' + `ptr-read-u64' / `ptr-write-u64' to
@@ -81,7 +81,7 @@ Each stage shippable as its own commit.  Parallelism:
   infrastructure (= new asm helpers + bridge updates) is mature.
 - §122.F (= refcount-aware grammar audit) is a *correctness* stage,
   not a new feature.  Should be re-audited after each of A/B/D ships
-  since each landed Phase 47 op is a candidate for the same SIMD-
+  since each landed AOT op is a candidate for the same SIMD-
   copy bug.
 
 After Doc 122 SHIPPED, *all* Doc 120 SKIPPED trampolines can
@@ -90,7 +90,7 @@ re-attempt under their parent doc (Doc 120.A_REOPEN / .B_REOPEN /
 
 * §1 Gap audit (= what is missing today)
 
-This section catalogues every Phase 47 grammar primitive that the
+This section catalogues every AOT grammar primitive that the
 Doc 120 audit identified as missing, grouped by cluster.  Each entry
 notes the primary caller, the proposed grammar surface, and the
 supporting Rust extern (= what `build-tool/src/lib.rs' must publish
@@ -99,7 +99,7 @@ via `#[no_mangle]').
 ** §1.1 Cluster 1 — String/Symbol allocator primitives
 
 The Doc 120.C SKIP rationale for `nl_jit_intern' /
-`nl_jit_symbol_name' is verbatim: *"Phase 47 currently only exposes
+`nl_jit_symbol_name' is verbatim: *"AOT currently only exposes
 `sexp-write-t` / `sexp-write-nil` for slot-byte writes — there is no
 `sexp-write-str` / `sexp-write-symbol` op (= no String-header
 allocator, no Rust-side `Vec<u8>::with_capacity` analogue)."*  This
@@ -169,7 +169,7 @@ becomes a 1-line `mut-str-set-codepoint-at' call after type-check).
 
 ** §1.3 Cluster 3 — Extended extern-call
 
-Current Phase 47 `extern-call' (= Doc 100 §100.A grammar) accepts
+Current AOT `extern-call' (= Doc 100 §100.A grammar) accepts
 *6 fixed i64 args + i64 return*.  Doc 120.C SKIP for
 `nl_jit_format_float' names two extensions: *"`extern-call-f64' /
 `extern-call-varargs' (= unlocks `format_float' via libc snprintf
@@ -189,7 +189,7 @@ Required asm support (= `lisp/nelisp-asm-x86_64.el'):
 
 - Mixed-register parameter classification (= an "args descriptor" at
   emit time naming, per slot, "this slot goes to xmm0" vs "this
-  slot goes to rdi").  Phase 47 currently classifies all 6 slots as
+  slot goes to rdi").  AOT currently classifies all 6 slots as
   GPR.
 - AL register set for variadic calls (= SysV says "the number of
   vector args used; up to 8").  Static at emit time when the var-
@@ -197,7 +197,7 @@ Required asm support (= `lisp/nelisp-asm-x86_64.el'):
 - Stack alignment audit at the call site (= 16-byte before `call').
 
 Required Rust externs: *none* (= the existing libc symbols are the
-target; the new grammar only changes how Phase 47 marshals
+target; the new grammar only changes how AOT marshals
 arguments to them).
 
 ** §1.4 Cluster 4 — UTF-8 helpers
@@ -236,7 +236,7 @@ Required Rust externs:
 - =extern "C" fn nl_codepoint_is_whitespace(cp: u32) -> i64=
 
 The Unicode-aware predicates remain in Rust (= the data table is
-~30 KB; porting to elisp is not justified).  The Phase 47 op is a
+~30 KB; porting to elisp is not justified).  The AOT op is a
 1-line wrap around `extern-call-1' to the helper.
 
 ** §1.5 Cluster 5 — Atomic + raw memory primitives
@@ -270,7 +270,7 @@ Proposed grammar:
 | `hash-state-finalize STATE'          | 1-arg → i64                            | Drain to u64                                 |
 
 Memory order encoding: pass as a compile-time-known small integer
-(= Phase 47 grammar accepts immediate literals for the order arg).
+(= AOT grammar accepts immediate literals for the order arg).
 The mapping `0 = relaxed`, `1 = acquire`, `2 = release`, `3 = acqrel`,
 `4 = seqcst` matches `std::sync::atomic::Ordering' variant order.
 
@@ -283,7 +283,7 @@ Required Rust externs:
 - =extern "C" fn nl_hash_state_finalize(state: *mut SipHasher13) -> u64=
 
 The raw-mem ops (= `ptr-read-*' / `ptr-write-*' / `ptr-add') do not
-need Rust externs — Phase 47 emits the loads/stores inline as
+need Rust externs — AOT emits the loads/stores inline as
 `mov' instructions with the offset embedded.  This is the same
 shape as the existing `record-slot-ref' / `vector-slot-ref' ops at
 a known offset, but generalized to a runtime-provided offset.
@@ -291,11 +291,11 @@ a known offset, but generalized to a runtime-provided offset.
 ** §1.6 Cluster 6 — Refcount-aware grammar op audit
 
 Doc 120.B inline note (= `box_accessor.rs' line 87-104): *"`record-
-type-tag' Phase 47 op does SIMD copy without refcount (per Doc
+type-tag' AOT op does SIMD copy without refcount (per Doc
 120.B finding).  Need refactor."*  The fix shipped for `record-
 slot-ref' but the audit was not extended to siblings.
 
-Audit targets (= every Phase 47 op that materializes a `Sexp' value
+Audit targets (= every AOT op that materializes a `Sexp' value
 from a heap-backed container without going through a refcount-
 managing extern):
 
@@ -322,15 +322,15 @@ managing extern):
 
 The audit deliverable is *not* new grammar but a written
 classification matrix + targeted fixes where the SIMD copy is
-unsafe.  Estimated fix surface: 1-3 Phase 47 ops.
+unsafe.  Estimated fix surface: 1-3 AOT ops.
 
 * §2 Per-cluster implementation plan
 
 Each cluster lands as a sub-stage with its own commit.  Per
 established Doc 115 / Doc 117 pattern:
 
-1. Add the new Phase 47 grammar surface in
-   =lisp/nelisp-phase47-compiler.el= (= parse-value clauses +
+1. Add the new AOT grammar surface in
+   =lisp/nelisp-aot-compiler.el= (= parse-value clauses +
    emit dispatch).
 2. Add the new x86_64 asm helpers in =lisp/nelisp-asm-x86_64.el=
    (= the actual bytes emitted by each op).
@@ -422,7 +422,7 @@ established Doc 115 / Doc 117 pattern:
 - Deliverable: a written classification matrix in
   =docs/design/122-phase47-grammar-extensions.org= §1.6 (= updated
   in-place at stage ship time) + per-op fixes where the SIMD copy
-  is unsafe.  Each fix is a small Phase 47 op refactor (= replace
+  is unsafe.  Each fix is a small AOT op refactor (= replace
   inline `movdqu' with an `nl_sexp_clone_into' extern-call hop)
   plus a regression probe.
 - Verification: a "weighted refcount" probe that allocates a
@@ -549,7 +549,7 @@ the §122.A grammar surface.
 ** §5.2 Atomic ordering semantics
 
 §122.E proposes 5 memory orders (relaxed / acquire / release /
-acqrel / seqcst).  Open question: does Phase 47 need *all five*
+acqrel / seqcst).  Open question: does AOT need *all five*
 upfront, or can §122.E ship with `relaxed' + `seqcst' only and
 add the others when a use case lands?
 
@@ -563,7 +563,7 @@ Decision: ship §122.E with all 4 of relaxed/acquire/release/seqcst.
 
 ** §5.3 f64 register class detection in extern-call
 
-Phase 47's current emit pipeline classifies all 6 extern-call slots
+AOT's current emit pipeline classifies all 6 extern-call slots
 as GPR (= rdi/rsi/rdx/rcx/r8/r9).  The §122.C `extern-call-f64'
 op needs a per-slot tag at emit time.  Open question: where does
 the tag live?
@@ -588,7 +588,7 @@ allocation).  Open question: who deallocates?
 - (a) Caller-side: pair `hash-state-finalize' with an implicit
   `Box::from_raw' free.  Risk: forgetting to call finalize leaks.
 - (b) Stack-allocated: pass a caller-owned buffer.  SipHasher13 is
-  ~48 bytes, fits in a small stack buffer.  Phase 47 grammar would
+  ~48 bytes, fits in a small stack buffer.  AOT grammar would
   need a "alloca" op or a fixed-size scratch slot.
 - (c) Pool of N preallocated state slots: caller borrows by index,
   returns by `finalize'.
@@ -602,7 +602,7 @@ error path.  Document the leak risk inline.
 The audit (= §122.F) currently lists ~10 ops to re-audit.  Open
 question: how confident are we that this is the complete set?
 
-The Phase 47 op catalog grows with each Doc; the audit needs to
+The AOT op catalog grows with each Doc; the audit needs to
 re-run after each new Doc (= Doc 123, 124, etc.) adds ops.
 Practical proposal: add a CI gate that lists every grammar op and
 flags any that does not have an explicit "refcount-safe?" tag in
@@ -644,7 +644,7 @@ ship immediately) + 117.B2 (= varargs, ship after §122.C) +
   `nl_jit_make_symbol' / `nl_jit_downcase' / `nl_jit_upcase' /
   `nl_jit_split_by_non_alnum' / `nl_jit_concat_ints' /
   `nl_jit_make_mut_str' / `nl_jit_format_float'.
-- =lisp/nelisp-phase47-compiler.el= — current grammar parse-value +
+- =lisp/nelisp-aot-compiler.el= — current grammar parse-value +
   emit dispatch (= the file the §122.A-F stages edit).
 - =lisp/nelisp-asm-x86_64.el= — current x86_64 asm emit helpers
   (= the file the §122.A-F stages extend).
@@ -654,11 +654,11 @@ ship immediately) + 117.B2 (= varargs, ship after §122.C) +
 
 ** Design docs
 
-- =docs/design/100-phase-47-sexp-int-abi-mvp.org= — Phase 47
+- =docs/design/100-phase-47-sexp-int-abi-mvp.org= — AOT
   Sexp::Int ABI MVP.
 - =docs/design/101-phase-47-sexp-cons-symbol-str-abi.org= — Phase
   47 Cons / Symbol / Str ABI.
-- =docs/design/110-phase-47-f64-abi.org= — Phase 47 f64 ABI (=
+- =docs/design/110-phase-47-f64-abi.org= — AOT f64 ABI (=
   §122.C parent reference).
 - =docs/design/111-phase-47-sexp-record-vector-cell-abi.org= —
   Doc 111 §111.E refcount-aware extern surface (= §122.F audit
@@ -845,11 +845,11 @@ Standard libc struct sizes (linux glibc, x86_64):
 
 - =build-tool/src/eval/raw_mem.rs= — 4 new `#[no_mangle]'
   externs + 4 new unit tests + 1 winsize layout assertion.
-- =lisp/nelisp-phase47-compiler.el= — parser arms for `ptr-{read,
+- =lisp/nelisp-aot-compiler.el= — parser arms for `ptr-{read,
   write}-u{16,32}' + `struct-make' / `struct-field-{set,get}'
   sugar desugarers.  Dispatch table + aarch64-unsupported list
   updated.
-- =lisp/nelisp-cc-struct-helpers.el= — Phase 47 sources for the
+- =lisp/nelisp-cc-struct-helpers.el= — AOT sources for the
   10 probe `.o' objects (4 raw-mem probes + 4 sugar dispatch
   probes + `nelisp_winsize_write_full' composed probe + an
   intermediate `nelisp_struct_make_winsize' 0-arg helper).
@@ -866,7 +866,7 @@ Standard libc struct sizes (linux glibc, x86_64):
 
 Doc 117 §117.D.gaps.3 class 4/5 — the sigaction / termios /
 pollfd / winsize handlers can now build their libc struct
-arguments entirely in Phase 47 elisp via `struct-make' +
+arguments entirely in AOT elisp via `struct-make' +
 `struct-field-set', deleting the Rust `MaybeUninit + as_mut_ptr'
 shims that currently populate struct fields one assignment at a
 time.  Concrete next sweeps:

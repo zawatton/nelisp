@@ -1,4 +1,4 @@
-;;; nelisp-cc-env-bind-local.el --- Wave b: Env::bind_local Phase 47 .o  -*- lexical-binding: t; -*-
+;;; nelisp-cc-env-bind-local.el --- Wave b: Env::bind_local AOT .o  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Wave b — `Env::bind_local' body migrated to Phase 47 elisp .o.
+;; Wave b — `Env::bind_local' body migrated to AOT elisp .o.
 ;; Replaces the 9-LOC Rust body in
 ;; `build-tool/src/eval/env_helpers.rs::Env::bind_local'.
 ;;
@@ -161,7 +161,7 @@
       (if (= (sexp-int-unwrap (record-slot-ref-ptr frames-ptr 1)) 0)
           (nelisp_env_bl_mirror mirror-ptr name-ptr scratch-ptr 0)
         (nelisp_env_bl_frame frames-ptr name-ptr val-ptr scratch-ptr))))
-  "Phase 47 source for Wave b `Env::bind_local' body.
+  "AOT source for Wave b `Env::bind_local' body.
 
 Three-defun CPS composition (all in same seq = intra-seq calls):
   `nelisp_env_bind_local' — depth check + dispatch (6 args, even).

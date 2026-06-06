@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the Rust `nl_jit_char_table_aset' trampoline
+;; AOT replacement for the Rust `nl_jit_char_table_aset' trampoline
 ;; in `build-tool/src/jit/box_accessor.rs' (deleted via this file).
 ;;
 ;; Function contract (`(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64'):
@@ -42,11 +42,11 @@
      ;;
      ;; sexp-tag = 9 guards Sexp::CharTable; mutation (entries Vec update
      ;; + val echo to *out) is handled by `nl_char_table_set_raw' Rust
-     ;; extern which cannot be expressed in Phase 47 grammar.
+     ;; extern which cannot be expressed in AOT grammar.
      (if (= (sexp-tag arg) 9)
          (extern-call nl_char_table_set_raw arg idx val out)
        1))
-  "Phase 47 source for the `nl_jit_char_table_aset' swap (Doc 120.B residual).
+  "AOT source for the `nl_jit_char_table_aset' swap (Doc 120.B residual).
 
 Guard: sexp-tag == 9 (CharTable); delegates to `nl_char_table_set_raw'
 Rust extern for the actual `char_table_set_one' mutation + val echo.

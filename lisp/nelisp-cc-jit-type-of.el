@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.A.2 — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.A.2 — AOT-compiled replacement for the Rust
 ;; `nl_jit_type_of' trampoline in `build-tool/src/jit/predicate.rs'.
 ;; Same `(*const Sexp, *mut Sexp) -> i64' contract:
 ;;
@@ -26,7 +26,7 @@
 ;;   0=Nil, 1=T, 2=Int, 3=Float, 4=Symbol, 5=Str, 6=MutStr, 7=Cons,
 ;;   8=Vector, 9=CharTable, 10=BoolVector, 11=Cell, 12=Record.
 ;;
-;; Phase 47 grammar pieces used:
+;; AOT grammar pieces used:
 ;;   `(sexp-tag PTR)'            — read tag byte at offset 0 via movzx.
 ;;   `(sexp-payload-ptr PTR)'    — read box pointer at offset 8 (= NlCellRef
 ;;                                 payload; NlCell.value is at box+0).
@@ -66,7 +66,7 @@
 ;;   5. Returns 0 (= TRAMPOLINE_OK).
 ;;
 ;; The 2-level split (nl_jit_to_write_VARIANT + nl_jit_to_fill_VARIANT)
-;; is required because Phase 47's `let' form only accepts compile-time
+;; is required because AOT's `let' form only accepts compile-time
 ;; integer constants as values; the `alloc-bytes' return value is runtime
 ;; so it must be threaded as a function parameter.
 ;; ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@
       ;; arg: *const Sexp.  out: *mut Sexp.
       ;; Returns: i64 = 0 always (no error path for valid Sexp input).
       (nl_jit_type_of_inner arg out)))
-  "Phase 47 source for the Doc 120 §120.A.2 `nl_jit_type_of' swap.
+  "AOT source for the Doc 120 §120.A.2 `nl_jit_type_of' swap.
 
 Implements the `type-of' variant dispatch (Cell unwrap + Record type_tag
 verbatim + tag-to-symbol mapping) using `sexp-payload-ptr' for zero-copy

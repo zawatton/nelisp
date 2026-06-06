@@ -9,7 +9,7 @@
   yet.
 - *Parent*: Doc 115 SHIPPED (main =7e18edd1=, env_lexframe shim file
   deleted) + Doc 73 §2.4 / Doc 98 §98.3 reader cfg-gating.  Pattern
-  reference for `defconst …--source' Phase 47 elisp swap = Doc 115
+  reference for `defconst …--source' AOT elisp swap = Doc 115
   §115.1-7 + Doc 117 Tier A precedent.
 - *Dependents*: Doc 117 Tier C (= `bi_read' / `bi_read_from_string'
   /  `bi_read_all_from_string' handlers) waits on Doc 116; their
@@ -23,7 +23,7 @@
   output `Sexp::Str` / `Sexp::Symbol` values without a mut-str
   builder.
 - *Scope*: replace =build-tool/src/reader/{mod,lexer,parser}.rs=
-  (~1,630 LOC) with pure-elisp implementations Phase 47-compiled
+  (~1,630 LOC) with pure-elisp implementations AOT-compiled
   into `.o` files linked into the build-tool crate (= same
   pattern as Doc 115's shim ports).  Final stage deletes the
   Rust source directory + `pub mod reader;` line from `lib.rs`.
@@ -96,7 +96,7 @@ contradiction.
 | Test-fixture migration (Rust → integration probes) | -130 LOC Rust mod tests |
 | New elisp source                | +~1,800 LOC (denser grammar; see §3) |
 | Net Rust LOC                    | *-1,630 LOC* |
-| New Phase 47 grammar ops        | 0-3 (= depending on Doc 122 audit; see §3) |
+| New AOT grammar ops        | 0-3 (= depending on Doc 122 audit; see §3) |
 
 Doc 116 is *the single largest Rust-deletion document* in the
 pure-elisp roadmap (= rivalled only by Doc 124 nl*.rs Clone/Drop
@@ -174,7 +174,7 @@ that the parser converts.
 - `eval::error::{ReadError, SourcePos}` for error construction (= `ReadError::lex`, `::unexpected_eof`, `::not_yet_implemented`).
 - Stdlib: `String::push`, `i64::from_str_radix`, `f64::from_str`,
   `str::parse`, `String::chars().filter()`.  Each of these is a
-  Phase 47 grammar concern (see §3).
+  AOT grammar concern (see §3).
 
 *Live code estimate*: ~675 LOC (= 885 - 210 `mod tests`).
 
@@ -232,12 +232,12 @@ headroom for bootstrap source's ~10-deep nesting).
 
 *Live code estimate*: ~290 LOC (= 485 - 195 `mod tests`).
 
-* §2 Phase 47 elisp化 plan — 4 stages
+* §2 AOT elisp化 plan — 4 stages
 
 ** §116.A — Lexer (= lisp/nelisp-cc-reader-lexer.el)
 
 *Goal*: tokenizer state machine in pure elisp.  Single source
-file holding `defconst …--source' that gets Phase 47 compiled into
+file holding `defconst …--source' that gets AOT compiled into
 `target/<...>/elisp-objects/nelisp_reader_lexer.o`.
 
 *Output shape*: instead of `Vec<PositionedToken>` (= Rust-owned
@@ -245,10 +245,10 @@ heap), the elisp tokenizer returns a `Sexp::Vector` of token
 records `#s(nelisp-token KIND POS-LINE POS-COL PAYLOAD)`.  Tokens
 are pure-elisp `Sexp` values that the §116.B parser walks.
 
-*Phase 47 ops needed*:
+*AOT ops needed*:
 - =str-len=, =str-byte-at= — already shipped (Doc 101 §101.C).
 - =int-eq=, =int-lt=, =int-le=, =int-ge=, =arith add/sub= — shipped (Doc 100).
-- =cond=, =while= — Phase 47 core.
+- =cond=, =while= — AOT core.
 - =cons-make=, =cons-car=, =cons-cdr= — shipped (Doc 101).
 - =vector-make=, =vector-slot-set=, =vector-len=, =vector-ref= — shipped (Doc 111).
 - =record-make=, =record-slot-ref=, =record-slot-set= — shipped (Doc 111).
@@ -261,7 +261,7 @@ are pure-elisp `Sexp` values that the §116.B parser walks.
   elisp via byte-range checks (= `(and (>= b 0x30) (<= b 0x39))`),
   or as Doc 122.C extern-call wrappers to libc `isdigit`/`isalpha`.
   *Decision*: pure-elisp byte-range checks — no extern needed,
-  identical perf after Phase 47 lowering.
+  identical perf after AOT lowering.
 
 *Probe test plan*:
 - New `build-tool/tests/elisp_cc_reader_lexer_probe.rs` (= Rust
@@ -288,13 +288,13 @@ Rust pattern matching).
 =Sexp::Vector= of token records produced by §116.A, produces the
 final =Sexp= forest.
 
-*Phase 47 ops needed*:
+*AOT ops needed*:
 - =vector-len=, =vector-ref= — token-stream cursor (= shipped Doc 111).
 - =cons-make= (= the building block of proper + improper lists) — shipped (Doc 101).
 - =record-make= (= for `#s()` literals + final result) — shipped (Doc 111).
 - =record-slot-ref= — read token kind from record — shipped (Doc 111).
 - =str-eq= — for `"nil"` / `"t"` symbol recognition — shipped (Doc 101 §101.C).
-- =if= / =cond= / =while= — Phase 47 core.
+- =if= / =cond= / =while= — AOT core.
 - Recursive function-call ABI — already shipped (Doc 99 §99.B `nl_fact_i64` spike + Doc 101 cons walks).
 - *Reuse mut-vec builder* (= for `parse_list` / `parse_vector` item
   accumulation) — already provided by =vector-make= + capacity
@@ -326,7 +326,7 @@ just recursive dispatch — no escape DSL.
 from Rust via `extern-call` (= same shape as Doc 117 Tier A handler
 swaps).
 
-*Phase 47 ops needed*: none new — pure composition.
+*AOT ops needed*: none new — pure composition.
 
 *Rust dispatch shape* (= mirrors `bi_truncate' precedent in
 =eval/builtins.rs= line 1234):
@@ -334,7 +334,7 @@ swaps).
 #+begin_src rust
 // build-tool/src/reader/mod.rs — replacement for read_str / read_all.
 pub fn read_str(input: &str) -> Result<Sexp, ReadError> {
-    // Phase 47 dispatch.  No tokenize+parse Rust logic remains.
+    // AOT dispatch.  No tokenize+parse Rust logic remains.
     crate::elisp_cc_spike::nelisp_cc_read_str(input)
 }
 pub fn read_all(input: &str) -> Result<Vec<Sexp>, ReadError> {
@@ -384,7 +384,7 @@ deletion, mod.rs reduction from 260 to ~30 LOC).
 
 * §3 Critical primitives audit — what Doc 122 must ship first
 
-** §3.1 Current Phase 47 grammar pool
+** §3.1 Current AOT grammar pool
 
 Surveyed from Doc 115 §0.2 table + Doc 117 references + Doc 100/
 101/111 SHIPPED status (= main =d8adf4a7=):
@@ -424,7 +424,7 @@ Per the pure-elisp roadmap memory entry:
 Two approaches for the lexer's `read_atom` (= scan a run of non-
 terminator bytes, then try-parse Int / Float / Symbol):
 
-1. *Byte-range substring* — Phase 47 `(str-sub STR START END)` op.
+1. *Byte-range substring* — AOT `(str-sub STR START END)` op.
    Requires a new grammar primitive.  Best perf.  *Cost*: +1 grammar
    op (= ~80 LOC asm helper + parser + emit).
 2. *Byte-by-byte append into mut-str* — uses only Doc 122.B mut-str
@@ -434,7 +434,7 @@ terminator bytes, then try-parse Int / Float / Symbol):
 
 *Decision*: option 2 (= byte-by-byte mut-str append).  Adds zero
 new grammar ops beyond Doc 122.B.  Lexer cold-init speed is dwarfed
-by Phase 47 emit time; perf is not a deciding factor.
+by AOT emit time; perf is not a deciding factor.
 
 ** §3.4 Char classification primitives
 
@@ -464,7 +464,7 @@ how Doc 115 §115.7 FNV-1a returns its result (= bare Sexp::Int, no
 error path needed) — and how Doc 117 Tier A handlers will surface
 errors after the throw / signal primitive lands.
 
-*New Phase 47 ops needed for error path*: zero.  All cons + record
+*New AOT ops needed for error path*: zero.  All cons + record
 + Int + Str ops already shipped.
 
 ** §3.6 Dependency cross-ref — which Doc 122 clusters block which Doc 116 stages
@@ -536,12 +536,12 @@ surface; Doc 121 (image baker elisp化) revisits gating.
 ** §4.5 Performance regression
 
 The Rust reader is a tight byte-loop with `&[u8]` indexing — very
-fast.  Phase 47-compiled elisp is also a tight loop after lowering,
-but each `(str-byte-at STR I)` call has the Phase 47 extern-call
+fast.  AOT-compiled elisp is also a tight loop after lowering,
+but each `(str-byte-at STR I)` call has the AOT extern-call
 overhead (= ~3-5 cycles for cdecl prologue).
 
 *Concrete estimate*: Rust reader on a 50KB elisp source = ~50µs.
-Phase 47 elisp version = ~80-100µs (= 2× slower due to per-byte call
+AOT elisp version = ~80-100µs (= 2× slower due to per-byte call
 overhead).
 
 *Verdict*: not a regression for the baker use-case (= images bake
@@ -588,7 +588,7 @@ Until Doc 122.A + 122.B ship, Doc 116 can only complete:
 ** §6.1 Internal precedent
 
 - =docs/design/115-phase47-shims-pure-elisp.org= — the cleanest
-  Phase 47 elisp swap pattern.  §115.1-7 ship sequence is the
+  AOT elisp swap pattern.  §115.1-7 ship sequence is the
   template for §116.A-D.
 - =docs/design/117-builtins-elisp-sweep.org= §1 Tier A — handler
   swap pattern (= `defconst …--source' + manifest entry + thin Rust
@@ -616,7 +616,7 @@ Until Doc 122.A + 122.B ship, Doc 116 can only complete:
 
 ** §6.3 Substrate dependency
 
-- *Doc 122 (DRAFT)* — Phase 47 grammar 拡張 (raw mem + atomic + libc binding).
+- *Doc 122 (DRAFT)* — AOT grammar 拡張 (raw mem + atomic + libc binding).
   Clusters 122.A + 122.B block Doc 116 §116.A start.  Cluster 122.C
   (atomic) + 122.D (libc) are *not* on Doc 116's critical path.
 

@@ -20,10 +20,10 @@
 (require 'nelisp-bytecode)
 (require 'nelisp-eval)
 ;; Loaded lazily by the §6.4 native lane; declared so the bytecode/nelc
-;; path does not pull the (heavy) Phase 47 compiler at require time.
-(declare-function nelisp-phase47-compile-to-object "nelisp-phase47-compiler"
+;; path does not pull the (heavy) AOT compiler at require time.
+(declare-function nelisp-aot-compile-to-object "nelisp-aot-compiler"
                   (sexp file-path &rest keys))
-(declare-function nelisp-phase47-compile-to-link-unit "nelisp-phase47-compiler"
+(declare-function nelisp-aot-compile-to-link-unit "nelisp-aot-compiler"
                   (sexp &rest keys))
 (declare-function nelisp-elf-write-binary "nelisp-elf-write"
                   (file-path sections))
@@ -50,7 +50,7 @@
 
 ;; Doc 142 §6.4: a `.neln' artifact carries the SAME portable bytecode
 ;; module (so it loads + runs everywhere, §6.3) PLUS an embedded native
-;; ET_REL object (Phase 47 output) that a standalone runtime can mmap+exec
+;; ET_REL object (AOT output) that a standalone runtime can mmap+exec
 ;; as an optimisation.  The native object is base64'd into the artifact's
 ;; `:native' section; on host the bytecode lane is used and the native
 ;; section is metadata only.
@@ -259,7 +259,7 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
     (buffer-string)))
 
 (defun nelisp-artifact--target-arch (target)
-  "Map a TARGET triple string to a Phase 47 arch symbol, or nil if unknown."
+  "Map a TARGET triple string to a AOT arch symbol, or nil if unknown."
   (cond
    ((null target) 'x86_64)
    ((string-match-p "x86_64\\|amd64" target) 'x86_64)
@@ -292,11 +292,11 @@ becomes (:eval FORM) replayed through `nelisp-eval' at load."
 Returns a `:native' section plist (Doc 142 §6.4) or nil when nothing is
 eligible.  Each defun is probed individually so one unsupported body does
 not sink the whole module; the eligible set is then emitted as a single
-object via the pure-elisp Phase 47 compiler."
+object via the pure-elisp AOT compiler."
   (let ((arch (nelisp-artifact--target-arch target)))
     (when (and arch
-               (or (fboundp 'nelisp-phase47-compile-to-object)
-                   (require 'nelisp-phase47-compiler nil t)))
+               (or (fboundp 'nelisp-aot-compile-to-object)
+                   (require 'nelisp-aot-compiler nil t)))
       (let ((defuns (seq-filter (lambda (f) (and (consp f) (eq (car f) 'defun)
                                                  (symbolp (nth 1 f))))
                                 forms))
@@ -306,7 +306,7 @@ object via the pure-elisp Phase 47 compiler."
           (let ((probe (nelisp-artifact--make-temp-path "neln-probe" "o")))
             (condition-case nil
                 (progn
-                  (nelisp-phase47-compile-to-object d probe :arch arch :format 'elf)
+                  (nelisp-aot-compile-to-object d probe :arch arch :format 'elf)
                   (push d eligible)
                   (push (symbol-name (nth 1 d)) symbols))
               (error nil))
@@ -315,7 +315,7 @@ object via the pure-elisp Phase 47 compiler."
           (let ((obj (nelisp-artifact--make-temp-path "neln-obj" "o")))
             (unwind-protect
                 (let* ((unit
-                        (nelisp-phase47-compile-to-link-unit
+                        (nelisp-aot-compile-to-link-unit
                          (cons 'seq (nreverse eligible))
                          :arch arch :format 'elf))
                        (text-bytes (plist-get unit :text)))
@@ -845,7 +845,7 @@ manifest."
 Extracts the ET_REL object from ARTIFACT-PATH's `:native' section, links
 it with a generated integer-ABI driver, runs it with integer ARGS, and
 returns the int64 result.  This is the first native-execution spike: it
-works for the reloc-free leaf functions Phase 47 emits today (plain C
+works for the reloc-free leaf functions AOT emits today (plain C
 integer ABI, no boundary slots).  The host C toolchain (cc + objcopy)
 acts as the loader; an in-process standalone mmap+reloc loader for the
 general boundary-ABI case is the remaining §6.4 work.
@@ -1204,7 +1204,7 @@ native object, or SYMBOL is not one of its native functions."
      "  return out;\n"
      "}\n"
      "\n"
-     "/* SysV x86_64 lowering observed in Phase 47: the first six fixed\n"
+     "/* SysV x86_64 lowering observed in AOT: the first six fixed\n"
      " * parameters consume the GP argument registers, so builtin argv\n"
      " * starts in the outgoing stack area and arrives here as a0..a7.\n"
      " * Extend this fixed window if a proof test ever needs >8 builtin\n"

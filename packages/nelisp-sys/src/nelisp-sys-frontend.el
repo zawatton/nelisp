@@ -334,7 +334,7 @@ FORM is the enclosing source form for diagnostics."
      ((eq head 'sys:alloc)
       ;; (sys:alloc SIZE ALIGN) — raw heap allocation, returns a usize
       ;; address (or 0 on failure).  Doc 133 Phase 2/3 allocator surface
-      ;; over the Phase 47 nl_alloc_bytes primitive.
+      ;; over the AOT nl_alloc_bytes primitive.
       (nelisp-sys-ast-make 'alloc
                            :size (nelisp-sys-frontend--parse-expr (nth 0 args))
                            :align (nelisp-sys-frontend--parse-expr (nth 1 args))
@@ -408,7 +408,7 @@ FORM is the enclosing source form for diagnostics."
      ((eq head 'sys:char-table-get)
       ;; (sys:char-table-get TBL IDX OUT) -> i64 (0 OK / 1 ERR).  Delegates
       ;; to the `nl_char_table_get_raw' runtime extern (parent-table
-      ;; recursion + default_val), the same primitive the Phase 47
+      ;; recursion + default_val), the same primitive the AOT
       ;; `nl_jit_char_table_aref' swap calls.  TBL/OUT are raw Sexp
       ;; addresses (usize), IDX an i64 char code.
       (unless (= (length args) 3)
@@ -476,11 +476,11 @@ FORM is the enclosing source form for diagnostics."
                            :ptr  (nelisp-sys-frontend--parse-expr (nth 0 args))
                            :slot (nelisp-sys-frontend--parse-expr (nth 1 args))
                            :form form))
-     ;; --- floating-point arithmetic (Phase 47 f64 grammar) ------------
+     ;; --- floating-point arithmetic (AOT f64 grammar) ------------
      ((memq head '(sys:f64+ sys:f64- sys:f64* sys:f64/))
       ;; binary f64 arithmetic, f64 x f64 -> f64.  Both operands must be
       ;; f64-typed (use sys:i64->f64 / sys:bits->f64 / an f64 param to make
-      ;; one); lowers to the Phase 47 f64-add/sub/mul/div SSE ops.
+      ;; one); lowers to the AOT f64-add/sub/mul/div SSE ops.
       (unless (= (length args) 2)
         (nelisp-sys-frontend--err form "%S needs exactly two operands" head))
       (nelisp-sys-ast-make 'f64-arith :op head

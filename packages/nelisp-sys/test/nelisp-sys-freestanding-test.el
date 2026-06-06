@@ -48,9 +48,9 @@
     (should (nelisp-sys-check-module mod))))
 
 (ert-deftest nelisp-sys-freestanding-lowers-exit ()
-  "Doc 133 Phase 7: sys:exit now lowers to the Phase 47 (exit ...) form.
+  "Doc 133 Phase 7: sys:exit now lowers to the AOT (exit ...) form.
 The _start entry `(sys:exit 0)' lowers to `(defun _start () (exit 0))',
-the Phase 47 program shape the standalone-binary emitter consumes."
+the AOT program shape the standalone-binary emitter consumes."
   (should (equal '(defun _start () (exit 0))
                  (nelisp-sys-backend-lower-module
                   (nelisp-sys-frontend-parse-module

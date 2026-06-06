@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stage 4 PRODUCTION PARALLEL BUILD test: the standalone NeLisp interpreter
-# (pure-elisp Phase-47-AOT binary, ZERO Rust, ZERO emacs) compiles MULTIPLE
-# units CONCURRENTLY — N worker tasks each running the FULL Phase-47 compiler
+# (pure-elisp AOT-AOT binary, ZERO Rust, ZERO emacs) compiles MULTIPLE
+# units CONCURRENTLY — N worker tasks each running the FULL AOT compiler
 # at the same time.
 #
 # Each worker is spawned with `fork-spawn' = fork(2) (syscall 57), giving it a
@@ -30,7 +30,7 @@ o3="$(mktemp /tmp/nelisp-par-o3-XXXXXX)"; o4="$(mktemp /tmp/nelisp-par-o4-XXXXXX
 trap 'rm -f "$driver" "$o1" "$o2" "$o3" "$o4"' EXIT
 
 cat scripts/nelisp-stdlib-prelude.el \
-    lisp/nelisp-phase47-compiler.el \
+    lisp/nelisp-aot-compiler.el \
     lisp/nelisp-asm-x86_64.el \
     lisp/nelisp-elf-write.el \
     lisp/nelisp-static-linker.el > "$driver"
@@ -39,26 +39,26 @@ cat scripts/nelisp-stdlib-prelude.el \
 # not callable positionally on standalone NeLisp).
 cat >> "$driver" <<'WRAP'
 (defun nelisp-selfhost-compile (sexp file-path)
-  (let* ((nelisp-phase47-compiler--label-counter 0)
-         (nelisp-phase47-compiler--arch 'x86_64)
-         (ir (nelisp-phase47-compiler--parse sexp nil))
-         (collected (nelisp-phase47-compiler--collect-strings ir))
+  (let* ((nelisp-aot-compiler--label-counter 0)
+         (nelisp-aot-compiler--arch 'x86_64)
+         (ir (nelisp-aot-compiler--parse sexp nil))
+         (collected (nelisp-aot-compiler--collect-strings ir))
          (str-offsets (car collected))
          (str-rodata-bytes (cdr collected))
-         (table-collected (nelisp-phase47-compiler--collect-tables ir))
+         (table-collected (nelisp-aot-compiler--collect-tables ir))
          (table-offsets (car table-collected))
          (table-bytes (cdr table-collected))
          (str-rodata-len (length str-rodata-bytes))
          (rodata-bytes (concat str-rodata-bytes table-bytes))
-         (defuns (nelisp-phase47-compiler--collect-defuns ir))
+         (defuns (nelisp-aot-compiler--collect-defuns ir))
          (pass1-table-vaddrs (mapcar (lambda (e) (cons (car e) 0)) table-offsets))
-         (pass1 (nelisp-phase47-compiler--pass ir defuns str-offsets 0 pass1-table-vaddrs))
+         (pass1 (nelisp-aot-compiler--pass ir defuns str-offsets 0 pass1-table-vaddrs))
          (text-size (nelisp-asm-x86_64-buffer-pos pass1))
-         (rodata-vaddr (+ nelisp-phase47-compiler--text-vaddr text-size))
+         (rodata-vaddr (+ nelisp-aot-compiler--text-vaddr text-size))
          (table-vaddrs (mapcar (lambda (e)
                           (let* ((nm (car e)) (info (cdr e)) (off (plist-get info :offset)))
                             (cons nm (+ rodata-vaddr str-rodata-len off)))) table-offsets))
-         (pass2 (nelisp-phase47-compiler--pass ir defuns str-offsets rodata-vaddr table-vaddrs))
+         (pass2 (nelisp-aot-compiler--pass ir defuns str-offsets rodata-vaddr table-vaddrs))
          (text-bytes (nelisp-asm-x86_64-resolve-fixups pass2))
          (have-rodata (> (length rodata-bytes) 0))
          (symbols (cons (list :name "_start" :value 0 :size (length text-bytes)

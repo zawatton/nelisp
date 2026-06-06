@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 120 §120.D — Phase-47-compiled replacement for the Rust
+;; Doc 120 §120.D — AOT-compiled replacement for the Rust
 ;; `nl_jit_access_aset' trampoline in `build-tool/src/jit/access.rs'.
 ;; Same `(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64' contract:
 ;;
@@ -45,13 +45,13 @@
          (if (= (sexp-tag arg) 10)
              (extern-call nl_jit_access_aset_bool_vector_inner arg idx val out)
            1))))
-  "Phase 47 source for the §120.D `nl_jit_access_aset' swap.
+  "AOT source for the §120.D `nl_jit_access_aset' swap.
 
 Vector arm: inline bounds check + refcount-safe
 `vector-slot-set' (= delegates to `nl_vector_set_slot') for the
 mutation, then refcount-aware `nl_sexp_clone_into' for the `*out
 = clone(*val)' write.  BoolVector arm: extern call to a narrow
-Rust helper because Phase 47 has no `bool-vector-set-bit'
+Rust helper because AOT has no `bool-vector-set-bit'
 grammar primitive yet.  Negative idx + non-array-tag both return
 ERR; strategy.el's `condition-case' dispatcher classifies the
 error by `type-of'.

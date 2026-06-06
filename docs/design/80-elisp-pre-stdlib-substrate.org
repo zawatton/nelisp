@@ -410,7 +410,7 @@ Doc 62 Phase 5 / Doc 76 bench history を Stage 80.3 / 80.4 完了直後に re-r
   - §84.2: =bi_syscall_nr_resolve= → =lisp/nelisp-syscall-table.el= (=build-tool/build.rs= codegen from =libc::SYS_*=) [SHIPPED].
   - §84.3: 6 Box accessors (=bi_mut_str_len= / =bi_bool_vector_len= / =bi_str_codepoint_at= / =bi_mut_str_set_codepoint= / =bi_char_table_aref= / =bi_char_table_aset=) → =lisp/nelisp-jit-strategy.el= on top of =nl-jit-call-out-{1,1i,2i}= (=jit/box_accessor.rs=) [SHIPPED].
   - §84.4: =strategy.rs= 全削除 + =mod.rs= cleanup [SHIPPED 2026-05-10].
-- 次の OOS frontier (= ~810 LOC future target = =Sexp= 型 / =ffi.rs= / boot loader) は **Doc 85 Phase 47 feasibility spike** で取扱 — 本 Doc とは independent path.
+- 次の OOS frontier (= ~810 LOC future target = =Sexp= 型 / =ffi.rs= / boot loader) は **Doc 85 AOT feasibility spike** で取扱 — 本 Doc とは independent path.
 - Phase C GC primitives elisp 化 (= Doc 79 v3) は別 path、本 Doc は orthogonal.
 - Phase D-B Cranelift 完全置換 (= 3-6 ヶ月) は本 Doc の前提でも結果でもなく、独立 timeline.
 - =nelisp-stdlib-eval-special.el= から =cond= / =when= / =unless= 等を削除する refactor は本 Doc 範囲外 (= 重複 macro definition は noise だが、shadow 上書きで挙動同一なら遅延 cleanup).

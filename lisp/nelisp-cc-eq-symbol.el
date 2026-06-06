@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Doc 101 §101.C — swap the `(eq SYMBOL SYMBOL)' fast path from Rust
-;; string comparison into a Phase 47-compiled elisp `.o'.  The body
+;; string comparison into a AOT-compiled elisp `.o'.  The body
 ;; assumes caller-owned storage for the result Sexp and writes only
 ;; the tag byte for `nil' / `t' via the dedicated grammar ops.
 
@@ -20,7 +20,7 @@
      (if (= 0 (symbol-eq arg0 arg1))
          (sexp-write-nil result-slot)
        (sexp-write-t result-slot)))
-  "Phase 47 source for the §101.C `(eq SYMBOL SYMBOL)' swap.
+  "AOT source for the §101.C `(eq SYMBOL SYMBOL)' swap.
 
 `arg0' and `arg1' are `*const Sexp' inputs; `result-slot' is a
 caller-owned `*mut Sexp'.  `symbol-eq' returns the i64 boolean 0/1,

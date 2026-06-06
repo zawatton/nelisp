@@ -13,7 +13,7 @@
   pattern + bridge primitive で Cranelift 削除を unblock)
 - *OOS for THIS doc*: 実装作業 (= §86.1.a-g 各 sub-stage の個別
   agent dispatch)、Doc 88 (= §86.2 error.rs detail)、Doc 89 (= §86.3
-  env.rs detail)、Phase 3 / Phase 47 検討
+  env.rs detail)、Phase 3 / AOT 検討
 - *Naming convention*: §87.X = 本 Doc 内 sub-section、§86.1.a-g = Doc
   86 §5.2 sub-stage、Tier 1/2/3 = Doc 86 §2.2 dispatch arm
   categorization
@@ -890,7 +890,7 @@ touch しない。Doc 89 で chicken-and-egg を解決する design を articula
 
 =string-match-p= は Rust regex crate に依存、elisp 純実装は不可。
 §86.1.f で primitive 1 件 (= =nl_jit_regex_match=) として残置 + thin
-wrapper で elisp lift。Phase 47 (= ultimate 0 Rust) では regex も
+wrapper で elisp lift。AOT (= ultimate 0 Rust) では regex も
 elisp で書く必要があり、Doc 85 §6 で audit 予定 = 本 Doc OOS。
 
 ** §7.5 Doc 86 §2.2 67 arm 表記との整合

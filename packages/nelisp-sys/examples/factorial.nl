@@ -1,6 +1,6 @@
 ;;; factorial.nl --- nelisp-sys example: iterative factorial -*- lexical-binding: t; -*-
 ;; Computes n! iteratively using let + while + set!.
-;; Inits result and i from n so the Phase 47 backend allocates mutable
+;; Inits result and i from n so the AOT backend allocates mutable
 ;; frame slots (constant-init bindings get folded into env and cannot be
 ;; updated by set!).
 ;; Exported as nl_fact(n) with C ABI.

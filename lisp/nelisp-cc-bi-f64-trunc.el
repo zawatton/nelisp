@@ -1,4 +1,4 @@
-;;; nelisp-cc-bi-f64-trunc.el --- Doc 118 bi_f64_trunc Phase 47 swap -*- lexical-binding: t; -*-
+;;; nelisp-cc-bi-f64-trunc.el --- Doc 118 bi_f64_trunc AOT swap -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -11,7 +11,7 @@
 ;; Doc 118 — moves the computation core of the `nelisp--f64-trunc'
 ;; builtin (= mode dispatch + sexp→f64 conversion + division +
 ;; truncation) out of `build-tool/src/eval/builtins.rs::bi_f64_trunc'
-;; and into a Phase 47 elisp object.  The Rust shim shrinks to arity
+;; and into a AOT elisp object.  The Rust shim shrinks to arity
 ;; check + WrongType guard on the mode symbol + call into this `.o'.
 ;;
 ;; Function contract:
@@ -50,7 +50,7 @@
 ;;   body (= see :ret-unknown below) — we use a cond chain where
 ;;   the final else returns 1 without writing out-ptr.
 ;;
-;; Phase 47 ops consumed:
+;; AOT ops consumed:
 ;;   G1  `symbol-name-eq'    — tag+len+byte inline literal compare
 ;;   G4  `sexp-float-unwrap' — f64 bits as i64 from Sexp::Float
 ;;   G5  `bits-to-f64'       — i64 bits → f64-class (MOVQ xmm0, rax)
@@ -67,7 +67,7 @@
 ;;; Code:
 
 (defconst nelisp-cc-bi-f64-trunc--source
-  ;; The Phase 47 `(seq ...)' form compiles multiple defuns into a
+  ;; The AOT `(seq ...)' form compiles multiple defuns into a
   ;; single `.o'.  The first defun is the public entry point
   ;; `nl_bi_f64_trunc_impl'; it forwards to the mode-specific tail
   ;; via `symbol-name-eq' dispatch.
@@ -107,9 +107,9 @@
                (extern-call nl_bi_f64_trunc_div_bits num-ptr denom-ptr))))))
       ;; Unknown mode — return 1 so Rust shim signals Internal error.
       (t 1)))
-  "Phase 47 source for the Doc 118 `nelisp--f64-trunc' computation swap.
+  "AOT source for the Doc 118 `nelisp--f64-trunc' computation swap.
 
-4-argument gp-class function — Phase 47 SysV AMD64 prologue spills
+4-argument gp-class function — AOT SysV AMD64 prologue spills
 the four `*const Sexp' / `*mut Sexp' pointers into rbp-relative
 slots 0-3 (= args[0]=mode-ptr, args[1]=num-ptr, args[2]=denom-ptr,
 args[3]=out-ptr).

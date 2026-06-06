@@ -1,4 +1,4 @@
-;;; nelisp-cc-frame-stack-install.el --- Wave i frame_stack_install_sexp → Phase 47 .o  -*- lexical-binding: t; -*-
+;;; nelisp-cc-frame-stack-install.el --- Wave i frame_stack_install_sexp → AOT .o  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -14,12 +14,12 @@
 ;;
 ;; The Rust body is DELETED; the `#[no_mangle]' symbol becomes a 3-line
 ;; thin wrapper in `env_helpers.rs' that allocates a scratch `Sexp::Nil'
-;; and delegates to this Phase-47-compiled object.
+;; and delegates to this AOT-compiled object.
 ;;
 ;; Algorithm implemented by `nelisp_frame_stack_install':
 ;;
 ;;   1. Ensure backing capacity >= depth+1 by calling
-;;      `nelisp_frame_stack_ensure_capacity' (existing Phase 47 .o).
+;;      `nelisp_frame_stack_ensure_capacity' (existing AOT .o).
 ;;      This is a no-op fast-path when depth < current capacity.
 ;;   2. Install FRAME-PTR into `backing[depth]' via `vector-slot-set'
 ;;      (refcount-aware clone into the NlVector slot).
@@ -92,7 +92,7 @@
                         1))
       ;; Step 4: depth bump — frames.slot[1] = Sexp::Int(depth+1).
       (record-slot-set frames-ptr 1 scratch-slot)))
-  "Phase 47 source for Wave i `nelisp_frame_stack_install'.
+  "AOT source for Wave i `nelisp_frame_stack_install'.
 
 Installs a lexframe into the frames-record backing vector and bumps
 the depth counter.  Replaces the 12-LOC `#[no_mangle] pub unsafe
@@ -101,7 +101,7 @@ extern \"C\" fn nelisp_frame_stack_install_sexp' body deleted from
 
 Net Rust delta: -12 LOC deleted + 3 LOC thin-wrapper = -9 LOC.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `extern-call'        — §100.A nelisp_frame_stack_ensure_capacity.
   `sexp-int-unwrap'    — §100 depth i64 read (x3).
   `record-slot-ref-ptr' — §111.B slot 0 / slot 1 pointer reads (x3).

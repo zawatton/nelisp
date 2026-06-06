@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Doc 122 §122.B / Doc 120 §120.B — Phase-47-compiled replacement for
+;; Doc 122 §122.B / Doc 120 §120.B — AOT-compiled replacement for
 ;; the Rust `nl_jit_bool_vector_len' trampoline in
 ;; `build-tool/src/jit/box_accessor.rs'.  Same
 ;; `(*const Sexp, *mut Sexp) -> i64' contract:
@@ -61,7 +61,7 @@
      (if (= (sexp-tag arg) 10)
          (and (sexp-int-make out (ptr-read-u64 (ptr-read-u64 arg 8) 16)) 0)
        1))
-  "Phase 47 source for the §120.B `nl_jit_bool_vector_len' swap.
+  "AOT source for the §120.B `nl_jit_bool_vector_len' swap.
 
 Single guard arm: BoolVector tag-byte check (= 10) + double
 `ptr-read-u64' dereference to load Vec<bool>.length from the

@@ -37,7 +37,7 @@ Taken from the target descriptor (=:entry-symbol=):
 
 * Why deferred
 
-The MVP backend lowers to the Phase 47 integer subset and emits relocatable
+The MVP backend lowers to the AOT integer subset and emits relocatable
 objects.  A freestanding =_start= needs syscall emission and an entry/CRT
 stub.  The toolchain already has =nelisp-crt0= entry stubs and a syscall
 table, so the path is open, but shipping it requires the syscall/effect

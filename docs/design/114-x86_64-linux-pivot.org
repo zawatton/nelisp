@@ -1,4 +1,4 @@
-#+TITLE: Doc 114 — x86_64-linux pivot (= Phase 47-using code dual-path cfg-gate end-of-life)
+#+TITLE: Doc 114 — x86_64-linux pivot (= AOT-using code dual-path cfg-gate end-of-life)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-17
 
@@ -7,13 +7,13 @@
 - *State*: DRAFT 2026-05-17 — design only, awaiting user approval before
   the cleanup PR series.
 - *Parent*: Doc 102 Phase 8.b (= env_mirror.rs / env_lexframe.rs
-  deletion goal); Doc 111 §111.E (= 18 Phase 47 helpers SHIPPED on
+  deletion goal); Doc 111 §111.E (= 18 AOT helpers SHIPPED on
   main =3bdc6487=).
 - *Sibling*: Doc 100 (Sexp::Int), Doc 101 (Cons/Sym/Str), Doc 110
   (f64), Doc 111 (Record/Vector/Cell), Doc 113 (Float ABI DRAFT).
-  All of them produce Phase 47 emit code that is *x86_64 only*
+  All of them produce AOT emit code that is *x86_64 only*
   (=:requires-arch x86_64= in =scripts/compile-elisp-objects.el=).
-- *Dependents*: every future Phase 47 swap PR.  Without this pivot,
+- *Dependents*: every future AOT swap PR.  Without this pivot,
   each new swap mandatorily grows Rust by O(duplication) (= the
   =#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]=
   fallback block).
@@ -26,11 +26,11 @@
 ** §0.1 The contradiction we are resolving
 
 This repo's existence purpose, per =dev/nelisp/CLAUDE.md=, is *pure
-elisp化 (Rust 削減 が唯一の評価軸)*.  Phase 47 (Doc 100/101/110/
+elisp化 (Rust 削減 が唯一の評価軸)*.  AOT (Doc 100/101/110/
 111/113) is the mechanism: each Sexp ABI op + helper swap moves
 work from Rust to elisp-compiled =.o= files.
 
-The current convention, however, surrounds every Phase 47 callsite
+The current convention, however, surrounds every AOT callsite
 with a cfg-gate:
 
 #+begin_src rust
@@ -53,31 +53,31 @@ opposite of the repo's stated purpose.  Concrete evidence:
 - =build-tool/src/eval/special_forms.rs=, =builtins.rs= already
   carry the same pattern from earlier swaps (Doc 100/101).
 
-Continuing this pattern means the more we ship Phase 47, the more
+Continuing this pattern means the more we ship AOT, the more
 Rust we accumulate.  Doc 111 §111.E exposes this clearly; the same
 arithmetic applies to Doc 100, 101, 110, 113, and every future ABI.
 
 ** §0.2 The pivot
 
-*Declare Phase 47-using code paths x86_64-linux-only.*
+*Declare AOT-using code paths x86_64-linux-only.*
 
 - Delete the =#[cfg(not(all(target_os = "linux",
   target_arch = "x86_64")))]= fallback branches everywhere they
-  guard a Phase 47 dispatch.
+  guard a AOT dispatch.
 - Replace the dual-arm =match= / =if-else= with a single arm that
   unconditionally dispatches to the elisp =.o=.
 - For modules that cannot otherwise be built on non-x86_64
-  (= because their entire body becomes Phase 47-dependent), add a
+  (= because their entire body becomes AOT-dependent), add a
   =compile_error!("...")= sentinel at the top of the file:
 
 #+begin_src rust
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("Doc 114: env_mirror.rs requires Phase 47 helpers \
+compile_error!("Doc 114: env_mirror.rs requires AOT helpers \
 which are emitted x86_64-linux-only.  Build on Linux x86_64 or via \
 Docker / Linux VM.");
 #+end_src
 
-- Multi-arch support comes back through *additional Phase 47 emit
+- Multi-arch support comes back through *additional AOT emit
   branches* (e.g., =lisp/nelisp-asm-aarch64.el=), never through
   re-introducing the Rust fallback.
 
@@ -86,7 +86,7 @@ Docker / Linux VM.");
 The current pattern conflates two unrelated concerns:
 
 1. *ISA support* (= which CPU ISA can the build tool emit code for).
-2. *Logic fallback* (= what runs when Phase 47 isn't available).
+2. *Logic fallback* (= what runs when AOT isn't available).
 
 Healthy native-code projects (LLVM, QEMU, rustc, GCC) keep these
 separate: a missing ISA backend is a missing backend, not a "use
@@ -120,7 +120,7 @@ Mitigation (= already de facto):
    support for hosts no production path actually uses.
 2. Developers on arm64 hosts use Docker / Linux VM (already required
    for many tasks: nelisp-emacs network stack tests, anvil daemon
-   probes, Phase 47 binary verification).
+   probes, AOT binary verification).
 3. CI runs on Linux x86_64.  No regression in CI signal.
 4. =compile_error!= messages name the constraint clearly so
    non-Linux-x86_64 contributors get an actionable build error, not
@@ -132,26 +132,26 @@ Benefit: bounded Rust footprint + linear pure-elisp化 progress
 
 * §1 What gets removed
 
-** §1.1 Scope: cfg-gate fallback branches around Phase 47 dispatch
+** §1.1 Scope: cfg-gate fallback branches around AOT dispatch
 
 A =#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]=
 block is a *removal target* IFF:
 
-- It guards code whose only purpose is to substitute for a Phase 47
+- It guards code whose only purpose is to substitute for a AOT
   =.o= helper on non-x86_64-linux hosts, AND
 - The corresponding x86_64-linux branch dispatches to a
   =crate::elisp_cc_spike::*= safe wrapper (or =unsafe= extern call
   with that wrapper's contract).
 
 If a cfg gate guards platform-specific syscalls, FFI, or genuine
-multi-OS plumbing (= the non-x86_64 branch *isn't a Phase 47 fallback*),
+multi-OS plumbing (= the non-x86_64 branch *isn't a AOT fallback*),
 leave it.  This doc is not about removing all cfg gates.
 
 ** §1.2 Concrete callsite audit (= what to delete)
 
 Sources flagged for cleanup (= as of main =3bdc6487=):
 
-| File                                     | Phase 47-related cfg gates (estimated) |
+| File                                     | AOT-related cfg gates (estimated) |
 |------------------------------------------+----------------------------------------|
 | =build-tool/src/eval/special_forms.rs=  | ~12 (Doc 100/101 swaps)                |
 | =build-tool/src/eval/builtins.rs=       | ~10 (Doc 100/101/111 swaps)            |
@@ -164,7 +164,7 @@ under =build-tool/src/=.  The audit step is mandatory because Phase
 47-related cfg gates share syntax with unrelated platform-gates;
 the auditor must visually confirm each one.)
 
-** §1.3 Files that become Phase 47-only outright
+** §1.3 Files that become AOT-only outright
 
 After the cleanup:
 
@@ -188,7 +188,7 @@ Replace:
 match &args[0] {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     Sexp::Int(_) => {
-        /* Phase 47 dispatch */
+        /* AOT dispatch */
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     Sexp::Int(_) => {
@@ -202,22 +202,22 @@ With:
 #+begin_src rust
 match &args[0] {
     Sexp::Int(_) => {
-        /* Phase 47 dispatch (= the only path) */
+        /* AOT dispatch (= the only path) */
     }
 }
 #+end_src
 
 The module file gets one top-level guard if the module is fully
-Phase 47-dependent:
+AOT-dependent:
 
 #+begin_src rust
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
-//! Doc 114: this module requires Phase 47 emit, which is
+//! Doc 114: this module requires AOT emit, which is
 //! x86_64-linux only.  Cross-arch hosts get a compile error.
 #+end_src
 
 Or =compile_error!= at the top for callsite modules that only have
-*some* Phase 47 callsites — the rest can compile cross-arch.
+*some* AOT callsites — the rest can compile cross-arch.
 
 ** §2.2 Future multi-arch path
 
@@ -225,7 +225,7 @@ When arm64 (or another ISA) becomes a real deployment target:
 
 1. Add =lisp/nelisp-asm-aarch64.el= with arm64 instruction emit
    helpers (parallel to =lisp/nelisp-asm-x86_64.el=).
-2. Extend each Phase 47 emit function with an arch-dispatched
+2. Extend each AOT emit function with an arch-dispatched
    branch (= elisp =if= on a runtime tag, or per-arch defun).
 3. Update =scripts/compile-elisp-objects.el= to drop the
    =:requires-arch x86_64= gate for ops that have arm64 emit.
@@ -241,7 +241,7 @@ This is the central design contract.
 
 - Run =grep -rn "cfg(all(target_os = \"linux\", target_arch = \"x86_64\"))"=
   under =build-tool/src/= and =build-tool/tests/=.
-- Categorize each hit: Phase 47 fallback (= remove) vs. unrelated
+- Categorize each hit: AOT fallback (= remove) vs. unrelated
   platform gate (= leave).
 - Apply removal to *2-3 small modules* (e.g., individual builtins),
   not the big files yet.
@@ -254,8 +254,8 @@ This is the central design contract.
 
 ** §3.2 PR-2 — special_forms.rs + builtins.rs cleanup
 
-- Remove all Phase 47-fallback cfg gates in these two files.
-- Top-of-file guard if the file becomes fully Phase 47-dependent;
+- Remove all AOT-fallback cfg gates in these two files.
+- Top-of-file guard if the file becomes fully AOT-dependent;
   otherwise per-callsite =compile_error!= comments.
 - LOC delta: −300 to −500 LOC estimated.
 - Verification gate identical to PR-1.
@@ -264,7 +264,7 @@ This is the central design contract.
 
 - Rebase =feat/doc-111-stage-e-cutover= onto post-PR-2 main.
 - Strip the 24 cfg-gates added by the original cutover Agent;
-  collapse each method to single-arm Phase 47 dispatch + Rust
+  collapse each method to single-arm AOT dispatch + Rust
   fallback only for the *miss* case (= entry not in mirror, not for
   the arch fallback).
 - Resulting LOC: net negative for env_mirror.rs (= cutover commit
@@ -291,7 +291,7 @@ This is the central design contract.
 - *Doc 102 Phase 8.b condition (a) literally satisfied.*
 - Doc 102 status mark: SHIPPED.
 
-** §3.6 PR-6 (optional) — sweep remaining Phase 47 callsites
+** §3.6 PR-6 (optional) — sweep remaining AOT callsites
 
 - Re-run the audit grep across the whole crate.
 - Apply cfg-gate removal to any callsites missed in PR-1..PR-2.
@@ -307,21 +307,21 @@ This is the central design contract.
 | PR-3  | 732+ lib tests pass; env_mirror.rs ≤ 200 LOC (= cutover commit collapsed to thin wrapper) |
 | PR-4  | 732+ lib tests pass; env_lexframe.rs ≤ 150 LOC                                       |
 | PR-5  | 732+ lib tests pass; env_mirror.rs + env_lexframe.rs *do not exist*; =pub mod= removed |
-| PR-6  | grep returns 0 Phase-47-fallback cfg gates                                            |
+| PR-6  | grep returns 0 AOT-fallback cfg gates                                            |
 
 Cumulative target: *net −1000 LOC of Rust* across PR-1..PR-5.
 
 * §5 Risks + open questions
 
-** §5.1 Hidden non-Phase-47 fallbacks
+** §5.1 Hidden non-AOT fallbacks
 
-Risk: a cfg-gated block looks like a Phase 47 fallback but actually
+Risk: a cfg-gated block looks like a AOT fallback but actually
 guards different platform-specific code (= unrelated syscalls,
 endianness, libc behavior).  Removing it would break real
-non-x86_64 builds for non-Phase-47 reasons.
+non-x86_64 builds for non-AOT reasons.
 
 Mitigation: PR-1 audit is *manual review per cfg gate*, not bulk
-=sed=.  The auditor confirms each one points at a Phase 47 path
+=sed=.  The auditor confirms each one points at a AOT path
 before removal.
 
 ** §5.2 Test infrastructure dependency
@@ -342,7 +342,7 @@ behind Doc 114 PR-1..PR-5" upon Doc 114 acceptance.
 
 Doc 111 §3.E spec "Rust −520 LOC" remains the *direct* env_mirror /
 env_lexframe target.  Doc 114 expands that to the broader "Rust
-−1000 LOC across all Phase 47 callsites" because the cleanup is
+−1000 LOC across all AOT callsites" because the cleanup is
 inherently repo-wide once we commit to the pivot.
 
 ** §5.4 Reversal cost (= what if arm64 becomes urgent tomorrow)
@@ -366,7 +366,7 @@ Mitigation: every =compile_error!= references Doc 114 by number:
 
 #+begin_src rust
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-compile_error!("Doc 114: Phase 47 helpers are x86_64-linux only.");
+compile_error!("Doc 114: AOT helpers are x86_64-linux only.");
 #+end_src
 
 The git blame + the Doc number gives any future investigator a
@@ -398,11 +398,11 @@ Memory cross-refs:
 
 - =feedback_anvil_module_dual_target_categorization= — anvil
   modules are categorized by purpose; the same logic separates ISA
-  support from logic fallback for Phase 47 callers.
+  support from logic fallback for AOT callers.
 - =feedback_nelisp_perf_not_elisp_interpreter= — NeLisp Phase 7+
   is native cc, not Emacs Lisp interpreter; the Rust fallback was
   shadowing this distinction.
 - =project_anvil_runtime_phase_b_complete= — anvil-runtime crate
   deleted (= prior precedent of "delete Rust crate when elisp
   replacement exists"); Doc 114 extends that operating mode to
-  Phase 47-using code paths.
+  AOT-using code paths.

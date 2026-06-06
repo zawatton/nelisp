@@ -1030,7 +1030,7 @@ fixture code."
          :type 'nelisp-link--unresolved-symbol)
       (when (file-exists-p path) (delete-file path)))))
 
-;; ---- §93.c (4) THE e2e exec test (= the Phase 47 critical gate) ----
+;; ---- §93.c (4) THE e2e exec test (= the AOT critical gate) ----
 
 (defun nelisp-link-test--e2e-units ()
   "Construct the §93.c e2e 2-unit fixture.
@@ -1065,8 +1065,8 @@ disp that targets symbol value directly)."
     (list main helper)))
 
 (ert-deftest nelisp-link-e2e-multi-unit-exec-exit-0 ()
-  "THE Phase 47 critical gate: link 2 units, exec, expect exit 0.
-This is the chain validation for the entire Phase 47 spike (= Doc
+  "THE AOT critical gate: link 2 units, exec, expect exit 0.
+This is the chain validation for the entire AOT spike (= Doc
 91 ELF writer + Doc 92 assembler shape + Doc 93 static linker)."
   (skip-unless (and (eq system-type 'gnu/linux)
                     (let ((m (or (and (boundp 'system-configuration)

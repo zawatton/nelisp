@@ -1,4 +1,4 @@
-;;; nelisp-cc-meta-driver.el --- Wave A25.2 Phase 47 meta-driver kernel  -*- lexical-binding: t; -*-
+;;; nelisp-cc-meta-driver.el --- Wave A25.2 AOT meta-driver kernel  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,17 +8,17 @@
 
 ;;; Commentary:
 
-;; Wave A25.2 (Phase 47 self-application — driver rewrite proof of
-;; concept).  Provides the Phase 47-compilable kernel that the future
+;; Wave A25.2 (AOT self-application — driver rewrite proof of
+;; concept).  Provides the AOT-compilable kernel that the future
 ;; Wave A25.3 standalone bootstrap will call to drive
 ;; `scripts/compile-elisp-objects.el's per-entry up-to-date check.
 ;;
 ;; A25.0 audit (= a114d48af6c4 report) called out two structural
 ;; mismatches between the existing `compile-elisp-objects.el' driver
-;; and Phase 47 grammar:
+;; and AOT grammar:
 ;;
 ;;   1. The manifest is iterated via `dolist' + `plist-get' against a
-;;      runtime alist of feature/symbol pairs.  Phase 47 has no `dolist'
+;;      runtime alist of feature/symbol pairs.  AOT has no `dolist'
 ;;      / `plist-get' / hash-table access, and `(require feature)' +
 ;;      `(symbol-value src-var)' do not exist at all (= the standalone
 ;;      runtime resolves all `provide' calls at link time, not load
@@ -26,7 +26,7 @@
 ;;
 ;;   2. The per-entry up-to-date check chains `locate-file' +
 ;;      `file-attribute-modification-time' + `time-less-p' — all
-;;      host-Emacs primitives with no Phase 47 substrate.
+;;      host-Emacs primitives with no AOT substrate.
 ;;
 ;; Wave A25.1-min shipped the foundation for (2): `nelisp_bi_getenv'
 ;; (read `NELISP_ELISP_OBJECTS_DIR') and `nelisp_bi_syscall_stat_mtime'
@@ -47,7 +47,7 @@
 ;; Static-link manifest plan (= the structural answer to mismatch #1).
 ;; In Wave A25.3 the manifest will be reified as a vector of Sexp::Str
 ;; pairs `(src-path-str . out-path-str)' bundled into the standalone
-;; binary's read-only data section via the existing Phase 47 rodata
+;; binary's read-only data section via the existing AOT rodata
 ;; emit path.  The driver then iterates `i = 0 .. N` via a tail-
 ;; recursive even-arity defun, reads `(vector-ref MANIFEST i)' to fetch
 ;; one entry, splits car/cdr via `cons-car' / `cons-cdr', invokes
@@ -62,9 +62,9 @@
 ;; rodata emit shape, symbol-table layout for source defconst names)
 ;; is settled.  Today's PoC proves:
 ;;
-;;   * The kernel composes only existing Phase 47 grammar — no new
+;;   * The kernel composes only existing AOT grammar — no new
 ;;     opcode, no Rust extern added.
-;;   * `nelisp-phase47-compile-to-object' on the source defconst
+;;   * `nelisp-aot-compile-to-object' on the source defconst
 ;;     produces an ET_REL `.o' with the expected global STT_FUNC
 ;;     symbols (= `nelisp_meta_should_rebuild' + helpers).
 ;;   * Rust LOC delta = 0 (= no new shim, no manifest table generator;
@@ -106,7 +106,7 @@
 ;;        S          O        1 if O < S else 0
 ;;
 ;; Linux-x86_64 only — same arch gate as the §122.I / A25.1-min
-;; parents.  Composes only existing Phase 47 grammar (no new opcode).
+;; parents.  Composes only existing AOT grammar (no new opcode).
 
 ;;; Code:
 
@@ -138,7 +138,7 @@
     ;;   else                      → 0
     ;;
     ;; The three conditions collapse into a single `(or)' chain in
-    ;; Phase 47 grammar; `or' short-circuits to 1 on the first non-zero
+    ;; AOT grammar; `or' short-circuits to 1 on the first non-zero
     ;; arm, and the final `(if ... 0)' wraps the fallthrough.  Each
     ;; comparison op (`<' / `=') yields 0/1 in rax per the §97.c
     ;; convention, so the entire decision is one short-circuit chain.
@@ -172,7 +172,7 @@
     ;; Even arity (4 = src-slot + out-slot + src-path + out-path; the
     ;; result-slot is captured by the outer call via an extra layer
     ;; below — keeping each defun ≤ 6 args for SysV AMD64 GP-reg
-    ;; passing).  Actually 5 args here — but Phase 47 emits the rsp
+    ;; passing).  Actually 5 args here — but AOT emits the rsp
     ;; alignment pad automatically for odd-arity defuns via the
     ;; `--needs-align' branch.
     (defun nelisp_meta_should_rebuild_inner
@@ -191,7 +191,7 @@
 
     ;; Public 3-arg entry — allocates two 32-byte scratch slots for
     ;; the `Sexp::Int(mtime)' results, then dispatches to the inner
-    ;; driver.  Odd arity (3) — Phase 47 emits the rsp alignment pad
+    ;; driver.  Odd arity (3) — AOT emits the rsp alignment pad
     ;; via the `--needs-align' branch around the outer caller's
     ;; dispatch into this entry.
     ;;
@@ -209,7 +209,7 @@
     ;; _should_rebuild" SRC-PATH OUT-PATH)'.  Wrapping the inner call
     ;; in `nelisp_meta_zero2 ... 0' threads the slot pointer through
     ;; (discarded) and emits `mov rax, 0' at function exit — no other
-    ;; behavioural change.  Future Phase 47 callers that want the slot
+    ;; behavioural change.  Future AOT callers that want the slot
     ;; pointer back continue to dispatch into
     ;; `nelisp_meta_should_rebuild_inner' directly.
     (defun nelisp_meta_should_rebuild (src-path out-path result-slot)
@@ -221,7 +221,7 @@
         out-path
         result-slot)
        0)))
-  "Phase 47 source for the Wave A25.2 meta-driver kernel
+  "AOT source for the Wave A25.2 meta-driver kernel
 `(nelisp_meta_should_rebuild SRC-PATH OUT-PATH RESULT-SLOT)'.
 
 Five-entry `(seq DEFUN ...)' manifest (Wave A25.6 + 1 sequencer):
@@ -249,11 +249,11 @@ Five-entry `(seq DEFUN ...)' manifest (Wave A25.6 + 1 sequencer):
   so the elisp `nl-jit-call-out-2' bridge can surface the decision
   via the caller-owned RESULT-SLOT (= `Sexp::Int(0|1)').
 
-Composes only existing Phase 47 grammar — no new opcode:
+Composes only existing AOT grammar — no new opcode:
 
 - §125.A `alloc-bytes' / `dealloc-bytes' — scratch slot lifecycle.
 - §100.A `extern-call' to the A25.1-min `nelisp_bi_syscall_stat_mtime'
-  helper (= cross-`.o' Phase 47 dispatch).
+  helper (= cross-`.o' AOT dispatch).
 - §100 `sexp-int-unwrap' — pull i64 mtime out of `Sexp::Int' result.
 - §100 `sexp-int-make' — write `Sexp::Int(decision)' into result slot.
 

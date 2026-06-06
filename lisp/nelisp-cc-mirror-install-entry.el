@@ -91,7 +91,7 @@
       (nelisp_mirror_install_entry_apply
        (extern-call nelisp_mirror_lookup_entry mirror-ptr sym-ptr)
        value-ptr function-ptr plist-ptr constant-ptr)))
-  "Phase 47 source for Doc 111 §111.E #12 `mirror_install_entry'.
+  "AOT source for Doc 111 §111.E #12 `mirror_install_entry'.
 
 Implements only the existing-entry update fast path (= 4
 `record-slot-set' calls).  Returns i64 1 on hit / 0 on miss; the

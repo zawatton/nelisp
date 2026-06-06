@@ -10,7 +10,7 @@
 
 ;; Doc 117 §117.D.gaps.3 — moves the syscall body of `(nl-make-
 ;; directory PATH)' (= `build-tool/src/eval/builtins.rs::
-;; bi_nl_make_directory') into a Phase 47 elisp object.  Fourth
+;; bi_nl_make_directory') into a AOT elisp object.  Fourth
 ;; handler in the Doc 122 §122.I CString helper sweep (after
 ;; `nelisp_bi_syscall_stat', `_canonicalize', and `nelisp_bi_nl_write_file').
 ;;
@@ -84,7 +84,7 @@
     ;; to the inner driver with mode = 0o755 (= 493).
     ;;
     ;; Arity 1 is odd; Doc 124.F requires the rsp-alignment workaround.
-    ;; But the single internal call lands through Phase 47's standard
+    ;; But the single internal call lands through AOT's standard
     ;; prologue which already maintains `rsp % 16 == 0' at the
     ;; call boundary (= same pattern as `nelisp_cstr_from_sexp' itself,
     ;; which is also 1-arg).
@@ -93,10 +93,10 @@
        (extern-call nelisp_cstr_from_sexp path-ptr)
        (+ (str-len path-ptr) 1)
        493)))
-  "Phase 47 source for the Doc 117 §117.D.gaps.3 `(nl-make-directory
+  "AOT source for the Doc 117 §117.D.gaps.3 `(nl-make-directory
 PATH)' libc syscall body swap.
 
-Composes only existing Phase 47 grammar (same set as the §117.D.3
+Composes only existing AOT grammar (same set as the §117.D.3
 siblings `nelisp-cc-bi-syscall-stat' / `_canonicalize'): §122.I
 cstr-helpers + §125.A dealloc-bytes + §101.C str-len + §100.A
 extern-call to libc `mkdir'.

@@ -1,4 +1,4 @@
-#+TITLE: Doc 111 — Phase 47 Sexp::Record / Vector / Cell ABI (= boxed-collection layout extensions)
+#+TITLE: Doc 111 — AOT Sexp::Record / Vector / Cell ABI (= boxed-collection layout extensions)
 #+AUTHOR: NeLisp design
 #+DATE: 2026-05-17
 
@@ -10,15 +10,15 @@
   designed to ship sequentially after §101.B-D land.
 - *Parent*: Doc 100 v2 (= Sexp::Int ABI, SHIPPED 2026-05-12);
   Doc 101 (= Sexp::Cons / Symbol / Str ABI, in flight).  This doc
-  is the third layer of Phase 47 ABI coverage, focused on the boxed-
+  is the third layer of AOT ABI coverage, focused on the boxed-
   collection variants that =env_mirror.rs= + =env_lexframe.rs=
   consume.
 - *Sibling*: Doc 110 (= f64 ABI, DRAFT); Doc 112 (= apply-arg-frame
-  separation, queued — may be moot if Phase 47 dispatch bypasses
+  separation, queued — may be moot if AOT dispatch bypasses
   =apply_lambda_inner=, see Doc 101 §0.3).
 - *Dependents*: Doc 102 Phase 8.b condition (a) — env_mirror.rs /
   env_lexframe.rs deletion needs Doc 101 + Doc 111 cumulative ABI
-  + a Phase 47 rewrite of the helpers themselves (Doc 111 §111.E).
+  + a AOT rewrite of the helpers themselves (Doc 111 §111.E).
 - *Scope*: design only.  Implementation is 5 sub-stages
   (§111.A-E).  Stages A-D add ABI surface; Stage E performs the
   actual env_mirror / env_lexframe rewrite + Rust-direct deletion.
@@ -72,10 +72,10 @@ element is a 32-byte =Sexp= slot, so element indexing requires a
 | Stage    | Scope                                                                                                       | Effect |
 |----------+-------------------------------------------------------------------------------------------------------------+--------|
 | §111.A   | Layout doc + elisp constants + Rust assertions for NlRecord / NlVector / NlCell.  Inherits §100.B CI gate.                                                          | unblock |
-| §111.B   | Phase 47 grammar gains Record read+write ops: =(record-type-tag H)=, =(record-slot-ref H N)=, =(record-slot-ref-ptr H N)=, =(record-slot-set H N VAL)=, =(record-slot-count H)=.  First swap: =recordp= predicate via elisp =.o=. | spike  |
-| §111.C   | Phase 47 grammar gains Vector read ops: =(vector-len H)=, =(vector-ref H N)=, =(vector-ref-ptr H N)=.  First swap: =aref= for Sexp::Vector via elisp =.o=.        | extend |
-| §111.D   | Phase 47 grammar gains Cell ops: =(cell-value H)= / =(cell-set-value H VAL)=.  First swap: NONE (Cell access is internal — used by §111.E only).                  | extend |
-| §111.E   | =env_mirror.rs= + =env_lexframe.rs= rewritten as ~19 Phase 47-compiled elisp helpers + 2 new Rust allocator helpers (=nl_alloc_record= + =nl_alloc_vector=, total ~22 LOC).  Bootstrap + baker-only helpers stay in Rust under cfg gating.  Doc 102 Phase 8.b condition (a) satisfied. | finale |
+| §111.B   | AOT grammar gains Record read+write ops: =(record-type-tag H)=, =(record-slot-ref H N)=, =(record-slot-ref-ptr H N)=, =(record-slot-set H N VAL)=, =(record-slot-count H)=.  First swap: =recordp= predicate via elisp =.o=. | spike  |
+| §111.C   | AOT grammar gains Vector read ops: =(vector-len H)=, =(vector-ref H N)=, =(vector-ref-ptr H N)=.  First swap: =aref= for Sexp::Vector via elisp =.o=.        | extend |
+| §111.D   | AOT grammar gains Cell ops: =(cell-value H)= / =(cell-set-value H VAL)=.  First swap: NONE (Cell access is internal — used by §111.E only).                  | extend |
+| §111.E   | =env_mirror.rs= + =env_lexframe.rs= rewritten as ~19 AOT-compiled elisp helpers + 2 new Rust allocator helpers (=nl_alloc_record= + =nl_alloc_vector=, total ~22 LOC).  Bootstrap + baker-only helpers stay in Rust under cfg gating.  Doc 102 Phase 8.b condition (a) satisfied. | finale |
 
 §111.A-D are foundation work (= ~4-6 days each); §111.E is the big
 payoff (= ~1-2 weeks, but each individual helper rewrite is a
@@ -91,7 +91,7 @@ Out of scope:
 - Sexp::BoolVector / Sexp::CharTable (= rarely used by env_mirror /
   env_lexframe; deferred to a follow-on doc if needed).
 - Sexp::MutStr (= mutable string, separate variant from Sexp::Str).
-- Phase 47-compiled Record / Vector / Cell *construction* — for
+- AOT-compiled Record / Vector / Cell *construction* — for
   Doc 111 we focus on READ + write-through-on-Cell, deferring fresh
   allocation to a future Doc 111b (if profiling shows need).
   =env_mirror= / =env_lexframe= construction paths can remain in
@@ -192,7 +192,7 @@ NlXxx box:
 #+end_src
 
 For an out-of-bounds read the caller must compare =N < len= first
-(via =mov rcx, [box + O + 16]= for the len field) — Phase 47's
+(via =mov rcx, [box + O + 16]= for the len field) — AOT's
 =if= form handles the dispatch.
 
 Reading the *length*:
@@ -383,14 +383,14 @@ must be respected.
 
 **Implementation strategy (= refined 2026-05-17)**: delegate to an
 existing Rust helper rather than re-implement drop+write in
-Phase 47 emit.  =NlCellRef::set_value= (=build-tool/src/eval/
+AOT emit.  =NlCellRef::set_value= (=build-tool/src/eval/
 nlcell.rs:151=) already does =std::ptr::drop_in_place= +
 =std::ptr::write= with the correct ordering + refcount maintenance
-(via the inner =Sexp::Drop= impl).  Phase 47 §111.D wraps this via
+(via the inner =Sexp::Drop= impl).  AOT §111.D wraps this via
 a thin =extern "C"= helper:
 
 #+begin_src rust
-  /// Doc 111 §111.D — extern wrapper for Phase 47 cell-set-value op.
+  /// Doc 111 §111.D — extern wrapper for AOT cell-set-value op.
   /// Wraps the existing `NlCellRef::set_value' unsafe method which
   /// itself does `std::ptr::drop_in_place' + `std::ptr::write' on the
   /// inner NlCell's `value' field.  Refcount maintenance is handled
@@ -409,7 +409,7 @@ a thin =extern "C"= helper:
   }
 #+end_src
 
-Phase 47 emit becomes a simple =call nl_cell_set_value= via §100.A
+AOT emit becomes a simple =call nl_cell_set_value= via §100.A
 =extern-call= grammar — no inline drop-table dispatch needed:
 
 #+begin_src text
@@ -528,7 +528,7 @@ Current Rust (= =build-tool/src/eval/env_mirror.rs::mirror_lookup_entry=):
   }
 #+end_src
 
-Phase 47 elisp source (= §111.E rewrite):
+AOT elisp source (= §111.E rewrite):
 
 #+begin_src elisp
   (defun nelisp_mirror_lookup_entry (env-ptr name-ptr result-slot)
@@ -621,7 +621,7 @@ helper; a follow-up swap can elisp-ify =mirror_fnv1a=.
 
 1. Add =record-type-tag=, =record-slot-count=, =record-slot-ref=,
    =record-slot-ref-ptr= as new value forms in
-   =lisp/nelisp-phase47-compiler.el='s =parse-value= dispatch.
+   =lisp/nelisp-aot-compiler.el='s =parse-value= dispatch.
 2. Add IR + emit cases.
 3. Add =lisp/nelisp-cc-recordp.el= source for the =recordp=
    predicate swap (= tag-byte check at Sexp slot offset 0; trivial
@@ -645,7 +645,7 @@ production smoke (= =(recordp (make-record 'foo 1 2 3))= → =t=).
    =Sexp::Vector=.
 3. Bounds check: emit =if (N < (vector-len H)) ...= dispatch.
 4. Replace =bi_aref='s Vector arm + the JIT trampoline
-   =nl_jit_access_vector_aref= path with Phase 47 dispatch.
+   =nl_jit_access_vector_aref= path with AOT dispatch.
 
 *LOC delta*: Rust ~+15 (= shim + bounds error), elisp ~+150.
 
@@ -738,7 +738,7 @@ table below enumerates each helper with its required ABI ops:
 - The =pub mod env_mirror;= / =pub mod env_lexframe;= in =eval/mod.rs=
 
 *Replace with thin extern wrappers* (= ~80 LOC total) that:
-- Dispatch each Group A/B/E callable helper through its Phase 47-
+- Dispatch each Group A/B/E callable helper through its AOT-
   compiled =.o= via the Doc 100 §100.A =extern-call= ABI.
 - Keep Group C/D Rust helpers inline (or move into eval/mod.rs).
 
@@ -784,13 +784,13 @@ asserts this in Doc 100 §100.B; reuse the same constant.
 
 The drop+write pattern (= drop_in_place then write) requires the
 old value's destructor to complete before the new value is written.
-The Phase 47 emit must respect this ordering even when the compiler
+The AOT emit must respect this ordering even when the compiler
 reorders instructions for ILP.
 
 *Mitigation*: emit a memory fence (= or call into a Rust =unsafe fn=
 helper that does the drop_in_place + write) before the new write.
 The current =NlCell::set_value= Rust impl uses =std::ptr::drop_in_place=
-+ =std::ptr::write= sequentially; the Phase 47 emit reuses the same
++ =std::ptr::write= sequentially; the AOT emit reuses the same
 helper via =call nl_cell_set_value= rather than re-implementing the
 unsafe sequence inline.
 
@@ -801,7 +801,7 @@ Slightly less pure-elisp but markedly safer.
 ** §5.3 Vec<T> capacity-doubling on push
 
 =env_lexframe::frame_push_rust_direct= currently grows the backing
-vector when full.  Phase 47 =vector-push= grammar requires either:
+vector when full.  AOT =vector-push= grammar requires either:
 - An =nl_vec_push_sexp= Rust helper (= ~15 LOC).
 - Or capacity-aware allocation in elisp (= ~50 LOC of arithmetic +
   =call nl_alloc_vec=).

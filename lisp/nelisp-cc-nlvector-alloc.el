@@ -1,4 +1,4 @@
-;;; nelisp-cc-nlvector-alloc.el --- nl_alloc_vector Phase 47 migration  -*- lexical-binding: t; -*-
+;;; nelisp-cc-nlvector-alloc.el --- nl_alloc_vector AOT migration  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -9,7 +9,7 @@
 ;;; Commentary:
 
 ;; Replaces the Rust `nl_alloc_vector' body in
-;; `build-tool/src/eval/nlvector.rs' with a Phase 47-compiled elisp
+;; `build-tool/src/eval/nlvector.rs' with a AOT-compiled elisp
 ;; object.  The function allocates a fresh `NlVector' holding a
 ;; `Vec<Sexp>' pre-filled with `Sexp::Nil' elements.
 ;;
@@ -27,7 +27,7 @@
 ;; offset-value-capacity = 8' is the data pointer field, not the
 ;; capacity count.  This is confirmed by the working aref-vector Phase
 ;; 47 tests (`tests/elisp_cc_aref_vector_probe.rs') and by
-;; `--emit-vector-slot-ptr-core' in `nelisp-phase47-compiler.el' which
+;; `--emit-vector-slot-ptr-core' in `nelisp-aot-compiler.el' which
 ;; adds `[NlVector* + 8]' (= data ptr) to `idx * 32'.
 ;;
 ;; Build strategy (three helper defuns + public entry):
@@ -129,7 +129,7 @@
        (alloc-bytes 32 8)
        (alloc-bytes (* (if (< capacity 0) 0 capacity) 32) 8)
        (if (< capacity 0) 0 capacity))))
-  "Phase 47 source for the `nl_alloc_vector' allocator swap.
+  "AOT source for the `nl_alloc_vector' allocator swap.
 
 Four-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_vector_fill (data-ptr i cap) -> data-ptr' — recursive
@@ -140,7 +140,7 @@ Four-entry `(seq DEFUN ...)' manifest:
   chains fill + build, passing fill's return (= data-ptr) into build.
 - `nl_alloc_vector (capacity) -> *mut NlVector' — public entry.
 
-Phase 47 ops consumed:
+AOT ops consumed:
   `alloc-bytes'   — 2-arg `nl_alloc_bytes'; 32 bytes for struct, cap*32
                     bytes for element buffer.
   `sexp-write-nil' — tags each slot with SEXP_TAG_NIL (1 byte write).

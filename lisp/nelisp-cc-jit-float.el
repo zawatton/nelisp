@@ -12,7 +12,7 @@
 ;; swaps for the f64 ABI rollout.  Each `defconst' below carries the
 ;; canonical elisp source for one `nl_jit_float_*' symbol; the build
 ;; chain (`scripts/compile-elisp-objects.el' →
-;; `nelisp-phase47-compile-to-object' → ET_REL `.o' → static archive
+;; `nelisp-aot-compile-to-object' → ET_REL `.o' → static archive
 ;; → cargo link) compiles each source into a single C-callable
 ;; symbol that replaces the corresponding Rust trampoline in
 ;; `build-tool/src/jit/float.rs'.
@@ -45,24 +45,24 @@
 (defconst nelisp-cc-jit-float-add--source
   '(defun nl_jit_float_add ((a :type f64) (b :type f64))
      (f64-add a b))
-  "Phase 47 source for `nl_jit_float_add' f64 trampoline.
+  "AOT source for `nl_jit_float_add' f64 trampoline.
 Replaces `build-tool/src/jit/float.rs::nl_jit_float_add'.  ABI:
 `extern \"C\" fn(f64, f64) -> f64' (= xmm0, xmm1 → xmm0).")
 
 (defconst nelisp-cc-jit-float-sub--source
   '(defun nl_jit_float_sub ((a :type f64) (b :type f64))
      (f64-sub a b))
-  "Phase 47 source for `nl_jit_float_sub' f64 trampoline.")
+  "AOT source for `nl_jit_float_sub' f64 trampoline.")
 
 (defconst nelisp-cc-jit-float-mul--source
   '(defun nl_jit_float_mul ((a :type f64) (b :type f64))
      (f64-mul a b))
-  "Phase 47 source for `nl_jit_float_mul' f64 trampoline.")
+  "AOT source for `nl_jit_float_mul' f64 trampoline.")
 
 (defconst nelisp-cc-jit-float-div--source
   '(defun nl_jit_float_div ((a :type f64) (b :type f64))
      (f64-div a b))
-  "Phase 47 source for `nl_jit_float_div' f64 trampoline.
+  "AOT source for `nl_jit_float_div' f64 trampoline.
 IEEE 754 division-by-zero produces ±inf / NaN, not a trap.")
 
 ;; Doc 110 §110.C.2.a — 4 ordered-comparison trampolines.  Each
@@ -76,25 +76,25 @@ IEEE 754 division-by-zero produces ±inf / NaN, not a trap.")
 (defconst nelisp-cc-jit-float-lt--source
   '(defun nl_jit_float_lt ((a :type f64) (b :type f64))
      (f64-lt a b))
-  "Phase 47 source for `nl_jit_float_lt' f64 trampoline.
+  "AOT source for `nl_jit_float_lt' f64 trampoline.
 Matches Rust `(a < b) as i64' including NaN → 0.")
 
 (defconst nelisp-cc-jit-float-gt--source
   '(defun nl_jit_float_gt ((a :type f64) (b :type f64))
      (f64-gt a b))
-  "Phase 47 source for `nl_jit_float_gt' f64 trampoline.
+  "AOT source for `nl_jit_float_gt' f64 trampoline.
 Matches Rust `(a > b) as i64' including NaN → 0.")
 
 (defconst nelisp-cc-jit-float-le--source
   '(defun nl_jit_float_le ((a :type f64) (b :type f64))
      (f64-le a b))
-  "Phase 47 source for `nl_jit_float_le' f64 trampoline.
+  "AOT source for `nl_jit_float_le' f64 trampoline.
 Matches Rust `(a <= b) as i64' including NaN → 0.")
 
 (defconst nelisp-cc-jit-float-ge--source
   '(defun nl_jit_float_ge ((a :type f64) (b :type f64))
      (f64-ge a b))
-  "Phase 47 source for `nl_jit_float_ge' f64 trampoline.
+  "AOT source for `nl_jit_float_ge' f64 trampoline.
 Matches Rust `(a >= b) as i64' including NaN → 0.")
 
 ;; Doc 110 §110.C.2.b — EQ-EPS (= `(a-b).abs() < 1e-15') with
@@ -107,10 +107,10 @@ Matches Rust `(a >= b) as i64' including NaN → 0.")
 (defconst nelisp-cc-jit-float-eq-eps--source
   '(defun nl_jit_float_eq_eps ((a :type f64) (b :type f64))
      (f64-eq-eps a b))
-  "Phase 47 source for `nl_jit_float_eq_eps' f64 trampoline.
+  "AOT source for `nl_jit_float_eq_eps' f64 trampoline.
 Matches Rust `if (a - b).abs() < 1e-15 { 1 } else { 0 }'
 including NaN → 0.  The 1e-15 bit pattern lives in
-`nelisp-phase47-compiler--f64-1e-15-bits' so it stays
+`nelisp-aot-compiler--f64-1e-15-bits' so it stays
 cross-checkable against Rust's own `1e-15_f64.to_bits()'.")
 
 (provide 'nelisp-cc-jit-float)

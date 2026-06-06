@@ -88,9 +88,9 @@
      ;; caller's responsibility; this kernel performs the raw load
      ;; unconditionally.
      (ptr-read-u64 sexp-ptr 8))
-  "Phase 47 source for the Doc 123 §123.D payload-ptr reader kernel.
+  "AOT source for the Doc 123 §123.D payload-ptr reader kernel.
 
-Single-arg function — Phase 47's SysV AMD64 prologue spills the
+Single-arg function — AOT's SysV AMD64 prologue spills the
 first arg (`sexp-ptr' = raw `*const Sexp' as i64) into the rbp-
 relative slot 0.  The body is one composed value form: pass
 `sexp-ptr' + offset = 8 (= `SEXP_PAYLOAD_OFFSET', the payload-union

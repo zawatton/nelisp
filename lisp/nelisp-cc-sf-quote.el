@@ -1,4 +1,4 @@
-;;; nelisp-cc-sf-quote.el --- Phase 47 nl_sf_quote swap  -*- lexical-binding: t; -*-
+;;; nelisp-cc-sf-quote.el --- AOT nl_sf_quote swap  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,7 +8,7 @@
 
 ;;; Commentary:
 
-;; Phase 47 replacement for the `sf_quote' Rust body in
+;; AOT replacement for the `sf_quote' Rust body in
 ;; `build-tool/src/eval/special_forms.rs'.  The Rust body was:
 ;;
 ;;   fn sf_quote(args: &Sexp) -> Result<Sexp, EvalError> {
@@ -18,7 +18,7 @@
 ;;   }
 ;;
 ;; `args' is the raw unevaluated argument list for `(quote FORM)' —
-;; a Sexp::Cons with car=FORM, cdr=Nil.  The Phase 47 body checks
+;; a Sexp::Cons with car=FORM, cdr=Nil.  The AOT body checks
 ;; the tag (must be Cons = 7) and that the cdr is Nil (arity == 1),
 ;; then refcount-clones the car into the output slot via
 ;; `nl_sexp_clone_into'.
@@ -70,7 +70,7 @@
            (extern-call nl_cons_car_ptr args)   ; pos 2: rsp ≡ -16 ≡ 0 ✓
            0)
         1)))
-  "Phase 47 source for `nl_sf_quote' (eval/special_forms.rs sf_quote → elisp).
+  "AOT source for `nl_sf_quote' (eval/special_forms.rs sf_quote → elisp).
 
 Two defuns (seq form).  Alignment-safe CPS structure.
 

@@ -45,7 +45,7 @@
     and links the REAL =nelisp_aot_builtin_call1= (=reader-real-sf-manifest=),
     so =addr-of= resolves the real helper in the reader.
   - *Remaining (gate 6 real-runtime integration)*: the mechanism test uses
-    test-local subset shims (=nelisp-phase47-compile-sexp= builds a minimal
+    test-local subset shims (=nelisp-aot-compile-sexp= builds a minimal
     binary with no runtime env).
   - *real-runtime gate 6 SHIPPED (call1, linux-x86_64)*: the standalone
     READER now exposes =--neln-selftest= — a baked-in loader unit
@@ -83,7 +83,7 @@
   proof reuse, native artifact, GNU =.elc= compatibility) remain open.
 - *Native (§6.4) compile lane IMPLEMENTED 2026-06-04*: =--kind neln=
   compiles native-eligible top-level =defun= bodies through the pure-elisp
-  Phase 47 compiler (=nelisp-phase47-compile-to-object=) into one ET_REL
+  AOT compiler (=nelisp-aot-compile-to-object=) into one ET_REL
   object, embeds it (base64) in the artifact's =:native= section alongside
   the FULL portable bytecode module, and records native metadata (arch,
   symbols, object sha256) in the manifest with =:artifact-class native= and
@@ -95,18 +95,18 @@
   to neln by suffix.
 - *Native (§6.4) EXEC — leaf subset SHIPPED 2026-06-04*: the embedded
   object now ACTUALLY EXECUTES end-to-end via =nelisp-artifact-native-exec=:
-  elisp -> Phase-47 =.o= -> embed -> extract -> link -> run -> correct
+  elisp -> AOT =.o= -> embed -> extract -> link -> run -> correct
   result.  Verified for the reloc-free leaf arithmetic subset (plain C
   integer ABI, no boundary slots — confirmed by disassembly: =(* x x)=
   takes =x= in =rdi=, returns in =rax=, reads no boundary slot).  The host
   C toolchain (cc + objcopy) acts as the loader.
 - *Native (§6.4) EXEC mechanism — PROVEN in the standalone runtime
   2026-06-04*: the in-process native-exec mechanism for gate 6 now works
-  end-to-end in a Phase-47-built standalone binary — mmap a RWX page
+  end-to-end in a AOT-built standalone binary — mmap a RWX page
   (=syscall-direct 9= with =PROT_READ|WRITE|EXEC=), memcpy a reloc-free
   function's machine code into it, and CALL THE COPIED CODE through a
-  runtime-computed pointer via Phase 47's =(call-ptr PTR ARG...)= (=call r11=
-  on x86_64).  Verified by =nelisp-phase47-compiler/e2e-native-exec-mmap-call-ptr=
+  runtime-computed pointer via AOT's =(call-ptr PTR ARG...)= (=call r11=
+  on x86_64).  Verified by =nelisp-aot-compiler/e2e-native-exec-mmap-call-ptr=
   (target(9)=81 -> exit 81).  Combined with host-side =nelisp-artifact-native-exec=
   (which confirms the emitted code is correct for the reloc-free subset:
   arithmetic, =let=/=if=, comparisons, multi-arg), gate 6 holds for reloc-free
@@ -114,7 +114,7 @@
   runtime can load+execute it in-process.
 - *Native (§6.4) EXEC remaining — general case*: builtin-calling defuns emit
   =R_X86_64_PLT32= relocs (=nelisp_aot_builtin_call1/calln=, =nl_alloc_symbol=)
-  and some read the Phase-47 boundary slots
+  and some read the AOT boundary slots
   (=out/mirror/frames/scratch/name_slot=).  Executing those in-process still
   needs (1) load-time reloc resolution against the runtime's symbol addresses
   (the static linker's =pc32/plt32= patcher is reusable) and (2) a
