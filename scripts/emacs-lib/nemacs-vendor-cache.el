@@ -9,7 +9,19 @@
 (require 'nelisp-bytecode)
 
 (defconst nemacs-vendor-cache--nelisp-root
-  "/home/madblack-21/Cowork/Notes/dev/nelisp")
+  ;; Prefer NEMACS_NELISP_ROOT (set by the Makefile), then a vendored
+  ;; vendor/nelisp snapshot beside this repo, then the legacy sibling
+  ;; checkout. Keeps the vendor cache decoupled from a rebuilt ../nelisp.
+  (or (getenv "NEMACS_NELISP_ROOT")
+      (let ((vendored
+             (expand-file-name
+              "vendor/nelisp"
+              (file-name-directory
+               (directory-file-name
+                (file-name-directory
+                 (or load-file-name buffer-file-name default-directory)))))))
+        (and (file-directory-p vendored) vendored))
+      "/home/madblack-21/Cowork/Notes/dev/nelisp"))
 (defconst nemacs-vendor-cache--nelisp-src-dir
   (expand-file-name "src" nemacs-vendor-cache--nelisp-root))
 (defconst nemacs-vendor-cache--nelisp-lisp-dir

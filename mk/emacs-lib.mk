@@ -5,7 +5,7 @@ EMACS = emacs --batch
 VENDOR_NELISP = vendor/nelisp
 DEFAULT_NELISP_ROOT := $(firstword $(wildcard $(VENDOR_NELISP) ../nelisp $(HOME)/Notes/dev/nelisp))
 NELISP_ROOT  ?= $(if $(DEFAULT_NELISP_ROOT),$(DEFAULT_NELISP_ROOT),$(VENDOR_NELISP))
-DEFAULT_NELISP_BIN := $(firstword $(wildcard build/nelisp-experiment $(NELISP_ROOT)/target/nelisp $(NELISP_ROOT)/target/nelisp-standalone-reader))
+DEFAULT_NELISP_BIN := $(firstword $(wildcard $(NELISP_ROOT)/target/nelisp $(NELISP_ROOT)/target/nelisp-standalone-reader build/nelisp-experiment))
 NELISP_BIN   ?= $(if $(DEFAULT_NELISP_BIN),$(DEFAULT_NELISP_BIN),$(NELISP_ROOT)/target/nelisp)
 NELISP_BOOT_TIMEOUT ?= 420s
 NEMACS_NELISP_ERT_TIMEOUT ?= 420s
@@ -545,25 +545,25 @@ test:
 		-f ert-run-tests-batch-and-exit
 
 gate5:
-	$(EMACS) -Q -L scripts -L test \
-		-L /home/madblack-21/Cowork/Notes/dev/nelisp/src \
-		-L /home/madblack-21/Cowork/Notes/dev/nelisp/lisp \
+	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
+		-L $(NELISP_ROOT)/src \
+		-L $(NELISP_ROOT)/lisp \
 		-l scripts/nemacs-artifact-gate5.el \
 		-l test/nelisp-emacs-artifact-gate5-test.el \
 		-f ert-run-tests-batch-and-exit
 
 vendor-nelc-cache:
-	$(EMACS) -Q -L scripts -L test \
-		-L /home/madblack-21/Cowork/Notes/dev/nelisp/lisp \
-		-L /home/madblack-21/Cowork/Notes/dev/nelisp/src \
+	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
+		-L $(NELISP_ROOT)/lisp \
+		-L $(NELISP_ROOT)/src \
 		-l scripts/nemacs-vendor-cache.el \
 		-l test/nemacs-vendor-cache-test.el \
 		-f ert-run-tests-batch-and-exit
 
 vendor-nelc-cache-set:
-	$(EMACS) -Q -L scripts -L test \
-		-L /home/madblack-21/Cowork/Notes/dev/nelisp/lisp \
-		-L /home/madblack-21/Cowork/Notes/dev/nelisp/src \
+	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
+		-L $(NELISP_ROOT)/lisp \
+		-L $(NELISP_ROOT)/src \
 		-l scripts/nemacs-vendor-cache-set.el \
 		-l test/nemacs-vendor-cache-set-test.el \
 		-f ert-run-tests-batch-and-exit
