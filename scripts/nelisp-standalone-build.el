@@ -805,6 +805,31 @@ or the toolchain is newer than the cached object."
                   obj))
             reused))))
     (defun nl_dealloc_bytes (_p _s _a) 1)
+    ;; Doc 146 §3.0: immediates-only tagged-word value helpers (foundation,
+    ;; stage 1 -- additive; no caller yet, so the runtime is unchanged).  A
+    ;; "value" word is: low bit 0 = 8-aligned slot pointer (heap type, 32-byte
+    ;; Sexp slot, unchanged); low bit 1 = immediate.  Encoding:
+    ;;   Int(n) = (n<<2)|1   (i62 fixnum, low 2 bits = 01)
+    ;;   Nil    = 3          (low 2 bits = 11, payload 0)
+    ;;   T      = 7          (low 2 bits = 11, payload 1)
+    ;; nl_val_is_imm: nonzero iff V is an immediate (not a slot pointer).
+    ;; nl_val_tag:    Sexp tag -- 0=Nil 1=T 2=Int for immediates, else the
+    ;;                slot's tag byte at +0.  Nil/T are distinguished by direct
+    ;;                compare (Nil=3, T=7) so no shift/div is needed.
+    ;; Only +/*/logand/=/ptr-read-u8 are used (all link-resolved in arena.o;
+    ;; `ash'/`/' are NOT inlinable here).  The Int *decode* (n = (v-1)/4) needs
+    ;; a shift/div and is deferred to the conversion stage (§3.0 step 7) where
+    ;; the arena-resolvable shift is wired; encode is (n<<2)|1 = n*4+1.
+    (defun nl_val_is_imm (v) (logand v 1))
+    (defun nl_imm_int (n) (+ (* n 4) 1))
+    (defun nl_imm_nil () 3)
+    (defun nl_imm_t () 7)
+    (defun nl_val_tag (v)
+      (if (= (logand v 1) 0)
+          (ptr-read-u8 v 0)
+        (if (= (logand v 3) 1)
+            2
+          (if (= v 3) 0 1))))
     ;; Doc 08 §8.16: symbol-name intern region.  A 64 MiB raw mmap (NOT a
     ;; chunk -> GC never walks it; interned buffers are permanent + invisible
     ;; to mark/sweep).  Control slots: +832 (268436288) = region base (0 =
