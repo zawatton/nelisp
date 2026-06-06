@@ -1439,7 +1439,8 @@ addressing by a runtime base, never by a fixed reservation."
            (nl_compact_rw_slot src)
            (nl_compact_rw_slot cursor)
            (nl_compact_rw_slot bsym)
-           (if (= (ptr-read-u64 268436328 0) 0) 0 (nl_compact_rw_edge 268436328))))
+           (if (= (ptr-read-u64 268436328 0) 0) 0
+             (nl_compact_rw_block (nl_compact_rw_edge 268436328)))))
     ;; --- Phase 4: move (memmove each rewritten-live block to its to-space
     ;; address) + reset marks.  Boot (below watermark) is mark3 from the rewrite
     ;; walk but stays put (just clear its mark).
@@ -1474,14 +1475,31 @@ addressing by a runtime base, never by a fixed reservation."
           (nl_seq2 (nl_compact_move_chunk chunk)
                    (nl_compact_move_chunks (ptr-read-u64 (+ chunk 48) 0) tospace)))))
     ;; --- Phase 6: munmap each old growth chunk (between chunk-0 and to-space).
+    (defun nl_compact_chunk_has_pin (base size)
+      (let ((b (ptr-read-u64 268436392 0)))
+        (if (= b 0) 0
+          (if (< b base) 0 (if (< b (+ base size)) 1 0)))))
+    (defun nl_compact_pin_src (src)
+      (let* ((tg (ptr-read-u8 src 0))
+             (b (if (= tg 5) (ptr-read-u64 src 16)
+                  (if (= tg 6) (ptr-read-u64 (ptr-read-u64 src 8) 8) 0))))
+        (if (= b 0) (ptr-write-u64 268436392 0 0)
+          (if (= (nl_gc_in_arena b) 0) (ptr-write-u64 268436392 0 0)
+            (nl_seq2 (ptr-write-u64 268436392 0 b)
+              (if (= (nl_hdr_mark (- b 8)) 1) (nl_hdr_set_mark (- b 8) 5) 0))))))
+    (defun nl_compact_unpin_src ()
+      (let ((b (ptr-read-u64 268436392 0)))
+        (if (= b 0) 0 (nl_hdr_set_mark (- b 8) 0))))
     (defun nl_compact_munmap_growth (chunk tospace)
       (if (= chunk 0) 0
         (if (= chunk tospace) 0
           (let ((next (ptr-read-u64 (+ chunk 48) 0))
                 (base (ptr-read-u64 chunk 0)) (size (ptr-read-u64 (+ chunk 8) 0)))
-            (seq (ptr-write-u64 268436184 0 (- (ptr-read-u64 268436184 0) size))
-                 (nl_os_free_chunk base size)
-                 (nl_compact_munmap_growth next tospace))))))
+            (if (= (nl_compact_chunk_has_pin base size) 1)
+                (nl_seq2 (nl_compact_munmap_growth next tospace) chunk)
+              (seq (ptr-write-u64 268436184 0 (- (ptr-read-u64 268436184 0) size))
+                   (nl_os_free_chunk base size)
+                   (nl_compact_munmap_growth next tospace)))))))
     (defun nl_compact_clear_fl (n)
       (if (> n 57) (ptr-write-u64 268435552 0 0)
         (nl_seq2 (ptr-write-u64 (+ 268435696 (* n 8)) 0 0)
@@ -1490,6 +1508,7 @@ addressing by a runtime base, never by a fixed reservation."
     (defun nl_gc_compact (ctx result out pool src cursor bsym)
       (seq
        (nl_compact_table_init)
+       (nl_compact_pin_src src)
        (ptr-write-u64 268436376 0 (+ (ptr-read-u64 268436376 0) 1)) ; gen++
        (ptr-write-u64 268436368 0 0)                                ; offset cursor = 0
        (nl_compact_fwd_chunks (ptr-read-u64 268436160 0))           ; phase 2
@@ -1500,15 +1519,19 @@ addressing by a runtime base, never by a fixed reservation."
             (ptr-write-u64 268436384 0 (ptr-read-u64 (+ tospace 24) 0)) ; T = data-start
             (nl_compact_rw_roots ctx result out pool src cursor bsym)   ; phase 3
             (nl_compact_move_chunks (ptr-read-u64 268436160 0) tospace) ; phase 4
-            (let ((c0 (ptr-read-u64 268436160 0)))                      ; phase 5/6
+            (let* ((c0 (ptr-read-u64 268436160 0))                      ; phase 5/6
+                   (pinned (nl_compact_munmap_growth (ptr-read-u64 (+ c0 48) 0) tospace)))
               (seq
-               (nl_compact_munmap_growth (ptr-read-u64 (+ c0 48) 0) tospace)
-               (ptr-write-u64 (+ c0 48) 0 tospace)
+               (if (= pinned 0)
+                   (ptr-write-u64 (+ c0 48) 0 tospace)
+                 (nl_seq2 (ptr-write-u64 (+ c0 48) 0 pinned)
+                          (ptr-write-u64 (+ pinned 48) 0 tospace)))
                (ptr-write-u64 (+ tospace 48) 0 0)
                (ptr-write-u64 268436168 0 tospace)
                (ptr-write-u64 268435456 0 (- (ptr-read-u64 268435664 0) (ptr-read-u64 c0 0)))
                (ptr-write-u64 (+ tospace 16) 0 (+ 1024 total))
-               (nl_compact_clear_fl 0))))))))
+               (nl_compact_clear_fl 0)
+               (nl_compact_unpin_src))))))))
     (defun nl_gc_collect (ctx result out pool src cursor bsym)
       (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
       (seq
