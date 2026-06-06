@@ -5,7 +5,19 @@
 ;;; Code:
 
 (defconst nemacs-artifact-gate5--nelisp-root
-  "/home/madblack-21/Cowork/Notes/dev/nelisp")
+  ;; Prefer NEMACS_NELISP_ROOT (set by the Makefile), then a vendored
+  ;; vendor/nelisp snapshot beside this repo, then the legacy sibling
+  ;; checkout. Keeps gate5 decoupled from a frequently-rebuilt ../nelisp.
+  (or (getenv "NEMACS_NELISP_ROOT")
+      (let ((vendored
+             (expand-file-name
+              "vendor/nelisp"
+              (file-name-directory
+               (directory-file-name
+                (file-name-directory
+                 (or load-file-name buffer-file-name default-directory)))))))
+        (and (file-directory-p vendored) vendored))
+      "/home/madblack-21/Cowork/Notes/dev/nelisp"))
 (defconst nemacs-artifact-gate5--nelisp-src-dir
   (expand-file-name "src" nemacs-artifact-gate5--nelisp-root))
 (defconst nemacs-artifact-gate5--nelisp-lisp-dir

@@ -121,7 +121,7 @@ nelisp_driver_kind() {
   esac
 }
 
-nelisp_standalone_eval_exit() {
+nelisp_standalone_eval_value() {
   local form="$1"
   local expected="$2"
   local rc out
@@ -129,14 +129,14 @@ nelisp_standalone_eval_exit() {
   out=$("$NEMACS_NELISP" --eval "$form" 2>&1)
   rc=$?
   set -e
-  if [[ "$rc" == "$expected" ]]; then
-    printf 'exit=%s\n' "$rc"
-    if [[ -n "$out" ]]; then
-      printf '%s\n' "$out"
-    fi
+  local trimmed="${out//[$' \t\r\n']/}"
+  # standalone-reader: `--eval' prints the value to stdout and exits 0
+  # (exit-with-value is the `--load' convention, not `--eval').
+  if [[ "$rc" == 0 && "$trimmed" == "$expected" ]]; then
+    printf 'exit=%s value=%s\n' "$rc" "$out"
     return 0
   fi
-  printf 'exit=%s expected=%s\n' "$rc" "$expected"
+  printf 'exit=%s expected-value=%s\n' "$rc" "$expected"
   if [[ -n "$out" ]]; then
     printf '%s\n' "$out"
   fi
@@ -191,7 +191,7 @@ run_doctor() {
       echo "  nelisp-version: skip"
       echo "    standalone-reader has no --version command"
 
-      if out=$(nelisp_standalone_eval_exit 42 42); then
+      if out=$(nelisp_standalone_eval_value 42 42); then
         echo "  nelisp-literal-eval: ok"
         doctor_block "$out"
       else
@@ -200,7 +200,7 @@ run_doctor() {
         failures=$((failures + 1))
       fi
 
-      if out=$(nelisp_standalone_eval_exit '(+ 40 2)' 42); then
+      if out=$(nelisp_standalone_eval_value '(+ 40 2)' 42); then
         echo "  nelisp-list-eval: ok"
         doctor_block "$out"
       else
