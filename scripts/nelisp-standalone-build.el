@@ -2543,6 +2543,12 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "ptr-read-u64") . (wf_write_int out (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-write-u64") . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
     ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
+    ;; ptr-call: forward FFI indirect call.  (ptr-call ADDR a0 a1 a2 a3 a4 a5)
+    ;; -> calls the i64 code pointer ADDR with up to 6 i64 args (SysV ABI),
+    ;; returns rax as i64.  Same `call-ptr' grammar op the compiler emits, so
+    ;; no new Rust.  Lets interpreted REPL code drive forward FFI (dlsym'd libc
+    ;; / GTK / SDL functions) directly.  Pad unused trailing args with 0.
+    ((:lit "ptr-call") . (wf_write_int out (call-ptr (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
     ((:lit "thread-spawn") . (bf_thread_spawn args env out))
     ((:lit "thread-join") . (bf_thread_join args env out))
     ((:lit "fork-spawn") . (bf_fork_spawn args env out)))
@@ -2558,7 +2564,7 @@ ash/logand/logior/logxor/lognot + string<.")
     "signal" "error" "equal" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join" "fork-spawn")
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "ptr-call" "thread-spawn" "thread-join" "fork-spawn")
   "Builtin names added by Wave-1 (B) breadth glue; appended to
 `nelisp-standalone--reader-builtins'.")
 
@@ -3587,7 +3593,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "thread-spawn" "thread-join" "fork-spawn")
+    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "ptr-call" "thread-spawn" "thread-join" "fork-spawn")
   "Builtin names installed into the reader binary's mirror.
 Each is dispatched by the pure-elisp `nelisp_apply_function' (see
 `nelisp-standalone--applyfn-source').  Names > 8 bytes (for example
