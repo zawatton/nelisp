@@ -1416,6 +1416,7 @@ argument (reachability + in-arena bounds checks).")
                                         (mut-str-finalize ms out) 0)))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
     ((:lit "nelisp--arena-force-grow-smoke") . (bf_arena_force_grow_smoke out))
+    ((:lit "nelisp--size-census") . (bf_size_census out))
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
     ((:u8 "wrf")  . (seq (nl_bi_write_file args out) 0))
     ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
@@ -1597,6 +1598,76 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (wf_cons_int bump s3 s2)
          (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
          (wf_cons_int 268435456 s1 out)
+         0)))
+    ;; bf_size_census (Doc 08 §8.14 diagnostic): BLOCK_TOTAL histogram over the
+    ;; whole arena.  Boxes carry NO self type tag (type lives in the Sexp that
+    ;; points to the box, top-down), so a bottom-up walk can only bucket by size.
+    ;; Reliable read-only walk modeled on `nl_gc_sweep_chunk'.  Accumulates into a
+    ;; heap-allocated 64-byte block ACC (never fixed reserved addresses — avoids
+    ;; the §8.7 wild-write risk).  ACC layout (u64 each):
+    ;;   +0 total-nonfree  +8 free-bytes  +16 cons(BT=88)  +24 small(BT<=64)
+    ;;   +32 med(65..256)  +40 big(>256)  +48 block-count  +56 free-count
+    ;; ACC slots (refined to localize the "big" bucket by size):
+    ;;   +0 total-nonfree  +8 free  +16 cons(BT=88)  +24 le256  +32 b257-4k
+    ;;   +40 b4k-256k  +48 b256k-2m (~1MB parse pool lands here)  +56 b>2m
+    (defun bf_size_census_block (hdr acc)
+      (let ((bt (ptr-read-u64 hdr 0))
+            (mark (ptr-read-u64 (+ hdr 8) 0)))
+        (if (= mark 2)
+            (ptr-write-u64 (+ acc 8) 0 (+ (ptr-read-u64 (+ acc 8) 0) bt))
+          (seq
+           (ptr-write-u64 acc 0 (+ (ptr-read-u64 acc 0) bt))
+           (if (= bt 88)
+               (ptr-write-u64 (+ acc 16) 0 (+ (ptr-read-u64 (+ acc 16) 0) bt))
+             (if (< bt 257)
+                 (ptr-write-u64 (+ acc 24) 0 (+ (ptr-read-u64 (+ acc 24) 0) bt))
+               (if (< bt 4097)
+                   (ptr-write-u64 (+ acc 32) 0 (+ (ptr-read-u64 (+ acc 32) 0) bt))
+                 (if (< bt 262145)
+                     (ptr-write-u64 (+ acc 40) 0 (+ (ptr-read-u64 (+ acc 40) 0) bt))
+                   (if (< bt 2097153)
+                       (ptr-write-u64 (+ acc 48) 0 (+ (ptr-read-u64 (+ acc 48) 0) bt))
+                     (ptr-write-u64 (+ acc 56) 0 (+ (ptr-read-u64 (+ acc 56) 0) bt)))))))))))
+    (defun bf_size_census_step (hdr end acc)
+      (if (= (nl_gc_bt_ok hdr (ptr-read-u64 hdr 0) end) 0)
+          0
+        (nl_seq2 (bf_size_census_block hdr acc) (+ hdr (ptr-read-u64 hdr 0)))))
+    (defun bf_size_census_chunk (chunk acc)
+      (let ((hdr (ptr-read-u64 (+ chunk 24) 0))
+            (end (nl_gc_chunk_end chunk)))
+        (while (and (> hdr 0) (< hdr end))
+          (setq hdr (bf_size_census_step hdr end acc)))
+        0))
+    (defun bf_size_census_chunks (chunk acc)
+      (if (= chunk 0)
+          0
+        (nl_seq2 (bf_size_census_chunk chunk acc)
+                 (bf_size_census_chunks (ptr-read-u64 (+ chunk 48) 0) acc))))
+    (defun bf_size_census (out)
+      (let* ((acc (alloc-bytes 64 8))
+             (nil-slot (alloc-bytes 32 8))
+             (s7 (alloc-bytes 32 8))
+             (s6 (alloc-bytes 32 8))
+             (s5 (alloc-bytes 32 8))
+             (s4 (alloc-bytes 32 8))
+             (s3 (alloc-bytes 32 8))
+             (s2 (alloc-bytes 32 8))
+             (s1 (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 acc 0 0) (ptr-write-u64 (+ acc 8) 0 0)
+         (ptr-write-u64 (+ acc 16) 0 0) (ptr-write-u64 (+ acc 24) 0 0)
+         (ptr-write-u64 (+ acc 32) 0 0) (ptr-write-u64 (+ acc 40) 0 0)
+         (ptr-write-u64 (+ acc 48) 0 0) (ptr-write-u64 (+ acc 56) 0 0)
+         (bf_size_census_chunks (ptr-read-u64 268436160 0) acc)
+         (wf_write_nil nil-slot)
+         (wf_cons_int (ptr-read-u64 (+ acc 56) 0) nil-slot s7)
+         (wf_cons_int (ptr-read-u64 (+ acc 48) 0) s7 s6)
+         (wf_cons_int (ptr-read-u64 (+ acc 40) 0) s6 s5)
+         (wf_cons_int (ptr-read-u64 (+ acc 32) 0) s5 s4)
+         (wf_cons_int (ptr-read-u64 (+ acc 24) 0) s4 s3)
+         (wf_cons_int (ptr-read-u64 (+ acc 16) 0) s3 s2)
+         (wf_cons_int (ptr-read-u64 (+ acc 8) 0) s2 s1)
+         (wf_cons_int (ptr-read-u64 acc 0) s1 out)
          0)))
     (defun bf_arena_force_grow_smoke (out)
       (let* ((chunk (ptr-read-u64 268436168 0))
@@ -2290,7 +2361,16 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
          (ptr-write-u64 268435624 0 0)
          (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-         (vector-make 32768 pool)
+         ;; Doc 08 §8.15: right-size the per-form parse pool to the source length
+         ;; instead of a fixed 32768-slot (~1MB) vector.  The parsed form's nodes
+         ;; live IN this pool (a GC root), so a retained defun/defvar pins the
+         ;; whole pool -> a 1MB pool per small form was 54-68% of the vendor-load
+         ;; arena.  8x source length bounds the node count (each parse node needs
+         ;; >=1 source char; 8x covers per-node slot overhead) and the 32768 cap
+         ;; keeps the previous behaviour for big forms (no parse regression).
+         (vector-make (let ((n (* 4 (str-len src))))
+                        (if (< n 256) 256 (if (> n 32768) 32768 n)))
+                      pool)
          (if (= (bf_eval_source_string_loop src cursor result pool env out bsym 1) 2)
              1
            (seq (wf_dirty) 0)))))
@@ -3577,7 +3657,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--arena-stats" "nelisp--arena-force-grow-smoke"
+    "nelisp--repr" "nelisp--arena-stats" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
