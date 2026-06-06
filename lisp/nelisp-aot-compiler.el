@@ -12198,13 +12198,29 @@ glue dispatches solely off the tag byte.  See `docs/arch/sexp-abi.md'
   "Emit a tag==Nil predicate for NODE's `:ptr' Sexp pointer.
 Returns 1 in rax iff the tag byte at `[ptr + 0]' equals
 `nelisp-sexp--tag-nil'; else returns 0."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
-    (nelisp-aot-compiler--emit-value ptr buf)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (id (aref buf 1))
+         (slot-lbl (intern (format "cnp%d_slot" id)))
+         (done-lbl (intern (format "cnp%d_done" id))))
+    ;; Doc 146 §3.0: immediate-aware Nil predicate.  V is Nil iff it is the
+    ;; immediate Nil word (3) or an 8-aligned slot whose tag byte is Nil.
+    (nelisp-aot-compiler--emit-value ptr buf)            ; rax = V
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)        ; rdi = V
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)        ; V & 1
+    (nelisp-asm-x86_64-jz-rel32 buf slot-lbl)            ; low bit 0 -> slot
+    ;; immediate: result = (V == 3)
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 3)
+    (nelisp-asm-x86_64-setcc-al buf 'sete)
+    (nelisp-asm-x86_64-movzx-eax-al buf)
+    (nelisp-asm-x86_64-jmp-rel32 buf done-lbl)
+    (nelisp-asm-x86_64-define-label buf slot-lbl)
+    (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'rdi) ; tag byte
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-nil)
     (nelisp-asm-x86_64-setcc-al buf 'sete)
-    (nelisp-asm-x86_64-movzx-eax-al buf)))
+    (nelisp-asm-x86_64-movzx-eax-al buf)
+    (nelisp-asm-x86_64-define-label buf done-lbl)))
 
 (defun nelisp-aot-compiler--emit-cons-slot-copy (node buf field-off)
   "Emit the Doc 101 §2.1 boxed-slot copy for `car' / `cdr'.

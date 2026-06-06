@@ -110,17 +110,17 @@
             (outer_scratch (alloc-bytes 32 8))
             (count_scratch (alloc-bytes 32 8)))
         (seq
-         (if (= (ptr-read-u64 val_ptr 0) 11)
+         (if (= (sexp-tag val_ptr) 11)
              (nl_sexp_clone_into val_ptr cell_slot)   ; already a Cell -> verbatim
            (cell-make val_ptr cell_slot))             ; bare value -> wrap once
          (nelisp_frame_bind frames_ptr name_ptr cell_slot
                             pair_scratch outer_scratch count_scratch)
          1)))
     (defun nl_push_captured_walk (alist_ptr mirror_ptr frames_ptr unbound_ptr)
-      (if (= (ptr-read-u64 alist_ptr 0) 7)
+      (if (= (sexp-tag alist_ptr) 7)
           (let ((pair_ptr (nl_cons_car_ptr alist_ptr))
                 (rest_ptr (nl_cons_cdr_ptr alist_ptr)))
-            (if (= (ptr-read-u64 pair_ptr 0) 7)
+            (if (= (sexp-tag pair_ptr) 7)
                 (let ((name_ptr (nl_cons_car_ptr pair_ptr))
                       (val_ptr (nl_cons_cdr_ptr pair_ptr)))
                   (seq (nl_pc_bind_one frames_ptr name_ptr val_ptr)
