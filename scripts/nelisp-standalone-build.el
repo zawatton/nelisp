@@ -2330,7 +2330,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                     (let* ((live (nl_gc_collect env result out pool src cursor bsym))
                            (bump (ptr-read-u64 268436184 0))
                            (lo (+ (* live 3) 1048576))
-                           (hi (+ bump 536870912)))
+                           (hi (+ bump 67108864)))
                       (ptr-write-u64 268435560 0
                                      (if (< lo hi) hi lo))))))
              (setq more 0)))))
@@ -2354,7 +2354,7 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
                         (let* ((live (nl_gc_collect env result out pool src cursor bsym))
                                (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
-                               (hi (+ bump 536870912)))
+                               (hi (+ bump 67108864)))
                           (ptr-write-u64 268435560 0
                                          (if (< lo hi) hi lo))))
                     (setq more 2))))
@@ -3853,7 +3853,7 @@ fixed-base immediate until `data-addr' lands for those toolchains."
                         (let* ((live (nl_gc_collect ctx result out pool src cursor builtin_sym))
                                (bump (ptr-read-u64 268436184 0))
                                (lo (+ (* live 3) 1048576))
-                               (hi (+ bump 536870912)))
+                               (hi (+ bump 67108864)))
                           (ptr-write-u64 268435560 0 (if (< lo hi) hi lo))))
                       (if (= (ptr-read-u64 268435464 0) 0)
                           0
@@ -4950,7 +4950,7 @@ correctly."
         ;; the old arena-base rearm bug that pushed the trigger past the
         ;; mapped arena.
         ;; The free-list reuse independently bounds long single-form compute.
-        (ptr-write-u64 268435560 0 536870912)
+        (ptr-write-u64 268435560 0 67108864)
         ;; BOOT WATERMARK: freeze the absolute address up to which everything
         ;; was allocated during install + driver setup (the mirror, all 60
         ;; builtins, the env/frame records, the fixed driver scratch slots).
