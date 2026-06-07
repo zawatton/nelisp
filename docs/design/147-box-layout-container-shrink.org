@@ -162,3 +162,39 @@ the symbol MIRROR buckets; frame/env records; wf_copy32 sites in standalone-buil
   (shl 5->3), nlvector-alloc:95 fill + :130 buffer; nlrecord-set-slot:80,
   nlrecord-alloc:73 fill + :110 buffer; aot --emit-vector/record-slot-ptr-core
   12547/12364 + ARM64 twins 14281/14208.
+
+* Phase 1.5 design + progress (2026-06-07)
+
+WRITE-consumer groups (a write-through interior pointer into a Vector/Record
+buffer; reads are handled in Phase 2 by slot-ptr-core materialization):
+- Group P — reader PARSE POOL (lisp/nelisp-cc-reader-parser.el, ~35 sites; alloc
+  in standalone-build bf_load/bf_eval ~2779/2804/5368). HARDEST: a GC-managed
+  tagged Vector holding TRANSIENT Sexps built in-place across a mid-parse
+  nl_gc_collect; recursive parse writes through the raw slot pointer so
+  vector-slot-set does NOT compose. → Option A: migrate to a raw alloc-bytes
+  (* cap 32) 8 buffer + a (+ base (* i 32)) index helper for all ~35 sites, AND a
+  NEW GC mark+compact root arm walking it at fixed 32B stride/size (replaces the
+  Vector mark/compact wiring at ~1331/1429/1506 + the pin at ~1571). GC-core
+  rewire — the keystone gating the Phase-2 win.
+- Group A — AOT --scratch-slot (nelisp-aot-compiler.el:1458). literal materializer
+  borrows the 11-slot env scratch Vector as temporaries. → Option A: bind raw
+  alloc-bytes 32 8 slots; emit (+ scratch (* i 32)). Caveat: (alloc-bytes) is not
+  idempotent like vector-ref-ptr → needs let-bound slots; no runtime test coverage.
+- Group S — per-op scratch vectors (mirror-bucket-prepend, env-install-empty,
+  frame-push, env-bind-local, the four mirror *-or-insert, nl_logic_build_scratch,
+  nl_bootstrap_build_fn_scratch, + the raw data_ptr+224/+256 writes in
+  evalport-env-leaves-frame.el). Throwaway OUT staging. → Option A, but keep any
+  PUBLISHED vector-make (real buckets/backing) intact; only the staging slot moves
+  to raw 32B. Caveat: perturbs documented startup refcount invariants (e.g.
+  env-install-empty step-7/10 rc=2) — change carefully.
+- Group G — mirror buckets / frame / env records. NO WORK: all mutation already
+  routes through vector-slot-set / record-slot-set (refcount-aware). Phase-2's
+  --emit-*-slot-set stride+clone change covers them.
+
+Migration order A -> S -> P (P last: it rewires the GC root walker for a buffer
+holding live Sexps across a collection). Each sub-step: pure refactor, buffers
+stay 32B, validate make standalone-reader + full-prog rc=0 + 20x soak + test.
+
+SHIPPED: nl_env_capture_lexical invec writes routed through vector-slot-set
+(459ab601, green + 20x soak). standalone-build.el now has zero functional
+write-through-interior-pointer sites. REMAINING: Group A, Group S, Group P.
