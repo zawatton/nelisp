@@ -20,6 +20,12 @@ org-entities, emoji--labels, auto-mode-alist, cl-font-lock-built-in--functions,
 unicode char-tables, big alists) bloated by the fat representation. chunk-0 size
 and the GC trigger are irrelevant; the lever is the *representation*.
 
+*Post-shrink correction:* those big-data structures turned out to be
+predominantly *cons / alist shaped*, not vector-shaped.  Phase 2 (Vector/Record
+buffer shrink) moved the peak *0 MB*; Phase 3 (=NlConsBox= 72->24B) delivered the
+entire *-729 MB*.  The "Bulk of the win" annotation on Phase 2 below was the
+original (wrong) prediction — see the Phase 2/3 SHIPPED sections for the actuals.
+
 * Current layout (verified)
 
 Source of truth: =lisp/nelisp-sexp-layout.el= (no Rust side; build-tool/ removed).
@@ -112,6 +118,62 @@ Every emit fn has an *ARM64 twin* — edit both.
 5. ARM64 twins.
 
 Rollback: each phase independently revertable behind the Phase-0 anchor.
+
+* Phase 0 — SHIPPED (2026-06-06)
+
+Keystone abstraction, NO layout change, stays green @850MB (commit 49b77056).
+New =lisp/nelisp-cc-val-load.el=: =nl_val_load(word, scratch32)= (pointer WORD
+passthrough; immediate WORD materialised into the caller scratch via
+=nl_sci_store_imm=) and =nl_val_clone_into(src_slot, dst_word_ptr)= (immediate
+stored directly; boxed/string child cloned into a FRESH 32B box, its 8-aligned
+pointer stored as the WORD — never a transient scratch pointer).  Registered in
+the build manifest.  The permanent anchor every later phase builds on.
+
+* Phase 1 — SHIPPED (2026-06-06)
+
+NlCell 40B -> *16B* (value 8B WORD @0, rc @8) + GC tag-11 word-awareness
+(commit 42010489).  The rehearsal flip — small blast radius, proves the
+layout-flip + word-aware-GC pattern.
+
+*The GC blocker (found by 3 parallel read-only agents).* The first attempt
+SIGSEGV'd: a heavily-shared cell (rc~553) had its value-WORD edge left
+un-rewritten by compaction phase-3, so phase-6 =munmap= dangled it.  Root cause
+= a *mark-vs-rewrite asymmetry*: the tag-11 arms in =nl_gc_mark_slot= /
+=nl_compact_rw_slot= still treated =box+0= as a 32B inline Sexp when it is now an
+8B WORD.  Fix (the pattern re-used by every later phase): read the WORD;
+immediate low-bit-1 -> skip; else =rw_edge= the value WORD @box+0 -> =fwd[child]=,
+=rw_block= the child, recurse — mirroring the cons/vector pointer-edge handling.
+Green, 20x soak; peak ~860MB (cells are a small fraction — no win expected, the
+pattern is the deliverable).
+
+* Phase 1.5 — SHIPPED (2026-06-07): the hidden prerequisite
+
+Vector/Record buffer shrink (Phase 2) was BLOCKED because =vector-ref-ptr= /
+=record-slot-ref-ptr= return a RAW INTERIOR POINTER into the data buffer and
+~257 sites treat it as a 32B Sexp slot they READ *and WRITE*.  A 32B write
+through =(vector-ref-ptr v N)= after the buffer shrinks to =cap*8= stomps slots
+N+1..N+3.  Reads are fixed in Phase 2 by slot-ptr materialisation; WRITE
+consumers cannot use a view (not write-through) and had to be decoupled FIRST.
+Groups:
+- *G — GC containers* (mirror buckets / frame / env records): NO WORK — all
+  mutation already routes through refcount-safe =vector-slot-set= / =record-slot-set=.
+- *S — per-op shared scratch* (=nl_logic_build_scratch=, =frame-push=,
+  =env-install-empty=, =env-bind-local=, =mirror-bucket-prepend=, …): staging
+  slots migrated off tagged-word Vectors onto raw =alloc-bytes (* n 32) 8= 32B
+  buffers; published buckets/backing stay real Vectors.  *Key finding:* the
+  standalone reader is *arena + compacting-GC*, NOT live-refcount — so the
+  documented "rc=2->1 on scratch drop" invariants were Rust-ABI-era commentary
+  artifacts, making every re-derivation provable.  ~9 files, each green + 20x soak.
+- *P — reader PARSE POOL* (the keystone, commit 454c5f50): a GC-managed Vector
+  holding TRANSIENT Sexps built in-place across a mid-parse =nl_gc_collect=, so
+  recursive parse writes through the raw slot pointer (=vector-slot-set= cannot
+  compose).  Migrated to a raw =alloc-bytes (* cap 32) 8= buffer (35-site
+  =(+ base (* i 32))= rewrite) + a NEW GC mark/compact/PIN root arm
+  (=nl_gc_mark_pool= / =nl_compact_rw_pool=, cap stashed @268436448).  20x soak.
+- *A — AOT =--scratch-slot=*: investigated and proven *NOT a Phase-2 hazard* —
+  the native literal-materialiser write path is host-only / dead in the
+  standalone-reader build (0 calls, 0 init-helper symbols).  Documented + a
+  regression-guard test; no code change.
 
 * Phase 2 — SHIPPED (2026-06-07)
 
@@ -256,3 +318,51 @@ ran *13x faster* (11.8s -> 0.9s) from the reduced allocation / GC pressure.
 Apples-to-apples on =/tmp/full-prog.el= via =measure-load.sh=: the stashed
 Phase-2 HEAD binary measured 847.6MB / 11.8s, the Phase-3 binary 118.5MB /
 0.9s.  Phase 3 is the peak mover the motivation table predicted.
+
+* Summary — SHIPPED to main (2026-06-07)
+
+Full standalone-reader vendor-load (319 files) peak RSS, end to end:
+
+| stage                                   | peak   | speed  |
+|-----------------------------------------+--------+--------|
+| baseline                                | 1.80GB | 13.4s  |
+| str-copy iterative (147c6ed6)           | 1.06GB |        |
+| compacting GC (84593f81 -> main)        | 850MB  |        |
+| *box-layout shrink, Phase 0-3 (this doc)* | *118MB*  | *0.9s* |
+
+*1.80GB -> 118MB (-93.4%), ~13x faster.*  All on =main= (FF), pushed.
+
+What the container shrink is: every CONTAINER slot (cons car/cdr, vector /
+record element, cell value) became an 8-byte tagged WORD — an immediate
+(=Nil=/=t=/fixnum, low bit 1) or an 8-aligned pointer to a 32B child box (low
+bit 0).  =NlConsBox= 72->24B, vector/record/cell slots 32->8B.  Child Sexp boxes
+stay 32B.
+
+Key learnings:
+1. *The peak was cons-dominated.*  The motivation's "~416MB big-data" is
+   alist/cons-chain shaped; Phase 2 (vector/record) moved it 0MB, Phase 3 (cons
+   72->24B) moved it -729MB.  Profile the SHAPE of the live set, not just its size.
+2. *The keystone made it tractable.*  Returning a 32B-slot VIEW from the
+   accessors (=nl_val_load= materialises an immediate into a fresh 32B box per
+   call) let the ~302 cons + ~257 vector/record consumer sites stay UNCHANGED.
+3. *The hidden cost was the interior-pointer WRITE surface* (Phase 1.5), not the
+   302 accessors — sites that WRITE a 32B Sexp through a raw interior pointer
+   (parse pool, per-op scratch) corrupt neighbours once the slot is 8B.  The
+   read-side collapses behind the keystone; the write-side needs real decoupling.
+4. *The recurring GC bug is the mark-vs-rewrite asymmetry* — every container's
+   GC arm must read the slot as a WORD, immediate-skip, and =rw_edge= + =rw_block=
+   + recurse the child, symmetrically in mark and compact.  Phase 1 found it for
+   cells; Phases 2/3 re-used the pattern verbatim.
+5. *Parallel agents = worktree-implementer + read-only auditor.*  The auditor's
+   write-through inventory before each build is why Phase 3 (the largest, cons
+   everywhere) shipped with ZERO SIGSEGV, while Phase 2 (built first, less
+   audited) hit 4 distinct crash bugs.
+
+Validation: =make standalone-reader= 105 units; =/tmp/full-prog.el= rc=0; 50x
+load soak under compaction = 0 failures; =make test-parallel= 4438 green (2
+documented pre-existing flakes: emit-sexp-float-unwrap stale assertion +
+process multi-spawn sentinel).
+
+Not done (optional follow-ups): NlRecord type_tag word-shrink (kept inline 32B);
+Phase-4 =--emit-sexp-payload-ptr= tightening; folding the now-redundant
+raw-copy-vs-clone cons-make split.
