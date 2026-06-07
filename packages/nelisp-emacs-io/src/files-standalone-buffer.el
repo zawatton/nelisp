@@ -546,8 +546,11 @@ Falls back to a read-based existence check when the reader exposes no
     (and (file-exists-p filename) (not (file-directory-p filename)))))
 
 ;; --- stat(2) metadata: file-modes / file-attributes -------------------------
-;; Built on the reader's generic `nelisp--syscall-stat-field' (stat(2) + read
-;; one struct stat field).  Linux x86_64 struct stat byte offsets:
+;; Built on the reader's generic stat primitives (stat(2) + read struct stat
+;; fields).  Linux x86_64 struct stat byte offsets:
+;; `ptr-read-u64' is a NeLisp standalone-reader primitive (absent from host
+;; Emacs); declared so byte-compilation stays warning-free.
+(declare-function ptr-read-u64 "ext:nelisp-reader")
 (defconst files--stat-off-dev 0 "struct stat st_dev offset.")
 (defconst files--stat-off-ino 8 "struct stat st_ino offset.")
 (defconst files--stat-off-nlink 16 "struct stat st_nlink offset.")
@@ -566,6 +569,15 @@ or the reader provides no `nelisp--syscall-stat-field'."
     (let ((v (nelisp--syscall-stat-field (files--expand-file-name filename)
                                          offset)))
       (and (>= v 0) v))))
+
+(defun files--stat-buf (filename)
+  "stat(2) FILENAME into a fresh struct stat buffer and return its pointer,
+or nil when stat fails or the reader provides no `nelisp--syscall-stat-buf'.
+Read individual fields from the pointer with `ptr-read-u64' -- one stat for
+the whole struct."
+  (when (fboundp 'nelisp--syscall-stat-buf)
+    (let ((p (nelisp--syscall-stat-buf (files--expand-file-name filename))))
+      (and (> p 0) p))))
 
 (defun files--mode-rwx (bits)
   "Return the 3-char rwx string for the low 3 BITS."
@@ -602,23 +614,22 @@ GID-CHANGE INODE DEVICE).  Degraded: TYPE is t for a directory and nil
 otherwise (symlinks are followed, not reported as link targets); times are
 integer seconds; the MODES string omits setuid/setgid/sticky display.
 ID-FORMAT is ignored."
-    (let ((mode (files--stat-field filename files--stat-off-mode)))
-      (when mode
-        (let ((uid (files--stat-field filename files--stat-off-uid))
-              (gid (files--stat-field filename files--stat-off-gid)))
+    (let ((buf (files--stat-buf filename)))
+      (when buf
+        (let ((mode (ptr-read-u64 buf files--stat-off-mode)))
           (list
            (= (logand mode #o170000) #o040000)
-           (files--stat-field filename files--stat-off-nlink)
-           (and uid (logand uid #xFFFFFFFF))
-           (and gid (logand gid #xFFFFFFFF))
-           (files--stat-field filename files--stat-off-atime)
-           (files--stat-field filename files--stat-off-mtime)
-           (files--stat-field filename files--stat-off-ctime)
-           (files--stat-field filename files--stat-off-size)
-           (files--mode-string mode)
+           (ptr-read-u64 buf files--stat-off-nlink)
+           (logand (ptr-read-u64 buf files--stat-off-uid) #xFFFFFFFF)
+           (logand (ptr-read-u64 buf files--stat-off-gid) #xFFFFFFFF)
+           (ptr-read-u64 buf files--stat-off-atime)
+           (ptr-read-u64 buf files--stat-off-mtime)
+           (ptr-read-u64 buf files--stat-off-ctime)
+           (ptr-read-u64 buf files--stat-off-size)
+           (files--mode-string (logand mode #xFFFF))
            nil
-           (files--stat-field filename files--stat-off-ino)
-           (files--stat-field filename files--stat-off-dev)))))))
+           (ptr-read-u64 buf files--stat-off-ino)
+           (ptr-read-u64 buf files--stat-off-dev)))))))
 (when (files--install-fallback-function-p 'char-before)
   (defun char-before (&optional pos)
     "Character before POS (or point) in the fallback current buffer, or nil."
