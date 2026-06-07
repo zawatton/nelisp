@@ -5624,12 +5624,30 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
          (nl_clx_write_nil out)
          (if (= depth 0)
              0
-           (let* ((invec (alloc-bytes 32 8)) (alist (alloc-bytes 32 8)))
+           ;; Doc 147 Phase 1.5: build the 3-slot `invec' WITHOUT holding a
+           ;; raw write-through interior pointer into its data buffer.  The
+           ;; old code did `(... (vector-ref-ptr invec N))' as a 32B write
+           ;; DESTINATION, which stomps neighbouring slots once the Phase-2
+           ;; buffer stride shrinks 32B->8B.  Route every write through
+           ;; `vector-slot-set' (= refcount-safe `nl_vector_set_slot', clones
+           ;; *VAL-PTR into slot N with the live buffer stride).  Each value is
+           ;; first materialized into a fresh 32B scratch slot, then cloned
+           ;; into the Vector by `vector-slot-set'.  `nl_capture_descend_native'
+           ;; still reads invec[0..2] via `vector-ref-ptr' (a Phase-2 view,
+           ;; read-safe) — only the producer side changes here.
+           (let* ((invec (alloc-bytes 32 8)) (alist (alloc-bytes 32 8))
+                  (depth_slot (alloc-bytes 32 8))
+                  (nil_slot (alloc-bytes 32 8)))
              (seq
               (vector-make 3 invec)
-              (nl_sexp_clone_into frames_ptr (vector-ref-ptr invec 0))
-              (sexp-int-make (vector-ref-ptr invec 1) depth)
-              (nl_clx_write_nil (vector-ref-ptr invec 2))
+              ;; slot 0 = stack record: clone frames_ptr straight in.
+              (vector-slot-set invec 0 frames_ptr)
+              ;; slot 1 = max-depth Int: build in scratch, clone in.
+              (sexp-int-make depth_slot depth)
+              (vector-slot-set invec 1 depth_slot)
+              ;; slot 2 = pair-slot scratch, Nil on entry.
+              (nl_clx_write_nil nil_slot)
+              (vector-slot-set invec 2 nil_slot)
               (nl_clx_write_nil alist)
               (nl_capture_descend_native invec alist)
               (nl_sexp_clone_into alist out)
