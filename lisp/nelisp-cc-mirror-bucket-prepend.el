@@ -72,13 +72,17 @@
 ;;
 ;; Caller-owned scratch vector layout (= `scratch-vec-ptr' is a
 ;; `Sexp::Vector' with 5 slots, all pre-initialised by the Rust safe
-;; wrapper to `Sexp::Nil'):
+;; wrapper to `Sexp::Nil').  Doc 147 P1.5: only slot 0 is still consumed
+;; here (as a READ source); slots 1-4 are no longer written through the
+;; Vector interior — their freshly-built Sexps now live in fresh stack
+;; slots (see the defun body) so a Phase-2 buffer stride shrink cannot
+;; stomp neighbours.
 ;;
-;;   slot 0  Sexp::Nil source        — reused as `cons-make' Nil/Nil seed.
-;;   slot 1  scratch for inner pair  — receives `Sexp::Cons(NAME . ENTRY)'.
-;;   slot 2  scratch for outer cell  — receives `Sexp::Cons(INNER . OLD)'.
-;;   slot 3  scratch for count int   — receives `Sexp::Int(new-count)'.
-;;   slot 4  scratch for KEY Str     — receives `Sexp::Str(NAME)'.
+;;   slot 0  Sexp::Nil source        — read as `cons-make' Nil/Nil seed.
+;;   slot 1  (was inner pair)        — now a fresh stack slot.
+;;   slot 2  (was outer cell)        — now a fresh stack slot.
+;;   slot 3  (was count int)         — now a fresh stack slot.
+;;   slot 4  (was KEY Str)           — now a fresh stack slot.
 ;;
 ;; Outer arity is 4 (even ✓) so body-entry rsp ≡ 0 mod 16, matching
 ;; the static rsp-alignment of `cons-make' / `vector-slot-set' /
@@ -152,50 +156,79 @@
       ;;   `cons-set-cdr' which call refcount-aware
       ;;   `nl_consbox_set_car' / `nl_consbox_set_cdr' (= clone before
       ;;   write).  Same pattern as `nelisp_frame_bind_prepend'.
-      (and
-       ;; Step 1: materialise fresh `Sexp::Str(NAME)' KEY into slot 4.
-       (sexp-write-str (vector-ref-ptr scratch-vec-ptr 4)
-                       (str-bytes-ptr sym-ptr)
-                       (str-len sym-ptr))
-       ;; Step 2: alloc inner pair `(Nil . Nil)' into slot 1.
-       (cons-make (vector-ref-ptr scratch-vec-ptr 0)
-                  (vector-ref-ptr scratch-vec-ptr 0)
-                  (vector-ref-ptr scratch-vec-ptr 1))
-       ;; Step 3: refcount-safe inner-pair car = KEY, cdr = ENTRY.
-       (cons-set-car (vector-ref-ptr scratch-vec-ptr 1)
-                     (vector-ref-ptr scratch-vec-ptr 4))
-       (cons-set-cdr (vector-ref-ptr scratch-vec-ptr 1) entry-ptr)
-       ;; Step 4: alloc outer cell `(Nil . Nil)' into slot 2.
-       (cons-make (vector-ref-ptr scratch-vec-ptr 0)
-                  (vector-ref-ptr scratch-vec-ptr 0)
-                  (vector-ref-ptr scratch-vec-ptr 2))
-       ;; Step 5: outer.car = INNER, outer.cdr = OLD-HEAD, install at
-       ;; buckets[idx], all via `nelisp_mirror_prepend_install' sub-defun
-       ;; (= keeps outer arity at 4).  Idx is computed from
-       ;; FNV-1a(NAME) & (BUCKET-COUNT - 1).
-       (nelisp_mirror_prepend_install
-        (record-slot-ref-ptr
-         (record-slot-ref-ptr mirror-ptr 0) ; HT-PTR
-         1)                                  ; HT.slots[1] = buckets vec
-        (logand
-         (extern-call nelisp_fnv1a sym-ptr)
-         (- (sexp-int-unwrap
-             (record-slot-ref-ptr
-              (record-slot-ref-ptr mirror-ptr 0)
-              0))                            ; HT.slots[0] = bucket count
-            1))
-        (vector-ref-ptr scratch-vec-ptr 2)   ; outer scratch
-        (vector-ref-ptr scratch-vec-ptr 1))  ; inner pair scratch
-       ;; Step 6: bump HT.slots[2] entry count.
-       (sexp-int-make (vector-ref-ptr scratch-vec-ptr 3)
-                      (+ (sexp-int-unwrap
-                          (record-slot-ref-ptr
-                           (record-slot-ref-ptr mirror-ptr 0)
-                           2))
-                         1))
-       (record-slot-set (record-slot-ref-ptr mirror-ptr 0)
-                        2
-                        (vector-ref-ptr scratch-vec-ptr 3)))))
+      ;; Doc 147 Phase 1.5 Group S — the four scratch slots that received
+      ;; a freshly-built 32B Sexp via a write-through-interior-pointer
+      ;; (slot 4 = KEY Str, slot 1 = inner pair, slot 2 = outer cell,
+      ;; slot 3 = count Int) now land in FRESH 32B stack slots
+      ;; (`alloc-bytes 32 8' on the per-eval arena, OUTSIDE the scratch
+      ;; Vector buffer).  `sexp-write-str' / `cons-make' / `sexp-int-make'
+      ;; wrote a full 32B Sexp at `data_ptr + N*32'; once the Phase-2
+      ;; Vector buffer stride shrinks to 8B, those 32B writes would
+      ;; address the wrong slot AND overrun three neighbours.  Routing the
+      ;; allocators to stack slots removes the interior-pointer write
+      ;; entirely; every later READ of the value uses the same stack slot.
+      ;; Only scratch slot 0 (the `Sexp::Nil' cons-make seed source) is
+      ;; still read via `(vector-ref-ptr scratch-vec-ptr 0)' — a READ
+      ;; pointer, handled stride-correctly when Phase 2 updates
+      ;; `vector-ref-ptr'; it is never a WRITE destination.
+      ;;
+      ;; Refcount re-derivation: UNCHANGED.  `cons-make' MVP byte-copy +
+      ;; the `(Nil . Nil)' seed / `cons-set-car' / `cons-set-cdr'
+      ;; refcount-bumping pattern is untouched — only the box that holds
+      ;; the in-progress pair/cell moved from a Vector interior slot to a
+      ;; stack slot.  Both are arena-reclaimed (never refcount-dropped),
+      ;; so neither was a counted owner; the new bucket head's sole
+      ;; counted owner remains buckets[idx] after `vector-slot-set'
+      ;; clones it in.  `sexp-write-str' KEY and `sexp-int-make' count are
+      ;; consumed (cloned) by `cons-set-car' / `record-slot-set'
+      ;; respectively, identical to before.  No new owner, no leak.
+      (let ((key-slot (alloc-bytes 32 8))
+            (pair-slot (alloc-bytes 32 8))
+            (outer-slot (alloc-bytes 32 8))
+            (count-slot (alloc-bytes 32 8)))
+        (and
+         ;; Step 1: materialise fresh `Sexp::Str(NAME)' KEY into key-slot.
+         (sexp-write-str key-slot
+                         (str-bytes-ptr sym-ptr)
+                         (str-len sym-ptr))
+         ;; Step 2: alloc inner pair `(Nil . Nil)' into pair-slot.
+         (cons-make (vector-ref-ptr scratch-vec-ptr 0)
+                    (vector-ref-ptr scratch-vec-ptr 0)
+                    pair-slot)
+         ;; Step 3: refcount-safe inner-pair car = KEY, cdr = ENTRY.
+         (cons-set-car pair-slot key-slot)
+         (cons-set-cdr pair-slot entry-ptr)
+         ;; Step 4: alloc outer cell `(Nil . Nil)' into outer-slot.
+         (cons-make (vector-ref-ptr scratch-vec-ptr 0)
+                    (vector-ref-ptr scratch-vec-ptr 0)
+                    outer-slot)
+         ;; Step 5: outer.car = INNER, outer.cdr = OLD-HEAD, install at
+         ;; buckets[idx], all via `nelisp_mirror_prepend_install' sub-defun
+         ;; (= keeps outer arity at 4).  Idx is computed from
+         ;; FNV-1a(NAME) & (BUCKET-COUNT - 1).
+         (nelisp_mirror_prepend_install
+          (record-slot-ref-ptr
+           (record-slot-ref-ptr mirror-ptr 0) ; HT-PTR
+           1)                                  ; HT.slots[1] = buckets vec
+          (logand
+           (extern-call nelisp_fnv1a sym-ptr)
+           (- (sexp-int-unwrap
+               (record-slot-ref-ptr
+                (record-slot-ref-ptr mirror-ptr 0)
+                0))                            ; HT.slots[0] = bucket count
+              1))
+          outer-slot   ; outer scratch (stack)
+          pair-slot)   ; inner pair scratch (stack)
+         ;; Step 6: bump HT.slots[2] entry count.
+         (sexp-int-make count-slot
+                        (+ (sexp-int-unwrap
+                            (record-slot-ref-ptr
+                             (record-slot-ref-ptr mirror-ptr 0)
+                             2))
+                           1))
+         (record-slot-set (record-slot-ref-ptr mirror-ptr 0)
+                          2
+                          count-slot)))))
   "AOT source for Doc 119 §119.A `mirror_bucket_prepend'.
 
 Pure-elisp port of `Env::mirror_prepend_to_bucket' (~45 LOC).
