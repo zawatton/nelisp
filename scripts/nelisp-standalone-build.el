@@ -2752,7 +2752,15 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (ptr-write-u64 268435624 0 0)
          (nl_bi_read_file args src)
          (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-         (vector-make 32768 pool)
+         ;; Size the per-load parse pool to the source so a single giant form
+         ;; (e.g. emoji-labels.el's `#s(hash-table ...)' with thousands of
+         ;; entries) does not overflow a fixed 32768-slot pool -> reader
+         ;; SIGSEGV.  Each parse node needs >=1 source char; 4x covers slot
+         ;; overhead.  Floor 32768 keeps small-file behaviour; the pool is
+         ;; transient (freed after this load), so growth is safe.
+         (vector-make (let ((n (* 4 (str-len src))))
+                        (if (< n 32768) 32768 (if (> n 4194304) 4194304 n)))
+                      pool)
          (if (= (bf_load_eval_loop src cursor result pool env out bsym 1) 2)
              1
            (seq
@@ -3163,13 +3171,15 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
     (defun nl_bi_rf_withfd (fd buf out)
       (if (< fd 0)
           (wf_copy32_strnil out)
-        (let* ((n (nl_os_read_file_handle fd buf 4194304)))
+        ;; 8 MiB read cap: the largest vendor file (leim/ja-dic/ja-dic.el) is
+        ;; ~4.8 MiB; a 4 MiB cap truncated it mid-form -> reader SIGSEGV.
+        (let* ((n (nl_os_read_file_handle fd buf 8388608)))
           (nl_seq2 (nl_os_close_handle fd)
                    (nl_seq2 (nl_alloc_str buf (if (< n 0) 0 n) out) 0)))))
     (defun nl_bi_read_file (args out)
       (let* ((path_sx (wf_arg_ptr args 0)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
-               (buf (alloc-bytes 4194304 1))
+               (buf (alloc-bytes 8388608 1))
                (fd (nl_os_open_read cpath)))
           (nl_bi_rf_withfd fd buf out))))
     (defun nl_bi_slen (args out)
