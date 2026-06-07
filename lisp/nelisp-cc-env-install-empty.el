@@ -34,10 +34,10 @@
 ;;      *globals-out via `record-make'.
 ;;   7. Install the fast-hash-table into globals.slot 0.
 ;;      (slots 1, 2 stay Sexp::Nil = auto-set by record-make.)
-;;   8. Allocate a fresh 8-element backing Sexp::Vector into scratch[4].
-;;      OLD scratch[4] (1024-bucket vec, rc=2) raw-overwritten — this
-;;      causes a refcount LEAK (NlVector_1024.rc stays 2 with only
-;;      ht.slot[1] as real owner), but NOT a crash.
+;;   8. Allocate a fresh 8-element backing Sexp::Vector (Doc 147 P1.5:
+;;      into its own fresh stack slot `backing-slot', NOT a raw-overwrite
+;;      of a shared scratch slot — so the old 32KB scratch-ref leak is
+;;      gone too).
 ;;   9. Allocate a fresh `nelisp-lexframe-stack' Record (2 slots)
 ;;      directly into *frames-out via `record-make'.
 ;;  10. Install the backing vector into frames.slot 0.
@@ -51,18 +51,23 @@
 ;;   slot 0 — `Sexp::Symbol("nelisp-env")'            (globals type-tag)
 ;;   slot 1 — `Sexp::Symbol("fast-hash-table")'        (ht type-tag)
 ;;   slot 2 — `Sexp::Symbol("nelisp-lexframe-stack")'  (frames type-tag)
-;;   slot 3 — Sexp::Nil — scratch for fast-hash-table Record
-;;   slot 4 — Sexp::Nil — scratch for Sexp::Vector (buckets / backing)
-;;   slot 5 — Sexp::Nil — scratch for Sexp::Int writes
+;;   slot 3 — (Doc 147 P1.5) no longer written; ht Record now in a fresh
+;;            stack slot (`ht-slot').
+;;   slot 4 — (Doc 147 P1.5) no longer written; buckets / backing Vectors
+;;            now in fresh stack slots (`buckets-slot' / `backing-slot').
+;;   slot 5 — (Doc 147 P1.5) no longer written; Sexp::Int writes now in a
+;;            fresh stack slot (`int-slot').
 ;;
-;; Refcount discipline:
-;;   After step 10, scratch[4] holds the 8-element backing vector (rc=2,
-;;   one from scratch[4], one from frames.slot[0]).
-;;   When the Rust safe-wrapper drops the scratch Sexp::Vector, each
-;;   scratch.data[N] is dropped normally:
-;;     scratch[3] (fast-ht record, rc=2) → drop → rc=1 (globals.slot[0] keeps it).
-;;     scratch[4] (8-elem backing vec, rc=2) → drop → rc=1 (frames.slot[0] keeps it).
-;;     scratch[5] (Int, no heap) → drop → no-op.
+;; Refcount discipline (Doc 147 P1.5): the published box-tagged variants
+;; (fast-ht Record / buckets+backing Vectors) are no longer staged in
+;; scratch slots 3/4 — they are built into fresh stack slots, then
+;; installed into globals-out / frames-out by the refcount-safe
+;; `record-slot-set' (clone+own).  Each published box therefore has
+;; exactly ONE live owner reachable from globals-out / frames-out after
+;; the call; the stack staging slots add no owner-count (arena-reclaimed,
+;; never refcount-dropped — exactly as the prior Vector-interior slots
+;; were never iterated/dropped in this substrate).  See the per-step
+;; re-derivation in the defun body.
 ;;
 ;; Alignment: outer defun arity = 4 (even) → post-prologue
 ;; rsp ≡ 0 mod 16, satisfying the `vector-make' / `record-make'
@@ -87,66 +92,94 @@
      ;; _pad:        i64 = 0 — alignment pad (keeps outer arity even).
      ;;
      ;; Returns: i64 from final `record-slot-set' (= 1 sentinel).
-     (and
-      ;; Step 1: allocate fresh fast-hash-table record (3 slots).
-      (record-make (vector-ref-ptr scratch-ptr 1)  ; ht type-tag sym
-                   3
-                   (vector-ref-ptr scratch-ptr 3)) ; ht record scratch
-      ;; Step 2: allocate 1024-bucket Sexp::Vector.
-      (vector-make 1024 (vector-ref-ptr scratch-ptr 4)) ; bucket scratch
-      ;; Step 3: ht.slot 1 = buckets vector.
-      (record-slot-set (vector-ref-ptr scratch-ptr 3)
-                       1
-                       (vector-ref-ptr scratch-ptr 4))
-      ;; Step 4: ht.slot 0 = Sexp::Int(1024) — bucket-count.
-      (sexp-int-make (vector-ref-ptr scratch-ptr 5) 1024)
-      (record-slot-set (vector-ref-ptr scratch-ptr 3)
-                       0
-                       (vector-ref-ptr scratch-ptr 5))
-      ;; Step 5: ht.slot 2 = Sexp::Int(0) — size.
-      (sexp-int-make (vector-ref-ptr scratch-ptr 5) 0)
-      (record-slot-set (vector-ref-ptr scratch-ptr 3)
-                       2
-                       (vector-ref-ptr scratch-ptr 5))
-      ;; Step 6: allocate nelisp-env record (3 slots) into *globals-out.
-      (record-make (vector-ref-ptr scratch-ptr 0)  ; nelisp-env type-tag sym
-                   3
-                   globals-out)
-      ;; Step 7: globals.slot 0 = fast-hash-table.
-      ;; (slots 1, 2 stay Sexp::Nil; set by record-make.)
-      (record-slot-set globals-out
-                       0
-                       (vector-ref-ptr scratch-ptr 3))
-      ;; Step 8: allocate 8-element backing Sexp::Vector into scratch[4].
-      ;; NOTE: raw-overwrite of scratch[4] (was NlVector_1024, rc=2).
-      ;; The NlVector_1024 refcount stays at 2 (ht.slot[1] holds it);
-      ;; the scratch ref is lost = refcount leak (32KB), not a crash.
-      (vector-make 8 (vector-ref-ptr scratch-ptr 4)) ; backing scratch
-      ;; Step 9: allocate nelisp-lexframe-stack record (2 slots) into *frames-out.
-      (record-make (vector-ref-ptr scratch-ptr 2)  ; nelisp-lexframe-stack type-tag
-                   2
-                   frames-out)
-      ;; Step 10: frames.slot 0 = backing vector.
-      (record-slot-set frames-out
-                       0
-                       (vector-ref-ptr scratch-ptr 4))
-      ;; Step 11: frames.slot 1 = Sexp::Int(0) — depth.
-      ;;
-      ;; Refcount discipline (Doc 135 cutover fix): `record-slot-set' (=
-      ;; `nl_record_set_slot') is now REFCOUNT-SAFE — it clones the source
-      ;; via `nl_sexp_clone_into' (rc-bump for boxed variants) instead of
-      ;; a raw 4xu64 move.  So after step 7 the fast-hash-table box has
-      ;; rc=2 (scratch[3] + globals.slot[0]) and after step 10 the backing
-      ;; vector box has rc=2 (scratch[4] + frames.slot[0]).  When the Rust
-      ;; safe wrapper `env_install_empty_globals_frames' drops its 6-slot
-      ;; scratch `Sexp::Vector', each box drops rc 2 -> 1, leaving the
-      ;; published owner (globals.slot[0] / frames.slot[0]) intact.  No
-      ;; MOVE-alias remains, so the previous Step-12 raw-zero neutraliser
-      ;; is no longer needed (it would now LEAK scratch[3]/scratch[4]).
-      (sexp-int-make (vector-ref-ptr scratch-ptr 5) 0)
-      (record-slot-set frames-out
-                       1
-                       (vector-ref-ptr scratch-ptr 5))))
+     ;; Doc 147 Phase 1.5 Group S — the scratch slots that received a
+     ;; freshly-built 32B Sexp via a write-through-interior-pointer now
+     ;; land in FRESH 32B stack slots (`alloc-bytes 32 8' on the per-eval
+     ;; arena, OUTSIDE the scratch Vector buffer):
+     ;;   slot 3 -> ht-slot       (`record-make' fast-hash-table Record)
+     ;;   slot 4 -> buckets-slot  (`vector-make' 1024-bucket Vector)
+     ;;             backing-slot   (`vector-make' 8-elem backing Vector;
+     ;;                             now a SEPARATE slot — the old Step-8
+     ;;                             raw-overwrite of scratch[4] is gone,
+     ;;                             so the documented 32KB scratch-ref
+     ;;                             "leak" cannot occur)
+     ;;   slot 5 -> int-slot      (`sexp-int-make' 1024 / 0 / depth)
+     ;; `record-make' / `vector-make' / `sexp-int-make' wrote a full 32B
+     ;; Sexp at `data_ptr + N*32'; once the Phase-2 Vector buffer stride
+     ;; shrinks to 8B those 32B writes would address the wrong slot and
+     ;; overrun neighbours.  Scratch slots 0/1/2 (type-tag symbols,
+     ;; pre-filled by the safe wrapper) stay `(vector-ref-ptr ...)' —
+     ;; READ sources only, never WRITE destinations.
+     ;;
+     ;; Refcount re-derivation (published Records/Vectors keep their
+     ;; refcount; only the throwaway STAGING moves to stack):
+     ;;   `record-make' / `vector-make' return a fresh rc=1 box and store
+     ;;   it raw into the destination slot (no rc bump).  The published
+     ;;   owner is then materialised by the refcount-SAFE `record-slot-set'
+     ;;   (= `nl_record_set_slot' -> `nl_sexp_clone_into', rc-bump for
+     ;;   boxed variants):
+     ;;     Step 3 ht.slot1     <- buckets-slot  (clone+own buckets vec)
+     ;;     Step 7 globals.slot0 <- ht-slot       (clone+own ht record)
+     ;;     Step 10 frames.slot0 <- backing-slot  (clone+own backing vec)
+     ;;   The stack staging slots are arena-reclaimed and never
+     ;;   refcount-dropped, so they add NO owner-count — exactly as the
+     ;;   prior Vector-interior staging was never iterated/dropped in this
+     ;;   substrate.  Each published box therefore has exactly ONE live
+     ;;   owner reachable from globals-out / frames-out after the call.
+     ;;   int-slot holds only `Sexp::Int' immediates (no box, no rc).  No
+     ;;   new owner, no leak, no double-free; the original rc invariant
+     ;;   (and its Step-12 neutraliser removal) is preserved, and the
+     ;;   Step-8 scratch-overwrite leak is additionally eliminated.
+     (let ((ht-slot (alloc-bytes 32 8))
+           (buckets-slot (alloc-bytes 32 8))
+           (backing-slot (alloc-bytes 32 8))
+           (int-slot (alloc-bytes 32 8)))
+       (and
+        ;; Step 1: allocate fresh fast-hash-table record (3 slots).
+        (record-make (vector-ref-ptr scratch-ptr 1)  ; ht type-tag sym
+                     3
+                     ht-slot)
+        ;; Step 2: allocate 1024-bucket Sexp::Vector.
+        (vector-make 1024 buckets-slot)
+        ;; Step 3: ht.slot 1 = buckets vector.
+        (record-slot-set ht-slot
+                         1
+                         buckets-slot)
+        ;; Step 4: ht.slot 0 = Sexp::Int(1024) — bucket-count.
+        (sexp-int-make int-slot 1024)
+        (record-slot-set ht-slot
+                         0
+                         int-slot)
+        ;; Step 5: ht.slot 2 = Sexp::Int(0) — size.
+        (sexp-int-make int-slot 0)
+        (record-slot-set ht-slot
+                         2
+                         int-slot)
+        ;; Step 6: allocate nelisp-env record (3 slots) into *globals-out.
+        (record-make (vector-ref-ptr scratch-ptr 0)  ; nelisp-env type-tag sym
+                     3
+                     globals-out)
+        ;; Step 7: globals.slot 0 = fast-hash-table.
+        ;; (slots 1, 2 stay Sexp::Nil; set by record-make.)
+        (record-slot-set globals-out
+                         0
+                         ht-slot)
+        ;; Step 8: allocate 8-element backing Sexp::Vector into backing-slot
+        ;; (its own stack slot; no scratch-overwrite, no leak).
+        (vector-make 8 backing-slot)
+        ;; Step 9: allocate nelisp-lexframe-stack record (2 slots) into *frames-out.
+        (record-make (vector-ref-ptr scratch-ptr 2)  ; nelisp-lexframe-stack type-tag
+                     2
+                     frames-out)
+        ;; Step 10: frames.slot 0 = backing vector.
+        (record-slot-set frames-out
+                         0
+                         backing-slot)
+        ;; Step 11: frames.slot 1 = Sexp::Int(0) — depth.
+        (sexp-int-make int-slot 0)
+        (record-slot-set frames-out
+                         1
+                         int-slot))))
   "AOT source for Wave h `nelisp_env_install_empty_globals_frames'.
 
 Builds a fresh empty globals mirror (nelisp-env Record with a 1024-bucket
