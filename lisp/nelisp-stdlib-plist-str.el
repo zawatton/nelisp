@@ -486,10 +486,12 @@ Result keeps the trailing slash."
 ;; even batch 7b).  The PERIOD optional arg in host emacs (= include
 ;; the leading `.') is also accepted+ignored here because the prior
 ;; Rust impl ignored args[1] as well.
-(defun file-name-extension (path &optional _period)
+(defun file-name-extension (path &optional period)
   "Return the extension of file name PATH (= text after the last `.').
 Returns nil when PATH has no `.', or when the basename starts with
-`.' (= a dotfile such as \".bashrc\" has no extension)."
+`.' (= a dotfile such as \".bashrc\" has no extension).  With PERIOD
+non-nil, include the leading `.', and return \"\" instead of nil when there
+is no extension."
   (let* ((non (file-name-nondirectory path))
          (n (length non))
          (idx -1)
@@ -499,9 +501,9 @@ Returns nil when PATH has no `.', or when the basename starts with
         (setq idx i))
       (setq i (1+ i)))
     (cond
-     ((< idx 0) nil)
-     ((= idx 0) nil)
-     (t (substring non (1+ idx))))))
+     ((< idx 0) (if period "" nil))
+     ((= idx 0) (if period "" nil))
+     (t (substring non (if period idx (1+ idx)))))))
 
 ;; Rust-min (2026-05-06): string-trim family + string-prefix-p /
 ;; string-suffix-p — pure string slicing.  Migrated from
