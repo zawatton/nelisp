@@ -559,8 +559,12 @@ Falls back to a read-based existence check when the reader exposes no
 (defconst files--stat-off-gid 32 "struct stat st_gid offset.")
 (defconst files--stat-off-size 48 "struct stat st_size offset.")
 (defconst files--stat-off-atime 72 "struct stat st_atim.tv_sec offset.")
+(defconst files--stat-off-atime-nsec 80 "struct stat st_atim.tv_nsec offset.")
 (defconst files--stat-off-mtime 88 "struct stat st_mtim.tv_sec offset.")
+(defconst files--stat-off-mtime-nsec 96 "struct stat st_mtim.tv_nsec offset.")
 (defconst files--stat-off-ctime 104 "struct stat st_ctim.tv_sec offset.")
+(defconst files--stat-off-ctime-nsec 112 "struct stat st_ctim.tv_nsec offset.")
+(defconst files--nsec-per-sec 1000000000 "Nanoseconds per second (timestamp HZ).")
 
 (defun files--stat-field (filename offset)
   "Return the struct stat u64 at OFFSET for FILENAME, or nil when stat fails
@@ -592,6 +596,13 @@ return its pointer, or nil on failure / when the reader provides no
 following a symbolic link), or nil on failure."
   (let ((buf (files--lstat-buf filename)))
     (and buf (ptr-read-u64 buf offset))))
+
+(defun files--stat-time (buf sec-offset nsec-offset)
+  "Return a (TICKS . HZ) Lisp timestamp from the struct stat at BUF, reading
+seconds at SEC-OFFSET and nanoseconds at NSEC-OFFSET (HZ = 1e9)."
+  (let ((sec (ptr-read-u64 buf sec-offset))
+        (nsec (logand (ptr-read-u64 buf nsec-offset) #xFFFFFFFF)))
+    (cons (+ (* sec files--nsec-per-sec) nsec) files--nsec-per-sec)))
 
 (defun files--readlink (filename)
   "Return the symbolic-link target of FILENAME as a string, or nil when it is
@@ -657,9 +668,9 @@ display.  ID-FORMAT is ignored."
            (ptr-read-u64 buf files--stat-off-nlink)
            (logand (ptr-read-u64 buf files--stat-off-uid) #xFFFFFFFF)
            (logand (ptr-read-u64 buf files--stat-off-gid) #xFFFFFFFF)
-           (ptr-read-u64 buf files--stat-off-atime)
-           (ptr-read-u64 buf files--stat-off-mtime)
-           (ptr-read-u64 buf files--stat-off-ctime)
+           (files--stat-time buf files--stat-off-atime files--stat-off-atime-nsec)
+           (files--stat-time buf files--stat-off-mtime files--stat-off-mtime-nsec)
+           (files--stat-time buf files--stat-off-ctime files--stat-off-ctime-nsec)
            (ptr-read-u64 buf files--stat-off-size)
            (files--mode-string (logand mode #xFFFF))
            nil
@@ -669,13 +680,17 @@ display.  ID-FORMAT is ignored."
 (defun files--time-to-seconds (time)
   "Convert a Lisp TIME value to integer seconds since the epoch.
 nil means now (via `nl-current-unix-time'); an integer is used as-is; a float
-is truncated; a (HIGH LOW . _) timestamp folds to HIGH*65536+LOW."
+is truncated; a (TICKS . HZ) timestamp folds to TICKS/HZ; a (HIGH LOW . _)
+timestamp folds to HIGH*65536+LOW."
   (cond
    ((null time) (if (fboundp 'nl-current-unix-time) (nl-current-unix-time) 0))
    ((integerp time) time)
    ((floatp time) (truncate time))
-   ((consp time) (+ (* (car time) 65536)
-                    (let ((lo (cdr time))) (if (consp lo) (car lo) lo))))
+   ((consp time)
+    (let ((d (cdr time)))
+      (if (consp d)
+          (+ (* (car time) 65536) (car d))
+        (/ (car time) d))))
    (t 0)))
 
 (when (files--install-fallback-function-p 'set-file-times)
