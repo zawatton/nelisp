@@ -579,6 +579,27 @@ the whole struct."
     (let ((p (nelisp--syscall-stat-buf (files--expand-file-name filename))))
       (and (> p 0) p))))
 
+(defun files--lstat-buf (filename)
+  "lstat(2) FILENAME (without following symlinks) into a struct stat buffer and
+return its pointer, or nil on failure / when the reader provides no
+`nelisp--syscall-lstat-buf'."
+  (when (fboundp 'nelisp--syscall-lstat-buf)
+    (let ((p (nelisp--syscall-lstat-buf (files--expand-file-name filename))))
+      (and (> p 0) p))))
+
+(defun files--readlink (filename)
+  "Return the symbolic-link target of FILENAME as a string, or nil when it is
+not a symlink / on error / when the reader provides no
+`nelisp--syscall-readlink'."
+  (and (fboundp 'nelisp--syscall-readlink)
+       (nelisp--syscall-readlink (files--expand-file-name filename))))
+
+(when (files--install-fallback-function-p 'file-symlink-p)
+  (defun file-symlink-p (filename)
+    "Return the target of symbolic link FILENAME (a string), or nil when
+FILENAME is not a symbolic link (via readlink(2))."
+    (files--readlink filename)))
+
 (defun files--mode-rwx (bits)
   "Return the 3-char rwx string for the low 3 BITS."
   (concat (if (= (logand bits 4) 0) "-" "r")
@@ -610,15 +631,19 @@ Omits the setuid/setgid/sticky special display."
   (defun file-attributes (filename &optional _id-format)
     "Return the stat(2) attribute list of FILENAME, or nil when it is absent.
 Order matches Emacs: (TYPE NLINK UID GID ATIME MTIME CTIME SIZE MODES
-GID-CHANGE INODE DEVICE).  Degraded: TYPE is t for a directory and nil
-otherwise (symlinks are followed, not reported as link targets); times are
-integer seconds; the MODES string omits setuid/setgid/sticky display.
-ID-FORMAT is ignored."
-    (let ((buf (files--stat-buf filename)))
+GID-CHANGE INODE DEVICE).  TYPE is the link target string for a symbolic
+link, t for a directory, nil otherwise.  Uses lstat(2) (the link itself) with
+a single stat via `nelisp--syscall-lstat-buf' + `ptr-read-u64'.  Degraded:
+times are integer seconds; the MODES string omits setuid/setgid/sticky
+display.  ID-FORMAT is ignored."
+    (let ((buf (or (files--lstat-buf filename) (files--stat-buf filename))))
       (when buf
-        (let ((mode (ptr-read-u64 buf files--stat-off-mode)))
+        (let* ((mode (ptr-read-u64 buf files--stat-off-mode))
+               (ifmt (logand mode #o170000)))
           (list
-           (= (logand mode #o170000) #o040000)
+           (cond ((= ifmt #o120000) (or (files--readlink filename) t))
+                 ((= ifmt #o040000) t)
+                 (t nil))
            (ptr-read-u64 buf files--stat-off-nlink)
            (logand (ptr-read-u64 buf files--stat-off-uid) #xFFFFFFFF)
            (logand (ptr-read-u64 buf files--stat-off-gid) #xFFFFFFFF)
