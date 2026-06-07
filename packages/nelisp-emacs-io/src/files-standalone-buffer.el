@@ -544,6 +544,81 @@ Falls back to a read-based existence check when the reader exposes no
   (defun file-regular-p (filename)
     "Return non-nil if FILENAME exists and is not a directory."
     (and (file-exists-p filename) (not (file-directory-p filename)))))
+
+;; --- stat(2) metadata: file-modes / file-attributes -------------------------
+;; Built on the reader's generic `nelisp--syscall-stat-field' (stat(2) + read
+;; one struct stat field).  Linux x86_64 struct stat byte offsets:
+(defconst files--stat-off-dev 0 "struct stat st_dev offset.")
+(defconst files--stat-off-ino 8 "struct stat st_ino offset.")
+(defconst files--stat-off-nlink 16 "struct stat st_nlink offset.")
+(defconst files--stat-off-mode 24 "struct stat st_mode offset.")
+(defconst files--stat-off-uid 28 "struct stat st_uid offset.")
+(defconst files--stat-off-gid 32 "struct stat st_gid offset.")
+(defconst files--stat-off-size 48 "struct stat st_size offset.")
+(defconst files--stat-off-atime 72 "struct stat st_atim.tv_sec offset.")
+(defconst files--stat-off-mtime 88 "struct stat st_mtim.tv_sec offset.")
+(defconst files--stat-off-ctime 104 "struct stat st_ctim.tv_sec offset.")
+
+(defun files--stat-field (filename offset)
+  "Return the struct stat u64 at OFFSET for FILENAME, or nil when stat fails
+or the reader provides no `nelisp--syscall-stat-field'."
+  (when (fboundp 'nelisp--syscall-stat-field)
+    (let ((v (nelisp--syscall-stat-field (files--expand-file-name filename)
+                                         offset)))
+      (and (>= v 0) v))))
+
+(defun files--mode-rwx (bits)
+  "Return the 3-char rwx string for the low 3 BITS."
+  (concat (if (= (logand bits 4) 0) "-" "r")
+          (if (= (logand bits 2) 0) "-" "w")
+          (if (= (logand bits 1) 0) "-" "x")))
+
+(defun files--mode-string (mode)
+  "Return the 10-char ls-style mode string for integer MODE (st_mode).
+Omits the setuid/setgid/sticky special display."
+  (let ((ifmt (logand mode #o170000)))
+    (concat (cond ((= ifmt #o040000) "d")
+                  ((= ifmt #o120000) "l")
+                  ((= ifmt #o020000) "c")
+                  ((= ifmt #o060000) "b")
+                  ((= ifmt #o010000) "p")
+                  ((= ifmt #o140000) "s")
+                  (t "-"))
+            (files--mode-rwx (logand (ash mode -6) 7))
+            (files--mode-rwx (logand (ash mode -3) 7))
+            (files--mode-rwx (logand mode 7)))))
+
+(when (files--install-fallback-function-p 'file-modes)
+  (defun file-modes (filename &optional _flag)
+    "Return the permission bits of FILENAME (st_mode masked to #o7777), or nil."
+    (let ((m (files--stat-field filename files--stat-off-mode)))
+      (and m (logand m #o7777)))))
+
+(when (files--install-fallback-function-p 'file-attributes)
+  (defun file-attributes (filename &optional _id-format)
+    "Return the stat(2) attribute list of FILENAME, or nil when it is absent.
+Order matches Emacs: (TYPE NLINK UID GID ATIME MTIME CTIME SIZE MODES
+GID-CHANGE INODE DEVICE).  Degraded: TYPE is t for a directory and nil
+otherwise (symlinks are followed, not reported as link targets); times are
+integer seconds; the MODES string omits setuid/setgid/sticky display.
+ID-FORMAT is ignored."
+    (let ((mode (files--stat-field filename files--stat-off-mode)))
+      (when mode
+        (let ((uid (files--stat-field filename files--stat-off-uid))
+              (gid (files--stat-field filename files--stat-off-gid)))
+          (list
+           (= (logand mode #o170000) #o040000)
+           (files--stat-field filename files--stat-off-nlink)
+           (and uid (logand uid #xFFFFFFFF))
+           (and gid (logand gid #xFFFFFFFF))
+           (files--stat-field filename files--stat-off-atime)
+           (files--stat-field filename files--stat-off-mtime)
+           (files--stat-field filename files--stat-off-ctime)
+           (files--stat-field filename files--stat-off-size)
+           (files--mode-string mode)
+           nil
+           (files--stat-field filename files--stat-off-ino)
+           (files--stat-field filename files--stat-off-dev)))))))
 (when (files--install-fallback-function-p 'char-before)
   (defun char-before (&optional pos)
     "Character before POS (or point) in the fallback current buffer, or nil."
