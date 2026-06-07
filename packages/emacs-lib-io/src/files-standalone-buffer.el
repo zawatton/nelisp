@@ -698,6 +698,7 @@ assumed to already exist."
 (defconst files--syscall-rename 82 "Linux x86_64 rename(2) syscall number.")
 (defconst files--syscall-link 86 "Linux x86_64 link(2) syscall number.")
 (defconst files--syscall-symlink 88 "Linux x86_64 symlink(2) syscall number.")
+(defconst files--syscall-chmod 90 "Linux x86_64 chmod(2) syscall number.")
 
 (when (files--install-fallback-function-p 'delete-file)
   (defun delete-file (filename &optional _trash)
@@ -775,6 +776,23 @@ failure (rc < 0).  OK-IF-ALREADY-EXISTS is ignored."
       (signal 'file-error
               (list "make-symbolic-link unavailable (no nelisp--syscall-path2)"
                     linkname)))
+    nil))
+
+(when (files--install-fallback-function-p 'set-file-modes)
+  (defun set-file-modes (filename mode &optional _flag)
+    "Set the permission bits of FILENAME to MODE via the reader's
+`nelisp--syscall-path-int' chmod(2).  MODE is the integer permission bits
+\(e.g. #o644).  Signals `file-error' on kernel failure (rc < 0).  FLAG is
+ignored."
+    (if (fboundp 'nelisp--syscall-path-int)
+        (let ((rc (nelisp--syscall-path-int files--syscall-chmod
+                                            (files--expand-file-name filename)
+                                            mode)))
+          (when (< rc 0)
+            (signal 'file-error (list "Setting file modes" filename rc))))
+      (signal 'file-error
+              (list "set-file-modes unavailable (no nelisp--syscall-path-int)"
+                    filename)))
     nil))
 
 ;; Bridge the file reader to the standalone reader's `rdf' primitive (the only
