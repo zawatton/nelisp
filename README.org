@@ -61,6 +61,17 @@ v2.0 (2026-05-22) ships:
   environment, so redefining a function and calling it again takes
   effect immediately, including through persistent
   =nelisp--eval-source-string=.
+- *Low-footprint standalone load* (2026-06) — a hybrid
+  refcount+tracing *compacting* GC (=mmap=-chunked arena, segregated
+  free-list, a moving collector that forwards live objects and
+  =munmap=s reclaimed chunks) together with an *8-byte tagged-word
+  container representation* (=NlConsBox= 72→24B; vector / record / cell
+  slots 32→8B) cut the full 319-file vendor-load peak RSS from *1.80GB
+  to 118MB (−93%)* and the load time *≈13×* (13.4s → 0.9s).  A container
+  slot (cons car/cdr, vector element, cell value) is either an immediate
+  (=Nil=/=t=/fixnum) or an 8-byte pointer to a 32-byte child box; the GC
+  marks, forwards, and moves them word-aware.  Validated by a 50× load
+  soak under compaction and the 4438-assertion suite.
 
 Use cases: running Elisp on machines without Emacs, and as a
 substrate for Lisp Machine / new-dialect experiments.
