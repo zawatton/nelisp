@@ -604,6 +604,27 @@ seconds at SEC-OFFSET and nanoseconds at NSEC-OFFSET (HZ = 1e9)."
         (nsec (logand (ptr-read-u64 buf nsec-offset) #xFFFFFFFF)))
     (cons (+ (* sec files--nsec-per-sec) nsec) files--nsec-per-sec)))
 
+;; struct statx (statx(2)) offsets / flags for birth time.
+(defconst files--statx-flag-nofollow 256 "AT_SYMLINK_NOFOLLOW (statx flags).")
+(defconst files--statx-mask-btime 2048 "STATX_BTIME bit in struct statx stx_mask.")
+(defconst files--statx-off-mask 0 "struct statx stx_mask offset.")
+(defconst files--statx-off-btime-sec 80 "struct statx stx_btime.tv_sec offset.")
+(defconst files--statx-off-btime-nsec 88 "struct statx stx_btime.tv_nsec offset.")
+
+(defun files--statx-btime (filename)
+  "Return the birth (creation) time of FILENAME as a (TICKS . HZ) timestamp via
+statx(2), or nil when statx or birth time is unavailable (some filesystems do
+not record it)."
+  (when (fboundp 'nelisp--syscall-statx-buf)
+    (let ((buf (nelisp--syscall-statx-buf (files--expand-file-name filename)
+                                          files--statx-flag-nofollow)))
+      (when (and (integerp buf) (> buf 0)
+                 (> (logand (ptr-read-u64 buf files--statx-off-mask)
+                            files--statx-mask-btime)
+                    0))
+        (files--stat-time buf files--statx-off-btime-sec
+                          files--statx-off-btime-nsec)))))
+
 (defun files--readlink (filename)
   "Return the symbolic-link target of FILENAME as a string, or nil when it is
 not a symlink / on error / when the reader provides no
@@ -654,9 +675,11 @@ of following the link."
 Order matches Emacs: (TYPE NLINK UID GID ATIME MTIME CTIME SIZE MODES
 GID-CHANGE INODE DEVICE).  TYPE is the link target string for a symbolic
 link, t for a directory, nil otherwise.  Uses lstat(2) (the link itself) with
-a single stat via `nelisp--syscall-lstat-buf' + `ptr-read-u64'.  Degraded:
-times are integer seconds; the MODES string omits setuid/setgid/sticky
-display.  ID-FORMAT is ignored."
+a single stat via `nelisp--syscall-lstat-buf' + `ptr-read-u64'.  Times are
+(TICKS . HZ) nanosecond timestamps.  A non-standard 13th element holds the
+birth (creation) time as a (TICKS . HZ) timestamp via statx(2), or nil when
+unavailable.  Degraded: the MODES string omits setuid/setgid/sticky display.
+ID-FORMAT is ignored."
     (let ((buf (or (files--lstat-buf filename) (files--stat-buf filename))))
       (when buf
         (let* ((mode (ptr-read-u64 buf files--stat-off-mode))
@@ -675,7 +698,8 @@ display.  ID-FORMAT is ignored."
            (files--mode-string (logand mode #xFFFF))
            nil
            (ptr-read-u64 buf files--stat-off-ino)
-           (ptr-read-u64 buf files--stat-off-dev)))))))
+           (ptr-read-u64 buf files--stat-off-dev)
+           (files--statx-btime filename)))))))
 
 (defun files--time-to-seconds (time)
   "Convert a Lisp TIME value to integer seconds since the epoch.
