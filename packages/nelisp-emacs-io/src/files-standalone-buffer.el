@@ -655,6 +655,33 @@ display.  ID-FORMAT is ignored."
            nil
            (ptr-read-u64 buf files--stat-off-ino)
            (ptr-read-u64 buf files--stat-off-dev)))))))
+
+(defun files--time-to-seconds (time)
+  "Convert a Lisp TIME value to integer seconds since the epoch.
+nil means now (via `nl-current-unix-time'); an integer is used as-is; a float
+is truncated; a (HIGH LOW . _) timestamp folds to HIGH*65536+LOW."
+  (cond
+   ((null time) (if (fboundp 'nl-current-unix-time) (nl-current-unix-time) 0))
+   ((integerp time) time)
+   ((floatp time) (truncate time))
+   ((consp time) (+ (* (car time) 65536)
+                    (let ((lo (cdr time))) (if (consp lo) (car lo) lo))))
+   (t 0)))
+
+(when (files--install-fallback-function-p 'set-file-times)
+  (defun set-file-times (filename &optional time _flag)
+    "Set the access and modification times of FILENAME to TIME (default now)
+via utimes(2).  Signals `file-error' on kernel failure (rc < 0)."
+    (if (fboundp 'nelisp--syscall-utimes)
+        (let* ((secs (files--time-to-seconds time))
+               (rc (nelisp--syscall-utimes (files--expand-file-name filename)
+                                           secs secs)))
+          (when (< rc 0)
+            (signal 'file-error (list "Setting file times" filename rc))))
+      (signal 'file-error
+              (list "set-file-times unavailable (no nelisp--syscall-utimes)"
+                    filename)))
+    nil))
 (when (files--install-fallback-function-p 'char-before)
   (defun char-before (&optional pos)
     "Character before POS (or point) in the fallback current buffer, or nil."
