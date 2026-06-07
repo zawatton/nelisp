@@ -638,6 +638,35 @@ not a symlink / on error / when the reader provides no
 FILENAME is not a symbolic link (via readlink(2))."
     (files--readlink filename)))
 
+(defun files--truename-walk (path depth)
+  "Resolve symbolic links in absolute PATH component by component.
+DEPTH guards against symlink loops; relative link targets resolve against
+the directory built so far."
+  (if (> depth 100)
+      path
+    (let ((true ""))
+      (dolist (comp (split-string path "/" t))
+        (let* ((cand (concat true "/" comp))
+               (link (files--readlink cand)))
+          (setq true
+                (if link
+                    (files--truename-walk
+                     (files--expand-file-name
+                      (if (and (> (length link) 0) (eq (aref link 0) ?/))
+                          link
+                        (concat true "/" link)))
+                     (1+ depth))
+                  cand))))
+      (if (= (length true) 0) "/" true))))
+
+(when (files--install-fallback-function-p 'file-truename)
+  (defun file-truename (filename &optional _counter _prev-dirs)
+    "Return the canonical name of FILENAME, resolving all symbolic links via
+readlink(2), component by component (interior links included).  COUNTER and
+PREV-DIRS are accepted for call compatibility and ignored.  `..' is only
+collapsed as far as the reader's `expand-file-name' does."
+    (files--truename-walk (files--expand-file-name filename) 0)))
+
 (defun files--mode-rwx (bits)
   "Return the 3-char rwx string for the low 3 BITS."
   (concat (if (= (logand bits 4) 0) "-" "r")
