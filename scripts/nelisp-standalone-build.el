@@ -3178,6 +3178,8 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-path-int") . (nl_bi_syscall_path_int args out))
     ((:lit "nelisp--syscall-stat-field") . (nl_bi_syscall_stat_field args out))
     ((:lit "nelisp--syscall-stat-buf") . (nl_bi_syscall_stat_buf args out))
+    ((:lit "nelisp--syscall-lstat-buf") . (nl_bi_syscall_lstat_buf args out))
+    ((:lit "nelisp--syscall-readlink") . (nl_bi_syscall_readlink args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
@@ -3436,6 +3438,28 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out buf))))
+    ;; nelisp--syscall-lstat-buf PATH: like stat-buf but lstat(2) (syscall 6) --
+    ;; does NOT follow symlinks, so file-attributes can report the link itself.
+    (defun nl_bi_syscall_lstat_buf (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (cpath (nl_bi_make_cpath path_sx))
+             (buf (alloc-bytes 144 8))
+             (rc (syscall-direct 6 cpath buf 0 0 0 0)))
+        (if (< rc 0)
+            (wf_write_int out rc)
+          (wf_write_int out buf))))
+    ;; nelisp--syscall-readlink PATH: readlink(2) (syscall 89) -- return the
+    ;; symbolic-link target as a string, or nil when PATH is not a symlink (or
+    ;; on any error).  readlink does not NUL-terminate, so the returned length
+    ;; bounds the string.
+    (defun nl_bi_syscall_readlink (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (cpath (nl_bi_make_cpath path_sx))
+             (buf (alloc-bytes 4096 1))
+             (n (syscall-direct 89 cpath buf 4096 0 0 0)))
+        (if (< n 0)
+            (wf_write_nil out)
+          (nl_seq2 (nl_alloc_str buf n out) 0))))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
@@ -4330,6 +4354,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
+    "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
     "exit"
