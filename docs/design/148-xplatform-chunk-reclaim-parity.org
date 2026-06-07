@@ -1,0 +1,274 @@
+#+TITLE: Doc 148 — Cross-platform chunk reclamation + OS-surface parity (macOS / Windows)
+#+DATE: 2026-06-07
+#+STATUS: IMPLEMENTED through structural parity (2026-06-07, ERT + linux source/link-shape verified; mac/win build/execution + RSS measurement pending real runners).
+#+STARTUP: overview
+
+* Motivation
+
+Doc 147 shipped the low-footprint standalone load on *linux-x86_64*: the
+compacting GC (=mmap=-chunked arena, moving collector that =munmap=s reclaimed
+chunks) plus the 8-byte tagged-word container representation cut the 319-file
+vendor-load peak RSS from *1.80 GB → 118 MB* and load time *≈13×*.
+
+That win does *not* currently reproduce on =macos-aarch64= or =windows-x86_64=.
+The container-representation half (Doc 147) is platform-independent and applies
+everywhere, but the *chunk-reclamation half* (returning freed growth chunks to
+the OS) is wired for Linux only.  Concretely, the per-target arena dispatch
+defines =nl_os_free_chunk= = =munmap= for Linux and leaves a no-op stub on the
+other two targets:
+
+#+begin_src elisp
+;; scripts/nelisp-standalone-build.el:665  (base stub, survives on mac/win)
+(defun nl_os_free_chunk (_size) 0)
+
+;; :1006  Linux override (the only platform that provides one)
+(defun nl_os_free_chunk (base size)
+  (syscall-direct 11 base size 0 0 0 0))  ; munmap(base, size)
+#+end_src
+
+The dispatch (=nelisp-standalone--target-arena-source=, :1054-1081) substitutes
+=nl_arena_init= / =nl_os_alloc_chunk= / =nl_os_free_chunk= / =nl_os_alloc_fail=
+by name from each target's chunk-form list.  =nelisp-standalone--macos-alloc-chunk-form=
+(:1046) and =nelisp-standalone--windows-alloc-chunk-form= (:1025) only supply
+=nl_os_alloc_chunk= + =nl_os_alloc_fail=, so =nl_os_free_chunk= keeps the no-op
+stub.  =nl_compact_munmap_growth= (:1761) — the GC compaction phase that returns
+growth chunks — therefore frees nothing on mac/win.
+
+* The user-facing request
+
+Add =nl_os_free_chunk= to the macOS and Windows chunk-forms:
+- macOS → Darwin =munmap= via =syscall-direct=
+- Windows → =VirtualFree= via =extern-call=
+
+This doc specifies that change *and* the additional Linux-vs-mac/win gaps found
+while scoping it, because chunk reclamation alone is **necessary but not
+sufficient** to reproduce the 118 MB result on the other two targets.
+
+* Current state per platform (verified 2026-06-07)
+
+| target | first arena | model | reclaim (=nl_os_free_chunk=) | 118 MB reproducible? |
+|--------+-------------+-------+------------------------------+----------------------|
+| linux-x86_64 | 256 MiB demand-paged mmap (:81) | chunked growth + reclaim | =munmap= (NR 11) | yes — measured |
+| macos-aarch64 | 512 MiB demand-paged mmap (:115) | dynamic-base chunked growth | =munmap= (Darwin NR 73) | pending real runner |
+| windows-x86_64 | 64 MiB reserve-first chunk (:102) | dynamic-base chunked growth; chunk pages committed on demand | =VirtualFree(_,0,0x8000)= | pending real runner |
+
+Two structural facts made this more than a one-function patch:
+
+1. *Windows used to commit the whole arena up front.*  The old
+   =VirtualAlloc(..., MEM_COMMIT|MEM_RESERVE, ...)= path charged each chunk
+   immediately.  This doc changes chunk allocation to reserve first and commit
+   allocated cursor ranges on demand.
+
+2. *Doc 140 Stage 8 is now structurally wired on macOS / Windows too.*
+   The current code uses dynamic =nl_arena_base= on all three targets.  This doc
+   therefore completes the remaining structural pieces needed before real
+   runner RSS measurement: target-specific chunk free, mac/win intern-region
+   init, and Windows reserve-first / commit-on-use chunk allocation.
+
+So the remaining dependency graph is: *real macOS/Windows execution* →
+*RSS ceiling measurement* → follow-up tuning if the measured working set still
+differs from linux.
+
+* Goal / scope
+
+- *In scope (primary):* implement =nl_os_free_chunk= for macOS (Darwin munmap)
+  and Windows (=VirtualFree=), so the compaction =munmap= phase returns memory on
+  all three targets, and add =VirtualFree= to the Windows PE import tables.
+- *In scope (secondary):* implement the symbol-name intern-region parity gap
+  and Windows chunk reserve/commit behavior needed before RSS measurement.
+- *Out of scope (this doc):* unrelated Linux-only OS-surface correctness gaps
+  (time, thread/fork, stat-family).  They remain triaged below.
+
+* Change 1 — =nl_os_free_chunk= (the requested fix)
+
+** macOS (Darwin =munmap=)
+
+Darwin's BSD =SYS_munmap= = *73* (Linux x86_64's is 11).  On arm64 Darwin the
+number goes in =x16= with =svc #0x80= — the same =syscall-direct= path already
+used by =nelisp-standalone--macos-alloc-chunk-form= (mmap NR 197).
+
+Add to =nelisp-standalone--macos-alloc-chunk-form= (:1046):
+
+#+begin_src elisp
+(defun nl_os_free_chunk (base size)
+  (syscall-direct 73 base size 0 0 0 0))  ; Darwin munmap(base, size)
+#+end_src
+
+** Windows (=VirtualFree=)
+
+Chunks are allocated as *independent reservations*.  The current implementation
+uses =VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE)= plus a first-page
+commit, then commits allocated cursor ranges on demand.  Each chunk reservation
+is released individually with =VirtualFree(base, 0, MEM_RELEASE)=.  Note: with
+=MEM_RELEASE= (=0x8000= = 32768)
+the size argument *must be 0* — passing the original size fails with
+=ERROR_INVALID_PARAMETER=.
+
+Add to =nelisp-standalone--windows-alloc-chunk-form= (:1025):
+
+#+begin_src elisp
+(defun nl_os_free_chunk (base _size)
+  (extern-call VirtualFree base 0 32768))  ; MEM_RELEASE = 0x8000; size MUST be 0
+#+end_src
+
+Then add =VirtualFree= to *both* Windows import lists (it is currently absent):
+- =scripts/nelisp-standalone-build.el:4271= — ='("ExitProcess" "VirtualAlloc")=
+  → add ="VirtualFree"=.
+- =nelisp-standalone--windows-reader-imports= (:4425-4427), KERNEL32.dll list
+  ="ExitProcess" "VirtualAlloc" "GetCommandLineW" …= → add ="VirtualFree"=.
+
+(=MEM_DECOMMIT= = =0x4000= with the original size is the alternative if a future
+design keeps the reservation and only returns physical pages; not needed for the
+current per-chunk-reservation topology.)
+
+** Why this is safe with the existing dispatch
+
+No dispatch change is required: =nelisp-standalone--target-arena-source=
+(:1067-1078) already looks up =nl_os_free_chunk= by name from the target's
+chunk-forms with =cl-find-if=.  Today that lookup returns =nil= for mac/win (so
+the :666 stub stays).  Once the form above is present in the list, the same
+substitution replaces the stub — symmetric with how Linux already works.
+
+** Implemented (2026-06-07)
+
+- =nelisp-standalone--macos-alloc-chunk-form=: added
+  =(defun nl_os_free_chunk (base size) (syscall-direct 73 base size 0 0 0 0))=.
+- =nelisp-standalone--windows-alloc-chunk-form=: added
+  =(defun nl_os_free_chunk (base _size) (extern-call VirtualFree base 0 32768))=.
+- =VirtualFree= registered in both Windows import lists (eval/PE link :4275 and
+  =nelisp-standalone--windows-reader-imports= :4431).
+- Windows chunk allocation changed from full upfront =MEM_COMMIT|MEM_RESERVE=
+  to =MEM_RESERVE= plus first-page commit; Windows uses a target-specific
+  =nl_chunk_try_alloc= that calls =nl_os_commit_range= for the allocated
+  [old,new) cursor range before writing the block header.  Linux/macOS keep the
+  original allocation hot path.
+- ERT coverage added:
+  =nelisp-standalone-target-arena-adds-target-chunk-reclaimer= asserts that the
+  dispatched arena source emits Linux =munmap=, macOS Darwin =munmap=, and
+  Windows =VirtualFree(base, 0, MEM_RELEASE)= rather than the no-op stub.
+  =nelisp-standalone-target-windows-imports-virtualfree= asserts that both
+  Windows eval and reader link paths import =VirtualFree=.
+
+Structure-verified on the linux dev host: =byte-compile-file= exits 0 (warnings
+only, matching the existing style), and the
+dispatched =nelisp-standalone--target-arena-source= now emits the platform form
+(not the :666 no-op stub) for every target:
+| target | emitted =nl_os_free_chunk= |
+|--------+----------------------------|
+| linux-x86_64 | =(syscall-direct 11 base size 0 0 0 0)= (unchanged) |
+| macos-aarch64 | =(syscall-direct 73 base size 0 0 0 0)= |
+| windows-x86_64 | =(extern-call VirtualFree base 0 32768)= |
+
+Execution on macOS/Windows is still pending the =macos-14= / =windows-latest= CI
+runners (the linux dev host cannot run the Mach-O/PE binaries).  Cross
+=--build-only= checks on the linux dev host currently hit pre-existing =main=
+blockers unrelated to this patch: unresolved =nl_gc_bt_ok= in the eval path, and
+Mach-O executable emission rejecting the dynamic arena-base =.bss= slot in the
+reader path.
+
+* Change 2 — symbol-name intern-region parity
+
+Implemented (2026-06-07):
+
+- macOS arena init now calls =nl_intern_region_init= and the function is
+  target-substituted to Darwin =mmap(NULL, 64MiB, PROT_READ|PROT_WRITE,
+  MAP_PRIVATE|MAP_ANON, -1, 0)=.
+- Windows arena init now calls =nl_intern_region_init= and the function is
+  target-substituted to =VirtualAlloc(NULL, 64MiB, MEM_COMMIT|MEM_RESERVE,
+  PAGE_READWRITE)=.  A reserve-only intern table was intentionally not kept in
+  this patch because committing individual table/buffer pages inside the shared
+  =nl_alloc_symbol= path changed Linux reader semantics; keep that as a
+  Windows-only follow-up if real RSS needs it.
+- ERT =nelisp-standalone-target-intern-region-is-target-aware= asserts Linux
+  keeps the Linux =mmap= form while macOS/Windows emit their target-correct
+  allocation surface and call =nl_intern_region_init= from arena init.
+
+* Remaining Linux-vs-mac/win OS-surface gaps
+
+Found while scoping Change 1.  These are *separate* from RSS — several are silent
+*correctness* failures on mac/win because a Linux x86_64 syscall NR is hardcoded
+and lands on a different (or nonexistent) Darwin/Windows operation.  Priority is
+"does interpreted code that runs in the standalone reader hit it".
+
+| # | gap (file:line) | Linux | macOS need | Windows need | impact |
+|---+-----------------+-------+------------+--------------+--------|
+| A | =nl_os_free_chunk= (:665/:1006) | munmap NR 11 | munmap NR 73 | =VirtualFree(_,0,0x8000)= | *DONE* |
+| B | =nl_intern_region_init= (:861) — 64 MiB symbol-intern region | mmap NR 9 | call it + mmap NR 197 | call it + =VirtualAlloc= | *DONE* |
+| C | =nl-current-unix-time= (:3200) | =time= NR 201 | =gettimeofday= NR 116 (read tv_sec) | =GetSystemTimeAsFileTime= | *correctness* — wrong/garbage time on mac/win |
+| D | =bf_thread_spawn= (:3077-3078) | mmap NR 9 + =clone= NR 56 | no =clone=; needs =pthread_create= | =CreateThread= | *correctness/crash* — Darwin NR 56 = =recvmsg= |
+| E | =bf_fork_spawn= (:3101) | =fork= NR 57 | =fork= NR 2 (Darwin NR 57 = =mmap=!) | no fork; =CreateProcess= | *correctness/crash* |
+| F | =nl_thread_run= / fork-child exit (:3066, :3104) | =exit= NR 60 | Darwin =exit= NR 1 | =ExitThread=/=ExitProcess= | latent (moot until D/E fixed) |
+| G | stat-family fileio (:3437/3449/3459/3471/3490/3502) — =stat=/=lstat=/=readlink=/=utimes=/=statx= | NR 4/6/89/235/332 *and* hardcoded *Linux struct stat offsets* (:3429-3431) | Darwin NR 188/190/58/138/(no statx) *and a different struct layout* | Win32 =GetFileAttributesExW= / =SetFileTime= | *correctness* — all file-attribute reads wrong on mac/win |
+| H | JIT exec pages =nl_neln_demo_exec= (:4954-4960) | mmap PROT_EXEC NR 9 | — | — | *none* — already gated to Linux (:4849 stub returns 125); not a bug |
+
+Notes:
+- *Gap B was resolved in this change.*  The macOS/Windows reader now initializes
+  the symbol-name intern region, matching the Linux semantic and memory shape.
+- *Gap G is deeper than a NR swap.*  The helpers hardcode Linux =struct stat=
+  byte offsets (st_size @48, st_mtime @88, …).  Darwin's =struct stat= has a
+  different field order/size, so porting needs both the Darwin NR *and* a
+  Darwin offset table (and =statx= has no Darwin equivalent — birth time comes
+  from a different field there).  These are the most recent commits (stat-field,
+  stat-buf, lstat-buf, readlink, utimes, statx-buf) and were all added Linux-only.
+- *Gaps D/E/F* only fire if interpreted code calls =thread-spawn= / =fork-spawn=;
+  they are compiled into the reader for all targets (:3244, :4414) with no guard,
+  so the failure is a latent runtime crash, not a build error.
+
+* Implementation plan
+
+1. *DONE — chunk reclaim*:
+   - added =nl_os_free_chunk= to macOS chunk-forms (Darwin munmap NR 73).
+   - added =nl_os_free_chunk= to Windows chunk-forms (=VirtualFree=) and
+     registered =VirtualFree= in the eval + reader import lists.
+2. *DONE — dispatch tests*: ERT asserts that all targets emit platform-specific
+   =nl_os_free_chunk= and Windows imports =VirtualFree=.
+3. *DONE — intern-region parity*: macOS/Windows arena init now calls a
+   target-correct =nl_intern_region_init=.
+4. *DONE — Windows chunk commit reduction*: Windows chunk reservations are
+   reserve-first, with a Windows-only =nl_chunk_try_alloc= committing allocated
+   ranges before block-header writes.
+5. *PENDING — real runner validation*: run macOS/Windows reader/load smokes and
+   RSS ceiling measurement on actual hosts.
+6. *PENDING — unrelated correctness gaps*: C/D/E/F/G remain separate work items.
+
+* Validation
+
+- *Build-time:* per-target assertion that =nl_os_free_chunk= and
+  =nl_intern_region_init= in the emitted arena source are platform forms, not
+  Linux-only/no-op fallbacks.
+- *Execution:* mac/win are *structure-verified only* today — the
+  319-file load has not been measured on them in this session.  The cross
+  =--build-only= blockers observed here reproduce on =main= as of 2026-06-07, so
+  they are tracked as prerequisites for real-runner validation rather than as
+  regressions from this memory patch.  Real validation needs the CI runners that
+  already exist: =macos-14= / =windows-latest= jobs in
+  =.github/workflows/stage-d-v3.0-standalone.yml=.  Add an RSS-ceiling assertion
+  to =verify-cross-platform.{sh,ps1}= once growth+reclaim is wired, mirroring the
+  Linux 118 MB soak (Doc 147).
+- *Windows-specific:* assert =VirtualFree= return is non-zero (success) in a debug
+  build; a wrong =dwSize=/=dwFreeType= silently returns 0 and leaks.
+
+* Risks / open questions
+
+1. *Measured RSS may still differ from Linux.*  The structural causes known in
+   this doc are handled, but actual working-set behavior depends on Darwin and
+   Windows VM accounting and must be measured on real hosts.
+2. *macOS =munmap= of a chunk that is part of a larger mapping* — only safe
+   because each chunk is its own =mmap= reservation (mirrors Linux).  Confirm the
+   growth path on macOS reserves per-chunk, not sub-ranges of one mapping.
+3. *Windows =MEM_RELEASE= requires the exact base returned by =VirtualAlloc=* and
+   size 0.  The current design still uses independent per-chunk reservations,
+   so =VirtualFree(base, 0, MEM_RELEASE)= is the right release operation.
+4. *Gap G struct-offset portability* may motivate moving file-attributes off raw
+   =syscall-direct= onto a small per-platform =struct stat= decoder rather than
+   open-coding offsets.
+
+* References
+
+- Doc 140 — Standalone fully chunked arena (Linux execution-verified; mac/win
+  structure-verified; =data-addr= prerequisite).
+- Doc 146 — compacting GC.
+- Doc 147 — container-slot representation shrink (1.80 GB → 118 MB on Linux).
+- =scripts/nelisp-standalone-build.el= — arena dispatch (:1054), platform
+  chunk-forms (:1001/:1025/:1046), compaction munmap (:1761), Windows imports
+  (:4271/:4425).

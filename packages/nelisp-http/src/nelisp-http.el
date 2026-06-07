@@ -27,6 +27,8 @@
 (require 'url-parse)
 (require 'dom)
 (require 'nelisp-state)
+(require 'nelisp-sys)
+(require 'nelisp-process)
 
 (defgroup nelisp-http nil
   "NeLisp HTTP fetch + cache."
@@ -951,10 +953,166 @@ upstream may freshen validators we'd otherwise miss)."
           :final-url (plist-get resp :final-url)
           :elapsed-ms elapsed-ms)))
 
-;; The Phase 5-E `nelisp-http-get' / `nelisp-http-head' (nelisp-network.el)
-;; ship their own in-memory hash cache + `nelisp-http-cache-clear' /
-;; `-cache-size' helpers; we pick `nelisp-http-fetch-*' here so the two
-;; backends can coexist until Phase 6.2.5+ consolidates them.
+;;; Curl-backed Doc 44 process/HTTP substrate ------------------------
+
+(defun nelisp-http--curl-binary-read-file (file)
+  "Return FILE contents as a literal byte string."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (buffer-string)))
+
+(defun nelisp-http--curl-text-read-file (file)
+  "Return FILE contents decoded as UTF-8 text with fallback."
+  (decode-coding-string
+   (nelisp-http--curl-binary-read-file file)
+   'utf-8 t))
+
+(defun nelisp-http--curl-header-args (headers)
+  "Return curl -H arguments for HEADERS alist."
+  (cl-loop for (name . value) in headers
+           unless (stringp name)
+           do (signal 'wrong-type-argument (list 'stringp name))
+           append (list "-H" (format "%s: %s" name (or value "")))))
+
+(defun nelisp-http--curl-parse-header-block (block)
+  "Parse one curl dump-header BLOCK into a response plist fragment."
+  (let ((lines (split-string block "\r?\n" t))
+        status headers)
+    (when (and lines
+               (string-match "\\`HTTP/[0-9.]+[ \t]+\\([0-9]+\\)"
+                             (car lines)))
+      (setq status (string-to-number (match-string 1 (car lines))))
+      (dolist (line (cdr lines))
+        (when (string-match "\\`\\([^:\r\n]+\\):[ \t]*\\(.*\\)\\'" line)
+          (push (cons (downcase (string-trim (match-string 1 line)))
+                      (string-trim (match-string 2 line)))
+                headers)))
+      (list :status status :headers (nreverse headers)))))
+
+(defun nelisp-http--curl-parse-headers (text)
+  "Parse curl --dump-header TEXT and return the final HTTP response block."
+  (let ((blocks (split-string text "\r?\n\r?\n" t))
+        last)
+    (dolist (block blocks)
+      (let ((parsed (nelisp-http--curl-parse-header-block block)))
+        (when (plist-get parsed :status)
+          (setq last parsed))))
+    (or last (list :status nil :headers nil))))
+
+(defun nelisp-http--content-length (headers body)
+  "Return content length from HEADERS or BODY byte length."
+  (let ((header (cdr (assoc "content-length" headers))))
+    (cond
+     ((and header (string-match-p "\\`[0-9]+\\'" header))
+      (string-to-number header))
+     ((stringp body) (string-bytes body))
+     (t nil))))
+
+(defun nelisp-http--curl-cache-entry (response)
+  "Convert curl RESPONSE to the shared nelisp-http cache entry shape."
+  (nelisp-http--cache-entry
+   (plist-get response :status)
+   (plist-get response :headers)
+   (plist-get response :body)
+   (truncate (float-time))
+   (plist-get response :final-url)))
+
+(defun nelisp-http--curl-cache-response (entry cached)
+  "Convert cache ENTRY into a Doc 44 `nelisp-http-get' response."
+  (list :status (plist-get entry :status)
+        :headers (plist-get entry :headers)
+        :body (plist-get entry :body)
+        :cached cached))
+
+(cl-defun nelisp-http-get-binary (url &key headers timeout cache-ttl auth)
+  "Fetch URL through curl and return a Doc 44 binary response plist.
+
+The transport is intentionally implemented above `nelisp-call-process':
+curl is located through `nelisp-sys-executable-find', headers and body
+are written to separate temp files, redirects use -L, and the final HTTP
+status block is parsed after redirects."
+  (nelisp-http--check-url url)
+  (let* ((norm (nelisp-http--normalize-url url))
+         (ttl (or cache-ttl 0))
+         (request-headers (nelisp-http--apply-auth headers auth))
+         (cached (and (numberp ttl) (> ttl 0)
+                      (nelisp-http--cache-get norm)))
+         (now (truncate (float-time))))
+    (if (and cached
+             (numberp (plist-get cached :fetched-at))
+             (< (- now (plist-get cached :fetched-at)) ttl))
+        (let* ((resp (nelisp-http--curl-cache-response cached t))
+               (body (plist-get resp :body))
+               (hdrs (plist-get resp :headers)))
+          (plist-put resp :content-length
+                     (nelisp-http--content-length hdrs body)))
+      (let ((curl (nelisp-sys-executable-find "curl")))
+        (unless curl
+          (error "nelisp-http: curl executable not found"))
+        (let* ((tmpdir (make-temp-file "nelisp-http-curl-" t))
+               (header-file (expand-file-name "headers" tmpdir))
+               (body-file (expand-file-name "body" tmpdir))
+               (stderr-file (expand-file-name "stderr" tmpdir)))
+          (unwind-protect
+              (let* ((curl-args
+                      (append
+                       (list "--silent" "--show-error" "-L"
+                             "--dump-header" header-file
+                             "--output" body-file)
+                       (when timeout
+                         (list "--max-time" (number-to-string timeout)))
+                       (nelisp-http--curl-header-args request-headers)
+                       (list url)))
+                     (rc (apply #'nelisp-call-process
+                                curl nil (list nil stderr-file) nil
+                                curl-args)))
+                (unless (and (integerp rc) (zerop rc))
+                  (error "nelisp-http: curl exited %S for %s: %s"
+                         rc url
+                         (if (file-readable-p stderr-file)
+                             (string-trim
+                              (nelisp-http--curl-text-read-file stderr-file))
+                           "")))
+                (let* ((header-text
+                        (if (file-readable-p header-file)
+                            (nelisp-http--curl-text-read-file header-file)
+                          ""))
+                       (parsed (nelisp-http--curl-parse-headers header-text))
+                       (body (if (file-readable-p body-file)
+                                 (nelisp-http--curl-binary-read-file body-file)
+                               ""))
+                       (status (plist-get parsed :status))
+                       (response
+                        (list :status status
+                              :headers (plist-get parsed :headers)
+                              :body body
+                              :cached nil
+                              :content-length
+                              (nelisp-http--content-length
+                               (plist-get parsed :headers) body)
+                              :final-url url)))
+                  (unless (integerp status)
+                    (error "nelisp-http: malformed curl headers for %s" url))
+                  (when (and (numberp ttl) (> ttl 0))
+                    (nelisp-http--cache-put
+                     norm (nelisp-http--curl-cache-entry response) ttl))
+                  response))
+            (when (file-directory-p tmpdir)
+              (delete-directory tmpdir t))))))))
+
+(cl-defun nelisp-http-get (url &key headers timeout cache-ttl auth)
+  "Fetch URL through the Doc 44 curl bridge and return text body.
+
+Returns (:status INT :headers ALIST :body STRING :cached BOOL)."
+  (let* ((resp (nelisp-http-get-binary
+                url
+                :headers headers
+                :timeout timeout
+                :cache-ttl cache-ttl
+                :auth auth))
+         (body (plist-get resp :body)))
+    (plist-put resp :body (decode-coding-string body 'utf-8 t))))
 
 ;;;###autoload
 (defun nelisp-http-robots-check (url &optional ua)

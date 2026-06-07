@@ -79,6 +79,7 @@
 ;; un-loadable on minimal standalone bootstraps (Doc 43 Phase 1e).  Keep
 ;; only the cl-lib + nelisp-actor deps that are actually exercised below.
 (require 'nelisp-actor)
+(require 'nelisp-sys)
 
 ;; --- optional eventloop integration helper ------------------------
 ;;
@@ -511,6 +512,26 @@ performing the same cleanup the sentinel would do."
         (nelisp-process--unregister-eventloop wrap))))
   wrap)
 
+(defun nelisp-process--drain-exited-output (wrap)
+  "Drain any host output that arrived just before WRAP exited."
+  (when (nelisp-process-p wrap)
+    (let ((host (nelisp-process-host-proc wrap))
+          (attempts 4))
+      (while (and (processp host)
+                  (> attempts 0)
+                  (accept-process-output host 0.01 nil t))
+        (setq attempts (1- attempts))))))
+
+(defun nelisp-process--drain-buffer-process (buffer)
+  "Drain a process associated with BUFFER, if Emacs created one."
+  (when (buffer-live-p buffer)
+    (let ((proc (get-buffer-process buffer))
+          (attempts 20))
+      (while (and (processp proc)
+                  (> attempts 0)
+                  (accept-process-output proc 0.01 nil t))
+        (setq attempts (1- attempts))))))
+
 (defun nelisp-process-wait-for-exit (wrap &optional timeout)
   "Block until WRAP exits or TIMEOUT (seconds, default 5) elapses.
 Returns the exit status or nil on timeout."
@@ -519,6 +540,7 @@ Returns the exit status or nil on timeout."
                 (< (float-time) deadline))
       (nelisp-process-accept-output wrap 0.05))
     (when (not (nelisp-process-live-p wrap))
+      (nelisp-process--drain-exited-output wrap)
       (nelisp-process--sync-exited-host wrap)
       (nelisp-process-exit-code wrap))))
 
@@ -706,6 +728,159 @@ via the optional TIMEOUT keyword on `nelisp-call-process-with-args'."
   :type 'number
   :group 'nelisp-process)
 
+(defcustom nelisp-process-prefer-syscall-substrate t
+  "When non-nil, use Doc 44 fork/exec/wait file-redirection path when available.
+Hosted Emacs sessions usually lack the lower raw-memory/libc runtime and
+therefore keep using the `make-process' bridge.  Standalone builds with
+`nelisp-stdlib-os' runtime bindings can take the syscall substrate path."
+  :type 'boolean
+  :group 'nelisp-process)
+
+(defun nelisp-process--destination-buffer (destination)
+  "Return the stdout buffer implied by DESTINATION, or nil.
+String destinations are Doc 44 file paths, not buffer names."
+  (cond ((bufferp destination) destination)
+        ((eq destination t) (current-buffer))
+        (t nil)))
+
+(defun nelisp-process--destination-file (destination)
+  "Return the output file implied by DESTINATION, or nil."
+  (cond ((stringp destination) destination)
+        ((and (consp destination)
+              (eq (car destination) :file)
+              (stringp (cadr destination)))
+         (cadr destination))
+        (t nil)))
+
+(defun nelisp-process--write-file-destination (file buffer)
+  "Overwrite FILE with BUFFER contents."
+  (when file
+    (make-directory (file-name-directory (expand-file-name file)) t)
+    (with-current-buffer buffer
+      (write-region (point-min) (point-max) file nil 'silent))))
+
+(defun nelisp-process--strip-host-status-line (buffer)
+  "Remove Emacs process status text from a scratch stderr BUFFER.
+
+When `make-process' redirects stderr to a buffer, the host can append a
+synthetic line such as \"Process NAME stderr finished\".  File capture
+should contain child stderr bytes only."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-max))
+        (when (re-search-backward
+               "\nProcess .+ stderr \\(?:finished\\|exited abnormally.*\\)\n\\'"
+               nil t)
+          (delete-region (match-beginning 0) (match-end 0)))))))
+
+(defun nelisp-process--kill-scratch-buffer (buffer)
+  "Kill internal scratch BUFFER without process-query prompts."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq-local kill-buffer-query-functions
+                  (delq 'process-kill-buffer-query-function
+                        kill-buffer-query-functions)))
+    (kill-buffer buffer)))
+
+(defun nelisp-process--send-eof-for-call-process (wrap)
+  "Close WRAP stdin for `nelisp-call-process' if it is still open."
+  (condition-case nil
+      (when (nelisp-process-live-p wrap)
+        (nelisp-process-send-eof wrap))
+    (error nil)))
+
+(defun nelisp-process--syscall-substrate-available-p ()
+  "Return non-nil when the Doc 44 OS substrate is executable."
+  (and nelisp-process-prefer-syscall-substrate
+       (fboundp 'nelisp-sys--ensure-os)
+       (ignore-errors (nelisp-sys--ensure-os))
+       ;; `nelisp-os-execve' and file I/O need the runtime FFI allocator.
+       (fboundp 'nelisp-os--libc-call)
+       (fboundp 'nelisp-os--alloc)
+       (fboundp 'nelisp-os--free)))
+
+(defun nelisp-process--file-destination-only-p (destination)
+  "Return non-nil when DESTINATION can be handled by fd redirection."
+  (or (null destination)
+      (stringp destination)
+      (and (consp destination)
+           (eq (car destination) :file)
+           (stringp (cadr destination)))))
+
+(defun nelisp-process--syscall-call-process-eligible-p
+    (infile dest-real dest-err)
+  "Return non-nil when `nelisp-call-process' can use fork/exec/dup2."
+  (and (nelisp-process--syscall-substrate-available-p)
+       (or (null infile) (stringp infile))
+       (nelisp-process--file-destination-only-p dest-real)
+       (or (eq dest-err t)
+           (nelisp-process--file-destination-only-p dest-err))))
+
+(defun nelisp-process--null-device ()
+  "Return the platform null device path."
+  (if (and (boundp 'null-device) (stringp null-device))
+      null-device
+    "/dev/null"))
+
+(defun nelisp-process--dup-file-to-fd (path flags mode target-fd)
+  "Open PATH, dup it onto TARGET-FD, close the temporary fd."
+  (let ((fd (nelisp-sys-open path flags mode)))
+    (unwind-protect
+        (nelisp-sys-dup2 fd target-fd)
+      (ignore-errors (nelisp-sys-close fd)))))
+
+(defun nelisp-process--wait-status-exit-code (status)
+  "Return process exit code from raw wait STATUS."
+  (if (and (integerp status) (zerop (logand status #x7f)))
+      (logand (ash status -8) #xff)
+    status))
+
+(defun nelisp-process--call-process-syscall
+    (program infile dest-real dest-err args)
+  "Run PROGRAM with ARGS via Doc 44 fork/exec/wait/dup2 substrate."
+  (let ((pid (nelisp-sys-fork)))
+    (cond
+     ((= pid 0)
+      (condition-case _err
+          (let* ((out-file (nelisp-process--destination-file dest-real))
+                 (err-file (and (not (eq dest-err t))
+                                (nelisp-process--destination-file dest-err)))
+                 (dev-null (nelisp-process--null-device))
+                 (out-path (or out-file dev-null))
+                 (err-path (or err-file dev-null)))
+            (nelisp-process--dup-file-to-fd
+             (or infile dev-null)
+             nelisp-sys-o-rdonly
+             0
+             nelisp-sys-stdin)
+            (nelisp-process--dup-file-to-fd
+             out-path
+             (logior nelisp-sys-o-wronly
+                     nelisp-sys-o-creat
+                     nelisp-sys-o-trunc)
+             #o666
+             nelisp-sys-stdout)
+            (if (eq dest-err t)
+                (nelisp-sys-dup2 nelisp-sys-stdout nelisp-sys-stderr)
+              (nelisp-process--dup-file-to-fd
+               err-path
+               (logior nelisp-sys-o-wronly
+                       nelisp-sys-o-creat
+                       nelisp-sys-o-trunc)
+               #o666
+               nelisp-sys-stderr))
+            (nelisp-sys-execve
+             program
+             (cons program args)
+             (nelisp-sys-startup-envp))
+            (nelisp-sys-exit 127))
+        (error (nelisp-sys-exit 127))))
+     ((> pid 0)
+      (nelisp-process--wait-status-exit-code
+       (nelisp-sys-waitpid pid 0)))
+     (t -1))))
+
 (defun nelisp-call-process (program &optional infile destination display
                                     &rest args)
   "Synchronously run PROGRAM with ARGS, returning the exit status.
@@ -713,8 +888,9 @@ Drop-in equivalent of Emacs `call-process'.
 
 PROGRAM      Path to executable (string).
 INFILE       File to use as stdin, or nil.
-DESTINATION  Where to send stdout — buffer, t, nil, or (REAL-DEST
-             ERROR-DEST) for split stderr.  nil discards.
+DESTINATION  Where to send stdout — buffer, t, nil, string file path,
+             (:file FILE), or (REAL-DEST ERROR-DEST) for split stderr.
+             nil discards.
 DISPLAY      Ignored (Emacs interactive-only).
 ARGS         Remaining string args to PROGRAM.
 
@@ -728,38 +904,68 @@ exits)."
   (ignore display)
   (unless (stringp program)
     (signal 'wrong-type-argument (list 'stringp program)))
-  (let* ((dest-real (cond ((consp destination) (car destination))
+  (let* ((dest-real (cond ((and (consp destination)
+                                (not (eq (car destination) :file)))
+                           (car destination))
                           (t destination)))
-         (dest-err  (cond ((consp destination) (cadr destination))
+         (dest-err  (cond ((and (consp destination)
+                                (not (eq (car destination) :file)))
+                           (cadr destination))
                           (t nil)))
-         (out-buf (cond ((bufferp dest-real) dest-real)
-                        ((stringp dest-real) (get-buffer-create dest-real))
-                        ((eq dest-real t) (current-buffer))
-                        (t nil)))
+         (out-file (nelisp-process--destination-file dest-real))
+         (err-file (and (not (eq dest-err t))
+                        (nelisp-process--destination-file dest-err)))
+         (out-scratch (and out-file
+                           (generate-new-buffer " *nelisp-call-stdout*")))
+         (err-scratch (and err-file
+                           (generate-new-buffer " *nelisp-call-stderr*")))
+         (out-buf (or (nelisp-process--destination-buffer dest-real)
+                      out-scratch))
          (err-target (cond ((bufferp dest-err) dest-err)
-                           ((stringp dest-err) (get-buffer-create dest-err))
+                           (err-scratch)
+                           ((eq dest-err t) out-buf)
                            (t nil)))
-         (cmd (cons program args))
-         (wrap (nelisp-make-process
-                :name program
-                :buffer out-buf
-                :command cmd
-                :stderr err-target)))
-    ;; Stream INFILE into the child's stdin if supplied.
-    (when (and infile (file-readable-p infile))
-      (let ((contents (with-temp-buffer
-                        (insert-file-contents infile)
-                        (buffer-string))))
-        (nelisp-process-send-string wrap contents)
-        (nelisp-process-send-eof wrap)))
-    (let ((exit (nelisp-process-wait-for-exit
-                 wrap nelisp-call-process-default-timeout)))
-      (cond
-       ((null exit)
-        ;; Timeout — kill cascade and report -1.
-        (nelisp-delete-process wrap)
-        -1)
-       (t exit)))))
+         (resolved-program (or (nelisp-sys-executable-find program)
+                               (error "nelisp-call-process: executable not found: %s"
+                                      program)))
+         (cmd (cons resolved-program args)))
+    (unwind-protect
+        (if (nelisp-process--syscall-call-process-eligible-p
+             infile dest-real dest-err)
+            (nelisp-process--call-process-syscall
+             resolved-program infile dest-real dest-err args)
+          (let ((wrap (nelisp-make-process
+                       :name program
+                       :buffer out-buf
+                       :command cmd
+                       :stderr err-target)))
+            (progn
+              ;; `call-process' connects nil INFILE to null-device.  Close the
+              ;; make-process stdin pipe either way so readers such as cat see EOF.
+              (when infile
+                (unless (file-readable-p infile)
+                  (error "nelisp-call-process: unreadable infile %s" infile))
+                (let ((contents (with-temp-buffer
+                                  (insert-file-contents-literally infile)
+                                  (buffer-string))))
+                  (nelisp-process-send-string wrap contents)))
+              (nelisp-process--send-eof-for-call-process wrap)
+              (let ((exit (nelisp-process-wait-for-exit
+                           wrap nelisp-call-process-default-timeout)))
+                (cond
+                 ((null exit)
+                  ;; Timeout — kill cascade and report -1.
+                  (nelisp-delete-process wrap)
+                  -1)
+                 (t
+                  (nelisp-process--write-file-destination out-file out-buf)
+                  (when err-scratch
+                    (nelisp-process--drain-buffer-process err-scratch)
+                    (nelisp-process--strip-host-status-line err-scratch))
+                  (nelisp-process--write-file-destination err-file err-target)
+                  exit))))))
+      (nelisp-process--kill-scratch-buffer out-scratch)
+      (nelisp-process--kill-scratch-buffer err-scratch))))
 
 (defun nelisp-call-process-region (start end program &optional delete
                                          destination display &rest args)
@@ -774,13 +980,16 @@ child has consumed it.  Returns the exit status integer."
                          (get-buffer-create destination))
                         ((eq destination t) (current-buffer))
                         (t nil)))
-         (cmd (cons program args))
+         (resolved-program (or (nelisp-sys-executable-find program)
+                               (error "nelisp-call-process-region: executable not found: %s"
+                                      program)))
+         (cmd (cons resolved-program args))
          (wrap (nelisp-make-process
                 :name program
                 :buffer out-buf
                 :command cmd)))
     (nelisp-process-send-string wrap stdin)
-    (nelisp-process-send-eof wrap)
+    (nelisp-process--send-eof-for-call-process wrap)
     (when delete (delete-region start end))
     (let ((exit (nelisp-process-wait-for-exit
                  wrap nelisp-call-process-default-timeout)))

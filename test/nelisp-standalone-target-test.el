@@ -441,7 +441,13 @@
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(extern-call VirtualAlloc 0 #x4000000 12288 4)
+                 '(nl_os_alloc_chunk #x4000000)
+                 arena))
+        (should (tree-member-p
+                 '(extern-call VirtualAlloc 0 size 8192 4)
+                 arena))
+        (should (tree-member-p
+                 '(extern-call VirtualAlloc base 4096 4096 4)
                  arena))
         (should (tree-member-p
                  '(ptr-write-u64 (data-addr nl_arena_base) 0 base)
@@ -453,8 +459,8 @@
                      '(extern-call VirtualAlloc #x70000000 #x4000000 12288 4)
                      arena))))))
 
-(ert-deftest nelisp-standalone-target-windows-arena-commits-64m ()
-  "Windows chunk-0 init keeps the bounded 64 MiB first reservation."
+(ert-deftest nelisp-standalone-target-windows-arena-reserves-64m ()
+  "Windows chunk-0 keeps a bounded 64 MiB reservation without committing it up front."
   (let ((nelisp-standalone--target 'windows-x86_64)
         (nelisp-standalone--windows-arena-base #x70000000))
     (cl-labels ((tree-member-p
@@ -466,7 +472,10 @@
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(extern-call VirtualAlloc 0 #x4000000 12288 4)
+                 '(nl_os_alloc_chunk #x4000000)
+                 arena))
+        (should (tree-member-p
+                 '(extern-call VirtualAlloc 0 size 8192 4)
                  arena))
         (should-not (tree-member-p
                      '(extern-call VirtualAlloc 268435456 #x10000000 12288 4)
@@ -752,13 +761,83 @@ scratch chunks have their cursor reset."
                (nelisp-standalone--target-arena-source))))
     (let ((nelisp-standalone--target 'windows-x86_64)
           (nelisp-standalone--windows-arena-base #x70000000))
-      (should (tree-member-p
-               '(extern-call VirtualAlloc 0 size 12288 4)
-               (nelisp-standalone--target-arena-source))))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p
+                 '(extern-call VirtualAlloc 0 size 8192 4)
+                 arena))
+        (should (tree-member-p
+                 '(nl_os_commit_range base old new)
+                 arena))))
     (let ((nelisp-standalone--target 'macos-aarch64))
       (should (tree-member-p
                '(syscall-direct 197 0 size 3 4098 -1 0)
                (nelisp-standalone--target-arena-source))))))
+
+(ert-deftest nelisp-standalone-target-arena-adds-target-chunk-reclaimer ()
+  "Growth chunk reclamation is wired on every standalone native target."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((nelisp-standalone--target 'linux-x86_64))
+      (should (tree-member-p
+               '(syscall-direct 11 base size 0 0 0 0)
+               (nelisp-standalone--target-arena-source))))
+    (let ((nelisp-standalone--target 'windows-x86_64)
+          (nelisp-standalone--windows-arena-base #x70000000))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p
+                 '(extern-call VirtualFree base 0 32768)
+                 arena))
+        (should-not (tree-member-p
+                     '(defun nl_os_free_chunk (_base _size) 0)
+                     arena))))
+    (let ((nelisp-standalone--target 'macos-aarch64))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p
+                 '(syscall-direct 73 base size 0 0 0 0)
+                 arena))
+        (should-not (tree-member-p
+                     '(defun nl_os_free_chunk (_base _size) 0)
+                     arena))))))
+
+(ert-deftest nelisp-standalone-target-intern-region-is-target-aware ()
+  "Symbol-name intern region setup uses each target's allocation surface."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((nelisp-standalone--target 'linux-x86_64))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p '(nl_intern_region_init) arena))
+        (should (tree-member-p
+                 '(syscall-direct 9 0 67108864 3 34 -1 0)
+                 arena))))
+    (let ((nelisp-standalone--target 'windows-x86_64)
+          (nelisp-standalone--windows-arena-base #x70000000))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p '(nl_intern_region_init) arena))
+        (should (tree-member-p
+                 '(extern-call VirtualAlloc 0 67108864 12288 4)
+                 arena))
+        (should-not (tree-member-p
+                     '(syscall-direct 9 0 67108864 3 34 -1 0)
+                     arena))))
+    (let ((nelisp-standalone--target 'macos-aarch64))
+      (let ((arena (nelisp-standalone--target-arena-source)))
+        (should (tree-member-p '(nl_intern_region_init) arena))
+        (should (tree-member-p
+                 '(syscall-direct 197 0 67108864 3 4098 -1 0)
+                 arena))
+        (should-not (tree-member-p
+                     '(syscall-direct 9 0 67108864 3 34 -1 0)
+                     arena))))))
 
 (ert-deftest nelisp-standalone-target-arena-allocation-is-chunk-aware ()
   "Doc 140 Stage 4 routes allocation through current chunk descriptors."
@@ -813,7 +892,7 @@ scratch chunks have their cursor reset."
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
         (should (tree-member-p
-                 '(syscall-direct 197 0 #x20000000 3 4098 -1 0)
+                 '(nl_os_alloc_chunk #x20000000)
                  arena))
         (should (tree-member-p
                  '(ptr-write-u64 (data-addr nl_arena_base) 0 base)
@@ -828,6 +907,31 @@ scratch chunks have their cursor reset."
 (ert-deftest nelisp-standalone-target-windows-reserves-1g-stack ()
   "Windows standalone reserves a Linux-trampoline-sized native stack."
   (should (= nelisp-standalone--windows-stack-reserve #x40000000)))
+
+(ert-deftest nelisp-standalone-target-windows-imports-virtualfree ()
+  "Windows eval and reader link paths import VirtualFree for chunk release."
+  (let ((nelisp-standalone--target 'windows-x86_64)
+        (nelisp-standalone--manifest '(("probe.o" :helper nil)))
+        captured-imports)
+    (cl-letf (((symbol-function 'nelisp-standalone--unit-for)
+               (lambda (_entry)
+                 (nelisp-link-unit-make "probe.obj" nil nil nil)))
+              ((symbol-function 'nelisp-standalone--arena-base-slot-unit)
+               (lambda ()
+                 (nelisp-link-unit-make "arena-base.obj"
+                                        (list (cons 'bss 8)) nil nil)))
+              ((symbol-function 'nelisp-standalone--output-path)
+               (lambda (&optional _reader-p) "/tmp/nelisp-target-test.exe"))
+              ((symbol-function 'nelisp-link-units-pe32)
+               (lambda (_out _units _entry imports &optional _opts)
+                 (setq captured-imports imports)))
+              ((symbol-function 'message)
+               (lambda (&rest _) nil)))
+      (nelisp-standalone-build)
+      (should (member "VirtualFree" captured-imports))))
+  (should (member "VirtualFree"
+                  (cdr (assoc "KERNEL32.dll"
+                              (nelisp-standalone--reader-pe-imports))))))
 
 (ert-deftest nelisp-standalone-target-macos-uses-bounded-native-stack ()
   "macOS standalone uses an explicit stack that Darwin can mmap reliably."
