@@ -587,6 +587,12 @@ return its pointer, or nil on failure / when the reader provides no
     (let ((p (nelisp--syscall-lstat-buf (files--expand-file-name filename))))
       (and (> p 0) p))))
 
+(defun files--lstat-field (filename offset)
+  "Return the lstat(2) struct stat u64 at OFFSET for FILENAME (without
+following a symbolic link), or nil on failure."
+  (let ((buf (files--lstat-buf filename)))
+    (and buf (ptr-read-u64 buf offset))))
+
 (defun files--readlink (filename)
   "Return the symbolic-link target of FILENAME as a string, or nil when it is
 not a symlink / on error / when the reader provides no
@@ -622,9 +628,13 @@ Omits the setuid/setgid/sticky special display."
             (files--mode-rwx (logand mode 7)))))
 
 (when (files--install-fallback-function-p 'file-modes)
-  (defun file-modes (filename &optional _flag)
-    "Return the permission bits of FILENAME (st_mode masked to #o7777), or nil."
-    (let ((m (files--stat-field filename files--stat-off-mode)))
+  (defun file-modes (filename &optional flag)
+    "Return the permission bits of FILENAME (st_mode masked to #o7777), or nil.
+With FLAG `nofollow', use lstat(2) -- the symbolic link's own mode -- instead
+of following the link."
+    (let ((m (if (eq flag 'nofollow)
+                 (files--lstat-field filename files--stat-off-mode)
+               (files--stat-field filename files--stat-off-mode))))
       (and m (logand m #o7777)))))
 
 (when (files--install-fallback-function-p 'file-attributes)
