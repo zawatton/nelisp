@@ -1,0 +1,126 @@
+#+TITLE: NeLisp / nemacs Layer Boundary
+#+AUTHOR: zawatton
+#+DATE: 2026-06-07
+
+* 0. Purpose
+
+This page fixes the boundary between the two repositories so that feature
+work lands in the right layer.  The rule is simple: *nelisp is a generic,
+Emacs-agnostic lisp runtime; nemacs is the Emacs-compatibility substrate
+built on top of it.*
+
+* 1. The two layers
+
+** nelisp — the runtime (generic, minimal, Emacs-agnostic)
+
+- Repo: =dev/nelisp/= (upstream =github.com/zawatton/nelisp=; vendored into
+  =dev/nelisp-emacs/vendor/nelisp/= by =bin/build-nelisp=).
+- Form: *pure-elisp, AOT-compiled to a static ELF (Rust 0)*.  The evaluator,
+  reader, special forms, macro layer, bytecode interpreter, allocator, GC,
+  printer, object writers, and code emitters are all Elisp source.
+- Provides:
+  1. the *language core* (read / eval / special forms / macros / bytecode),
+  2. *generic data primitives* (cons / string / vector / hash / symbol /
+     arithmetic / bitwise), and
+  3. a *thin, generic OS syscall surface* (see §3).
+- Constraint: nelisp is reused as a standalone evaluator by other projects.
+  It must carry *no Emacs concepts* — no buffers, no =delete-file= semantics,
+  no =file-error=, no =point=.
+
+** nemacs — the substrate (Emacs semantics)
+
+- Repo: =dev/nelisp-emacs/=, sources under =src/*.el=.
+- Provides:
+  1. the *Emacs editing model* (buffer / marker / point / region / window /
+     frame / keymap / text-property / overlay), and
+  2. *Emacs API semantics* layered over nelisp's capabilities (e.g. the
+     Emacs file API in §3).
+- Composes nelisp's generic primitives in pure Elisp.  Installs each shim
+  behind =fboundp= / =files--install-fallback-function-p= and *degrades
+  gracefully* when a runtime capability is absent.
+
+#+begin_example
+  ┌─────────────────────────────────────────────┐
+  │ nemacs substrate (dev/nelisp-emacs, src/*.el)│  Emacs semantics:
+  │  buffer/marker/point/window/keymap/...        │  delete-file, file-*-p,
+  │  Emacs file API  ── wraps ──┐                 │  rename-file, ...
+  └─────────────────────────────┼────────────────┘
+                                │ uses generic capabilities
+  ┌─────────────────────────────▼────────────────┐
+  │ nelisp runtime (dev/nelisp, pure-elisp AOT)   │  capabilities only:
+  │  reader/eval/GC + data primitives             │  syscall-direct,
+  │  thin OS syscall surface                      │  nelisp--syscall-path*
+  └───────────────────────────────────────────────┘
+#+end_example
+
+* 2. The decision rule
+
+When a feature is requested, classify it first and say which layer it lands in.
+
+| The feature is...                                            | Layer       | Where to add it                                                      |
+|--------------------------------------------------------------+-------------+---------------------------------------------------------------------|
+| a generic, Emacs-agnostic capability (raw syscall, memory op, language/data primitive) | *nelisp*    | =scripts/nelisp-standalone-build.el=: the =nelisp_apply_function= dispatch table + the =nelisp-standalone--reader-builtins= name list |
+| a function with an Emacs name and Emacs-defined behavior, or any editing-model piece    | *nelisp-emacs* | =src/*.el=, guarded with =fboundp= / =files--install-fallback-function-p=, degrading gracefully |
+
+Two hard rules:
+- *Never* add a raw syscall / OS primitive in the substrate.
+- *Never* add Emacs semantics (argument conventions, error signaling, Emacs
+  return-value shapes) in the runtime.
+
+* 3. Canonical example: the OS file surface
+
+The file API is the clearest illustration of the split.
+
+** Runtime side (nelisp) — thin generic syscall marshaling
+
+- =syscall-direct NR A0..A5= — raw Linux syscall, integers only.
+- =nelisp--syscall-path NR PATH= — NR with one path marshaled to a
+  NUL-terminated =char*= in =rdi=.  (unlink 87, rmdir 84, access F_OK, ...)
+- =nelisp--syscall-path2 NR PATH1 PATH2= — two paths (=rdi=, =rsi=).
+  (rename 82, link 86, symlink 88, ...)
+- =nelisp--syscall-path-int NR PATH INT= — one path (=rdi=) + one scalar
+  (=rsi=).  (access 21 with R/W/X/F_OK mode, chmod 90, truncate 76, ...)
+- read / write / readdir helpers (=nelisp--syscall-read-file=, =nl-write-file=).
+
+These return the *raw kernel result* (0 = success, negative = -errno) and
+know nothing about Emacs.
+
+** Substrate side (nemacs) — Emacs semantics on top
+
+In =src/files-standalone-buffer.el=, each Emacs file function wraps a generic
+primitive and adds Emacs behavior (=expand-file-name=, =file-error= signaling,
+argument conventions, =fboundp= fallback):
+
+- =delete-file= → unlink(87) via =nelisp--syscall-path=
+- =delete-directory= → rmdir(84) via =nelisp--syscall-path=
+- =rename-file= → rename(82) via =nelisp--syscall-path2=
+- =add-name-to-file= → link(86) via =nelisp--syscall-path2=
+- =make-symbolic-link= → symlink(88) via =nelisp--syscall-path2= (TARGET kept
+  verbatim — a symlink target may be relative)
+- =file-exists-p= / =file-readable-p= / =file-writable-p= / =file-executable-p=
+  → access(21) F_OK / R_OK / W_OK / X_OK via =nelisp--syscall-path-int=
+- =file-directory-p= → =access(FILENAME "/.", F_OK)= (only a directory has a
+  =.= entry) via =nelisp--syscall-path-int=
+- =file-regular-p= → exists and not a directory
+- =file-accessible-directory-p= → directory and executable
+
+* 4. Anti-pattern: semantics leaking into the runtime
+
+=nelisp--syscall-stat= (returns ='absent / ='file / ='directory) is a
+semi-high-level reader function — it encodes a bit of Emacs-ish meaning.  It is
+also *AOT-only: it is NOT registered in the interpreter dispatch table*, so
+calling it from interpreted substrate code fails silently.  This is exactly the
+kind of leak this boundary forbids.
+
+The correct fix is what §3 shows: keep the runtime primitive *generic*
+(=nelisp--syscall-path-int=, raw access(2)) and put the semantics in the
+substrate (the =access(path "/.")= directory trick).  Do not depend on
+=nelisp--syscall-stat= from the substrate.
+
+* 5. Note on stale comments
+
+Comments throughout the nelisp sources reference paths like
+=build-tool/src/eval/builtins.rs=.  These are *historical* provenance from the
+Rust → pure-Elisp migration; the =build-tool/= tree no longer exists.  See the
+note at the top of =dev/nelisp/README.org=.  Do not treat those paths as live
+files.
