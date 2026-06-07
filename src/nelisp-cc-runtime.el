@@ -3657,7 +3657,15 @@ the context for native callers.  When MIRROR or FRAMES are omitted,
 they default to host hash-table handles.  OUT, SCRATCH, and NAME-SLOT
 default to fresh one-slot vectors so callers can run module
 initialization without separately allocating the standard boxed-boundary
-slots."
+slots.
+
+Doc 147 Phase 1.5 Group A: SCRATCH defaults to a HOST Emacs `(vector
+nil)', never a native NlVector.  The literal materializer's interior
+writes via `(vector-ref-ptr SCRATCH INDEX)' (see
+`nelisp-aot-compiler--scratch-slot') only run on this host-interpreted
+path; the standalone-reader native build ships no AOT init helpers and
+never executes them.  A host vector is not subject to the Phase-2
+container-slot 32B->8B shrink, so this scratch needs no decoupling."
   (let* ((handles
           (nelisp-cc-runtime-make-aot-environment-handles
            mirror frames env))
