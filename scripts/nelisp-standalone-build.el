@@ -1169,6 +1169,23 @@ addressing by a runtime base, never by a fixed reservation."
         (while (< k len)
           (nl_seq2 (nl_gc_mark_slot (+ data_ptr (* k 32))) (setq k (+ k 1))))
         0))
+    ;; Doc 147 Phase 1.5 Group P — RAW reader parse-pool GC arms.  The pool
+    ;; is no longer a GC-managed Sexp::Vector; it is a flat cap*32B buffer
+    ;; whose `cap' is stashed @268436448 (`nl_gc_pool_cap').  Mark = mark the
+    ;; buffer block itself, then walk all `cap' 32B slots as live Sexps.  The
+    ;; pool holds LIVE transient Sexps across a mid-parse collection, so every
+    ;; slot must be a root.  Buffer stays 32B in Phase 1.5, so per-slot walk
+    ;; reads FULL 32B Sexps (no immediate-skip — that arrives with Phase 2).
+    (defun nl_gc_pool_cap () (ptr-read-u64 268436448 0))
+    (defun nl_gc_mark_pool_slots (base i cap)
+      (let ((k i))
+        (while (< k cap)
+          (nl_seq2 (nl_gc_mark_slot (+ base (* k 32))) (setq k (+ k 1))))
+        0))
+    (defun nl_gc_mark_pool (base cap)
+      (if (= base 0) 0
+        (nl_seq2 (nl_gc_mark_block base)
+                 (nl_gc_mark_pool_slots base 0 cap))))
     ;; Cons cdr-spine walker (tail-recursive: recurse only on car, loop
     ;; on cdr) so list LENGTH does not bound native mark depth.  SP points
     ;; at a Sexp slot known to be tag 7 (Cons).
@@ -1328,7 +1345,7 @@ addressing by a runtime base, never by a fixed reservation."
          (nl_seq2 (nl_gc_mark_slot (+ ctx 64))   ; unbound marker
           (nl_seq2 (nl_gc_mark_slot result)      ; current parsed form
            (nl_seq2 (nl_gc_mark_slot out)        ; in-flight / last result
-            (nl_seq2 (nl_gc_mark_slot pool)      ; slot-pool vector
+            (nl_seq2 (nl_gc_mark_pool pool (nl_gc_pool_cap)) ; Doc 147 P1.5 — RAW parse-pool buffer (cap slots @ pool+N*32)
              (nl_seq2 (nl_gc_mark_slot src)      ; source string
               (nl_seq2 (nl_gc_mark_slot cursor)  ; reader cursor Sexp
                        (nl_seq2 (nl_gc_mark_slot bsym)
@@ -1440,6 +1457,21 @@ addressing by a runtime base, never by a fixed reservation."
           (nl_seq2 (nl_compact_rw_slot (+ data (* i 32)))
                    (nl_compact_rw_vec_slots data (+ i 1) len))
         0))
+    ;; Doc 147 Phase 1.5 Group P — RAW reader parse-pool compact arms (mirror
+    ;; of the mark arms above; mirror of nl_compact_rw_vec_slots).  Rewrite the
+    ;; buffer's own block edge, then walk every 32B slot rewriting its child
+    ;; edges to fwd[child].  The pool buffer block itself is PINNED (mark-5)
+    ;; via nl_compact_pin_root 3 before phase 3, so nl_compact_rw_block leaves
+    ;; it put (it only flips mark1->3) while its children get forwarded.
+    (defun nl_compact_rw_pool_slots (base i cap)
+      (if (< i cap)
+          (nl_seq2 (nl_compact_rw_slot (+ base (* i 32)))
+                   (nl_compact_rw_pool_slots base (+ i 1) cap))
+        0))
+    (defun nl_compact_rw_pool (base cap)
+      (if (= base 0) 0
+        (nl_seq2 (nl_compact_rw_block base)
+                 (nl_compact_rw_pool_slots base 0 cap))))
     (defun nl_compact_rw_cons (sp)
       (let ((old (nl_compact_rw_edge (+ sp 8))))
         (if (= (nl_compact_rw_block old) 0) 0
@@ -1509,7 +1541,7 @@ addressing by a runtime base, never by a fixed reservation."
            (nl_compact_rw_slot (+ ctx 64))
            (nl_compact_rw_slot result)
            (nl_compact_rw_slot out)
-           (nl_compact_rw_slot pool)
+           (nl_compact_rw_pool pool (nl_gc_pool_cap)) ; Doc 147 P1.5 — RAW parse-pool buffer
            (nl_compact_rw_slot src)
            (nl_compact_rw_slot cursor)
            (nl_compact_rw_slot bsym)
@@ -2766,17 +2798,22 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
              (setq more 0)))))
       more)
     (defun bf_load (args env out)
+      ;; Doc 147 Phase 1.5 Group P — the reader parse pool is now a RAW
+      ;; 32B-slot buffer (cap*32 bytes) instead of a GC-managed
+      ;; Sexp::Vector.  `pool' IS the buffer base; slot N lives at
+      ;; pool+N*32 (see `nelisp_reader_p_slot').  Store the cap at the
+      ;; control-region word @268436448 so the GC pool arms can walk it.
       (let* ((src (alloc-bytes 32 8))
              (cursor (alloc-bytes 32 8))
              (result (alloc-bytes 32 8))
-             (pool (alloc-bytes 32 8))
+             (pool (alloc-bytes (* 32768 32) 8))
              (bsym (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
          (ptr-write-u64 268435624 0 0)
          (nl_bi_read_file args src)
          (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-         (vector-make 32768 pool)
+         (ptr-write-u64 268436448 0 32768)
          (if (= (bf_load_eval_loop src cursor result pool env out bsym 1) 2)
              1
            (seq
@@ -2785,25 +2822,31 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
             (wf_write_t out)
             0)))))
     (defun bf_eval_source_string (args env out)
+      ;; Doc 147 Phase 1.5 Group P — RAW parse-pool buffer (cap*32 bytes),
+      ;; `pool' IS the base; slot N @ pool+N*32 (`nelisp_reader_p_slot').
+      ;; `src' is bound before `pool', so the cap can size the alloc
+      ;; directly; store the same cap @268436448 for the GC pool arms.
       (let* ((src (wf_arg_ptr args 0))
              (cursor (alloc-bytes 32 8))
              (result (alloc-bytes 32 8))
-             (pool (alloc-bytes 32 8))
+             ;; Doc 08 §8.15: right-size the per-form parse pool to the source
+             ;; length instead of a fixed 32768-slot (~1MB) buffer.  The parsed
+             ;; form's nodes live IN this pool (a GC root), so a retained
+             ;; defun/defvar pins the whole pool -> a 1MB pool per small form was
+             ;; 54-68% of the vendor-load arena.  4x source length bounds the
+             ;; node count (each parse node needs >=1 source char) and the 32768
+             ;; cap keeps the previous behaviour for big forms (no regression).
+             (pool (alloc-bytes (* (let ((n (* 4 (str-len src))))
+                                     (if (< n 256) 256 (if (> n 32768) 32768 n)))
+                                   32)
+                                8))
              (bsym (alloc-bytes 32 8)))
         (seq
          (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
          (ptr-write-u64 268435624 0 0)
          (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
-         ;; Doc 08 §8.15: right-size the per-form parse pool to the source length
-         ;; instead of a fixed 32768-slot (~1MB) vector.  The parsed form's nodes
-         ;; live IN this pool (a GC root), so a retained defun/defvar pins the
-         ;; whole pool -> a 1MB pool per small form was 54-68% of the vendor-load
-         ;; arena.  8x source length bounds the node count (each parse node needs
-         ;; >=1 source char; 8x covers per-node slot overhead) and the 32768 cap
-         ;; keeps the previous behaviour for big forms (no parse regression).
-         (vector-make (let ((n (* 4 (str-len src))))
-                        (if (< n 256) 256 (if (> n 32768) 32768 n)))
-                      pool)
+         (ptr-write-u64 268436448 0 (let ((n (* 4 (str-len src))))
+                                      (if (< n 256) 256 (if (> n 32768) 32768 n))))
          (if (= (bf_eval_source_string_loop src cursor result pool env out bsym 1) 2)
              1
            (seq (wf_dirty) 0)))))
@@ -5314,7 +5357,9 @@ correctly."
             (ctx (alloc-bytes 120 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
             (src (alloc-bytes 32 8)) (cursor (alloc-bytes 32 8))
-            (result (alloc-bytes 32 8)) (pool (alloc-bytes 32 8)) (out (alloc-bytes 32 8))
+            ;; Doc 147 Phase 1.5 Group P — RAW parse-pool buffer (32768*32
+            ;; bytes); `pool' IS the base, slot N @ pool+N*32.
+            (result (alloc-bytes 32 8)) (pool (alloc-bytes (* 32768 32) 8)) (out (alloc-bytes 32 8))
             (argv_list (alloc-bytes 32 8))
             (argv_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "nelisp-standalone-argv"))) 1))
             (argv_sym (alloc-bytes 32 8))
@@ -5365,7 +5410,7 @@ correctly."
 ;; that ceiling, so deep recursion (cnt(100000) -> 42) succeeds while still erroring
 ;; at the guard -- never SIGSEGV -- once it exceeds the budget.
 (ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 300000)
-        (vector-make 32768 pool)                                ; Sexp::Vector(32768) slot-pool — raised from 8192 after vendored eucjp-ms' 2069-entry generated alist exceeded the flat-list tail depth; 32768 => MAX_DEPTH ~8191 for the current 3+4*MAX_DEPTH reader slot shape.
+        (ptr-write-u64 268436448 0 32768)                       ; Doc 147 P1.5 — store the RAW parse-pool cap (32768 slots) for the GC pool arms.  Raised from 8192 after vendored eucjp-ms' 2069-entry generated alist exceeded the flat-list tail depth; 32768 => MAX_DEPTH ~8191 for the current 3+4*MAX_DEPTH reader slot shape.
         ;; GC trigger: collect at a form boundary once the bump offset
         ;; crosses this threshold.  Initial 512 MiB keeps small *and*
         ;; moderate programs GC-free (zero overhead) — crucially the full

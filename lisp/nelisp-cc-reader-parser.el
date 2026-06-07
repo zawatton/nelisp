@@ -114,6 +114,17 @@
     (defun nelisp_reader_p_spare_idx (d) (+ 6 (* d 4)))
 
     ;; ===========================================================
+    ;; Slot address helper (Doc 147 Phase 1.5 Group P).  The slot-pool
+    ;; is now a RAW 32B-slot buffer (alloc-bytes (* cap 32) 8) rather
+    ;; than a GC-managed Sexp::Vector.  Slot N lives at BASE + N*32.
+    ;; This is a pure idempotent address — exactly like the old
+    ;; `vector-ref-ptr' on a 32B-stride Vector — so recursive
+    ;; write-through composes identically.
+    ;; ===========================================================
+
+    (defun nelisp_reader_p_slot (base n) (+ base (* n 32)))
+
+    ;; ===========================================================
     ;; ASCII digit predicate.
     ;; ===========================================================
 
@@ -588,8 +599,8 @@
        str-ptr cursor-slot result-slot slot-pool depth
        (nelisp_reader_p_lex_one
         str-ptr cursor-slot
-        (vector-ref-ptr slot-pool 1)   ; payload-slot
-        (vector-ref-ptr slot-pool 0)))) ; scratch-slot
+        (nelisp_reader_p_slot slot-pool 1)   ; payload-slot
+        (nelisp_reader_p_slot slot-pool 0)))) ; scratch-slot
 
     (defun nelisp_reader_p_dispatch
         (str-ptr cursor-slot result-slot slot-pool depth kind)
@@ -634,7 +645,7 @@
        ;; Leaf payloads.
        ((>= kind 20)
         (nelisp_reader_p_leaf kind result-slot
-                              (vector-ref-ptr slot-pool 1)))
+                              (nelisp_reader_p_slot slot-pool 1)))
        ;; Stray close / dot / EOF / error / record / byte-code → error.
        (t -1)))
 
@@ -649,27 +660,27 @@
         (str-ptr cursor-slot result-slot slot-pool depth tag-byte)
       (and (= (nelisp_reader_p_parse_at
                str-ptr cursor-slot
-               (vector-ref-ptr slot-pool
+               (nelisp_reader_p_slot slot-pool
                                (nelisp_reader_p_car_idx depth))
                slot-pool (+ depth 1))
               1)
            ;; tail = (INNER . nil) at cdr[d].  nil source = slot 2.
-           (cons-make-with-clone (vector-ref-ptr slot-pool
+           (cons-make-with-clone (nelisp_reader_p_slot slot-pool
                                                  (nelisp_reader_p_car_idx depth))
-                                 (vector-ref-ptr slot-pool 2)
-                                 (vector-ref-ptr slot-pool
+                                 (nelisp_reader_p_slot slot-pool 2)
+                                 (nelisp_reader_p_slot slot-pool
                                                  (nelisp_reader_p_cdr_idx depth)))
            ;; Build HEAD symbol at head[d].
            (= (nelisp_reader_p_build_head_symbol
-               (vector-ref-ptr slot-pool
+               (nelisp_reader_p_slot slot-pool
                                (nelisp_reader_p_head_idx depth))
-               (vector-ref-ptr slot-pool 0)
+               (nelisp_reader_p_slot slot-pool 0)
                tag-byte)
               1)
            ;; cons-make-with-clone HEAD TAIL -> result-slot.
-           (cons-make-with-clone (vector-ref-ptr slot-pool
+           (cons-make-with-clone (nelisp_reader_p_slot slot-pool
                                                  (nelisp_reader_p_head_idx depth))
-                                 (vector-ref-ptr slot-pool
+                                 (nelisp_reader_p_slot slot-pool
                                                  (nelisp_reader_p_cdr_idx depth))
                                  result-slot)
            1))
@@ -688,8 +699,8 @@
        str-ptr cursor-slot result-slot slot-pool depth
        (nelisp_reader_p_lex_one
         str-ptr cursor-slot
-        (vector-ref-ptr slot-pool 1)
-        (vector-ref-ptr slot-pool 0))))
+        (nelisp_reader_p_slot slot-pool 1)
+        (nelisp_reader_p_slot slot-pool 0))))
 
     (defun nelisp_reader_p_list_dispatch
         (str-ptr cursor-slot result-slot slot-pool depth kind)
@@ -707,8 +718,8 @@
              ;; Consume the closing RParen.
              (= (nelisp_reader_p_lex_one
                  str-ptr cursor-slot
-                 (vector-ref-ptr slot-pool 1)
-                 (vector-ref-ptr slot-pool 0))
+                 (nelisp_reader_p_slot slot-pool 1)
+                 (nelisp_reader_p_slot slot-pool 0))
                 2)
              1))
        ;; EOF / stray RBracket / error: parse error.
@@ -718,19 +729,19 @@
        (t
         (and (= (nelisp_reader_p_dispatch
                  str-ptr cursor-slot
-                 (vector-ref-ptr slot-pool
+                 (nelisp_reader_p_slot slot-pool
                                  (nelisp_reader_p_car_idx depth))
                  slot-pool (+ depth 1) kind)
                 1)
              (= (nelisp_reader_p_parse_list_step
                  str-ptr cursor-slot
-                 (vector-ref-ptr slot-pool
+                 (nelisp_reader_p_slot slot-pool
                                  (nelisp_reader_p_cdr_idx depth))
                  slot-pool (+ depth 1))
                 1)
-             (cons-make-with-clone (vector-ref-ptr slot-pool
+             (cons-make-with-clone (nelisp_reader_p_slot slot-pool
                                                    (nelisp_reader_p_car_idx depth))
-                                   (vector-ref-ptr slot-pool
+                                   (nelisp_reader_p_slot slot-pool
                                                    (nelisp_reader_p_cdr_idx depth))
                                    result-slot)
              1))))
@@ -834,21 +845,21 @@
             (setq data (nelisp_reader_p_list_nth_ptr body 4))
           0)
         (and (sexp-int-make
-              (vector-ref-ptr slot-pool
+              (nelisp_reader_p_slot slot-pool
                               (nelisp_reader_p_head_idx depth))
               0)
              (cons-make-with-clone
-              (vector-ref-ptr slot-pool
+              (nelisp_reader_p_slot slot-pool
                               (nelisp_reader_p_head_idx depth))
-              (vector-ref-ptr slot-pool 2)
+              (nelisp_reader_p_slot slot-pool 2)
               result-slot)
              (if (= data 0)
                  1
                (nelisp_reader_p_hash_fill_table
                 data result-slot
-                (vector-ref-ptr slot-pool
+                (nelisp_reader_p_slot slot-pool
                                 (nelisp_reader_p_cdr_idx depth))
-                (vector-ref-ptr slot-pool
+                (nelisp_reader_p_slot slot-pool
                                 (nelisp_reader_p_spare_idx depth)))))))
 
     (defun nelisp_reader_p_record_tag_p (tag)
@@ -892,11 +903,11 @@
         (str-ptr cursor-slot result-slot slot-pool depth _pad)
       (and (= (nelisp_reader_p_parse_list_step
                str-ptr cursor-slot
-               (vector-ref-ptr slot-pool
+               (nelisp_reader_p_slot slot-pool
                                (nelisp_reader_p_car_idx depth))
                slot-pool (+ depth 1))
               1)
-           (let* ((body (vector-ref-ptr slot-pool
+           (let* ((body (nelisp_reader_p_slot slot-pool
                                         (nelisp_reader_p_car_idx depth))))
              (if (= (nelisp_reader_p_hash_table_body_p body) 1)
                  (nelisp_reader_p_build_hash_table
@@ -923,8 +934,8 @@
        str-ptr cursor-slot list-slot slot-pool depth
        (nelisp_reader_p_lex_one
         str-ptr cursor-slot
-        (vector-ref-ptr slot-pool 1)
-        (vector-ref-ptr slot-pool 0))))
+        (nelisp_reader_p_slot slot-pool 1)
+        (nelisp_reader_p_slot slot-pool 0))))
 
     (defun nelisp_reader_p_vec_dispatch
         (str-ptr cursor-slot list-slot slot-pool depth kind)
@@ -942,19 +953,19 @@
        (t
         (and (= (nelisp_reader_p_dispatch
                  str-ptr cursor-slot
-                 (vector-ref-ptr slot-pool
+                 (nelisp_reader_p_slot slot-pool
                                  (nelisp_reader_p_car_idx depth))
                  slot-pool (+ depth 1) kind)
                 1)
              (= (nelisp_reader_p_parse_vector_step
                  str-ptr cursor-slot
-                 (vector-ref-ptr slot-pool
+                 (nelisp_reader_p_slot slot-pool
                                  (nelisp_reader_p_cdr_idx depth))
                  slot-pool (+ depth 1) 0)
                 1)
-             (cons-make-with-clone (vector-ref-ptr slot-pool
+             (cons-make-with-clone (nelisp_reader_p_slot slot-pool
                                                    (nelisp_reader_p_car_idx depth))
-                                   (vector-ref-ptr slot-pool
+                                   (nelisp_reader_p_slot slot-pool
                                                    (nelisp_reader_p_cdr_idx depth))
                                    list-slot)
              1))))
@@ -1019,7 +1030,7 @@
         (str-ptr cursor-slot result-slot slot-pool depth _pad)
       (and (= (nelisp_reader_p_parse_vector_step
                str-ptr cursor-slot
-               (vector-ref-ptr slot-pool
+               (nelisp_reader_p_slot slot-pool
                                (nelisp_reader_p_car_idx depth))
                slot-pool (+ depth 1) 0)
               1)
@@ -1029,12 +1040,12 @@
            (vector-make
             (nelisp_reader_p_cons_list_len_walk
              (sexp-payload-ptr
-              (vector-ref-ptr slot-pool
+              (nelisp_reader_p_slot slot-pool
                               (nelisp_reader_p_car_idx depth)))
              0)
             result-slot)
            (= (nelisp_reader_p_fill_vec
-               (vector-ref-ptr slot-pool
+               (nelisp_reader_p_slot slot-pool
                                (nelisp_reader_p_car_idx depth))
                result-slot 0 slot-pool depth 0)
               1)))
