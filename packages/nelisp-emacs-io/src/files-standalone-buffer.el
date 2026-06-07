@@ -667,6 +667,52 @@ PREV-DIRS are accepted for call compatibility and ignored.  `..' is only
 collapsed as far as the reader's `expand-file-name' does."
     (files--truename-walk (files--expand-file-name filename) 0)))
 
+(defun files--toggle-case (str)
+  "Return STR with the case of each ASCII letter toggled.
+Built with `concat'/`char-to-string' since reader strings are immutable."
+  (let ((out "") (i 0) (n (length str)))
+    (while (< i n)
+      (let ((c (aref str i)))
+        (setq out (concat out (char-to-string
+                               (cond ((and (>= c ?a) (<= c ?z)) (- c 32))
+                                     ((and (>= c ?A) (<= c ?Z)) (+ c 32))
+                                     (t c))))))
+      (setq i (1+ i)))
+    out))
+
+(defun files--has-letter-p (str)
+  "Return non-nil if STR contains an ASCII letter."
+  (let ((i 0) (n (length str)) (found nil))
+    (while (and (< i n) (not found))
+      (let ((c (aref str i)))
+        (when (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z)))
+          (setq found t)))
+      (setq i (1+ i)))
+    found))
+
+(when (files--install-fallback-function-p 'file-name-case-insensitive-p)
+  (defun file-name-case-insensitive-p (filename)
+    "Return t if FILENAME is on a case-insensitive filesystem.
+Probe: toggle the case of an existing path component and check whether the
+toggled name refers to the same file (same inode).  Returns nil on a
+case-sensitive filesystem (the Linux default).  FILENAME need not exist; the
+nearest existing ancestor with a letter in its name is probed."
+    (let ((path (directory-file-name (files--expand-file-name filename)))
+          (depth 0))
+      (catch 'done
+        (while (and (stringp path) (> (length path) 1) (< depth 64))
+          (let ((base (file-name-nondirectory path)))
+            (when (and (files--has-letter-p base) (file-exists-p path))
+              (let* ((dir (file-name-directory path))
+                     (toggled (concat dir (files--toggle-case base)))
+                     (ino1 (files--stat-field path files--stat-off-ino))
+                     (ino2 (and (file-exists-p toggled)
+                                (files--stat-field toggled files--stat-off-ino))))
+                (throw 'done (and ino1 ino2 (= ino1 ino2))))))
+          (setq path (directory-file-name (file-name-directory path))
+                depth (1+ depth)))
+        nil))))
+
 (defun files--mode-rwx (bits)
   "Return the 3-char rwx string for the low 3 BITS."
   (concat (if (= (logand bits 4) 0) "-" "r")
