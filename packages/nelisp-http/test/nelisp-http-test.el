@@ -479,5 +479,64 @@ so the http cache + robots namespaces start empty for each test."
      (nelisp-http-fetch-batch '("a" "b" "c"))
      :type 'user-error)))
 
+;;;; Doc 44 curl bridge
+
+(ert-deftest nelisp-http-test-curl-parse-headers-uses-final-redirect-block ()
+  "curl --dump-header can contain one HTTP block per redirect."
+  (let* ((text "HTTP/1.1 301 Moved Permanently\r\nLocation: /next\r\n\r\nHTTP/2 200\r\nContent-Length: 2\r\n\r\n")
+         (parsed (nelisp-http--curl-parse-headers text)))
+    (should (= (plist-get parsed :status) 200))
+    (should (equal (cdr (assoc "content-length"
+                               (plist-get parsed :headers)))
+                   "2"))))
+
+(ert-deftest nelisp-http-test-get-binary-uses-curl-process-bridge ()
+  "Doc 44 HTTP bridge locates curl and invokes it through nelisp-call-process."
+  (let (seen-program seen-destination seen-args)
+    (cl-letf (((symbol-function 'nelisp-sys-executable-find)
+               (lambda (program)
+                 (and (equal program "curl") "/bin/curl")))
+              ((symbol-function 'nelisp-call-process)
+               (lambda (program _infile destination _display &rest args)
+                 (setq seen-program program
+                       seen-destination destination
+                       seen-args args)
+                 (let ((header-file (cadr (member "--dump-header" args)))
+                       (body-file (cadr (member "--output" args))))
+                   (write-region
+                    "HTTP/1.1 302 Found\r\nLocation: /ok\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n"
+                    nil header-file nil 'silent)
+                   (write-region "ok" nil body-file nil 'silent))
+                 0)))
+      (let ((resp (nelisp-http-get-binary
+                   "https://example.com/"
+                   :auth '(:bearer "token")
+                   :timeout 7
+                   :cache-ttl 0)))
+        (should (equal seen-program "/bin/curl"))
+        (should (equal (car seen-destination) nil))
+        (should (stringp (cadr seen-destination)))
+        (should (member "-L" seen-args))
+        (should (equal (cadr (member "--max-time" seen-args)) "7"))
+        (should (equal (cadr (member "-H" seen-args))
+                       "Authorization: Bearer token"))
+        (should (= (plist-get resp :status) 200))
+        (should (equal (plist-get resp :body) "ok"))
+        (should (= (plist-get resp :content-length) 2))))))
+
+(ert-deftest nelisp-http-test-get-decodes-binary-body-to-text ()
+  "Text adapter preserves the Doc 44 response shape."
+  (cl-letf (((symbol-function 'nelisp-http-get-binary)
+             (lambda (_url &rest _args)
+               (list :status 200
+                     :headers '(("content-type" . "text/plain"))
+                     :body (encode-coding-string "ok" 'utf-8)
+                     :cached nil
+                     :content-length 2))))
+    (let ((resp (nelisp-http-get "https://example.com/" :cache-ttl 0)))
+      (should (= (plist-get resp :status) 200))
+      (should (equal (plist-get resp :body) "ok"))
+      (should (eq (plist-get resp :cached) nil)))))
+
 (provide 'nelisp-http-test)
 ;;; nelisp-http-test.el ends here

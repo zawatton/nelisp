@@ -1,0 +1,416 @@
+#+title: Doc 44 — anvil-pkg process/HTTP backend via NeLisp syscall substrate
+#+author: zawatton
+#+date: 2026-06-08
+#+status: DESIGN
+
+* Status
+
+DESIGN.  This document defines the NeLisp-side implementation plan for
+the process and HTTP lower primitives required by =anvil-pkg= Phase 5.
+
+The goal is not to add one VM primitive for every missing Emacs
+function.  The goal is to keep the standalone evaluator's primitive
+surface small and generic, then implement =getenv=,
+=executable-find=, =call-process=, =make-process=, and HTTP helpers as
+NeLisp libraries built on that substrate.
+
+* Problem
+
+=anvil-pkg= can already dispatch through compat hooks and auto-detect
+NeLisp backends.  The remaining gap is executable lower runtime
+support in standalone NeLisp:
+
+- subprocess creation and wait semantics
+- stdout / stderr capture
+- PATH and environment lookup
+- HTTP fetch for text and binary payloads
+
+It is tempting to add dedicated builtins such as =getenv=,
+=executable-find=, =call-process=, and =nelisp-http-get=.  That makes
+short-term smoke tests easier, but it repeats the same mistake each
+time an Emacs-compatible API is needed: the VM grows a new special
+case instead of exposing a stable operating-system substrate.
+
+* Design goal
+
+Use a fixed, generic primitive layer:
+
+| Area             | Primitive capability                                 |
+|------------------+-------------------------------------------------------|
+| Syscalls         | =syscall-direct= for raw OS calls                     |
+| Memory           | =alloc-bytes=, =ptr-read-u8/u64=, =ptr-write-u8/u64= |
+| Strings          | access to NeLisp string pointer and byte length       |
+| Startup metadata | access to process =argv= and =envp=                   |
+| Optional FFI     | =ptr-call= for future libc / TLS / platform libraries |
+
+Then implement higher-level behavior in NeLisp packages:
+
+| Layer | Owner     | Examples                                               |
+|-------+-----------+--------------------------------------------------------|
+| L0    | VM        | syscall, pointer, allocation, argv/envp exposure       |
+| L1    | NeLisp    | OS wrappers: open/read/write/close/access/fork/execve/waitpid/dup2/pipe |
+| L2    | NeLisp    | =getenv=, =executable-find=, =call-process=, process handles |
+| L3    | NeLisp    | =nelisp-http-get=, =nelisp-http-get-binary=, cache adapters |
+| L4    | anvil-pkg | compat calls only: =anvil-pkg-compat-call-process=, HTTP helpers |
+
+* Ownership boundary
+
+** anvil-pkg owns
+
+- the public package workflow and =pkg-= API
+- =anvil-pkg-compat= contracts
+- hook names and normalized return shapes
+- fallback policy, including =curl= use when NeLisp native HTTP is not ready
+- smoke tests that report whether NeLisp lower primitives are executable
+
+** NeLisp owns
+
+- standalone evaluator lower primitives
+- OS syscall wrappers
+- process lifecycle implementation
+- environment and PATH lookup
+- HTTP transport implementation or a documented =curl= bridge
+- platform-specific behavior for Linux, macOS, and future Windows support
+
+=anvil-pkg= must not call =syscall-direct= directly.  It should only
+see NeLisp APIs such as =nelisp-call-process=,
+=nelisp-make-process=, =nelisp-http-get=, and
+=nelisp-http-get-binary=.
+
+* Why =syscall-direct= alone is not enough
+
+Raw syscalls are necessary but not sufficient because many OS calls
+require pointer-rich C ABI data structures.
+
+** =execve= needs C strings and arrays
+
+Linux =execve= takes:
+
+#+begin_src c
+int execve(const char *path, char *const argv[], char *const envp[]);
+#+end_src
+
+NeLisp string values are not automatically valid C strings or
+=char **= arrays.  A process implementation must provide helpers that:
+
+- copy a NeLisp string into NUL-terminated memory
+- allocate an =argv= pointer vector ending with NULL
+- reuse or construct an =envp= pointer vector ending with NULL
+- preserve those buffers until the child calls =execve=
+
+This should be a generic library helper, not a new primitive for every
+program launch.
+
+** =getenv= needs startup =envp=
+
+=getenv= is not a syscall on Unix.  libc implements it by scanning the
+process environment block.  In a standalone no-libc evaluator, NeLisp
+must retain a pointer to the initial =envp= vector from process
+startup.
+
+The VM only needs to expose:
+
+- initial =argc=
+- initial =argv=
+- initial =envp=
+
+Then NeLisp can implement:
+
+#+begin_src elisp
+(nelisp-sys-getenv "PATH")
+#+end_src
+
+by scanning =envp= for =NAME== and returning the bytes after the first
+= character.
+
+** =executable-find= needs PATH parsing and access checks
+
+=executable-find= is also not a syscall.  It is a library function:
+
+1. If the command contains =/=, test that exact path.
+2. Otherwise read =PATH= through =getenv=.
+3. Split =PATH= on =:=.
+4. Join each directory with the command name.
+5. Check executable permission with =access(path, X_OK)=, or an
+   equivalent platform-specific call.
+
+This belongs in NeLisp Layer 2.  The VM should not have a dedicated
+=executable-find= primitive.
+
+** =call-process= needs fork/exec/wait and fd redirection
+
+Synchronous process execution needs several lower operations:
+
+- =fork= or =posix_spawn=
+- =execve=
+- =waitpid= / =wait4=
+- =open= for input/output files
+- =dup2= for fd redirection
+- =close=
+- optional =pipe= when capturing output without temp files
+
+The minimal implementation for =anvil-pkg= can redirect stdout and
+stderr to files, because =anvil-pkg-compat= already supports a NeLisp
+path where =nelisp-call-process= writes to file destinations.
+
+The better long-term implementation should support pipes and buffers
+so =make-process= can provide async filters and sentinels.
+
+** HTTP needs transport, and HTTPS needs TLS
+
+Plain HTTP can be implemented with sockets and request parsing.
+HTTPS requires TLS.  Reimplementing TLS inside NeLisp is out of scope
+for the package manager integration.
+
+Therefore the near-term HTTP plan is:
+
+1. Implement =nelisp-call-process= correctly.
+2. Implement =nelisp-http-get= and =nelisp-http-get-binary= as wrappers
+   around =curl=.
+3. Preserve a future native HTTP/TLS slot behind the same API.
+
+This gives =anvil-pkg= a working backend without baking =curl= into the
+VM or the package manager's core logic.
+
+* Required NeLisp substrate
+
+** VM-level primitives
+
+The standalone evaluator should expose only these generic operations:
+
+| Primitive             | Purpose                         |
+|-----------------------+---------------------------------|
+| =syscall-direct=      | raw syscall invocation          |
+| =alloc-bytes=         | allocate raw memory             |
+| =ptr-read-u8/u64=     | read raw memory                 |
+| =ptr-write-u8/u64=    | write raw memory                |
+| =nelisp-string-data=  | return byte pointer for string  |
+| =nelisp-string-size=  | return byte length for string   |
+| =nelisp-startup-argc= | initial argument count          |
+| =nelisp-startup-argv= | initial =char **argv= pointer   |
+| =nelisp-startup-envp= | initial =char **envp= pointer   |
+
+If the current evaluator already has equivalent lower names, use those
+instead of adding aliases.  The important constraint is that these
+operations are generic.
+
+** NeLisp system package
+
+Create or extend a low-level package, for example =nelisp-sys=:
+
+#+begin_src elisp
+(nelisp-sys-cstring STRING)          ;; -> pointer to NUL-terminated bytes
+(nelisp-sys-cstring-array STRINGS)   ;; -> char ** ending in NULL
+(nelisp-sys-getenv NAME)             ;; -> string or nil
+(nelisp-sys-access PATH MODE)        ;; -> integer status
+(nelisp-sys-open PATH FLAGS MODE)    ;; -> fd
+(nelisp-sys-read FD PTR LEN)         ;; -> bytes read
+(nelisp-sys-write FD PTR LEN)        ;; -> bytes written
+(nelisp-sys-close FD)                ;; -> status
+(nelisp-sys-dup2 OLD NEW)            ;; -> status
+(nelisp-sys-fork)                    ;; -> pid in parent, 0 in child
+(nelisp-sys-execve PATH ARGV ENVP)   ;; does not return on success
+(nelisp-sys-waitpid PID OPTIONS)     ;; -> raw wait status
+#+end_src
+
+Platform syscall numbers stay inside this package.
+
+** Process package
+
+=nelisp-process= should consume =nelisp-sys= and provide:
+
+#+begin_src elisp
+(nelisp-call-process PROGRAM INFILE DESTINATION DISPLAY &rest ARGS)
+#+end_src
+
+Minimum accepted behavior:
+
+- returns integer exit status
+- accepts PROGRAM as absolute path or PATH-resolved command
+- accepts nil INFILE
+- accepts string INFILE for stdin redirection
+- accepts nil DESTINATION
+- accepts string DESTINATION for stdout file
+- accepts =(STDOUT-FILE STDERR-FILE)= destination pair
+- does not expose partial success as a successful exit
+
+Later async behavior:
+
+#+begin_src elisp
+(nelisp-make-process :name NAME :command COMMAND :buffer BUFFER
+                     :filter FILTER :sentinel SENTINEL ...)
+#+end_src
+
+Async requires process handles, nonblocking pipes, an event loop, and
+filter/sentinel dispatch.  It should not be faked by merely defining
+the symbol.  =anvil-pkg= should only treat async as ready when this
+path is genuinely executable.
+
+** HTTP package
+
+Near-term =curl= bridge:
+
+#+begin_src elisp
+(nelisp-http-get URL &key headers timeout cache-ttl)
+;; -> (:status INT :headers ALIST :body STRING :cached BOOL)
+
+(nelisp-http-get-binary URL &key headers timeout cache-ttl)
+;; -> (:status INT :headers ALIST :body STRING :content-length INT-OR-NIL)
+#+end_src
+
+Implementation rules:
+
+- find =curl= through =nelisp-sys-executable-find=
+- execute through =nelisp-call-process=
+- write headers and body to separate temp files
+- use =--dump-header= and =--output=
+- use =-L= for redirects
+- use =--max-time= for timeout
+- include authorization headers when supplied
+- parse the final HTTP status block after redirects
+
+Native HTTP/TLS can replace the transport later without changing the
+API consumed by =anvil-pkg=.
+
+* anvil-pkg integration contract
+
+=anvil-pkg= expects these normalized return shapes:
+
+#+begin_src elisp
+(anvil-pkg-compat-call-process PROGRAM ARGS)
+;; -> (:exit INT :stdout STRING :stderr STRING)
+
+(anvil-pkg-compat-http-get URL TIMEOUT AUTH)
+;; -> (:status INT :body STRING)
+
+(anvil-pkg-compat-http-get-binary URL TIMEOUT AUTH)
+;; -> (:status INT :body STRING :content-length INT-OR-NIL)
+#+end_src
+
+The NeLisp backend may expose either direct hooks or conventional
+functions:
+
+- =nelisp-call-process=
+- =nelisp-make-process=
+- =nelisp-http-get=
+- =nelisp-http-fetch=
+- =nelisp-http-get-binary=
+- =nelisp-sys-getenv= or compatible hook
+- =nelisp-sys-executable-find= or compatible hook
+
+* Implementation phases
+
+** Phase N1 — startup metadata and system helpers
+
+- expose initial =argv= and =envp= pointers
+- implement C string copy
+- implement C string array construction
+- implement =nelisp-sys-getenv=
+- implement =nelisp-sys-executable-find=
+
+Acceptance:
+
+#+begin_src elisp
+(getenv "PATH")                 ;; returns non-empty string
+(executable-find "sh")          ;; returns absolute path or nil
+#+end_src
+
+** Phase N2 — synchronous process
+
+- implement =fork=
+- implement =execve=
+- implement =waitpid=
+- implement stdin/stdout/stderr file redirection with =dup2=
+- expose =nelisp-call-process=
+
+Acceptance:
+
+#+begin_src elisp
+(nelisp-call-process "sh" nil "/tmp/out" nil "-c" "printf ok")
+#+end_src
+
+returns =0= and writes =ok= to the destination file.
+
+** Phase N3 — curl-backed HTTP
+
+- implement temp file helpers if missing
+- implement =nelisp-http-get-binary= through =curl=
+- implement text =nelisp-http-get= as a normalized adapter
+
+Acceptance:
+
+#+begin_src elisp
+(nelisp-http-get "https://example.com" :timeout 10 :cache-ttl 0)
+#+end_src
+
+returns a plist with integer =:status= and string =:body=.
+
+** Phase N4 — async process
+
+- implement pipes
+- implement nonblocking fd or event loop integration
+- implement process handle state
+- implement filters and sentinels
+- expose real =nelisp-make-process=
+
+Acceptance:
+
+- async stdout reaches the filter
+- sentinel receives exit event
+- exit status is queryable after process completion
+- no symbol is exposed as ready before this behavior exists
+
+** Phase N5 — optional native HTTP/TLS
+
+- plain socket HTTP may be added first
+- HTTPS must use a real TLS provider
+- keep the =nelisp-http-get= API stable
+- keep =curl= as fallback unless policy explicitly changes
+
+* Non-goals
+
+- Do not add one VM primitive per Emacs function.
+- Do not make =anvil-pkg= depend on raw syscall numbers.
+- Do not expose =make-process= as present until async semantics work.
+- Do not implement TLS in the package manager.
+- Do not remove =curl= fallback until native HTTPS is proven reliable.
+
+* Open decisions
+
+** Name of startup metadata functions
+
+The design uses =nelisp-startup-argc=, =nelisp-startup-argv=, and
+=nelisp-startup-envp= as descriptive names.  If the standalone
+evaluator already exposes equivalent names, reuse the existing names
+and document them in =nelisp-sys=.
+
+** =posix_spawn= vs =fork= / =execve=
+
+=fork= / =execve= is simpler to build with raw syscalls on Linux.
+=posix_spawn= may be better on some platforms, but usually requires a
+libc or platform-specific spawn API.  The first Linux implementation
+should use =fork= / =execve=, with =posix_spawn= as a later platform
+optimization.
+
+** Pipe capture vs file capture
+
+File capture is enough for =anvil-pkg= sync process and =curl= HTTP.
+Pipe capture is required for async =make-process=.  These should be
+separate milestones so sync support can ship without pretending async
+is ready.
+
+* Acceptance for anvil-pkg readiness
+
+The NeLisp backend is sufficient for =anvil-pkg= Phase 5 completion
+when:
+
+- =nelisp-call-process= can execute =curl= and capture stdout/stderr
+- =nelisp-http-get= or =nelisp-http-get-binary= works for HTTPS through
+  =curl=
+- =anvil-pkg= NeLisp smoke no longer reports process / HTTP lower
+  primitive gaps for sync and HTTP
+- async readiness remains false until =nelisp-make-process= has real
+  filter/sentinel behavior
+
+Full async package installation is a later readiness item and should
+be reported separately from sync process / HTTP readiness.

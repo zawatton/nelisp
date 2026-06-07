@@ -39,6 +39,31 @@ Only =src/nelisp-sys-adapter-nelisp.el= may call private NeLisp internals
 Sexp layout).  Every other module uses the named adapter contract.  This is
 extraction criterion 6 from Doc 130.
 
+* Public host substrate helpers
+
+Doc 44 adds small OS-library helpers for package/process integration while
+the standalone raw syscall substrate is still being wired:
+
+- =nelisp-sys-getenv=
+- =nelisp-sys-access=
+- =nelisp-sys-executable-find=
+- =nelisp-sys-cstring=
+- =nelisp-sys-cstring-array=
+- =nelisp-sys-free-cstring-array=
+- =nelisp-sys-open=
+- =nelisp-sys-read=
+- =nelisp-sys-write=
+- =nelisp-sys-close=
+- =nelisp-sys-dup2=
+- =nelisp-sys-fork=
+- =nelisp-sys-execve=
+- =nelisp-sys-waitpid=
+- =nelisp-sys-pipe=
+
+The hosted implementation forwards low-level calls to the existing
+=nelisp-stdlib-os= substrate.  Standalone builds can replace the lower
+runtime primitives without changing these package-facing names.
+
 * Example (target syntax)
 
 #+begin_src elisp

@@ -31,6 +31,8 @@ packages/nelisp-http/
 - =nelisp-http-fetch-batch=
 - =nelisp-http-fetch-post=
 - =nelisp-http-fetch-head=
+- =nelisp-http-get=
+- =nelisp-http-get-binary=
 - =nelisp-http-robots-check=
 - =nelisp-http-fetch-cache-clear=
 - =nelisp-http-fetch-cache-get=
@@ -40,6 +42,8 @@ packages/nelisp-http/
 
 - Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
 - Internal NeLisp dependency declared by the library: =nelisp-state=
+- Internal NeLisp dependencies declared by the library: =nelisp-sys=,
+  =nelisp-process=
 - Host Elisp dependencies declared by the library: =cl-lib=, =url=,
   =url-http=, =url-parse=, =dom=
 
@@ -68,3 +72,8 @@ packages/nelisp-http/
 - Robots support: cached =robots.txt= evaluation via
   =nelisp-http-robots-check=
 - Extraction helpers: HTML selector and dotted JSON-path extraction
+- Doc 44 curl bridge: =nelisp-http-get= and
+  =nelisp-http-get-binary= locate =curl= through =nelisp-sys= and run it
+  through =nelisp-call-process=, keeping native HTTP/TLS replaceable behind
+  the same API.  Both accept =:headers= and =:auth=; auth specs are
+  normalized into Authorization headers before invoking curl.

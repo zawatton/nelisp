@@ -504,6 +504,143 @@ second buffer."
        (kill-buffer out)
        (kill-buffer err)))))
 
+(ert-deftest nelisp-process-call-process-writes-string-destination-file ()
+  "Doc 44 minimum behavior: string DESTINATION is a stdout file path."
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (not (nelisp-process-test--ci-env-p)))
+  (nelisp-process-test--fresh
+   (let ((file (make-temp-file "nelisp-call-process-out-")))
+     (unwind-protect
+         (let ((rc (nelisp-call-process "sh" nil file nil "-c"
+                                        "printf file-out")))
+           (should (eql 0 rc))
+           (should (equal (with-temp-buffer
+                            (insert-file-contents file)
+                            (buffer-string))
+                          "file-out")))
+       (delete-file file)))))
+
+(ert-deftest nelisp-process-call-process-resolves-program-through-path ()
+  "Doc 44 minimum behavior: bare PROGRAM is resolved through PATH."
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (not (nelisp-process-test--ci-env-p)))
+  (nelisp-process-test--fresh
+   (let* ((dir (make-temp-file "nelisp-process-path-" t))
+          (tool (expand-file-name "doc44-tool" dir))
+          (out (make-temp-file "nelisp-call-process-path-out-"))
+          (process-environment (cons (concat "PATH=" dir)
+                                     process-environment)))
+     (unwind-protect
+         (progn
+           (write-region "#!/bin/sh\nprintf path-ok\n" nil tool nil 'silent)
+           (set-file-modes tool #o755)
+           (should (eql 0 (nelisp-call-process "doc44-tool" nil out nil)))
+           (should (equal (with-temp-buffer
+                            (insert-file-contents out)
+                            (buffer-string))
+                          "path-ok")))
+       (delete-directory dir t)
+       (delete-file out)))))
+
+(ert-deftest nelisp-process-call-process-syscall-parent-waits ()
+  "When the Doc 44 substrate is available, file destinations use waitpid."
+  (cl-letf (((symbol-function 'nelisp-process--syscall-substrate-available-p)
+             (lambda () t))
+            ((symbol-function 'nelisp-sys-executable-find)
+             (lambda (_program) "/bin/doc44-tool"))
+            ((symbol-function 'nelisp-sys-fork)
+             (lambda () 1234))
+            ((symbol-function 'nelisp-sys-waitpid)
+             (lambda (pid options)
+               (should (equal (list pid options) '(1234 0)))
+               #x2a00))
+            ((symbol-function 'nelisp-make-process)
+             (lambda (&rest _args)
+               (ert-fail "host make-process path should not run"))))
+    (should (= (nelisp-call-process "doc44-tool" nil "/tmp/out" nil)
+               42))))
+
+(ert-deftest nelisp-process-call-process-syscall-child-redirects-and-execve ()
+  "The Doc 44 child path wires stdin/stdout/stderr through dup2 before execve."
+  (let ((open-fds '(10 11 12))
+        opens dup2s closes execve-call)
+    (cl-letf (((symbol-function 'nelisp-sys-fork) (lambda () 0))
+              ((symbol-function 'nelisp-sys-open)
+               (lambda (path flags mode)
+                 (push (list path flags mode) opens)
+                 (pop open-fds)))
+              ((symbol-function 'nelisp-sys-dup2)
+               (lambda (old new) (push (list old new) dup2s) new))
+              ((symbol-function 'nelisp-sys-close)
+               (lambda (fd) (push fd closes) 0))
+              ((symbol-function 'nelisp-sys-execve)
+               (lambda (path argv envp)
+                 (setq execve-call (list path argv envp))
+                 :execve-returned))
+              ((symbol-function 'nelisp-sys-startup-envp)
+               (lambda () '("A=B")))
+              ((symbol-function 'nelisp-sys-exit)
+               (lambda (code) (throw 'child-exit code))))
+      (should (= (catch 'child-exit
+                   (nelisp-process--call-process-syscall
+                    "/bin/tool" "/tmp/in" "/tmp/out" "/tmp/err"
+                    '("arg")))
+                 127))
+      (should (equal (nreverse opens)
+                     (list (list "/tmp/in" nelisp-sys-o-rdonly 0)
+                           (list "/tmp/out"
+                                 (logior nelisp-sys-o-wronly
+                                         nelisp-sys-o-creat
+                                         nelisp-sys-o-trunc)
+                                 #o666)
+                           (list "/tmp/err"
+                                 (logior nelisp-sys-o-wronly
+                                         nelisp-sys-o-creat
+                                         nelisp-sys-o-trunc)
+                                 #o666))))
+      (should (equal (nreverse dup2s)
+                     `((10 ,nelisp-sys-stdin)
+                       (11 ,nelisp-sys-stdout)
+                       (12 ,nelisp-sys-stderr))))
+      (should (equal (nreverse closes) '(10 11 12)))
+      (should (equal execve-call
+                     '("/bin/tool" ("/bin/tool" "arg") ("A=B")))))))
+
+(ert-deftest nelisp-process-call-process-writes-split-file-destinations ()
+  "Doc 44 minimum behavior: (STDOUT-FILE STDERR-FILE) captures both."
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (not (nelisp-process-test--ci-env-p)))
+  (nelisp-process-test--fresh
+   (let ((out (make-temp-file "nelisp-call-process-out-"))
+         (err (make-temp-file "nelisp-call-process-err-")))
+     (unwind-protect
+         (let ((rc (nelisp-call-process
+                    "sh" nil (list out err) nil "-c"
+                    "printf out; printf err >&2")))
+           (should (eql 0 rc))
+           (should (equal (with-temp-buffer
+                            (insert-file-contents out)
+                            (buffer-string))
+                          "out"))
+           (should (equal (with-temp-buffer
+                            (insert-file-contents err)
+                            (buffer-string))
+                          "err")))
+       (delete-file out)
+       (delete-file err)))))
+
+(ert-deftest nelisp-process-call-process-nil-infile-closes-stdin ()
+  "nil INFILE behaves like null-device instead of leaving stdin open."
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (not (nelisp-process-test--ci-env-p)))
+  (nelisp-process-test--fresh
+   (let ((buf (generate-new-buffer " *np-cp-cat*")))
+     (unwind-protect
+         (let ((rc (nelisp-call-process "cat" nil buf nil)))
+           (should (eql 0 rc))
+           (should (equal (with-current-buffer buf (buffer-string)) "")))
+       (kill-buffer buf)))))
+
 (ert-deftest nelisp-process-call-process-rejects-non-string-program ()
   (nelisp-process-test--fresh
    (should-error (nelisp-call-process 42))))

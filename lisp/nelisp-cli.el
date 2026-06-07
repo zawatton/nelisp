@@ -59,6 +59,12 @@
 (declare-function exec-elisp-artifact "nelisp-artifact" (args))
 (declare-function eval-elisp-artifact "nelisp-artifact" (args))
 (declare-function inspect-elisp-artifact "nelisp-artifact" (args))
+(declare-function nelisp--read-all-from-string-impl "nelisp-reader" (input))
+(declare-function nelisp--syscall-read-file "nelisp-stdlib-os" (path))
+(declare-function nelisp--write-stderr-line "nelisp-stdio" (line))
+(declare-function nelisp--write-stdout-bytes "nelisp-stdio" (bytes))
+(declare-function nl-make-directory "ext:nelisp-runtime" (dir parents))
+(declare-function read-stdin-bytes "ext:nelisp-runtime" (nbytes))
 
 (defvar nelisp--cli-version "unknown"
   "Production binary version string.
@@ -66,6 +72,15 @@
 Seeded by the Rust bootstrap stub in `build-tool/src/bin/nelisp.rs'
 (via `Env::set_value') from the `CARGO_PKG_VERSION' compile-time
 constant before the elisp `nelisp-cli-main' dispatch runs.")
+
+(defvar nelisp--startup-argc nil
+  "Initial process argc recorded by `nelisp-cli-main'.")
+
+(defvar nelisp--startup-argv nil
+  "Initial process argv recorded by `nelisp-cli-main'.")
+
+(defvar nelisp--startup-envp nil
+  "Initial process environment recorded by `nelisp-cli-main'.")
 
 (defconst nelisp--cli-usage
   "usage: nelisp --version
@@ -336,15 +351,15 @@ This split (inline stub first, proper load after -L) means
 (defun nelisp--cli-meta-driver-load-deps ()
   "Pre-load the AOT meta-driver dependency chain.
 
-Standalone NeLisp's `require' resolves `(require 'nelisp-aot-compiler)'
+Standalone NeLisp `require' resolves the `nelisp-aot-compiler' feature
 through the elisp `load' shim defined in `lisp/nelisp-stdlib-misc.el'.
-That shim sets `default-directory' to the loaded file's parent dir, so
+That shim sets `default-directory' to the loaded file parent dir, so
 nested `(require ...)' calls executed during the load body resolve their
 file probes relative to that dir — fine on host Emacs (which has its own
 absolute load-path walk) but fragile on the standalone elisp shim because
 the inner `locate-library' walks `default-directory' first and only then
 the `load-path' list.  We sidestep that by hoisting the dep chain to
-top-level requires before the meta-driver's own load runs.
+top-level requires before the meta-driver load runs.
 
 Order matches `nelisp-aot-compiler.el's own require chain (lines 92-96).
 Returns t on full success, signals on the first missing feature.
@@ -646,6 +661,13 @@ Returns an integer exit code (0 = success, 1 = error, 2 = bad args)."
       (setq exit-code (nelisp--cli-meta-driver-main)))
     exit-code))
 
+(defun nelisp--cli-record-startup-metadata (argv)
+  "Record ARGV and current `process-environment' for Doc 44 startup APIs."
+  (setq nelisp--startup-argv (and (listp argv) (copy-sequence argv))
+        nelisp--startup-argc (length nelisp--startup-argv)
+        nelisp--startup-envp (and (boundp 'process-environment)
+                                  (copy-sequence process-environment))))
+
 (defun nelisp-cli-main (argv)
   "Entry point invoked by `build-tool/src/bin/nelisp.rs'.
 
@@ -654,6 +676,7 @@ name (typically `nelisp').  Returns an integer exit code consumed by
 the Rust stub's `ExitCode::from'.
 
 See file header for the CLI surface + exit-code contract."
+  (nelisp--cli-record-startup-metadata argv)
   (let* ((args (and (listp argv) (cdr argv)))
          (n (length args)))
     (cond

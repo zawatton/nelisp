@@ -31,11 +31,21 @@ packages/nelisp-process/
 - =nelisp-set-process-filter=
 - =nelisp-set-process-sentinel=
 
+* API Notes
+
+- Doc 44 synchronous process support accepts nil/string INFILE,
+  stdout file destinations, and =(STDOUT-FILE STDERR-FILE)= split
+  destinations through =nelisp-call-process=.
+- When the standalone =nelisp-stdlib-os= runtime bindings are present,
+  file-only destinations use the fork/exec/wait/dup2 substrate.  Hosted
+  Emacs sessions without that runtime continue to use the existing
+  =make-process= bridge.
+
 * Dependencies
 
 - Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
-- Elisp dependencies declared by the library: =cl-lib=, =nelisp-eval=,
-  =nelisp-actor=
+- Elisp dependencies declared by the library: =cl-lib=, =nelisp-actor=,
+  =nelisp-sys=
 - Soft runtime integrations via autoload: =nelisp-eventloop=,
   =nelisp-eventloop-multiplex=
 
