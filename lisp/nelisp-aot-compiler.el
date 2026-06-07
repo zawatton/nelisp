@@ -1456,7 +1456,28 @@ must be materialized into a Sexp slot before calling the env bridge."
           `(seq ,@write-forms ,out))))))
 
 (defun nelisp-aot-compiler--scratch-slot (scratch index)
-  "Return a pointer form for scratch vector slot INDEX."
+  "Return a pointer form for scratch vector slot INDEX.
+
+Doc 147 Phase 1.5 Group A (reachability analysis, 2026-06-07): the
+`(vector-ref-ptr SCRATCH INDEX)' form this emits is an interior write
+dest for the literal materializer (`--top-level-literal-write-forms',
+`--top-level-make-hash-table-write-forms').  Those forms are produced
+ONLY by the AOT top-level-var lowering (`--lower-top-level-var-form'),
+which the standalone-reader compile path NEVER invokes:
+`nelisp-standalone--compile-to-unit' uses `--collect-defuns' (explicit
+tag-21 defuns from the hand-written reader sources) and never lowers
+top-level `defvar'/`defconst'/`setq' forms.  Instrumenting
+`nelisp-standalone--reader-units' shows 0 calls to this function and 0
+calls to the materializer; the linked `target/nelisp' carries ZERO
+`nelisp_aot_var_*'/`nelisp_aot_const_*'/`nelisp_aot_setq_*' init-helper
+symbols.  The standalone reader interprets source via the native reader
+at runtime; it does not execute AOT module-init plans.  On the host the
+materializer writes into a host Emacs `(vector nil)' scratch
+(`nelisp-cc-runtime-make-aot-init-context'), which is not an NlVector
+and is immune to the Phase-2 container-slot (32B->8B) shrink.  Therefore
+the native scratch-slot WRITE path is host-only / dead in the native
+build and is NOT a Phase-2 corruption hazard.  Regression guard:
+`nelisp-aot-doc147-groupA-test.el'."
   `(vector-ref-ptr ,scratch ,index))
 
 (defun nelisp-aot-compiler--next-power-of-two (n)
