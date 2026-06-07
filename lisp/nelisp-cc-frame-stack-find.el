@@ -51,37 +51,39 @@
 
 (defconst nelisp-cc-frame-stack-find--source
   '(seq
-    (defun nelisp_frame_stack_find_walk_bucket (box-ptr name-ptr)
-      ;; Tail-recursive walk over one bucket's NlConsBox* chain.
+    (defun nelisp_frame_stack_find_walk_bucket (cell-ptr name-ptr)
+      ;; Tail-recursive walk over one bucket's cons chain.
       ;; Identical in shape to `nelisp_mirror_walk_bucket' (§111.E #1);
       ;; duplicated here so this object stands alone for AOT
       ;; compile (= each helper module owns its tight loop).
       ;;
-      ;;   box-ptr:  i64.  0 means end-of-bucket.  Otherwise a live
-      ;;             `NlConsBox*' for the outer bucket cell whose CAR
-      ;;             is the inner (KEY . CELL) pair, CDR is the next
-      ;;             bucket cell.
-      ;;   name-ptr: `*const Sexp' pointing at Sexp::Symbol /
-      ;;             Sexp::Str being looked up.
+      ;; Doc 147 Phase 3 — the NlConsBox car / cdr are now 8-byte tagged
+      ;; WORDS (not 32B inline Sexps), so the walk carries the bucket
+      ;; cell's 32B-slot Sexp VIEW and uses the materialising accessors
+      ;; `nl_cons_car_ptr' / `nl_cons_cdr_ptr':
       ;;
-      ;; Returns: i64.  On hit, `(+ inner-ptr 32)' where inner-ptr is
-      ;; the inner (KEY . CELL) pair's NlConsBox* — that's the address
-      ;; of the CELL slot.  On miss, 0.
+      ;;   cell-ptr: `*const Sexp' — a Cons (tag 7) bucket cell whose CAR
+      ;;             is the inner (KEY . CELL) PAIR, CDR is the next
+      ;;             bucket cell (or Nil).  0 / non-Cons = end-of-bucket.
+      ;;   name-ptr: `*const Sexp' for the Sexp::Symbol / Sexp::Str key.
       ;;
-      ;; R11b Wave 9 CSE-hoist: the inner (KEY . CELL) pair pointer is
-      ;; read twice on the hit path (= once for `str-eq' against KEY,
-      ;; once for the `(+ ... 32)' cell-slot offset).  Hoisting
-      ;; `(sexp-payload-ptr box-ptr)' into `inner-ptr' via let-rt frame
-      ;; slot eliminates the redundant memory read on every bucket
-      ;; comparison.
-      (if (= box-ptr 0)
+      ;; Returns: i64.  On hit, the `*const Sexp' 32B-slot view of the
+      ;; matching CELL (= the PAIR's cdr).  On miss, 0.
+      ;;
+      ;;   pair-view = nl_cons_car_ptr(cell)   // the (KEY . CELL) PAIR
+      ;;   key-view  = nl_cons_car_ptr(pair)   // KEY -> str-eq vs name
+      ;;   hit       -> nl_cons_cdr_ptr(pair)  // CELL view (live box)
+      ;;   miss      -> recurse nl_cons_cdr_ptr(cell)  // next bucket cell
+      (if (= cell-ptr 0)
           0
-        (let ((inner-ptr (sexp-payload-ptr box-ptr)))
-          (if (= (str-eq inner-ptr name-ptr) 1)
-              (+ inner-ptr 32)
-            (nelisp_frame_stack_find_walk_bucket
-             (cons-cdr-raw-from-box box-ptr)
-             name-ptr)))))
+        (if (= (sexp-tag cell-ptr) 7)
+            (let ((pair-view (extern-call nl_cons_car_ptr cell-ptr)))
+              (if (= (str-eq (extern-call nl_cons_car_ptr pair-view) name-ptr) 1)
+                  (extern-call nl_cons_cdr_ptr pair-view)
+                (nelisp_frame_stack_find_walk_bucket
+                 (extern-call nl_cons_cdr_ptr cell-ptr)
+                 name-ptr)))
+          0)))
     (defun nelisp_frame_stack_find_in_frame (frame-ptr name-ptr)
       ;; Look up NAME in a single frame's hash table.  frame-ptr
       ;; points at the outer `Sexp::Record(`nelisp-lexframe')'; its
@@ -94,15 +96,17 @@
       ;; Bucket-count is assumed power-of-2 (= `nl_frame_push'
       ;; allocates 16 buckets, no resize), so the index mask is the
       ;; cheap `(h & (count - 1))' fast path matching the Rust impl.
+      ;; Doc 147 Phase 3: seed with the bucket-head Sexp VIEW
+      ;; (`vector-ref-ptr'), NOT the raw `sexp-payload-ptr' box — the
+      ;; walker reads car/cdr WORDS via the materialising accessors.
       (nelisp_frame_stack_find_walk_bucket
-       (sexp-payload-ptr
-        (vector-ref-ptr
-         (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 1)
-         (logand
-          (extern-call nelisp_fnv1a name-ptr)
-          (- (sexp-int-unwrap
-              (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 0))
-             1))))
+       (vector-ref-ptr
+        (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 1)
+        (logand
+         (extern-call nelisp_fnv1a name-ptr)
+         (- (sexp-int-unwrap
+             (record-slot-ref-ptr (record-slot-ref-ptr frame-ptr 0) 0))
+            1)))
        name-ptr))
     (defun nelisp_frame_stack_find_descend (backing-ptr i name-ptr)
       ;; Innermost-first walk: descend from i = depth-1 down to 0.
@@ -234,28 +238,38 @@
            (cons-make-with-clone pair-slot out out)
            1))
 
-    (defun nl_capture_walk_bucket (box-ptr pair-slot out)
-      ;; Walk one bucket's NlConsBox* chain emitting each entry.  Mirrors
+    (defun nl_capture_walk_bucket (cell-ptr pair-slot out)
+      ;; Walk one bucket's cons chain emitting each entry.  Mirrors
       ;; `nelisp_frame_stack_find_walk_bucket' above but emits instead of
-      ;; comparing.  box-ptr = 0 means end-of-bucket.
+      ;; comparing.
       ;;
-      ;; Bucket cell layout (= identical to `nelisp_frame_stack_find_in_frame'):
-      ;;   outer box  = `NlConsBox' whose car = Sexp::Cons(inner-box),
-      ;;                cdr = next bucket cell or Sexp::Nil.
-      ;;   inner box  = `NlConsBox' whose car = Sexp::Str (NAME),
-      ;;                cdr = Sexp::Cell (or any value — opaque to walk).
+      ;; Doc 147 Phase 3 — the NlConsBox car / cdr are now 8-byte tagged
+      ;; WORDS, so the walk carries the bucket cell's 32B-slot Sexp VIEW
+      ;; (cell-ptr; 0 / non-Cons = end-of-bucket) and uses the
+      ;; materialising accessors:
       ;;
-      ;; `sexp-payload-ptr box-ptr' = inner-box (= NlConsBox* of the
-      ;; (NAME . CELL) pair).  `+ inner-box 0' = NAME slot ptr,
-      ;; `+ inner-box 32' = CELL slot ptr (= second 32-byte slot inside
-      ;; the box, matching the `nelisp_frame_stack_find_walk_bucket'
-      ;; (`+ inner-ptr 32') convention for the CELL position).
-      (if (= box-ptr 0)
+      ;;   pair-view = nl_cons_car_ptr(cell)   // the (NAME . CELL) PAIR
+      ;;   name-view = nl_cons_car_ptr(pair)   // NAME (Sexp::Str / Symbol)
+      ;;   cell-view = nl_cons_cdr_ptr(pair)   // CELL (Sexp::Cell / value)
+      ;;
+      ;; `nl_capture_emit_one' then `cons-make-with-clone's the NAME /
+      ;; CELL views into the fresh (NAME . CELL) pair (each `nl_val_clone_
+      ;; into' deep-clones the boxed child), so the materialised views
+      ;; only need to outlive the two clone calls — satisfied because the
+      ;; accessors return live boxes for pointer slots / fresh boxes for
+      ;; immediates.
+      (if (= cell-ptr 0)
           1
-        (let ((pair-box (sexp-payload-ptr box-ptr)))
-          (and (nl_capture_emit_one pair-box (+ pair-box 32) pair-slot out)
-               (nl_capture_walk_bucket (cons-cdr-raw-from-box box-ptr)
-                                       pair-slot out)))))
+        (if (= (sexp-tag cell-ptr) 7)
+            (let ((pair-view (extern-call nl_cons_car_ptr cell-ptr)))
+              (and (nl_capture_emit_one
+                    (extern-call nl_cons_car_ptr pair-view)
+                    (extern-call nl_cons_cdr_ptr pair-view)
+                    pair-slot out)
+                   (nl_capture_walk_bucket
+                    (extern-call nl_cons_cdr_ptr cell-ptr)
+                    pair-slot out)))
+          1)))
 
     (defun nl_capture_walk_buckets (buckets-ptr j bc pair-slot out)
       ;; Iterate the bucket array slots j = 0..bc-1.  buckets-ptr is a
@@ -273,7 +287,10 @@
       (if (>= j bc)
           1
         (and (nl_capture_walk_bucket
-              (sexp-payload-ptr (vector-ref-ptr buckets-ptr j))
+              ;; Doc 147 Phase 3: seed with the bucket-head Sexp VIEW
+              ;; (`vector-ref-ptr'); empty buckets yield a Nil view that
+              ;; the walker's non-Cons base case handles.
+              (vector-ref-ptr buckets-ptr j)
               pair-slot out)
              (nl_capture_walk_buckets buckets-ptr (+ j 1) bc
                                       pair-slot out))))

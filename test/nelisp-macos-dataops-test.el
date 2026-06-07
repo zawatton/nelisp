@@ -149,12 +149,27 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                 '(seq
                   (defun nl_alloc_bytes (size align)
                     (atomic-fetch-add 8589934592 size))
-                  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+                  ;; Doc 147 Phase 3: NlConsBox is 24B (car WORD @0, cdr
+                  ;; WORD @8, rc @16); cons-make / cons-car emit bl
+                  ;; nl_val_clone_into / nl_sexp_clone_into, so stub the
+                  ;; keystones (compile-only `bl' target resolution).
+                  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
+                  (defun nl_sexp_clone_into (src dst)
+                    (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+                         (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+                         (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+                         (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+                  (defun nl_val_clone_into (src dst)
+                    (if (= (logand src 1) 1)
+                        (ptr-write-u64 dst 0 src)
+                      (let ((box (nl_alloc_bytes 32 8)))
+                        (seq (nl_sexp_clone_into src box)
+                             (ptr-write-u64 dst 0 box)))))
+                  (defun nl_val_load (word scratch)
+                    (if (= (logand word 1) 0) word
+                      (seq (ptr-write-u64 scratch 0 word) scratch)))
                   (defun nl_consbox_set_car (box valptr)
-                    (seq (ptr-write-u64 box 0 (ptr-read-u64 valptr 0))
-                         (ptr-write-u64 box 8 (ptr-read-u64 valptr 8))
-                         (ptr-write-u64 box 16 (ptr-read-u64 valptr 16))
-                         (ptr-write-u64 box 24 (ptr-read-u64 valptr 24))))
+                    (nl_val_clone_into valptr box))
                   (defun run ()
                     (seq
                      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
@@ -175,12 +190,25 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                 '(seq
                   (defun nl_alloc_bytes (size align)
                     (atomic-fetch-add 8589934592 size))
-                  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+                  ;; Doc 147 Phase 3: NlConsBox is 24B; cdr WORD @8; cons
+                  ;; emit calls the keystones — stub them.
+                  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
+                  (defun nl_sexp_clone_into (src dst)
+                    (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+                         (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+                         (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+                         (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+                  (defun nl_val_clone_into (src dst)
+                    (if (= (logand src 1) 1)
+                        (ptr-write-u64 dst 0 src)
+                      (let ((box (nl_alloc_bytes 32 8)))
+                        (seq (nl_sexp_clone_into src box)
+                             (ptr-write-u64 dst 0 box)))))
+                  (defun nl_val_load (word scratch)
+                    (if (= (logand word 1) 0) word
+                      (seq (ptr-write-u64 scratch 0 word) scratch)))
                   (defun nl_consbox_set_cdr (box valptr)
-                    (seq (ptr-write-u64 box 32 (ptr-read-u64 valptr 0))
-                         (ptr-write-u64 box 40 (ptr-read-u64 valptr 8))
-                         (ptr-write-u64 box 48 (ptr-read-u64 valptr 16))
-                         (ptr-write-u64 box 56 (ptr-read-u64 valptr 24))))
+                    (nl_val_clone_into valptr (+ box 8)))
                   (defun run ()
                     (seq
                      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
@@ -238,12 +266,23 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                 '(seq
                   (defun nl_alloc_bytes (size align)
                     (atomic-fetch-add 8589934592 size))
-                  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+                  ;; Doc 147 Phase 3: NlConsBox is 24B; cons-make-with-clone
+                  ;; stores car / cdr as 8B WORDS via nl_val_clone_into.
+                  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
                   (defun nl_sexp_clone_into (src dst)
                     (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
                          (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
                          (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
                          (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+                  (defun nl_val_clone_into (src dst)
+                    (if (= (logand src 1) 1)
+                        (ptr-write-u64 dst 0 src)
+                      (let ((box (nl_alloc_bytes 32 8)))
+                        (seq (nl_sexp_clone_into src box)
+                             (ptr-write-u64 dst 0 box)))))
+                  (defun nl_val_load (word scratch)
+                    (if (= (logand word 1) 0) word
+                      (seq (ptr-write-u64 scratch 0 word) scratch)))
                   (defun run ()
                     (seq
                      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
@@ -285,7 +324,7 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                   (defun nl_val_load (word scratch)
                     (if (= (logand word 1) 0) word
                       (seq (ptr-write-u64 scratch 0 word) scratch)))
-                  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+                  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
                   (defun nl_alloc_cell (valptr)
                     (let ((box (nl_alloc_bytes 16 8)))
                       (seq (nl_sexp_clone_into valptr box) box)))

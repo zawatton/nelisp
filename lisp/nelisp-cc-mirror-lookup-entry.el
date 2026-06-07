@@ -46,39 +46,44 @@
 
 (defconst nelisp-cc-mirror-lookup-entry--source
   '(seq
-    (defun nelisp_mirror_walk_bucket (box-ptr sym-ptr)
-      ;; Tail-recursive walk over a bucket's NlConsBox* chain.
+    (defun nelisp_mirror_walk_bucket (cell-ptr sym-ptr)
+      ;; Tail-recursive walk over a bucket's cons chain.
       ;;
-      ;;   box-ptr: i64.  0 means end-of-bucket.  Otherwise a live
-      ;;            `NlConsBox*' (= bucket cell whose car is the
-      ;;            (KEY . ENTRY) pair, cdr is the next bucket cell).
-      ;;   sym-ptr: `*const Sexp' pointing at the Sexp::Symbol /
-      ;;            Sexp::Str being looked up.
+      ;; Doc 147 Phase 3 — the NlConsBox car / cdr are now 8-byte tagged
+      ;; WORDS (not 32B inline Sexps), so the bucket cell can no longer be
+      ;; read as a raw box with car @ box+0 / cdr @ box+32.  The walk now
+      ;; carries the bucket cell's 32B-slot Sexp VIEW and uses the Phase 3
+      ;; materialising accessors `nl_cons_car_ptr' / `nl_cons_cdr_ptr':
       ;;
-      ;; Returns: i64.  On hit, the `*const Sexp' of the matching
-      ;; ENTRY (= the Sexp slot one NlConsBox-pair-cdr deep, holding
-      ;; `Sexp::Record(NlRecordRef)').  On miss / end-of-bucket, 0.
+      ;;   cell-ptr: `*const Sexp' — a Cons (tag 7) bucket cell whose car
+      ;;             is the (KEY . ENTRY) PAIR, cdr is the next bucket
+      ;;             cell (or Nil at end-of-bucket).  0 / non-Cons = end.
+      ;;   sym-ptr:  `*const Sexp' for the Sexp::Symbol / Sexp::Str key.
       ;;
-      ;; `box-ptr' itself, treated as `*const Sexp', addresses the
-      ;; bucket cell's CAR slot — the PAIR Sexp.  `sexp-payload-ptr'
-      ;; checks PAIR's tag and returns the inner NlConsBox* of the
-      ;; (KEY . ENTRY) pair, or 0 for any non-Cons tag (= malformed
-      ;; bucket entry, treated as end-of-list).  The inner pair box
-      ;; b2 starts with the KEY Sexp at offset 0 and the ENTRY Sexp
-      ;; at offset 32, so `(+ b2 32)' is the entry's `*const Sexp'.
+      ;; Returns: i64.  On hit, the `*const Sexp' 32B-slot view of the
+      ;; matching ENTRY (= the PAIR's cdr, `Sexp::Record(NlRecordRef)').
+      ;; On miss / end-of-bucket, 0.
       ;;
-      ;; R11a CSE-hoist: `(sexp-payload-ptr box-ptr)' lifted into a
-      ;; `let' so both the str-eq compare and the hit-branch
-      ;; `(+ b2 32)' reuse the same payload pointer (= one tag check
-      ;; + one payload-offset load per bucket step instead of two).
-      (if (= box-ptr 0)
+      ;;   pair-view = nl_cons_car_ptr(cell)   // the (KEY . ENTRY) PAIR
+      ;;   key-view  = nl_cons_car_ptr(pair)   // KEY -> str-eq vs sym-ptr
+      ;;   hit       -> nl_cons_cdr_ptr(pair)  // ENTRY view (live box)
+      ;;   miss      -> recurse nl_cons_cdr_ptr(cell)  // next bucket cell
+      ;;
+      ;; The materialising accessors return the live 32B child box for a
+      ;; pointer slot (bucket cells / pairs / entries are all boxed), and
+      ;; a fresh-per-call 32B box only for the rare immediate slot, so two
+      ;; concurrently-live views never alias (no shared-scratch clobber
+      ;; under the recursive descent).
+      (if (= cell-ptr 0)
           0
-        (let ((b2 (sexp-payload-ptr box-ptr)))
-          (if (= (str-eq b2 sym-ptr) 1)
-              (+ b2 32)
-            (nelisp_mirror_walk_bucket
-             (cons-cdr-raw-from-box box-ptr)
-             sym-ptr)))))
+        (if (= (sexp-tag cell-ptr) 7)
+            (let ((pair-view (extern-call nl_cons_car_ptr cell-ptr)))
+              (if (= (str-eq (extern-call nl_cons_car_ptr pair-view) sym-ptr) 1)
+                  (extern-call nl_cons_cdr_ptr pair-view)
+                (nelisp_mirror_walk_bucket
+                 (extern-call nl_cons_cdr_ptr cell-ptr)
+                 sym-ptr)))
+          0)))
     (defun nelisp_mirror_lookup_entry (mirror-ptr sym-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record
       ;;             (= `globals_record', tag `nelisp-env').
@@ -95,15 +100,19 @@
       ;;   - mirror-ptr.slots[0].tag = Sexp::Record (= fast-hash-table).
       ;;   - ht_rec.slots[0].tag = Sexp::Int (= bucket-count, power of 2).
       ;;   - ht_rec.slots[1].tag = Sexp::Vector (= buckets).
+      ;; Doc 147 Phase 3: seed the walk with the bucket-head Sexp VIEW
+      ;; (`vector-ref-ptr' = the 32B-slot view of the bucket slot — a
+      ;; Cons for a non-empty bucket, Nil for an empty one), NOT the raw
+      ;; `sexp-payload-ptr' box (the walker now reads car/cdr WORDS via
+      ;; the materialising accessors, so it needs the Sexp VIEW).
       (nelisp_mirror_walk_bucket
-       (sexp-payload-ptr
-        (vector-ref-ptr
-         (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 1)
-         (logand
-          (extern-call nelisp_fnv1a sym-ptr)
-          (- (sexp-int-unwrap
-              (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 0))
-             1))))
+       (vector-ref-ptr
+        (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 1)
+        (logand
+         (extern-call nelisp_fnv1a sym-ptr)
+         (- (sexp-int-unwrap
+             (record-slot-ref-ptr (record-slot-ref-ptr mirror-ptr 0) 0))
+            1)))
        sym-ptr)))
   "AOT source for Doc 111 §111.E #1 `mirror_lookup_entry'.
 

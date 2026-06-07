@@ -93,9 +93,11 @@
     (defun nelisp_nlconsbox_clone_prog2 (_eff val) val)
 
     ;; Public entry — bump refcount + return input pointer.
+    ;; Doc 147 Phase 3: refcount offset 64 -> 16 (car WORD @0 + cdr WORD
+    ;; @8 + refcount @16; was two 32B inline Sexps + refcount @64).
     (defun nelisp_nlconsbox_clone (box-ptr)
       (nelisp_nlconsbox_clone_prog2
-       (atomic-fetch-add (+ box-ptr 64) 1)
+       (atomic-fetch-add (+ box-ptr 16) 1)
        box-ptr)))
   "AOT source for the Doc 124 §124.A NlConsBox Clone kernel.
 

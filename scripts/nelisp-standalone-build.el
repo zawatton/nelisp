@@ -1213,15 +1213,34 @@ addressing by a runtime base, never by a fixed reservation."
     ;; Cons cdr-spine walker (tail-recursive: recurse only on car, loop
     ;; on cdr) so list LENGTH does not bound native mark depth.  SP points
     ;; at a Sexp slot known to be tag 7 (Cons).
+    ;;
+    ;; Doc 147 Phase 3: the NlConsBox car / cdr are now 8-byte tagged
+    ;; WORDS (car @ box+0, cdr @ box+8; was 32B inline Sexps @ box+0 /
+    ;; box+32).  Per-slot WORD-aware mark, mirroring the Phase-1 tag-11
+    ;; cell + Phase-2 vec-slot arms: read the 8B WORD; an immediate (low
+    ;; bit 1) has no child -> skip; else the WORD is an 8-aligned pointer
+    ;; to a 32B child Sexp box -> mark the box block, then recurse.  For
+    ;; the CDR, gate the tail-loop on the child box's tag: a Cons child
+    ;; (tag 7) tail-loops `nl_gc_mark_cons' on the child box (= a valid
+    ;; Sexp slot, payload @+8 = the next NlConsBox); a non-Cons child is
+    ;; a leaf walked via `nl_gc_mark_slot'.
     (defun nl_gc_mark_cons (sp)
       (let ((box (ptr-read-u64 sp 8)))
         (if (= (nl_gc_mark_block box) 0)
             0                                      ; foreign / already marked
           (nl_seq2
-           (nl_gc_mark_slot box)                   ; car @ box+0
-           (if (= (ptr-read-u8 (+ box 32) 0) 7)
-               (nl_gc_mark_cons (+ box 32))        ; cdr is a cons -> tail loop
-             (nl_gc_mark_slot (+ box 32)))))))     ; cdr atom/other
+           ;; car WORD @ box+0
+           (let ((cw (ptr-read-u64 box 0)))
+             (if (= (logand cw 1) 1) 0             ; immediate -> no child
+               (if (= (nl_gc_mark_block cw) 0) 0   ; foreign / already marked
+                 (nl_gc_mark_slot cw))))           ; mark the 32B child box
+           ;; cdr WORD @ box+8
+           (let ((dw (ptr-read-u64 box 8)))
+             (if (= (logand dw 1) 1) 0             ; immediate -> end of list
+               (if (= (nl_gc_mark_block dw) 0) 0   ; foreign / already marked
+                 (if (= (ptr-read-u8 dw 0) 7)
+                     (nl_gc_mark_cons dw)          ; cdr child is a cons -> tail loop
+                   (nl_gc_mark_slot dw)))))))))     ; cdr child atom/other
     ;; Mark one Sexp slot at SP (32 bytes).  Pure recursion per type.
     (defun nl_gc_mark_slot (sp)
       (let ((tag (ptr-read-u8 sp 0)))
@@ -1535,13 +1554,35 @@ addressing by a runtime base, never by a fixed reservation."
       (if (= base 0) 0
         (nl_seq2 (nl_compact_rw_block base)
                  (nl_compact_rw_pool_slots base 0 cap))))
+    ;; Doc 147 Phase 3: the NlConsBox car / cdr are now 8-byte tagged
+    ;; WORDS (car @ box+0, cdr @ box+8; was 32B inline Sexps @ box+0 /
+    ;; box+32).  Per-slot WORD-aware rewrite, mirroring the Phase-1 cell
+    ;; tag-11 arm: `rw_edge(old+0)' rewrites the car WORD to fwd[child]
+    ;; and returns the OLD child word; an immediate (low bit 1, e.g.
+    ;; Nil/Int) is a safe no-op so skip BEFORE touching it (rw_edge on an
+    ;; immediate can spuriously hash-hit and corrupt the WORD into a
+    ;; dangling pointer — same hazard as the vec-slot arm); a pointer
+    ;; child gets its block flipped mark1->mark3 (phase 4 MOVES it) and is
+    ;; recursed on its OLD pre-move address.  For the CDR, gate the
+    ;; tail-loop on the OLD child box's tag (read on the not-yet-moved
+    ;; address): a Cons child (tag 7) tail-loops `rw_cons'; a non-Cons
+    ;; child is a leaf walked via `rw_slot'.
     (defun nl_compact_rw_cons (sp)
       (let ((old (nl_compact_rw_edge (+ sp 8))))
         (if (= (nl_compact_rw_block old) 0) 0
-          (nl_seq2 (nl_compact_rw_slot old)
-            (if (= (ptr-read-u8 (+ old 32) 0) 7)
-                (nl_compact_rw_cons (+ old 32))
-              (nl_compact_rw_slot (+ old 32)))))))
+          (nl_seq2
+           ;; car WORD @ old+0
+           (if (= (logand (ptr-read-u64 (+ old 0) 0) 1) 1) 0
+             (let ((cw (nl_compact_rw_edge (+ old 0))))
+               (if (= (nl_compact_rw_block cw) 0) 0
+                 (nl_compact_rw_slot cw))))
+           ;; cdr WORD @ old+8
+           (if (= (logand (ptr-read-u64 (+ old 8) 0) 1) 1) 0
+             (let ((dw (nl_compact_rw_edge (+ old 8))))
+               (if (= (nl_compact_rw_block dw) 0) 0
+                 (if (= (ptr-read-u8 dw 0) 7)
+                     (nl_compact_rw_cons dw)
+                   (nl_compact_rw_slot dw)))))))))
     (defun nl_compact_rw_slot (sp)
       (let ((tag (ptr-read-u8 sp 0)))
         (if (= tag 7) (nl_compact_rw_cons sp)

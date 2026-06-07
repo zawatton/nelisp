@@ -128,11 +128,18 @@
      ;; (~2 cycles + cache hit) and avoids the let-binding gap in
      ;; the AOT grammar (= `let' only supports int-foldable
      ;; constants per `nelisp-aot-compiler.el:1290-1310').
+     ;; Doc 147 Phase 3: the input NlConsBox car / cdr are now 8-byte
+     ;; tagged WORDS, not 32B inline Sexps, so the old `(ptr-read-u64
+     ;; sexp-ptr 8)' (= &car) and `(+ ... 32)' (= &cdr) raw-slot pointers
+     ;; would feed `cons-make' an 8-byte WORD location where it expects a
+     ;; 32B Sexp VIEW.  Use the materialising accessors `nl_cons_car_ptr'
+     ;; / `nl_cons_cdr_ptr' on the input Sexp to obtain proper 32B-slot
+     ;; views of the input's car / cdr.
      (and (sexp-write-nil tail-slot)
-          (cons-make (+ (ptr-read-u64 sexp-ptr 8) 32)
+          (cons-make (extern-call nl_cons_cdr_ptr sexp-ptr)
                      tail-slot
                      tail-slot)
-          (cons-make (ptr-read-u64 sexp-ptr 8)
+          (cons-make (extern-call nl_cons_car_ptr sexp-ptr)
                      tail-slot
                      result-slot)))
   "AOT source for the Doc 123 §123.D walk-children kernel.

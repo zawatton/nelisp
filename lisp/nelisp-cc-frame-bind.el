@@ -81,9 +81,21 @@
 
 (defconst nelisp-cc-frame-bind--source
   '(seq
-    (defun nelisp_frame_bind_walk_update (box-ptr name-ptr cell-ptr _pad)
-      ;; Tail-recursive walk over a bucket's NlConsBox* chain looking
-      ;; for an existing (KEY . CELL) pair whose KEY matches NAME-PTR.
+    (defun nelisp_frame_bind_walk_update (bucket-view name-ptr cell-ptr _pad)
+      ;; Tail-recursive walk over a bucket's cons chain looking for an
+      ;; existing (KEY . CELL) pair whose KEY matches NAME-PTR.
+      ;;
+      ;; Doc 147 Phase 3 — the NlConsBox car / cdr are now 8-byte tagged
+      ;; WORDS, so the walk carries the bucket cell's 32B-slot Sexp VIEW
+      ;; (BUCKET-VIEW; 0 / non-Cons = end-of-bucket) and uses the
+      ;; materialising accessors:
+      ;;   pair-view = nl_cons_car_ptr(bucket)  // the (KEY . CELL) PAIR
+      ;;   key-view  = nl_cons_car_ptr(pair)    // KEY -> str-eq vs name
+      ;;   hit       -> cons-set-cdr(pair, cell-ptr)  // replace PAIR cdr
+      ;;   miss      -> recurse nl_cons_cdr_ptr(bucket)  // next bucket cell
+      ;; `cons-set-cdr' on the PAIR VIEW resolves its NlConsBox payload and
+      ;; refcount-safely overwrites the pair's cdr WORD with `*cell-ptr'
+      ;; via `nl_consbox_set_cdr' (= the `nl_val_clone_into' keystone).
       ;; _pad: unused — Doc 124.F-blocker fix.  Keeps outer arity *even*
       ;; (= 4) so body-entry rsp ≡ 0 mod 16, which matches the static
       ;; rsp-alignment of the `cons-set-cdr' static emit (= 2 push +
@@ -119,13 +131,15 @@
       ;; comparison — matters because bind walks one bucket per call
       ;; site, and there are many call sites in deep-recursion lambda
       ;; evaluator paths.
-      (if (= box-ptr 0)
+      (if (= bucket-view 0)
           0
-        (let ((inner-ptr (sexp-payload-ptr box-ptr)))
-          (if (= (str-eq inner-ptr name-ptr) 1)
-              (and (cons-set-cdr box-ptr cell-ptr) 1)
-            (nelisp_frame_bind_walk_update
-             (cons-cdr-raw-from-box box-ptr) name-ptr cell-ptr 0)))))
+        (if (= (sexp-tag bucket-view) 7)
+            (let ((pair-view (extern-call nl_cons_car_ptr bucket-view)))
+              (if (= (str-eq (extern-call nl_cons_car_ptr pair-view) name-ptr) 1)
+                  (and (cons-set-cdr pair-view cell-ptr) 1)
+                (nelisp_frame_bind_walk_update
+                 (extern-call nl_cons_cdr_ptr bucket-view) name-ptr cell-ptr 0)))
+          0)))
     (defun nelisp_frame_bind_install
         (buckets-ptr idx scratch-pair-slot scratch-outer-slot)
       ;; Miss-path tail: populate the empty outer bucket cell in
@@ -221,13 +235,14 @@
       ;; cheap to recompute and the AOT grammar lacks let-binding
       ;; for pointer values across calls anyway.
       (if (= (nelisp_frame_bind_walk_update
-              (sexp-payload-ptr
-               (vector-ref-ptr
-                (record-slot-ref-ptr ht-ptr 1)
-                (logand
-                 (extern-call nelisp_fnv1a name-ptr)
-                 (- (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
-                    1))))
+              ;; Doc 147 Phase 3: seed with the bucket-head Sexp VIEW
+              ;; (`vector-ref-ptr'), NOT the raw `sexp-payload-ptr' box.
+              (vector-ref-ptr
+               (record-slot-ref-ptr ht-ptr 1)
+               (logand
+                (extern-call nelisp_fnv1a name-ptr)
+                (- (sexp-int-unwrap (record-slot-ref-ptr ht-ptr 0))
+                   1)))
               name-ptr cell-ptr 0) ; _pad — Doc 124.F-blocker even-arity fix
              1)
           1

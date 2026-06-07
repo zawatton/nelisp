@@ -129,15 +129,16 @@
      ;; before the outer 72-byte allocation is freed.  Matches the
      ;; `nlrc_drop_box!' macro's ordering: fetch_sub → fence → DROP_FN
      ;; → dealloc.
+    ;; Doc 147 Phase 3: refcount offset 64 -> 16, box size 72 -> 24 (car
+    ;; WORD @0 + cdr WORD @8 + refcount @16).
     (defun nelisp_nlconsbox_drop (box-ptr)
-      (if (= (atomic-fetch-add (+ box-ptr 64) -1) 1)
+      (if (= (atomic-fetch-add (+ box-ptr 16) -1) 1)
           ;; Last ref — pre-sub was 1, new count is 0.  Drop the
-          ;; interior payload (= recursively walk car + cdr via
-          ;; `drop_in_place::<NlConsBox>') then free the 72-byte
-          ;; allocation.
+          ;; interior payload (= recursively walk car + cdr) then free
+          ;; the 24-byte allocation.
           (nelisp_nlconsbox_drop_prog2
            (extern-call nl_consbox_drop_inner box-ptr)
-           (dealloc-bytes box-ptr 72 8))
+           (dealloc-bytes box-ptr 24 8))
         ;; Still alive — pre-sub was > 1.  Return 1 sentinel to match
         ;; the dealloc-bytes arm's return convention so the caller
         ;; sees a uniform `i64 = 1' on both branches.

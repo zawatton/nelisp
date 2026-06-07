@@ -15,13 +15,12 @@
 ;; `sexp-write-nil' / `ptr-write-u64' grammar ops and returns the
 ;; raw pointer as i64.
 ;;
-;; NlConsBox layout (pinned by `#[repr(C)]' + compile-time asserts
-;; in `build-tool/src/eval/nlconsbox.rs'):
+;; NlConsBox layout (Doc 147 Phase 3 — container slot shrink):
 ;;
-;;   car      @ 0   (32 bytes — sizeof(Sexp))
-;;   cdr      @ 32  (32 bytes — sizeof(Sexp))
-;;   refcount @ 64  (8 bytes  — AtomicUsize)
-;;   total = 72 bytes, align = 8
+;;   car      @ 0   (8 bytes — tagged WORD: imm or 8-aligned box ptr)
+;;   cdr      @ 8   (8 bytes — tagged WORD: imm or 8-aligned box ptr)
+;;   refcount @ 16  (8 bytes — AtomicUsize)
+;;   total = 24 bytes, align = 8
 ;;
 ;; The two-function manifest (init helper + public entry) avoids
 ;; needing `let' in a value context (= AOT `let' only supports
@@ -85,16 +84,23 @@
     ;; `sexp-write-nil' returns the slot pointer (non-zero), and
     ;; `ptr-write-u64' returns 1 sentinel, so the chain never short-
     ;; circuits under normal conditions.
+    ;; Doc 147 Phase 3: car / cdr are now 8-byte tagged WORDS, not 32B
+    ;; inline Sexps.  Init each to the Nil immediate WORD (3 = (logior (ash
+    ;; 0 2) 3), low bit 1 -> immediate) via `ptr-write-u64', and refcount
+    ;; @ box+16.  `cons-make' / `cons-make-with-clone' overwrite both WORDS
+    ;; via `nl_val_clone_into' before the box is observed, so the Nil seed
+    ;; only matters for the brief pre-fill window + GC safety if a
+    ;; collection lands mid-construction.
     (defun nl_alloc_consbox_init (box-ptr)
-      (and (sexp-write-nil box-ptr)
-           (sexp-write-nil (+ box-ptr 32))
-           (ptr-write-u64 box-ptr 64 1)
+      (and (ptr-write-u64 box-ptr 0 3)        ; car WORD = Nil immediate
+           (ptr-write-u64 box-ptr 8 3)        ; cdr WORD = Nil immediate
+           (ptr-write-u64 box-ptr 16 1)       ; refcount = 1
            box-ptr))
 
-    ;; Public entry — allocate 72-byte NlConsBox with alignment 8,
+    ;; Public entry — allocate 24-byte NlConsBox with alignment 8,
     ;; initialise fields, return raw pointer as i64.
     (defun nl_alloc_consbox ()
-      (nl_alloc_consbox_init (alloc-bytes 72 8))))
+      (nl_alloc_consbox_init (alloc-bytes 24 8))))
   "AOT source for the `nl_alloc_consbox' allocator swap.
 
 Two-entry `(seq DEFUN ...)' manifest:

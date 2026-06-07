@@ -108,9 +108,9 @@ to a stable 0 return per §120.A `nl_jit_ref_eq' convention.")
          1)))
   "AOT source for the §120.C `nl_jit_cons_cdr' swap.
 
-Mirror of `nl_jit_cons_car' with `nl_cons_cdr_ptr' (= `&(*box_ptr
-).cdr as *const Sexp', cdr lives at `NlConsBox' offset 32) for
-the slot-ptr resolution.")
+Mirror of `nl_jit_cons_car' with `nl_cons_cdr_ptr' (Doc 147 Phase 3:
+the cdr is an 8B tagged WORD @ `NlConsBox' offset 8, materialised to a
+32B-slot view) for the slot-ptr resolution.")
 
 (defconst nelisp-cc-jit-cons-setcar--source
   '(defun nelisp_jit_cons_setcar (arg val out)

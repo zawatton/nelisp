@@ -127,16 +127,19 @@
   (should (= nelisp-nlconsbox--offset-car 0)))
 
 (ert-deftest nelisp-sexp-layout--nlconsbox-offset-cdr ()
-  "NlConsBox::cdr is at byte offset 32 (= one Sexp slot past car)."
-  (should (= nelisp-nlconsbox--offset-cdr 32)))
+  "NlConsBox::cdr WORD is at byte offset 8 (Doc 147 Phase 3, was 32).
+The car / cdr are now 8-byte tagged WORDS, not 32B inline Sexps."
+  (should (= nelisp-nlconsbox--offset-cdr 8)))
 
 (ert-deftest nelisp-sexp-layout--nlconsbox-offset-refcount ()
-  "NlConsBox::refcount is at byte offset 64 (= two Sexp slots past start)."
-  (should (= nelisp-nlconsbox--offset-refcount 64)))
+  "NlConsBox::refcount is at byte offset 16 (Doc 147 Phase 3, was 64).
+Immediately after the two 8-byte car / cdr WORDS."
+  (should (= nelisp-nlconsbox--offset-refcount 16)))
 
 (ert-deftest nelisp-sexp-layout--nlconsbox-size ()
-  "NlConsBox total size is 72 bytes."
-  (should (= nelisp-nlconsbox--size 72)))
+  "NlConsBox total size is 24 bytes (Doc 147 Phase 3, was 72).
+car WORD (8) + cdr WORD (8) + refcount (8)."
+  (should (= nelisp-nlconsbox--size 24)))
 
 ;; ---------------------------------------------------------------------------
 ;; Rust String header offsets (within a Sexp::Symbol / Sexp::Str slot)

@@ -12225,12 +12225,18 @@ Returns 1 in rax iff the tag byte at `[ptr + 0]' equals
 (defun nelisp-aot-compiler--emit-cons-slot-copy (node buf field-off)
   "Emit the Doc 101 §2.1 boxed-slot copy for `car' / `cdr'.
 NODE carries `:ptr' (= `*const Sexp') and `:slot' (= `*mut Sexp').
-FIELD-OFF is 0 for `car' and 32 for `cdr'.  The emitted x86_64 path:
+FIELD-OFF is 0 for `car' and 8 for `cdr' (Doc 147 Phase 3, was 32).
+
+Doc 147 Phase 3 — the NlConsBox car / cdr are now 8-byte tagged WORDS
+(was 32B inline Sexps).  The emitted x86_64 path:
 
   1. Reads the `NlConsBox*' payload from `[ptr + 8]'.
-  2. Copies 32 bytes from `[box + FIELD-OFF, box + FIELD-OFF + 32)'
-     into SLOT using two 16-byte `movdqu' load/store pairs.
-  3. Returns SLOT in rax.
+  2. Loads the 8-byte tagged WORD at `[box + FIELD-OFF]'.
+  3. MATERIALISES a refcount-correct 32B-slot VIEW of that WORD into
+     SLOT via `nl_sexp_clone_into(word, slot)' (the keystone that
+     accepts a value word: immediate -> store_imm into SLOT; box ptr
+     -> tag-dispatch deep-clone the child into SLOT).
+  4. Returns SLOT in rax.
 
 Caller must guarantee PTR points at `Sexp::Cons(_)'."
   (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
@@ -12239,29 +12245,49 @@ Caller must guarantee PTR points at `Sexp::Cons(_)'."
     (nelisp-asm-x86_64-push buf 'rax)
     (nelisp-aot-compiler--emit-value slot buf)
     (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdi)
+    (nelisp-asm-x86_64-pop buf 'rsi)        ; rsi = slot (dst)
+    (nelisp-asm-x86_64-pop buf 'rdi)        ; rdi = ptr (Sexp::Cons)
+    ;; r10 = NlConsBox* ; rdi = the 8-byte tagged WORD at box+field-off.
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'r10 'rdi nelisp-sexp--offset-payload)
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 field-off)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 0 'xmm0)
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'r10 (+ field-off 16))
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'rsi 16 'xmm0)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+    (nelisp-asm-x86_64-mov-reg-mem-disp8 buf 'rdi 'r10 field-off)
+    ;; nl_sexp_clone_into(word, slot): SysV rdi=word, rsi=slot already
+    ;; in place; win64 rcx=word, rdx=slot.  Preserve slot across the
+    ;; call (= the return value) via push; one push keeps rsp 16-aligned
+    ;; at the call site (body entry ≡ 8 mod 16 after the two pops).
+    (nelisp-asm-x86_64-push buf 'rsi)
+    (if (eq nelisp-aot-compiler--abi 'win64)
+        (progn
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rcx 'rdi)
+          (nelisp-asm-x86_64-mov-reg-reg buf 'rdx 'rsi)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_sexp_clone_into" -4 'text)
+    (when (eq nelisp-aot-compiler--abi 'win64)
+      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
+    (nelisp-asm-x86_64-pop buf 'rax)))      ; rax = slot (return)
 
 (defun nelisp-aot-compiler--emit-cons-cdr-raw (node buf)
   "Emit the Doc 101 §2.1 raw cdr walker primitive.
 If NODE's `:from-box' is nil, `:ptr' is a `*const Sexp' and we first
 load the `NlConsBox*' payload from `[ptr + 8]'.  If `:from-box' is t,
-`:ptr' already is the `NlConsBox*'.  Then:
+`:ptr' already is the `NlConsBox*'.
 
-  1. Read the cdr tag byte at `[box + 32 + 0]'.
-  2. If tag == `SEXP_TAG_CONS', return `[box + 32 + 8]'
-     (= next `NlConsBox*').
-  3. Else return 0.
+Doc 147 Phase 3 — the cdr is now an 8-byte tagged WORD @ box+8 (was a
+32B inline Sexp @ box+32).  The next-box walk becomes word-aware:
 
-Used by the §101.B `length' list walk to follow proper-list cons
-chains without materialising intermediate `Sexp' values."
+  1. Load the cdr WORD at `[box + offset-cdr]' (offset-cdr = 8).
+  2. If the WORD is immediate (low bit 1 = Nil / Int / T): return 0
+     (= end of proper list).
+  3. Else the WORD is an 8-aligned pointer to a 32B child Sexp box.
+     Read the child's tag byte at `[child + 0]'.
+  4. If the child tag == `SEXP_TAG_CONS', return the child's payload at
+     `[child + 8]' (= the next `NlConsBox*').  Else return 0.
+
+Used by the §101.B `length' / bucket-chain list walks to follow
+proper-list cons chains without materialising intermediate `Sexp'
+values."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (from-box (nelisp-aot-compiler--ir-get node :from-box))
          (id (nelisp-aot-compiler--gensym "cons-cdr-raw"))
@@ -12274,11 +12300,20 @@ chains without materialising intermediate `Sexp' values."
         (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
         (nelisp-asm-x86_64-mov-reg-mem-disp8
          buf 'rdi 'rdi nelisp-sexp--offset-payload)))
-    (nelisp-asm-x86_64-mov-reg-reg buf 'r11 'rdi)
-    (nelisp-asm-x86_64-add-imm32 buf 'r11 nelisp-nlconsbox--offset-cdr)
+    ;; r11 = cdr WORD @ [box + offset-cdr].
+    (nelisp-asm-x86_64-mov-reg-mem-disp8
+     buf 'r11 'rdi nelisp-nlconsbox--offset-cdr)
+    ;; Immediate test: rax = r11 & 1; if == 1 (immediate) -> nil.
+    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'r11)
+    (nelisp-asm-x86_64-mov-imm32 buf 'rdx 1)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdx)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 1)
+    (nelisp-asm-x86_64-jz-rel32 buf nil-lbl)
+    ;; r11 is an 8-aligned ptr to a 32B child Sexp box.  Check tag@+0.
     (nelisp-asm-x86_64-movzx-reg-byte-mem buf 'rax 'r11)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-cons)
     (nelisp-asm-x86_64-jnz-rel32 buf nil-lbl)
+    ;; child is a Cons -> next NlConsBox* = child payload @ +8.
     (nelisp-asm-x86_64-mov-reg-mem-disp8
      buf 'rax 'r11 nelisp-sexp--offset-payload)
     (nelisp-asm-x86_64-jmp-rel32 buf end-lbl)
@@ -14111,52 +14146,39 @@ slot -> x0, val -> x1; STRB tag-int @[x0+0], STR val @[x0+8]; x0 = slot."
   (nelisp-asm-arm64-cset buf 'x0 'eq))
 
 (defun nelisp-aot-compiler--emit-cons-slot-copy-arm64 (node buf field-off)
-  "Emit `cons-car'/`cons-cdr' for aarch64 — copy 32-byte boxed Sexp to :slot.
-ptr -> x0, slot -> x1, box = [ptr+8] -> x2; copy [box+FIELD-OFF .. +32)
-into [slot]; x0 = slot.  FIELD-OFF is 0 (car) or 32 (cdr)."
+  "Emit `cons-car'/`cons-cdr' for aarch64.
+
+Doc 147 Phase 3: the NlConsBox car / cdr are now 8-byte tagged WORDS
+(FIELD-OFF is 0 for car, 8 for cdr; was 0 / 32).  Load the box from
+[ptr+8], load the 8-byte tagged WORD at [box+FIELD-OFF], then
+MATERIALISE a refcount-correct 32B-slot VIEW of it into :slot via
+`nl_sexp_clone_into(word, slot)' (the keystone that accepts a value
+word).  x0 = slot on return."
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :slot) buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = slot (top)
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = ptr
-  (nelisp-asm-arm64-ldr-imm buf 'x2 'x0 nelisp-sexp--offset-payload) ; x2 = box
-  (dotimes (i 4)
-    (nelisp-asm-arm64-ldr-imm buf 'x9 'x2 (+ field-off (* i 8)))
-    (nelisp-asm-arm64-str-imm buf 'x9 'x1 (* i 8)))
-  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))        ; return slot
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push slot (preserve for return)
+  (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 0)           ; x1 = slot (peek, keep on stack)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'sp 16)          ; x0 = ptr (peek)
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload) ; x0 = box
+  (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 field-off)   ; x0 = the 8B tagged WORD
+  (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)      ; nl_sexp_clone_into(word, slot)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)          ; x0 = slot (pop, return)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x9))         ; pop ptr scratch
 
 (defun nelisp-aot-compiler--emit-cons-make-arm64 (node buf)
-  "Emit `cons-make' for aarch64 — alloc a box, copy car/cdr, tag the slot.
-car-ptr/cdr-ptr/slot pushed; BL nl_alloc_consbox -> box (x10); copy the
-two 32-byte Sexps into box->car (+0) / box->cdr (+32); write tag-cons +
-box pointer into the slot; x0 = slot."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :car-ptr) buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :cdr-ptr) buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :slot) buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
-  (nelisp-asm-arm64-bl buf 'nl_alloc_consbox)        ; x0 = box
-  (nelisp-asm-arm64-mov-reg-reg buf 'x10 'x0)        ; x10 = box
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)          ; slot  (top)
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x2)          ; cdr-ptr
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x3)          ; car-ptr
-  (dotimes (i 4)                                      ; box->car = *car-ptr
-    (nelisp-asm-arm64-ldr-imm buf 'x9 'x3 (* i 8))
-    (nelisp-asm-arm64-str-imm buf 'x9 'x10 (+ nelisp-nlconsbox--offset-car (* i 8))))
-  (dotimes (i 4)                                      ; box->cdr = *cdr-ptr
-    (nelisp-asm-arm64-ldr-imm buf 'x9 'x2 (* i 8))
-    (nelisp-asm-arm64-str-imm buf 'x9 'x10 (+ nelisp-nlconsbox--offset-cdr (* i 8))))
-  (nelisp-asm-arm64-mov-imm64 buf 'x4 nelisp-sexp--tag-cons)
-  (nelisp-asm-arm64-strb-imm buf 'x4 'x1 0)          ; slot tag = Cons
-  (nelisp-asm-arm64-str-imm buf 'x10 'x1 nelisp-sexp--offset-payload) ; slot payload = box
-  (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1))        ; return slot
+  "Emit `cons-make' for aarch64.
+
+Doc 147 Phase 3: the NlConsBox car / cdr are now 8-byte tagged WORDS
+(was 32B inline Sexps), so the old two 32-byte `ldr'/`str' copies are
+unsound (32 bytes into an 8-byte slot clobbers the adjacent WORD +
+refcount).  Both children must be stored as WORDS via `nl_val_clone_into'
+— exactly what `--emit-cons-make-with-clone-arm64' now does, so
+`cons-make' delegates to it (the raw-copy / clone distinction is erased
+by the shrink: a WORD store is intrinsically clone-or-immediate)."
+  (nelisp-aot-compiler--emit-cons-make-with-clone-arm64 node buf))
 
 (defun nelisp-aot-compiler--emit-cons-make-with-clone-arm64 (node buf)
   "Emit Doc 120.E fused `cons-make-with-clone' for aarch64.
@@ -14181,15 +14203,19 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push slot     -> [SP+16]
   (nelisp-asm-arm64-bl buf 'nl_alloc_consbox)        ; x0 = box
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push box      -> [SP+0]
-  ;; clone car: nl_sexp_clone_into(car-ptr, &box->car = box + 0).
+  ;; Doc 147 Phase 3: store car / cdr as 8-byte tagged WORDS via the
+  ;; `nl_val_clone_into' keystone (immediate direct; boxed child
+  ;; deep-cloned into a fresh 32B box, its 8-aligned ptr stored — never
+  ;; a transient scratch pointer).  car WORD @ box+0, cdr WORD @ box+8.
+  ;; clone car: nl_val_clone_into(car-ptr, &box->car = box + 0).
   (nelisp-asm-arm64-ldr-imm buf 'x0 'sp 48)          ; x0 = car-ptr (src)
-  (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 0)           ; x1 = box (dst)
-  (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
-  ;; clone cdr: nl_sexp_clone_into(cdr-ptr, &box->cdr = box + offset-cdr).
+  (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 0)           ; x1 = box (dst word ptr)
+  (nelisp-asm-arm64-bl buf 'nl_val_clone_into)
+  ;; clone cdr: nl_val_clone_into(cdr-ptr, &box->cdr = box + offset-cdr=8).
   (nelisp-asm-arm64-ldr-imm buf 'x0 'sp 32)          ; x0 = cdr-ptr (src)
   (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 0)           ; x1 = box
   (nelisp-asm-arm64-add-imm buf 'x1 'x1 nelisp-nlconsbox--offset-cdr) ; x1 = &box->cdr
-  (nelisp-asm-arm64-bl buf 'nl_sexp_clone_into)
+  (nelisp-asm-arm64-bl buf 'nl_val_clone_into)
   ;; write Sexp::Cons(box) into the slot.
   (nelisp-asm-arm64-ldr-imm buf 'x1 'sp 16)          ; x1 = slot
   (nelisp-asm-arm64-ldr-imm buf 'x10 'sp 0)          ; x10 = box
@@ -14225,7 +14251,13 @@ slot pointer in x0 (matches the `cons-make' ABI)."
      buf 'x9 dst (+ (or dst-off 0) (* i 8)))))
 
 (defun nelisp-aot-compiler--emit-cons-cdr-raw-arm64 (node buf)
-  "Emit `cons-cdr-raw' for aarch64 — follow cdr if it is a Cons."
+  "Emit `cons-cdr-raw' for aarch64 — follow cdr if it is a Cons.
+
+Doc 147 Phase 3 — the cdr is now an 8-byte tagged WORD @ box+8 (was a
+32B inline Sexp @ box+32).  Load the cdr WORD; an immediate (low bit 1)
+ends the walk (return 0); otherwise the WORD is an 8-aligned pointer to
+a 32B child Sexp box — if its tag is Cons, return the child's payload
+(= the next `NlConsBox*'), else 0."
   (let* ((id (nelisp-aot-compiler--gensym "cons-cdr-raw-a64"))
          (nil-lbl (intern (format "%s-nil" id)))
          (end-lbl (intern (format "%s-end" id)))
@@ -14234,10 +14266,18 @@ slot pointer in x0 (matches the `cons-make' ABI)."
      (nelisp-aot-compiler--ir-get node :ptr) buf)
     (unless from-box
       (nelisp-asm-arm64-ldr-imm buf 'x0 'x0 nelisp-sexp--offset-payload))
-    (nelisp-asm-arm64-add-imm buf 'x1 'x0 nelisp-nlconsbox--offset-cdr)
+    ;; x1 = cdr WORD @ [box + offset-cdr=8].
+    (nelisp-asm-arm64-ldr-imm buf 'x1 'x0 nelisp-nlconsbox--offset-cdr)
+    ;; Immediate test: x3 = x1 & 1; if non-zero (immediate) -> nil.
+    (nelisp-asm-arm64-mov-imm64 buf 'x2 1)
+    (nelisp-asm-arm64-and-reg-reg buf 'x3 'x1 'x2)
+    (nelisp-asm-arm64-cmp-imm buf 'x3 1)
+    (nelisp-asm-arm64-b-cond buf 'eq nil-lbl)
+    ;; x1 is an 8-aligned ptr to a 32B child Sexp box.  Check tag@+0.
     (nelisp-asm-arm64-ldrb-imm buf 'x2 'x1 nelisp-sexp--offset-tag)
     (nelisp-asm-arm64-cmp-imm buf 'x2 nelisp-sexp--tag-cons)
     (nelisp-asm-arm64-b-cond buf 'ne nil-lbl)
+    ;; child is a Cons -> next NlConsBox* = child payload @ +8.
     (nelisp-asm-arm64-ldr-imm buf 'x0 'x1 nelisp-sexp--offset-payload)
     (nelisp-asm-arm64-b buf end-lbl)
     (nelisp-asm-arm64-define-label buf nil-lbl)
@@ -14906,61 +14946,20 @@ into x9 (caller-saved, not an arg reg) and invoked with `BLR x9'."
 
 (defun nelisp-aot-compiler--emit-cons-make (node buf)
   "Emit a `Sexp::Cons' constructor into NODE's caller-owned slot.
-Strategy:
 
-  1. Evaluate CAR-PTR / CDR-PTR / SLOT and save them on the stack.
-  2. Call `nl_alloc_consbox()' to allocate a fresh `NlConsBox'
-     initialized to `(nil . nil)' with refcount 1.
-  3. Copy the 32-byte Sexp at `*CAR-PTR' into `box->car' and the
-     32-byte Sexp at `*CDR-PTR' into `box->cdr' via two 16-byte
-     `movdqu' pairs each.
-  4. Write `SEXP_TAG_CONS' and the box pointer into SLOT.
-  5. Return SLOT in rax.
-
-MVP ownership constraint: the copied `Sexp' payloads are assumed to
-already be caller-owned / cloned; this op does not yet perform
-refcount-aware nested-box increments."
-  (let ((car-ptr (nelisp-aot-compiler--ir-get node :car-ptr))
-        (cdr-ptr (nelisp-aot-compiler--ir-get node :cdr-ptr))
-        (slot (nelisp-aot-compiler--ir-get node :slot)))
-    (nelisp-aot-compiler--emit-value car-ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-aot-compiler--emit-value cdr-ptr buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    (nelisp-aot-compiler--emit-value slot buf)
-    (nelisp-asm-x86_64-push buf 'rax)
-    ;; Keep rsp 16-byte aligned across the extern call: 3 saved
-    ;; values would misalign the call site, so reserve one extra
-    ;; scratch slot and discard it after the call.
-    (nelisp-asm-x86_64-push buf 'rax)
-    (when (eq nelisp-aot-compiler--abi 'win64)
-      (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32))
-    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-    (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_alloc_consbox" -4 'text)
-    (when (eq nelisp-aot-compiler--abi 'win64)
-      (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
-    (nelisp-asm-x86_64-mov-reg-reg buf 'r10 'rax)
-    (nelisp-asm-x86_64-pop buf 'r11)
-    ;; last pushed (= slot) -> rsi, cdr-ptr -> rdx, car-ptr -> rdi
-    (nelisp-asm-x86_64-pop buf 'rsi)
-    (nelisp-asm-x86_64-pop buf 'rdx)
-    (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; box->car = *car-ptr
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdi 0)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 nelisp-nlconsbox--offset-car 'xmm0)
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdi 16)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 (+ nelisp-nlconsbox--offset-car 16) 'xmm0)
-    ;; box->cdr = *cdr-ptr
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdx 0)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 nelisp-nlconsbox--offset-cdr 'xmm0)
-    (nelisp-asm-x86_64-movdqu-xmm-mem-disp8 buf 'xmm0 'rdx 16)
-    (nelisp-asm-x86_64-movdqu-mem-disp8-xmm buf 'r10 (+ nelisp-nlconsbox--offset-cdr 16) 'xmm0)
-    ;; slot = Sexp::Cons(box)
-    (nelisp-asm-x86_64-mov-mem-imm8 buf 'rsi nelisp-sexp--tag-cons)
-    (nelisp-asm-x86_64-mov-mem-reg-disp8
-     buf 'rsi nelisp-sexp--offset-payload 'r10)
-    (nelisp-asm-x86_64-mov-reg-reg buf 'rax 'rsi)))
+Doc 147 Phase 3: the NlConsBox car / cdr are now 8-byte tagged WORDS
+(was 32B inline Sexps), so the old two-`movdqu'-pair-each raw copy is
+unsound (it would write 32 bytes into an 8-byte slot, clobbering the
+adjacent WORD + refcount).  Both child values must be stored as WORDS
+via the `nl_val_clone_into' keystone (immediate direct; boxed child
+deep-cloned into a FRESH 32B box, its 8-aligned ptr stored — never a
+pointer to a transient scratch slot).  That is exactly what
+`--emit-cons-make-with-clone' now does, so `cons-make' delegates to it.
+The historical `cons-make' (raw byte copy, no refcount) /
+`cons-make-with-clone' (refcount-aware) distinction is erased by the
+shrink: a WORD store is intrinsically a clone-or-immediate, so the two
+ops are observationally identical post-Phase-3."
+  (nelisp-aot-compiler--emit-cons-make-with-clone node buf))
 
 (defun nelisp-aot-compiler--emit-cons-make-with-clone (node buf)
   "Emit Doc 120.E fused `cons-make-with-clone' constructor.
@@ -15014,7 +15013,10 @@ and the fresh NlConsBox already starts at refcount = 1."
     (nelisp-asm-x86_64-pop buf 'rsi)
     (nelisp-asm-x86_64-pop buf 'rdx)
     (nelisp-asm-x86_64-pop buf 'rdi)
-    ;; Step 4: nl_sexp_clone_into(car-ptr, box).  Save rsi/rdx/r10
+    ;; Step 4: nl_val_clone_into(car-ptr, box).  Doc 147 Phase 3: store
+    ;; the car as an 8-byte tagged WORD @ box+0 (immediate direct; boxed
+    ;; child deep-cloned into a fresh 32B box, its 8-aligned ptr stored)
+    ;; — NEVER a pointer to a transient scratch slot.  Save rsi/rdx/r10
     ;; across the call (= all caller-saved) plus a 4th push for the
     ;; 16-byte alignment.
     (nelisp-asm-x86_64-push buf 'rsi)
@@ -15029,16 +15031,17 @@ and the fresh NlConsBox already starts at refcount = 1."
       (nelisp-asm-x86_64-mov-reg-reg buf 'rsi 'r10))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_sexp_clone_into" -4 'text)
+     buf "nl_val_clone_into" -4 'text)
     (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)
     (nelisp-asm-x86_64-pop buf 'r10)
     (nelisp-asm-x86_64-pop buf 'rdx)
     (nelisp-asm-x86_64-pop buf 'rsi)
-    ;; Step 5: nl_sexp_clone_into(cdr-ptr, box + 32).  rdi := cdr-ptr,
-    ;; rsi := box + 32.  Save rsi/r10 across the call plus 2 alignment
-    ;; pushes (= 4 push = 16-byte aligned).
+    ;; Step 5: nl_val_clone_into(cdr-ptr, box + offset-cdr).  Doc 147
+    ;; Phase 3: store the cdr as an 8-byte tagged WORD @ box+8 (offset-cdr
+    ;; = 8).  rdi := cdr-ptr, rsi := box + 8.  Save rsi/r10 across the
+    ;; call plus 2 alignment pushes (= 4 push = 16-byte aligned).
     (nelisp-asm-x86_64-push buf 'rsi)
     (nelisp-asm-x86_64-push buf 'r10)
     (nelisp-asm-x86_64-push buf 'rax)
@@ -15054,7 +15057,7 @@ and the fresh NlConsBox already starts at refcount = 1."
       (nelisp-asm-x86_64-add-imm32 buf 'rsi nelisp-nlconsbox--offset-cdr))
     (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
     (nelisp-asm-x86_64-reloc-plt32-here
-     buf "nl_sexp_clone_into" -4 'text)
+     buf "nl_val_clone_into" -4 'text)
     (when (eq nelisp-aot-compiler--abi 'win64)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp 32))
     (nelisp-asm-x86_64-pop buf 'r11)

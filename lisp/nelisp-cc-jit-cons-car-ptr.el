@@ -31,24 +31,39 @@
 
 (defconst nelisp-cc-jit-cons-car-ptr--source
   '(defun nl_cons_car_ptr (arg)
-     ;; arg: *const Sexp.
-     ;; Returns: i64 = NlConsBox* (= &car) when tag==7 (Cons), else 0.
+     ;; arg: *const Sexp.  Returns a 32B-slot VIEW of the car, or 0 when
+     ;; arg is not a Cons (tag != 7).
      ;;
-     ;; `sexp-payload-ptr' returns the box pointer for any boxed
-     ;; variant (Cons tag=7 → NlConsBox*, etc.) and 0 for unboxed
-     ;; variants (Nil/T/Int/Float).  Since NlConsBox::car is at offset
-     ;; 0, the box pointer is the same address as `*const Sexp' for
-     ;; the car field — no arithmetic needed.
+     ;; Doc 147 Phase 3 — the NlConsBox car is now an 8-byte tagged WORD
+     ;; @ box+0 (was a 32B inline Sexp).  The ~302 consumer sites still
+     ;; read a 32B `Sexp' (tag@+0 / payload@+8) from the returned pointer,
+     ;; so we MATERIALISE a 32B-slot VIEW exactly like the Phase-2
+     ;; `nl_vector_slot_ptr':
+     ;;   box   = *(u64*)(arg + 8)        // Sexp::Cons payload (NlConsBox*)
+     ;;   word  = *(u64*)(box + 0)        // the 8B tagged car WORD
+     ;;   - pointer WORD (low bit 0): return it directly (already a 32B
+     ;;     child Sexp box the consumer reads tag/payload from).
+     ;;   - immediate WORD (low bit 1): alloc a FRESH 32B box and
+     ;;     materialise the immediate into it via `nl_val_load(word, box)'
+     ;;     (the Phase 0 keystone).  A fresh box PER immediate call kills
+     ;;     the SCRATCH-LIFETIME HAZARD for consumers holding two+ accessor
+     ;;     results live (list walks / bucket walks / equal2 recursion).
      (if (= (sexp-tag arg) 7)
-         (sexp-payload-ptr arg)
+         (let ((word (ptr-read-u64 (ptr-read-u64 arg 8) 0)))
+           (if (= (logand word 1) 0)
+               word
+             (extern-call nl_val_load word (alloc-bytes 32 8))))
        0))
-  "AOT source for `nl_cons_car_ptr' (jit/cons.rs → elisp).
+  "AOT source for `nl_cons_car_ptr' (Doc 147 Phase 3 materialiser).
 
-Returns the NlConsBox* (= &car as *const Sexp, NlConsBox offset 0)
-when arg is Sexp::Cons (tag 7), else 0 (null).  Used via
-`(extern-call nl_cons_car_ptr arg)' in `nelisp-cc-jit-cons.el'
-to obtain the slot pointer before `nl_sexp_clone_into' copies the
-car refcount-safely into the output slot.")
+Returns a 32B-slot VIEW of the cons CAR when arg is Sexp::Cons (tag 7),
+else 0 (null).  Derefs the Sexp::Cons payload at arg+8 to the NlConsBox,
+loads the 8B tagged car WORD at box+0, and returns the view: a pointer
+WORD passes through (already a 32B child box); an immediate WORD is
+materialised into a FRESH 32B box via the arity-2 `nl_val_load' keystone
+(one box per call -> no shared-scratch clobber when a consumer holds
+two+ accessor results live).  Used via `(extern-call nl_cons_car_ptr
+arg)' at the ~302 cons read sites.")
 
 (provide 'nelisp-cc-jit-cons-car-ptr)
 

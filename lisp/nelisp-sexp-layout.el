@@ -77,23 +77,35 @@ boxes + the inline NlRecord type_tag.  Do NOT conflate the two.")
 ;; ---------------------------------------------------------------------------
 ;; Doc 101 §101.A — NlConsBox struct field offsets (= car / cdr / refcount
 ;; inside the heap-allocated cons box that Sexp::Cons points to).
-;; The box is `#[repr(C)]` per `build-tool/src/eval/nlconsbox.rs:56-67'.
+;;
+;; Doc 147 Phase 3 — CONTAINER SLOT SHRINK.  The `car' / `cdr' are now each
+;; an 8-byte tagged WORD (low bit 1 = immediate Int/Nil/T; low bit 0 = an
+;; 8-aligned pointer to a 32B child Sexp box), NOT a 32-byte inline Sexp.
+;; Child Sexp boxes stay 32B; only the two CONTAINER SLOTS shrink.  The box
+;; collapses 72B -> 24B (car WORD @0, cdr WORD @8, refcount @16), the single
+;; largest peak-RSS lever (the big-data structures — idna-mapping-table,
+;; org-entities, auto-mode-alist, ... — are alist / cons-chain shaped).
 ;; ---------------------------------------------------------------------------
 
 (defconst nelisp-nlconsbox--offset-car   0
-  "Byte offset of the `car' Sexp inside an NlConsBox.")
+  "Byte offset of the `car' WORD inside an NlConsBox.
+Doc 147 Phase 3: an 8-byte tagged WORD (immediate or 8-aligned ptr to a
+32B child Sexp box), NOT a 32-byte inline Sexp.")
 
-(defconst nelisp-nlconsbox--offset-cdr   32
-  "Byte offset of the `cdr' Sexp inside an NlConsBox.
-Equals one full Sexp slot (= 32) past the `car'.")
+(defconst nelisp-nlconsbox--offset-cdr   8
+  "Byte offset of the `cdr' WORD inside an NlConsBox.
+Doc 147 Phase 3: one 8-byte tagged WORD (= 8) past the `car' WORD (was
+32 = one full 32B inline Sexp).")
 
-(defconst nelisp-nlconsbox--offset-refcount 64
+(defconst nelisp-nlconsbox--offset-refcount 16
   "Byte offset of the `refcount' AtomicUsize inside an NlConsBox.
-Two full Sexp slots (= 64) past the start.")
+Doc 147 Phase 3: immediately after the two 8-byte car/cdr WORDS (= 16,
+was 64 = two full 32B inline Sexps).")
 
-(defconst nelisp-nlconsbox--size         72
+(defconst nelisp-nlconsbox--size         24
   "Total size of an NlConsBox struct in bytes.
-Mirrors `std::mem::size_of::<NlConsBox>()' on the Rust side.")
+Doc 147 Phase 3: car WORD (8) + cdr WORD (8) + refcount (8) = 24 (was 72
+when car / cdr were inline 32B Sexps).")
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 101 §101.A — Rust `String' header field offsets within a Sexp::Symbol

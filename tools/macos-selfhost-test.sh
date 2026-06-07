@@ -221,7 +221,21 @@ build_run mprotect-munmap '(seq
 # allocator hands out boxes from arena+512 on.
 build_run cons '(seq
   (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
-  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
+  (defun nl_sexp_clone_into (src dst)
+    (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+         (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+         (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+         (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+  (defun nl_val_clone_into (src dst)
+    (if (= (logand src 1) 1)
+        (ptr-write-u64 dst 0 src)
+      (let ((box (nl_alloc_bytes 32 8)))
+        (seq (nl_sexp_clone_into src box)
+             (ptr-write-u64 dst 0 box)))))
+  (defun nl_val_load (word scratch)
+    (if (= (logand word 1) 0) word
+      (seq (ptr-write-u64 scratch 0 word) scratch)))
   (defun run ()
     (seq
       (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
@@ -327,19 +341,23 @@ build_run dealloc '(seq
 # bump allocator (cons-make's box) starts at arena+512.
 build_run cons-set '(seq
   (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
-  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
-  (defun nl_consbox_set_car (box valptr)
-    (seq
-      (ptr-write-u64 box 0 (ptr-read-u64 valptr 0))
-      (ptr-write-u64 box 8 (ptr-read-u64 valptr 8))
-      (ptr-write-u64 box 16 (ptr-read-u64 valptr 16))
-      (ptr-write-u64 box 24 (ptr-read-u64 valptr 24))))
-  (defun nl_consbox_set_cdr (box valptr)
-    (seq
-      (ptr-write-u64 box 32 (ptr-read-u64 valptr 0))
-      (ptr-write-u64 box 40 (ptr-read-u64 valptr 8))
-      (ptr-write-u64 box 48 (ptr-read-u64 valptr 16))
-      (ptr-write-u64 box 56 (ptr-read-u64 valptr 24))))
+  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
+  (defun nl_sexp_clone_into (src dst)
+    (seq (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+         (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+         (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+         (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+  (defun nl_val_clone_into (src dst)
+    (if (= (logand src 1) 1)
+        (ptr-write-u64 dst 0 src)
+      (let ((box (nl_alloc_bytes 32 8)))
+        (seq (nl_sexp_clone_into src box)
+             (ptr-write-u64 dst 0 box)))))
+  (defun nl_val_load (word scratch)
+    (if (= (logand word 1) 0) word
+      (seq (ptr-write-u64 scratch 0 word) scratch)))
+  (defun nl_consbox_set_car (box valptr) (nl_val_clone_into valptr box))
+  (defun nl_consbox_set_cdr (box valptr) (nl_val_clone_into valptr (+ box 8)))
   (defun run ()
     (seq
       (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
@@ -649,17 +667,27 @@ build_run dup-fcntl '(seq
 
 # cons-make-with-clone: fused (alloc box + deep-clone car/cdr).  Clone
 # Int(20) into car and Int(3) into cdr, read both back -> 20 + 3 = 23.
-# nl_sexp_clone_into is stubbed here as a 32-byte copy (the real one is
-# refcount/String aware); box->car @0, box->cdr @offset-cdr(32).
+# Doc 147 Phase 3: NlConsBox is 24B; car WORD @0, cdr WORD @8.  cons-make-
+# with-clone stores each via nl_val_clone_into; cons-car/cdr materialise a
+# 32B view via nl_sexp_clone_into.  All stubbed here (compile+run smoke).
 build_run cons-clone '(seq
   (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
-  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
   (defun nl_sexp_clone_into (src dst)
     (seq
       (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
       (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
       (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
       (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+  (defun nl_val_clone_into (src dst)
+    (if (= (logand src 1) 1)
+        (ptr-write-u64 dst 0 src)
+      (let ((box (nl_alloc_bytes 32 8)))
+        (seq (nl_sexp_clone_into src box)
+             (ptr-write-u64 dst 0 box)))))
+  (defun nl_val_load (word scratch)
+    (if (= (logand word 1) 0) word
+      (seq (ptr-write-u64 scratch 0 word) scratch)))
   (defun run ()
     (seq
       (syscall-direct 197 34359738368 1048576 3 4114 -1 0)
@@ -684,7 +712,7 @@ build_run boxed '(seq
       (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
       (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
       (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
-  (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
+  (defun nl_alloc_consbox () (nl_alloc_bytes 24 8))
   (defun nl_alloc_cell (valptr)
     (let ((box (nl_alloc_bytes 16 8)))
       (seq (nl_sexp_clone_into valptr box) box)))

@@ -14,22 +14,16 @@
 ;; `*const Sexp' in rsi) into the car slot of the NlConsBox pointed to
 ;; by `box' (a raw `*mut NlConsBox' in rdi).
 ;;
-;; NlConsBox layout (pinned by `#[repr(C)]' + compile-time asserts in
-;; `build-tool/src/eval/nlconsbox.rs'):
+;; NlConsBox layout (Doc 147 Phase 3 — container slot shrink):
 ;;
-;;   car      @ 0   (32 bytes — sizeof(Sexp))
-;;   cdr      @ 32  (32 bytes — sizeof(Sexp))
-;;   refcount @ 64  (8 bytes  — AtomicUsize)
-;;   total = 72 bytes, align = 8
+;;   car      @ 0   (8 bytes — tagged WORD: imm or 8-aligned box ptr)
+;;   cdr      @ 8   (8 bytes — tagged WORD: imm or 8-aligned box ptr)
+;;   refcount @ 16  (8 bytes — AtomicUsize)
+;;   total = 24 bytes, align = 8
 ;;
-;; The car slot occupies bytes 0..31 of the NlConsBox.  A Sexp is
-;; 32 bytes = 4 × u64 words.  The body copies these four words in
-;; order using `ptr-write-u64' + `ptr-read-u64' pairs:
-;;
-;;   word 0: box+0  <- val+0
-;;   word 1: box+8  <- val+8
-;;   word 2: box+16 <- val+16
-;;   word 3: box+24 <- val+24
+;; The car field is now a single 8-byte tagged WORD; the body stores
+;; it via the `nl_val_clone_into' keystone (immediate direct; boxed
+;; child deep-cloned into a fresh 32B box, its 8-aligned ptr stored).
 ;;
 ;; C-ABI contract (SysV AMD64):
 ;;   rdi = *mut NlConsBox (= raw box pointer, already extracted from
@@ -60,26 +54,26 @@
     ;; left-to-right; each `ptr-write-u64' returns 1 (non-nil) so the
     ;; chain never short-circuits.  The final store's 1-sentinel becomes
     ;; the function return in rax (void from the caller's perspective).
+    ;; Doc 147 Phase 3: store VAL as a single 8-byte tagged WORD @ box+0
+    ;; (the car field) via the keystone `nl_val_clone_into(src_slot,
+    ;; dst_word_ptr)':
+    ;;   - immediate VAL (low bit 1): writes the 8B word straight to box+0.
+    ;;   - boxed/string VAL (low bit 0): deep-clones the child into a FRESH
+    ;;     32B box and stores its 8-aligned pointer as the word at box+0
+    ;;     (never a transient scratch slot).
+    ;; NOT a 4xu64 inline copy — the car field is now 8 bytes.
     (defun nl_consbox_set_car (box val)
-      (if (= (logand val 1) 0)
-          (and (ptr-write-u64 box 0 (ptr-read-u64 val 0))
-               (ptr-write-u64 box 8 (ptr-read-u64 val 8))
-               (ptr-write-u64 box 16 (ptr-read-u64 val 16))
-               (ptr-write-u64 box 24 (ptr-read-u64 val 24)))
-        (extern-call nl_sci_store_imm val box))))
-  "AOT source for the `nl_consbox_set_car' cutover spike.
+      (extern-call nl_val_clone_into val box)))
+  "AOT source for the `nl_consbox_set_car' swap.
 
 Single-entry `(seq DEFUN)' manifest:
-- `nl_consbox_set_car (box val) -> i64' — copies the 32-byte Sexp
-  at VAL into the car slot (offset 0) of the NlConsBox at BOX via
-  four `ptr-write-u64' / `ptr-read-u64' word-copy pairs.
+- `nl_consbox_set_car (box val) -> i64' — stores VAL as an 8-byte
+  tagged WORD in the car field (offset 0) of the NlConsBox at BOX via
+  the Doc 147 `nl_val_clone_into' keystone (immediate direct; boxed
+  child deep-cloned into a fresh 32B box, its 8-aligned ptr stored).
 
 AOT ops consumed:
-  `ptr-read-u64'   — `*(u64*)(val + offset)' load (offsets 0/8/16/24).
-  `ptr-write-u64'  — `*(u64*)(box + offset) = v' store (same offsets).
-
-Net Rust delta: deletes the `nl_consbox_set_car' body from
-`build-tool/src/eval/nlconsbox.rs'.")
+  `extern-call nl_val_clone_into' — store VAL as a car WORD at box+0.")
 
 (provide 'nelisp-cc-nlconsbox-set-car)
 

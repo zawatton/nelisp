@@ -41,9 +41,12 @@
       (if (= cur-box 0)
           1
         (if (= idx 0)
-            ;; NlConsBox.car at offset 0 — cur-box (NlConsBox*) cast
-            ;; as *const Sexp points at the car field directly.
-            (and (extern-call nl_sexp_clone_into cur-box out) 0)
+            ;; Doc 147 Phase 3: NlConsBox.car is now an 8-byte tagged
+            ;; WORD @ box+0 (was a 32B inline Sexp).  Load the car WORD
+            ;; and materialise a refcount-correct 32B-slot view into OUT
+            ;; via `nl_sexp_clone_into(word, out)' (the keystone accepts a
+            ;; value word: immediate -> store_imm; box ptr -> deep-clone).
+            (and (extern-call nl_sexp_clone_into (ptr-read-u64 cur-box 0) out) 0)
           (nelisp_jit_elt_walk
            (cons-cdr-raw-from-box cur-box)
            (- idx 1)

@@ -3175,9 +3175,12 @@ SysV would emit `push rdi' = 57 instead."
     (should (nelisp-aot-compiler-test--bytes-contain-p
              text
              ;; cdr clone: RCX = cdr-ptr, RDX = box + cdr offset.
+             ;; Doc 147 Phase 3: cdr offset 32 -> 8 (`add rdx, 8' =
+             ;; #x48 #x81 #xc2 #x08...; the NlConsBox cdr is now an 8-byte
+             ;; tagged WORD @ box+8, stored via `nl_val_clone_into').
              (unibyte-string #x48 #x89 #xd1
                              #x4c #x89 #xd2
-                             #x48 #x81 #xc2 #x20 #x00 #x00 #x00
+                             #x48 #x81 #xc2 #x08 #x00 #x00 #x00
                              #x48 #x81 #xec #x20 #x00 #x00 #x00
                              #xe8 #x00 #x00 #x00 #x00
                              #x48 #x81 #xc4 #x20 #x00 #x00 #x00)))))

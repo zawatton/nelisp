@@ -38,10 +38,12 @@
       (tag u8)
       (payload u64)
       (pad (array u8 16)))
-    ;; NlConsBox: car / cdr Sexp slots + atomic refcount (size 72).
+    ;; NlConsBox (Doc 147 Phase 3 — container slot shrink): car / cdr are
+    ;; now 8-byte tagged value WORDS + atomic refcount (size 24, was: two
+    ;; 32B Sexp slots + rc = 72).
     (sys:defstruct nlconsbox (:repr c)
-      (car (struct sexp))
-      (cdr (struct sexp))
+      (car u64)
+      (cdr u64)
       (refcount u64))
     ;; NlVector: inline Vec<Sexp> header (ptr, cap, len) + refcount.
     (sys:defstruct nlvector (:repr c)
@@ -74,7 +76,7 @@ machine-checked layout is built from the same field specs by
 
 (defconst nelisp-sys-sexp-shadow--specs
   '((sexp c ((tag u8) (payload u64) (pad (array u8 16))))
-    (nlconsbox c ((car (struct sexp)) (cdr (struct sexp)) (refcount u64)))
+    (nlconsbox c ((car u64) (cdr u64) (refcount u64)))
     (nlvector c ((ptr usize) (cap usize) (len usize) (refcount u64)))
     (nlcell c ((value u64) (refcount u64)))
     (nlrecord c ((type-tag (struct sexp)) (slots-ptr usize)

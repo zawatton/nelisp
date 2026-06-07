@@ -187,3 +187,72 @@ Phase 3 (NlConsBox 72B -> 24B)*, not Phase 2.  Phase 2 is still a correct,
 necessary prerequisite (proves the bulk word-slot pattern + GC arms) and does
 shrink immediate-heavy vectors / char-tables; it just isn't the peak mover
 for the vendor load.  Re-baseline the peak after Phase 3.
+
+* Phase 3 — SHIPPED (2026-06-07)
+
+NlConsBox shrunk 72B -> *24B*: car 8B tagged-WORD @0, cdr 8B tagged-WORD @8,
+refcount @16 (was two 32B inline car/cdr Sexps + rc @64).  THE peak-RSS
+lever — the big-data structures (idna-mapping-table / org-entities /
+auto-mode-alist / unicode tables) are alist / cons-chain shaped, so the 48B
+saved per cons cell dominates the live set.
+
+** What changed
+- =nelisp-sexp-layout.el=: nlconsbox offset-cdr 32->8, offset-refcount
+  64->16, size 72->24.
+- box ops: =nl_alloc_consbox= (24B; car/cdr = Nil immediate WORD @0/@8, rc
+  @16), =nl_consbox_set_car= / =_set_cdr= (8B WORD via the =nl_val_clone_into=
+  keystone; cdr 32->8), =nlconsbox-clone= / =-drop= (rc 64->16, dealloc 72->24).
+- ACCESSORS (the ~302-site collapse): =nl_cons_car_ptr= / =nl_cons_cdr_ptr=
+  load the 8B car/cdr WORD and MATERIALISE a 32B-slot VIEW (pointer WORD
+  passthrough; immediate WORD -> =nl_val_load= into a FRESH 32B box per call
+  -> no shared-scratch clobber under list-walk recursion).  The ~302
+  consumers read a valid 32B view UNCHANGED — the proven Phase-2 collapse.
+- AOT emit (+ARM64 twins): =--emit-cons-make= / =-make-with-clone= store
+  car/cdr as 8B WORDS via =nl_val_clone_into= (cons-make now delegates to
+  with-clone; the raw-copy vs clone split is erased by the WORD store);
+  =--emit-cons-slot-copy= (cdr field-off 32->8, materialise via
+  =nl_sexp_clone_into=); =--emit-cons-cdr-raw= (word-aware spine walk:
+  immediate-skip, else deref child box, tag-7 -> next NlConsBox*).
+- GC (=nl_gc_mark_cons= / =nl_compact_rw_cons=): car @box+0 / cdr @box+8 are
+  now 8B WORDS; per-slot WORD-aware (immediate-skip; else mark/rewrite +
+  recurse the child box); cdr-spine tail-loop derefs the cdr child box and
+  tail-loops on tag-7.  rw_cons checks the immediate bit on the RAW word
+  BEFORE rw_edge (the Phase-2 vec-slot discipline).
+
+** Write-through consumers decoupled (Phase-1.5 style)
+The bucket walkers (=mirror-lookup-entry= / =frame-bind= / =frame-stack-find=
++ =nl_capture_walk_bucket=) read car @box+0 / cdr @box+32 as inline 32B
+Sexps, =str-eq='d the inner-pair box directly, and =cons-set-cdr='d the raw
+bucket box — ALL unsound post-shrink (box+0 is now an 8B WORD, not a Sexp).
+Rewrote each to carry the bucket-cell Sexp VIEW and use the materialising
+=nl_cons_car_ptr= / =nl_cons_cdr_ptr= accessors (+ =cons-set-cdr= on the pair
+VIEW for frame-bind), seeded with =vector-ref-ptr= (not =sexp-payload-ptr=).
+=gc-walk-children= / =jit-elt= read the car/cdr WORDS via the accessors /
+=ptr-read-u64= instead of the old +0 / +32 inline-Sexp pointers.
+
+** No SIGSEGV — clean on the first build
+Unlike Phase 2 (4 distinct SIGSEGV bugs), Phase 3 ran =/tmp/full-prog.el=
+rc=0 on the first standalone build and stayed soak-clean (20x then 50x,
+compaction ON, 0 failures).  Credit: the proven Phase-1 (cell) + Phase-2
+(vec/record) word-aware GC + materialiser patterns transferred directly,
+and the write-through audit caught all the bucket-walker box-inline reads
+BEFORE the build (they would have faulted on the first env lookup).
+
+** Validation
+- =make standalone-reader= -> linked 105 units (no new units; the
+  materialisation lives inside the existing car-ptr / cdr-ptr .o).
+- =./target/nelisp --load /tmp/full-prog.el= (319 vendor files) -> rc=0;
+  20x + 50x soak compaction-ON = 0 failures.
+- =make test-parallel= -> 4438 tests, 2 unexpected = the 2 documented flakes
+  (emit-sexp-float-unwrap stale assertion + process multi-spawn sentinel).
+  Updated: sexp-layout-test (cdr 8 / rc 16 / size 24), nelisp-sys-sexp-shadow
+  (nlconsbox = 3x u64, 24B), aot win64 cons-make-with-clone (=add rdx,8=),
+  macos-dataops + macos-selfhost cons smokes (24B stubs + keystones).
+
+** Peak RSS — *847MB -> 118MB* (THE headline)
+Full-vendor-load peak dropped *-729MB (-86%)*, far past the ~434MB estimate
+(the cons saving compounds with Phase 1+2 + slashed GC churn), and the load
+ran *13x faster* (11.8s -> 0.9s) from the reduced allocation / GC pressure.
+Apples-to-apples on =/tmp/full-prog.el= via =measure-load.sh=: the stashed
+Phase-2 HEAD binary measured 847.6MB / 11.8s, the Phase-3 binary 118.5MB /
+0.9s.  Phase 3 is the peak mover the motivation table predicted.
