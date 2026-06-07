@@ -3180,6 +3180,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-stat-buf") . (nl_bi_syscall_stat_buf args out))
     ((:lit "nelisp--syscall-lstat-buf") . (nl_bi_syscall_lstat_buf args out))
     ((:lit "nelisp--syscall-readlink") . (nl_bi_syscall_readlink args out))
+    ((:lit "nelisp--syscall-utimes") . (nl_bi_syscall_utimes args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
@@ -3460,6 +3461,22 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
         (if (< n 0)
             (wf_write_nil out)
           (nl_seq2 (nl_alloc_str buf n out) 0))))
+    ;; nelisp--syscall-utimes PATH ATIME MTIME: utimes(2) (syscall 235) -- set
+    ;; the access + modification times to ATIME / MTIME (seconds; usec = 0).
+    ;; Builds a struct timeval[2] {atime.sec, atime.usec, mtime.sec, mtime.usec}
+    ;; and returns the raw kernel rc (0 = success, negative = -errno).
+    (defun nl_bi_syscall_utimes (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (atime (wf_argval args 1))
+             (mtime (wf_argval args 2))
+             (cpath (nl_bi_make_cpath path_sx))
+             (buf (alloc-bytes 32 8)))
+        (seq
+         (ptr-write-u64 buf 0 atime)
+         (ptr-write-u64 buf 8 0)
+         (ptr-write-u64 buf 16 mtime)
+         (ptr-write-u64 buf 24 0)
+         (wf_write_int out (syscall-direct 235 cpath buf 0 0 0 0)))))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
@@ -4355,6 +4372,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
     "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
+    "nelisp--syscall-utimes"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
     "exit"
