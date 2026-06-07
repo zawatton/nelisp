@@ -42,7 +42,8 @@
 ;; 11-slot scratch vector is used for BOTH:
 ;;
 ;;   Frame path writes:
-;;     slot 0 (Sexp::Cell via cell-make) — shadows mirror "Nil source"
+;;     (Doc 147 P1.5) Sexp::Cell now built into a FRESH stack slot, not
+;;       scratch slot 0 (was a 32B write-through-interior-pointer).
 ;;     slots 1-3 (pair/outer/count by nelisp_frame_bind)
 ;;   Mirror path reads:
 ;;     slot 5  Symbol("symbol-entry") — pre-filled by Rust wrapper
@@ -113,23 +114,41 @@
     ;; val-ptr:     *const Sexp — initial value.
     ;; scratch-ptr: *const Sexp — 11-slot standard scratch vector.
     ;;
-    ;; After `cell-make val-ptr (vector-ref-ptr scratch-ptr 0)',
-    ;; scratch[0] holds Sexp::Cell(NlCell(*val-ptr)).  The subsequent
-    ;; `vector-ref-ptr scratch-ptr 0' in the extern-call arg list
-    ;; re-computes the same address, now pointing to that Sexp::Cell.
+    ;; Doc 147 Phase 1.5 Group S — the freshly-made Sexp::Cell no longer
+    ;; lands in scratch slot 0 via a write-through-interior-pointer.
+    ;; `cell-make' wrote a 32B `Sexp::Cell' straight through
+    ;; `(vector-ref-ptr scratch-ptr 0)' (= data_ptr + 0*32); once the
+    ;; Phase-2 Vector buffer stride shrinks 32B->8B, that 32B write would
+    ;; stomp scratch slots 1-3 (the very pad slots `nelisp_frame_bind'
+    ;; needs).  Fix: `cell-make' writes into a fresh 32B stack slot
+    ;; CELL-SLOT (= `alloc-bytes 32 8' on the per-eval arena, NOT inside
+    ;; the shrinking Vector buffer), and that same CELL-SLOT is passed as
+    ;; the `cell-ptr' arg to `nelisp_frame_bind' (which only READS it =
+    ;; clones the cell into the innermost frame).  Scratch slots 1-3 stay
+    ;; `(vector-ref-ptr scratch-ptr N)' — `nelisp_frame_bind' OWNS those
+    ;; writes (separate consumer; decoupled in its own file), so they are
+    ;; out of scope here.
+    ;;
+    ;; Refcount: unchanged.  `cell-make' clones `*val-ptr' into a fresh
+    ;; rc=1 NlCell exactly as before; the destination slot (stack vs
+    ;; Vector interior) does not affect the cell's refcount — the stack
+    ;; slot is arena-reclaimed, never refcount-dropped, and the cell's
+    ;; sole counted owner remains the frame binding installed by
+    ;; `nelisp_frame_bind'.  No new owner, no leak, no double-free.
     ;;
     ;; Arity 4 (even) ✓.
     ;; One extern-call in the single execution path ✓.
     (defun nelisp_env_bl_frame (frames-ptr name-ptr val-ptr scratch-ptr)
-      (and
-       (cell-make val-ptr (vector-ref-ptr scratch-ptr 0))
-       (extern-call nelisp_frame_bind
-                    frames-ptr name-ptr
-                    (vector-ref-ptr scratch-ptr 0)
-                    (vector-ref-ptr scratch-ptr 1)
-                    (vector-ref-ptr scratch-ptr 2)
-                    (vector-ref-ptr scratch-ptr 3))
-       1))
+      (let ((cell-slot (alloc-bytes 32 8)))
+        (and
+         (cell-make val-ptr cell-slot)
+         (extern-call nelisp_frame_bind
+                      frames-ptr name-ptr
+                      cell-slot
+                      (vector-ref-ptr scratch-ptr 1)
+                      (vector-ref-ptr scratch-ptr 2)
+                      (vector-ref-ptr scratch-ptr 3))
+         1)))
 
     ;; nelisp_env_bl_mirror
     ;;
