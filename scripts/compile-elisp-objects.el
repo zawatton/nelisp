@@ -929,6 +929,21 @@
      :source-var nelisp-cc-nlrecord-set-slot--source
      :output "nl_record_set_slot.o"
      :requires-arch x86_64)
+    ;; Doc 147 Phase 2 — nl_vector_slot_ptr / nl_record_slot_ptr: the
+    ;; word->32B-slot materialisers for the vector-ref-ptr /
+    ;; record-slot-ref-ptr read path.  Load the 8B tagged WORD at
+    ;; data_ptr + idx*8 and return a 32B-slot VIEW (pointer WORD passes
+    ;; through; immediate WORD materialised into a fresh 32B box via the
+    ;; arity-2 nl_val_load keystone — fresh box per call avoids the
+    ;; shared-scratch clobber when a consumer holds two+ results live).
+    (nelisp-cc-nlvector-slot-ptr
+     :source-var nelisp-cc-nlvector-slot-ptr--source
+     :output "nl_vector_slot_ptr.o"
+     :requires-arch x86_64)
+    (nelisp-cc-nlrecord-slot-ptr
+     :source-var nelisp-cc-nlrecord-slot-ptr--source
+     :output "nl_record_slot_ptr.o"
+     :requires-arch x86_64)
     ;; nl_alloc_consbox elisp swap — allocates a fresh NlConsBox
     ;; (car=Nil, cdr=Nil, refcount=1) using alloc-bytes + sexp-write-nil
     ;; + ptr-write-u64.  Replaces the Rust `nl_alloc_consbox' body in

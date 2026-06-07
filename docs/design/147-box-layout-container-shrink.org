@@ -112,3 +112,78 @@ Every emit fn has an *ARM64 twin* — edit both.
 5. ARM64 twins.
 
 Rollback: each phase independently revertable behind the Phase-0 anchor.
+
+* Phase 2 — SHIPPED (2026-06-07)
+
+Vector (tag 8) + Record (tag 12) DATA BUFFERS shrunk 32B-per-slot -> 8B
+tagged-WORD-per-slot.  Record type_tag stays inline 32B (header offsets
+UNCHANGED); only the separately-alloc'd slots buffer shrinks.  char-tables
+(=#^[ / #^^[) read as tag-8 Vectors -> shrink for free; bool-vectors (tag
+10, raw u8) untouched.
+
+** What changed
+- =nelisp-sexp-layout.el=: new =nelisp-sexp--container-word-size= = 8 (the
+  per-slot stride).  =--slot-size= stays 32 (child boxes + Record type_tag).
+- alloc (=nl_alloc_vector= / =nl_alloc_record=): buffer =cap*8= / =n*8=, each
+  slot Nil-filled with the 8B WORD 3 (=ptr-write-u64 .. 3=, was sexp-write-nil).
+- set-slot (=nl_vector_set_slot= / =nl_record_set_slot=): stride 8, store via
+  the =nl_val_clone_into= keystone (was inline 4xu64 / nl_sexp_clone_into).
+- NEW =.o= helpers =nl_vector_slot_ptr= / =nl_record_slot_ptr= (lisp/
+  nelisp-cc-nl{vector,record}-slot-ptr.el): deref Sexp payload -> box ->
+  data_ptr, load the 8B WORD at data_ptr+idx*8, return a 32B-slot VIEW
+  (pointer WORD passthrough; immediate WORD materialised into a FRESH 32B box
+  per call via =nl_val_load= -> NO shared-scratch clobber for consumers that
+  hold 2+ slot-ptr results live, e.g. meta-walk / env-bind-local / lookup).
+  =--emit-vector-slot-ptr-core= / =--emit-record-slot-ptr-core= (+ARM64
+  twins) now delegate to these helpers (dynamic rsp align via rbx on x86, the
+  =record-slot-set= idiom).  vector-make/-slot-set/-len + record-make/-slot-
+  set/-type-tag already delegate to ABI-stable .o helpers -> no emit change.
+  Link manifest: 103 -> *105 units* (the 2 new helpers).
+- GC (scripts/nelisp-standalone-build.el): =nl_gc_mark_vec_slots= +
+  =nl_compact_rw_vec_slots= (shared by tag-8 + tag-12) -> stride 8 +
+  per-slot WORD-aware (read WORD; immediate low-bit-1 -> skip; pointer ->
+  mark/rw_block + recurse on the child box).
+- Bootstrap decouple (mirror set_value/function/constant_or_insert dispatch):
+  the new symbol entry was WRITTEN-THROUGH =(vector-ref-ptr scratch 6)= and
+  read back the same way -> post-shrink the view is a TRANSIENT box, so the
+  record-make write landed in a throwaway and the read-back saw Nil -> null
+  deref.  Fixed by staging the entry in a fresh 32B STACK slot
+  (=alloc-bytes 32 8=).  This write-through surface was MISSED by Phase 1.5
+  (Group A only cleared the unreachable AOT top-level-var materializer).
+
+** SIGSEGV debug story (4 distinct bugs, all fixed)
+1. slot-ptr helper took the Sexp SLOT ptr, not the box -> needed the extra
+   payload deref (sexp_ptr -> *+8 box -> *+8/+40 data_ptr).
+2. bootstrap entry write-through scratch slot 6 -> decouple to stack slot.
+3. =nl_compact_rw_vec_slots= recursed =rw_slot(vw)= UNGATED by =rw_block= ->
+   a foreign/garbage pointer WORD faulted; gate recursion on rw_block!=0
+   (the canonical cons-arm discipline).  Also: check the immediate bit on the
+   RAW word BEFORE rw_edge (rw_edge on an immediate can spuriously hash-hit
+   and corrupt a Nil WORD into a dangling pointer).
+4. RAW parse-pool (Group P, still 32B-slot) walks UNINITIALISED garbage slots;
+   a garbage slot can present tag-8/12 with a junk box whose data_ptr the 8B
+   walker dereferences directly (the 32B-era per-slot mark_slot re-guarded it).
+   Added an =nl_gc_in_arena(data_ptr)= guard at the top of both vec-slot
+   walkers (intermittent / ASLR-dependent — appeared ~1/15 runs before, 0/100
+   after).
+
+** Validation
+- =make standalone-reader= -> linked 105 units.
+- =./target/nelisp --load /tmp/full-prog.el= -> rc=0, all 319 vendor files
+  (deterministic; 100x soak compaction-ON = 0 failures).
+- =make test-parallel= -> 4438 tests, 2 unexpected = the 2 documented flakes
+  (emit-sexp-float-unwrap stale assertion + process multi-spawn sentinel);
+  macos-dataops + macos-selfhost smokes updated with nl_vector/record_slot_ptr
+  + nl_val_load/clone_into stubs.
+
+** Peak RSS — *unchanged* (847MB vs 844MB baseline)
+The container-slot shrink did NOT move the full-vendor-load peak.  The peak
+is dominated by CONS cells (the big-data structures — idna-mapping-table,
+org-entities, auto-mode-alist, etc. — are alist/cons-chain shaped, NlConsBox
+72B each) plus the 32B RAW parse pool and the still-32B child Sexp boxes.
+Vector/Record slot buffers are a small fraction of the live set for this
+workload, so the 24B/slot saving is in the noise.  *The ~416MB peak lever is
+Phase 3 (NlConsBox 72B -> 24B)*, not Phase 2.  Phase 2 is still a correct,
+necessary prerequisite (proves the bulk word-slot pattern + GC arms) and does
+shrink immediate-heavy vectors / char-tables; it just isn't the peak mover
+for the vendor load.  Re-baseline the peak after Phase 3.

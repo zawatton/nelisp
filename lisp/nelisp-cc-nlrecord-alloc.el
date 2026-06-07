@@ -13,15 +13,24 @@
 ;; object.  Mechanical sibling of `nelisp-cc-nlvector-alloc.el' with
 ;; an additional type_tag Sexp clone step.
 ;;
-;; NlRecord layout (pinned by `#[repr(C)]' + compile-time asserts):
+;; NlRecord HEADER layout (UNCHANGED by Doc 147 Phase 2 — pinned by
+;; `#[repr(C)]' + compile-time asserts):
 ;;
-;;   type_tag: Sexp    @ 0   (32 bytes)
+;;   type_tag: Sexp    @ 0   (32 bytes — STAYS INLINE 32B)
 ;;   slots: Vec<Sexp>  @ 32  (24 bytes)
 ;;     Vec.capacity    @ 32  (8 bytes — element count)
-;;     Vec.data_ptr    @ 40  (8 bytes — *mut Sexp buffer)
+;;     Vec.data_ptr    @ 40  (8 bytes — *mut Sexp-word buffer)
 ;;     Vec.len         @ 48  (8 bytes — element count)
 ;;   refcount          @ 56  (8 bytes — AtomicUsize)
 ;;   total = 64 bytes, align = 8
+;;
+;; Doc 147 Phase 2 — the inline `type_tag' STAYS a 32B Sexp (header
+;; offsets unchanged); ONLY the separately-allocated SLOTS BUFFER (the
+;; one `Vec.data_ptr' points at) shrinks from `n * 32B` (one inline
+;; `Sexp' per slot) to `n * 8B` (one tagged WORD per slot).  A tagged
+;; WORD is 8 bytes: low bit 1 = immediate (Nil = 3, T = 7,
+;; Int = (n<<2)|1); low bit 0 = 8-aligned pointer to a 32B child Sexp
+;; box (children stay 32B; only the slot CELLS shrink).
 ;;
 ;; Vec field order is `(capacity, data_ptr, len)' — same convention
 ;; as NlVector.  `nelisp-nlrecord--offset-slots-capacity = 40' is the
@@ -66,11 +75,13 @@
 
 (defconst nelisp-cc-nlrecord-alloc--source
   '(seq
-    ;; Recursive Nil-fill loop for the slots buffer.
+    ;; Recursive Nil-fill loop for the slots buffer.  Doc 147 Phase 2:
+    ;; writes the 8-byte Nil immediate WORD (= 3) into each slot at
+    ;; data-ptr+i*8 (stride 8, was a 32B stride + 1-byte Nil tag).
     ;; Identical shape to `nl_alloc_vector_fill'; modulo variable names.
     (defun nl_alloc_record_fill (data-ptr i n)
       (if (< i n)
-          (and (sexp-write-nil (+ data-ptr (* i 32)))
+          (and (ptr-write-u64 (+ data-ptr (* i 8)) 0 3)
                (nl_alloc_record_fill data-ptr (+ i 1) n))
         data-ptr))
 
@@ -102,12 +113,13 @@
        n))
 
     ;; Public entry.  Clamps negative slot-count to 0, allocates the
-    ;; 64-byte NlRecord struct and the n*32-byte slot element buffer,
-    ;; then delegates to `nl_alloc_record_with_data'.
+    ;; 64-byte NlRecord struct and the n*8-byte slot WORD buffer (Doc
+    ;; 147 Phase 2 stride shrink 32 -> 8), then delegates to
+    ;; `nl_alloc_record_with_data'.
     (defun nl_alloc_record (type-tag-ptr slot-count)
       (nl_alloc_record_with_data
        (alloc-bytes 64 8)
-       (alloc-bytes (* (if (< slot-count 0) 0 slot-count) 32) 8)
+       (alloc-bytes (* (if (< slot-count 0) 0 slot-count) 8) 8)
        type-tag-ptr
        (if (< slot-count 0) 0 slot-count))))
   "AOT source for the `nl_alloc_record' allocator swap.
@@ -123,10 +135,12 @@ Four-entry `(seq DEFUN ...)' manifest:
   public entry.
 
 AOT ops consumed:
-  `alloc-bytes'                    — 64B struct + n*32B slot buffer.
-  `extern-call nl_sexp_clone_into' — clones type_tag into box-ptr+0.
-  `sexp-write-nil'                 — tags each slot with SEXP_TAG_NIL.
-  `ptr-write-u64'                  — 4 writes for Vec header + refcount.
+  `alloc-bytes'                    — 64B struct + n*8B slot WORD buffer
+                                     (Doc 147 Phase 2 stride shrink).
+  `extern-call nl_sexp_clone_into' — clones type_tag into box-ptr+0
+                                     (type_tag STAYS inline 32B).
+  `ptr-write-u64'                  — Nil-WORD (= 3) fill per slot + 4
+                                     Vec header / refcount writes.
   `if' / `<' / `*' / `+'          — control flow + arithmetic.
 
 Net Rust delta: deletes the 15-LOC `nl_alloc_record' body + safety

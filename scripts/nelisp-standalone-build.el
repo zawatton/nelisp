@@ -1163,12 +1163,36 @@ addressing by a runtime base, never by a fixed reservation."
           0)))
     ;; Mark the char buffer of a string (raw byte block, no Sexp children).
     (defun nl_gc_mark_buf (ptr) (nl_seq2 (nl_gc_mark_block ptr) 0))
-    ;; Mark every Sexp slot of a `len'-element buffer starting at data_ptr.
+    ;; Mark every slot of a `len'-element buffer starting at data_ptr.
+    ;; Doc 147 Phase 2: each slot is now an 8-byte tagged WORD (stride 8,
+    ;; was a 32B inline Sexp).  Per-slot WORD-aware mark, mirroring the
+    ;; Phase-1 tag-11 cell value-word handling: read the 8B WORD; an
+    ;; immediate (low bit 1) has no child -> skip; else the WORD is an
+    ;; 8-aligned pointer to a 32B child box -> mark the box block then
+    ;; recurse into it as a 32B Sexp SLOT (nl_gc_mark_slot reads
+    ;; tag@+0/payload@+8 from the child box).  Shared by tag-8 Vectors
+    ;; and tag-12 Records (whose slots buffers both shrank).
+    ;; DEFENSIVE in-arena guard on DATA_PTR: the reader parse pool is a
+    ;; RAW cap*32 buffer (Group P) whose UNUSED slots are uninitialised
+    ;; garbage; the pool walk reads every slot as a live Sexp, so a
+    ;; garbage slot can present tag-8/12 with a garbage NlVector/NlRecord
+    ;; box whose `data_ptr' field is junk.  In the 32B era each slot was
+    ;; re-validated by `nl_gc_mark_slot' (in_arena-guarded); the 8B walker
+    ;; reads the WORD directly (`*(data_ptr + k*8)'), so a junk DATA_PTR
+    ;; faults BEFORE any per-slot guard.  Skip the whole buffer when
+    ;; DATA_PTR is not in-arena (a real vector/record always has an
+    ;; in-arena alloc'd buffer; len==0 -> data_ptr may be null -> skip).
     (defun nl_gc_mark_vec_slots (data_ptr i len)
-      (let ((k i))
-        (while (< k len)
-          (nl_seq2 (nl_gc_mark_slot (+ data_ptr (* k 32))) (setq k (+ k 1))))
-        0))
+      (if (= (nl_gc_in_arena data_ptr) 0) 0
+        (let ((k i))
+          (while (< k len)
+            (nl_seq2
+             (let ((vw (ptr-read-u64 (+ data_ptr (* k 8)) 0)))
+               (if (= (logand vw 1) 1) 0
+                 (if (= (nl_gc_mark_block vw) 0) 0
+                   (nl_gc_mark_slot vw))))
+             (setq k (+ k 1))))
+          0)))
     ;; Doc 147 Phase 1.5 Group P — RAW reader parse-pool GC arms.  The pool
     ;; is no longer a GC-managed Sexp::Vector; it is a flat cap*32B buffer
     ;; whose `cap' is stashed @268436448 (`nl_gc_pool_cap').  Mark = mark the
@@ -1452,11 +1476,50 @@ addressing by a runtime base, never by a fixed reservation."
         (if (= (nl_hdr_mark (- obj 8)) 1)
             (nl_seq2 (nl_hdr_set_mark (- obj 8) 3) 1)
           0)))
+    ;; Doc 147 Phase 2: each slot is now an 8-byte tagged WORD (stride 8,
+    ;; was a 32B inline Sexp).  Per-slot WORD-aware rewrite.
+    ;;
+    ;; CRITICAL #1: read the raw WORD first and check the immediate bit
+    ;; BEFORE touching the edge.  Calling `nl_compact_rw_edge' on an
+    ;; immediate (Nil=3, T=7, Int=(n<<2)|1) is UNSOUND here: rw_edge
+    ;; computes `fwd(word)' and, on a SPURIOUS hash hit for the small
+    ;; integer value of the immediate, OVERWRITES the slot with a bogus
+    ;; to-space pointer — corrupting a Nil/Int word into a dangling
+    ;; pointer that the NEXT walk dereferences -> SIGSEGV.  So: immediate
+    ;; (low bit 1) -> skip entirely, leaving the WORD untouched.
+    ;;
+    ;; CRITICAL #2: GATE the child recursion on `nl_compact_rw_block'
+    ;; returning non-zero (= the canonical cons-arm discipline, line
+    ;; ~1512).  rw_block returns 0 for a FOREIGN / already-visited /
+    ;; unmarked child; recursing `rw_slot' into such a pointer reads a
+    ;; tag byte at a non-arena / stale address -> SIGSEGV.  A pointer
+    ;; WORD whose target is not an in-arena mark-1 block (e.g. a boxed
+    ;; Float pointing into the boot image, or an aliased child already
+    ;; flipped to mark-3) must NOT be recursed.  (The Phase-1 cell arm's
+    ;; UNGATED `(nl_seq2 (rw_block vw) (rw_slot vw))' is latently unsafe
+    ;; the same way, but a cell holds exactly one child so the collision
+    ;; window never opened; a vector/record buffer exercises it.)
+    ;;
+    ;; For a pointer whose target IS a fresh in-arena mark-1 block,
+    ;; rw_edge rewrote the WORD to fwd[child] and returned the OLD child
+    ;; pointer; rw_block flipped it mark1->mark3 (phase 4 MOVES it) and we
+    ;; recurse on the OLD pre-move address.  Shared by tag-8 Vectors and
+    ;; tag-12 Records.
+    ;; DEFENSIVE in-arena guard on DATA (same rationale as the mark-side
+    ;; `nl_gc_mark_vec_slots'): a garbage parse-pool slot can present a
+    ;; tag-8/12 box with a junk `data_ptr', and the 8B walker dereferences
+    ;; it directly -> fault before any per-slot guard.  A real vector /
+    ;; record buffer is always an in-arena alloc; skip a non-arena DATA.
     (defun nl_compact_rw_vec_slots (data i len)
-      (if (< i len)
-          (nl_seq2 (nl_compact_rw_slot (+ data (* i 32)))
-                   (nl_compact_rw_vec_slots data (+ i 1) len))
-        0))
+      (if (= (nl_gc_in_arena data) 0) 0
+        (if (< i len)
+            (nl_seq2
+             (if (= (logand (ptr-read-u64 (+ data (* i 8)) 0) 1) 1) 0
+               (let ((vw (nl_compact_rw_edge (+ data (* i 8)))))
+                 (if (= (nl_compact_rw_block vw) 0) 0
+                   (nl_compact_rw_slot vw))))
+             (nl_compact_rw_vec_slots data (+ i 1) len))
+          0)))
     ;; Doc 147 Phase 1.5 Group P — RAW reader parse-pool compact arms (mirror
     ;; of the mark arms above; mirror of nl_compact_rw_vec_slots).  Rewrite the
     ;; buffer's own block edge, then walk every 32B slot rewriting its child
@@ -3954,6 +4017,8 @@ calling the reader driver."
     ("consbox-setcdr.o"   nelisp-cc-nlconsbox-set-cdr             nelisp-cc-nlconsbox-set-cdr--source)
     ("vec-alloc.o"        nelisp-cc-nlvector-alloc                nelisp-cc-nlvector-alloc--source)
     ("vec-set.o"          nelisp-cc-nlvector-set-slot             nelisp-cc-nlvector-set-slot--source)
+    ;; Doc 147 Phase 2 — word->32B-slot materialiser for vector-ref-ptr.
+    ("vec-slot-ptr.o"     nelisp-cc-nlvector-slot-ptr            nelisp-cc-nlvector-slot-ptr--source)
     ("vec-clone.o"        nelisp-cc-nlvector-clone                nelisp-cc-nlvector-clone--source)
     ("alloc-str.o"        nelisp-cc-nlstr-direct-ops              nelisp-cc-nlstr-direct-ops--alloc-str-source)
     ("str-bytes.o"        nelisp-cc-nlstr-direct-ops              nelisp-cc-nlstr-direct-ops--str-bytes-ptr-source)
@@ -3964,6 +4029,8 @@ calling the reader driver."
     ("record-alloc.o"     nelisp-cc-nlrecord-alloc                nelisp-cc-nlrecord-alloc--source)
     ("record-clone.o"     nelisp-cc-nlrecord-clone                nelisp-cc-nlrecord-clone--source)
     ("record-set.o"       nelisp-cc-nlrecord-set-slot             nelisp-cc-nlrecord-set-slot--source)
+    ;; Doc 147 Phase 2 — word->32B-slot materialiser for record-slot-ref-ptr.
+    ("record-slot-ptr.o"  nelisp-cc-nlrecord-slot-ptr           nelisp-cc-nlrecord-slot-ptr--source)
     ("trap.o"             :glue   nelisp-standalone--trap-source)
     ("arena.o"            :glue   nelisp-standalone--arena-source))
   "Ordered standalone-eval unit manifest.")

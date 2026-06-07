@@ -60,7 +60,19 @@ expressed without overloading the generic offset.")
 
 (defconst nelisp-sexp--slot-size         32
   "Total bytes occupied by one Sexp value, including tag and padding.
-Mirrors `std::mem::size_of::<Sexp>()' on the Rust side.")
+Mirrors `std::mem::size_of::<Sexp>()' on the Rust side.
+NOTE (Doc 147 Phase 2): this is the CHILD-BOX / type_tag size and is
+UNCHANGED — child Sexp boxes stay 32B.  Container SLOTS shrank to an
+8-byte tagged WORD; use `nelisp-sexp--container-word-size' for the
+per-slot stride of Vector / Record data buffers.")
+
+(defconst nelisp-sexp--container-word-size 8
+  "Bytes per CONTAINER SLOT (Vector / Record data-buffer element).
+Doc 147 Phase 2: a container slot is now an 8-byte tagged WORD (low
+bit 1 = immediate Int/Nil/T; low bit 0 = 8-aligned ptr to a 32B child
+Sexp box), NOT a 32-byte inline Sexp.  The per-slot stride is 8;
+`nelisp-sexp--slot-size' (= 32) is reserved for the still-32B child
+boxes + the inline NlRecord type_tag.  Do NOT conflate the two.")
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 101 §101.A — NlConsBox struct field offsets (= car / cdr / refcount
@@ -197,6 +209,7 @@ Doc 147 Phase 1: 8-byte value WORD + 8-byte refcount (was 40).")
     (offset-tag       . ,nelisp-sexp--offset-tag)
     (offset-payload   . ,nelisp-sexp--offset-payload)
     (slot-size        . ,nelisp-sexp--slot-size)
+    (container-word-size . ,nelisp-sexp--container-word-size)
     ;; Doc 101 §101.A additions
     (nlconsbox-offset-car      . ,nelisp-nlconsbox--offset-car)
     (nlconsbox-offset-cdr      . ,nelisp-nlconsbox--offset-cdr)

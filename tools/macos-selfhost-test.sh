@@ -692,23 +692,44 @@ build_run boxed '(seq
     (nl_sexp_clone_into valptr box))
   (defun nl_cell_get_value (cellptr out)
     (nl_sexp_clone_into (ptr-read-u64 (ptr-read-u64 cellptr 8) 0) out))
+  ;; Doc 147 Phase 0/2 keystone + slot-ptr stubs (compile-only): store a
+  ;; 32B-slot SRC as an 8B WORD / load a WORD back into a 32B view, and
+  ;; the vector/record slot-ptr materialisers, so the emitted bl targets
+  ;; resolve.  Container data buffers are now 8B-per-slot WORDS.
+  (defun nl_val_clone_into (src dst)
+    (if (= (logand src 1) 1)
+        (ptr-write-u64 dst 0 src)
+      (let ((box (nl_alloc_bytes 32 8)))
+        (seq (nl_sexp_clone_into src box)
+             (ptr-write-u64 dst 0 box)))))
+  (defun nl_val_load (word scratch)
+    (if (= (logand word 1) 0) word
+      (seq (ptr-write-u64 scratch 0 word) scratch)))
   (defun nl_alloc_vector (cap)
     (let ((box (nl_alloc_bytes 32 8)))
       (seq
-        (ptr-write-u64 box 8 (nl_alloc_bytes (* cap 32) 8))
+        (ptr-write-u64 box 8 (nl_alloc_bytes (* cap 8) 8))
         (ptr-write-u64 box 16 cap)
         box)))
   (defun nl_vector_set_slot (vec idx valptr)
-    (nl_sexp_clone_into valptr (+ (ptr-read-u64 vec 8) (* idx 32))))
+    (nl_val_clone_into valptr (+ (ptr-read-u64 vec 8) (* idx 8))))
+  (defun nl_vector_slot_ptr (sexpptr idx)
+    (nl_val_load
+     (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexpptr 8) 8) (* idx 8)) 0)
+     (nl_alloc_bytes 32 8)))
   (defun nl_alloc_record (tagptr count)
     (let ((box (nl_alloc_bytes 64 8)))
       (seq
         (nl_sexp_clone_into tagptr box)
-        (ptr-write-u64 box 40 (nl_alloc_bytes (* count 32) 8))
+        (ptr-write-u64 box 40 (nl_alloc_bytes (* count 8) 8))
         (ptr-write-u64 box 48 count)
         box)))
   (defun nl_record_set_slot (rec idx valptr)
-    (nl_sexp_clone_into valptr (+ (ptr-read-u64 rec 40) (* idx 32))))
+    (nl_val_clone_into valptr (+ (ptr-read-u64 rec 40) (* idx 8))))
+  (defun nl_record_slot_ptr (sexpptr idx)
+    (nl_val_load
+     (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexpptr 8) 40) (* idx 8)) 0)
+     (nl_alloc_bytes 32 8)))
   (defun run ()
     (seq
       (syscall-direct 197 34359738368 1048576 3 4114 -1 0)

@@ -12332,47 +12332,61 @@ deref.  Used by `nl_record_type_tag_ptr' to read NlRecord*."
 ;; ---- Doc 111 §111.B Record read+write ops emit ----
 
 (defun nelisp-aot-compiler--emit-record-slot-ptr-core (ptr idx buf)
-  "Leave the raw `*const Sexp' for record slot IDX in rax.
+  "Leave a `*const Sexp' 32B-slot VIEW for record slot IDX in rax.
 
-Doc 111 §111.E #1 fix (two bugs uncovered by the first user of
-`record-slot-ref-ptr', = `mirror_lookup_entry'):
+Doc 147 Phase 2: the NlRecord SLOTS BUFFER now holds one 8-byte
+tagged WORD per slot (was a 32B inline `Sexp'); the inline `type_tag'
+@ box+0 stays 32B (header offsets unchanged).  The prior inline
+`data_ptr + idx*32' address would be wrong on two counts (stride 32
+not 8; the slot is an 8B word, not a 32B Sexp the consumer can read
+tag/payload from).  Delegate to the ABI-stable `nl_record_slot_ptr
+(rec_ptr, idx) -> *const Sexp' .o helper, which:
+  - reads slots Vec.data_ptr from rec_ptr+40,
+  - loads the 8B tagged WORD at data_ptr + idx*8,
+  - returns a 32B-slot VIEW: a pointer WORD (low bit 0) passes
+    through (already a 32B child box); an immediate WORD (low bit 1)
+    is materialised into a FRESH 32B box via `nl_val_load' (the Phase 0
+    keystone).  A fresh box PER immediate slot keeps two+
+    concurrently-live slot-ptr results from aliasing one scratch (=
+    the SCRATCH-LIFETIME HAZARD: e.g. `nl_jit_sxhash' /
+    `nl_fmt_sexp_dispatch' recursion, frame-pop's depth reads).
 
-  1. Per-Sexp slot stride was `nelisp-sexp--size' (= undefined
-     symbol); the canonical constant in `nelisp-sexp-layout.el' is
-     `--slot-size'.
-  2. The slots `Vec<Sexp>' data-pointer read used
-     `nelisp-nlrecord--offset-slots-vec' (= 32), which on the
-     pinned repo Rust toolchain is the Vec's `capacity' field, not
-     the data pointer.  The actual layout is `(capacity, ptr,
-     length)' (= same convention as `vector-ref-ptr-core' over
-     `NlVector'); the data pointer lives at offset `+40' inside
-     NlRecord (= `nelisp-nlrecord--offset-slots-capacity' — name
-     left from a pre-merge `(ptr, cap, len)' assumption that no
-     longer holds).
-
-Both bugs stayed dormant because the §111.B `recordp' probe only
-reads the tag byte and the §111.C `aref-vector' probe goes through
-the NlVector path which has its own correctly-named offset
-constants.  The first composer of `record-slot-ref-ptr'
-(= `mirror_lookup_entry') is the first caller to exercise this
-code, so the test there is the regression gate."
+Returns the view pointer in rax (matches the prior op's contract:
+every `record-slot-ref-ptr' consumer reads a 32B `Sexp' from it)."
   (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-asm-x86_64-push buf 'rax)
   (nelisp-aot-compiler--emit-value idx buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-asm-x86_64-pop buf 'rax)
-  (nelisp-aot-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
-  (nelisp-asm-x86_64-pop buf 'rdi)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf 'r10 'rdi nelisp-sexp--offset-payload)
-  ;; Read the Vec<Sexp>'s data pointer, which on the pinned toolchain
-  ;; lives at byte +40 inside NlRecord (= the `--offset-slots-capacity'
-  ;; constant; the name dates from a (ptr, cap, len) assumption that
-  ;; no longer matches actual layout).  See the comment in
-  ;; `--emit-vector-slot-ptr-core' for the matching NlVector reasoning.
-  (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf 'r10 'r10 nelisp-nlrecord--offset-slots-capacity)
-  (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10))
+  ;; Pop args, marshal to the helper ABI: rdi = rec_ptr, rsi = idx.
+  ;; `slot-ptr-core' is invoked from MANY contexts (record-slot-ref,
+  ;; record-slot-ref-ptr, and nested inside larger value forms), so the
+  ;; rsp alignment at this point is NOT statically known.  Use the
+  ;; dynamic-align idiom (= `record-slot-set's convention): save rsp in
+  ;; the callee-saved r10... actually rbx (callee-saved across the call),
+  ;; `and rsp, -16', then restore.  rbx is preserved by the helper.
+  (if (eq nelisp-aot-compiler--abi 'win64)
+      (progn
+        (nelisp-asm-x86_64-pop buf 'rdx)       ; idx (arg1)
+        (nelisp-asm-x86_64-pop buf 'rcx)       ; rec_ptr (arg0)
+        ;; mov rbx, rsp; and rsp, -16  (dynamic align, rbx callee-saved)
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xE3))
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
+        (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+        (nelisp-asm-x86_64-reloc-plt32-here
+         buf "nl_record_slot_ptr" -4 'text)
+        ;; mov rsp, rbx (restore)
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC)))
+    (nelisp-asm-x86_64-pop buf 'rsi)           ; idx (arg1)
+    (nelisp-asm-x86_64-pop buf 'rdi)           ; rec_ptr (arg0)
+    ;; mov rbx, rsp; and rsp, -16  (dynamic align to 16B for the call)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xE3))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_record_slot_ptr" -4 'text)
+    ;; mov rsp, rbx (restore); rax = the 32B-slot view pointer.
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC))))
 
 (defun nelisp-aot-compiler--emit-record-type-tag (node buf)
   "Copy a record's inline `type_tag' Sexp into the caller-owned slot."
@@ -12538,20 +12552,51 @@ undefined-rax behaviour."
 ;; ---- Doc 111 §111.C Vector read ops emit ----
 
 (defun nelisp-aot-compiler--emit-vector-slot-ptr-core (ptr idx buf)
-  "Leave the raw `*const Sexp' for vector element IDX in rax."
+  "Leave a `*const Sexp' 32B-slot VIEW for vector element IDX in rax.
+
+Doc 147 Phase 2: the NlVector DATA BUFFER now holds one 8-byte tagged
+WORD per element (was a 32B inline `Sexp').  The prior inline
+`data_ptr + idx*32' address would be wrong on two counts (stride 32
+not 8; the slot is an 8B word, not a 32B Sexp the consumer reads
+tag/payload from).  Delegate to the ABI-stable `nl_vector_slot_ptr
+(vec_ptr, idx) -> *const Sexp' .o helper, which reads Vec.data_ptr
+from vec_ptr+8, loads the 8B tagged WORD at data_ptr + idx*8, and
+returns a 32B-slot VIEW (pointer WORD passes through; immediate WORD
+materialised into a FRESH 32B box via `nl_val_load' — one box per
+immediate slot so two+ concurrently-live slot-ptr results never alias
+one scratch, the SCRATCH-LIFETIME HAZARD = e.g. meta-walk's
+`(... (vector-ref-ptr srcs i) (vector-ref-ptr outs i) ...)' and
+env-bind-local's three `(vector-ref-ptr scratch-ptr N)' args).
+
+Returns the view pointer in rax (every `vector-ref-ptr' consumer
+reads a 32B `Sexp' from it).  Dynamic rsp alignment via rbx (=
+`record-slot-set's idiom): `slot-ptr-core' runs at a statically-
+unknown alignment, so save rsp / `and rsp,-16' / restore around the
+`call'.  rbx is callee-saved (preserved by the helper) and unused
+elsewhere in AOT."
   (nelisp-aot-compiler--emit-value ptr buf)
   (nelisp-asm-x86_64-push buf 'rax)
   (nelisp-aot-compiler--emit-value idx buf)
   (nelisp-asm-x86_64-push buf 'rax)
-  (nelisp-asm-x86_64-pop buf 'rax)
-  (nelisp-aot-compiler--imul-rax-imm32 buf nelisp-sexp--slot-size)
-  (nelisp-asm-x86_64-pop buf 'rdi)
-  (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf 'rsi 'rdi nelisp-sexp--offset-payload)
-  ;; Pinned repo toolchain lays out `Vec<Sexp>' as (capacity, ptr, len).
-  (nelisp-asm-x86_64-mov-reg-mem-disp8
-   buf 'rcx 'rsi nelisp-nlvector--offset-value-capacity)
-  (nelisp-asm-x86_64-add-reg-reg buf 'rax 'rcx))
+  (if (eq nelisp-aot-compiler--abi 'win64)
+      (progn
+        (nelisp-asm-x86_64-pop buf 'rdx)       ; idx (arg1)
+        (nelisp-asm-x86_64-pop buf 'rcx)       ; vec_ptr (arg0)
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xE3))
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
+        (nelisp-asm-x86_64-sub-imm32 buf 'rsp 32)
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+        (nelisp-asm-x86_64-reloc-plt32-here
+         buf "nl_vector_slot_ptr" -4 'text)
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC)))
+    (nelisp-asm-x86_64-pop buf 'rsi)           ; idx (arg1)
+    (nelisp-asm-x86_64-pop buf 'rdi)           ; vec_ptr (arg0)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xE3))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0))
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-plt32-here
+     buf "nl_vector_slot_ptr" -4 'text)
+    (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #xDC))))
 
 (defun nelisp-aot-compiler--emit-vector-len (node buf)
   "Read `vector.value.len' into rax."
@@ -14216,17 +14261,19 @@ slot pointer in x0 (matches the `cons-make' ABI)."
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
 (defun nelisp-aot-compiler--emit-record-slot-ptr-core-arm64 (ptr idx buf)
-  "Leave the raw record slot pointer for PTR/IDX in x0."
+  "Leave a 32B-slot VIEW pointer for record slot PTR/IDX in x0.
+Doc 147 Phase 2: the slots buffer is now one 8-byte tagged WORD per
+slot, so delegate to the ABI-stable `nl_record_slot_ptr(rec, idx)' .o
+helper (word load + 32B-slot view materialise via `nl_val_load' into a
+fresh box per immediate slot — no shared-scratch clobber).  x0 = rec
+(arg0), x1 = idx (arg1); SP stays 16-aligned across the str/ldr pair so
+no manual align is needed.  Returns the view pointer in x0."
   (nelisp-aot-compiler--emit-value ptr buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)         ; save rec
   (nelisp-aot-compiler--emit-value idx buf)
-  (nelisp-asm-arm64-mov-imm64 buf 'x9 nelisp-sexp--slot-size)
-  (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9)
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
-  (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 nelisp-sexp--offset-payload)
-  (nelisp-asm-arm64-ldr-imm
-   buf 'x2 'x2 nelisp-nlrecord--offset-slots-capacity)
-  (nelisp-asm-arm64-add-reg-reg buf 'x0 'x2 'x0))
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)       ; x1 = idx (arg1)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)        ; x0 = rec (arg0)
+  (nelisp-asm-arm64-bl buf 'nl_record_slot_ptr))   ; x0 = view ptr
 
 (defun nelisp-aot-compiler--emit-record-type-tag-arm64 (node buf)
   "Emit `record-type-tag' for aarch64 — copy inline type tag to :slot."
@@ -14289,17 +14336,19 @@ slot pointer in x0 (matches the `cons-make' ABI)."
   (nelisp-asm-arm64-mov-imm64 buf 'x0 1))
 
 (defun nelisp-aot-compiler--emit-vector-slot-ptr-core-arm64 (ptr idx buf)
-  "Leave the raw vector element pointer for PTR/IDX in x0."
+  "Leave a 32B-slot VIEW pointer for vector element PTR/IDX in x0.
+Doc 147 Phase 2: the data buffer is now one 8-byte tagged WORD per
+element, so delegate to the ABI-stable `nl_vector_slot_ptr(vec, idx)'
+.o helper (word load + 32B-slot view materialise via `nl_val_load' into
+a fresh box per immediate slot — no shared-scratch clobber).  x0 = vec
+(arg0), x1 = idx (arg1); SP stays 16-aligned across the str/ldr pair so
+no manual align is needed.  Returns the view pointer in x0."
   (nelisp-aot-compiler--emit-value ptr buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)
+  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)         ; save vec
   (nelisp-aot-compiler--emit-value idx buf)
-  (nelisp-asm-arm64-mov-imm64 buf 'x9 nelisp-sexp--slot-size)
-  (nelisp-asm-arm64-mul-reg-reg buf 'x0 'x0 'x9)
-  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x1)
-  (nelisp-asm-arm64-ldr-imm buf 'x2 'x1 nelisp-sexp--offset-payload)
-  (nelisp-asm-arm64-ldr-imm
-   buf 'x2 'x2 nelisp-nlvector--offset-value-capacity)
-  (nelisp-asm-arm64-add-reg-reg buf 'x0 'x2 'x0))
+  (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)       ; x1 = idx (arg1)
+  (nelisp-asm-arm64-ldr-post-sp-16 buf 'x0)        ; x0 = vec (arg0)
+  (nelisp-asm-arm64-bl buf 'nl_vector_slot_ptr))   ; x0 = view ptr
 
 (defun nelisp-aot-compiler--emit-vector-len-arm64 (node buf)
   "Emit `vector-len' for aarch64 — read NlVector.value.length."

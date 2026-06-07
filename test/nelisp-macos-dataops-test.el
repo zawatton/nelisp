@@ -272,6 +272,19 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                      (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
                      (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
                      (ptr-write-u64 dst 24 (ptr-read-u64 src 24))))
+                  ;; Doc 147 Phase 0/2 keystone stubs (compile-only): store a
+                  ;; 32B-slot SRC as an 8B WORD at DST (immediate passthrough
+                  ;; / boxed -> fresh-box ptr) and load a WORD back into a 32B
+                  ;; view.  Minimal shapes so the `bl' targets resolve.
+                  (defun nl_val_clone_into (src dst)
+                    (if (= (logand src 1) 1)
+                        (ptr-write-u64 dst 0 src)
+                      (let ((box (nl_alloc_bytes 32 8)))
+                        (seq (nl_sexp_clone_into src box)
+                             (ptr-write-u64 dst 0 box)))))
+                  (defun nl_val_load (word scratch)
+                    (if (= (logand word 1) 0) word
+                      (seq (ptr-write-u64 scratch 0 word) scratch)))
                   (defun nl_alloc_consbox () (nl_alloc_bytes 72 8))
                   (defun nl_alloc_cell (valptr)
                     (let ((box (nl_alloc_bytes 16 8)))
@@ -284,23 +297,36 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
                   ;; here so the compile-only probe resolves the `bl' target.
                   (defun nl_cell_get_value (cellptr out)
                     (nl_sexp_clone_into (ptr-read-u64 (ptr-read-u64 cellptr 8) 0) out))
+                  ;; Doc 147 Phase 2: Vector/Record data buffers shrank to
+                  ;; 8B-per-slot tagged WORDs; set-slot stores via the
+                  ;; word-keystone and slot-ptr-core materialises a 32B view.
+                  ;; Stub all four so the compile-only probe resolves the
+                  ;; `bl' targets emitted by vector-/record- ops.
                   (defun nl_alloc_vector (cap)
                     (let ((box (nl_alloc_bytes 32 8)))
                       (seq
-                       (ptr-write-u64 box 8 (nl_alloc_bytes (* cap 32) 8))
+                       (ptr-write-u64 box 8 (nl_alloc_bytes (* cap 8) 8))
                        (ptr-write-u64 box 16 cap)
                        box)))
                   (defun nl_vector_set_slot (vec idx valptr)
-                    (nl_sexp_clone_into valptr (+ (ptr-read-u64 vec 8) (* idx 32))))
+                    (nl_val_clone_into valptr (+ (ptr-read-u64 vec 8) (* idx 8))))
+                  (defun nl_vector_slot_ptr (sexpptr idx)
+                    (nl_val_load
+                     (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexpptr 8) 8) (* idx 8)) 0)
+                     (nl_alloc_bytes 32 8)))
                   (defun nl_alloc_record (tagptr count)
                     (let ((box (nl_alloc_bytes 64 8)))
                       (seq
                        (nl_sexp_clone_into tagptr box)
-                       (ptr-write-u64 box 40 (nl_alloc_bytes (* count 32) 8))
+                       (ptr-write-u64 box 40 (nl_alloc_bytes (* count 8) 8))
                        (ptr-write-u64 box 48 count)
                        box)))
                   (defun nl_record_set_slot (rec idx valptr)
-                    (nl_sexp_clone_into valptr (+ (ptr-read-u64 rec 40) (* idx 32))))
+                    (nl_val_clone_into valptr (+ (ptr-read-u64 rec 40) (* idx 8))))
+                  (defun nl_record_slot_ptr (sexpptr idx)
+                    (nl_val_load
+                     (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexpptr 8) 40) (* idx 8)) 0)
+                     (nl_alloc_bytes 32 8)))
                   (defun run ()
                     (seq
                      (syscall-direct 197 8589934592 1048576 3 4114 -1 0)

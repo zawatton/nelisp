@@ -10,17 +10,25 @@
 
 ;; Replaces the Rust `nl_alloc_vector' body in
 ;; `build-tool/src/eval/nlvector.rs' with a AOT-compiled elisp
-;; object.  The function allocates a fresh `NlVector' holding a
-;; `Vec<Sexp>' pre-filled with `Sexp::Nil' elements.
+;; object.  The function allocates a fresh `NlVector' whose data
+;; buffer holds `Sexp::Nil' tagged WORDS (Doc 147 Phase 2 shrink).
 ;;
-;; NlVector layout (pinned by `#[repr(C)]' + compile-time asserts):
+;; NlVector HEADER layout (UNCHANGED — pinned by `#[repr(C)]'):
 ;;
 ;;   value: Vec<Sexp> @ 0  (24 bytes)
 ;;     Vec.capacity @ 0   (8 bytes — element count)
-;;     Vec.data_ptr @ 8   (8 bytes — *mut Sexp, data buffer)
+;;     Vec.data_ptr @ 8   (8 bytes — *mut Sexp-word, data buffer)
 ;;     Vec.len      @ 16  (8 bytes — element count)
 ;;   refcount       @ 24  (8 bytes — AtomicUsize)
 ;;   total = 32 bytes, align = 8
+;;
+;; Doc 147 Phase 2 — the DATA BUFFER shrinks from `cap * 32B` (one
+;; inline `Sexp' per slot) to `cap * 8B` (one tagged WORD per slot).
+;; A tagged WORD is 8 bytes: low bit 1 = immediate (Nil = 3, T = 7,
+;; Int = (n<<2)|1); low bit 0 = 8-aligned pointer to a 32B child Sexp
+;; box (children stay 32B; only the container SLOTS shrink).  The
+;; header above is UNCHANGED — only the separately-allocated buffer
+;; pointed at by `Vec.data_ptr' gets the 8B-per-slot stride.
 ;;
 ;; Vec<Sexp> memory layout: the pinned repo toolchain uses
 ;; `(capacity, data_ptr, len)' field order — i.e. `nelisp-nlvector--
@@ -33,9 +41,10 @@
 ;; Build strategy (three helper defuns + public entry):
 ;;
 ;;   nl_alloc_vector_fill (data-ptr i cap) — recursive Nil-fill loop
-;;     that tags each 32-byte slot at `data-ptr + i * 32' with a Nil
-;;     tag byte via `sexp-write-nil', counts from i up to cap, then
-;;     returns data-ptr.
+;;     that writes the 8-byte Nil WORD (= u64 3) into each slot at
+;;     `data-ptr + i * 8', counts from i up to cap, then returns
+;;     data-ptr.  (Doc 147 Phase 2: stride 8, full 8B WORD store —
+;;     was a 32-byte stride + 1-byte Nil tag.)
 ;;
 ;;   nl_alloc_vector_build (box-ptr data-ptr cap) — writes the four
 ;;     words of the NlVector struct:
@@ -50,17 +59,15 @@
 ;;     original data-ptr.
 ;;
 ;;   nl_alloc_vector (capacity) — clamps negative capacity to 0,
-;;     allocates the 32-byte struct + cap*32-byte data buffer, and
+;;     allocates the 32-byte struct + cap*8-byte data buffer, and
 ;;     delegates to `nl_alloc_vector_with_data'.
 ;;
-;; Nil-fill via `sexp-write-nil': writes only the tag byte (1 byte) at
-;; each 32-byte Sexp slot, leaving the remaining 31 bytes
-;; uninitialized.  This is safe because `Sexp::Nil' has no heap
-;; payload; `nl_vector_set_slot' (the only way to update a slot after
-;; alloc) calls `drop_in_place' on the old slot before writing the new
-;; value — dropping an uninitialised tail of a Nil Sexp is a no-op
-;; because Nil's drop glue only checks the tag byte.  This matches the
-;; `nl_alloc_consbox_init' PoC precedent (`nelisp-cc-nlconsbox-alloc.el').
+;; Nil-fill via `ptr-write-u64 .. 3': writes the 8-byte Nil immediate
+;; WORD (= 3) into each slot, fully initialising the 8B slot.  This is
+;; safe because the Nil WORD is a self-contained immediate (low bit 1,
+;; no heap payload); `nl_vector_set_slot' (the only way to update a
+;; slot after alloc) installs a new tagged WORD via `nl_val_clone_into'
+;; over the prior Nil WORD (the old immediate slot needs no drop).
 ;;
 ;; Capacity = 0 case: `alloc-bytes(0, 8)' returns null (per `nl_layout'
 ;; in `raw_mem.rs' which rejects size = 0).  The resulting NlVector has
@@ -82,17 +89,19 @@
 
 (defconst nelisp-cc-nlvector-alloc--source
   '(seq
-    ;; Recursive Nil-fill loop.  Tags each 32-byte slot starting at
-    ;; index i with a Nil tag byte, then recurses until i == cap.
-    ;; Returns data-ptr (= input) when done; non-zero when data-ptr
-    ;; is non-null (= cap > 0 case), and 0 when cap = 0 (data-ptr =
-    ;; null from alloc-bytes(0, 8)).  The caller `nl_alloc_vector_with_data'
-    ;; passes the return of this function directly to `nl_alloc_vector_build'
-    ;; which handles both null and non-null data-ptr correctly.
+    ;; Recursive Nil-fill loop.  Writes the 8-byte Nil immediate WORD
+    ;; (= 3) into each slot starting at index i, then loops until
+    ;; i == cap.  (Doc 147 Phase 2: stride 8, full 8B WORD store — was
+    ;; a 32-byte stride + 1-byte Nil tag.)  Returns data-ptr (= input)
+    ;; when done; non-zero when data-ptr is non-null (= cap > 0 case),
+    ;; and 0 when cap = 0 (data-ptr = null from alloc-bytes(0, 8)).
+    ;; The caller `nl_alloc_vector_with_data' passes the return of this
+    ;; function directly to `nl_alloc_vector_build' which handles both
+    ;; null and non-null data-ptr correctly.
     (defun nl_alloc_vector_fill (data-ptr i cap)
       (let ((k i))
         (while (< k cap)
-          (and (sexp-write-nil (+ data-ptr (* k 32))) (setq k (+ k 1))))
+          (and (ptr-write-u64 (+ data-ptr (* k 8)) 0 3) (setq k (+ k 1))))
         data-ptr))
 
     ;; Write the four words of the NlVector struct and return box-ptr.
@@ -127,13 +136,14 @@
     (defun nl_alloc_vector (capacity)
       (nl_alloc_vector_with_data
        (alloc-bytes 32 8)
-       (alloc-bytes (* (if (< capacity 0) 0 capacity) 32) 8)
+       (alloc-bytes (* (if (< capacity 0) 0 capacity) 8) 8)
        (if (< capacity 0) 0 capacity))))
   "AOT source for the `nl_alloc_vector' allocator swap.
 
 Four-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_vector_fill (data-ptr i cap) -> data-ptr' — recursive
-  Nil-fill loop; tags each 32-byte slot at data-ptr+i*32.
+  Nil-fill loop; writes the 8B Nil WORD (= 3) at data-ptr+i*8
+  (Doc 147 Phase 2 stride shrink 32 -> 8).
 - `nl_alloc_vector_build (box-ptr data-ptr cap) -> box-ptr' — writes
   the Vec header (capacity@0, data_ptr@8, len@16) and refcount@24.
 - `nl_alloc_vector_with_data (box-ptr data-ptr cap) -> box-ptr' —
@@ -141,10 +151,10 @@ Four-entry `(seq DEFUN ...)' manifest:
 - `nl_alloc_vector (capacity) -> *mut NlVector' — public entry.
 
 AOT ops consumed:
-  `alloc-bytes'   — 2-arg `nl_alloc_bytes'; 32 bytes for struct, cap*32
-                    bytes for element buffer.
-  `sexp-write-nil' — tags each slot with SEXP_TAG_NIL (1 byte write).
-  `ptr-write-u64'  — 4 writes for Vec header + refcount.
+  `alloc-bytes'   — 2-arg `nl_alloc_bytes'; 32 bytes for struct, cap*8
+                    bytes for element buffer (Doc 147 Phase 2 shrink).
+  `ptr-write-u64'  — Nil-WORD (= 3) fill per slot + 4 Vec header /
+                    refcount writes.
   `if' / `<' / `*' / `+' — control flow + arithmetic.
 
 Net Rust delta: deletes the 10-LOC `nl_alloc_vector' body + safety

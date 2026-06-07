@@ -80,22 +80,37 @@
       ;; semantics.
       ;;
       ;; On miss: `nelisp_mirror_alloc_entry' builds the fresh
-      ;; `symbol-entry' Record into scratch slot 6, then
+      ;; `symbol-entry' Record into ENTRY-SLOT, then
       ;; `nelisp_mirror_bucket_prepend' hashes NAME and prepends the
       ;; `(KEY-STR . ENTRY-RECORD)' bucket cell.  Both ops return 1.
+      ;;
+      ;; Doc 147 Phase 2 decouple: the entry result was written THROUGH
+      ;; `(vector-ref-ptr scratch-vec-ptr 6)' (a Vector interior pointer)
+      ;; and read back the same way.  Post-Phase-2 the Vector slot is an
+      ;; 8B WORD and `vector-ref-ptr' returns a TRANSIENT materialised
+      ;; view of the slot's word (a fresh box for the Nil slot), so the
+      ;; `record-make' 32B write landed in a throwaway box and the
+      ;; read-back saw Nil -> null entry -> SIGSEGV.  Fix: stage the new
+      ;; entry in a fresh 32B STACK slot ENTRY-SLOT (`alloc-bytes 32 8'
+      ;; on the per-eval arena), written by alloc_entry and read by
+      ;; bucket_prepend (which CLONES it into the bucket cons via
+      ;; `cons-set-cdr' -> `nl_val_clone_into', so the stack slot is
+      ;; never a counted owner).  Mirrors the env-bind-local cell-slot
+      ;; decoupling.  Scratch slot 6 is now unused on this path.
       (if (= entry-ptr 0)
-          (and
-           (extern-call nelisp_mirror_alloc_entry
-                        (vector-ref-ptr scratch-vec-ptr 5)  ; tag-sym
-                        (vector-ref-ptr scratch-vec-ptr 7)  ; value
-                        (vector-ref-ptr scratch-vec-ptr 8)  ; function
-                        (vector-ref-ptr scratch-vec-ptr 9)  ; plist
-                        (vector-ref-ptr scratch-vec-ptr 10) ; constant
-                        (vector-ref-ptr scratch-vec-ptr 6)) ; result
-           (extern-call nelisp_mirror_bucket_prepend
-                        mirror-ptr sym-ptr
-                        (vector-ref-ptr scratch-vec-ptr 6)  ; entry
-                        scratch-vec-ptr))                   ; scratch
+          (let ((entry-slot (alloc-bytes 32 8)))
+            (and
+             (extern-call nelisp_mirror_alloc_entry
+                          (vector-ref-ptr scratch-vec-ptr 5)  ; tag-sym
+                          (vector-ref-ptr scratch-vec-ptr 7)  ; value
+                          (vector-ref-ptr scratch-vec-ptr 8)  ; function
+                          (vector-ref-ptr scratch-vec-ptr 9)  ; plist
+                          (vector-ref-ptr scratch-vec-ptr 10) ; constant
+                          entry-slot)                         ; result (stack)
+             (extern-call nelisp_mirror_bucket_prepend
+                          mirror-ptr sym-ptr
+                          entry-slot                          ; entry (stack)
+                          scratch-vec-ptr)))                  ; scratch
         (and (record-slot-set entry-ptr 0
                               (vector-ref-ptr scratch-vec-ptr 7))
              1)))

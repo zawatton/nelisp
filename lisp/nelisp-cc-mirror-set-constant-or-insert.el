@@ -36,19 +36,24 @@
         (entry-ptr mirror-ptr sym-ptr scratch-vec-ptr _pad _pad2)
       ;; Dispatch on ENTRY-PTR; hit-path writes slot 3 (= constant
       ;; flag).  See `set_value_or_insert_dispatch' for details.
+      ;; Doc 147 Phase 2 decouple (see `mirror_set_value_or_insert' for the
+      ;; full rationale): stage the new entry in a fresh 32B STACK slot
+      ;; ENTRY-SLOT instead of writing-through `(vector-ref-ptr scratch 6)'
+      ;; (now an 8B WORD slot whose `vector-ref-ptr' view is transient).
       (if (= entry-ptr 0)
-          (and
-           (extern-call nelisp_mirror_alloc_entry
-                        (vector-ref-ptr scratch-vec-ptr 5)
-                        (vector-ref-ptr scratch-vec-ptr 7)
-                        (vector-ref-ptr scratch-vec-ptr 8)
-                        (vector-ref-ptr scratch-vec-ptr 9)
-                        (vector-ref-ptr scratch-vec-ptr 10)
-                        (vector-ref-ptr scratch-vec-ptr 6))
-           (extern-call nelisp_mirror_bucket_prepend
-                        mirror-ptr sym-ptr
-                        (vector-ref-ptr scratch-vec-ptr 6)
-                        scratch-vec-ptr))
+          (let ((entry-slot (alloc-bytes 32 8)))
+            (and
+             (extern-call nelisp_mirror_alloc_entry
+                          (vector-ref-ptr scratch-vec-ptr 5)
+                          (vector-ref-ptr scratch-vec-ptr 7)
+                          (vector-ref-ptr scratch-vec-ptr 8)
+                          (vector-ref-ptr scratch-vec-ptr 9)
+                          (vector-ref-ptr scratch-vec-ptr 10)
+                          entry-slot)
+             (extern-call nelisp_mirror_bucket_prepend
+                          mirror-ptr sym-ptr
+                          entry-slot
+                          scratch-vec-ptr)))
         (and (record-slot-set entry-ptr 3
                               (vector-ref-ptr scratch-vec-ptr 10))
              1)))
