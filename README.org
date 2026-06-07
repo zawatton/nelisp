@@ -331,10 +331,16 @@ platform, then run =make standalone-reader=.
 
 Tier guarantees (v2.0):
 - =linux-x86_64= — 1st-class (CI blocker, every release must pass).
-- =linux-aarch64= / =macos-aarch64= / =macos-x86_64= — supported by
-  the elisp object-file writers, end-to-end CI gate pending.
-- =windows-x86_64= — supported by =nelisp-pe-write.el= + Win64 ABI
-  codegen; end-to-end link + execute verification pending CI setup.
+- =macos-aarch64= / =windows-x86_64= — end-to-end CI gated on real
+  runners (=macos-14= / =windows-latest=) via
+  =.github/workflows/stage-d-v3.0-standalone.yml=: native self-host
+  (Mach-O / PE32+), OS-compat ERT, native eval/reader, cache identity,
+  parallel build, and tarball/install of the native CLI.  macOS uses
+  ad-hoc =codesign= for native execution.  Not release blockers —
+  =linux-x86_64= remains the hard gate.
+- =linux-aarch64= / =macos-x86_64= — supported by the elisp
+  object-file writers (=nelisp-elf-write.el= / =nelisp-mach-o-write.el=),
+  but no dedicated CI runner job yet (best-effort).
 - =windows-aarch64= (=arm64ec=) — deferred.
 
 Linux (Debian / Ubuntu):

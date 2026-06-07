@@ -1011,43 +1011,96 @@ addressing by a runtime base, never by a fixed reservation."
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc(NULL, ...)."
   `(defun nl_arena_init ()
-     (let ((base (extern-call VirtualAlloc 0
-                              ,nelisp-standalone--windows-arena-size
-                              12288 4)))
+     (let ((base (nl_os_alloc_chunk ,nelisp-standalone--windows-arena-size)))
        (if (= base 0)
            (extern-call ExitProcess 88)
          (seq
           (ptr-write-u64 (data-addr nl_arena_base) 0 base)
           ,@(nelisp-standalone--arena-init-metadata-forms-dynamic
              'base nelisp-standalone--windows-arena-size)
+          (nl_intern_region_init)
           base)))))
+
+(defun nelisp-standalone--windows-intern-region-init-form ()
+  "Return Windows `nl_intern_region_init' using VirtualAlloc(NULL, ...)."
+  '(defun nl_intern_region_init ()
+     (let ((rbase (extern-call VirtualAlloc 0 67108864 12288 4)))
+       (if (= rbase 0)
+           0
+         (seq
+          (ptr-write-u64 268436288 0 rbase)
+          (ptr-write-u64 268436296 0 (+ rbase 16777216)))))))
 
 (defun nelisp-standalone--windows-alloc-chunk-form ()
   "Return Windows chunk allocation forms using VirtualAlloc(NULL, ...)."
   '((defun nl_os_alloc_chunk (size)
-      (extern-call VirtualAlloc 0 size 12288 4))
+      (let ((base (extern-call VirtualAlloc 0 size 8192 4)))
+        (if (= base 0)
+            0
+          (if (= (extern-call VirtualAlloc base 4096 4096 4) 0)
+              (seq (extern-call VirtualFree base 0 32768) 0)
+            base))))
+    (defun nl_os_free_chunk (base _size)
+      (extern-call VirtualFree base 0 32768))  ; MEM_RELEASE=0x8000; size must be 0
+    (defun nl_os_commit_range (base old new)
+      (if (= (extern-call VirtualAlloc (+ base old) (- new old) 4096 4) 0) 0 1))
     (defun nl_os_alloc_fail ()
       (extern-call ExitProcess 88))))
+
+(defun nelisp-standalone--windows-chunk-try-alloc-form ()
+  "Return Windows `nl_chunk_try_alloc' with on-demand page commit."
+  '(defun nl_chunk_try_alloc (chunk want)
+     (let* ((base (ptr-read-u64 (+ chunk 0) 0))
+            (size (ptr-read-u64 (+ chunk 8) 0))
+            (cursor_addr (nl_chunk_cursor_addr chunk))
+            (obj 0)
+            (done 0))
+       (seq
+        (while (= done 0)
+          (let* ((old (ptr-read-u64 cursor_addr 0))
+                 (new (+ old want)))
+            (if (> new size)
+                (setq done 1)
+              (if (= (atomic-compare-exchange cursor_addr old new) 1)
+                  (if (= (nl_os_commit_range base old new) 0)
+                      (setq done 1)
+                    (seq
+                     (setq obj (+ base (+ old 8)))
+                     (ptr-write-u64 (- obj 8) 0 want)
+                     (setq done 1)))
+                0))))
+        obj))))
 
 (defun nelisp-standalone--macos-arena-init-form ()
   "Return the macOS `nl_arena_init' form using Darwin mmap(NULL, ...)."
   `(defun nl_arena_init ()
-     (let ((base (syscall-direct 197 0
-                                 ,nelisp-standalone--macos-arena-size
-                                 3 4098 -1 0)))
-       (if (< base 4096)
+     (let ((base (nl_os_alloc_chunk ,nelisp-standalone--macos-arena-size)))
+       (if (= base 0)
            (syscall-direct 1 88 0 0 0 0 0)
            (seq
             (ptr-write-u64 (data-addr nl_arena_base) 0 base)
             ,@(nelisp-standalone--arena-init-metadata-forms-dynamic
                'base nelisp-standalone--macos-arena-size)
+            (nl_intern_region_init)
             base)))))
+
+(defun nelisp-standalone--macos-intern-region-init-form ()
+  "Return macOS `nl_intern_region_init' using Darwin mmap(NULL, ...)."
+  '(defun nl_intern_region_init ()
+     (let ((rbase (syscall-direct 197 0 67108864 3 4098 -1 0)))
+       (if (< rbase 4096)
+           0
+         (seq
+          (ptr-write-u64 268436288 0 rbase)
+          (ptr-write-u64 268436296 0 (+ rbase 16777216)))))))
 
 (defun nelisp-standalone--macos-alloc-chunk-form ()
   "Return macOS chunk allocation forms using mmap(NULL, ...)."
   '((defun nl_os_alloc_chunk (size)
       (let ((p (syscall-direct 197 0 size 3 4098 -1 0)))
         (if (< p 4096) 0 p)))
+    (defun nl_os_free_chunk (base size)
+      (syscall-direct 73 base size 0 0 0 0))  ; Darwin munmap(base, size)
     (defun nl_os_alloc_fail ()
       (syscall-direct 1 88 0 0 0 0 0))))
 
@@ -1055,29 +1108,52 @@ addressing by a runtime base, never by a fixed reservation."
   "Return the arena source adjusted for the current standalone target."
   (pcase nelisp-standalone--target
     ((or 'linux-x86_64 'windows-x86_64 'macos-aarch64)
-     (let ((init-form (pcase nelisp-standalone--target
+     (let* ((init-form (pcase nelisp-standalone--target
                         ('linux-x86_64 (nelisp-standalone--linux-arena-init-form))
                         ('windows-x86_64 (nelisp-standalone--windows-arena-init-form))
                         ('macos-aarch64 (nelisp-standalone--macos-arena-init-form))))
            (chunk-forms (pcase nelisp-standalone--target
                           ('linux-x86_64 (nelisp-standalone--linux-alloc-chunk-form))
                           ('windows-x86_64 (nelisp-standalone--windows-alloc-chunk-form))
-                          ('macos-aarch64 (nelisp-standalone--macos-alloc-chunk-form)))))
-       (cons 'seq
-             (mapcar (lambda (form)
-                       (if (and (consp form)
-                                (eq (car form) 'defun)
-                                (eq (cadr form) 'nl_arena_init))
-                           init-form
-                         (if (and (consp form)
-                                  (eq (car form) 'defun)
-                                  (memq (cadr form)
-                                        '(nl_os_alloc_chunk nl_os_free_chunk nl_os_alloc_fail)))
+                          ('macos-aarch64 (nelisp-standalone--macos-alloc-chunk-form))))
+           (intern-form (pcase nelisp-standalone--target
+                          ('windows-x86_64 (nelisp-standalone--windows-intern-region-init-form))
+                          ('macos-aarch64 (nelisp-standalone--macos-intern-region-init-form))
+                          (_ nil)))
+           (try-alloc-form (pcase nelisp-standalone--target
+                             ('windows-x86_64
+                              (nelisp-standalone--windows-chunk-try-alloc-form))
+                             (_ nil)))
+           (commit-form (and (eq nelisp-standalone--target 'windows-x86_64)
                              (cl-find-if (lambda (chunk-form)
-                                           (eq (cadr chunk-form) (cadr form)))
-                                         chunk-forms)
-                           form)))
-                     (cdr nelisp-standalone--arena-source)))))
+                                           (eq (cadr chunk-form) 'nl_os_commit_range))
+                                         chunk-forms)))
+           (body (mapcar (lambda (form)
+                           (if (and (consp form)
+                                    (eq (car form) 'defun)
+                                    (eq (cadr form) 'nl_arena_init))
+                               init-form
+                             (if (and try-alloc-form
+                                      (consp form)
+                                      (eq (car form) 'defun)
+                                      (eq (cadr form) 'nl_chunk_try_alloc))
+                                 try-alloc-form
+                               (if (and intern-form
+                                        (consp form)
+                                        (eq (car form) 'defun)
+                                        (eq (cadr form) 'nl_intern_region_init))
+                                   intern-form
+                                 (if (and (consp form)
+                                          (eq (car form) 'defun)
+                                          (memq (cadr form)
+                                                '(nl_os_alloc_chunk nl_os_free_chunk
+                                                  nl_os_alloc_fail)))
+                                     (cl-find-if (lambda (chunk-form)
+                                                   (eq (cadr chunk-form) (cadr form)))
+                                                 chunk-forms)
+                                   form)))))
+                         (cdr nelisp-standalone--arena-source))))
+       (cons 'seq (if commit-form (append body (list commit-form)) body))))
     (_ nelisp-standalone--arena-source)))
 
 ;; ===================================================================
@@ -4268,7 +4344,7 @@ units)."
     (pcase nelisp-standalone--target
       ('windows-x86_64
        (nelisp-link-units-pe32 out units "_start"
-                               '("ExitProcess" "VirtualAlloc")
+                               '("ExitProcess" "VirtualAlloc" "VirtualFree")
                                (list :stack-reserve
                                      nelisp-standalone--windows-stack-reserve)))
       ('macos-aarch64
@@ -4424,7 +4500,7 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
 
 (defconst nelisp-standalone--windows-reader-imports
   (list (cons "KERNEL32.dll"
-              (list "ExitProcess" "VirtualAlloc" "GetCommandLineW"
+              (list "ExitProcess" "VirtualAlloc" "VirtualFree" "GetCommandLineW"
                     "GetStdHandle" "CreateFileW" "ReadFile" "WriteFile"
                     "CloseHandle" "WideCharToMultiByte"
                     "MultiByteToWideChar"))
