@@ -3176,6 +3176,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-path") . (nl_bi_syscall_path args out))
     ((:lit "nelisp--syscall-path2") . (nl_bi_syscall_path2 args out))
     ((:lit "nelisp--syscall-path-int") . (nl_bi_syscall_path_int args out))
+    ((:lit "nelisp--syscall-stat-field") . (nl_bi_syscall_stat_field args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
@@ -3407,6 +3408,21 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
              (cpath (nl_bi_make_cpath path_sx))
              (rc (syscall-direct nr cpath iarg 0 0 0 0)))
         (wf_write_int out rc)))
+    ;; nelisp--syscall-stat-field PATH OFFSET: stat(2) PATH into a 144-byte
+    ;; struct stat buffer, then return the u64 at byte OFFSET (little-endian).
+    ;; Returns the negative kernel errno when stat fails.  The substrate masks
+    ;; sub-8-byte fields itself.  Linux x86_64 struct stat offsets: st_dev 0,
+    ;; st_ino 8, st_nlink 16, st_mode 24, st_uid 28, st_gid 32, st_size 48,
+    ;; st_atime 72, st_mtime 88, st_ctime 104.  Pure elisp, no new Rust.
+    (defun nl_bi_syscall_stat_field (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (offset (wf_argval args 1))
+             (cpath (nl_bi_make_cpath path_sx))
+             (buf (alloc-bytes 144 8))
+             (rc (syscall-direct 4 cpath buf 0 0 0 0)))
+        (if (< rc 0)
+            (wf_write_int out rc)
+          (wf_write_int out (ptr-read-u64 buf offset)))))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
@@ -4300,6 +4316,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
+    "nelisp--syscall-stat-field"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
     "exit"
