@@ -3006,6 +3006,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-path2") . (nl_bi_syscall_path2 args out))
     ((:lit "nelisp--syscall-path-int") . (nl_bi_syscall_path_int args out))
     ((:lit "nelisp--syscall-stat-field") . (nl_bi_syscall_stat_field args out))
+    ((:lit "nelisp--syscall-stat-buf") . (nl_bi_syscall_stat_buf args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
@@ -3252,6 +3253,18 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out (ptr-read-u64 buf offset)))))
+    ;; nelisp--syscall-stat-buf PATH: stat(2) PATH into a fresh 144-byte struct
+    ;; stat buffer and return that buffer's pointer (a positive address), or the
+    ;; negative kernel errno on failure.  The caller reads individual fields
+    ;; with ptr-read-u64 -- ONE stat for the whole struct (vs one per field).
+    (defun nl_bi_syscall_stat_buf (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (cpath (nl_bi_make_cpath path_sx))
+             (buf (alloc-bytes 144 8))
+             (rc (syscall-direct 4 cpath buf 0 0 0 0)))
+        (if (< rc 0)
+            (wf_write_int out rc)
+          (wf_write_int out buf))))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
@@ -4141,7 +4154,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "wrf" "rdf" "slen" "load"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
-    "nelisp--syscall-stat-field"
+    "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
     "exit"
