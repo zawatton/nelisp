@@ -3181,6 +3181,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-lstat-buf") . (nl_bi_syscall_lstat_buf args out))
     ((:lit "nelisp--syscall-readlink") . (nl_bi_syscall_readlink args out))
     ((:lit "nelisp--syscall-utimes") . (nl_bi_syscall_utimes args out))
+    ((:lit "nelisp--syscall-statx-buf") . (nl_bi_syscall_statx_buf args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
@@ -3477,6 +3478,21 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
          (ptr-write-u64 buf 16 mtime)
          (ptr-write-u64 buf 24 0)
          (wf_write_int out (syscall-direct 235 cpath buf 0 0 0 0)))))
+    ;; nelisp--syscall-statx-buf PATH FLAGS: statx(2) (syscall 332) into a
+    ;; 256-byte struct statx buffer; return its pointer (positive) or the
+    ;; negative kernel errno.  dirfd = AT_FDCWD (-100), mask = STATX_BASIC_STATS
+    ;; | STATX_BTIME (0xfff).  FLAGS = AT_SYMLINK_NOFOLLOW (0x100) for an
+    ;; lstat-like probe, 0 to follow.  Exposes birth time (stx_btime @80/@88)
+    ;; that struct stat lacks; caller reads fields with ptr-read-u64.
+    (defun nl_bi_syscall_statx_buf (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (flags (wf_argval args 1))
+             (cpath (nl_bi_make_cpath path_sx))
+             (buf (alloc-bytes 256 8))
+             (rc (syscall-direct 332 (- 0 100) cpath flags 4095 buf 0)))
+        (if (< rc 0)
+            (wf_write_int out rc)
+          (wf_write_int out buf))))
     (defun nl_bi_write_file_t (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cont_sx (wf_arg_ptr args 1))
@@ -4372,7 +4388,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
     "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
-    "nelisp--syscall-utimes"
+    "nelisp--syscall-utimes" "nelisp--syscall-statx-buf"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
     "exit"
