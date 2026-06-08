@@ -30,11 +30,10 @@
 ;;   returns   i64 = *const Sexp (pointer to the car field of the
 ;;                  idx-th cons cell), or 0 when idx >= list length.
 ;;
-;; Layout constants (§100.B frozen):
+;; Layout constants (§100.B + Doc 147 frozen):
 ;;   SEXP_TAG_CONS = 7
-;;   SEXP_PAYLOAD_OFFSET = 8       (= sexp-payload-ptr reads at [PTR+8])
-;;   NlConsBox::car @ offset 0     (= box ptr IS &car)
-;;   NlConsBox::cdr @ offset 32    (= box ptr + 32 IS &cdr as *const Sexp)
+;;   Cons car/cdr slots are 8-byte tagged WORDs; use nl_cons_car_ptr and
+;;   nl_cons_cdr_ptr to obtain 32B Sexp views.
 ;;
 ;; Implementation:
 ;;   `nl_bf_args_nth_step (cur remaining)' — recursive list walker.
@@ -42,11 +41,9 @@
 ;;     remaining: i64 countdown (0 → return car ptr of cur).
 ;;
 ;;   `(sexp-tag cur)' reads the tag byte at [cur+0].  When == 7 (Cons):
-;;     - remaining == 0: return `(sexp-payload-ptr cur)' = NlConsBox*
-;;                       which equals &b.car (NlConsBox::car at offset 0).
-;;     - remaining >  0: recurse with cur = `(+ (sexp-payload-ptr cur) 32)'
-;;                       (= address of NlConsBox::cdr = *const Sexp for
-;;                       the next list element) and remaining - 1.
+;;     - remaining == 0: return `(nl_cons_car_ptr cur)'.
+;;     - remaining >  0: recurse with cur = `(nl_cons_cdr_ptr cur)' and
+;;                       remaining - 1.
 ;;   Non-Cons (nil or end): return 0.
 ;;
 ;;   `nl_bf_args_nth_ptr' is the public entry, a thin wrapper over the
@@ -54,8 +51,8 @@
 ;;
 ;; AOT ops consumed:
 ;;   `(sexp-tag PTR)'          — tag byte check (inline).
-;;   `(sexp-payload-ptr PTR)'  — NlConsBox* when tag==7, else 0 (inline).
-;;   `(+ A B)', `(- A B)'      — pointer arithmetic / counter.
+;;   `nl_cons_car_ptr' / `nl_cons_cdr_ptr' — materialised cons slot views.
+;;   `(- A B)'                — counter decrement.
 ;;   `(if TEST THEN ELSE)'     — dispatch.
 ;;   `(= A B)'                 — comparison.
 ;;   Recursive defun call      — tail-call walk pattern (CPS-style).
@@ -81,23 +78,20 @@
     ;; cur:       *const Sexp — current position in the cons list.
     ;; remaining: i64 countdown (0 = return car-ptr here).
     ;;
-    ;; Tail-call recursion: each step follows the cdr pointer
-    ;; `(+ (sexp-payload-ptr cur) 32)' to the next cons cell.
-    ;; NlConsBox::cdr is at offset 32 from the box pointer
-    ;; returned by sexp-payload-ptr.  That address IS the *const Sexp
-    ;; for the cdr Sexp value stored in-place inside the NlConsBox.
+    ;; Tail-call recursion: each step follows the cdr through
+    ;; `nl_cons_cdr_ptr', which materialises 8-byte tagged WORD cdrs
+    ;; as 32B Sexp views.
     ;;
-    ;; On the hit branch (remaining == 0), `(sexp-payload-ptr cur)'
-    ;; returns NlConsBox* = &b.car (NlConsBox::car at offset 0) which
-    ;; is the same value Rust returns as `&b.car as *const Sexp as i64'.
+    ;; Doc 147 Phase 3 shrank cons car/cdr to 8-byte tagged WORD slots.
+    ;; Use nl_cons_car_ptr/nl_cons_cdr_ptr so immediate values are
+    ;; materialised as 32B Sexp views before bind_formals consumes them.
     ;;
     ;; Arity 2 (even).
     (defun nl_bf_args_nth_step (cur remaining)
       (if (= (sexp-tag cur) 7)
           (if (= remaining 0)
-              (sexp-payload-ptr cur)
-            (nl_bf_args_nth_step (+ (sexp-payload-ptr cur) 32)
-                                 (- remaining 1)))
+              (nl_cons_car_ptr cur)
+            (nl_bf_args_nth_step (nl_cons_cdr_ptr cur) (- remaining 1)))
         0))
 
     ;; nl_bf_args_nth_ptr — public entry point.
@@ -116,13 +110,11 @@ Two defuns in a `seq' form:
   `nl_bf_args_nth_step (cur remaining)' — recursive walker (arity 2).
   `nl_bf_args_nth_ptr  (args_ptr idx)' — public entry (arity 2).
 
-The walker follows NlConsBox::cdr chains via pointer arithmetic:
-  cdr-address = sexp-payload-ptr(cur) + 32
-              = NlConsBox* + sizeof(NlConsBox::car)
-              = &b.cdr as *const Sexp
+The walker follows cons cells via nl_cons_cdr_ptr so Doc 147 8-byte
+tagged WORD cdr slots are materialised when needed.
 
 On a hit (remaining == 0 and cur is Cons):
-  return = sexp-payload-ptr(cur) = NlConsBox* = &b.car as *const Sexp
+  return = nl_cons_car_ptr(cur), a 32B Sexp view of the car value.
 
 Called via `(extern-call nl_bf_args_nth_ptr args IDX)' from
 `nelisp-cc-bind-formals.el' in the Required-mode dispatch branch

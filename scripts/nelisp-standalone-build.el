@@ -3938,11 +3938,13 @@ and thread head_ptr at its call site in nl_eval_inner_cons.  COMPOSE AFTER
          (cdr src))))
 
 (defun nelisp-standalone--patch-combiner-cons-full (src)
-  "Apply BOTH combiner-cons build-time patches in order: the catch/throw dispatch
-patch (`--patch-combiner-cons') first, then the macro-expansion in-place caching
-patch (`--patch-macro-cache').  Both patch the same combiner-cons source."
-  (nelisp-standalone--patch-macro-cache
-   (nelisp-standalone--patch-combiner-cons src)))
+  "Apply combiner-cons build-time patches that are valid for Doc 147 layout.
+
+The old macro-expansion in-place cache assumed `head_ptr' was the original
+form's cons box.  After Doc 147, `head_ptr' is a materialised 32B car view from
+`nl_cons_car_ptr', so caching corrupts memory.  Keep the catch/throw and
+void-function fixes, and leave macro expansion uncached."
+  (nelisp-standalone--patch-combiner-cons src))
 
 ;; CORRECTED arg-list walk.  Byte-identical to nelisp-cc-evalport-combiner-arglist
 ;; --source EXCEPT the success tail wraps the constructor in (seq ... 0): the
@@ -5944,13 +5946,8 @@ correctly."
     ("sf-cc.o"             nelisp-cc-sf-condition-case            nelisp-cc-sf-condition-case--source)
     ("sf-uwp.o"            nelisp-cc-sf-unwind-protect            nelisp-cc-sf-unwind-protect--source)
     ("env-leaves-simple.o" nelisp-cc-evalport-env-leaves-simple  nelisp-cc-evalport-env-leaves-simple--source)
-    ;; Doc 147 Phase 1: the word<->32B-slot keystone (.o).  Provides
-    ;; `nl_val_clone_into' (used by the shrunk nl_alloc_cell /
-    ;; nl_cell_set_value to store the value as an 8B tagged WORD) and the
-    ;; arity-2 `nl_val_load' keystone.  The local arity-1 storage->word
-    ;; producer was renamed `nl_val_store_word' to avoid the strong-symbol
-    ;; collision Phase 0 deferred here.
-    ("val-load.o"          nelisp-cc-val-load                    nelisp-cc-val-load--source)
+    ;; val-load.o is supplied by `nelisp-standalone--manifest`; keep it out of
+    ;; this overlay so the reader link does not define `nl_val_clone_into' twice.
     ("nlcell-get-value.o"  nelisp-cc-nlcell-get-value            nelisp-cc-nlcell-get-value--source)
     ("apply-lambda-inner.o" nelisp-cc-apply-lambda-inner         nelisp-cc-apply-lambda-inner--source)
     ("frame-push.o"        nelisp-cc-frame-push                   nelisp-cc-frame-push--source)
@@ -6125,6 +6122,34 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
     (require feat)
     (nelisp-standalone--cached-unit name (symbol-value src)
                                     (locate-library (symbol-name feat)))))
+
+;; Doc 147 container slots made `nl_cons_cdr_ptr' return a materialised 32B
+;; view for cdr WORDs.  Binding `&rest' directly to the tail view is unstable
+;; once required arguments have been consumed (`(a &rest xs)' and friends).
+;; Clone the tail into a fresh slot before installing it in the frame.
+(defconst nelisp-standalone--reader-bind-rest-fixed
+  '(defun nl_bf_bind_rest (env name_ptr args_ptr idx)
+     (let* ((tail_ptr (nl_bf_bind_rest_tail args_ptr idx))
+            (tail_slot (alloc-bytes 32 8))
+            (mirror_ptr (+ env 0))
+            (frames_ptr (+ env 32))
+            (unbound_ptr (+ env 64))
+            (out_vec_slot (alloc-bytes 32 8)))
+       (seq
+        (nl_sexp_clone_into tail_ptr tail_slot)
+        (nl_env_build_scratch tail_slot unbound_ptr out_vec_slot)
+        (nelisp_env_bind_local mirror_ptr frames_ptr name_ptr tail_slot out_vec_slot 0))))
+  "Standalone reader fix for required-plus-&rest formal binding.")
+
+(defun nelisp-standalone--patch-env-leaves-bind-rest (src)
+  "Return env-leaves-bind SRC with rc/lifetime-safe `nl_bf_bind_rest'."
+  (cons (car src)
+        (mapcar (lambda (form)
+                  (if (and (consp form) (eq (car form) 'defun)
+                           (eq (cadr form) 'nl_bf_bind_rest))
+                      nelisp-standalone--reader-bind-rest-fixed
+                    form))
+                (cdr src))))
 
 ;; rc-correct nl_apply_do_fset (Doc 137 M3).  The shipped handler in
 ;; nelisp-cc-evalport-combiner-apply has two rc-plumbing bugs (the non-symbol
@@ -6441,12 +6466,12 @@ genuine general interpreter for the 11 special forms + installed builtins."
                         (nelisp-standalone--patch-eval-inner
                          (symbol-value 'nelisp-cc-eval-inner--source))
                         nelisp-standalone--this-file)))
-         ;; M6 catch/throw dispatch + Wave-1 (A) macro-expansion in-place caching,
-         ;; both patched onto combiner-cons (catch/throw first, then macro cache).
+         ;; M6 catch/throw dispatch + void-function miss fix.  The old
+         ;; macro-expansion cache is disabled inside the patch for Doc 147.
          (combiner-cons (progn
                           (require 'nelisp-cc-evalport-combiner-cons)
                           (nelisp-standalone--cached-unit
-                           "combiner-cons-ct-mc.o"
+                           "combiner-cons-ct-doc147.o"
                            (nelisp-standalone--patch-combiner-cons-full
                             (symbol-value 'nelisp-cc-evalport-combiner-cons--source))
                            nelisp-standalone--this-file)))
@@ -6475,6 +6500,14 @@ genuine general interpreter for the 11 special forms + installed builtins."
                              ("sf-frame-ensure-cap.o"
                               (nelisp-standalone--reader-extra-unit-epoch
                                entry '(nelisp_frame_stack_ensure_capacity_grow)))
+                             ("sf-env-set-value.o"
+                              (progn
+                                (require 'nelisp-cc-evalport-env-leaves-bind)
+                                (nelisp-standalone--cached-unit
+                                 "sf-env-set-value-bind-rest-fix.o"
+                                 (nelisp-standalone--patch-env-leaves-bind-rest
+                                  (symbol-value 'nelisp-cc-evalport-env-leaves-bind--source))
+                                 nelisp-standalone--this-file)))
                              ("sf-env-set-value2.o"
                               (nelisp-standalone--reader-extra-unit-epoch
                                entry '(nelisp_env_set_value)))

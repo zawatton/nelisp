@@ -87,10 +87,8 @@
     ;; req: i64 required count (carried from formals phase).
     (defun nl_bf_pc_args_step (cur ac req _pad)
       (if (= (sexp-tag cur) 7)
-          ;; Cons: advance to cdr (= *const Sexp at NlConsBox+32), increment count.
-          (nl_bf_pc_args_step
-           (+ (sexp-payload-ptr cur) 32)
-           (+ ac 1) req 0)
+          ;; Cons: advance through the Doc 147 cdr view, increment count.
+          (nl_bf_pc_args_step (nl_cons_cdr_ptr cur) (+ ac 1) req 0)
         ;; Nil or other: done counting args.
         (nl_bf_pc_pack ac req 0 0)))
 
@@ -100,10 +98,8 @@
     ;; else:   &optional/&rest or non-sym → stop, count args.
     (defun nl_bf_pc_req_dispatch (tag cur req args)
       (if (= tag 0)
-          ;; Normal required formal: cdr = NlConsBox* + 32 = *const Sexp of cdr.
-          (nl_bf_pc_req_step
-           (+ (sexp-payload-ptr cur) 32)
-           (+ req 1) args 0)
+          ;; Normal required formal: advance through the Doc 147 cdr view.
+          (nl_bf_pc_req_step (nl_cons_cdr_ptr cur) (+ req 1) args 0)
         ;; &optional, &rest, or non-sym: done counting required.
         (nl_bf_pc_args_step args 0 req 0)))
 
@@ -115,10 +111,10 @@
     ;; extern-call nl_bf_formal_tag is at position 0 ✓.
     (defun nl_bf_pc_req_step (cur req args _pad)
       (if (= (sexp-tag cur) 7)
-          ;; Cons: fetch car ptr = sexp-payload-ptr(cur) = NlConsBox* = &car.
+          ;; Cons: fetch a 32B car view, then classify the formal.
           ;; Call nl_bf_formal_tag as FIRST arg ✓.
           (nl_bf_pc_req_dispatch
-           (extern-call nl_bf_formal_tag (sexp-payload-ptr cur))
+           (extern-call nl_bf_formal_tag (nl_cons_car_ptr cur))
            cur req args)
         ;; Nil: formals exhausted, count args.
         (nl_bf_pc_args_step args 0 req 0)))
