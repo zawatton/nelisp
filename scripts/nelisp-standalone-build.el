@@ -4603,17 +4603,17 @@ and the `string-match' family aliases over it."
 (defun nelisp-standalone--reader-repl-eval-suffix ()
   "Return target-aware source appended to one standalone REPL input form.
 
-The suffix reads the quit/throw flag at arena-base+8 to decide whether to
-print the form's value.  Doc 140 Stage 8: on linux the arena base is a runtime
-mmap(NULL) address, and runtime-PARSED REPL code cannot use the compile-time
-`data-addr' primitive (it never reaches the chunk-arena rewrite), so the flag
-address is computed from `(car (nelisp--arena-stats))' — whose car is the live
-runtime base — instead of a baked fixed immediate.  windows/macos keep their
-fixed-base immediate until `data-addr' lands for those toolchains."
-  (if (eq nelisp-standalone--target 'linux-x86_64)
-      "))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
-    (format "))) (if (= (ptr-read-u64 %d 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
-            (nelisp-standalone--target-arena-metadata-address 8))))
+The suffix reads the quit/throw flag at arena-base+8 to decide whether to print
+the form's value.  Doc 140 Stage 8 put the arena at a RUNTIME mmap/VirtualAlloc
+base on EVERY target (no baked fixed base), and runtime-PARSED REPL code cannot
+use the compile-time `data-addr' primitive (it never reaches the chunk-arena
+rewrite), so the flag address MUST come from `(car (nelisp--arena-stats))' (=
+the live runtime base) on all targets.  The old windows/macos branch baked the
+pre-Stage-8 fixed immediate (`nelisp-standalone--windows-arena-base' #x70000000
++ 8 = #x70000008), which after the rebase points at unmapped VA -> SIGSEGV in
+the REPL print path's quit-flag check (the `--eval' command never runs this
+suffix, which is why only `--repl' crashed)."
+  "))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n")
 
 (defconst nelisp-standalone--reader-boundary-source
   '(seq
