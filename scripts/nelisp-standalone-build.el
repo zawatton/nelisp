@@ -4328,6 +4328,12 @@ calling the reader driver."
     ("record-set.o"       nelisp-cc-nlrecord-set-slot             nelisp-cc-nlrecord-set-slot--source)
     ;; Doc 147 Phase 2 — word->32B-slot materialiser for record-slot-ref-ptr.
     ("record-slot-ptr.o"  nelisp-cc-nlrecord-slot-ptr           nelisp-cc-nlrecord-slot-ptr--source)
+    ;; Doc 147 — tagged-word value load/clone helpers (nl_val_load,
+    ;; nl_val_clone_into) referenced by the car/cdr/slot-ptr + setcar/setcdr +
+    ;; vec/record-set units above.  Same unit the reader manifest links; its own
+    ;; deps (nl_sci_store_imm, nl_sexp_clone_into, nl_alloc_bytes) are already
+    ;; provided by clone.o / arena.o, so this closes the eval link cascade.
+    ("val-load.o"          nelisp-cc-val-load                    nelisp-cc-val-load--source)
     ("trap.o"             :glue   nelisp-standalone--trap-source)
     ("arena.o"            :glue   nelisp-standalone--arena-source))
   "Ordered standalone-eval unit manifest.")
