@@ -1502,23 +1502,28 @@ addressing by a runtime base, never by a fixed reservation."
     ;; in the platform source; this defconst only links nl_os_alloc_chunk).
     (defun nl_compact_table_init ()
       (if (= (ptr-read-u64 268436360 0) 0)
-          (let ((p (nl_os_alloc_chunk 201326592)))
+          (let ((p (nl_os_alloc_chunk 100663296)))
             (if (= p 0) 0
-              ;; The forwarding table is probed at RANDOM offsets across its
-              ;; full 192MB extent (nl_compact_hash -> 2^23 24B slots), so unlike
-              ;; the bump arena it cannot grow its commit incrementally.  On
-              ;; Windows, reserved pages do NOT auto-commit on first touch (mmap
-              ;; does), so force-commit the whole region now; nl_os_commit_range
-              ;; is a no-op on mmap-backed targets.  Committed-but-untouched
-              ;; pages stay out of the working set, so this is RSS-neutral.
-              (nl_seq2 (nl_os_commit_range p 0 201326592)
+              ;; Forwarding table: 2^22 = 4,194,304 slots x 24B = 96MiB (was
+              ;; 2^23/192MiB).  It is probed at RANDOM offsets across its full
+              ;; extent (nl_compact_hash, mask 0x3FFFFF), so unlike the bump
+              ;; arena it cannot grow its commit incrementally.  On Windows,
+              ;; reserved pages do NOT auto-commit on first touch (mmap does), so
+              ;; force-commit the whole region now; nl_os_commit_range is a no-op
+              ;; on mmap-backed targets.  Committed-but-untouched pages stay out
+              ;; of the working set.  4M slots holds up to ~4M live blocks (one
+              ;; entry per live non-boot block per compaction) at load 1.0, or
+              ;; ~2M at the recommended 0.5 — generous for this reader; shrink
+              ;; further (mask + both sizes in lockstep) only if the workload's
+              ;; live-block ceiling is known smaller.
+              (nl_seq2 (nl_os_commit_range p 0 100663296)
                        (ptr-write-u64 268436360 0 p))))
         0))
-    (defun nl_compact_hash (old) (logand (sar old 4) 8388607))
+    (defun nl_compact_hash (old) (logand (sar old 4) 4194303))
     (defun nl_compact_insert_probe (base idx old new gen)
       (let ((slot (+ base (* idx 24))))
         (if (= (ptr-read-u64 (+ slot 16) 0) gen)
-            (nl_compact_insert_probe base (logand (+ idx 1) 8388607) old new gen)
+            (nl_compact_insert_probe base (logand (+ idx 1) 4194303) old new gen)
           (nl_seq2 (ptr-write-u64 slot 0 old)
             (nl_seq2 (ptr-write-u64 (+ slot 8) 0 new)
                      (ptr-write-u64 (+ slot 16) 0 gen))))))
@@ -1529,7 +1534,7 @@ addressing by a runtime base, never by a fixed reservation."
       (let ((slot (+ base (* idx 24))))
         (if (= (ptr-read-u64 (+ slot 16) 0) gen)
             (if (= (ptr-read-u64 slot 0) old) (ptr-read-u64 (+ slot 8) 0)
-              (nl_compact_lookup_probe base (logand (+ idx 1) 8388607) old gen))
+              (nl_compact_lookup_probe base (logand (+ idx 1) 4194303) old gen))
           0)))
     ;; fwd(old) -> new obj ptr: below-watermark boot is identity; above-watermark
     ;; live resolves to to-space-base (268436384) + stored obj-offset.  0 = not a
