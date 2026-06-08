@@ -1005,6 +1005,8 @@ addressing by a runtime base, never by a fixed reservation."
         (if (< p 4096) 0 p)))
     (defun nl_os_free_chunk (base size)
       (syscall-direct 11 base size 0 0 0 0))  ; munmap(base, size)
+    ;; mmap demand-pages on first touch, so explicit range commit is a no-op.
+    (defun nl_os_commit_range (base old new) 1)
     (defun nl_os_alloc_fail ()
       (syscall-direct 60 88 0 0 0 0 0))))
 
@@ -1101,6 +1103,8 @@ addressing by a runtime base, never by a fixed reservation."
         (if (< p 4096) 0 p)))
     (defun nl_os_free_chunk (base size)
       (syscall-direct 73 base size 0 0 0 0))  ; Darwin munmap(base, size)
+    ;; mmap demand-pages on first touch, so explicit range commit is a no-op.
+    (defun nl_os_commit_range (base old new) 1)
     (defun nl_os_alloc_fail ()
       (syscall-direct 1 88 0 0 0 0 0))))
 
@@ -1124,10 +1128,13 @@ addressing by a runtime base, never by a fixed reservation."
                              ('windows-x86_64
                               (nelisp-standalone--windows-chunk-try-alloc-form))
                              (_ nil)))
-           (commit-form (and (eq nelisp-standalone--target 'windows-x86_64)
-                             (cl-find-if (lambda (chunk-form)
-                                           (eq (cadr chunk-form) 'nl_os_commit_range))
-                                         chunk-forms)))
+           ;; nl_os_commit_range is defined by every platform's chunk-forms
+           ;; (real VirtualAlloc commit on Windows; no-op on mmap targets) so
+           ;; the shared `nl_compact_table_init' can portably force-commit its
+           ;; randomly-probed 192MB forwarding table.
+           (commit-form (cl-find-if (lambda (chunk-form)
+                                      (eq (cadr chunk-form) 'nl_os_commit_range))
+                                    chunk-forms))
            (body (mapcar (lambda (form)
                            (if (and (consp form)
                                     (eq (car form) 'defun)
@@ -1495,14 +1502,28 @@ addressing by a runtime base, never by a fixed reservation."
     ;; in the platform source; this defconst only links nl_os_alloc_chunk).
     (defun nl_compact_table_init ()
       (if (= (ptr-read-u64 268436360 0) 0)
-          (let ((p (nl_os_alloc_chunk 201326592)))
-            (if (= p 0) 0 (ptr-write-u64 268436360 0 p)))
+          (let ((p (nl_os_alloc_chunk 100663296)))
+            (if (= p 0) 0
+              ;; Forwarding table: 2^22 = 4,194,304 slots x 24B = 96MiB (was
+              ;; 2^23/192MiB).  It is probed at RANDOM offsets across its full
+              ;; extent (nl_compact_hash, mask 0x3FFFFF), so unlike the bump
+              ;; arena it cannot grow its commit incrementally.  On Windows,
+              ;; reserved pages do NOT auto-commit on first touch (mmap does), so
+              ;; force-commit the whole region now; nl_os_commit_range is a no-op
+              ;; on mmap-backed targets.  Committed-but-untouched pages stay out
+              ;; of the working set.  4M slots holds up to ~4M live blocks (one
+              ;; entry per live non-boot block per compaction) at load 1.0, or
+              ;; ~2M at the recommended 0.5 — generous for this reader; shrink
+              ;; further (mask + both sizes in lockstep) only if the workload's
+              ;; live-block ceiling is known smaller.
+              (nl_seq2 (nl_os_commit_range p 0 100663296)
+                       (ptr-write-u64 268436360 0 p))))
         0))
-    (defun nl_compact_hash (old) (logand (sar old 4) 8388607))
+    (defun nl_compact_hash (old) (logand (sar old 4) 4194303))
     (defun nl_compact_insert_probe (base idx old new gen)
       (let ((slot (+ base (* idx 24))))
         (if (= (ptr-read-u64 (+ slot 16) 0) gen)
-            (nl_compact_insert_probe base (logand (+ idx 1) 8388607) old new gen)
+            (nl_compact_insert_probe base (logand (+ idx 1) 4194303) old new gen)
           (nl_seq2 (ptr-write-u64 slot 0 old)
             (nl_seq2 (ptr-write-u64 (+ slot 8) 0 new)
                      (ptr-write-u64 (+ slot 16) 0 gen))))))
@@ -1513,7 +1534,7 @@ addressing by a runtime base, never by a fixed reservation."
       (let ((slot (+ base (* idx 24))))
         (if (= (ptr-read-u64 (+ slot 16) 0) gen)
             (if (= (ptr-read-u64 slot 0) old) (ptr-read-u64 (+ slot 8) 0)
-              (nl_compact_lookup_probe base (logand (+ idx 1) 8388607) old gen))
+              (nl_compact_lookup_probe base (logand (+ idx 1) 4194303) old gen))
           0)))
     ;; fwd(old) -> new obj ptr: below-watermark boot is identity; above-watermark
     ;; live resolves to to-space-base (268436384) + stored obj-offset.  0 = not a
@@ -1864,6 +1885,13 @@ addressing by a runtime base, never by a fixed reservation."
               (tospace (nl_chunk_alloc_new (+ total 1048576))))     ; to-space chunk
          (if (= tospace 0) 0
            (seq
+            ;; Phase 4 memmoves the live set into to-space via BULK copy, not
+            ;; the bump path, so commit_range is never reached for those pages.
+            ;; Windows reserved pages don't demand-commit on touch (mmap does),
+            ;; so force-commit the whole to-space now; it is densely written
+            ;; anyway (= the compacted live set) so this is RSS-neutral, and
+            ;; nl_os_commit_range is a no-op on mmap-backed targets.
+            (nl_os_commit_range (ptr-read-u64 tospace 0) 0 (ptr-read-u64 (+ tospace 8) 0))
             (ptr-write-u64 268436384 0 (ptr-read-u64 (+ tospace 24) 0)) ; T = data-start
             (nl_compact_rw_roots ctx result out pool src cursor bsym)   ; phase 3
             (nl_compact_move_chunks (ptr-read-u64 268436160 0) tospace) ; phase 4
@@ -2085,20 +2113,26 @@ MATCH = (:u8 NAME) for <=8-byte u64-packed names, (:lit NAME) for full-length
   (cl-subseq nelisp-standalone--applyfn-dispatch-table 0 19)
   "Arithmetic/comparison/list-only dispatch subset for the baked-form eval path.")
 
-(defun nelisp-standalone--applyfn-build-dispatch (&optional table)
+(defun nelisp-standalone--applyfn-build-dispatch (&optional table default-form)
   "Fold the (MATCH . IMPL) TABLE (default the full dispatch table) into a
-nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
+nested-if Phase47 dispatch chain, defaulting to DEFAULT-FORM (an IR form
+returned for an unknown builtin).  DEFAULT-FORM defaults to the stderr
+diagnostic below; pass a self-contained form (e.g. `1') for link sets that do
+NOT provide `nl_os_write_stderr' — the baked eval applyfn, whose manifest omits
+the reader-only stderr unit, so emitting the diagnostic would leave the symbol
+unresolved at link time."
   (let ((u #'nelisp-standalone--name-u64)
         ;; Unknown-builtin default: write the symbol name to stderr (was a
         ;; silent failure) so interpreted callers surface WHICH registered-but-
         ;; undispatched builtin is missing, then fall through to rc 1.  A symbol
         ;; Sexp (tag 4) keeps its name bytes at ptr@16 / len@24, same as a Str.
-        (dispatch '(let* ((unkb (alloc-bytes 1 1)))
-                     (seq (ptr-write-u8 unkb 0 10)
-                          (nl_os_write_stderr (ptr-read-u64 name_ptr 16)
-                                              (ptr-read-u64 name_ptr 24))
-                          (nl_os_write_stderr unkb 1)
-                          1))))
+        (dispatch (or default-form
+                      '(let* ((unkb (alloc-bytes 1 1)))
+                         (seq (ptr-write-u8 unkb 0 10)
+                              (nl_os_write_stderr (ptr-read-u64 name_ptr 16)
+                                                  (ptr-read-u64 name_ptr 24))
+                              (nl_os_write_stderr unkb 1)
+                              1)))))
     (dolist (entry (reverse (or table nelisp-standalone--applyfn-dispatch-table)))
       (let* ((match (car entry))
              (impl (cdr entry))
@@ -2242,18 +2276,70 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (wf_cons_int (ptr-read-u64 268435672 0) s2 s1)
          (wf_cons_int 268435456 s1 out)
          0)))
-    ;; bf_size_census (Doc 08 §8.14 diagnostic): BLOCK_TOTAL histogram over the
-    ;; whole arena.  Boxes carry NO self type tag (type lives in the Sexp that
-    ;; points to the box, top-down), so a bottom-up walk can only bucket by size.
-    ;; Reliable read-only walk modeled on `nl_gc_sweep_chunk'.  Accumulates into a
-    ;; heap-allocated 64-byte block ACC (never fixed reserved addresses — avoids
-    ;; the §8.7 wild-write risk).  ACC layout (u64 each):
-    ;;   +0 total-nonfree  +8 free-bytes  +16 cons(BT=88)  +24 small(BT<=64)
-    ;;   +32 med(65..256)  +40 big(>256)  +48 block-count  +56 free-count
-    ;; ACC slots (refined to localize the "big" bucket by size):
-    ;;   +0 total-nonfree  +8 free  +16 cons(BT=88)  +24 le256  +32 b257-4k
-    ;;   +40 b4k-256k  +48 b256k-2m (~1MB parse pool lands here)  +56 b>2m
-    (defun bf_size_census_block (hdr acc)
+    ;; NB: the `bf_size_census*' arena-diagnostic family moved to
+    ;; `nelisp-standalone--applyfn-census-helpers' (reader-only).  It calls
+    ;; `nl_gc_bt_ok' / `nl_gc_chunk_end', which only `reader-gc.o' defines, so
+    ;; emitting it into the baked eval applyfn (where its `nelisp--size-census'
+    ;; dispatch arm is absent — dead code) left those GC symbols unresolved at
+    ;; link time.  Census stays available to the reader applyfn, which links
+    ;; `reader-gc.o'.  (Blocker fix: eval-path `nl_gc_bt_ok' unresolved.)
+    (defun bf_arena_force_grow_smoke (out)
+      (let* ((chunk (ptr-read-u64 268436168 0))
+             (cursor-addr (if (= chunk (ptr-read-u64 268436160 0))
+                              268435456
+                            (+ chunk 16)))
+             (size (ptr-read-u64 (+ chunk 8) 0))
+             (near (if (< size 2048) 1024 (- size 32)))
+             (p 0))
+        (seq
+         (ptr-write-u64 cursor-addr 0 near)
+         (setq p (alloc-bytes 64 8))
+         (if (= p 0)
+             (wf_write_int out 0)
+           (bf_arena_stats out)))))
+    ;; wf_dirty: bump the MUTATION EPOCH counter @268435544 (NO-ESCAPE gate
+    ;; in `nelisp_eval_call').  Called by every primitive that installs a box
+    ;; into PRE-EXISTING (persistent) structure — setcar/setcdr/aset/puthash —
+    ;; so the per-eval arena reset never frees a still-reachable escapee.
+    (defun wf_dirty ()
+      ;; SeqCst atomic increment so concurrent threads (parallel build) never
+      ;; lose a mutation-epoch bump (the old read;+1;write was a racy RMW).
+      (atomic-fetch-add 268435544 1))
+    (defun wf_sum (list_ptr acc)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
+            (wf_sum (nl_cons_cdr_ptr list_ptr) (+ acc v))) acc))
+    (defun wf_prod (list_ptr acc)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
+            (wf_prod (nl_cons_cdr_ptr list_ptr) (* acc v))) acc))
+    (defun wf_subtail (list_ptr acc)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
+            (wf_subtail (nl_cons_cdr_ptr list_ptr) (- acc v))) acc))
+    (defun wf_diff (list_ptr)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (first (ptr-read-u64 car_ptr 8))
+                 (rest (nl_cons_cdr_ptr list_ptr)))
+            ;; elisp `-': 1-arg `(- x)' = NEGATION (-x), not x; n-arg subtracts
+            ;; the tail from the first.  The old `first' fallthrough made `(- 5)'
+            ;; return 5, breaking every `(ash v (- (* i 8)))' byte-extraction.
+            (if (= (ptr-read-u64 rest 0) 7) (wf_subtail rest first) (- 0 first))) 0)))
+  "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
+
+;; bf_size_census arena-diagnostic family (Doc 08 §8.14): BLOCK_TOTAL histogram
+;; over the whole arena.  READER-ONLY: it walks the heap via `nl_gc_bt_ok' /
+;; `nl_gc_chunk_end', which only `reader-gc.o' defines.  Keeping it out of the
+;; shared core-helpers stops the baked eval applyfn (whose `nelisp--size-census'
+;; dispatch arm is clipped away) from emitting dead references to those GC
+;; symbols, which the eval manifest cannot resolve.  Boxes carry NO self type
+;; tag (type lives in the Sexp that points to the box, top-down), so a bottom-up
+;; walk can only bucket by size.  Reliable read-only walk modeled on
+;; `nl_gc_sweep_chunk'.  ACC layout (u64 each, refined to localize "big"):
+;;   +0 total-nonfree  +8 free  +16 cons(BT=88)  +24 le256  +32 b257-4k
+;;   +40 b4k-256k  +48 b256k-2m (~1MB parse pool lands here)  +56 b>2m
+(defconst nelisp-standalone--applyfn-census-helpers
+  '((defun bf_size_census_block (hdr acc)
       (let ((bt (nl_hdr_bt hdr))
             (mark (nl_hdr_mark hdr)))
         ;; le256 sub-buckets: +24 le32-bytes +32 le32-COUNT +40 bt33-64 +48 bt65-256
@@ -2313,50 +2399,9 @@ nested-if Phase47 dispatch chain, defaulting to rc 1 (unknown builtin)."
          (wf_cons_int (ptr-read-u64 (+ acc 16) 0) s3 s2)
          (wf_cons_int (ptr-read-u64 (+ acc 8) 0) s2 s1)
          (wf_cons_int (ptr-read-u64 acc 0) s1 out)
-         0)))
-    (defun bf_arena_force_grow_smoke (out)
-      (let* ((chunk (ptr-read-u64 268436168 0))
-             (cursor-addr (if (= chunk (ptr-read-u64 268436160 0))
-                              268435456
-                            (+ chunk 16)))
-             (size (ptr-read-u64 (+ chunk 8) 0))
-             (near (if (< size 2048) 1024 (- size 32)))
-             (p 0))
-        (seq
-         (ptr-write-u64 cursor-addr 0 near)
-         (setq p (alloc-bytes 64 8))
-         (if (= p 0)
-             (wf_write_int out 0)
-           (bf_arena_stats out)))))
-    ;; wf_dirty: bump the MUTATION EPOCH counter @268435544 (NO-ESCAPE gate
-    ;; in `nelisp_eval_call').  Called by every primitive that installs a box
-    ;; into PRE-EXISTING (persistent) structure — setcar/setcdr/aset/puthash —
-    ;; so the per-eval arena reset never frees a still-reachable escapee.
-    (defun wf_dirty ()
-      ;; SeqCst atomic increment so concurrent threads (parallel build) never
-      ;; lose a mutation-epoch bump (the old read;+1;write was a racy RMW).
-      (atomic-fetch-add 268435544 1))
-    (defun wf_sum (list_ptr acc)
-      (if (= (ptr-read-u64 list_ptr 0) 7)
-          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
-            (wf_sum (nl_cons_cdr_ptr list_ptr) (+ acc v))) acc))
-    (defun wf_prod (list_ptr acc)
-      (if (= (ptr-read-u64 list_ptr 0) 7)
-          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
-            (wf_prod (nl_cons_cdr_ptr list_ptr) (* acc v))) acc))
-    (defun wf_subtail (list_ptr acc)
-      (if (= (ptr-read-u64 list_ptr 0) 7)
-          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (v (ptr-read-u64 car_ptr 8)))
-            (wf_subtail (nl_cons_cdr_ptr list_ptr) (- acc v))) acc))
-    (defun wf_diff (list_ptr)
-      (if (= (ptr-read-u64 list_ptr 0) 7)
-          (let* ((car_ptr (nl_cons_car_ptr list_ptr)) (first (ptr-read-u64 car_ptr 8))
-                 (rest (nl_cons_cdr_ptr list_ptr)))
-            ;; elisp `-': 1-arg `(- x)' = NEGATION (-x), not x; n-arg subtracts
-            ;; the tail from the first.  The old `first' fallthrough made `(- 5)'
-            ;; return 5, breaking every `(ash v (- (* i 8)))' byte-extraction.
-            (if (= (ptr-read-u64 rest 0) 7) (wf_subtail rest first) (- 0 first))) 0)))
-  "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
+         0))))
+  "Reader-only arena size-census diagnostics (call `nl_gc_bt_ok' /
+`nl_gc_chunk_end' from `reader-gc.o'); excluded from the baked eval applyfn.")
 
 ;; M4 hash-table helpers (cons-alist v1).  Reader-only: wf_key_eq uses symbol-eq
 ;; / str-eq grammar ops that lower to extern calls present only in the reader.
@@ -3341,10 +3386,13 @@ made vector-aware, then the B-foundation breadth arms APPENDED."
     nelisp-standalone--applyfn-dispatch-table)
    nelisp-standalone--applyfn-bf-arms))
 
-(defun nelisp-standalone--applyfn-assemble (helper-groups table)
+(defun nelisp-standalone--applyfn-assemble (helper-groups table &optional default-form)
   "Assemble an applyfn `(seq ...)' unit from HELPER-GROUPS (lists of defun forms,
-appended in order) and the dispatch TABLE, ending in nelisp_apply_function."
-  (let ((dispatch (nelisp-standalone--applyfn-build-dispatch table)))
+appended in order) and the dispatch TABLE, ending in nelisp_apply_function.
+DEFAULT-FORM is the unknown-builtin fallthrough passed to
+`nelisp-standalone--applyfn-build-dispatch' (pass `1' for the baked eval link
+set, which lacks the reader-only `nl_os_write_stderr')."
+  (let ((dispatch (nelisp-standalone--applyfn-build-dispatch table default-form)))
     (append
      '(seq)
      (apply #'append helper-groups)
@@ -3358,7 +3406,11 @@ appended in order) and the dispatch TABLE, ending in nelisp_apply_function."
 (defconst nelisp-standalone--applyfn-baked-source
   (nelisp-standalone--applyfn-assemble
    (list nelisp-standalone--applyfn-core-helpers)
-   nelisp-standalone--applyfn-dispatch-table-baked)
+   nelisp-standalone--applyfn-dispatch-table-baked
+   ;; Silent rc-1 fallthrough: the baked eval manifest omits the reader-only
+   ;; unit defining `nl_os_write_stderr', so the stderr diagnostic default
+   ;; would be an unresolved symbol at link time.
+   1)
   "Arithmetic/list-only applyfn for the baked-form eval build.")
 
 ;; Reader applyfn: core + HT (M4) + string/format (M5) + B-foundation breadth
@@ -3368,6 +3420,7 @@ appended in order) and the dispatch TABLE, ending in nelisp_apply_function."
 (defconst nelisp-standalone--applyfn-source
   (nelisp-standalone--applyfn-assemble
    (list nelisp-standalone--applyfn-core-helpers
+         nelisp-standalone--applyfn-census-helpers
          nelisp-standalone--applyfn-ht-helpers
          nelisp-standalone--applyfn-m5-helpers
          nelisp-standalone--applyfn-bf-helpers)
@@ -4550,17 +4603,17 @@ and the `string-match' family aliases over it."
 (defun nelisp-standalone--reader-repl-eval-suffix ()
   "Return target-aware source appended to one standalone REPL input form.
 
-The suffix reads the quit/throw flag at arena-base+8 to decide whether to
-print the form's value.  Doc 140 Stage 8: on linux the arena base is a runtime
-mmap(NULL) address, and runtime-PARSED REPL code cannot use the compile-time
-`data-addr' primitive (it never reaches the chunk-arena rewrite), so the flag
-address is computed from `(car (nelisp--arena-stats))' — whose car is the live
-runtime base — instead of a baked fixed immediate.  windows/macos keep their
-fixed-base immediate until `data-addr' lands for those toolchains."
-  (if (eq nelisp-standalone--target 'linux-x86_64)
-      "))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
-    (format "))) (if (= (ptr-read-u64 %d 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n"
-            (nelisp-standalone--target-arena-metadata-address 8))))
+The suffix reads the quit/throw flag at arena-base+8 to decide whether to print
+the form's value.  Doc 140 Stage 8 put the arena at a RUNTIME mmap/VirtualAlloc
+base on EVERY target (no baked fixed base), and runtime-PARSED REPL code cannot
+use the compile-time `data-addr' primitive (it never reaches the chunk-arena
+rewrite), so the flag address MUST come from `(car (nelisp--arena-stats))' (=
+the live runtime base) on all targets.  The old windows/macos branch baked the
+pre-Stage-8 fixed immediate (`nelisp-standalone--windows-arena-base' #x70000000
++ 8 = #x70000008), which after the rebase points at unmapped VA -> SIGSEGV in
+the REPL print path's quit-flag check (the `--eval' command never runs this
+suffix, which is why only `--repl' crashed)."
+  "))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n")
 
 (defconst nelisp-standalone--reader-boundary-source
   '(seq

@@ -11540,11 +11540,12 @@ count."
          (n (length args))
          (cur-arg-regs (nelisp-aot-compiler--current-arg-regs))
          (reg-budget (length cur-arg-regs)))
-    ;; Doc 133 P0: indirect (fn-ptr) calls only support register-args
-    ;; (nelisp-sys caps functions at 6 params anyway).
-    (when (and fn-value (> n reg-budget))
-      (signal 'nelisp-aot-compiler-error
-              (list :call-ptr-stack-args-unsupported n)))
+    ;; Doc 133 P0 (relaxed): indirect (fn-ptr) calls now also support stack
+    ;; args on x86_64 sysv/win64.  The fn-ptr is evaluated FIRST and stashed on
+    ;; the stack below every saved arg, then recovered into r11 just before the
+    ;; CALL (r11 is caller-saved on both ABIs and never an arg reg).  This is
+    ;; what unblocks 6-arg fn-ptr applies under win64 (reg-budget 4).  Other
+    ;; arches still reject below via the `:call-stack-args-unsupported' guard.
     (if (> n reg-budget)
         (progn
           (unless (and (eq nelisp-aot-compiler--arch 'x86_64)
@@ -11554,14 +11555,23 @@ count."
           (let* ((stack-count (- n reg-budget))
                  (arity (or nelisp-aot-compiler--current-defun-arity 0))
                  (win64-p (eq nelisp-aot-compiler--abi 'win64))
+                 ;; Indirect calls occupy one extra stack slot for the stashed
+                 ;; fn-ptr; fold it into alignment parity and the final cleanup.
+                 (fn-slots (if fn-value 1 0))
                  (needs-align
                   (if win64-p
-                      (= (logand (+ n stack-count) 1) 1)
-                    (= (logand (+ arity n stack-count) 1) 1)))
+                      (= (logand (+ n stack-count fn-slots) 1) 1)
+                    (= (logand (+ arity n stack-count fn-slots) 1) 1)))
                  (win64-outgoing
                   (if win64-p
                       (+ 32 (* 8 stack-count) (if needs-align 8 0))
                     0)))
+            ;; (0) Indirect: evaluate the fn-ptr FIRST and push it BELOW every
+            ;; saved arg, so later arg evaluation cannot clobber it.  Recovered
+            ;; into r11 right before the call.
+            (when fn-value
+              (nelisp-aot-compiler--emit-value fn-value buf)
+              (nelisp-asm-x86_64-push buf 'rax))
             ;; Save every arg left-to-right so complex args cannot clobber
             ;; earlier register-bound values while later args are evaluated.
             (dolist (a args)
@@ -11585,7 +11595,12 @@ count."
                                 (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
                                  buf 'r10 source-disp)
                                 (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
-                                 buf dest-disp 'r10))))
+                                 buf dest-disp 'r10)))
+                  ;; Recover the stashed fn-ptr: it sits just above the saved
+                  ;; args, at [rsp + win64-outgoing + 8*n].
+                  (when fn-value
+                    (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                     buf 'r11 (+ win64-outgoing (* 8 n)))))
               (when needs-align
                 (nelisp-asm-x86_64-sub-imm32 buf 'rsp 8))
               ;; SysV outgoing stack args are pushed right-to-left.  The first
@@ -11598,15 +11613,23 @@ count."
                               (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
                                buf 'r10 disp)
                               (nelisp-asm-x86_64-push buf 'r10)
-                              (setq pushed-stack (1+ pushed-stack))))))
-            (nelisp-asm-x86_64-call-rel32 buf name)
+                              (setq pushed-stack (1+ pushed-stack)))))
+              ;; Recover the stashed fn-ptr: after the align pad and the
+              ;; right-to-left stack pushes it sits at
+              ;; [rsp + 8*stack-count + (align?8:0) + 8*n].
+              (when fn-value
+                (nelisp-asm-x86_64-mov-reg-mem-rsp-disp
+                 buf 'r11 (+ (* 8 stack-count) (if needs-align 8 0) (* 8 n)))))
+            (if fn-value
+                (nelisp-asm-x86_64-call-reg buf 'r11)
+              (nelisp-asm-x86_64-call-rel32 buf name))
             (if win64-p
                 (nelisp-asm-x86_64-add-imm32 buf 'rsp win64-outgoing)
               (when (> stack-count 0)
                 (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 stack-count)))
               (when needs-align
                 (nelisp-asm-x86_64-add-imm32 buf 'rsp 8)))
-            (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 n))))
+            (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (+ n fn-slots)))))
       (let* ((regs (cl-subseq cur-arg-regs 0 n))
          ;; Stack alignment correction (Doc 111 §111.E fix).
          (arity (or nelisp-aot-compiler--current-defun-arity 0))

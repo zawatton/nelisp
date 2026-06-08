@@ -419,15 +419,24 @@
                '(nl_boundary_maybe_reclaim mark_chunk mark_cursor epoch0 out)
                eval-source)))))
 
-(ert-deftest nelisp-standalone-target-reader-repl-suffix-is-target-aware ()
-  "REPL runtime wrapper must not embed the Linux arena quit slot on macOS."
-  (let ((nelisp-standalone--target 'macos-aarch64))
-    (let ((suffix (nelisp-standalone--reader-repl-eval-suffix)))
+(ert-deftest nelisp-standalone-target-reader-repl-suffix-uses-runtime-base ()
+  "REPL runtime wrapper must read the quit slot via the live RUNTIME arena base
+on EVERY target (Doc 140 Stage 8), never a baked fixed arena-base immediate.
+The runtime-PARSED suffix cannot use `data-addr', and the pre-Stage-8
+windows/macos fixed bases (e.g. #x70000000 + 8) point at unmapped VA after the
+rebase -> SIGSEGV in the REPL print path's quit-flag check."
+  (dolist (target '(macos-aarch64 windows-x86_64 linux-x86_64))
+    (let* ((nelisp-standalone--target target)
+           (suffix (nelisp-standalone--reader-repl-eval-suffix)))
+      ;; Reads the quit flag via the live runtime base.
       (should (string-match-p
-               (number-to-string
-                (nelisp-standalone--target-arena-metadata-address 8))
+               (regexp-quote "(ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0)")
                suffix))
-      (should-not (string-match-p "268435464" suffix)))))
+      ;; Embeds NO fixed arena-base metadata immediate for any target.
+      (should-not (string-match-p
+                   (number-to-string
+                    (nelisp-standalone--target-arena-metadata-address 8))
+                   suffix)))))
 
 (ert-deftest nelisp-standalone-target-windows-arena-init-uses-null-virtualalloc ()
   "Windows chunk-0 init uses VirtualAlloc(NULL, ...) and stores `nl_arena_base'."
