@@ -34,6 +34,14 @@
 (defvar vendor-repl-standalone-trace-forms nil
   "When non-nil, record per-form progress in the sentinel marker.")
 
+(defvar vendor-repl-standalone-direct-character-limit 0
+  "Minimum normalized source size emitted directly in generated REPL input.
+
+By default every normalized vendor form is emitted directly.  The persistent
+REPL replay is an accumulated load/evaluator diagnostic, and current standalone
+runtime builds remain sensitive to repeated nested `nelisp--eval-source-string'
+reads.  Raise this value when intentionally probing that source-reader path.")
+
 (defconst vendor-repl-standalone--success
   "VENDOR-REPL-STANDALONE=ok"
   "Marker-file sentinel written by a successful REPL replay.")
@@ -41,6 +49,15 @@
 (defconst vendor-repl-standalone--failure
   "VENDOR-REPL-STANDALONE=fail"
   "Marker-file sentinel written by a failed REPL replay proof.")
+
+(defun vendor-repl-standalone--status-form (prefix)
+  "Return a standalone form recording load status with PREFIX.
+
+Keep this free of raw pointer reads.  The persistent REPL diagnostic should
+not depend on low-level telemetry primitives, because those are not guaranteed
+to be safe in every standalone-reader evaluator path."
+  (format "(setq vendor-repl-load-status (concat %S (number-to-string vendor-standalone-load-ok-count)))\n"
+          prefix))
 
 (defun vendor-repl-standalone--true-name (file)
   "Return FILE as a canonical absolute path."
@@ -56,8 +73,8 @@
   (let ((name (file-name-nondirectory file))
         (index 0))
     (concat
-     (format "(setq vendor-repl-load-status (concat %S (number-to-string vendor-standalone-load-ok-count) %S (number-to-string (ptr-read-u64 268435456 0))))\n"
-             (concat "start:" name ":count=") ":bump=")
+     (vendor-repl-standalone--status-form
+      (concat "start:" name ":count="))
      (format "(nl-write-file %S vendor-repl-load-status)\n" marker)
      (format "(setq load-file-name %S)\n" file)
      (format "(setq buffer-file-name %S)\n" file)
@@ -68,27 +85,31 @@
                 (standalone-source-normalize-file-to-form-strings file)
                 "")
      "(setq vendor-standalone-load-ok-count (1+ vendor-standalone-load-ok-count))\n"
-     (format "(setq vendor-repl-load-status (concat %S (number-to-string vendor-standalone-load-ok-count) %S (number-to-string (ptr-read-u64 268435456 0))))\n"
-             (concat "ok:" name ":count=") ":bump=")
+     (vendor-repl-standalone--status-form
+      (concat "ok:" name ":count="))
      (format "(nl-write-file %S vendor-repl-load-status)\n" marker)
      "")))
 
 (defun vendor-repl-standalone--eval-source-form (source &optional marker file-name index)
   "Return a standalone form that evaluates SOURCE through NeLisp's reader."
-  (let ((print-escape-newlines t)
-        (eval-form (format "(nelisp--eval-source-string %s)\n"
-                           (prin1-to-string source))))
+  (let* ((print-escape-newlines t)
+         (direct-form (and (> (length source)
+                              vendor-repl-standalone-direct-character-limit)
+                           (concat source
+                                   (unless (string-suffix-p "\n" source)
+                                     "\n"))))
+         (eval-form (or direct-form
+                        (format "(nelisp--eval-source-string %s)\n"
+                                (prin1-to-string source)))))
     (if (and vendor-repl-standalone-trace-forms
              marker file-name index)
         (concat
-         (format "(setq vendor-repl-load-status (concat %S (number-to-string vendor-standalone-load-ok-count) %S (number-to-string (ptr-read-u64 268435456 0))))\n"
-                 (format "form-start:%s:%d:count=" file-name index)
-                 ":bump=")
+         (vendor-repl-standalone--status-form
+          (format "form-start:%s:%d:count=" file-name index))
          (format "(nl-write-file %S vendor-repl-load-status)\n" marker)
          eval-form
-         (format "(setq vendor-repl-load-status (concat %S (number-to-string vendor-standalone-load-ok-count) %S (number-to-string (ptr-read-u64 268435456 0))))\n"
-                 (format "form-ok:%s:%d:count=" file-name index)
-                 ":bump=")
+         (vendor-repl-standalone--status-form
+          (format "form-ok:%s:%d:count=" file-name index))
          (format "(nl-write-file %S vendor-repl-load-status)\n" marker))
       eval-form)))
 

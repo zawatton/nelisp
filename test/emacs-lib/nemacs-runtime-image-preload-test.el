@@ -956,6 +956,8 @@
     (goto-char (point-min))
     (should (search-forward "vendor-repl-standalone-detail-form" nil t))
     (goto-char (point-min))
+    (should (search-forward "vendor-repl-standalone-direct-character-limit" nil t))
+    (goto-char (point-min))
     (should (search-forward "-l vendor-repl-standalone-replay" nil t))
     (goto-char (point-min))
     (should (search-forward "-f vendor-repl-standalone-batch" nil t))

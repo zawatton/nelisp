@@ -46,6 +46,14 @@ final `.el' suffix with `.repl'.")
     "emacs-font-lock-builtins.el")
   "Local src files inserted after buffer/face substrates are available.")
 
+(defvar nelisp-bootstrap-repl-direct-character-limit 0
+  "Minimum printed form size emitted directly in generated REPL input.
+
+Large forms are already normalized before this stage.  Emitting them as direct
+REPL forms avoids an extra nested source-string read in the persistent
+standalone evaluator while preserving the same evaluated form.  A value of 0
+emits every bootstrap form directly.")
+
 (defun nelisp-bootstrap--src-dir ()
   "Return the absolute src directory."
   (file-name-as-directory
@@ -176,6 +184,12 @@ avoids retaining large docstring literals in the persistent evaluator."
          (>= (length form) 4)
          (stringp (nth 3 form)))
     (list 'defvar (nth 1 form) (nth 2 form)))
+   ((and (consp form)
+         (eq (car form) 'cl-defstruct)
+         (>= (length form) 3)
+         (stringp (nth 2 form)))
+    (append (list (nth 0 form) (nth 1 form))
+            (nthcdr 3 form)))
    (t form)))
 
 (defun nelisp-bootstrap--function-headed-list-p (object)
@@ -201,6 +215,18 @@ avoids retaining large docstring literals in the persistent evaluator."
     (or (nelisp-bootstrap--quoted-defun-lambda-list-risk-p (car object))
         (nelisp-bootstrap--quoted-defun-lambda-list-risk-p (cdr object))))
    (t nil)))
+
+(defun nelisp-bootstrap--direct-repl-form-p (rel form &optional form-string)
+  "Return non-nil when FORM from REL should be emitted as a direct REPL form.
+
+FORM-STRING, when non-nil, is the printed form used for size-based emission."
+  (or (member rel '("src/nelisp-text-buffer.el"
+                    "src/nelisp-emacs-compat.el"))
+      (and (consp form)
+           (eq (car form) 'cl-defstruct))
+      (and form-string
+           (> (length form-string)
+              nelisp-bootstrap-repl-direct-character-limit))))
 
 (defun nelisp-bootstrap--repl-form-string (form)
   "Return FORM printed for `nelisp--eval-source-string'."
@@ -228,16 +254,16 @@ the live REPL context for immediate redefinition."
       (let ((rel (file-relative-name file nelisp-bootstrap-repo-root)))
         (insert "\n;;; >>> " rel "\n")
         (dolist (source-form (nelisp-bootstrap--read-forms-from-file file))
-          (let ((form (nelisp-bootstrap--standalone-repl-form source-form)))
-            (if (member rel '("src/nelisp-text-buffer.el"
-                              "src/nelisp-emacs-compat.el"))
+          (let* ((form (nelisp-bootstrap--standalone-repl-form source-form))
+                 (form-string (nelisp-bootstrap--repl-form-string form)))
+            (if (nelisp-bootstrap--direct-repl-form-p rel form form-string)
                 (progn
                   (insert "(progn ")
-                  (insert (nelisp-bootstrap--repl-form-string form))
+                  (insert form-string)
                   (insert " nil)\n"))
               (insert "(progn (nelisp--eval-source-string ")
               (insert (nelisp-bootstrap--one-line-string-literal
-                       (nelisp-bootstrap--repl-form-string form)))
+                       form-string))
               (insert ") nil)\n"))))
         (insert ";;; <<< " rel "\n")))
     (let ((coding-system-for-write 'utf-8-emacs-unix))
