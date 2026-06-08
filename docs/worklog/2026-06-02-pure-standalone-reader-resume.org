@@ -16189,3 +16189,195 @@ the feature/function/Custom/local-variable/process-primitive/setter/query
 surface, while minor-mode command metadata, live mode activation, auto-unlock
 process behavior, kill/exit hook integration, unload prompts, and accumulated
 persistent REPL adoption stay deferred at their current boundaries.
+
+** Continuation: REPL progress marker no longer calls ptr-read-u64
+
+Development resumed from the =emacs-lock.el= boundary and moved to
+=vendor/emacs-lisp/obsolete/linum.el=.  During that check, isolated
+persistent REPL replay crashed before the proof sentinel even for a count-only
+=linum.el= replay.
+
+Root cause in =scripts/vendor-repl-standalone-replay.el=:
+
+- Per-file and per-form progress marker strings unconditionally embedded
+  =(ptr-read-u64 268435456 0)= to report an arena bump value.
+- The current standalone interpreter path still treats direct =ptr-read-u64=
+  as unsafe; local design notes already record this as rc=139.
+- Therefore the diagnostic marker could create a false persistent-REPL
+  segfault before the vendor form under test was reached.
+
+Implemented:
+
+- Replaced the raw pointer read in REPL status strings with a count-only
+  status helper.
+- Added ERT coverage that generated REPL input does not contain
+  =ptr-read-u64=.
+
+Verification:
+
+#+begin_example
+emacs --batch -Q -L src -L test -L scripts --eval '(setq native-comp-enable-subr-trampolines nil)' -l ert -l test/standalone-diagnostics-test.el --eval '(ert-run-tests-batch-and-exit "vendor-repl")'
+make diagnose-vendor-form-walk-fast NELISP_BIN=build/nelisp-experiment VENDOR_FORM_WALK_FILE=vendor/emacs-lisp/obsolete/linum.el VENDOR_FORM_WALK_LIMIT=0 VENDOR_FORM_WALK_PRINT_EVERY=10
+make diagnose-vendor-repl-replay-fast NELISP_BIN=build/nelisp-experiment VENDOR_FAST_FILES=vendor/emacs-lisp/obsolete/linum.el VENDOR_FAST_PROOF_FORM='(= vendor-standalone-load-ok-count vendor-standalone-load-file-count)'
+make diagnose-vendor-repl-replay-fast NELISP_BIN=build/nelisp-experiment VENDOR_FAST_FILES=vendor/emacs-lisp/obsolete/linum.el VENDOR_FAST_PROOF_FORM='(featurep (quote linum))'
+#+end_example
+
+Results:
+
+- =standalone-diagnostics-test.el= vendor-repl selector passed: 6/6.
+- =linum.el= standalone form-walk reaches all 26 top-level forms.
+- =linum.el= isolated persistent REPL now returns to the sentinel for both
+  count-only and =(featurep 'linum)= proofs.
+- =linum.el= remains in =standalone-source-normalize-dropped-source-files=,
+  so true-load detailed feature proof is not a promoted surface for that path.
+
+Current residual:
+
+- Default 306-file persistent REPL replay now reaches the real progress marker
+  and crashes at =start:emoji-labels.el:count=23= without form tracing.
+- =emoji-labels.el= isolated persistent REPL and form-walk both pass.
+- The default prefix's first 23 files plus =emoji-labels.el= reproduces the
+  crash at the same marker without form tracing.
+- Enabling =VENDOR_REPL_TRACE_FORMS=t= makes that 24-file prefix pass, but the
+  full 306-file replay then reaches a later real boundary at
+  =form-start:org.el:75:count=41=.
+
+*** Next resume point
+
+Continue from the accumulated persistent-REPL boundary rather than from the old
+marker crash:
+
+1. Recheck the 23-file prefix plus =emoji-labels.el= with reduced source
+   chunks or table-shape rewrites to determine whether the crash is generated
+   table payload size, GC pressure, or load-order state.
+2. Keep =ptr-read-u64= out of REPL diagnostics until the interpreter primitive
+   is fixed in the sibling runtime.
+3. Treat =VENDOR_REPL_TRACE_FORMS=t= as a locator only.  It changes arena/GC
+   timing and can move the crash boundary.
+
+** Continuation: bootstrap REPL avoids nested source-string pressure
+
+After the sibling =nelisp= checkout advanced to:
+
+#+begin_example
+7e6b0dcc fix(standalone): repair Doc147 reader list handling
+4a9aa4b3 fix(standalone): close eval-build link cascade — add val-load.o to manifest
+8472b093 perf(standalone): shrink moving-GC forwarding table 96MiB -> 24MiB
+#+end_example
+
+the new =../nelisp/target/nelisp= passed basic =--eval= and true-load replay,
+but crashed in =nelisp-emacs='s persistent REPL bootstrap before any vendor
+load marker was written.  The first observed boundary was the generated
+=cl-defstruct nelisp-coding--stream-state= bootstrap form; after removing that
+struct docstring, the boundary moved to earlier/later bootstrap forms passed
+through =nelisp--eval-source-string=.
+
+Conclusion: this was also a =nelisp-emacs= input-shape problem.  The bootstrap
+REPL bundle is substrate setup, not the vendor source-reader proof surface, so
+wrapping every generated bootstrap form in a nested source string was adding
+unnecessary persistent-evaluator pressure.
+
+Implemented in =scripts/build-nelisp-bootstrap.el=:
+
+- Drop optional =cl-defstruct= docstrings from generated bootstrap REPL forms,
+  matching the existing docstring elision for =defun=, =defmacro=,
+  =defvar=, and =defcustom=.
+- Emit bootstrap REPL forms directly by default
+  (=nelisp-bootstrap-repl-direct-character-limit= =0=), avoiding the extra
+  =nelisp--eval-source-string= read for bootstrap substrate forms.
+- Keep the direct-emission predicate explicit so later work can raise the
+  threshold again if the standalone runtime becomes robust enough.
+
+Verification with =NELISP_ROOT=../nelisp= and
+=NELISP_BIN=../nelisp/target/nelisp=:
+
+#+begin_example
+emacs --batch -Q -L src -L test -L scripts --eval '(setq native-comp-enable-subr-trampolines nil)' -l ert -l test/standalone-diagnostics-test.el --eval '(ert-run-tests-batch-and-exit "bootstrap-repl-.*\\|vendor-repl")'
+make build-nelisp-bootstrap
+make diagnose-vendor-repl-replay-fast VENDOR_FAST_FILES=vendor/emacs-lisp/simple.el VENDOR_FAST_PROOF_FORM='(= vendor-standalone-load-ok-count vendor-standalone-load-file-count)'
+make diagnose-vendor-repl-replay-fast VENDOR_FAST_FILES=vendor/emacs-lisp/obsolete/linum.el VENDOR_FAST_PROOF_FORM='(featurep (quote linum))'
+make diagnose-vendor-repl-replay-fast VENDOR_FAST_FILES=vendor/emacs-lisp/international/emoji-labels.el VENDOR_FAST_PROOF_FORM='(= vendor-standalone-load-ok-count vendor-standalone-load-file-count)'
+make diagnose-vendor-repl-replay
+#+end_example
+
+Results:
+
+- Targeted ERT selector passed: 9/9.
+- =simple.el= persistent replay passes with the latest sibling =nelisp=.
+- =linum.el= isolated persistent REPL passes count-only and feature proof.
+- =emoji-labels.el= isolated persistent REPL passes count-only proof.
+- Full 306-file persistent replay now reaches the vendor accumulation surface
+  and crashes at =start:dired.el:count=6=.
+- Isolated =dired.el= persistent replay passes; the full failure is therefore
+  the next accumulated-load boundary, not a simple isolated =dired.el= load
+  failure.
+- A parallel =linum.el= feature-proof attempt hit a host-side
+  =standalone-source-cache= lock conflict; rerunning sequentially passed.
+
+*** Next resume point
+
+Continue from the full persistent REPL boundary:
+
+1. Reproduce the first six-file prefix ending at =dired.el=, then bisect
+   accumulated state between =files.el= and =dired.el=.
+2. Use =VENDOR_REPL_TRACE_FORMS=t= only as a locator; it can alter GC/timing.
+3. Keep bootstrap REPL direct-emission enabled while the sibling runtime's
+   persistent =nelisp--eval-source-string= path remains sensitive to repeated
+   nested source reads.
+
+** Continuation: vendor REPL direct-emits large normalized forms
+
+The previous full persistent REPL boundary was not a =dired.el= isolated-load
+failure.  After isolated =dired.el= passed, the accumulated replay moved through
+=help-fns.el=, =emoji-labels.el=, and into =org.el=.  The remaining Org boundary
+was dominated by repeated large normalized forms still being wrapped in
+=nelisp--eval-source-string=.
+
+Implemented in =nelisp-emacs=:
+
+- =scripts/vendor-repl-standalone-replay.el= now has
+  =vendor-repl-standalone-direct-character-limit= (=0= by default), so the
+  persistent REPL replay direct-emits normalized vendor forms by default.
+  Raising the threshold re-enables =nelisp--eval-source-string= probing for
+  smaller forms when that is the explicit diagnostic goal.
+- =Makefile= exposes this as =VENDOR_REPL_DIRECT_CHARACTER_LIMIT= for both
+  default and fast persistent REPL replay targets.
+- The progress marker helper stays free of =ptr-read-u64=.
+- =scripts/standalone-source-normalize.el= drops or stubs replay-only Dired
+  desktop/DnD, =help-fns--analyze-function=, large emoji name data, and
+  interactive Org mark/link helpers that were outside the current proof surface.
+
+Verification:
+
+#+begin_example
+emacs --batch -Q -L src -L test -L scripts --eval '(setq native-comp-enable-subr-trampolines nil)' -l ert -l test/standalone-diagnostics-test.el --eval '(ert-run-tests-batch-and-exit "vendor-repl-input\\|vendor-repl-emits-large-forms-directly\\|vendor-repl-trace-records-form-boundaries\\|bootstrap-repl")'
+emacs --batch -Q -L src -L test -L scripts --eval '(setq native-comp-enable-subr-trampolines nil)' -l ert -l test/standalone-source-normalize-test.el --eval '(ert-run-tests-batch-and-exit "drops-listed-top-level-defun\\|drops-dired-desktop-handler-registration\\|elides-help-fns-analyze-function\\|elides-emoji-names-defconst-data\\|elides-org-offer-links-in-entry\\|elides-org-mark-ring-goto\\|drops-org-mark-ring-initialization")'
+make build-nelisp-bootstrap
+make diagnose-vendor-repl-replay VENDOR_REPL_TIMEOUT=900s VENDOR_REPL_KEEP_TEMP=t
+make diagnose-vendor-repl-replay-fast VENDOR_REPL_TIMEOUT=300s VENDOR_REPL_KEEP_TEMP=t NELISP_ROOT=../nelisp NELISP_BIN=../nelisp/target/nelisp VENDOR_FAST_FILES=vendor/emacs-lisp/simple.el VENDOR_FAST_PROOF_FORM='(= vendor-standalone-load-ok-count vendor-standalone-load-file-count)'
+make diagnose-vendor-repl-replay VENDOR_REPL_TIMEOUT=900s VENDOR_REPL_KEEP_TEMP=t NELISP_ROOT=../nelisp NELISP_BIN=../nelisp/target/nelisp
+#+end_example
+
+Results:
+
+- Targeted diagnostics ERT passed: 8/8.
+- Targeted normalizer ERT passed: 7/7.
+- =make build-nelisp-bootstrap= regenerated the bundle successfully.
+- Full default persistent vendor REPL replay now passes with the vendored
+  standalone reader: =306/306=, elapsed about 2.5s, exit 0.
+- With the sibling =../nelisp/target/nelisp= at =7e6b0dcc=, direct-all
+  =simple.el= fast replay passes.  Forcing smaller forms through
+  =nelisp--eval-source-string= still reproduces runtime segfaults in
+  =simple.el=.
+- Full sibling replay with direct-all reaches =start:org.el:count=41= and then
+  remains long-running; it was stopped manually after several minutes.  Treat
+  that as the next sibling-runtime accumulation boundary rather than the
+  vendored default replay lane.
+
+*** Next resume point
+
+The immediate persistent REPL boundary is clear for the vendored default
+reader.  Treat nonzero =VENDOR_REPL_DIRECT_CHARACTER_LIMIT= as a runtime
+=nelisp--eval-source-string= stress diagnostic, not as the default accumulated
+vendor replay lane.  For sibling =../nelisp=, resume from the direct-all
+=org.el= accumulated boundary.

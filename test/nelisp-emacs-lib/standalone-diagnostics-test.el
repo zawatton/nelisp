@@ -24,6 +24,11 @@
        (file-name-directory (or load-file-name buffer-file-name)))
       nil t)
 
+(load (expand-file-name
+       "../scripts/build-nelisp-bootstrap.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
+
 (ert-deftest standalone-diagnostics-test/profile-splits-bootstrap-sections ()
   (let ((sections
          (standalone-bootstrap-profile--sections
@@ -124,6 +129,8 @@
             (insert "(defvar preload-a-loaded t)\n"))
           (with-temp-file (expand-file-name "vendor/preload-b.el" root)
             (insert "(defvar preload-b-loaded t)\n"))
+          (with-temp-file (expand-file-name "vendor/org-footnote.el" root)
+            (insert "(defvar preload-footnote-loaded t)\n"))
           (with-temp-file bootstrap
             (insert "(defvar bootstrap-loaded t)\n"))
           (setq forms
@@ -132,7 +139,8 @@
           (vendor-form-standalone--write-program
            bootstrap "/vendor/sample.el" forms 1 output
            (list (expand-file-name "vendor/preload-a.el" root)
-                 (expand-file-name "vendor/preload-b.el" root)))
+                 (expand-file-name "vendor/preload-b.el" root)
+                 (expand-file-name "vendor/org-footnote.el" root)))
           (let* ((program (with-temp-buffer
                             (insert-file-contents output)
                             (buffer-string)))
@@ -147,6 +155,10 @@
                                  (regexp-quote
                                   "(defvar preload-b-loaded t)")
                                  program))
+                 (preload-footnote-pos (string-match-p
+                                        (regexp-quote
+                                         "(defvar preload-footnote-loaded t)")
+                                        program))
                  (target-pos (string-match-p
                               (regexp-quote
                                "(setq load-file-name \"/vendor/sample.el\")")
@@ -154,10 +166,16 @@
             (should bootstrap-pos)
             (should preload-a-pos)
             (should preload-b-pos)
+            (should preload-footnote-pos)
             (should target-pos)
+            (should (string-match-p
+                     (regexp-quote
+                      "(setq load-file-name \"org-footnote.el\")")
+                     program))
             (should (< bootstrap-pos preload-a-pos))
             (should (< preload-a-pos preload-b-pos))
-            (should (< preload-b-pos target-pos))))
+            (should (< preload-b-pos preload-footnote-pos))
+            (should (< preload-footnote-pos target-pos))))
       (dolist (file (list bootstrap output))
         (when (file-exists-p file)
           (delete-file file)))
@@ -176,10 +194,111 @@
                (regexp-quote "(> x 1)")
                (vendor-form-standalone--form-text (car forms)))))))
 
+(ert-deftest standalone-diagnostics-test/vendor-form-text-uses-top-level-normalizer ()
+  (let ((require-form (list :index 1 :pos 0 :end 19 :head 'require
+                            :text "(require 'org-macs)"))
+        (inline-form (list :index 2 :pos 20 :end 83 :head 'define-inline
+                           :text "(define-inline demo-inline (node) (inline-quote (car node)))")))
+    (let ((standalone-source-normalize-current-file "org-element-ast.el"))
+      (should (string-empty-p
+               (vendor-form-standalone--form-text require-form))))
+    (let ((standalone-source-normalize-current-file "org-element-ast.el"))
+      (should (string-match-p
+               (regexp-quote "(defun demo-inline (node) nil)")
+               (vendor-form-standalone--form-text inline-form))))))
+
+(ert-deftest standalone-diagnostics-test/vendor-form-shortens-selected-runtime-file-name ()
+  (should (equal (vendor-form-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-element-ast.el")
+                 "org-element-ast.el"))
+  (should (equal (vendor-form-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-footnote.el")
+                 "org-footnote.el"))
+  (should (equal (vendor-form-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-list.el")
+                 "org-list.el"))
+  (should (equal (vendor-form-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-entities.el")
+                 "org-entities.el"))
+  (should (equal (vendor-form-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-macro.el")
+                 "org-macro.el")))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-repl-drops-cl-defstruct-docstring ()
+  (let* ((form '(cl-defstruct
+                 (sample-state
+                  (:constructor sample-state-make)
+                  (:copier sample-state-copy))
+                 "Large struct docstring that is metadata only."
+                 (slot-a nil)
+                 (slot-b 0)))
+         (normalized (nelisp-bootstrap--standalone-repl-form form)))
+    (should (equal normalized
+                   '(cl-defstruct
+                     (sample-state
+                      (:constructor sample-state-make)
+                      (:copier sample-state-copy))
+                     (slot-a nil)
+                     (slot-b 0))))
+    (should-not (member "Large struct docstring that is metadata only."
+                        normalized))))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-repl-emits-cl-defstruct-directly ()
+  (should (nelisp-bootstrap--direct-repl-form-p
+           "src/nelisp-coding.el"
+           '(cl-defstruct (sample-state (:constructor sample-state-make))
+              (slot-a nil))))
+  (should-not (nelisp-bootstrap--direct-repl-form-p
+               "src/nelisp-coding.el"
+               '(defun sample-state-make nil nil))))
+
+(ert-deftest standalone-diagnostics-test/bootstrap-repl-emits-large-forms-directly ()
+  (let ((nelisp-bootstrap-repl-direct-character-limit 24))
+    (should (nelisp-bootstrap--direct-repl-form-p
+             "src/nelisp-coding.el"
+             '(defun sample-large nil nil)
+             "(defun sample-large nil nil)"))
+    (should-not (nelisp-bootstrap--direct-repl-form-p
+                 "src/nelisp-coding.el"
+                 '(defun x nil nil)
+                 "(defun x nil nil)"))))
+
 (ert-deftest standalone-diagnostics-test/vendor-load-files-splits-string ()
   (let ((vendor-load-standalone-files "/repo/a.el /repo/b.el"))
     (should (equal (vendor-load-standalone--files)
                    '("/repo/a.el" "/repo/b.el")))))
+
+(ert-deftest standalone-diagnostics-test/vendor-load-shortens-selected-runtime-file-name ()
+  (should (equal (vendor-load-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-element-ast.el")
+                 "org-element-ast.el"))
+  (should (equal (vendor-load-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-footnote.el")
+                 "org-footnote.el"))
+  (should (equal (vendor-load-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-list.el")
+                 "org-list.el"))
+  (should (equal (vendor-load-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-entities.el")
+                 "org-entities.el"))
+  (should (equal (vendor-load-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org-macro.el")
+                 "org-macro.el"))
+  (should (equal (vendor-load-standalone--runtime-file-name
+                  "/repo/vendor/emacs-lisp/org/org.el")
+                 "/repo/vendor/emacs-lisp/org/org.el")))
+
+(ert-deftest standalone-diagnostics-test/vendor-load-omits-selected-runtime-file-name ()
+  (should (vendor-load-standalone--omit-runtime-file-name-p
+           "/repo/vendor/emacs-lisp/org/oc-bibtex.el"))
+  (should (vendor-load-standalone--omit-runtime-file-name-p
+           "/repo/vendor/emacs-lisp/emacs-lisp/thunk.el"))
+  (should (vendor-load-standalone--omit-runtime-file-name-p
+           "/repo/vendor/emacs-lisp/env.el"))
+  (should (vendor-load-standalone--omit-runtime-file-name-p
+           "/repo/vendor/emacs-lisp/fileloop.el"))
+  (should-not (vendor-load-standalone--omit-runtime-file-name-p
+               "/repo/vendor/emacs-lisp/org/org.el")))
 
 (ert-deftest standalone-diagnostics-test/vendor-load-program-uses-top-level-loads ()
   (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
@@ -200,13 +319,16 @@
             (insert "(defvar vendor-a-loaded t)\n"))
           (with-temp-file (expand-file-name "vendor/b.el" root)
             (insert "(defvar vendor-b-loaded t)\n"))
+          (with-temp-file (expand-file-name "vendor/c.el" root)
+            (insert ""))
           (with-temp-file prelude
             (insert "(defvar prelude-loaded t)\n"))
           (with-temp-file bootstrap
             (insert "(defvar bootstrap-loaded t)\n"))
           (vendor-load-standalone--write-program
            (list (expand-file-name "vendor/a.el" root)
-                 (expand-file-name "vendor/b.el" root))
+                 (expand-file-name "vendor/b.el" root)
+                 (expand-file-name "vendor/c.el" root))
            output
            "/tmp/vendor-load-status")
           (let ((program (with-temp-buffer
@@ -224,8 +346,11 @@
                      program))
             (should (string-match-p
                      (regexp-quote
-                      "(setq vendor-standalone-load-file-count 2)")
+                      "(setq vendor-standalone-load-file-count 3)")
                      program))
+            (should-not (string-match-p
+                         (regexp-quote "(progn (nelisp--eval-source-string")
+                         program))
             (should (string-match-p
                      (regexp-quote
                       "(setq vendor-standalone-load-ok-count 0)")
@@ -254,20 +379,178 @@
                      (regexp-quote
                       "(nl-write-file \"/tmp/vendor-load-status\" \"ok:b.el\")")
                      program))
+            (should-not (string-match-p
+                         (regexp-quote
+                          "(nl-write-file \"/tmp/vendor-load-status\" \"start:c.el\")")
+                         program))
+            (should-not (string-match-p
+                         (regexp-quote "c.el")
+                         program))
             (should (string-match-p
                      (regexp-quote
-                      "(setq vendor-standalone-load-ok-count (1+ vendor-standalone-load-ok-count))")
+                      "(setq vendor-standalone-load-ok-count vendor-standalone-load-file-count)")
                      program))
+            (should-not (string-match-p
+                         (regexp-quote
+                          "(setq vendor-standalone-load-ok-count (1+ vendor-standalone-load-ok-count))")
+                         program))
             (should-not (string-match-p "\\`(progn" program))
             (should (string-match-p
                      (regexp-quote
-                      "(if (boundp (quote replay-proof)) (exit 42) (exit 13))")
+                      "(setq vendor-standalone-proof-ok (boundp (quote replay-proof)))")
+                     program))
+            (should (string-match-p
+                     (regexp-quote
+                      "(if vendor-standalone-proof-ok nil (exit 13))")
+                     program))
+            (should (string-match-p
+                     (regexp-quote
+                      "(exit 42)")
                      program))))
       (dolist (file (list bootstrap prelude output))
         (when (file-exists-p file)
           (delete-file file)))
       (when (file-directory-p root)
         (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-load-program-linearizes-compound-proof ()
+  (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
+        (prelude (make-temp-file "vendor-load-prelude-" nil ".el"))
+        (source (make-temp-file "vendor-load-source-" nil ".el"))
+        (output (make-temp-file "vendor-load-program-" nil ".el"))
+        (root (make-temp-file "vendor-load-root-" t))
+        vendor-load-standalone-repo-root
+        vendor-load-standalone-prelude
+        vendor-load-standalone-bootstrap
+        (vendor-load-standalone-proof-form
+         "(progn (org-agenda) (and (= vendor-standalone-load-ok-count vendor-standalone-load-file-count) (featurep (quote org-agenda))))"))
+    (unwind-protect
+        (progn
+          (setq vendor-load-standalone-repo-root root)
+          (setq vendor-load-standalone-prelude prelude)
+          (setq vendor-load-standalone-bootstrap bootstrap)
+          (with-temp-file prelude
+            (insert "(defvar prelude-loaded t)\n"))
+          (with-temp-file bootstrap
+            (insert "(defvar bootstrap-loaded t)\n"))
+          (with-temp-file source
+            (insert "(defvar source-loaded t)\n"))
+          (vendor-load-standalone--write-program
+           (list source)
+           output)
+          (let ((program (with-temp-buffer
+                           (insert-file-contents output)
+                           (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote "(org-agenda)")
+                     program))
+            (should (string-match-p
+                     (regexp-quote
+                      "(setq vendor-standalone-proof-ok (= vendor-standalone-load-ok-count vendor-standalone-load-file-count))")
+                     program))
+            (should (string-match-p
+                     (regexp-quote
+                      "(setq vendor-standalone-proof-ok (featurep (quote org-agenda)))")
+                     program))
+            (should-not (string-match-p
+                         (regexp-quote
+                          "(if (progn")
+                         program))))
+      (dolist (file (list bootstrap prelude source output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-load-program-count-only-proof-uses-sentinel ()
+  (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
+        (prelude (make-temp-file "vendor-load-prelude-" nil ".el"))
+        (source (make-temp-file "vendor-load-source-" nil ".el"))
+        (output (make-temp-file "vendor-load-program-" nil ".el"))
+        (root (make-temp-file "vendor-load-root-" t))
+        vendor-load-standalone-repo-root
+        vendor-load-standalone-prelude
+        vendor-load-standalone-bootstrap
+        (vendor-load-standalone-proof-form
+         "(and (= vendor-standalone-load-ok-count vendor-standalone-load-file-count) (= vendor-standalone-load-ok-count 1))"))
+    (unwind-protect
+        (progn
+          (setq vendor-load-standalone-repo-root root)
+          (setq vendor-load-standalone-prelude prelude)
+          (setq vendor-load-standalone-bootstrap bootstrap)
+          (with-temp-file prelude
+            (insert "(defvar prelude-loaded t)\n"))
+          (with-temp-file bootstrap
+            (insert "(defvar bootstrap-loaded t)\n"))
+          (with-temp-file source
+            (insert "(defvar source-loaded t)\n"))
+          (vendor-load-standalone--write-program
+           (list source)
+           output)
+          (let ((program (with-temp-buffer
+                           (insert-file-contents output)
+                           (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote "(setq vendor-standalone-load-file-count 1)")
+                     program))
+            (should (string-match-p
+                     (regexp-quote "(setq vendor-standalone-load-ok-count 0)")
+                     program))
+            (should-not (string-match-p
+                         (regexp-quote
+                          "(setq vendor-standalone-load-ok-count vendor-standalone-load-file-count)")
+                         program))
+            (should-not (string-match-p
+                         (regexp-quote
+                          "(setq vendor-standalone-proof-ok")
+                         program))
+            (should (string-match-p "\n(exit 42)\n\\'" program))))
+      (dolist (file (list bootstrap prelude source output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-load-debug-program-is-kept ()
+  (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
+        (prelude (make-temp-file "vendor-load-prelude-" nil ".el"))
+        (source (make-temp-file "vendor-load-source-" nil ".el"))
+        (output (make-temp-file "vendor-load-debug-program-" nil ".el"))
+        (reader (make-temp-file "vendor-load-reader-" nil ".sh"))
+        vendor-load-standalone-repo-root
+        vendor-load-standalone-prelude
+        vendor-load-standalone-bootstrap
+        vendor-load-standalone-reader
+        vendor-load-standalone-debug-program
+        (vendor-load-standalone-proof-form "(boundp (quote source-loaded))"))
+    (unwind-protect
+        (progn
+          (setq vendor-load-standalone-repo-root "/repo")
+          (setq vendor-load-standalone-prelude prelude)
+          (setq vendor-load-standalone-bootstrap bootstrap)
+          (setq vendor-load-standalone-reader reader)
+          (setq vendor-load-standalone-debug-program output)
+          (with-temp-file prelude
+            (insert "(defvar prelude-loaded t)\n"))
+          (with-temp-file bootstrap
+            (insert "(defvar bootstrap-loaded t)\n"))
+          (with-temp-file source
+            (insert "(defvar source-loaded t)\n"))
+          (with-temp-file reader
+            (insert "#!/bin/sh\nexit 42\n"))
+          (set-file-modes reader #o755)
+          (delete-file output)
+          (should (equal 42 (car (vendor-load-standalone--run (list source)))))
+          (should (file-exists-p output))
+          (let ((program (with-temp-buffer
+                           (insert-file-contents output)
+                           (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote "(defvar source-loaded t)")
+                     program))))
+      (dolist (file (list bootstrap prelude source output reader))
+        (when (file-exists-p file)
+          (delete-file file))))))
 
 (ert-deftest standalone-diagnostics-test/vendor-repl-files-splits-string ()
   (let ((vendor-repl-standalone-files "/repo/a.el /repo/b.el"))
@@ -303,6 +586,7 @@
         vendor-repl-standalone-repo-root
         (vendor-repl-standalone-bootstrap-repl nil)
         (vendor-repl-standalone-prelude nil)
+        (vendor-repl-standalone-direct-character-limit most-positive-fixnum)
         (vendor-repl-standalone-proof-form
          "(boundp (quote replay-proof))")
         (vendor-repl-standalone-detail-form
@@ -385,6 +669,9 @@
             (should (string-match-p
                      (regexp-quote "(setq vendor-repl-load-status \"\")")
                      input))
+            (should-not (string-match-p
+                         (regexp-quote "ptr-read-u64")
+                         input))
             (should (string-match-p
                      (regexp-quote
                       "(nelisp--eval-source-string \"(defvar prelude-loaded t)\")")
@@ -398,7 +685,19 @@
                          input))
             (should (string-match-p
                      (regexp-quote
-                      "(let ((vendor-repl-proof-error nil) (vendor-repl-proof-value (condition-case err (boundp (quote replay-proof))")
+                      "(setq vendor-repl-proof-error nil)")
+                     input))
+            (should (string-match-p
+                     (regexp-quote
+                      "(setq vendor-repl-proof-value")
+                     input))
+            (should (string-match-p
+                     (regexp-quote
+                      "(condition-case err")
+                     input))
+            (should (string-match-p
+                     (regexp-quote
+                      "(boundp 'replay-proof)")
                      input))
             (should (string-match-p ",quit\n\\'" input))))
       (dolist (file (list bootstrap-repl prelude output))
@@ -438,6 +737,103 @@
                      (regexp-quote unicode)
                      input))))
       (dolist (file (list bootstrap-repl output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-repl-emits-large-forms-directly ()
+  (let ((bootstrap-repl (make-temp-file "vendor-repl-bootstrap-" nil ".repl"))
+        (output (make-temp-file "vendor-repl-input-" nil ".repl"))
+        (root (make-temp-file "vendor-repl-root-" t))
+        vendor-repl-standalone-repo-root
+        vendor-repl-standalone-bootstrap-repl
+        (vendor-repl-standalone-prelude nil)
+        (vendor-repl-standalone-direct-character-limit 40)
+        (vendor-repl-standalone-trace-forms t))
+    (unwind-protect
+        (progn
+          (setq vendor-repl-standalone-repo-root root)
+          (setq vendor-repl-standalone-bootstrap-repl bootstrap-repl)
+          (make-directory (expand-file-name "vendor" root) t)
+          (with-temp-file bootstrap-repl
+            (insert "(setq bootstrap-repl-loaded t)\n"))
+          (with-temp-file (expand-file-name "vendor/a.el" root)
+            (insert "(defvar vendor-repl-small t)\n")
+            (insert "(defvar vendor-repl-large ")
+            (prin1 (make-string 64 ?x) (current-buffer))
+            (insert ")\n"))
+          (vendor-repl-standalone--write-input
+           (list (expand-file-name "vendor/a.el" root))
+           "/tmp/vendor-repl-sentinel"
+           output)
+          (let ((input (with-temp-buffer
+                         (insert-file-contents output)
+                         (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote
+                      "(nelisp--eval-source-string \"(defvar vendor-repl-small t)\")")
+                     input))
+            (should (string-match-p
+                     (regexp-quote "(defvar vendor-repl-large ")
+                     input))
+            (should-not
+             (string-match-p
+              (regexp-quote
+               "(nelisp--eval-source-string \"(defvar vendor-repl-large")
+              input))
+            (should (string-match-p
+                     (regexp-quote "form-start:a.el:2:count=")
+                     input))
+            (should (string-match-p
+                     (regexp-quote "form-ok:a.el:2:count=")
+                     input))))
+      (dolist (file (list bootstrap-repl output))
+        (when (file-exists-p file)
+          (delete-file file)))
+      (when (file-directory-p root)
+        (delete-directory root t)))))
+
+(ert-deftest standalone-diagnostics-test/vendor-load-inserts-org-macro-directly ()
+  (let ((bootstrap (make-temp-file "vendor-load-bootstrap-" nil ".el"))
+        (prelude (make-temp-file "vendor-load-prelude-" nil ".el"))
+        (root (make-temp-file "vendor-load-root-" t))
+        (output (make-temp-file "vendor-load-program-" nil ".el"))
+        vendor-load-standalone-repo-root
+        vendor-load-standalone-prelude
+        vendor-load-standalone-bootstrap)
+    (unwind-protect
+        (progn
+          (setq vendor-load-standalone-repo-root root)
+          (setq vendor-load-standalone-prelude prelude)
+          (setq vendor-load-standalone-bootstrap bootstrap)
+          (make-directory (expand-file-name "vendor/org" root) t)
+          (with-temp-file prelude
+            (insert "(defvar prelude-loaded t)\n"))
+          (with-temp-file bootstrap
+            (insert "(defvar bootstrap-loaded t)\n"))
+          (with-temp-file (expand-file-name "vendor/org/org-macro.el" root)
+            (insert "(defvar org-macro-direct \"\\000\")\n"))
+          (vendor-load-standalone--write-program
+           (list (expand-file-name "vendor/org/org-macro.el" root))
+           output)
+          (let ((program (with-temp-buffer
+                           (insert-file-contents output)
+                           (buffer-string))))
+            (should (string-match-p
+                     (regexp-quote "(setq load-file-name \"org-macro.el\")")
+                     program))
+            (should (string-match-p
+                     (regexp-quote
+                      (concat "(defvar org-macro-direct \""
+                              (string 0)
+                              "\")"))
+                     program))
+            (should-not (string-match-p
+                         (regexp-quote
+                          "(nelisp--eval-source-string \"(defvar org-macro-direct")
+                         program))))
+      (dolist (file (list bootstrap prelude output))
         (when (file-exists-p file)
           (delete-file file)))
       (when (file-directory-p root)

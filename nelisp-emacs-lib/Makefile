@@ -465,6 +465,7 @@ VENDOR_REPL_DETAIL_FORM_ELISP = $(subst ",\",$(VENDOR_REPL_DETAIL_FORM))
 VENDOR_REPL_TIMEOUT ?= 900s
 VENDOR_REPL_KEEP_TEMP ?= nil
 VENDOR_REPL_TRACE_FORMS ?= nil
+VENDOR_REPL_DIRECT_CHARACTER_LIMIT ?= 0
 VENDOR_FAST_FILES ?= $(abspath $(VENDOR_FORM_WALK_FILE))
 VENDOR_FAST_PROOF_FORM ?= (= vendor-standalone-load-ok-count vendor-standalone-load-file-count)
 VENDOR_FAST_DETAIL_FORM ?= (concat "load-ok-count=" (number-to-string vendor-standalone-load-ok-count) "/" (number-to-string vendor-standalone-load-file-count))
@@ -540,6 +541,7 @@ help:
 	@echo "  VENDOR_REPL_DETAIL_FORM=$(VENDOR_REPL_DETAIL_FORM)  diagnostic string form shown when REPL proof fails"
 	@echo "  VENDOR_REPL_KEEP_TEMP=$(VENDOR_REPL_KEEP_TEMP)  keep generated REPL diagnostics when non-nil"
 	@echo "  VENDOR_REPL_TRACE_FORMS=$(VENDOR_REPL_TRACE_FORMS)  record per-form REPL progress when non-nil"
+	@echo "  VENDOR_REPL_DIRECT_CHARACTER_LIMIT=$(VENDOR_REPL_DIRECT_CHARACTER_LIMIT)  direct-emits normalized forms above this size"
 	@echo "  VENDOR_FAST_FILES=$(VENDOR_FAST_FILES)  small file set for diagnose-vendor-*-fast"
 	@echo "  VENDOR_FAST_PROOF_FORM=$(VENDOR_FAST_PROOF_FORM)  fast load/REPL proof"
 	@echo "  VENDOR_FAST_DETAIL_FORM=$(VENDOR_FAST_DETAIL_FORM)  fast REPL failure detail"
@@ -791,6 +793,7 @@ diagnose-vendor-repl-replay: build-nelisp-bootstrap
 		--eval '(setq vendor-repl-standalone-repo-root "$(abspath .)")' \
 		--eval '(setq vendor-repl-standalone-keep-temp $(VENDOR_REPL_KEEP_TEMP))' \
 		--eval '(setq vendor-repl-standalone-trace-forms $(VENDOR_REPL_TRACE_FORMS))' \
+		--eval '(setq vendor-repl-standalone-direct-character-limit $(VENDOR_REPL_DIRECT_CHARACTER_LIMIT))' \
 		--eval '(setq standalone-source-normalize-cache-directory "$(VENDOR_SOURCE_CACHE_DIR)")' \
 		-l vendor-repl-standalone-replay \
 		-f vendor-repl-standalone-batch
@@ -808,6 +811,7 @@ diagnose-vendor-repl-replay-fast:
 		--eval '(setq vendor-repl-standalone-repo-root "$(abspath .)")' \
 		--eval '(setq vendor-repl-standalone-keep-temp $(VENDOR_REPL_KEEP_TEMP))' \
 		--eval '(setq vendor-repl-standalone-trace-forms $(VENDOR_REPL_TRACE_FORMS))' \
+		--eval '(setq vendor-repl-standalone-direct-character-limit $(VENDOR_REPL_DIRECT_CHARACTER_LIMIT))' \
 		--eval '(setq standalone-source-normalize-cache-directory "$(VENDOR_SOURCE_CACHE_DIR)")' \
 		-l vendor-repl-standalone-replay \
 		-f vendor-repl-standalone-batch
