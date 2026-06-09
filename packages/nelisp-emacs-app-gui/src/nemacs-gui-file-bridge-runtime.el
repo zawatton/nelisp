@@ -259,6 +259,11 @@
 (setq files--modeline-override "")
 (setq files--dired-marks "")
 (setq files--dired-directory "")
+(setq files--magit-root "")
+(setq files--magit-last-status 0)
+(setq files--tramp-host "")
+(setq files--tramp-file "")
+(setq files--tramp-last-status 0)
 (setq files--undo-buffer-string "")
 (setq files--undo-point 0)
 (setq files--undo-mark 0)
@@ -2561,13 +2566,106 @@
         (setq files--current-file-name filename)
         filename))
 
+(fset 'files--tramp-ssh-path-p
+      (lambda (path)
+        (if (if path (>= (length path) 5) nil)
+            (equal (substring path 0 5) "/ssh:")
+          nil)))
+
+(fset 'files--tramp-parse
+      (lambda (path)
+        (let ((rest (substring path 5))
+              (idx 0)
+              (colon -1))
+          (while (if (< idx (length rest)) (< colon 0) nil)
+            (if (= (aref rest idx) 58)
+                (setq colon idx)
+              nil)
+            (setq idx (+ idx 1)))
+          (if (< colon 0)
+              (progn
+                (setq files--tramp-host "")
+                (setq files--tramp-file ""))
+            (progn
+              (setq files--tramp-host (substring rest 0 colon))
+              (setq files--tramp-file (substring rest (+ colon 1)))))
+          files--tramp-host)))
+
+(fset 'files--tramp-run
+      (lambda (shellcmd)
+        (let ((output-file (progn (setq files--transport-name "nemacs-tramp-output") (files--transport-path)))
+              (status 1))
+          (nl-write-file output-file "")
+          (if (fboundp 'call-process)
+              (setq status
+                    (call-process "/bin/sh" nil nil nil "-c"
+                                  (concat "exec > "
+                                          output-file
+                                          " 2>&1\n"
+                                          shellcmd)))
+            (setq status 127))
+          (setq files--tramp-last-status status)
+          (if (fboundp 'call-process)
+              (rdf output-file)
+            ""))))
+
+(fset 'files--tramp-read-file
+      (lambda (path)
+        (files--tramp-parse path)
+        (if (if (equal files--tramp-host "")
+                t
+              (equal files--tramp-file ""))
+            (progn
+              (setq files--tramp-last-status 1)
+              "")
+          (files--tramp-run
+           (concat "ssh "
+                   (files--shell-quote-argument files--tramp-host)
+                   " "
+                   (files--shell-quote-argument
+                    (concat "cat " files--tramp-file)))))))
+
+(fset 'files--tramp-write-file
+      (lambda (path text)
+        (files--tramp-parse path)
+        (if (if (equal files--tramp-host "")
+                t
+              (equal files--tramp-file ""))
+            (progn
+              (setq files--tramp-last-status 1)
+              nil)
+          (let ((stage (progn (setq files--transport-name "nemacs-tramp-stage") (files--transport-path))))
+            (nl-write-file stage text)
+            (files--tramp-run
+             (concat "ssh "
+                     (files--shell-quote-argument files--tramp-host)
+                     " "
+                     (files--shell-quote-argument
+                      (concat "cat > " files--tramp-file))
+                     " < "
+                     stage))
+            (= files--tramp-last-status 0)))))
+
 (fset 'files--find-file-core
       (lambda ()
-        (setq files--access-path files--bridge-arg)
-        (if (not (files--access-path-exists-p))
-            (setq files--bridge-status "file-not-found")
-          (if (not (files--access-path-readable-p))
-              (setq files--bridge-status "permission-denied")
+        (if (files--tramp-ssh-path-p files--bridge-arg)
+            (let ((text (files--tramp-read-file files--bridge-arg)))
+              (if (= files--tramp-last-status 0)
+                  (progn
+                    (setq files--current-file-name files--bridge-arg)
+                    (setq files--buffer-string text)
+                    (files--clear-narrow-state)
+                    (setq files--point 0)
+                    (setq files--buffer-modified-p nil)
+                    (setq files--buffer-read-only-p nil)
+                    files--current-file-name)
+                (setq files--bridge-status "file-not-found")))
+          (progn
+            (setq files--access-path files--bridge-arg)
+            (if (not (files--access-path-exists-p))
+                (setq files--bridge-status "file-not-found")
+              (if (not (files--access-path-readable-p))
+                  (setq files--bridge-status "permission-denied")
 	            (progn
 	              (setq files--current-file-name files--bridge-arg)
 	              (setq files--buffer-string (rdf files--bridge-arg))
@@ -2575,7 +2673,7 @@
 		              (setq files--point 0)
 		              (setq files--buffer-modified-p nil)
 		              (setq files--buffer-read-only-p nil)
-		              files--current-file-name)))))
+		              files--current-file-name)))))))
 
 	(fset 'find-file
 	      (lambda ()
@@ -2802,8 +2900,11 @@
               nil)
             (progn
               (files--sync-narrow-full-from-visible)
-              (if (nl-write-file files--current-file-name
-                                 (files--narrow-current-full-string))
+              (if (if (files--tramp-ssh-path-p files--current-file-name)
+                      (files--tramp-write-file files--current-file-name
+                                               (files--narrow-current-full-string))
+                    (nl-write-file files--current-file-name
+                                   (files--narrow-current-full-string)))
                 (progn
                   (setq files--buffer-modified-p nil)
                   files--current-file-name)
@@ -2855,7 +2956,12 @@
       (lambda ()
         (if files--current-file-name
             (progn
-              (setq files--buffer-string (rdf files--current-file-name))
+              (if (files--tramp-ssh-path-p files--current-file-name)
+                  (let ((text (files--tramp-read-file files--current-file-name)))
+                    (if (= files--tramp-last-status 0)
+                        (setq files--buffer-string text)
+                      nil))
+                (setq files--buffer-string (rdf files--current-file-name)))
               (files--clear-narrow-state)
               (files--clamp-point)
               (setq files--buffer-modified-p nil)
@@ -4376,6 +4482,160 @@
           (files--save-current-buffer-state)
           (files--apply-display-prefix-for-same-window-command)
           files--buffer-name)))
+
+(fset 'files--magit-root-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-magit-root") (files--transport-path))))
+
+(fset 'files--read-magit-root-state
+      (lambda ()
+        (if (files--file-exists-p (files--magit-root-path))
+            (setq files--magit-root (rdf (files--magit-root-path)))
+          (setq files--magit-root ""))
+        files--magit-root))
+
+(fset 'files--write-magit-root-state
+      (lambda ()
+        (nl-write-file (files--magit-root-path) files--magit-root)))
+
+(fset 'files--magit-git
+      (lambda (subcmd)
+        (let ((output-file (progn (setq files--transport-name "nemacs-magit-output") (files--transport-path)))
+              (dir files--magit-root)
+              (status 1))
+          (if (equal dir "")
+              (setq dir ".")
+            nil)
+          (nl-write-file output-file "")
+          (if (fboundp 'call-process)
+              (setq status
+                    (call-process "/bin/sh" nil nil nil "-c"
+                                  (concat "cd "
+                                          (files--shell-quote-argument dir)
+                                          " && exec > "
+                                          output-file
+                                          " 2>&1\ngit "
+                                          subcmd)))
+            (setq status 127))
+          (setq files--magit-last-status status)
+          (if (fboundp 'call-process)
+              (rdf output-file)
+            ""))))
+
+(fset 'files--magit-render-special
+      (lambda (name text)
+        (files--save-current-buffer-state)
+        (setq files--buffer-list-name name)
+        (files--buffer-list-add)
+        (setq files--buffer-name name)
+        (setq files--buffer-string text)
+        (setq files--current-file-name "")
+        (setq files--point 0)
+        (setq files--mark 0)
+        (setq files--window-start 0)
+        (setq files--buffer-read-only-p t)
+        (setq files--buffer-modified-p nil)
+        (files--clear-narrow-state)
+        (files--save-current-buffer-state)
+        (files--apply-display-prefix-for-same-window-command)
+        files--buffer-name))
+
+(fset 'files--magit-render-status
+      (lambda ()
+        (let ((head "")
+              (porcelain ""))
+          (setq head (files--magit-git "log -1 --oneline"))
+          (if (= files--magit-last-status 0)
+              nil
+            (setq head "(no commits)\n"))
+          (setq porcelain (files--magit-git "status --porcelain"))
+          (if (equal porcelain "")
+              (setq porcelain "(clean)\n")
+            nil)
+          (files--magit-render-special
+           "*magit*"
+           (concat "Magit: " files--magit-root "\n"
+                   "Head: " head
+                   "\n"
+                   porcelain)))))
+
+(fset 'magit-status
+      (lambda ()
+        (let ((dir files--bridge-arg))
+          (if (equal dir "")
+              (setq dir (files--project-command-directory))
+            nil)
+          (setq files--magit-root dir)
+          (files--write-magit-root-state)
+          (files--magit-render-status)
+          files--buffer-name)))
+
+(fset 'files--magit-file-at-point
+      (lambda ()
+        (let ((bol (files--org-line-start files--point))
+              (eol (files--org-line-end files--point))
+              (line ""))
+          (setq line (substring files--buffer-string bol eol))
+          (if (> (length line) 3)
+              (substring line 3)
+            ""))))
+
+(fset 'magit-stage-file
+      (lambda ()
+        (if (equal files--buffer-name "*magit*")
+            (let ((name (files--magit-file-at-point)))
+              (if (equal name "")
+                  (setq files--bridge-status "unsupported")
+                (progn
+                  (files--magit-git
+                   (concat "add -- " (files--shell-quote-argument name)))
+                  (files--magit-render-status))))
+          (setq files--bridge-status "unsupported"))
+        files--buffer-name))
+
+(fset 'magit-unstage-file
+      (lambda ()
+        (if (equal files--buffer-name "*magit*")
+            (let ((name (files--magit-file-at-point)))
+              (if (equal name "")
+                  (setq files--bridge-status "unsupported")
+                (progn
+                  (files--magit-git
+                   (concat "reset -q HEAD -- "
+                           (files--shell-quote-argument name)))
+                  (files--magit-render-status))))
+          (setq files--bridge-status "unsupported"))
+        files--buffer-name))
+
+(fset 'magit-commit
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--bridge-status "unsupported")
+          (progn
+            (files--magit-git
+             (concat "commit -m " (files--shell-quote-argument files--bridge-arg)))
+            (if (= files--magit-last-status 0)
+                (setq files--modeline-string "Committed")
+              (setq files--modeline-string "Commit failed"))
+            (setq files--modeline-override files--modeline-string)
+            (files--magit-render-status)))
+        files--buffer-name))
+
+(fset 'magit-diff
+      (lambda ()
+        (let ((out (files--magit-git "diff")))
+          (if (equal out "")
+              (setq out "(no unstaged changes)\n")
+            nil)
+          (files--magit-render-special "*magit-diff*" out))))
+
+(fset 'magit-log
+      (lambda ()
+        (let ((out (files--magit-git "log --oneline -20")))
+          (if (equal out "")
+              (setq out "(no commits)\n")
+            nil)
+          (files--magit-render-special "*magit-log*" out))))
 
     (fset 'files--compose-mail-core
           (lambda ()
@@ -13204,6 +13464,12 @@
 	                                                "org-table-next-field\n"
 	                                                "org-capture\n"
 	                                                "org-agenda\n"
+	                                                "magit-status\n"
+	                                                "magit-stage-file\n"
+	                                                "magit-unstage-file\n"
+	                                                "magit-commit\n"
+	                                                "magit-diff\n"
+	                                                "magit-log\n"
                                                 "compose-mail\n"
                                                 "compose-mail-other-window\n"
                                                 "compose-mail-other-frame\n"
@@ -15088,6 +15354,12 @@
           (if (eq files--bridge-command 'org-table-next-field) (setq ok t) nil)
           (if (eq files--bridge-command 'org-capture) (setq ok t) nil)
           (if (eq files--bridge-command 'org-agenda) (setq ok t) nil)
+          (if (eq files--bridge-command 'magit-status) (setq ok t) nil)
+          (if (eq files--bridge-command 'magit-stage-file) (setq ok t) nil)
+          (if (eq files--bridge-command 'magit-unstage-file) (setq ok t) nil)
+          (if (eq files--bridge-command 'magit-commit) (setq ok t) nil)
+          (if (eq files--bridge-command 'magit-diff) (setq ok t) nil)
+          (if (eq files--bridge-command 'magit-log) (setq ok t) nil)
           (if (eq files--bridge-command 'window-toggle-side-windows) (setq ok t) nil)
           (if (eq files--bridge-command 'enlarge-window) (setq ok t) nil)
           (if (eq files--bridge-command 'shrink-window-horizontally) (setq ok t) nil)
@@ -15517,6 +15789,12 @@
         (if (eq files--bridge-command 'org-table-next-field) (org-table-next-field) nil)
         (if (eq files--bridge-command 'org-capture) (org-capture) nil)
         (if (eq files--bridge-command 'org-agenda) (org-agenda) nil)
+        (if (eq files--bridge-command 'magit-status) (magit-status) nil)
+        (if (eq files--bridge-command 'magit-stage-file) (magit-stage-file) nil)
+        (if (eq files--bridge-command 'magit-unstage-file) (magit-unstage-file) nil)
+        (if (eq files--bridge-command 'magit-commit) (magit-commit) nil)
+        (if (eq files--bridge-command 'magit-diff) (magit-diff) nil)
+        (if (eq files--bridge-command 'magit-log) (magit-log) nil)
         (if (eq files--bridge-command 'window-toggle-side-windows) (window-toggle-side-windows) nil)
         (if (eq files--bridge-command 'enlarge-window) (enlarge-window) nil)
         (if (eq files--bridge-command 'shrink-window-horizontally) (shrink-window-horizontally) nil)
@@ -15793,6 +16071,7 @@
               (files--read-selective-display-state)
               (files--read-coding-input-state)
               (files--read-dired-marks-state)
+              (files--read-magit-root-state)
               (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-hscroll") (files--transport-path)))
               (files--read-number-file)
               (setq files--window-hscroll files--number-file-value)
@@ -17597,6 +17876,39 @@
                     (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
                     (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
                                    (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "magit-status")
+                      t
+                    (if (equal cmd "magit-stage-file")
+                        t
+                      (if (equal cmd "magit-unstage-file")
+                          t
+                        (if (equal cmd "magit-diff")
+                            t
+                          (equal cmd "magit-log")))))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "magit-commit")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
                     (files--write-transport-point)
                     (files--write-transport-mark)
                     (files--write-transport-window-start)
