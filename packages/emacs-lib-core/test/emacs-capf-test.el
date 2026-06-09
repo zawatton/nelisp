@@ -60,6 +60,42 @@
     (should (eq t (completion-at-point)))
     (should (string= "foobar" (nelisp-ec-buffer-string)))))
 
+(ert-deftest emacs-capf-elisp-symbol-names-prefix-filter ()
+  (defun emacs-capf-test--zzqa () nil)
+  (defun emacs-capf-test--zzqb () nil)
+  (unwind-protect
+      (let ((names (emacs-capf-elisp-symbol-names "emacs-capf-test--zzq")))
+        (should (member "emacs-capf-test--zzqa" names))
+        (should (member "emacs-capf-test--zzqb" names))
+        ;; unrelated symbols are excluded
+        (should-not (member "car" names)))
+    (fmakunbound 'emacs-capf-test--zzqa)
+    (fmakunbound 'emacs-capf-test--zzqb)))
+
+(ert-deftest emacs-capf-elisp-completion-at-point-region ()
+  (emacs-capf-test--with-buffer "(emacs-capf-test--zzq"
+    (defun emacs-capf-test--zzqa () nil)
+    (unwind-protect
+        (let ((res (emacs-capf-elisp-completion-at-point)))
+          (should res)
+          ;; END is point; START skips the leading "("
+          (should (= (nth 1 res) (nelisp-ec-point)))
+          (should (member "emacs-capf-test--zzqa" (nth 2 res))))
+      (fmakunbound 'emacs-capf-test--zzqa))))
+
+(ert-deftest emacs-capf-elisp-completion-end-to-end ()
+  (emacs-capf-test--with-buffer "(emacs-capf-test--uniqxy"
+    (defun emacs-capf-test--uniqxyz () nil)
+    (unwind-protect
+        (progn
+          (setq completion-at-point-functions
+                (list #'emacs-capf-elisp-completion-at-point))
+          ;; only one symbol matches the prefix -> completed fully
+          (should (eq t (completion-at-point)))
+          (should (string-match-p "emacs-capf-test--uniqxyz"
+                                  (nelisp-ec-buffer-string))))
+      (fmakunbound 'emacs-capf-test--uniqxyz))))
+
 (provide 'emacs-capf-test)
 
 ;;; emacs-capf-test.el ends here
