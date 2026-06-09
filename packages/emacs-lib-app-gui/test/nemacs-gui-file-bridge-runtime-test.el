@@ -2775,6 +2775,14 @@
                     (write-region "" nil "/tmp/nemacs-minibuffer-state" nil 'silent)
                     (write-region "0" nil "/tmp/nemacs-minibuffer-cursor" nil 'silent)
 	                    (write-region "C-x =" nil "/tmp/nemacs-keys" nil 'silent)
+                    ;; Preceding raw-find-file block changed window/file state;
+                    ;; reset volatile transport to a clean baseline (as a
+                    ;; front-end would re-send) so what-cursor-position opens
+                    ;; *Help* instead of acting on stale window/file state.
+                    (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+                    (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+                    (write-region "0" nil "/tmp/nemacs-window-start" nil 'silent)
+                    (write-region "" nil "/tmp/nemacs-file" nil 'silent)
                     (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
                     (write-region "one\ntwo\nthree\n"
                                   nil "/tmp/nemacs-buf" nil 'silent)
