@@ -196,7 +196,11 @@
                            "/tmp/nemacs-bookmark-list"
                            "/tmp/nemacs-abbrev-table"
 			                   "/tmp/nemacs-status"
-			                   "/tmp/nemacs-dired-marks"))
+			                   "/tmp/nemacs-dired-marks"
+			                   "/tmp/nemacs-magit-root"
+			                   "/tmp/nemacs-magit-output"
+			                   "/tmp/nemacs-tramp-output"
+			                   "/tmp/nemacs-tramp-stage"))
 	          (dirs '("/tmp/nemacs-buffer-store"
 	                  "/tmp/nemacs-buffer-file-store"
 		                  "/tmp/nemacs-buffer-point-store"
@@ -541,6 +545,14 @@
                                       "(fset 'org-table-next-field"
                                       "(fset 'org-capture"
                                       "(fset 'org-agenda"
+                                      "(fset 'magit-status"
+                                      "(fset 'magit-stage-file"
+                                      "(fset 'magit-unstage-file"
+                                      "(fset 'magit-commit"
+                                      "(fset 'magit-diff"
+                                      "(fset 'magit-log"
+                                      "(fset 'files--tramp-read-file"
+                                      "(fset 'files--tramp-write-file"
                                       "(fset 'compose-mail"
                                       "(fset 'compose-mail-other-window"
                                       "(fset 'compose-mail-other-frame"
@@ -3575,6 +3587,171 @@
                       "/tmp/nemacs-buf")))
             (should (string-suffix-p "* TODO write report\n" buf))
             (should (string-prefix-p org-text buf))))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-magit-min ()
+  "Magit-min status/stage/commit/diff/log workflow (M10)."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (repo "/tmp/nemacs-magit-test"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (when (file-directory-p repo)
+              (delete-directory repo t))
+            (make-directory repo t)
+            (let ((default-directory repo))
+              (shell-command-to-string "git init -q .")
+              (shell-command-to-string "git config user.email nemacs@test")
+              (shell-command-to-string "git config user.name nemacs")
+              (write-region "one\n" nil (concat repo "/file.txt") nil 'silent)
+              (shell-command-to-string "git add file.txt")
+              (shell-command-to-string "git commit -q -m init"))
+            (write-region "one\ntwo\n" nil (concat repo "/file.txt") nil 'silent)
+            ;; Step 1: magit-status renders head + porcelain.
+            (write-region "magit-status" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region repo nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "old\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*magit*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "Head: ") buf))
+              (should (string-match-p (regexp-quote "init") buf))
+              (should (string-match-p (regexp-quote " M file.txt") buf)))
+            ;; Step 2: stage the file at point -> index column set.
+            (let* ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                         "/tmp/nemacs-buf"))
+                   (pos (string-match (regexp-quote " M file.txt") buf)))
+              (should pos)
+              (write-region (number-to-string pos)
+                            nil "/tmp/nemacs-point" nil 'silent))
+            (write-region "magit-stage-file" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "M  file.txt") buf)))
+            ;; Step 3: commit -> clean status + modeline.
+            (write-region "magit-commit" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "second change" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "Committed"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-modeline")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "second change") buf))
+              (should (string-match-p (regexp-quote "(clean)") buf)))
+            ;; Step 4: diff shows a new unstaged change.
+            (write-region "one\ntwo\nthree\n"
+                          nil (concat repo "/file.txt") nil 'silent)
+            (write-region "magit-diff" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*magit-diff*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "+three") buf)))
+            ;; Step 5: log lists both commits.
+            (write-region "magit-log" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*magit-log*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "second change") buf))
+              (should (string-match-p (regexp-quote "init") buf))))
+        (when (file-directory-p repo)
+          (delete-directory repo t))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-tramp-ssh-roundtrip ()
+  "M11: /ssh:HOST:/path find-file -> edit -> save round-trip (stub ssh)."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let* ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+           (image (nemacs-gui-file-bridge-runtime-test--write-image))
+           (stub-dir "/tmp/nemacs-tramp-bin")
+           (remote-dir "/tmp/nemacs-tramp-remote")
+           (remote-file (concat remote-dir "/hello.txt"))
+           (tramp-path (concat "/ssh:fakehost:" remote-file)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (dolist (dir (list stub-dir remote-dir))
+              (when (file-directory-p dir)
+                (delete-directory dir t))
+              (make-directory dir t))
+            (write-region "#!/bin/sh\nshift\nexec /bin/sh -c \"$*\"\n"
+                          nil (concat stub-dir "/ssh") nil 'silent)
+            (set-file-modes (concat stub-dir "/ssh") #o755)
+            (write-region "remote hello\n" nil remote-file nil 'silent)
+            (let ((process-environment
+                   (cons (concat "PATH=" stub-dir ":" (getenv "PATH"))
+                         process-environment)))
+              ;; Step 1: find-file loads the remote content.
+              (write-region "find-file" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region tramp-path nil "/tmp/nemacs-arg" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-file" nil 'silent)
+              (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region "old\n" nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+              (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal tramp-path
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "remote hello\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              ;; Step 2: save-buffer writes the edited text back remotely.
+              (write-region "remote hello\nedited locally\n"
+                            nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region tramp-path nil "/tmp/nemacs-file" nil 'silent)
+              (write-region "save-buffer" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "remote hello\nedited locally\n"
+                             (with-temp-buffer
+                               (insert-file-contents remote-file)
+                               (buffer-string))))
+              ;; Step 3: a non-ssh Tramp method is not silently mangled —
+              ;; find-file on /scp:... falls through to the local path check
+              ;; and reports file-not-found.
+              (write-region "find-file" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "/scp:fakehost:/tmp/x" nil "/tmp/nemacs-arg" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "file-not-found"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-status")))))
+        (dolist (dir (list stub-dir remote-dir))
+          (when (file-directory-p dir)
+            (delete-directory dir t)))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-narrow-widen ()
   "In standalone NeLisp, narrowing should persist and widen should merge edits."
