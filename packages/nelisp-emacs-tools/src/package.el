@@ -56,15 +56,41 @@
     (or (featurep name)
         (package--registered-p name))))
 
+(defun package--desc-dir (name)
+  "Return the on-disk directory recorded for package NAME, or nil."
+  (let ((desc (car (cdr (assq name package-alist)))))
+    (and (package-desc-p desc) (plist-get (cdr desc) :dir))))
+
 (defun package-activate (pkg &optional _force)
-  "Activate PKG if it is installed, returning non-nil on success."
+  "Activate PKG if it is installed, returning non-nil on success.
+Activation adds the package's recorded directory (if any) to `load-path',
+loads its feature when not already loaded, and records it in
+`package-activated-list'.  A missing feature file is non-fatal: the package
+is still recorded as activated (matching the registry-only facade)."
   (let ((name (package--name-symbol pkg)))
     (when (package-installed-p name)
+      (let ((dir (package--desc-dir name)))
+        (when (and dir (file-directory-p dir))
+          (add-to-list 'load-path dir)))
+      (unless (featurep name)
+        (condition-case nil
+            (require name)
+          (error nil)))
       (cl-pushnew name package-activated-list)
       t)))
 
-(defun package-initialize (&optional _no-activate)
-  "Initialize the minimal package facade."
+(defun package-activate-all ()
+  "Activate every package registered in `package-alist'.
+Returns the list of activated package names."
+  (dolist (entry package-alist)
+    (package-activate (car entry)))
+  package-activated-list)
+
+(defun package-initialize (&optional no-activate)
+  "Initialize the minimal package facade.
+Unless NO-ACTIVATE is non-nil, activate all registered packages."
+  (unless no-activate
+    (package-activate-all))
   t)
 
 (defun package-refresh-contents ()
