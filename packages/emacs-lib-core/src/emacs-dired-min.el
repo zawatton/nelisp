@@ -39,6 +39,7 @@
     (emacs-keymap-define-key map (kbd "u") #'dired-unmark)
     (emacs-keymap-define-key map (kbd "d") #'dired-flag-file-deletion)
     (emacs-keymap-define-key map (kbd "x") #'dired-do-flagged-delete)
+    (emacs-keymap-define-key map (kbd "R") #'dired-do-rename)
     map)
   "Keymap for `dired-mode'.")
 
@@ -351,6 +352,22 @@ Returns the number of files deleted."
           (setq deleted (1+ deleted)))))
     (emacs-dired-min--render-current-buffer dir)
     deleted))
+
+;;;###autoload
+(defun dired-do-rename (&optional _arg)
+  "Rename the file at point to a destination read from the minibuffer."
+  (interactive "p")
+  (let* ((entry (or (emacs-dired-min--current-entry)
+                    (user-error "No dired entry on this line")))
+         (name (plist-get entry :name))
+         (path (plist-get entry :path))
+         (state (emacs-dired-min--current-state))
+         (dir (plist-get state :directory))
+         (target (read-file-name (format "Rename %s to: " name) dir))
+         (new-path (nelisp-ec-expand-file-name target dir)))
+    (nelisp-ec-rename-file path new-path)
+    (emacs-dired-min--render-current-buffer dir)
+    new-path))
 
 (provide 'emacs-dired-min)
 
