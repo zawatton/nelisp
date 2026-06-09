@@ -63,7 +63,11 @@ run_stage "fast-gate" make test
 # Stage 2: standalone reader-binary smoke.
 run_stage "standalone-smoke" timeout "$SMOKE_TIMEOUT" make test-nemacs-gui-bridge
 
-# Stage 3: soak (opt-in) -- repeat the smoke to surface intermittent / leak
+# Stage 3: in-process soak diagnostic (fast: buffer create/edit/search/kill,
+# bucketed errors).  Complements the smoke; always run.
+run_stage "in-process-soak" make soak SOAK_ITER=50
+
+# Stage 4: soak (opt-in) -- repeat the smoke to surface intermittent / leak
 # failures.  Each iteration is its own bucket so a single flake is visible.
 if [ "$SOAK_ITER" -gt 0 ]; then
   i=1
