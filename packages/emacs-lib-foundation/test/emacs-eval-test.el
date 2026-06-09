@@ -64,6 +64,32 @@
                   (error "boom")))))
 
 
+(ert-deftest emacs-eval-test/autoload-lazy-loads-on-call ()
+  (let* ((dir (make-temp-file "nemacs-al-" t))
+         (file (expand-file-name "alfeat.el" dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file file
+            (insert "(defun emacs-eval-test--al-fn (x) (* x 2))\n"
+                    "(provide 'alfeat)\n"))
+          (fmakunbound 'emacs-eval-test--al-fn)
+          (autoload 'emacs-eval-test--al-fn file)
+          ;; a thunk is installed before the file is loaded
+          (should (fboundp 'emacs-eval-test--al-fn))
+          ;; calling it triggers the load and runs the real definition
+          (should (= 6 (emacs-eval-test--al-fn 3))))
+      (fmakunbound 'emacs-eval-test--al-fn)
+      (when (file-directory-p dir) (delete-directory dir t)))))
+
+(ert-deftest emacs-eval-test/autoload-leaves-defined-function ()
+  (defun emacs-eval-test--al-already () 'original)
+  (unwind-protect
+      (progn
+        ;; autoload is a no-op for an already-defined function
+        (autoload 'emacs-eval-test--al-already "nonexistent-file")
+        (should (eq 'original (emacs-eval-test--al-already))))
+    (fmakunbound 'emacs-eval-test--al-already)))
+
 (provide 'emacs-eval-test)
 
 ;;; emacs-eval-test.el ends here
