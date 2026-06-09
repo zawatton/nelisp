@@ -173,9 +173,29 @@ inspecting a literal lambda / closure body."
 ;; polyfills.
 (unless (fboundp 'autoload)
   (defun autoload (function file &optional docstring interactive type)
-    "Polyfill: no-op for NeLisp standalone."
-    (ignore function file docstring interactive type)
-    nil))
+    "Lazy-load FUNCTION from FILE on first call (standalone autoload).
+
+When FUNCTION is not yet defined, install a thunk that `load's FILE — which
+is expected to redefine FUNCTION — on the first call, then invokes the real
+definition with the original arguments.  Functions that are already defined
+(the common case under eager module loading) are left untouched, so this is
+a no-op for them.  DOCSTRING/INTERACTIVE/TYPE are accepted for
+call-compatibility and otherwise ignored.
+
+This keeps startup bounded: vendor libraries can be declared with `autoload'
+and only paid for when a workflow actually calls them."
+    (ignore docstring interactive type)
+    (when (and (symbolp function) (not (fboundp function)))
+      (let (thunk)
+        (setq thunk
+              (lambda (&rest args)
+                (load file)
+                (when (eq (symbol-function function) thunk)
+                  (error "Autoloading `%s' from %s did not define it"
+                         function file))
+                (apply function args)))
+        (fset function thunk)))
+    function))
 
 ;; Obsoletion-tracking aliases.  In Emacs these record metadata for
 ;; deprecation warnings; under NeLisp standalone we just install the
