@@ -70,6 +70,26 @@ sample inside a soak loop.  Returns nil on platforms without /proc."
             (string-to-number (match-string 1)))))
     (error nil)))
 
+(defun standalone-soak-large-file (lines)
+  "Soak a large buffer of LINES lines: build it, search its tail, sample RSS.
+Returns a plist (:lines N :found BOOL :rss-kb RSS) where FOUND is whether the
+last line is locatable in the buffer.  Exercises the large-file path of the
+release gate without an external fixture."
+  (let ((buf (nelisp-ec-generate-new-buffer " *soak-large*")))
+    (unwind-protect
+        (progn
+          (nelisp-ec-set-buffer buf)
+          (dotimes (i lines)
+            (nelisp-ec-insert (format "line %d content\n" i)))
+          (let* ((text (nelisp-ec-buffer-string))
+                 (needle (format "line %d content" (max 0 (1- lines))))
+                 (found (and (> lines 0)
+                             (string-match-p (regexp-quote needle) text)
+                             t)))
+            (list :lines lines :found found :rss-kb (standalone-soak-rss-kb))))
+      (when (nelisp-ec-buffer-p buf)
+        (nelisp-ec-kill-buffer buf)))))
+
 (defun standalone-soak-report-string (report)
   "Format a soak REPORT plist as a human-readable bucket summary string."
   (let ((buckets (plist-get report :buckets)))
