@@ -424,8 +424,10 @@ Focus:
 
 Deliverable:
 
-- A loopback-ssh round-trip test passes under the standalone runtime; remote
-  editing of one file works end-to-end.
+- A hermetic stub-ssh round-trip test (PATH-injected fake ssh, no sshd
+  dependency) passes under the standalone runtime; remote editing of one file
+  works end-to-end.  Real-host ssh verification stays a manual checklist item
+  because it depends on local sshd/key setup.
 
 * 5. Explicit Non-goals For Initial Roadmap
 
