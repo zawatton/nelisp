@@ -4217,6 +4217,14 @@
             (setq files--buffer-read-only-p t)
             (files--save-current-buffer-state)
             (files--apply-display-prefix-for-same-window-command)
+            ;; Transport the compilation buffer directly.  next-error /
+            ;; previous-error leave files--bridge-status = "unsupported", whose
+            ;; write-back only emits /tmp/nemacs-status -- so without this the
+            ;; *compilation* buffer is set in-process but never reaches the
+            ;; front-end (buffer-name stays at the caller's input).
+            (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+            (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+            (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path)) (if files--buffer-read-only-p "1" "0"))
             files--buffer-name))
 
 	(fset 'files--xref-current-buffer-matches
