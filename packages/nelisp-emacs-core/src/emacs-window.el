@@ -1013,6 +1013,32 @@ Returns the displayed buffer."
     (emacs-window-select-window window)
     (emacs-window-buffer window)))
 
+(defun emacs-window-quit-window (&optional kill window)
+  "Quit WINDOW (default the selected window): stop displaying its buffer.
+
+If more than one live window exists, delete WINDOW — this closes a popup
+such as a `*Help*' window and returns to the editing layout.  Otherwise
+switch WINDOW to another live buffer, leaving the quit buffer buried.  With
+KILL non-nil, kill the quit buffer afterward.  Returns nil.
+
+This is the `q' complement to `emacs-window-display-buffer' for the
+help/completion/popup workflow."
+  (emacs-window--ensure-root)
+  (let* ((w (or window (emacs-window-selected-window)))
+         (buf (emacs-window-buffer w)))
+    (if (> (length (emacs-window-window-list)) 1)
+        (emacs-window-delete-window w)
+      (let ((other (cl-loop for (_name . b) in nelisp-ec--buffers
+                            when (not (eq b buf)) return b)))
+        (when other
+          (emacs-window-set-window-buffer w other)
+          (nelisp-ec-set-buffer other))))
+    (when (and kill (nelisp-ec-buffer-p buf)
+               ;; only kill once it is no longer displayed anywhere
+               (not (emacs-window-get-buffer-window buf)))
+      (nelisp-ec-kill-buffer buf))
+    nil))
+
 (provide 'emacs-window)
 
 ;;; emacs-window.el ends here

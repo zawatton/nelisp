@@ -180,6 +180,13 @@ accepted for API parity and ignored (= single-frame Phase 1)."
 (when (emacs-window-builtins--install-function-p 'pop-to-buffer)
   (defalias 'pop-to-buffer #'emacs-window-pop-to-buffer))
 
+(when (emacs-window-builtins--install-function-p 'quit-window)
+  (defun quit-window (&optional kill window)
+    "Phase 11 polyfill: quit WINDOW, closing a popup or burying its buffer.
+Bound to `q' in help/special-buffer keymaps."
+    (interactive "P")
+    (emacs-window-quit-window kill window)))
+
 (provide 'emacs-window-builtins)
 
 ;;; emacs-window-builtins.el ends here

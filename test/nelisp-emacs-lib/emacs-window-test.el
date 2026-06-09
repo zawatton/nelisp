@@ -654,6 +654,46 @@
           (should (eq b2 (emacs-window-buffer
                           (emacs-window-selected-window)))))))))
 
+;;;; H. quit-window (M3 popup/help workflow)
+
+(ert-deftest emacs-window-quit-window-deletes-popup-window ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2)
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 b1)
+        (let ((w2 (emacs-window-split-window)))
+          (emacs-window-set-window-buffer w2 b2)
+          (emacs-window-select-window w2)
+          (emacs-window-quit-window nil w2)
+          ;; popup window closed -> back to a single window
+          (should (= 1 (length (emacs-window-window-list))))
+          ;; b2 buried, not killed
+          (should (memq b2 (mapcar #'cdr nelisp-ec--buffers))))))))
+
+(ert-deftest emacs-window-quit-window-switches-buffer-when-sole-window ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2)
+      (ignore b1)
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 b2)
+        (emacs-window-quit-window nil w1)
+        ;; still one window, now showing a different live buffer
+        (should (= 1 (length (emacs-window-window-list))))
+        (should (not (eq b2 (emacs-window-buffer w1))))))))
+
+(ert-deftest emacs-window-quit-window-kill-kills-buffer ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2)
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 b1)
+        (let ((w2 (emacs-window-split-window)))
+          (emacs-window-set-window-buffer w2 b2)
+          (emacs-window-select-window w2)
+          (emacs-window-quit-window t w2)
+          (should (= 1 (length (emacs-window-window-list))))
+          ;; b2 killed (removed from the buffer list)
+          (should (not (memq b2 (mapcar #'cdr nelisp-ec--buffers)))))))))
+
 (provide 'emacs-window-test)
 
 ;;; emacs-window-test.el ends here
