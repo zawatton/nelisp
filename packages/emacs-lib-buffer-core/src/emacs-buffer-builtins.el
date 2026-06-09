@@ -55,7 +55,8 @@
       ;; surface.  Under standalone, replace `emacs-stub' placeholders
       ;; without repeated fboundp checks.
       t
-    (not (fboundp symbol))))
+    (or (get symbol 'emacs-stub-bulk)
+        (not (fboundp symbol)))))
 
 (defun emacs-buffer-builtins--call-emacs-buffer (function args)
   "Lazy-load `emacs-buffer' and call FUNCTION with ARGS."
@@ -85,6 +86,7 @@
          (goto-char                  . nelisp-ec-goto-char)
          (buffer-size                . nelisp-ec-buffer-size)
          (insert                     . nelisp-ec-insert)
+         (insert-and-inherit         . nelisp-ec-insert)
          (erase-buffer               . nelisp-ec-erase-buffer)
          (delete-region              . nelisp-ec-delete-region)
          (buffer-string              . nelisp-ec-buffer-string)
@@ -117,6 +119,31 @@
    ((and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object)) object)
    (t :string-or-unsupported)))
 
+(defvar buffer-invisibility-spec nil
+  "Standalone bridge for Emacs's per-buffer invisibility spec.")
+
+(defun emacs-buffer-builtins-invisible-p (prop)
+  "Return non-nil when PROP is hidden by `buffer-invisibility-spec'.
+The standalone bridge preserves the host-visible shape needed by
+redisplay callers: direct symbol matches return t, cons/list spec
+matches return 2, and absent matches return nil."
+  (let ((spec (and (boundp 'buffer-invisibility-spec)
+                   buffer-invisibility-spec)))
+    (cond
+     ((null prop) nil)
+     ((eq spec t) t)
+     ((null spec) nil)
+     ((consp prop)
+      (catch 'found
+        (dolist (item prop)
+          (let ((match (emacs-buffer-builtins-invisible-p item)))
+            (when match
+              (throw 'found match))))
+        nil))
+     ((memq prop spec) t)
+     ((assq prop spec) 2)
+     (t nil))))
+
 (when (emacs-buffer-builtins--install-function-p 'put-text-property)
   (defun put-text-property (start end prop value &optional object)
     "Set text property PROP to VALUE on buffer OBJECT.
@@ -136,6 +163,84 @@ String text properties are accepted as a no-op in the standalone MVP."
         (emacs-buffer-builtins--call-emacs-buffer
          'emacs-buffer-get-text-property
          (list pos prop target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'get-char-property)
+  (defun get-char-property (pos prop &optional object)
+    "Return char property PROP at POS on buffer OBJECT."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (eq target :string-or-unsupported)
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-get-char-property
+         (list pos prop target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'invisible-p)
+  (defalias 'invisible-p #'emacs-buffer-builtins-invisible-p))
+
+(defun emacs-buffer-builtins-next-property-change (pos &optional object limit)
+  "Return next property change after POS in OBJECT.
+String property scans are not yet represented in the standalone
+substrate, so unsupported objects return LIMIT or nil."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-next-property-change
+       (list pos target limit)))))
+
+(defun emacs-buffer-builtins-previous-property-change (pos &optional object limit)
+  "Return previous property change before POS in OBJECT.
+String property scans are not yet represented in the standalone
+substrate, so unsupported objects return LIMIT or nil."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-previous-property-change
+       (list pos target limit)))))
+
+(defun emacs-buffer-builtins-next-single-property-change
+    (pos prop &optional object limit)
+  "Return next change after POS for text property PROP in OBJECT."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-next-single-property-change
+       (list pos prop target limit)))))
+
+(defun emacs-buffer-builtins-previous-single-property-change
+    (pos prop &optional object limit)
+  "Return previous change before POS for text property PROP in OBJECT."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-previous-single-property-change
+       (list pos prop target limit)))))
+
+(when (emacs-buffer-builtins--install-function-p 'next-property-change)
+  (defalias 'next-property-change
+    #'emacs-buffer-builtins-next-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'previous-property-change)
+  (defalias 'previous-property-change
+    #'emacs-buffer-builtins-previous-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'next-single-property-change)
+  (defalias 'next-single-property-change
+    #'emacs-buffer-builtins-next-single-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'previous-single-property-change)
+  (defalias 'previous-single-property-change
+    #'emacs-buffer-builtins-previous-single-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'next-single-char-property-change)
+  (defalias 'next-single-char-property-change
+    #'emacs-buffer-builtins-next-single-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'previous-single-char-property-change)
+  (defalias 'previous-single-char-property-change
+    #'emacs-buffer-builtins-previous-single-property-change))
 
 (when (emacs-buffer-builtins--install-function-p 'add-text-properties)
   (defun add-text-properties (start end props &optional object)
@@ -314,6 +419,29 @@ buffers are returned regardless."
     (declare (indent 1) (debug (form body)))
     (cons 'nelisp-ec-with-current-buffer (cons buf body))))
 
+(when (emacs-buffer-builtins--install-function-p 'default-value)
+  (defalias 'default-value #'emacs-buffer-default-value))
+
+(when (emacs-buffer-builtins--install-function-p 'default-boundp)
+  (defalias 'default-boundp #'emacs-buffer-default-boundp))
+
+(when (emacs-buffer-builtins--install-function-p 'set-default)
+  (defalias 'set-default #'emacs-buffer-set-default))
+
+(defun emacs-buffer-builtins-buffer-modified-tick (&optional buffer)
+  "Return BUFFER's standalone modified tick."
+  (emacs-buffer-builtins--call-emacs-buffer
+   'emacs-buffer-buffer-chars-modified-tick
+   (list buffer)))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-modified-tick)
+  (defalias 'buffer-modified-tick
+    #'emacs-buffer-builtins-buffer-modified-tick))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-chars-modified-tick)
+  (defalias 'buffer-chars-modified-tick
+    #'emacs-buffer-builtins-buffer-modified-tick))
+
 ;;;; --- positions ---------------------------------------------------------
 
 ;; point / point-min / point-max / goto-char batched into the dolist near
@@ -363,6 +491,70 @@ clamp + signal semantics."
 
 ;; insert / erase-buffer / delete-region batched into the dolist near the
 ;; top.
+
+(defun emacs-buffer-builtins-char-after (&optional pos)
+  "Return character at POS, or nil at end of accessible buffer."
+  (let ((p (or pos (nelisp-ec-point))))
+    (if (and (integerp p)
+             (>= p (nelisp-ec-point-min))
+             (< p (nelisp-ec-point-max)))
+        (aref (nelisp-ec-buffer-substring p (1+ p)) 0)
+      nil)))
+
+(defun emacs-buffer-builtins-char-before (&optional pos)
+  "Return character before POS, or nil at beginning of accessible buffer."
+  (let ((p (or pos (nelisp-ec-point))))
+    (if (and (integerp p)
+             (> p (nelisp-ec-point-min))
+             (<= p (nelisp-ec-point-max)))
+        (aref (nelisp-ec-buffer-substring (1- p) p) 0)
+      nil)))
+
+(defun emacs-buffer-builtins-following-char ()
+  "Return character at point, or 0 at end of accessible buffer."
+  (or (emacs-buffer-builtins-char-after) 0))
+
+(defun emacs-buffer-builtins-preceding-char ()
+  "Return character before point, or 0 at beginning of accessible buffer."
+  (or (emacs-buffer-builtins-char-before) 0))
+
+(dolist (--cell--
+         '((char-after     . emacs-buffer-builtins-char-after)
+           (char-before    . emacs-buffer-builtins-char-before)
+           (following-char . emacs-buffer-builtins-following-char)
+           (preceding-char . emacs-buffer-builtins-preceding-char)))
+  (let ((--name-- (car --cell--))
+        (--target-- (cdr --cell--)))
+    (when (emacs-buffer-builtins--install-function-p --name--)
+      (defalias --name-- --target--))))
+
+(defun emacs-buffer-builtins-subst-char-in-region
+    (start end fromchar tochar &optional noundo)
+  "Replace FROMCHAR with TOCHAR between START and END.
+NOUNDO is accepted for API parity; the standalone substrate currently
+has no undo integration at this layer."
+  (ignore noundo)
+  (let ((text (nelisp-ec-buffer-substring start end))
+        (i 0)
+        (changed nil)
+        (replacement ""))
+    (while (< i (length text))
+      (let ((ch (aref text i)))
+        (when (= ch fromchar)
+          (setq ch tochar)
+          (setq changed t))
+        (setq replacement (concat replacement (string ch))))
+      (setq i (1+ i)))
+    (when changed
+      (nelisp-ec-save-excursion
+        (nelisp-ec-goto-char start)
+        (nelisp-ec-delete-region start end)
+        (nelisp-ec-insert replacement)))
+    nil))
+
+(when (emacs-buffer-builtins--install-function-p 'subst-char-in-region)
+  (defalias 'subst-char-in-region
+    #'emacs-buffer-builtins-subst-char-in-region))
 
 (when (emacs-buffer-builtins--install-function-p 'delete-char)
   (defun delete-char (n &optional killflag)

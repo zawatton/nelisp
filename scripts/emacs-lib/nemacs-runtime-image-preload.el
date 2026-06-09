@@ -8,6 +8,10 @@
 
 ;;; Code:
 
+(defconst nemacs-runtime-image-preload--script-directory
+  (file-name-directory (or load-file-name buffer-file-name ""))
+  "Directory containing runtime-image preload helper scripts.")
+
 (defun nemacs-runtime-image-setup-paths (repo-root)
   "Install REPO-ROOT's src/vendor paths for a NeLisp image bake."
   (unless (boundp 'load-path)
@@ -32,7 +36,10 @@
   "Preload the batch nemacs entry into the current NeLisp image."
   (nemacs-runtime-image-setup-paths repo-root)
   (nemacs-runtime-image-load-bootstrap bootstrap-file)
+  (nemacs-runtime-image-preload--install-process-core)
   (require 'nemacs-main)
+  (load (concat repo-root "/scripts/nemacs-runtime-frame-tab-preload.el")
+        nil 'no-message t t)
   t)
 
 (defun nemacs-runtime-image-preload-interactive (repo-root bootstrap-file)
@@ -66,6 +73,9 @@ the default batch image while the vendor surface is still expanding."
   (nemacs-runtime-image-preload--install-isearch-core)
   (nemacs-runtime-image-preload--install-minibuffer-core)
   (nemacs-runtime-image-preload--install-project-core)
+  (nemacs-runtime-image-preload--install-process-core)
+  (nemacs-runtime-image-preload--install-frame-core)
+  (nemacs-runtime-image-preload--install-tab-core)
   (nemacs-runtime-image-preload--install-support-core)
   (nemacs-runtime-image-preload--install-utility-i18n-core)
   t)
@@ -136,15 +146,22 @@ the default batch image while the vendor surface is still expanding."
   "Install PUBLIC as a lazy wrapper around TARGET.
 The wrapper is quoted data instead of a closure so source-v1 images can
 replay it in runtimes with minimal closure support."
-  (unless (fboundp public)
+  (unless (nemacs-runtime-image-preload--function-cell-live-p public)
     (fset public
           (list 'lambda '(&rest args)
                 '(require 'files-standalone-buffer)
                 (list 'apply (list 'quote target) 'args)))))
 
+(defun nemacs-runtime-image-preload--function-cell-live-p (symbol)
+  "Return non-nil when SYMBOL has a usable function cell."
+  (and (fboundp symbol)
+       (condition-case nil
+           (symbol-function symbol)
+         (error nil))))
+
 (defun nemacs-runtime-image-preload--install-dired-command (public)
   "Install PUBLIC as a lazy wrapper around `emacs-dired-min'."
-  (unless (fboundp public)
+  (unless (nemacs-runtime-image-preload--function-cell-live-p public)
     (fset public
           (list 'lambda '(&rest args)
                 '(require 'emacs-dired-min)
@@ -165,7 +182,7 @@ replay it in runtimes with minimal closure support."
 
 (defun nemacs-runtime-image-preload--install-help-command (public)
   "Install PUBLIC as a lazy wrapper around `emacs-help'."
-  (unless (fboundp public)
+  (unless (nemacs-runtime-image-preload--function-cell-live-p public)
     (fset public
           (list 'lambda '(&rest args)
                 '(require 'emacs-help)
@@ -191,7 +208,7 @@ replay it in runtimes with minimal closure support."
 (defun nemacs-runtime-image-preload--install-module-command
     (public feature target)
   "Install PUBLIC as a lazy wrapper requiring FEATURE and calling TARGET."
-  (unless (fboundp public)
+  (unless (nemacs-runtime-image-preload--function-cell-live-p public)
     (fset public
           (list 'lambda '(&rest args)
                 (list 'require (list 'quote feature))
@@ -260,6 +277,909 @@ replay it in runtimes with minimal closure support."
       (nemacs-runtime-image-preload--install-module-command
        symbol 'emacs-project symbol))
     (provide 'project))
+  t)
+
+(defun nemacs-runtime-image-preload--install-process-core ()
+  "Install process API facades without source `load'.
+
+The source-v1 runtime image records `setq' and `fset' reliably, while
+full source `defun' forms may not replay into a fresh standalone reader.
+Keep this surface as data lambdas so runtime images expose the
+`emacs-process' boundary even before NeLisp's real subprocess primitives are
+bound.  When `nelisp-process-*' or legacy `nelisp-*' delegates exist they are
+used; otherwise synchronous calls return a failure status instead of aborting
+image startup."
+  (let* ((base nemacs-runtime-image-preload--script-directory)
+         (preload (and base
+                       (expand-file-name
+                        "nemacs-runtime-process-preload.el" base))))
+    (when (and preload (file-readable-p preload))
+      (load preload nil 'no-message)))
+  (unless (boundp 'shell-file-name)
+    (defvar shell-file-name "/bin/sh"))
+  (unless (boundp 'shell-command-switch)
+    (defvar shell-command-switch "-c"))
+  (unless (boundp 'emacs-process-shell-file-name)
+    (defvar emacs-process-shell-file-name "/bin/sh"))
+  (unless (boundp 'emacs-process-shell-command-switch)
+    (defvar emacs-process-shell-command-switch "-c"))
+  (unless (boundp 'emacs-process-call-process-region-input-file)
+    (defvar emacs-process-call-process-region-input-file
+      "/tmp/nemacs-call-process-region-input"))
+  (unless (boundp 'emacs-process-shell-command-on-region-output-file)
+    (defvar emacs-process-shell-command-on-region-output-file
+      "/tmp/nemacs-shell-command-on-region-output"))
+  (unless (boundp 'emacs-process--fallback-tag)
+    (defvar emacs-process--fallback-tag 'emacs-process-fallback))
+  (unless (boundp 'emacs-process--fallback-processes)
+    (defvar emacs-process--fallback-processes nil))
+  (unless (boundp 'emacs-process--fallback-next-pid)
+    (defvar emacs-process--fallback-next-pid 10000))
+  (unless (fboundp 'emacs-process--fallback-process-p)
+    (fset 'emacs-process--fallback-process-p
+          '(lambda (object)
+             (if (vectorp object)
+                 (if (<= 10 (length object))
+                     (eq (aref object 0) emacs-process--fallback-tag)
+                   nil)
+               nil))))
+  (unless (fboundp 'emacs-process--fallback-plist-get)
+    (fset 'emacs-process--fallback-plist-get
+          '(lambda (plist prop)
+             (let ((value nil)
+                   (found nil))
+               (while (if plist (not found) nil)
+                 (if (eq (car plist) prop)
+                     (progn
+                       (setq value (car (cdr plist)))
+                       (setq found t))
+                   (setq plist (cdr (cdr plist)))))
+               value))))
+  (unless (fboundp 'emacs-process--fallback-buffer)
+    (fset 'emacs-process--fallback-buffer
+          '(lambda (buffer)
+             (if (if (stringp buffer) (fboundp 'get-buffer-create) nil)
+                 (get-buffer-create buffer)
+               buffer))))
+  (unless (fboundp 'emacs-process--fallback-sentinel-event)
+    (fset 'emacs-process--fallback-sentinel-event
+          '(lambda (status)
+             (if (if (integerp status) (= status 0) nil)
+                 "finished\n"
+               (concat "exited abnormally with code "
+                       (number-to-string status)
+                       "\n")))))
+  (unless (fboundp 'emacs-process--fallback-make-process)
+    (fset 'emacs-process--fallback-make-process
+          '(lambda (&rest plist)
+             (let ((name (or (emacs-process--fallback-plist-get plist :name)
+                             "process"))
+                   (buffer (emacs-process--fallback-buffer
+                            (emacs-process--fallback-plist-get plist :buffer)))
+                   (command (emacs-process--fallback-plist-get plist :command))
+                   (sentinel (emacs-process--fallback-plist-get
+                              plist :sentinel))
+                   (filter (emacs-process--fallback-plist-get plist :filter))
+                   (pid emacs-process--fallback-next-pid)
+                   (process nil)
+                   (status 1))
+               (setq process
+                     (vector emacs-process--fallback-tag name buffer command
+                             'run nil filter sentinel nil pid))
+               (setq emacs-process--fallback-next-pid
+                     (+ emacs-process--fallback-next-pid 1))
+               (setq emacs-process--fallback-processes
+                     (cons process emacs-process--fallback-processes))
+               (setq status
+                     (if (if (consp command) (car command) nil)
+                         (apply 'call-process
+                                (car command) nil buffer nil (cdr command))
+                       1))
+               (aset process 4 'exit)
+               (aset process 5 status)
+               (if (functionp sentinel)
+                   (funcall sentinel process
+                            (emacs-process--fallback-sentinel-event status))
+                 nil)
+               process))))
+  (unless (fboundp 'emacs-process-call-process)
+    (fset 'emacs-process-call-process
+          '(lambda (&rest args)
+             (cond
+              ((fboundp 'nelisp-process-call-process)
+               (apply 'nelisp-process-call-process args))
+              ((fboundp 'nelisp-call-process)
+               (apply 'nelisp-call-process args))
+              (t 1)))))
+  (unless (fboundp 'call-process)
+    (fset 'call-process
+          '(lambda (&rest args)
+             (apply 'emacs-process-call-process args))))
+  (unless (fboundp 'emacs-process-call-process-region)
+    (fset 'emacs-process-call-process-region
+          '(lambda (start end program &optional delete destination display
+                          &rest args)
+             (cond
+              ((fboundp 'nelisp-process-call-process-region)
+               (apply 'nelisp-process-call-process-region
+                      start end program delete destination display args))
+              ((fboundp 'nelisp-call-process-region)
+               (apply 'nelisp-call-process-region
+                      start end program delete destination display args))
+              ((and (fboundp 'buffer-substring-no-properties)
+                    (fboundp 'nl-write-file))
+               (nl-write-file
+                emacs-process-call-process-region-input-file
+                (buffer-substring-no-properties start end))
+               (when (and delete (fboundp 'delete-region))
+                 (delete-region start end))
+               (apply 'call-process
+                      program
+                      emacs-process-call-process-region-input-file
+                      destination
+                      display
+                      args))
+              (t 1)))))
+  (unless (fboundp 'call-process-region)
+    (fset 'call-process-region
+          '(lambda (&rest args)
+             (apply 'emacs-process-call-process-region args))))
+  (unless (fboundp 'emacs-process-start-process)
+    (fset 'emacs-process-start-process
+          '(lambda (name buffer program &rest program-args)
+             (emacs-process--fallback-make-process
+              :name name
+              :buffer buffer
+              :command (cons program program-args)))))
+  (unless (fboundp 'start-process)
+    (fset 'start-process
+          '(lambda (&rest args)
+             (apply 'emacs-process-start-process args))))
+  (unless (fboundp 'emacs-process-make-process)
+    (fset 'emacs-process-make-process
+          '(lambda (&rest plist)
+             (apply 'emacs-process--fallback-make-process plist))))
+  (unless (fboundp 'make-process)
+    (fset 'make-process
+          '(lambda (&rest plist)
+             (apply 'emacs-process-make-process plist))))
+  (unless (fboundp 'emacs-process-processp)
+    (fset 'emacs-process-processp
+          '(lambda (object)
+             (emacs-process--fallback-process-p object))))
+  (unless (fboundp 'processp)
+    (fset 'processp
+          '(lambda (object)
+             (emacs-process-processp object))))
+  (unless (fboundp 'emacs-process-process-list)
+    (fset 'emacs-process-process-list
+          '(lambda ()
+             (let ((items emacs-process--fallback-processes)
+                   (result nil))
+               (while items
+                 (if (aref (car items) 8)
+                     nil
+                   (setq result (cons (car items) result)))
+                 (setq items (cdr items)))
+               result))))
+  (unless (fboundp 'process-list)
+    (fset 'process-list
+          '(lambda ()
+             (emacs-process-process-list))))
+  (unless (fboundp 'emacs-process-process-status)
+    (fset 'emacs-process-process-status
+          '(lambda (process)
+             (if (emacs-process--fallback-process-p process)
+                 (aref process 4)
+               nil))))
+  (unless (fboundp 'process-status)
+    (fset 'process-status
+          '(lambda (process)
+             (emacs-process-process-status process))))
+  (unless (fboundp 'emacs-process-process-exit-status)
+    (fset 'emacs-process-process-exit-status
+          '(lambda (process)
+             (if (emacs-process--fallback-process-p process)
+                 (or (aref process 5) 0)
+               0))))
+  (unless (fboundp 'process-exit-status)
+    (fset 'process-exit-status
+          '(lambda (process)
+             (emacs-process-process-exit-status process))))
+  (unless (fboundp 'emacs-process-process-buffer)
+    (fset 'emacs-process-process-buffer
+          '(lambda (process)
+             (if (emacs-process--fallback-process-p process)
+                 (aref process 2)
+               nil))))
+  (unless (fboundp 'process-buffer)
+    (fset 'process-buffer
+          '(lambda (process)
+             (emacs-process-process-buffer process))))
+  (unless (fboundp 'emacs-process-process-name)
+    (fset 'emacs-process-process-name
+          '(lambda (process)
+             (if (emacs-process--fallback-process-p process)
+                 (aref process 1)
+               ""))))
+  (unless (fboundp 'process-name)
+    (fset 'process-name
+          '(lambda (process)
+             (emacs-process-process-name process))))
+  (unless (fboundp 'emacs-process-process-command)
+    (fset 'emacs-process-process-command
+          '(lambda (process)
+             (if (emacs-process--fallback-process-p process)
+                 (aref process 3)
+               nil))))
+  (unless (fboundp 'process-command)
+    (fset 'process-command
+          '(lambda (process)
+             (emacs-process-process-command process))))
+  (unless (fboundp 'emacs-process-process-live-p)
+    (fset 'emacs-process-process-live-p
+          '(lambda (process)
+             (memq (process-status process)
+                   '(run open listen connect stop)))))
+  (unless (fboundp 'process-live-p)
+    (fset 'process-live-p
+          '(lambda (process)
+             (emacs-process-process-live-p process))))
+  (unless (fboundp 'emacs-process-process-id)
+    (fset 'emacs-process-process-id
+          '(lambda (process)
+             (if (emacs-process--fallback-process-p process)
+                 (aref process 9)
+               nil))))
+  (unless (fboundp 'process-id)
+    (fset 'process-id
+          '(lambda (process)
+             (emacs-process-process-id process))))
+  (unless (fboundp 'emacs-process-process-mark)
+    (fset 'emacs-process-process-mark
+          '(lambda (process)
+             nil)))
+  (unless (fboundp 'process-mark)
+    (fset 'process-mark
+          '(lambda (process)
+             (emacs-process-process-mark process))))
+  (unless (fboundp 'emacs-process-set-process-filter)
+    (fset 'emacs-process-set-process-filter
+          '(lambda (process filter)
+             (if (emacs-process--fallback-process-p process)
+                 (progn
+                   (aset process 6 filter)
+                   filter)
+               nil))))
+  (unless (fboundp 'set-process-filter)
+    (fset 'set-process-filter
+          '(lambda (process filter)
+             (emacs-process-set-process-filter process filter))))
+  (unless (fboundp 'emacs-process-set-process-sentinel)
+    (fset 'emacs-process-set-process-sentinel
+          '(lambda (process sentinel)
+             (if (emacs-process--fallback-process-p process)
+                 (progn
+                   (aset process 7 sentinel)
+                   sentinel)
+               nil))))
+  (unless (fboundp 'set-process-sentinel)
+    (fset 'set-process-sentinel
+          '(lambda (process sentinel)
+             (emacs-process-set-process-sentinel process sentinel))))
+  (unless (fboundp 'emacs-process-accept-process-output)
+    (fset 'emacs-process-accept-process-output
+          '(lambda (&optional process seconds millisec just-this-one)
+             nil)))
+  (unless (fboundp 'accept-process-output)
+    (fset 'accept-process-output
+          '(lambda (&optional process seconds millisec just-this-one)
+             (emacs-process-accept-process-output
+              process seconds millisec just-this-one))))
+  (unless (fboundp 'emacs-process-signal-process)
+    (fset 'emacs-process-signal-process
+          '(lambda (process-or-pid signum)
+             (if (emacs-process--fallback-process-p process-or-pid)
+                 (progn
+                   (aset process-or-pid 4 'signal)
+                   (aset process-or-pid 5 1)
+                   process-or-pid)
+               nil))))
+  (unless (fboundp 'signal-process)
+    (fset 'signal-process
+          '(lambda (process-or-pid signum)
+             (emacs-process-signal-process process-or-pid signum))))
+  (unless (fboundp 'emacs-process-kill-process)
+    (fset 'emacs-process-kill-process
+          '(lambda (process)
+             (signal-process process 'KILL))))
+  (unless (fboundp 'kill-process)
+    (fset 'kill-process
+          '(lambda (process)
+             (emacs-process-kill-process process))))
+  (unless (fboundp 'emacs-process-process-send-string)
+    (fset 'emacs-process-process-send-string
+          '(lambda (process string)
+             nil)))
+  (unless (fboundp 'process-send-string)
+    (fset 'process-send-string
+          '(lambda (process string)
+             (emacs-process-process-send-string process string))))
+  (unless (fboundp 'emacs-process-process-send-eof)
+    (fset 'emacs-process-process-send-eof
+          '(lambda (&optional process)
+             nil)))
+  (unless (fboundp 'process-send-eof)
+    (fset 'process-send-eof
+          '(lambda (&optional process)
+             (emacs-process-process-send-eof process))))
+  (unless (fboundp 'emacs-process-delete-process)
+    (fset 'emacs-process-delete-process
+          '(lambda (process)
+             (if (emacs-process--fallback-process-p process)
+                 (progn
+                   (aset process 8 t)
+                   process)
+               nil))))
+  (unless (fboundp 'delete-process)
+    (fset 'delete-process
+          '(lambda (process)
+             (emacs-process-delete-process process))))
+  (unless (fboundp 'emacs-process-shell-command)
+    (fset 'emacs-process-shell-command
+          '(lambda (command &optional output-buffer error-buffer)
+             (call-process emacs-process-shell-file-name
+                           nil
+                           (if output-buffer output-buffer t)
+                           nil
+                           emacs-process-shell-command-switch
+                           command))))
+  (unless (fboundp 'shell-command)
+    (fset 'shell-command
+          '(lambda (command &optional output-buffer error-buffer)
+             (emacs-process-shell-command
+              command output-buffer error-buffer))))
+  (unless (fboundp 'emacs-process-shell-command-on-region)
+    (fset 'emacs-process-shell-command-on-region
+          '(lambda (start end command &optional output-buffer replace-flag
+                          error-buffer display-error-buffer
+                          region-noncontiguous-p)
+             (let ((destination
+                    (if replace-flag
+                        emacs-process-shell-command-on-region-output-file
+                      (if output-buffer
+                          output-buffer
+                        emacs-process-shell-command-on-region-output-file)))
+                   (status 1))
+               (when (fboundp 'nl-write-file)
+                 (nl-write-file destination ""))
+               (setq status
+                     (call-process-region
+                      start end emacs-process-shell-file-name
+                      nil destination nil
+                      emacs-process-shell-command-switch command))
+               (when (and replace-flag
+                          (fboundp 'delete-region)
+                          (fboundp 'insert))
+                 (let ((text (if (fboundp 'rdf) (rdf destination) "")))
+                   (delete-region start end)
+                   (insert text)))
+               status))))
+  (unless (fboundp 'shell-command-on-region)
+    (fset 'shell-command-on-region
+          '(lambda (start end command &optional output-buffer replace-flag
+                          error-buffer display-error-buffer
+                          region-noncontiguous-p)
+             (emacs-process-shell-command-on-region
+              start end command output-buffer replace-flag error-buffer
+              display-error-buffer region-noncontiguous-p))))
+  (unless (fboundp 'emacs-process-async-shell-command)
+    (fset 'emacs-process-async-shell-command
+          '(lambda (command &optional output-buffer error-buffer)
+             (make-process
+              :name (concat "async-shell-command<" command ">")
+              :buffer (or output-buffer "*Async Shell Command*")
+              :command (list emacs-process-shell-file-name
+                             emacs-process-shell-command-switch
+                             command)))))
+  (unless (fboundp 'async-shell-command)
+    (fset 'async-shell-command
+          '(lambda (command &optional output-buffer error-buffer)
+             (emacs-process-async-shell-command
+              command output-buffer error-buffer))))
+  (unless (fboundp 'emacs-process-shell-command-to-string)
+    (fset 'emacs-process-shell-command-to-string
+          '(lambda (command)
+             (if (fboundp 'with-temp-buffer)
+                 (with-temp-buffer
+                   (call-process emacs-process-shell-file-name
+                                 nil t nil
+                                 emacs-process-shell-command-switch
+                                 command)
+                   (buffer-string))
+               ""))))
+  (unless (fboundp 'shell-command-to-string)
+    (fset 'shell-command-to-string
+          '(lambda (command)
+             (emacs-process-shell-command-to-string command))))
+  (provide 'emacs-process)
+  (provide 'emacs-process-builtins)
+  t)
+
+(defun nemacs-runtime-image-preload--install-frame-core ()
+  "Install the minimal frame daily-driver surface without source `load'."
+  (unless (boundp 'emacs-frame--runtime-id-counter)
+    (defvar emacs-frame--runtime-id-counter 0))
+  (unless (boundp 'emacs-frame--runtime-registry)
+    (defvar emacs-frame--runtime-registry nil))
+  (unless (boundp 'emacs-frame--runtime-selected-frame)
+    (defvar emacs-frame--runtime-selected-frame nil))
+  (unless (fboundp 'emacs-frame--runtime-cell)
+    (fset 'emacs-frame--runtime-cell
+          '(lambda (frame key)
+             (assq key frame))))
+  (unless (fboundp 'emacs-frame--runtime-ref)
+    (fset 'emacs-frame--runtime-ref
+          '(lambda (frame key)
+             (cdr (emacs-frame--runtime-cell frame key)))))
+  (unless (fboundp 'emacs-frame--runtime-set)
+    (fset 'emacs-frame--runtime-set
+          '(lambda (frame key value)
+             (let ((cell (emacs-frame--runtime-cell frame key)))
+               (if cell
+                   (setcdr cell value)
+                 (setq frame (cons (cons key value) frame)))
+               value))))
+  (unless (fboundp 'emacs-frame--runtime-frame-object-p)
+    (fset 'emacs-frame--runtime-frame-object-p
+          '(lambda (object)
+             (and (consp object)
+                  (assq 'nemacs-frame object)))))
+  (unless (fboundp 'emacs-frame--runtime-live-p)
+    (fset 'emacs-frame--runtime-live-p
+          '(lambda (object)
+             (and (emacs-frame--runtime-frame-object-p object)
+                  (not (emacs-frame--runtime-ref object 'dead))))))
+  (unless (fboundp 'emacs-frame--runtime-make-frame-object)
+    (fset 'emacs-frame--runtime-make-frame-object
+          '(lambda (&optional parameters)
+             (setq emacs-frame--runtime-id-counter
+                   (+ emacs-frame--runtime-id-counter 1))
+             (let* ((id emacs-frame--runtime-id-counter)
+                    (frame (list (cons 'nemacs-frame t)
+                                 (cons 'id id)
+                                 (cons 'backend 'stub)
+                                 (cons 'name (concat "F" (number-to-string id)))
+                                 (cons 'width 80)
+                                 (cons 'height 24)
+                                 (cons 'pixel-width 640)
+                                 (cons 'pixel-height 384)
+                                 (cons 'left 0)
+                                 (cons 'top 0)
+                                 (cons 'visible t)
+                                 (cons 'parameters nil)
+                                 (cons 'dead nil))))
+               (when parameters
+                 (emacs-frame--runtime-apply-parameters frame parameters))
+               frame))))
+  (unless (fboundp 'emacs-frame--runtime-ensure-initial)
+    (fset 'emacs-frame--runtime-ensure-initial
+          '(lambda ()
+             (unless (emacs-frame--runtime-live-p
+                      emacs-frame--runtime-selected-frame)
+               (let ((frame (emacs-frame--runtime-make-frame-object nil)))
+                 (setq emacs-frame--runtime-registry (list frame))
+                 (setq emacs-frame--runtime-selected-frame frame)))
+             emacs-frame--runtime-selected-frame)))
+  (unless (fboundp 'emacs-frame--runtime-get)
+    (fset 'emacs-frame--runtime-get
+          '(lambda (&optional frame)
+             (let ((target (if frame
+                               frame
+                             (emacs-frame--runtime-ensure-initial))))
+               (if (emacs-frame--runtime-live-p target)
+                   target
+                 (emacs-frame--runtime-ensure-initial))))))
+  (unless (fboundp 'emacs-frame--runtime-put-parameter)
+    (fset 'emacs-frame--runtime-put-parameter
+          '(lambda (frame key value)
+             (let* ((pcell (emacs-frame--runtime-cell frame 'parameters))
+                    (plist (cdr pcell))
+                    (existing (assq key plist)))
+               (if existing
+                   (setcdr existing value)
+                 (setcdr pcell (cons (cons key value) plist)))
+               value))))
+  (unless (fboundp 'emacs-frame--runtime-apply-parameters)
+    (fset 'emacs-frame--runtime-apply-parameters
+          '(lambda (frame parameters)
+             (dolist (pair parameters)
+               (let ((key (car pair))
+                     (value (cdr pair)))
+                 (cond
+                  ((eq key 'width)
+                   (emacs-frame--runtime-set frame 'width value)
+                   (emacs-frame--runtime-set frame 'pixel-width (* value 8)))
+                  ((eq key 'height)
+                   (emacs-frame--runtime-set frame 'height value)
+                   (emacs-frame--runtime-set frame 'pixel-height (* value 16)))
+                  ((eq key 'left)
+                   (emacs-frame--runtime-set frame 'left value))
+                  ((eq key 'top)
+                   (emacs-frame--runtime-set frame 'top value))
+                  ((eq key 'name)
+                   (emacs-frame--runtime-set frame 'name value))
+                  ((eq key 'visibility)
+                   (emacs-frame--runtime-set frame 'visible value)))
+                 (emacs-frame--runtime-put-parameter frame key value)))
+             frame)))
+  (unless (fboundp 'emacs-frame-reset)
+    (fset 'emacs-frame-reset
+          '(lambda ()
+             (setq emacs-frame--runtime-id-counter 0)
+             (setq emacs-frame--runtime-registry nil)
+             (setq emacs-frame--runtime-selected-frame nil)
+             nil)))
+  (unless (fboundp 'framep)
+    (fset 'framep
+          '(lambda (object)
+             (and (emacs-frame--runtime-frame-object-p object)
+                  (emacs-frame--runtime-ref object 'backend)))))
+  (unless (fboundp 'frame-live-p)
+    (fset 'frame-live-p
+          '(lambda (object)
+             (and (emacs-frame--runtime-live-p object)
+                  (emacs-frame--runtime-ref object 'backend)))))
+  (unless (fboundp 'selected-frame)
+    (fset 'selected-frame
+          '(lambda ()
+             (emacs-frame--runtime-ensure-initial))))
+  (unless (fboundp 'frame-list)
+    (fset 'frame-list
+          '(lambda ()
+             (emacs-frame--runtime-ensure-initial)
+             (let ((live nil))
+               (dolist (frame emacs-frame--runtime-registry)
+                 (when (emacs-frame--runtime-live-p frame)
+                   (setq live (append live (list frame)))))
+               live))))
+  (unless (fboundp 'make-frame)
+    (fset 'make-frame
+          '(lambda (&optional parameters)
+             (emacs-frame--runtime-ensure-initial)
+             (let ((frame
+                    (emacs-frame--runtime-make-frame-object parameters)))
+               (setq emacs-frame--runtime-registry
+                     (append emacs-frame--runtime-registry (list frame)))
+               frame))))
+  (unless (fboundp 'delete-frame)
+    (fset 'delete-frame
+          '(lambda (&optional frame force)
+             (let ((target (emacs-frame--runtime-get frame)))
+               (if (<= (length (frame-list)) 1)
+                   nil
+                 (emacs-frame--runtime-set target 'dead t)
+                 (when (eq target emacs-frame--runtime-selected-frame)
+                   (setq emacs-frame--runtime-selected-frame
+                         (car (frame-list))))
+                 nil)))))
+  (unless (fboundp 'delete-other-frames)
+    (fset 'delete-other-frames
+          '(lambda (&optional frame)
+             (let ((keep (emacs-frame--runtime-get frame)))
+               (dolist (candidate (frame-list))
+                 (unless (eq candidate keep)
+                   (delete-frame candidate)))
+               nil))))
+  (unless (fboundp 'window-frame)
+    (fset 'window-frame
+          '(lambda (&optional window)
+             (if (framep window)
+                 window
+               (selected-frame)))))
+  (unless (fboundp 'frame-width)
+    (fset 'frame-width
+          '(lambda (&optional frame)
+             (emacs-frame--runtime-ref
+              (emacs-frame--runtime-get frame) 'width))))
+  (unless (fboundp 'frame-height)
+    (fset 'frame-height
+          '(lambda (&optional frame)
+             (emacs-frame--runtime-ref
+              (emacs-frame--runtime-get frame) 'height))))
+  (unless (fboundp 'frame-char-width)
+    (fset 'frame-char-width '(lambda (&optional frame) 8)))
+  (unless (fboundp 'frame-char-height)
+    (fset 'frame-char-height '(lambda (&optional frame) 16)))
+  (unless (fboundp 'frame-pixel-width)
+    (fset 'frame-pixel-width
+          '(lambda (&optional frame)
+             (emacs-frame--runtime-ref
+              (emacs-frame--runtime-get frame) 'pixel-width))))
+  (unless (fboundp 'frame-pixel-height)
+    (fset 'frame-pixel-height
+          '(lambda (&optional frame)
+             (emacs-frame--runtime-ref
+              (emacs-frame--runtime-get frame) 'pixel-height))))
+  (unless (fboundp 'set-frame-size)
+    (fset 'set-frame-size
+          '(lambda (frame cols lines &optional pixelwise)
+             (let ((target (emacs-frame--runtime-get frame)))
+               (emacs-frame--runtime-set target 'width cols)
+               (emacs-frame--runtime-set target 'height lines)
+               (emacs-frame--runtime-set target 'pixel-width (* cols 8))
+               (emacs-frame--runtime-set target 'pixel-height (* lines 16))
+               nil))))
+  (unless (fboundp 'set-frame-position)
+    (fset 'set-frame-position
+          '(lambda (frame x y)
+             (let ((target (emacs-frame--runtime-get frame)))
+               (emacs-frame--runtime-set target 'left x)
+               (emacs-frame--runtime-set target 'top y)
+               nil))))
+  (unless (fboundp 'frame-parameters)
+    (fset 'frame-parameters
+          '(lambda (&optional frame)
+             (let ((target (emacs-frame--runtime-get frame)))
+               (append
+                (list (cons 'width (emacs-frame--runtime-ref target 'width))
+                      (cons 'height (emacs-frame--runtime-ref target 'height))
+                      (cons 'pixel-width
+                            (emacs-frame--runtime-ref target 'pixel-width))
+                      (cons 'pixel-height
+                            (emacs-frame--runtime-ref target 'pixel-height))
+                      (cons 'left (emacs-frame--runtime-ref target 'left))
+                      (cons 'top (emacs-frame--runtime-ref target 'top))
+                      (cons 'name (emacs-frame--runtime-ref target 'name))
+                      (cons 'visibility
+                            (emacs-frame--runtime-ref target 'visible)))
+                (emacs-frame--runtime-ref target 'parameters))))))
+  (unless (fboundp 'frame-parameter)
+    (fset 'frame-parameter
+          '(lambda (frame parameter)
+             (cdr (assq parameter (frame-parameters frame))))))
+  (unless (fboundp 'set-frame-parameter)
+    (fset 'set-frame-parameter
+          '(lambda (frame parameter value)
+             (emacs-frame--runtime-apply-parameters
+              (emacs-frame--runtime-get frame)
+              (list (cons parameter value)))
+             value)))
+  (unless (fboundp 'modify-frame-parameters)
+    (fset 'modify-frame-parameters
+          '(lambda (frame alist)
+             (emacs-frame--runtime-apply-parameters
+              (emacs-frame--runtime-get frame) alist)
+             nil)))
+  (unless (fboundp 'frame-visible-p)
+    (fset 'frame-visible-p
+          '(lambda (&optional frame)
+             (emacs-frame--runtime-ref
+              (emacs-frame--runtime-get frame) 'visible))))
+  (unless (fboundp 'make-frame-visible)
+    (fset 'make-frame-visible
+          '(lambda (&optional frame)
+             (let ((target (emacs-frame--runtime-get frame)))
+               (emacs-frame--runtime-set target 'visible t)
+               target))))
+  (unless (fboundp 'make-frame-invisible)
+    (fset 'make-frame-invisible
+          '(lambda (&optional frame force)
+             (let ((target (emacs-frame--runtime-get frame)))
+               (emacs-frame--runtime-set target 'visible nil)
+               target))))
+  (unless (fboundp 'raise-frame)
+    (fset 'raise-frame
+          '(lambda (&optional frame)
+             (emacs-frame--runtime-get frame))))
+  (unless (fboundp 'lower-frame)
+    (fset 'lower-frame
+          '(lambda (&optional frame)
+             (emacs-frame--runtime-get frame))))
+  (unless (fboundp 'select-frame)
+    (fset 'select-frame
+          '(lambda (frame &optional norecord)
+             (when (emacs-frame--runtime-live-p frame)
+               (setq emacs-frame--runtime-selected-frame frame))
+             emacs-frame--runtime-selected-frame)))
+  (unless (fboundp 'frame-focus)
+    (fset 'frame-focus
+          '(lambda (&optional frame)
+             (if frame
+                 (and (eq frame emacs-frame--runtime-selected-frame) frame)
+               emacs-frame--runtime-selected-frame))))
+  (unless (fboundp 'frame-windows)
+    (fset 'frame-windows '(lambda (&optional frame) nil)))
+  (unless (fboundp 'display-pixel-width)
+    (fset 'display-pixel-width '(lambda (&optional display) 1024)))
+  (unless (fboundp 'display-pixel-height)
+    (fset 'display-pixel-height '(lambda (&optional display) 768)))
+  (provide 'frame)
+  (provide 'emacs-frame-builtins)
+  t)
+
+(defun nemacs-runtime-image-preload--install-tab-core ()
+  "Install the minimal tab-bar/tab-line daily-driver surface."
+  (unless (boundp 'tab-bar-mode)
+    (defvar tab-bar-mode nil))
+  (unless (boundp 'tab-bar--tabs)
+    (defvar tab-bar--tabs nil))
+  (unless (boundp 'tab-bar--selected-index)
+    (defvar tab-bar--selected-index 0))
+  (unless (boundp 'tab-line-mode)
+    (defvar tab-line-mode nil))
+  (unless (boundp 'global-tab-line-mode)
+    (defvar global-tab-line-mode nil))
+  (unless (boundp 'tab-line-format)
+    (defvar tab-line-format nil))
+  (unless (fboundp 'tab-bar--ensure-tabs)
+    (fset 'tab-bar--ensure-tabs
+          '(lambda ()
+             (unless tab-bar--tabs
+               (setq tab-bar--tabs
+                     (list (list (cons 'name "1")
+                                 (cons 'explicit-name nil))))
+               (setq tab-bar--selected-index 0))
+             tab-bar--tabs)))
+  (unless (fboundp 'tab-bar-tabs)
+    (fset 'tab-bar-tabs
+          '(lambda (&optional frame)
+             (tab-bar--ensure-tabs))))
+  (unless (fboundp 'tab-bar-current-tab)
+    (fset 'tab-bar-current-tab
+          '(lambda (&optional frame)
+             (nth tab-bar--selected-index (tab-bar--ensure-tabs)))))
+  (unless (fboundp 'tab-bar-current-tab-index)
+    (fset 'tab-bar-current-tab-index
+          '(lambda (&optional frame)
+             (tab-bar--ensure-tabs)
+             tab-bar--selected-index)))
+  (unless (fboundp 'tab-bar-new-tab)
+    (fset 'tab-bar-new-tab
+          '(lambda (&optional arg)
+             (tab-bar--ensure-tabs)
+             (let ((tab (list (cons 'name
+                                    (number-to-string
+                                     (+ (length tab-bar--tabs) 1)))
+                              (cons 'explicit-name nil))))
+               (setq tab-bar--tabs (append tab-bar--tabs (list tab)))
+               (setq tab-bar--selected-index
+                     (- (length tab-bar--tabs) 1))
+               tab))))
+  (unless (fboundp 'tab-bar-select-tab)
+    (fset 'tab-bar-select-tab
+          '(lambda (tab-number)
+             (tab-bar--ensure-tabs)
+             (let ((index (- tab-number 1)))
+               (when (and (>= index 0) (< index (length tab-bar--tabs)))
+                 (setq tab-bar--selected-index index))
+               (tab-bar-current-tab)))))
+  (unless (fboundp 'tab-bar-switch-to-next-tab)
+    (fset 'tab-bar-switch-to-next-tab
+          '(lambda (&optional arg)
+             (tab-bar--ensure-tabs)
+             (let ((count (length tab-bar--tabs))
+                   (index (+ tab-bar--selected-index (or arg 1))))
+               (while (< index 0)
+                 (setq index (+ index count)))
+               (while (>= index count)
+                 (setq index (- index count)))
+               (setq tab-bar--selected-index index)
+               (tab-bar-current-tab)))))
+  (unless (fboundp 'tab-bar-switch-to-prev-tab)
+    (fset 'tab-bar-switch-to-prev-tab
+          '(lambda (&optional arg)
+             (tab-bar-switch-to-next-tab (- 0 (or arg 1))))))
+  (unless (fboundp 'tab-bar-close-tab)
+    (fset 'tab-bar-close-tab
+          '(lambda (&optional tab-number)
+             (tab-bar--ensure-tabs)
+             (if (<= (length tab-bar--tabs) 1)
+                 (tab-bar-current-tab)
+               (let ((index (if tab-number
+                                (- tab-number 1)
+                              tab-bar--selected-index))
+                     (i 0)
+                     (new-tabs nil))
+                 (dolist (tab tab-bar--tabs)
+                   (unless (= i index)
+                     (setq new-tabs (append new-tabs (list tab))))
+                   (setq i (+ i 1)))
+                 (setq tab-bar--tabs new-tabs)
+                 (when (>= tab-bar--selected-index
+                           (length tab-bar--tabs))
+                   (setq tab-bar--selected-index
+                         (- (length tab-bar--tabs) 1)))
+                 (tab-bar-current-tab))))))
+  (unless (fboundp 'tab-bar-rename-tab)
+    (fset 'tab-bar-rename-tab
+          '(lambda (name &optional tab-number)
+             (tab-bar--ensure-tabs)
+             (let* ((index (if tab-number
+                               (- tab-number 1)
+                             tab-bar--selected-index))
+                    (tab (nth index tab-bar--tabs))
+                    (name-cell (assq 'name tab))
+                    (explicit-cell (assq 'explicit-name tab)))
+               (when name-cell
+                 (setcdr name-cell name))
+               (when explicit-cell
+                 (setcdr explicit-cell t))
+               tab))))
+  (unless (fboundp 'tab-bar-mode)
+    (fset 'tab-bar-mode
+          '(lambda (&optional arg)
+             (setq tab-bar-mode
+                   (if arg
+                       (> arg 0)
+                     (not tab-bar-mode)))
+             (tab-bar--ensure-tabs)
+             tab-bar-mode)))
+  (unless (fboundp 'tab-bar-height)
+    (fset 'tab-bar-height
+          '(lambda (&optional frame)
+             (if tab-bar-mode 1 0))))
+  (unless (fboundp 'tab-new)
+    (fset 'tab-new '(lambda (&optional arg) (tab-bar-new-tab arg))))
+  (unless (fboundp 'tab-close)
+    (fset 'tab-close '(lambda (&optional tab-number)
+                        (tab-bar-close-tab tab-number))))
+  (unless (fboundp 'tab-next)
+    (fset 'tab-next '(lambda (&optional arg)
+                       (tab-bar-switch-to-next-tab arg))))
+  (unless (fboundp 'tab-previous)
+    (fset 'tab-previous '(lambda (&optional arg)
+                           (tab-bar-switch-to-prev-tab arg))))
+  (unless (fboundp 'tab-select)
+    (fset 'tab-select '(lambda (tab-number)
+                         (tab-bar-select-tab tab-number))))
+  (unless (fboundp 'tab-rename)
+    (fset 'tab-rename '(lambda (name &optional tab-number)
+                         (tab-bar-rename-tab name tab-number))))
+  (unless (fboundp 'tab-line-mode)
+    (fset 'tab-line-mode
+          '(lambda (&optional arg)
+             (setq tab-line-mode
+                   (if arg
+                       (> arg 0)
+                     (not tab-line-mode)))
+             (setq tab-line-format
+                   (and tab-line-mode '(:eval (buffer-name))))
+             tab-line-mode)))
+  (unless (fboundp 'global-tab-line-mode)
+    (fset 'global-tab-line-mode
+          '(lambda (&optional arg)
+             (setq global-tab-line-mode
+                   (if arg
+                       (> arg 0)
+                     (not global-tab-line-mode)))
+             global-tab-line-mode)))
+  (unless (fboundp 'window-tab-line-height)
+    (fset 'window-tab-line-height
+          '(lambda (&optional window)
+             (if (or tab-line-mode global-tab-line-mode) 1 0))))
+  (unless (fboundp 'tab-line-tabs-buffer-list)
+    (fset 'tab-line-tabs-buffer-list
+          '(lambda ()
+             (if (fboundp 'buffer-list)
+                 (buffer-list)
+               nil))))
+  (unless (fboundp 'tab-line-tabs-window-buffers)
+    (fset 'tab-line-tabs-window-buffers
+          '(lambda ()
+             (tab-line-tabs-buffer-list))))
+  (unless (fboundp 'tab-line-tabs-fixed-window-buffers)
+    (fset 'tab-line-tabs-fixed-window-buffers
+          '(lambda ()
+             (tab-line-tabs-buffer-list))))
+  (unless (fboundp 'tab-line-tab-name-buffer)
+    (fset 'tab-line-tab-name-buffer
+          '(lambda (buffer &optional buffers)
+             (if (fboundp 'buffer-name)
+                 (buffer-name buffer)
+               ""))))
+  (provide 'tab-bar)
+  (provide 'tab-line)
   t)
 
 (defun nemacs-runtime-image-preload--install-simple-core ()
@@ -2247,6 +3167,24 @@ replay it in runtimes with minimal closure support."
   (nemacs-runtime-image-preload--install-idna-mapping-core)
   (nemacs-runtime-image-preload--install-ja-dic-utl-core)
   t)
+
+;; Source-v1 runtime images replay top-level `setq' / `fset' reliably, while
+;; helper `defun' forms are not a dependable runtime surface.  In standalone
+;; bakes, force the frame/tab installers past earlier stub `fboundp' results so
+;; the GUI-neutral API cells are recorded in the base image.  Host Emacs keeps
+;; its native frame/tab functions because `nelisp--write-stdout-bytes' is not
+;; present there.
+(defun nemacs-runtime-image-preload--force-install-frame-tab-core ()
+  "Force-install frame/tab API cells for standalone runtime-image bakes."
+  (setq nemacs-runtime-image-preload--saved-fboundp (symbol-function 'fboundp))
+  (fset 'fboundp '(lambda (_symbol) nil))
+  (nemacs-runtime-image-preload--install-frame-core)
+  (nemacs-runtime-image-preload--install-tab-core)
+  (fset 'fboundp nemacs-runtime-image-preload--saved-fboundp)
+  t)
+
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (nemacs-runtime-image-preload--force-install-frame-tab-core))
 
 (provide 'nemacs-runtime-image-preload)
 

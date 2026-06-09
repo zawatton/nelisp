@@ -85,6 +85,110 @@
                  "/bin/sh" nil t nil "-c" "exit 7")))
         (should (eq rc 7))))))
 
+(ert-deftest emacs-process-builtins-test/call-process-uses-nelisp-process-in-standalone ()
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq))
+        (captured nil))
+    (cl-letf (((symbol-function 'nelisp-call-process)
+               (lambda (&rest args)
+                 (setq captured args)
+                 23)))
+      (should (eq (emacs-process-call-process
+                   "/bin/tool" nil t nil "arg1" "arg2")
+                  23))
+      (should (equal captured
+                     '("/bin/tool" nil t nil "arg1" "arg2"))))))
+
+(ert-deftest emacs-process-builtins-test/call-process-prefers-package-prefixed-nelisp-process ()
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq))
+        (captured nil)
+        (had-new (fboundp 'nelisp-process-call-process))
+        (before-new (and (fboundp 'nelisp-process-call-process)
+                         (symbol-function 'nelisp-process-call-process)))
+        (had-old (fboundp 'nelisp-call-process))
+        (before-old (and (fboundp 'nelisp-call-process)
+                         (symbol-function 'nelisp-call-process))))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-process-call-process
+                (lambda (&rest args)
+                  (setq captured args)
+                  31))
+          (fset 'nelisp-call-process
+                (lambda (&rest _)
+                  (error "package-prefixed delegate should win")))
+          (should (eq (emacs-process-call-process
+                       "/bin/new" nil nil nil "--ok")
+                      31))
+          (should (equal captured '("/bin/new" nil nil nil "--ok"))))
+      (if had-new
+          (fset 'nelisp-process-call-process before-new)
+        (fmakunbound 'nelisp-process-call-process))
+      (if had-old
+          (fset 'nelisp-call-process before-old)
+        (fmakunbound 'nelisp-call-process)))))
+
+(ert-deftest emacs-process-builtins-test/call-process-soft-loads-nelisp-process ()
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq))
+        (required nil)
+        (had-new (fboundp 'nelisp-process-call-process))
+        (before-new (and (fboundp 'nelisp-process-call-process)
+                         (symbol-function 'nelisp-process-call-process)))
+        (had-old (fboundp 'nelisp-call-process))
+        (before-old (and (fboundp 'nelisp-call-process)
+                         (symbol-function 'nelisp-call-process))))
+    (unwind-protect
+        (progn
+          (when had-new
+            (fmakunbound 'nelisp-process-call-process))
+          (when had-old
+            (fmakunbound 'nelisp-call-process))
+          (cl-letf (((symbol-function 'require)
+                     (lambda (feature &optional _filename _noerror)
+                       (setq required feature)
+                       (fset 'nelisp-call-process
+                             (lambda (&rest _args) 37))
+                       t)))
+            (should (eq (emacs-process-call-process "/bin/soft" nil nil nil)
+                        37))
+            (should (eq required 'nelisp-process))))
+      (if had-new
+          (fset 'nelisp-process-call-process before-new)
+        (fmakunbound 'nelisp-process-call-process))
+      (if had-old
+          (fset 'nelisp-call-process before-old)
+        (fmakunbound 'nelisp-call-process)))))
+
+(ert-deftest emacs-process-builtins-test/call-process-prefers-registered-primitive ()
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq)))
+    (emacs-standalone-register-primitive
+     'call-process
+     (lambda (&rest args)
+       (and (equal args '("/bin/primitive" nil nil nil))
+            77)))
+    (cl-letf (((symbol-function 'nelisp-call-process)
+               (lambda (&rest _)
+                 (error "registered primitive should win"))))
+      (should (eq (emacs-process-call-process "/bin/primitive" nil nil nil)
+                  77)))))
+
+(ert-deftest emacs-process-builtins-test/call-process-region-uses-nelisp-process ()
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq))
+        (captured nil))
+    (cl-letf (((symbol-function 'nelisp-call-process-region)
+               (lambda (&rest args)
+                 (setq captured args)
+                 24)))
+      (should (eq (emacs-process-call-process-region
+                   1 5 "/bin/filter" nil t nil "--flag")
+                  24))
+      (should (equal captured
+                     '(1 5 "/bin/filter" nil t nil "--flag"))))))
+
 ;;;; E. shell-command-to-string
 
 (ert-deftest emacs-process-builtins-test/shell-command-to-string-captures ()
@@ -121,6 +225,125 @@
         (should (memq (emacs-process-process-status proc)
                       '(exit signal)))
         (emacs-process-delete-process proc)))))
+
+(ert-deftest emacs-process-builtins-test/make-process-standalone-fallback-object ()
+  "Standalone fallback should return a process-shaped object."
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq))
+        (emacs-process--fallback-processes nil)
+        (emacs-process--fallback-next-pid 10000)
+        (captured nil)
+        (sentinel-events nil))
+    (emacs-standalone-register-primitive
+     'call-process
+     (lambda (&rest args)
+       (setq captured args)
+       (when (bufferp (nth 2 args))
+         (with-current-buffer (nth 2 args)
+           (insert "fallback-output")))
+       0))
+    (let* ((buffer (generate-new-buffer " *fallback-process*"))
+           (proc (unwind-protect
+                     (emacs-process-make-process
+                      :name "fallback"
+                      :buffer buffer
+                      :command '("/bin/sh" "-c" "printf fallback-output")
+                      :sentinel (lambda (process event)
+                                  (push (list process event)
+                                        sentinel-events)))
+                   nil)))
+      (unwind-protect
+          (progn
+            (should (emacs-process-processp proc))
+            (should (memq proc (emacs-process-process-list)))
+            (should (equal (emacs-process-process-name proc) "fallback"))
+            (should (equal (emacs-process-process-command proc)
+                           '("/bin/sh" "-c" "printf fallback-output")))
+            (should (eq (emacs-process-process-buffer proc) buffer))
+            (should (eq (emacs-process-process-status proc) 'exit))
+            (should (= (emacs-process-process-exit-status proc) 0))
+            (should (= (emacs-process-process-id proc) 10000))
+            (should (equal (nth 0 captured) "/bin/sh"))
+            (should (null (nth 1 captured)))
+            (should (eq (nth 2 captured) buffer))
+            (should (null (nth 3 captured)))
+            (should (equal (nthcdr 4 captured)
+                           '("-c" "printf fallback-output")))
+            (should (equal (with-current-buffer buffer (buffer-string))
+                           "fallback-output"))
+            (should (= (length sentinel-events) 1))
+            (should (eq (caar sentinel-events) proc))
+            (should (equal (cadar sentinel-events) "finished\n"))
+            (should (eq (emacs-process-delete-process proc) proc))
+            (should-not (memq proc (emacs-process-process-list))))
+        (kill-buffer buffer)))))
+
+(ert-deftest emacs-process-builtins-test/make-process-uses-native-nelisp-object ()
+  "Standalone native process builtins should be preferred over fallback."
+  (let ((emacs-standalone-force-mode t)
+        (emacs-standalone--primitives (make-hash-table :test 'eq))
+        (emacs-process--fallback-processes nil)
+        (emacs-process--native-process-metadata nil)
+        (native (vector 'native-process))
+        (captured nil)
+        (status-code 0)
+        (output "native-output")
+        (filter-chunks nil)
+        (sentinel-events nil)
+        (deleted nil))
+    (cl-letf (((symbol-function 'nelisp-process-object-p)
+               (lambda (object) (eq object native)))
+              ((symbol-function 'nelisp-process-start-process)
+               (lambda (&rest args)
+                 (setq captured args)
+                 native))
+              ((symbol-function 'nelisp-process-status)
+               (lambda (_process) status-code))
+              ((symbol-function 'nelisp-process-exit-status)
+               (lambda (_process) 0))
+              ((symbol-function 'nelisp-process-pid)
+               (lambda (_process) 4242))
+              ((symbol-function 'nelisp-process-read-output)
+               (lambda (_process _limit)
+                 (prog1 output
+                   (setq output nil))))
+              ((symbol-function 'nelisp-process-delete)
+               (lambda (_process)
+                 (setq deleted t)
+                 nil)))
+      (let ((buffer (generate-new-buffer " *native-process*")))
+        (unwind-protect
+            (let ((proc (emacs-process-make-process
+                         :name "native"
+                         :buffer buffer
+                         :command '("/bin/sh" "-c" "printf native-output")
+                         :filter (lambda (_process chunk)
+                                   (push chunk filter-chunks))
+                         :sentinel (lambda (_process event)
+                                     (push event sentinel-events)))))
+              (should (eq proc native))
+              (should (equal captured
+                             '("/bin/sh" "-c" "printf native-output")))
+              (should (emacs-process-processp proc))
+              (should (memq proc (emacs-process-process-list)))
+              (should (eq (emacs-process-process-status proc) 'run))
+              (should (= (emacs-process-process-id proc) 4242))
+              (should (equal (emacs-process-process-name proc) "native"))
+              (should (equal (emacs-process-process-command proc)
+                             '("/bin/sh" "-c" "printf native-output")))
+              (should (eq (emacs-process-process-buffer proc) buffer))
+              (setq status-code 1)
+              (should (emacs-process-accept-process-output proc 0 0 t))
+              (should (equal (with-current-buffer buffer (buffer-string))
+                             "native-output"))
+              (should (equal filter-chunks '("native-output")))
+              (should (equal sentinel-events '("finished\n")))
+              (should (eq (emacs-process-process-status proc) 'exit))
+              (should (= (emacs-process-process-exit-status proc) 0))
+              (should (eq (emacs-process-delete-process proc) proc))
+              (should deleted)
+              (should-not (memq proc (emacs-process-process-list))))
+          (kill-buffer buffer))))))
 
 ;;;; I. shell-file-name + shell-command-switch defaults
 

@@ -9,49 +9,67 @@
 ;; Doc 51 Phase 1.6 — Layer 2.
 ;;
 ;; Ports `getenv' / `setenv' / `process-environment' from Emacs C
-;; core's `callproc.c'.  Real OS access requires a syscall route;
-;; Phase 1.6 ships a STUB that always returns nil for `getenv' and
-;; silently no-ops `setenv'.  Phase 2 will route through NeLisp's
-;; `nelisp-syscall-types' extension once that crate exposes a
-;; user-visible `nelisp-syscall-types-getenv' (or equivalent).
-;;
-;; Stub semantics are deliberate: most callers (= anvil-memory's
-;; `anvil-memory-effective-db-path' for example) treat a missing env
-;; var as "use my default".  Returning nil from `getenv' makes the
-;; default branch fire, which is exactly what we want until the real
-;; route lands.  Callers that NEED the env var (= scripts driven by
-;; an explicit ANVIL_FOO=...) will surface as "bug — expected env
-;; override but got default", and we know to wire `getenv' through
-;; the syscall extension at that point.
+;; core's `callproc.c'.  The bridge first honors the elisp
+;; `process-environment' overlay, then falls through to a NeLisp
+;; syscall/runtime getenv primitive when one is bound.
 
 ;;; Code:
 
 (defvar process-environment nil
-  "List of `KEY=VALUE' strings — the polyfill keeps it nil so callers
-that walk it explicitly find no entries.  Phase 2 will populate from
-the host env at startup via the NeLisp syscall extension.")
+  "List of `KEY=VALUE' strings used as the elisp environment overlay.")
+
+(declare-function nl-syscall-getenv "nelisp-runtime" (variable))
+(declare-function nelisp-sys-getenv "nelisp-sys" (variable))
+
+(defconst emacs-callproc--sys-getenv-functions
+  '(nelisp-sys-getenv nl-syscall-getenv)
+  "Candidate NeLisp runtime getenv functions, in preferred order.")
+
+(defvar emacs-callproc--sys-getenv-active nil
+  "Non-nil while `emacs-callproc--sys-getenv' is inside a backend call.")
+
+(defun emacs-callproc--lookup-process-environment (variable)
+  "Return VARIABLE from `process-environment', or nil when absent."
+  (let ((cur process-environment)
+        (prefix (concat variable "="))
+        (prefix-len 0)
+        (found nil)
+        (result nil))
+    (setq prefix-len (length prefix))
+    (while (and cur (not found))
+      (let ((entry (car cur)))
+        (if (and (stringp entry)
+                 (>= (length entry) prefix-len)
+                 (equal (substring entry 0 prefix-len) prefix))
+            (progn (setq result (substring entry prefix-len))
+                   (setq found t))))
+      (setq cur (cdr cur)))
+    result))
+
+(defun emacs-callproc--sys-getenv (variable)
+  "Return VARIABLE from a NeLisp getenv primitive, or nil if unavailable."
+  (unless emacs-callproc--sys-getenv-active
+    (let ((emacs-callproc--sys-getenv-active t))
+      (catch 'done
+        (dolist (fn emacs-callproc--sys-getenv-functions)
+          (when (fboundp fn)
+            (let ((value (condition-case nil
+                             (funcall fn variable)
+                           (error nil))))
+              (when (stringp value)
+                (throw 'done value)))))
+        nil))))
+
+(defun emacs-callproc-getenv (variable &optional frame)
+  "Look VARIABLE up in the elisp overlay, then the NeLisp runtime env."
+  (ignore frame)
+  (or (emacs-callproc--lookup-process-environment variable)
+      (emacs-callproc--sys-getenv variable)))
 
 (unless (fboundp 'getenv)
   (defun getenv (variable &optional frame)
-    "Polyfill: look VARIABLE up in `process-environment'.
-Phase 1.6 keeps `process-environment' nil so this always returns nil
-and callers fall through to their default branch.  Phase 2 replaces
-the implementation with a NeLisp syscall route."
-    (ignore frame)
-    (let ((cur process-environment)
-          (prefix (concat variable "="))
-          (prefix-len 0)
-          (found nil)
-          (result nil))
-      (setq prefix-len (length prefix))
-      (while (and cur (not found))
-        (let ((entry (car cur)))
-          (if (and (>= (length entry) prefix-len)
-                   (equal (substring entry 0 prefix-len) prefix))
-              (progn (setq result (substring entry prefix-len))
-                     (setq found t))))
-        (setq cur (cdr cur)))
-      result)))
+    "Polyfill: look VARIABLE up in the NeLisp-compatible environment."
+    (emacs-callproc-getenv variable frame)))
 
 (unless (fboundp 'setenv)
   (defun setenv (variable &optional value substitute-env-vars)

@@ -142,6 +142,10 @@ an `emacs-stub-bulk' placeholder."
 (when (emacs-command-loop-builtins--install-function-p 'negative-argument)
   (defalias 'negative-argument #'emacs-command-loop-negative-argument))
 
+(when (emacs-command-loop-builtins--install-function-p 'prefix-numeric-value)
+  (defalias 'prefix-numeric-value
+    #'emacs-command-loop--prefix-numeric-value))
+
 (when (emacs-command-loop-builtins--install-function-p 'keyboard-quit)
   (defalias 'keyboard-quit #'emacs-command-loop-keyboard-quit))
 

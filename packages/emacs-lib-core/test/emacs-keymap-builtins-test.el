@@ -22,6 +22,7 @@
   (dolist (sym '(make-keymap make-sparse-keymap keymapp
                  define-key define-key-after suppress-keymap
                  lookup-key key-binding
+                 key-description
                  set-keymap-parent keymap-parent
                  current-global-map current-local-map
                  use-global-map use-local-map
@@ -108,6 +109,16 @@
 
 (ert-deftest emacs-keymap-builtins-test/current-global-map-via-prefixed ()
   (should (emacs-keymap-keymapp (emacs-keymap-current-global-map))))
+
+(ert-deftest emacs-keymap-builtins-test/key-description-bridge-in-source ()
+  (let ((file (locate-library "emacs-keymap-builtins")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (search-forward
+               "(defalias 'key-description #'emacs-keymap-key-description"
+               nil t)))))
 
 ;;;; F2. Bridge shape: standard prefix maps exist
 

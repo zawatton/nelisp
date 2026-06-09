@@ -34,6 +34,75 @@
   (let ((process-environment '("KEY=val=with=equals")))
     (should (equal (getenv "KEY") "val=with=equals"))))
 
+(ert-deftest emacs-callproc-test/getenv-falls-through-to-nelisp-sys ()
+  (let ((process-environment nil)
+        (had (fboundp 'nelisp-sys-getenv))
+        (before (and (fboundp 'nelisp-sys-getenv)
+                     (symbol-function 'nelisp-sys-getenv))))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-sys-getenv
+                (lambda (variable)
+                  (and (equal variable "FROM_SYS") "sys-value")))
+          (should (equal (emacs-callproc-getenv "FROM_SYS") "sys-value"))
+          (should-not (emacs-callproc-getenv "MISSING_SYS")))
+      (if had
+          (fset 'nelisp-sys-getenv before)
+        (fmakunbound 'nelisp-sys-getenv)))))
+
+(ert-deftest emacs-callproc-test/process-environment-overrides-sys-getenv ()
+  (let ((process-environment '("FROM_SYS=overlay-value"))
+        (had (fboundp 'nelisp-sys-getenv))
+        (before (and (fboundp 'nelisp-sys-getenv)
+                     (symbol-function 'nelisp-sys-getenv))))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-sys-getenv
+                (lambda (_variable) "runtime-value"))
+          (should (equal (emacs-callproc-getenv "FROM_SYS")
+                         "overlay-value")))
+      (if had
+          (fset 'nelisp-sys-getenv before)
+        (fmakunbound 'nelisp-sys-getenv)))))
+
+(ert-deftest emacs-callproc-test/sys-getenv-recursion-guard ()
+  (let ((process-environment nil)
+        (had (fboundp 'nelisp-sys-getenv))
+        (before (and (fboundp 'nelisp-sys-getenv)
+                     (symbol-function 'nelisp-sys-getenv))))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-sys-getenv
+                (lambda (variable)
+                  (getenv variable)))
+          (should-not (emacs-callproc-getenv "RECURSIVE_SYS")))
+      (if had
+          (fset 'nelisp-sys-getenv before)
+        (fmakunbound 'nelisp-sys-getenv)))))
+
+(ert-deftest emacs-callproc-test/getenv-falls-through-to-nl-syscall ()
+  (let ((process-environment nil)
+        (had-sys (fboundp 'nelisp-sys-getenv))
+        (before-sys (and (fboundp 'nelisp-sys-getenv)
+                         (symbol-function 'nelisp-sys-getenv)))
+        (had-nl (fboundp 'nl-syscall-getenv))
+        (before-nl (and (fboundp 'nl-syscall-getenv)
+                        (symbol-function 'nl-syscall-getenv))))
+    (unwind-protect
+        (progn
+          (when had-sys
+            (fmakunbound 'nelisp-sys-getenv))
+          (fset 'nl-syscall-getenv
+                (lambda (variable)
+                  (and (equal variable "FROM_NL") "nl-value")))
+          (should (equal (emacs-callproc-getenv "FROM_NL") "nl-value")))
+      (if had-sys
+          (fset 'nelisp-sys-getenv before-sys)
+        (fmakunbound 'nelisp-sys-getenv))
+      (if had-nl
+          (fset 'nl-syscall-getenv before-nl)
+        (fmakunbound 'nl-syscall-getenv)))))
+
 
 ;;;; --- setenv -------------------------------------------------------------
 

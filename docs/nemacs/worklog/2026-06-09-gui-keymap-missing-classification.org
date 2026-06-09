@@ -1,0 +1,276 @@
+#+TITLE: GUI Keymap Missing Classification
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-09
+
+* 0. Source
+
+This memo classifies the missing rows from the GUI keymap coverage script.
+
+- Script: =scripts/nemacs-gui-keymap-coverage.el=
+- Command: =make nemacs-gui-keymap-coverage=
+- Result: =implemented=301=, =missing=191=, =different=0=,
+  =command-missing=0=, =runtime-only=0=
+
+The classification is a primary-blocker classification.  Some commands cross
+boundaries, for example =project-shell-command= is both project-facing and
+process-backed.  In those cases the bucket below records the next blocking
+dependency for a usable GUI replacement.
+
+No runtime implementation file was changed for this memo.
+
+* 1. Summary table
+
+| # | Bucket | Key rows | Commands | Reason | Touch layers |
+|---+--------+----------+----------+--------+--------------|
+| 1 | すぐ実装可能 | 39 | 33 | Pure command-loop/editor state.  No GUI drawing, process, project, frame, or coding substrate is the primary blocker. | =nelisp-emacs= |
+| 2 | GUI 描画依存 | 26 | 19 | Requires visible presentation beyond plain buffer text: overlays/faces, text scaling, menu/emoji UI, or selective display. | =nelisp-emacs= for command state, =nelisp-gui= for rendering |
+| 3 | process/syscall 依存 | 6 | 6 | Starts or manages external jobs, shells, compilers, or process-backed tools. | =nelisp= for generic process/syscall capability, =nelisp-emacs= for Emacs semantics |
+| 4 | major-mode / package / project / vc 依存 | 58 | 55 | Depends on larger Lisp subsystems and their buffers, menus, completion, repository state, or package-specific command behavior. | Mostly =nelisp-emacs=; process-backed VC/project paths also use =nelisp= |
+| 5 | frame/tab/window 拡張依存 | 49 | 46 | Requires multi-frame, tab-bar, root-window, side-window, or extended window configuration semantics. | =nelisp-emacs= for semantic model, =nelisp-gui= for actual GUI frame/display |
+| 6 | coding-system / input-method 依存 | 13 | 13 | Requires coding-system variables, conversion behavior, language environments, selection coding, or input-method state. | =nelisp-emacs= plus =nelisp= coding primitives where missing |
+
+* 2. Full missing buckets
+
+** 1. すぐ実装可能
+
+These are isolated editor-state or command-loop commands.  The right first
+target is =nelisp-emacs=; =nelisp-gui= should keep transporting raw keys.
+
+| Command | Keys |
+|---------+------|
+| =abbrev-prefix-mark= | =M-'= |
+| =add-global-abbrev= | =C-x a g= |
+| =add-mode-abbrev= | =C-x a +=, =C-x a C-a=, =C-x a l= |
+| =apply-macro-to-region-lines= | =C-x C-k r= |
+| =edit-kbd-macro= | =C-x C-k e= |
+| =expand-abbrev= | =C-x '=, =C-x a '=, =C-x a e= |
+| =expand-jump-to-next-slot= | =C-x a n= |
+| =expand-jump-to-previous-slot= | =C-x a p= |
+| =inverse-add-global-abbrev= | =C-x a -=, =C-x a i g= |
+| =inverse-add-mode-abbrev= | =C-x a i l= |
+| =kbd-macro-query= | =C-x C-k q= |
+| =kmacro-add-counter= | =C-x C-k C-a= |
+| =kmacro-bind-to-key= | =C-x C-k b= |
+| =kmacro-call-ring-2nd-repeat= | =C-x C-k C-l= |
+| =kmacro-cycle-ring-next= | =C-x C-k C-n= |
+| =kmacro-cycle-ring-previous= | =C-x C-k C-p= |
+| =kmacro-delete-ring-head= | =C-x C-k C-d= |
+| =kmacro-edit-lossage= | =C-x C-k l= |
+| =kmacro-edit-macro= | =C-x C-k RET= |
+| =kmacro-edit-macro-repeat= | =C-x C-k C-e= |
+| =kmacro-end-or-call-macro-repeat= | =C-x C-k C-k= |
+| =kmacro-insert-counter= | =C-x C-k TAB= |
+| =kmacro-keymap= | =C-x C-k= |
+| =kmacro-name-last-macro= | =C-x C-k n= |
+| =kmacro-redisplay= | =C-x C-k d= |
+| =kmacro-set-counter= | =C-x C-k C-c= |
+| =kmacro-set-format= | =C-x C-k C-f= |
+| =kmacro-start-macro= | =C-x C-k C-s=, =C-x C-k s= |
+| =kmacro-step-edit-macro= | =C-x C-k SPC= |
+| =kmacro-swap-ring= | =C-x C-k C-t= |
+| =kmacro-to-register= | =C-x C-k x= |
+| =kmacro-view-macro-repeat= | =C-x C-k C-v= |
+| =rectangle-mark-mode= | =C-x SPC= |
+
+** 2. GUI 描画依存
+
+The semantic owner is still =nelisp-emacs=, but these are not complete until
+the GUI can paint the resulting state: faces/overlays, text scale, menu-like
+selection, emoji glyphs, or hidden text.
+
+| Command | Keys |
+|---------+------|
+| =emoji-describe= | =C-x 8 e d= |
+| =emoji-insert= | =C-x 8 e e=, =C-x 8 e i= |
+| =emoji-list= | =C-x 8 e l= |
+| =emoji-recent= | =C-x 8 e r= |
+| =emoji-search= | =C-x 8 e s= |
+| =emoji-zoom-decrease= | =C-x 8 e -= |
+| =emoji-zoom-increase= | =C-x 8 e += |
+| =emoji-zoom-reset= | =C-x 8 e 0= |
+| =global-text-scale-adjust= | =C-x C-M-+=, =C-x C-M--=, =C-x C-M-0=, =C-x C-M-== |
+| =hi-lock-find-patterns= | =M-s h f= |
+| =hi-lock-write-interactive-patterns= | =M-s h w= |
+| =highlight-lines-matching-regexp= | =M-s h l= |
+| =highlight-phrase= | =M-s h p= |
+| =highlight-regexp= | =M-s h r= |
+| =highlight-symbol-at-point= | =M-s h .= |
+| =set-selective-display= | =C-x $= |
+| =text-scale-adjust= | =C-x C-+=, =C-x C--=, =C-x C-0=, =C-x C-== |
+| =tmm-menubar= | =M-`= |
+| =unhighlight-regexp= | =M-s h u= |
+
+** 3. process/syscall 依存
+
+These should wait for the generic process/syscall surface to be callable from
+the substrate.  Emacs command semantics still belong in =nelisp-emacs=.
+
+| Command | Keys |
+|---------+------|
+| =ispell-word= | =M-$= |
+| =project-async-shell-command= | =C-x p &= |
+| =project-compile= | =C-x p c= |
+| =project-eshell= | =C-x p e= |
+| =project-shell= | =C-x p s= |
+| =project-shell-command= | =C-x p != |
+
+** 4. major-mode / package / project / vc 依存
+
+These are broad subsystem commands.  The low-risk path is to add narrow
+facades or minimal live behavior only for the command paths used by the GUI,
+instead of claiming complete subsystem parity.
+
+| Command | Keys |
+|---------+------|
+| =add-change-log-entry-other-window= | =C-x 4 a= |
+| =calc-dispatch= | =C-x *= |
+| =compose-mail= | =C-x m= |
+| =compose-mail-other-frame= | =C-x 5 m= |
+| =compose-mail-other-window= | =C-x 4 m= |
+| =dired-other-frame= | =C-x 5 d= |
+| =dired-other-tab= | =C-x t d= |
+| =eww-search-words= | =M-s M-w= |
+| =imenu= | =M-g i= |
+| =next-error= | =C-x `=, =M-g M-n=, =M-g n= |
+| =previous-error= | =M-g M-p=, =M-g p= |
+| =project-any-command= | =C-x p o= |
+| =project-dired= | =C-x p D= |
+| =project-execute-extended-command= | =C-x p x= |
+| =project-find-dir= | =C-x p d= |
+| =project-find-file= | =C-x p f= |
+| =project-find-regexp= | =C-x p g= |
+| =project-kill-buffers= | =C-x p k= |
+| =project-list-buffers= | =C-x p C-b= |
+| =project-or-external-find-file= | =C-x p F= |
+| =project-or-external-find-regexp= | =C-x p G= |
+| =project-other-frame-command= | =C-x 5 p= |
+| =project-other-tab-command= | =C-x t p= |
+| =project-other-window-command= | =C-x 4 p= |
+| =project-query-replace-regexp= | =C-x p r= |
+| =project-switch-project= | =C-x p p= |
+| =project-switch-to-buffer= | =C-x p b= |
+| =project-vc-dir= | =C-x p v= |
+| =vc-annotate= | =C-x v g= |
+| =vc-create-branch= | =C-x v b c= |
+| =vc-create-tag= | =C-x v s= |
+| =vc-delete-file= | =C-x v x= |
+| =vc-diff= | =C-x v == |
+| =vc-diff-mergebase= | =C-x v M D= |
+| =vc-dir= | =C-x v d= |
+| =vc-edit-next-command= | =C-x v != |
+| =vc-ignore= | =C-x v G= |
+| =vc-log-incoming= | =C-x v I= |
+| =vc-log-mergebase= | =C-x v M L= |
+| =vc-log-outgoing= | =C-x v O= |
+| =vc-merge= | =C-x v m= |
+| =vc-next-action= | =C-x v v= |
+| =vc-print-branch-log= | =C-x v b l= |
+| =vc-print-log= | =C-x v l= |
+| =vc-print-root-log= | =C-x v L= |
+| =vc-push= | =C-x v P= |
+| =vc-region-history= | =C-x v h= |
+| =vc-register= | =C-x v i= |
+| =vc-retrieve-tag= | =C-x v r= |
+| =vc-revert= | =C-x v u= |
+| =vc-revision-other-window= | =C-x v ~= |
+| =vc-root-diff= | =C-x v D= |
+| =vc-switch-branch= | =C-x v b s= |
+| =vc-update= | =C-x v += |
+| =vc-update-change-log= | =C-x v a= |
+
+** 5. frame/tab/window 拡張依存
+
+These extend the already-established rule: =nelisp-emacs= owns window/frame/tab
+semantics and returns display state; =nelisp-gui= only paints it or creates the
+native GUI frame when the semantic model asks for one.
+
+| Command | Keys |
+|---------+------|
+| =2C-associate-buffer= | =C-x 6 b= |
+| =2C-command= | =C-x 6= |
+| =2C-split= | =C-x 6 s= |
+| =2C-two-columns= | =C-x 6 2= |
+| =clone-frame= | =C-x 5 c= |
+| =clone-indirect-buffer-other-window= | =C-x 4 c= |
+| =delete-frame= | =C-x 5 0= |
+| =delete-other-frames= | =C-x 5 1= |
+| =delete-windows-on= | =C-x w 0= |
+| =display-buffer-other-frame= | =C-x 5 C-o= |
+| =enlarge-window= | =C-x ^= |
+| =enlarge-window-horizontally= | =C-x }= |
+| =find-file-other-frame= | =C-x 5 C-f=, =C-x 5 f= |
+| =find-file-other-tab= | =C-x t C-f=, =C-x t f= |
+| =find-file-read-only-other-frame= | =C-x 5 r= |
+| =find-file-read-only-other-tab= | =C-x t C-r= |
+| =fit-window-to-buffer= | =C-x w -= |
+| =frameset-to-register= | =C-x r f= |
+| =make-frame-command= | =C-x 5 2= |
+| =other-frame= | =C-x 5 o= |
+| =other-frame-prefix= | =C-x 5 5= |
+| =other-tab-prefix= | =C-x t t= |
+| =other-window-prefix= | =C-x 4 4= |
+| =quit-window= | =C-x w q= |
+| =same-window-prefix= | =C-x 4 1= |
+| =shrink-window-horizontally= | =C-x {= |
+| =split-root-window-below= | =C-x w 2= |
+| =split-root-window-right= | =C-x w 3= |
+| =suspend-frame= | =C-x C-z=, =C-z= |
+| =switch-to-buffer-other-frame= | =C-x 5 b= |
+| =switch-to-buffer-other-tab= | =C-x t b= |
+| =tab-close-other= | =C-x t 1= |
+| =tab-detach= | =C-x t ^ f= |
+| =tab-duplicate= | =C-x t n= |
+| =tab-group= | =C-x t G= |
+| =tab-move= | =C-x t m= |
+| =tab-move-to= | =C-x t M= |
+| =tab-new-to= | =C-x t N= |
+| =tab-switch= | =C-x t RET= |
+| =tab-undo= | =C-x t u= |
+| =tab-window-detach= | =C-x w ^ t= |
+| =tear-off-window= | =C-x w ^ f= |
+| =toggle-window-dedicated= | =C-x w d= |
+| =undelete-frame= | =C-x 5 u= |
+| =window-configuration-to-register= | =C-x r w= |
+| =window-toggle-side-windows= | =C-x w s= |
+
+** 6. coding-system / input-method 依存
+
+The command surface belongs in =nelisp-emacs=.  Only generic conversion or
+byte/character primitives should move down into =nelisp=.
+
+| Command | Keys |
+|---------+------|
+| =activate-transient-input-method= | =C-x \= |
+| =revert-buffer-with-coding-system= | =C-x RET r= |
+| =set-buffer-file-coding-system= | =C-x RET f= |
+| =set-buffer-process-coding-system= | =C-x RET p= |
+| =set-file-name-coding-system= | =C-x RET F= |
+| =set-input-method= | =C-x RET C-\= |
+| =set-keyboard-coding-system= | =C-x RET k= |
+| =set-language-environment= | =C-x RET l= |
+| =set-next-selection-coding-system= | =C-x RET X= |
+| =set-selection-coding-system= | =C-x RET x= |
+| =set-terminal-coding-system= | =C-x RET t= |
+| =toggle-input-method= | =C-\= |
+| =universal-coding-system-argument= | =C-x RET c= |
+
+* 3. Next 10 implementation priorities
+
+| Priority | Item | Bucket | Reason | Touch layers |
+|----------+------+--------+--------+--------------|
+| 1 | Window teardown and placement: =quit-window=, =delete-windows-on=, =toggle-window-dedicated=, =window-configuration-to-register= | 5 | Many help, dired, project, vc, and temporary-buffer flows depend on predictable window cleanup before their package-specific behavior matters. | =nelisp-emacs= first; =nelisp-gui= repaint only |
+| 2 | Window sizing: =enlarge-window=, =enlarge-window-horizontally=, =shrink-window-horizontally=, =fit-window-to-buffer= | 5 | High-frequency GUI ergonomics, contained in the existing window model, and useful before adding more package buffers. | =nelisp-emacs=; =nelisp-gui= if snapshot lacks size fields |
+| 3 | Basic frame commands: =make-frame-command=, =delete-frame=, =other-frame=, =find-file-other-frame=, =switch-to-buffer-other-frame= | 5 | A GUI replacement eventually needs multi-frame behavior; the semantic model must exist before native X11 frame lifecycle can be trusted. | =nelisp-emacs= model plus =nelisp-gui= frame creation/destruction |
+| 4 | Basic tab commands: =find-file-other-tab=, =switch-to-buffer-other-tab=, =tab-switch=, =tab-new-to=, =tab-close-other= | 5 | Tab-bar workflows are keymap-visible and mostly pure editor state once buffers/windows are stable. | =nelisp-emacs=; =nelisp-gui= only for tab display |
+| 5 | Input-method entry points: =toggle-input-method=, =set-input-method=, =activate-transient-input-method= | 6 | This is a daily-driver blocker for Japanese and other non-ASCII input.  Raw GUI key transport should remain unchanged. | =nelisp-emacs=, with =nelisp= only for missing character/coding primitives |
+| 6 | Coding-system command prefix: =universal-coding-system-argument= and =C-x RET *= setters | 6 | File/process/selection coding needs explicit user control before the GUI can replace Emacs on mixed-encoding projects. | =nelisp-emacs= wrappers over =nelisp= conversion/coding support |
+| 7 | Project navigation: =project-find-file=, =project-switch-project=, =project-dired=, =project-switch-to-buffer= | 4 | Large daily coding payoff without requiring full VC parity; can be implemented as a narrow project facade. | =nelisp-emacs=, with filesystem primitives from =nelisp= if needed |
+| 8 | Project process commands: =project-compile=, =project-shell-command=, =project-async-shell-command= | 3 | The process/syscall work should be exercised by real editor workflows; these commands expose async process behavior in the GUI. | =nelisp= process/syscall plus =nelisp-emacs= process/project semantics |
+| 9 | Error navigation: =next-error=, =previous-error= | 4 | Completes the compile/search feedback loop after process-backed commands produce buffers. | =nelisp-emacs= |
+| 10 | VC essentials: =vc-dir=, =vc-diff=, =vc-next-action=, =vc-revert=, =vc-root-diff= | 4 | Repository workflows are important, but should follow project/process plumbing so the implementation can stay narrow and process-backed. | =nelisp-emacs= over =nelisp= process/syscall |
+
+Cheap coverage wins not in the top ten: =kmacro-*=, =expand-abbrev=,
+=add-*-abbrev=, and =rectangle-mark-mode= are mostly self-contained in
+=nelisp-emacs=.  They are good filler tasks when the larger frame/tab/project
+work is blocked, but they are not the main replacement blockers in this
+coverage run.

@@ -56,6 +56,13 @@
   (should (null (internal-make-var-non-special
                  'emacs-eval-test--non-special))))
 
+(ert-deftest emacs-eval-test/runtime-callable-fallbacks-are-callable ()
+  (should (eq 'x (purecopy 'x)))
+  (should (string-equal "value 42" (format-message "value %d" 42)))
+  (should (= 42 (with-local-quit 42)))
+  (should (null (with-demoted-errors "demoted %s"
+                  (error "boom")))))
+
 
 (provide 'emacs-eval-test)
 

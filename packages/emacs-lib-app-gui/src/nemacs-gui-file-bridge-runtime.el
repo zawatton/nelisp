@@ -143,6 +143,10 @@
 (setq files--register-string "")
 (setq files--register-kind "")
 (setq files--register-number 0)
+(setq files--register-window-layout "")
+(setq files--register-window-selected "")
+(setq files--register-window-split-delta 0)
+(setq files--register-frame-state "")
 (setq files--bookmark-name "")
 (setq files--bookmark-key "")
 (setq files--bookmark-path "")
@@ -174,6 +178,8 @@
 (setq files--window-start 0)
 (setq files--window-hscroll 0)
 (setq files--window-split-delta 0)
+(setq files--window-dedicated-p nil)
+(setq files--side-windows-visible-p nil)
 (setq files--display-prefix-action "")
 (setq files--tab-count 1)
 (setq files--tab-selected-index 0)
@@ -221,18 +227,21 @@
               "C-x C-j\tdired-jump\n"
               "C-x 4 C-j\tdired-jump-other-window\n"
               "C-x s\tsave-some-buffers\n"
+              "C-x m\tcompose-mail\n"
               "C-x C-c\tsave-buffers-kill-terminal\n"
               "C-x 0\tdelete-window\n"
               "C-x 4 0\tkill-buffer-and-window\n"
               "C-x 4 1\tsame-window-prefix\n"
               "C-x 4 4\tother-window-prefix\n"
               "C-x 4 c\tclone-indirect-buffer-other-window\n"
+              "C-x 4 m\tcompose-mail-other-window\n"
               "C-x 4 p\tproject-other-window-command\tProject other window command: \n"
               "C-x 5 0\tdelete-frame\n"
               "C-x 5 1\tdelete-other-frames\n"
               "C-x 5 2\tmake-frame-command\n"
               "C-x 5 5\tother-frame-prefix\n"
               "C-x 5 c\tclone-frame\n"
+              "C-x 5 m\tcompose-mail-other-frame\n"
               "C-x 5 o\tother-frame\n"
               "C-x 5 p\tproject-other-frame-command\tProject other frame command: \n"
               "C-x 5 u\tundelete-frame\n"
@@ -262,6 +271,12 @@
               "C-x t u\ttab-undo\n"
               "C-x t RET\ttab-switch\n"
               "C-x w ^ t\ttab-window-detach\n"
+              "C-x w 2\tsplit-root-window-below\n"
+              "C-x w 3\tsplit-root-window-right\n"
+              "C-x w ^ f\ttear-off-window\n"
+              "C-x w d\ttoggle-window-dedicated\n"
+              "C-x w q\tquit-window\n"
+              "C-x w s\twindow-toggle-side-windows\n"
               "C-x +\tbalance-windows\n"
               "C-x -\tshrink-window-if-larger-than-buffer\n"
               "C-x w -\tfit-window-to-buffer\n"
@@ -513,14 +528,17 @@
                   "C-x r x\tcopy-to-register\tCopy to register: \n"
                   "C-x r i\tinsert-register\tInsert register: \n"
                   "C-x r g\tinsert-register\tInsert register: \n"
+                  "C-x r f\tframeset-to-register\tFrameset to register: \n"
+                  "C-x r w\twindow-configuration-to-register\tWindow configuration to register: \n"
                   "C-x r n\tnumber-to-register\tNumber to register: \n"
                   "C-x r +\tincrement-register\tIncrement register: \n"
-                  "C-x r m\tbookmark-set\tSet bookmark: \n"
-                  "C-x r M\tbookmark-set-no-overwrite\tSet bookmark: \n"
-                  "C-x r b\tbookmark-jump\tJump to bookmark: \n"
-                  "C-x r r\tcopy-rectangle-to-register\tCopy rectangle to register: \n"
-                  "C-x r t\tstring-rectangle\tString rectangle: \n"
-	                  "C-x C-d\tlist-directory\tList directory: \n"
+	                  "C-x r m\tbookmark-set\tSet bookmark: \n"
+	                  "C-x r M\tbookmark-set-no-overwrite\tSet bookmark: \n"
+	                  "C-x r b\tbookmark-jump\tJump to bookmark: \n"
+	                  "C-x r r\tcopy-rectangle-to-register\tCopy rectangle to register: \n"
+	                  "C-x r t\tstring-rectangle\tString rectangle: \n"
+                      "C-x w 0\tdelete-windows-on\tDelete windows on buffer: \n"
+		                  "C-x C-d\tlist-directory\tList directory: \n"
 	                  "C-x d\tdired\tDired directory: \n"
 	                  "C-x 4 d\tdired-other-window\tDired directory in other window: \n"
                       "C-x 5 d\tdired-other-frame\tDired directory in other frame: \n"
@@ -997,6 +1015,28 @@
       (lambda ()
         (nl-write-file (progn (setq files--transport-name "nemacs-window-split-delta") (files--transport-path))
                        (number-to-string files--window-split-delta))))
+
+(fset 'files--read-transport-window-dedicated-state
+      (lambda ()
+        (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-dedicated") (files--transport-path)))
+        (files--read-number-file)
+        (setq files--window-dedicated-p (not (= files--number-file-value 0)))))
+
+(fset 'files--write-transport-window-dedicated-state
+      (lambda ()
+        (nl-write-file (progn (setq files--transport-name "nemacs-window-dedicated") (files--transport-path))
+                       (if files--window-dedicated-p "1" "0"))))
+
+(fset 'files--read-transport-side-windows-state
+      (lambda ()
+        (setq files--number-file-name (progn (setq files--transport-name "nemacs-side-windows-visible") (files--transport-path)))
+        (files--read-number-file)
+        (setq files--side-windows-visible-p (not (= files--number-file-value 0)))))
+
+(fset 'files--write-transport-side-windows-state
+      (lambda ()
+        (nl-write-file (progn (setq files--transport-name "nemacs-side-windows-visible") (files--transport-path))
+                       (if files--side-windows-visible-p "1" "0"))))
 
 (fset 'files--tab-selected-default-name
       (lambda ()
@@ -2170,9 +2210,7 @@
           nil)
         (setq files--frame-count 1)
         (setq files--frame-selected-index 0)
-        (if (equal files--frame-selected-name "")
-            (setq files--frame-selected-name "1")
-          nil)
+        (setq files--frame-selected-name (files--frame-selected-default-name))
         (files--write-transport-frame-state)
         files--frame-selected-name))
 
@@ -2726,6 +2764,50 @@
                 (setq files--bridge-status "unsupported")))))
         files--register-string))
 
+(fset 'files--read-configuration-register
+      (lambda ()
+        (setq files--register-kind "")
+        (setq files--register-window-layout "")
+        (setq files--register-window-selected "")
+        (setq files--register-window-split-delta 0)
+        (setq files--register-frame-state "")
+        (let ((text (rdf files--register-path))
+              (index 0)
+              (start 0)
+              (field 0))
+          (if (if (>= (length text) 7)
+                  (equal (substring text 0 7) "window\n")
+                nil)
+              (progn
+                (setq files--register-kind "window")
+                (setq index 7)
+                (setq start 7)
+                (while (if (<= index (length text)) (< field 3) nil)
+                  (if (if (= index (length text))
+                          t
+                        (= (aref text index) 10))
+                      (let ((line (substring text start index)))
+                        (if (= field 0)
+                            (setq files--register-window-layout line)
+                          (if (= field 1)
+                              (setq files--register-window-selected line)
+                            (if (= field 2)
+                                (setq files--register-window-split-delta
+                                      (string-to-number line))
+                              nil)))
+                        (setq field (+ field 1))
+                        (setq start (+ index 1)))
+                    nil)
+                  (setq index (+ index 1))))
+            (if (if (>= (length text) 6)
+                    (equal (substring text 0 6) "frame\n")
+                  nil)
+                (progn
+                  (setq files--register-kind "frame")
+                  (setq files--register-frame-state (substring text 6)))
+              nil)))
+        files--register-kind))
+
 (fset 'files--number-at-point
       (lambda ()
         (files--clamp-point)
@@ -2783,28 +2865,75 @@
                                    "\n"))
             files--point))))
 
+(fset 'window-configuration-to-register
+      (lambda ()
+        (files--register-path-from-arg)
+        (if (equal files--bridge-status "unsupported")
+            nil
+          (progn
+            (files--normalize-window-state)
+            (nl-write-file files--register-path
+                           (concat "window\n"
+                                   files--window-layout
+                                   "\n"
+                                   files--window-selected
+                                   "\n"
+                                   (number-to-string files--window-split-delta)
+                                   "\n"))
+            files--window-layout))))
+
+(fset 'frameset-to-register
+      (lambda ()
+        (files--register-path-from-arg)
+        (if (equal files--bridge-status "unsupported")
+            nil
+          (progn
+            (files--write-transport-frame-state)
+            (nl-write-file files--register-path
+                           (concat "frame\n"
+                                   (rdf (progn
+                                          (setq files--transport-name "nemacs-frame-state")
+                                          (files--transport-path)))))
+            files--frame-selected-name))))
+
 (fset 'jump-to-register
       (lambda ()
         (files--register-path-from-arg)
         (if (equal files--bridge-status "unsupported")
             nil
           (progn
-            (files--read-register)
-            (if (equal files--bridge-status "unsupported")
-                nil
-              (progn
-                (if (equal files--register-buffer-name "")
-                    (setq files--register-buffer-name "main")
-                  nil)
-                (setq files--bridge-arg files--register-buffer-name)
-                (files--switch-to-buffer)
-                (setq files--point files--register-point)
-                (setq files--window-start files--register-window-start)
-                (files--clamp-point)
-                (if (> files--window-start (length files--buffer-string))
-                    (setq files--window-start 0)
-                  nil)
-                files--point))))))
+            (files--read-configuration-register)
+            (if (equal files--register-kind "window")
+                (progn
+                  (setq files--window-layout files--register-window-layout)
+                  (setq files--window-selected files--register-window-selected)
+                  (setq files--window-split-delta files--register-window-split-delta)
+                  (files--normalize-window-state)
+                  files--window-layout)
+              (if (equal files--register-kind "frame")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-frame-state") (files--transport-path))
+                                   files--register-frame-state)
+                    (files--read-transport-frame-state)
+                    (files--write-transport-frame-state)
+                    files--frame-selected-name)
+                (progn
+                  (files--read-register)
+                  (if (equal files--bridge-status "unsupported")
+                      nil
+                    (progn
+                      (if (equal files--register-buffer-name "")
+                          (setq files--register-buffer-name "main")
+                        nil)
+                      (setq files--bridge-arg files--register-buffer-name)
+                      (files--switch-to-buffer)
+                      (setq files--point files--register-point)
+                      (setq files--window-start files--register-window-start)
+                      (files--clamp-point)
+                      (if (> files--window-start (length files--buffer-string))
+                          (setq files--window-start 0)
+                        nil)
+                      files--point)))))))))
 
 (fset 'copy-to-register
       (lambda ()
@@ -3431,6 +3560,46 @@
           (lambda ()
             (tab-new)
             (list-directory)
+            files--buffer-name))
+
+    (fset 'files--compose-mail-core
+          (lambda ()
+            (files--save-current-buffer-state)
+            (setq files--buffer-name "*mail*")
+            (setq files--buffer-list-name files--buffer-name)
+            (files--buffer-list-add)
+            (setq files--buffer-string "To: \nSubject: \n\n")
+            (setq files--current-file-name "")
+            (setq files--point 4)
+            (setq files--mark 4)
+            (setq files--window-start 0)
+            (setq files--buffer-read-only-p nil)
+            (setq files--buffer-modified-p nil)
+            (files--clear-narrow-state)
+            (files--save-current-buffer-state)
+            files--buffer-name))
+
+    (fset 'compose-mail
+          (lambda ()
+            (files--compose-mail-core)
+            (files--apply-display-prefix-for-same-window-command)
+            files--buffer-name))
+
+    (fset 'compose-mail-other-window
+          (lambda ()
+            (let ((action files--display-prefix-action))
+              (setq files--display-prefix-action "")
+              (files--compose-mail-core)
+              (setq files--display-prefix-action action))
+            (files--apply-display-prefix-for-other-window-command)
+            files--buffer-name))
+
+    (fset 'compose-mail-other-frame
+          (lambda ()
+            (let ((action files--display-prefix-action))
+              (setq files--display-prefix-action "frame")
+              (compose-mail-other-window)
+              (setq files--display-prefix-action action))
             files--buffer-name))
 
     (fset 'add-change-log-entry-other-window
@@ -7057,6 +7226,17 @@
             nil)
           files--window-split-delta)))
 
+(fset 'delete-windows-on
+      (lambda ()
+        (files--normalize-window-state)
+        (if (not (equal files--window-layout "single"))
+            (progn
+              (setq files--window-layout "single")
+              (setq files--window-selected "0")
+              (setq files--window-split-delta 0))
+          nil)
+        files--window-layout))
+
 (fset 'split-window-right
       (lambda ()
         (setq files--window-layout "vertical")
@@ -7066,6 +7246,41 @@
       (lambda ()
         (setq files--window-layout "horizontal")
         (setq files--window-split-delta 0)))
+
+(fset 'split-root-window-right
+      (lambda ()
+        (split-window-right)))
+
+(fset 'split-root-window-below
+      (lambda ()
+        (split-window-below)))
+
+(fset 'tear-off-window
+      (lambda ()
+        (files--normalize-window-state)
+        (files--save-frame-undo-state)
+        (files--display-in-other-frame)
+        (setq files--window-layout "single")
+        (setq files--window-selected "0")
+        (setq files--window-split-delta 0)
+        files--frame-selected-name))
+
+(fset 'toggle-window-dedicated
+      (lambda ()
+        (setq files--window-dedicated-p (not files--window-dedicated-p))
+        files--window-dedicated-p))
+
+(fset 'quit-window
+      (lambda ()
+        (if (equal files--window-layout "single")
+            nil
+          (delete-window))
+        files--window-layout))
+
+(fset 'window-toggle-side-windows
+      (lambda ()
+        (setq files--side-windows-visible-p (not files--side-windows-visible-p))
+        files--side-windows-visible-p))
 
 (fset 'files--window-resize-delta
       (lambda (amount horizontal)
@@ -11057,6 +11272,9 @@
 	                                            "dired-other-window\n"
                                                 "dired-other-frame\n"
 	                                                "dired-other-tab\n"
+                                                "compose-mail\n"
+                                                "compose-mail-other-window\n"
+                                                "compose-mail-other-frame\n"
                                                 "add-change-log-entry-other-window\n"
 				                                "insert-file\n"
                                         "insert-buffer\n"
@@ -11067,6 +11285,8 @@
                                     "revert-buffer-quick\n"
                                     "point-to-register\n"
                                     "jump-to-register\n"
+                                    "frameset-to-register\n"
+                                    "window-configuration-to-register\n"
                                     "copy-to-register\n"
                                     "insert-register\n"
                                     "number-to-register\n"
@@ -11238,6 +11458,13 @@
                                     "balance-windows\n"
                                     "shrink-window-if-larger-than-buffer\n"
                                     "fit-window-to-buffer\n"
+                                    "delete-windows-on\n"
+                                    "split-root-window-below\n"
+                                    "split-root-window-right\n"
+                                    "tear-off-window\n"
+                                    "toggle-window-dedicated\n"
+                                    "quit-window\n"
+                                    "window-toggle-side-windows\n"
                                     "enlarge-window\n"
                                     "shrink-window-horizontally\n"
                                     "enlarge-window-horizontally\n"
@@ -11678,6 +11905,8 @@
           (if (equal files--minibuffer-purpose "insert-buffer") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "point-to-register") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "jump-to-register") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "frameset-to-register") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "window-configuration-to-register") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "copy-to-register") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "insert-register") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "number-to-register") (setq ok t) nil)
@@ -12613,10 +12842,15 @@
               (if (eq files--bridge-command 'dired-other-window) (setq ok t) nil)
               (if (eq files--bridge-command 'dired-other-frame) (setq ok t) nil)
               (if (eq files--bridge-command 'dired-other-tab) (setq ok t) nil)
-	          (if (eq files--bridge-command 'insert-file) (setq ok t) nil)
+              (if (eq files--bridge-command 'compose-mail) (setq ok t) nil)
+              (if (eq files--bridge-command 'compose-mail-other-window) (setq ok t) nil)
+              (if (eq files--bridge-command 'compose-mail-other-frame) (setq ok t) nil)
+          (if (eq files--bridge-command 'insert-file) (setq ok t) nil)
           (if (eq files--bridge-command 'insert-buffer) (setq ok t) nil)
           (if (eq files--bridge-command 'point-to-register) (setq ok t) nil)
           (if (eq files--bridge-command 'jump-to-register) (setq ok t) nil)
+          (if (eq files--bridge-command 'frameset-to-register) (setq ok t) nil)
+          (if (eq files--bridge-command 'window-configuration-to-register) (setq ok t) nil)
           (if (eq files--bridge-command 'copy-to-register) (setq ok t) nil)
           (if (eq files--bridge-command 'insert-register) (setq ok t) nil)
           (if (eq files--bridge-command 'number-to-register) (setq ok t) nil)
@@ -12727,6 +12961,13 @@
           (if (eq files--bridge-command 'balance-windows) (setq ok t) nil)
           (if (eq files--bridge-command 'shrink-window-if-larger-than-buffer) (setq ok t) nil)
           (if (eq files--bridge-command 'fit-window-to-buffer) (setq ok t) nil)
+          (if (eq files--bridge-command 'delete-windows-on) (setq ok t) nil)
+          (if (eq files--bridge-command 'split-root-window-below) (setq ok t) nil)
+          (if (eq files--bridge-command 'split-root-window-right) (setq ok t) nil)
+          (if (eq files--bridge-command 'tear-off-window) (setq ok t) nil)
+          (if (eq files--bridge-command 'toggle-window-dedicated) (setq ok t) nil)
+          (if (eq files--bridge-command 'quit-window) (setq ok t) nil)
+          (if (eq files--bridge-command 'window-toggle-side-windows) (setq ok t) nil)
           (if (eq files--bridge-command 'enlarge-window) (setq ok t) nil)
           (if (eq files--bridge-command 'shrink-window-horizontally) (setq ok t) nil)
           (if (eq files--bridge-command 'enlarge-window-horizontally) (setq ok t) nil)
@@ -12954,10 +13195,15 @@
             (if (eq files--bridge-command 'dired-other-window) (dired-other-window) nil)
             (if (eq files--bridge-command 'dired-other-frame) (dired-other-frame) nil)
             (if (eq files--bridge-command 'dired-other-tab) (dired-other-tab) nil)
-	        (if (eq files--bridge-command 'insert-file) (insert-file) nil)
+            (if (eq files--bridge-command 'compose-mail) (compose-mail) nil)
+            (if (eq files--bridge-command 'compose-mail-other-window) (compose-mail-other-window) nil)
+            (if (eq files--bridge-command 'compose-mail-other-frame) (compose-mail-other-frame) nil)
+            (if (eq files--bridge-command 'insert-file) (insert-file) nil)
             (if (eq files--bridge-command 'insert-buffer) (insert-buffer) nil)
             (if (eq files--bridge-command 'point-to-register) (point-to-register) nil)
             (if (eq files--bridge-command 'jump-to-register) (jump-to-register) nil)
+            (if (eq files--bridge-command 'frameset-to-register) (frameset-to-register) nil)
+            (if (eq files--bridge-command 'window-configuration-to-register) (window-configuration-to-register) nil)
             (if (eq files--bridge-command 'copy-to-register) (copy-to-register) nil)
             (if (eq files--bridge-command 'insert-register) (insert-register) nil)
             (if (eq files--bridge-command 'number-to-register) (number-to-register) nil)
@@ -13068,6 +13314,13 @@
         (if (eq files--bridge-command 'balance-windows) (balance-windows) nil)
         (if (eq files--bridge-command 'shrink-window-if-larger-than-buffer) (shrink-window-if-larger-than-buffer) nil)
         (if (eq files--bridge-command 'fit-window-to-buffer) (fit-window-to-buffer) nil)
+        (if (eq files--bridge-command 'delete-windows-on) (delete-windows-on) nil)
+        (if (eq files--bridge-command 'split-root-window-below) (split-root-window-below) nil)
+        (if (eq files--bridge-command 'split-root-window-right) (split-root-window-right) nil)
+        (if (eq files--bridge-command 'tear-off-window) (tear-off-window) nil)
+        (if (eq files--bridge-command 'toggle-window-dedicated) (toggle-window-dedicated) nil)
+        (if (eq files--bridge-command 'quit-window) (quit-window) nil)
+        (if (eq files--bridge-command 'window-toggle-side-windows) (window-toggle-side-windows) nil)
         (if (eq files--bridge-command 'enlarge-window) (enlarge-window) nil)
         (if (eq files--bridge-command 'shrink-window-horizontally) (shrink-window-horizontally) nil)
         (if (eq files--bridge-command 'enlarge-window-horizontally) (enlarge-window-horizontally) nil)
@@ -13324,6 +13577,8 @@
               (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-split-delta") (files--transport-path)))
               (files--read-signed-number-file)
               (setq files--window-split-delta files--number-file-value)
+              (files--read-transport-window-dedicated-state)
+              (files--read-transport-side-windows-state)
               (files--read-transport-tab-state)
               (files--read-transport-tab-undo-state)
               (files--read-transport-frame-state)
@@ -13501,6 +13756,8 @@
 					          (files--write-last-command-state)
 				          (files--write-kill-ring-state)
 	                  (files--write-transport-window-split-delta)
+                  (files--write-transport-window-dedicated-state)
+                  (files--write-transport-side-windows-state)
                   (files--write-transport-frame-state)
 			          (if (equal files--bridge-status "read-only")
               (progn
@@ -13872,6 +14129,21 @@
                     (files--write-transport-window-start)
                     (setq files--bridge-status "written"))
                 nil)
+              (if (equal cmd "frameset-to-register")
+                  (progn
+                    (files--write-transport-frame-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "window-configuration-to-register")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-window-split-delta)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
               (if (equal cmd "jump-to-register")
                   (progn
 	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
@@ -13879,6 +14151,8 @@
 	                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
                       (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
                       (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                      (files--write-transport-window-split-delta)
+                      (files--write-transport-frame-state)
 	                    (files--write-transport-point)
                     (files--write-transport-mark)
                     (files--write-transport-window-start)
@@ -14146,6 +14420,49 @@
 	                    (files--write-transport-window-start)
 	                    (setq files--bridge-status "written"))
 	                nil)
+              (if (equal cmd "compose-mail")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "compose-mail-other-window")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "compose-mail-other-frame")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-frame-state)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
               (if (equal cmd "add-change-log-entry-other-window")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
@@ -14646,6 +14963,40 @@
                     (files--write-transport-tab-state)
                     (setq files--bridge-status "written"))
                 nil)
+              (if (equal cmd "delete-frame")
+                  (progn
+                    (files--write-transport-frame-state)
+                    (files--write-transport-frame-undo-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "delete-other-frames")
+                  (progn
+                    (files--write-transport-frame-state)
+                    (files--write-transport-frame-undo-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "make-frame-command")
+                  (progn
+                    (files--write-transport-frame-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "other-frame")
+                  (progn
+                    (files--write-transport-frame-state)
+                    (files--write-prefix-arg-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "clone-frame")
+                  (progn
+                    (files--write-transport-frame-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "undelete-frame")
+                  (progn
+                    (files--write-transport-frame-state)
+                    (files--write-transport-frame-undo-state)
+                    (setq files--bridge-status "written"))
+                nil)
               (if (equal cmd "tab-next")
                   (progn
                     (files--write-transport-tab-state)
@@ -14853,6 +15204,53 @@
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
                     (files--write-transport-window-split-delta)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "delete-windows-on")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-window-split-delta)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "split-root-window-below")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-window-split-delta)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "split-root-window-right")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-window-split-delta)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "tear-off-window")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-window-split-delta)
+                    (files--write-transport-frame-state)
+                    (files--write-transport-frame-undo-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "toggle-window-dedicated")
+                  (progn
+                    (files--write-transport-window-dedicated-state)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "quit-window")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-window-split-delta)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "window-toggle-side-windows")
+                  (progn
+                    (files--write-transport-side-windows-state)
                     (setq files--bridge-status "written"))
                 nil)
               (if (equal cmd "enlarge-window")

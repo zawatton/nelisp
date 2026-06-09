@@ -65,7 +65,7 @@ Concretely, as of 2026-05-27:
   Phase 5 future.
 - *Doc 02 v0.1 daily-driver gate* (parallel to Phase 4) shipped to
   =main= on 2026-05-16.  Adds ~58k LOC across 131 files: M1 file +
-  buffer + dired-min (find-file / save-buffer / switch-to-buffer /
+  buffer + dired-min (find-file / save-buffer / switch-to-buffer / kill-buffer /
   window split + dired entry / RET / q / g), M2 dev experience
   (isearch / undo UI / help system C-h f/v/k / =eval-defun= /
   =ielm=), M3 org-mode subset (outline / TODO state cycle / agenda
@@ -106,10 +106,10 @@ without a hand-written C core.
 
 #+begin_src
 ┌──────────────────────────────────────────────────────────────┐
-│  Layer 3                                                     │
+│  Layer 3 display backends                                    │
 │  ├── TUI backend (THIS REPO):                                │
 │  │     emacs-tui-backend.el · emacs-tui-terminfo.el · ...    │
-│  └── GUI backend (separate repo: nelisp-gtk)                 │
+│  └── GUI backend (separate repo: nelisp-gui)                 │
 └─────────────▲────────────────────────────────────────────────┘
               │
 ┌─────────────┴────────────────────────────────────────────────┐
@@ -147,9 +147,164 @@ without a hand-written C core.
   (buffer / window / frame / keymap / minibuffer / etc.) ported
   from Emacs C.
 - =Layer 3 (display backend)= = TUI primary (in this repo).  The
-  GTK4 GUI sibling lives in
-  [[https://github.com/zawatton/nelisp-gtk][~nelisp-gtk~]].  Cocoa / Win32 /
-  =wgpu= backends are open to community contribution.
+  pure native GUI sibling is developed in the separate
+  =nelisp-gui= repo; the older GTK frontend in this tree remains a
+  reference/legacy path.  Cocoa / Win32 / =wgpu= backends are open to
+  community contribution.
+
+* Boundary with nelisp-gui
+
+=nelisp-emacs= owns Emacs behavior.  =nelisp-gui= owns only the GUI
+display/input adapter.
+
+Final ownership rule:
+
+| Decision surface | Owner | Reason |
+|------------------+-------+--------|
+| Buffer text, point, mark, region, kill-ring, undo, modified flag, visited file, buffer list, window layout/selection/window-start changes | =nelisp-emacs= | This is the result of an Emacs command |
+| Keymap lookup, =command-execute=, =call-interactively=, =execute-extended-command=, minibuffer completion/history/require-match | =nelisp-emacs= | This is Emacs command-loop behavior |
+| =find-file=, =save-buffer=, =write-file=, =self-insert-command=, movement/editing/kill/yank/window/help/search/undo commands | =nelisp-emacs= | The same key/command must have one semantic owner |
+| X11 socket/wire protocol, window id, pixmap, GC, font metrics, colors, glyph/cursor/modeline/minibuffer painting | =nelisp-gui= | This is display-backend-specific |
+| X11 event decode, raw key sequence generation, =/tmp/nemacs-*= transport setup, runtime image/session launch | =nelisp-gui= | This is the adapter between Layer 3 and Layer 2 |
+| Smoke test focus | =nelisp-gui= tests input→transport→paint; =nelisp-emacs= tests command semantics | This keeps failures actionable |
+
+Do not add a second implementation of Emacs behavior in =nelisp-gui=.  If a
+GUI interaction changes buffer text, point, mark, visited file, modified state,
+kill-ring, undo, buffer selection, window layout, or minibuffer command result,
+the implementation belongs in this repository and =nelisp-gui= should call it
+through the raw-key/session bridge.
+
+Bridge contract:
+- GUI sends =/tmp/nemacs-keys= raw key sequence plus the current snapshot:
+  buffer text, point, mark, kill-ring mirror, buffer name, visited file,
+  window layout, selected window, window-start, read-only state, and related
+  display transport.
+- This repository returns the updated snapshot, point, mark, kill-ring mirror,
+  buffer/window state, modeline, cursor, minibuffer active/prompt/state/
+  candidates/history/require-match, and status/error.
+- =/tmp/nemacs-cmd=, =/tmp/nemacs-arg=, and =/tmp/nemacs-minibuffer-text= are
+  direct fallback/migration transport only.  New daily-driver behavior should
+  extend the raw-key/session path.
+
+Short rule:
+- If a change decides what an Emacs command does to buffer contents,
+  point, mark, visited files, modified state, kill-ring, undo, window
+  state, or command dispatch, it belongs in =nelisp-emacs=.
+- If a change decodes X11 input, transports a raw key sequence/snapshot,
+  or paints the returned state, it belongs in =nelisp-gui=.
+  Keymap lookup and command dispatch belong in =nelisp-emacs=.
+- =nelisp-gui= may contain temporary spike behavior only while wiring the
+  display path.  Once the behavior is part of the Emacs replacement surface,
+  the command semantics must live here and be invoked through the bridge.
+
+In practical terms, this repository is the owner of commands such as
+=find-file=, =save-buffer=, =self-insert-command=, =backward-delete-char=,
+=execute-extended-command=, =newline=, =undo=, =split-window-right=, =other-window=, and search/editing
+commands.  =nelisp-gui= may bind keys to those commands and render the result,
+but it should not decide the resulting buffer contents, point, mark, kill-ring,
+undo state, visited file, current buffer name, selected window, or window-start.
+The preferred GUI bridge input is a raw key sequence plus the current
+snapshot; direct command names and direct minibuffer text remain only as a
+fallback/migration path.
+
+| owner | responsibilities | examples |
+|-------+------------------+----------|
+| =nelisp-emacs= | buffer state, point, visited file, modified state, window state, command dispatch, Emacs Lisp API compatibility | =find-file=, =save-buffer=, =write-file=, =delete-window=, =other-window=, movement/editing commands, =undo=, =command-execute=, =call-interactively= |
+| =nelisp-gui= | frame painting, X11 event decode, cursor/glyph rendering, minibuffer display/input collection, key/minibuffer transport | X11 wire protocol, font/color drawing, =/tmp/nemacs-*= snapshot/point/key/minibuffer files |
+
+New editor behavior should land here first as a command/state update,
+then =nelisp-gui= should call it through the GUI bridge.  The bridge
+runtime adapter lives at
+=src/nemacs-gui-file-bridge-runtime.el= while the full standalone image
+path is being stabilized; its tests live in
+=test/nemacs-gui-file-bridge-runtime-test.el=.
+
+Hard boundary:
+- =nelisp-emacs= owns the result of an Emacs command.  This includes
+  =find-file=, =save-buffer=, =write-file=, =revert-buffer=, movement,
+  insertion/deletion, region commands, kill/yank, undo, command dispatch,
+  and buffer/file metadata.
+- =nelisp-gui= owns only presentation and input transport: X11 events,
+  frame painting, glyph/cursor rendering, font/color handling, minibuffer
+  display/input collection, and the =/tmp/nemacs-*= transport files.
+- =nelisp-emacs= owns keymap lookup, minibuffer command interpretation,
+  =execute-extended-command=, help dispatch, and =command-execute=.
+- GUI code must not grow a second implementation of Emacs editing
+  semantics.  If a key binding changes buffer contents, point, mark,
+  visited file, modified state, kill-ring, or undo state, the behavior
+  belongs here and the GUI should invoke it through the bridge.
+- Host Emacs fallback is temporary coverage for not-yet-ported commands.
+  It does not move ownership away from this repository.
+
+Bridge contract with =nelisp-gui=:
+- GUI sends raw key sequence (=/tmp/nemacs-keys=), current buffer snapshot,
+  point, mark, kill-ring mirror, buffer name, window layout, selected window, and
+  window-start.  =/tmp/nemacs-cmd= and =/tmp/nemacs-arg= remain a direct
+  command fallback/migration path; =/tmp/nemacs-minibuffer-text= and
+  =/tmp/nemacs-minibuffer-arg= remain direct/minibuffer migration inputs.
+- The native GUI currently writes =/tmp/nemacs-keys= in parallel with
+  the older command fallback.  The session backend gives raw keys priority,
+  so new editor behavior should extend the keymap/dispatch path here rather
+  than adding more GUI command-specific branches.
+- The persistent GUI session path runs
+  =nemacs-gui-file-bridge-session-run= once in a long-lived =nelisp=
+  process and synchronizes operations through
+  =/tmp/nemacs-session-request= / =/tmp/nemacs-session-response=.  In that
+  mode the initial transport restores state once; subsequent key events
+  mutate the session's buffer/window/kill/undo globals and return display
+  state to =nelisp-gui=.
+- =nelisp-emacs= runs the command and returns the updated snapshot, point,
+  mark, kill-ring mirror, buffer name, window layout, selected window,
+  window-start, modeline, cursor,
+  minibuffer active/prompt/state/candidates/history/require-match, and status/error.
+- GUI renders the returned state.  It should not repair or reinterpret the
+  command result.
+
+Placement rules:
+- Add command semantics and command-level tests here.
+- Add X11 decode, key/minibuffer transport, drawing, and GUI smoke tests in
+  =nelisp-gui=.  Add key-to-command lookup and dispatch here.
+- Add =find-file=, =find-file-read-only=, =save-buffer=, movement,
+  insertion/deletion, region, kill/yank, undo, =insert-file=, and other Emacs
+  command behavior here, even when the only current caller is =nelisp-gui=.
+- Add multi-buffer save semantics here: =save-some-buffers= decides which
+  known visited buffers are writable and writes those files; =nelisp-gui= only
+  sends the command and receives the returned transport state.
+- Add minibuffer command behavior, completion semantics, history, candidates,
+  and buffer/file state updates here.
+- Add extended command dispatch here: =execute-extended-command= resolves the
+  minibuffer command name and runs that command; =nelisp-gui= only transports
+  =M-x= and the following typed keys as raw key sequences.
+- The current GUI bridge has a migration transport for minibuffer command
+  arguments (=/tmp/nemacs-minibuffer-text= and =/tmp/nemacs-minibuffer-arg=).
+  The session bridge now owns active/prompt/text/candidates/history state in
+  =nemacs-gui-file-bridge-runtime.el=.  Its bridge-local
+  =read-from-minibuffer= / =completing-read= and =emacs-minibuffer-gui-*= entry
+  points model the same reader ownership and already handle candidate
+  filtering, history recording, require-match transport, and =TAB= completion.
+  The remaining target is to replace the adapter-local reader with the shared
+  =read-from-minibuffer= / completion / history implementation here.
+- Add help command semantics here: =describe-function= / =describe-variable=
+  / =describe-key=
+  select and populate =*Help*= and decide the returned buffer/read-only state;
+  =nelisp-gui= only transports =C-h f= / =C-h v= / =C-h k= and following
+  typed keys as raw key sequences, then paints the returned buffer snapshot.
+- Add minibuffer rendering and raw input collection in =nelisp-gui=.
+- Add buffer command semantics here: =switch-to-buffer=, =kill-buffer=,
+  =list-buffers=, current buffer name, per-buffer contents, per-buffer
+  visited-file metadata, and per-buffer point/mark/window-start.  =nelisp-gui=
+  only collects command/minibuffer input and paints the returned buffer snapshot.
+- Add read-only buffer semantics here: =find-file-read-only= marks the current
+  buffer read-only, per-buffer read-only state is persisted across buffer
+  switching, =toggle-read-only= / =read-only-mode= flips that state, and editing
+  commands are rejected by =command-execute=.
+- Add window command semantics here: =delete-window=,
+  =delete-other-windows=, =split-window-right=, =split-window-below=,
+  =other-window=, scrolling, recentering, selected window, and window-start.
+  =nelisp-gui= only paints the split and selected frame using the returned
+  state.
+- Add session command semantics here: =save-buffers-kill-terminal= decides when
+  the GUI should exit and exposes that decision as transport state.
 
 * Repository layout
 
@@ -173,7 +328,8 @@ without a hand-written C core.
   =org-mode= bootstrap becomes meaningful)
 - =vendor/nelisp/= — optional vendored NeLisp checkout produced by
   =bin/build-nelisp= (= =make nelisp=).  A sibling =../nelisp= checkout
-  or explicit =NELISP_HOME= is also supported for local development.
+  or explicit =NELISP_HOME= is also supported for local development.  This
+  directory vendors =nelisp=, not =nelisp-emacs= itself.
 - =docs/design/= — design documents for each port phase
 - =bench/= — micro-benchmarks (advisory; not merge gates)
 

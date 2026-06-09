@@ -13,7 +13,8 @@
   (should (featurep 'emacs-string))
   (dolist (sym '(string-empty-p string-blank-p string-prefix-p
                  string-suffix-p string-trim-left string-trim-right
-                 string-trim string-lines))
+                 string-trim string-lines string< char-equal string-width
+                 int-to-string assoc-string))
     (should (fboundp sym))))
 
 (ert-deftest emacs-string-test/string-lines-basic-shape ()
@@ -33,6 +34,19 @@
   (should (equal (string-lines "a\n\n" nil t) '("a\n" "\n")))
   (should (equal (string-lines "\na" nil t) '("\n" "a")))
   (should (equal (string-lines "a\n\n" t t) '("a\n"))))
+
+(ert-deftest emacs-string-test/runtime-callable-fallbacks ()
+  (should (string< "a" "b"))
+  (should-not (string< "b" "a"))
+  (should-not (string< "a" "a"))
+  (should (char-equal ?x ?x))
+  (should (= 3 (string-width "abc")))
+  (should (string-equal "-42" (int-to-string -42)))
+  (should (equal '("A" . 1)
+                 (assoc-string "a" '(("A" . 1)) t)))
+  (should (equal '(A . 1)
+                 (assoc-string "a" '((A . 1)) t)))
+  (should-not (assoc-string 'a '((A . 1)) nil)))
 
 (provide 'emacs-string-test)
 

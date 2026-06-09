@@ -124,3 +124,40 @@ Comments throughout the nelisp sources reference paths like
 Rust → pure-Elisp migration; the =build-tool/= tree no longer exists.  See the
 note at the top of =dev/nelisp/README.org=.  Do not treat those paths as live
 files.
+
+* 6. nelisp-emacs / nelisp-gui boundary
+
+This document also fixes the boundary between the Emacs substrate and the
+native GUI sibling.
+
+Short version: *nelisp-emacs owns Emacs semantics; nelisp-gui owns presentation
+and input transport.*
+
+| Surface | Owner | Examples |
+|---------+-------+----------|
+| Command result semantics | =nelisp-emacs= | buffer text, point, mark, region, kill-ring, undo, modified flag, visited filename, current buffer, buffer list |
+| Command loop | =nelisp-emacs= | keymap lookup, =command-execute=, =call-interactively=, =execute-extended-command=, minibuffer completion/history/require-match |
+| Window semantics | =nelisp-emacs= | selected window, window layout, window-start changes caused by =split-window-right=, =other-window=, scrolling/recentering commands |
+| Display backend | =nelisp-gui= | X11 socket/wire protocol, window id, pixmap, GC, fonts, colors, glyph drawing, cursor drawing, modeline/minibuffer painting |
+| Input adapter | =nelisp-gui= | X11 event decode, raw key sequence construction, =/tmp/nemacs-*= transport setup, runtime image/session startup |
+
+Hard rules:
+- Do not implement Emacs command semantics in =nelisp-gui=.  A GUI key binding
+  must send raw key transport and let this repository resolve the keymap and
+  command result.
+- Do not repair command results in =nelisp-gui=.  If returned point,
+  window-start, modeline, minibuffer candidates, or buffer contents are wrong,
+  fix the =nelisp-emacs= bridge/runtime command path.
+- =/tmp/nemacs-cmd=, =/tmp/nemacs-arg=, and direct minibuffer transport are
+  migration fallbacks.  The preferred daily-driver path is
+  =/tmp/nemacs-keys= plus a persistent =nemacs-gui-file-bridge-session-run=
+  runtime.
+- Host Emacs fallback is temporary coverage for not-yet-ported commands.  It
+  does not change ownership; the final implementation belongs in
+  =nelisp-emacs=.
+
+Test ownership follows the same split:
+- =nelisp-emacs/test/nemacs-gui-file-bridge-runtime-test.el= verifies command
+  semantics and bridge state updates under the standalone reader.
+- =nelisp-gui/scripts/verify-nemacs-gui.sh= verifies native GUI input decode,
+  raw-key transport, session startup, and repaint of returned state.

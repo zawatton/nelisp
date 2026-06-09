@@ -51,6 +51,7 @@ by the NeLisp-only `nl-write-file' primitive; otherwise the unprefixed
 keymap builtins (`make-keymap', `define-key', ...) silently stay as the
 `emacs-stub-bulk.el' nil-stubs in standalone."
   (or (fboundp 'nl-write-file)
+      (get symbol 'emacs-stub-bulk)
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
 
@@ -113,6 +114,9 @@ the conventional shape expected by `defvar-keymap :suppress'."
 
 (when (emacs-keymap-builtins--install-function-p 'key-binding)
   (defalias 'key-binding #'emacs-keymap-key-binding))
+
+(when (emacs-keymap-builtins--install-function-p 'key-description)
+  (defalias 'key-description #'emacs-keymap-key-description))
 
 ;;;; --- global / local map ----------------------------------------------
 

@@ -110,6 +110,7 @@
 (declare-function nl-syscall-stat-ex   "nelisp-runtime")
 (declare-function nl-syscall-read-file "nelisp-runtime")
 (declare-function nl-syscall-write-file "nelisp-runtime")
+(declare-function nelisp-sys-access    "nelisp-sys")
 (declare-function nelisp--syscall-stat "nelisp-runtime")
 (declare-function nelisp--syscall-readdir "nelisp-runtime")
 (declare-function nelisp--syscall-read-file "nelisp-runtime")
@@ -118,6 +119,23 @@
 (defun nelisp-ec--syscall-available-p (sym)
   "Return non-nil if standalone syscall SYM is wired (T76 SHIPPED)."
   (fboundp sym))
+
+(defconst nelisp-ec--access-functions
+  '(nelisp-sys-access nl-syscall-access)
+  "Candidate access(2)-style functions, in preferred order.")
+
+(defun nelisp-ec--access (file mode)
+  "Call the first available access(2)-style backend for FILE and MODE.
+Returns the integer backend result, or nil when no backend is wired."
+  (catch 'done
+    (dolist (fn nelisp-ec--access-functions)
+      (when (fboundp fn)
+        (let ((rc (condition-case nil
+                      (funcall fn file mode)
+                    (error nil))))
+          (when (integerp rc)
+            (throw 'done rc)))))
+    nil))
 
 (defun nelisp-ec--stat-kind (file)
   "Return a coarse standalone stat kind for FILE, or nil when unavailable."
@@ -386,12 +404,12 @@ invoked beyond reading `default-directory' for the seed CWD."
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (and (nelisp-ec-file-exists-p file)
-       (cond
-        ((nelisp-ec--syscall-available-p 'nl-syscall-access)
-         (zerop (nl-syscall-access file 4))) ;; R_OK = 4
-        ((fboundp 'nelisp--syscall-stat)
-         (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
-        (t (file-readable-p file)))))
+       (let ((rc (nelisp-ec--access file 4))) ;; R_OK = 4
+         (cond
+          ((integerp rc) (zerop rc))
+          ((fboundp 'nelisp--syscall-stat)
+           (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
+          (t (file-readable-p file))))))
 
 ;;;###autoload
 (defun nelisp-ec-file-directory-p (file)
@@ -551,6 +569,16 @@ When OK-IF-ALREADY-EXISTS is nil and NEWNAME exists, signals
 ;;; §4. PATH walk
 ;;; ──────────────────────────────────────────────────────────────────────
 
+(defun nelisp-ec--executable-p (file)
+  "Return non-nil if FILE exists and is executable."
+  (let ((rc (nelisp-ec--access file 1))) ;; X_OK = 1
+    (cond
+     ((integerp rc) (zerop rc))
+     ((fboundp 'nelisp--syscall-stat)
+      (eq (nelisp-ec--stat-kind file) 'file))
+     (t (and (file-exists-p file)
+             (file-executable-p file))))))
+
 ;;;###autoload
 (defun nelisp-ec-executable-find (command &optional remote)
   "Return the absolute path of executable COMMAND, or nil if not found.
@@ -569,7 +597,7 @@ currently a no-op (Phase 9d MVP is local-only)."
              (eq (aref command 0) ?.)
              (or (eq (aref command 1) ?/)
                  (eq (aref command 1) ?.))))
-    (and (nelisp-ec-file-exists-p command) command))
+    (and (nelisp-ec--executable-p command) command))
    (t
     (let* ((path (or (getenv "PATH") ""))
            (dirs (nelisp-ec--split-string-char path ?: t))
@@ -577,13 +605,7 @@ currently a no-op (Phase 9d MVP is local-only)."
       (catch 'done
         (dolist (d dirs)
           (let ((cand (concat (nelisp-ec-file-name-as-directory d) command)))
-            (when (cond
-                   ((nelisp-ec--syscall-available-p 'nl-syscall-access)
-                    (zerop (nl-syscall-access cand 1))) ;; X_OK = 1
-                   ((fboundp 'nelisp--syscall-stat)
-                    (eq (nelisp-ec--stat-kind cand) 'file))
-                   (t (and (file-exists-p cand)
-                           (file-executable-p cand))))
+            (when (nelisp-ec--executable-p cand)
               (setq found cand)
               (throw 'done nil)))))
       found))))
