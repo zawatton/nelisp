@@ -243,6 +243,23 @@
             (should-not (nelisp-ec-file-attributes (plist-get tree :file-a))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
+(ert-deftest dired-do-copy-copies-file-at-point ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'read-file-name)
+                     (lambda (&rest _) "alpha-copy.txt")))
+            (dired (plist-get tree :root))
+            (emacs-dired-min-test--goto-entry "alpha.txt")
+            (dired-do-copy)
+            ;; both the original and the copy are present
+            (should (member "  alpha.txt\t5\t-rw-rw-r--"
+                            (emacs-dired-min-test--buffer-lines)))
+            (should (member "  alpha-copy.txt\t5\t-rw-rw-r--"
+                            (emacs-dired-min-test--buffer-lines)))
+            (should (nelisp-ec-file-attributes (plist-get tree :file-a))))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
 (provide 'emacs-dired-min-test)
 
 ;;; emacs-dired-min-test.el ends here
