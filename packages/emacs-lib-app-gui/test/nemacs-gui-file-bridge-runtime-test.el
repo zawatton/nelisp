@@ -517,6 +517,7 @@
                                       "(fset 'dired-jump"
                                       "(fset 'dired-jump-other-window"
                                       "(fset 'dired-other-window"
+                                      "(fset 'dired-other-frame"
                                               "(fset 'dired-other-tab"
                                               "(fset 'project-find-dir"
                                               "(fset 'project-dired"
@@ -762,9 +763,11 @@
 				                      "(fset 'query-replace-regexp"
                                       "(fset 'project-query-replace-regexp"
 				                      "(fset 'sort-lines"
-			                      "(fset 'switch-to-buffer"
-			                      "(fset 'switch-to-buffer-other-window"
-                                  "(fset 'display-buffer"
+				                      "(fset 'switch-to-buffer"
+				                      "(fset 'switch-to-buffer-other-window"
+                                      "(fset 'switch-to-buffer-other-frame"
+                                      "(fset 'display-buffer"
+                                      "(fset 'display-buffer-other-frame"
                                   "(fset 'rename-buffer"
 		                      "(fset 'kill-buffer"
 	                      "(fset 'kill-buffer-and-window"
@@ -823,17 +826,20 @@
                                       "C-x 4 a\\tadd-change-log-entry-other-window"
 		                              "C-x C-d\\tlist-directory\\tList directory: "
 	                              "C-x d\\tdired\\tDired directory: "
-	                              "C-x 4 d\\tdired-other-window\\tDired directory in other window: "
-                                  "C-x t d\\tdired-other-tab\\tDired directory in other tab: "
+	                                  "C-x 4 d\\tdired-other-window\\tDired directory in other window: "
+                                      "C-x 5 d\\tdired-other-frame\\tDired directory in other frame: "
+	                                  "C-x t d\\tdired-other-tab\\tDired directory in other tab: "
 				                      "C-x C-w\\twrite-file\\tWrite file: "
 				                      "C-x C-s\\tsave-buffer"
                                       "C-x C-j\\tdired-jump"
 	                                      "C-x 4 C-j\\tdired-jump-other-window"
-		                                      "C-x 4 b\\tswitch-to-buffer-other-window\\tSwitch to buffer in other window: "
-	                                          "C-x t b\\tswitch-to-buffer-other-tab\\tSwitch to buffer in other tab: "
+			                                      "C-x 4 b\\tswitch-to-buffer-other-window\\tSwitch to buffer in other window: "
+                                                  "C-x 5 b\\tswitch-to-buffer-other-frame\\tSwitch to buffer in other frame: "
+		                                          "C-x t b\\tswitch-to-buffer-other-tab\\tSwitch to buffer in other tab: "
                                               "C-x p b\\tproject-switch-to-buffer\\tSwitch to project buffer: "
                                               "C-x p C-b\\tproject-list-buffers"
-		                                      "C-x 4 C-o\\tdisplay-buffer\\tDisplay buffer: "
+			                                      "C-x 4 C-o\\tdisplay-buffer\\tDisplay buffer: "
+                                                  "C-x 5 C-o\\tdisplay-buffer-other-frame\\tDisplay buffer in other frame: "
                                       "C-x 4 c\\tclone-indirect-buffer-other-window"
                                       "C-x x r\\trename-buffer\\tRename buffer: "
                                       "C-x x i\\tinsert-buffer\\tInsert buffer: "
@@ -1099,14 +1105,17 @@
 	                                      "(if (equal cmd \"add-change-log-entry-other-window\")"
 			                      "(if (equal cmd \"save-buffer\")"
 		                      "(if (equal cmd \"write-file\")"
-				                      "(if (equal cmd \"switch-to-buffer\")"
-				                      "(if (equal cmd \"switch-to-buffer-other-window\")"
-		                                  "(if (equal cmd \"switch-to-buffer-other-tab\")"
+					                      "(if (equal cmd \"switch-to-buffer\")"
+					                      "(if (equal cmd \"switch-to-buffer-other-window\")"
+                                          "(if (equal cmd \"switch-to-buffer-other-frame\")"
+			                                  "(if (equal cmd \"switch-to-buffer-other-tab\")"
                                           "(if (equal cmd \"project-switch-to-buffer\")"
                                           "(if (equal cmd \"project-list-buffers\")"
-	                                      "(if (equal cmd \"imenu\")"
-                                      "(if (equal cmd \"dired-other-tab\")"
-	                              "(if (equal cmd \"display-buffer\")"
+	                                          "(if (equal cmd \"imenu\")"
+                                      "(if (equal cmd \"dired-other-frame\")"
+	                                      "(if (equal cmd \"dired-other-tab\")"
+		                              "(if (equal cmd \"display-buffer\")"
+                                      "(if (equal cmd \"display-buffer-other-frame\")"
                               "(if (equal cmd \"narrow-to-defun\")"
                               "(if (equal cmd \"narrow-to-region\")"
                               "(if (equal cmd \"narrow-to-page\")"
@@ -4226,12 +4235,77 @@
 		            (should (equal "vertical"
 		                           (nemacs-gui-file-bridge-runtime-test--slurp
 		                            "/tmp/nemacs-window-layout")))
-			                (ert-info ("switch-to-buffer-other-window selects other window")
-				              (should (equal "1"
-				                             (nemacs-gui-file-bridge-runtime-test--slurp
-				                              "/tmp/nemacs-window-selected"))))
-			            (should (= 7 (nemacs-gui-file-bridge-runtime-test--point-value)))
-			            (should (= 6 (nemacs-gui-file-bridge-runtime-test--mark-value)))
+				                (ert-info ("switch-to-buffer-other-window selects other window")
+					              (should (equal "1"
+					                             (nemacs-gui-file-bridge-runtime-test--slurp
+					                              "/tmp/nemacs-window-selected"))))
+				            (should (= 7 (nemacs-gui-file-bridge-runtime-test--point-value)))
+				            (should (= 6 (nemacs-gui-file-bridge-runtime-test--mark-value)))
+            (write-region "other changed\n" nil "/tmp/nemacs-buffer-store/other" nil 'silent)
+            (write-region "/tmp/nemacs-other-file.txt"
+                          nil "/tmp/nemacs-buffer-file-store/other" nil 'silent)
+            (write-region "7" nil "/tmp/nemacs-buffer-point-store/other" nil 'silent)
+            (write-region "6" nil "/tmp/nemacs-buffer-mark-store/other" nil 'silent)
+            (write-region "3" nil "/tmp/nemacs-buffer-window-start-store/other" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "/tmp/nemacs-main-file.txt" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main text\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "main\nother\n" nil "/tmp/nemacs-buffer-list" nil 'silent)
+            (write-region "switch-to-buffer-other-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "other" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0\t1\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "other"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (equal "other changed\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            (should (equal "single"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-layout")))
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-selected")))
+            (ert-info ("switch-to-buffer-other-frame selects a new frame")
+              (should (equal "1\t2\t2"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-state"))))
+            (should (= 7 (nemacs-gui-file-bridge-runtime-test--point-value)))
+            (should (= 6 (nemacs-gui-file-bridge-runtime-test--mark-value)))
+            (write-region "main text\n" nil "/tmp/nemacs-buffer-store/main" nil 'silent)
+            (write-region "/tmp/nemacs-main-file.txt" nil "/tmp/nemacs-buffer-file-store/main" nil 'silent)
+            (write-region "4" nil "/tmp/nemacs-buffer-point-store/main" nil 'silent)
+            (write-region "2" nil "/tmp/nemacs-buffer-mark-store/main" nil 'silent)
+            (write-region "1" nil "/tmp/nemacs-buffer-window-start-store/main" nil 'silent)
+            (write-region "display-buffer-other-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0\t1\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "main"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (equal "main text\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            (should (equal "single"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-layout")))
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-selected")))
+            (ert-info ("display-buffer-other-frame selects a new frame")
+              (should (equal "1\t2\t2"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-state"))))
+            (should (= 4 (nemacs-gui-file-bridge-runtime-test--point-value)))
+            (should (= 2 (nemacs-gui-file-bridge-runtime-test--mark-value)))
             (write-region "project buffer\n" nil "/tmp/nemacs-buffer-store/proj" nil 'silent)
             (write-region "/tmp/nemacs-project-switch-test/proj.txt"
                           nil "/tmp/nemacs-buffer-file-store/proj" nil 'silent)
@@ -4521,10 +4595,31 @@
 	              (should (equal "vertical"
 	                             (nemacs-gui-file-bridge-runtime-test--slurp
 	                              "/tmp/nemacs-window-layout")))
-		                (ert-info ("dired-other-window selects other window")
-		                (should (equal "1"
-		                               (nemacs-gui-file-bridge-runtime-test--slurp
-		                                "/tmp/nemacs-window-selected"))))
+			                (ert-info ("dired-other-window selects other window")
+			                (should (equal "1"
+			                               (nemacs-gui-file-bridge-runtime-test--slurp
+			                                "/tmp/nemacs-window-selected"))))
+              (write-region "dired-other-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+              (write-region dir nil "/tmp/nemacs-arg" nil 'silent)
+              (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+              (write-region "0\t1\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "*Directory*"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "single"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "0"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (ert-info ("dired-other-frame selects a new frame")
+                (should (equal "1\t2\t2"
+                               (nemacs-gui-file-bridge-runtime-test--slurp
+                                "/tmp/nemacs-frame-state"))))
               (write-region "dired-other-tab" nil "/tmp/nemacs-cmd" nil 'silent)
               (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
               (write-region dir nil "/tmp/nemacs-arg" nil 'silent)
@@ -9007,6 +9102,63 @@
                               "/tmp/nemacs-status")))))
         (when (file-exists-p image)
           (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-vc-git-diff-log ()
+  "In a Git repo, project-vc-dir / vc-diff / vc-print-log share one root and
+report real Git state, diff, and log (M2 Project/Git close-gate)."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (skip-unless (executable-find "git"))
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (repo (make-temp-file "nemacs-m2-git-" t))
+          file)
+      (unwind-protect
+          (progn
+            (setq file (expand-file-name "tracked.txt" repo))
+            (call-process "git" nil nil nil "-C" repo "init" "-q")
+            (call-process "git" nil nil nil "-C" repo "config" "user.email" "t@example.com")
+            (call-process "git" nil nil nil "-C" repo "config" "user.name" "Tester")
+            (write-region "line one\n" nil file nil 'silent)
+            (call-process "git" nil nil nil "-C" repo "add" "tracked.txt")
+            (call-process "git" nil nil nil "-C" repo "commit" "-q" "-m" "seed-commit")
+            ;; uncommitted modification
+            (write-region "line one\nline two\n" nil file nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--with-transport
+              ;; project-vc-dir -> status buffer rooted at REPO
+              (write-region "" nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region file nil "/tmp/nemacs-file" nil 'silent)
+              (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+              (write-region "project-vc-dir" nil "/tmp/nemacs-cmd" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (let ((vc (nemacs-gui-file-bridge-runtime-test--slurp "/tmp/nemacs-buf")))
+                (should (string-match-p (concat "VC root: " (regexp-quote repo)) vc))
+                (should (string-match-p "tracked.txt" vc)))
+              ;; vc-diff -> unified diff containing the new line
+              (write-region "" nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region file nil "/tmp/nemacs-file" nil 'silent)
+              (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region "vc-diff" nil "/tmp/nemacs-cmd" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (let ((diff (nemacs-gui-file-bridge-runtime-test--slurp "/tmp/nemacs-buf")))
+                (should (string-match-p (concat "VC root: " (regexp-quote repo)) diff))
+                (should (string-match-p "diff --git" diff))
+                (should (string-match-p "line two" diff)))
+              ;; vc-print-log -> contains the seed commit subject
+              (write-region "" nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region file nil "/tmp/nemacs-file" nil 'silent)
+              (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region "vc-print-log" nil "/tmp/nemacs-cmd" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (string-match-p "seed-commit"
+                                      (nemacs-gui-file-bridge-runtime-test--slurp
+                                       "/tmp/nemacs-buf")))))
+        (when (file-exists-p image) (delete-file image))
+        (when (file-directory-p repo) (delete-directory repo t))))))
 
 (provide 'nemacs-gui-file-bridge-runtime-test)
 

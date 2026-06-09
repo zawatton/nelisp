@@ -186,6 +186,9 @@
 (setq files--frame-count 1)
 (setq files--frame-selected-index 0)
 (setq files--frame-selected-name "1")
+(setq files--frame-undo-active nil)
+(setq files--frame-undo-index 0)
+(setq files--frame-undo-name "")
 (setq rectangle-mark-mode nil)
 (setq files--narrow-active-p nil)
 (setq files--narrow-start 0)
@@ -225,8 +228,14 @@
               "C-x 4 4\tother-window-prefix\n"
               "C-x 4 c\tclone-indirect-buffer-other-window\n"
               "C-x 4 p\tproject-other-window-command\tProject other window command: \n"
+              "C-x 5 0\tdelete-frame\n"
+              "C-x 5 1\tdelete-other-frames\n"
+              "C-x 5 2\tmake-frame-command\n"
               "C-x 5 5\tother-frame-prefix\n"
+              "C-x 5 c\tclone-frame\n"
+              "C-x 5 o\tother-frame\n"
               "C-x 5 p\tproject-other-frame-command\tProject other frame command: \n"
+              "C-x 5 u\tundelete-frame\n"
               "C-x t p\tproject-other-tab-command\tProject other tab command: \n"
               "C-x (\tkmacro-start-macro\n"
               "C-x )\tkmacro-end-macro\n"
@@ -514,12 +523,15 @@
 	                  "C-x C-d\tlist-directory\tList directory: \n"
 	                  "C-x d\tdired\tDired directory: \n"
 	                  "C-x 4 d\tdired-other-window\tDired directory in other window: \n"
+                      "C-x 5 d\tdired-other-frame\tDired directory in other frame: \n"
                       "C-x t d\tdired-other-tab\tDired directory in other tab: \n"
 				              "C-x b\tswitch-to-buffer\tSwitch to buffer: \n"
 			              "C-x 4 b\tswitch-to-buffer-other-window\tSwitch to buffer in other window: \n"
+                          "C-x 5 b\tswitch-to-buffer-other-frame\tSwitch to buffer in other frame: \n"
                           "C-x t b\tswitch-to-buffer-other-tab\tSwitch to buffer in other tab: \n"
                           "C-x p b\tproject-switch-to-buffer\tSwitch to project buffer: \n"
 		                  "C-x 4 C-o\tdisplay-buffer\tDisplay buffer: \n"
+                          "C-x 5 C-o\tdisplay-buffer-other-frame\tDisplay buffer in other frame: \n"
 		              "C-x x r\trename-buffer\tRename buffer: \n"
                       "C-x x i\tinsert-buffer\tInsert buffer: \n"
 			              "C-x k\tkill-buffer\tKill buffer: \n"
@@ -546,6 +558,8 @@
                           "C-x p r\tproject-query-replace-regexp\tProject query replace regexp: \n"
                           "C-x p s\tproject-shell\n"
                           "C-x p v\tproject-vc-dir\n"
+                          "C-x v =\tvc-diff\n"
+                          "C-x v l\tvc-print-log\n"
                           "C-x p x\tproject-execute-extended-command\tProject M-x \n"
                           "C-x t p\tproject-other-tab-command\tProject other tab command: \n"
                           "C-x t RET\ttab-switch\tSwitch to tab: \n"
@@ -1147,10 +1161,10 @@
               (setq files--frame-selected-name (files--frame-selected-default-name))
             nil))))
 
-(fset 'files--write-transport-frame-state
-      (lambda ()
-        (if (< files--frame-count 1)
-            (setq files--frame-count 1)
+	(fset 'files--write-transport-frame-state
+	      (lambda ()
+	        (if (< files--frame-count 1)
+	            (setq files--frame-count 1)
           nil)
         (if (< files--frame-selected-index 0)
             (setq files--frame-selected-index 0)
@@ -1167,10 +1181,66 @@
           (setq selected (files--number-plain-string))
           (setq files--number-file-value files--frame-count)
           (setq count (files--number-plain-string))
-          (nl-write-file (progn (setq files--transport-name "nemacs-frame-state") (files--transport-path))
-                         (concat selected "\t" count "\t" files--frame-selected-name)))))
+	          (nl-write-file (progn (setq files--transport-name "nemacs-frame-state") (files--transport-path))
+	                         (concat selected "\t" count "\t" files--frame-selected-name)))))
 
-(fset 'files--read-transport-tab-undo-state
+(fset 'files--read-transport-frame-undo-state
+      (lambda ()
+        (let ((text (rdf (progn (setq files--transport-name "nemacs-frame-undo-state") (files--transport-path))))
+              (index 0)
+              (start 0)
+              (value 0))
+          (setq files--frame-undo-active nil)
+          (setq files--frame-undo-index 0)
+          (setq files--frame-undo-name "")
+          (if (> (length text) 0)
+              (progn
+                (setq files--frame-undo-active t)
+                (while (if (< index (length text))
+                           (if (= (aref text index) 9) nil t)
+                         nil)
+                  (let ((ch (aref text index)))
+                    (if (if (>= ch 48) (< ch 58) nil)
+                        (setq value (+ (* value 10) (- ch 48)))
+                      nil))
+                  (setq index (+ index 1)))
+                (setq files--frame-undo-index value)
+                (if (< index (length text))
+                    (setq index (+ index 1))
+                  nil)
+                (if (< index (length text))
+                    (progn
+                      (setq start index)
+                      (while (if (< index (length text))
+                                 (not (= (aref text index) 10))
+                               nil)
+                        (setq index (+ index 1)))
+                      (setq files--frame-undo-name (substring text start index)))
+                  nil)
+                (if (equal files--frame-undo-name "")
+                    (setq files--frame-undo-active nil)
+                  nil))
+            nil))))
+
+(fset 'files--write-transport-frame-undo-state
+      (lambda ()
+        (if files--frame-undo-active
+            (let ((index ""))
+              (setq files--number-file-value files--frame-undo-index)
+              (setq index (files--number-plain-string))
+              (nl-write-file (progn (setq files--transport-name "nemacs-frame-undo-state") (files--transport-path))
+                             (concat index "\t" files--frame-undo-name)))
+          (nl-write-file (progn (setq files--transport-name "nemacs-frame-undo-state") (files--transport-path))
+                         ""))))
+
+(fset 'files--save-frame-undo-state
+      (lambda ()
+        (setq files--frame-undo-active t)
+        (setq files--frame-undo-index files--frame-selected-index)
+        (setq files--frame-undo-name files--frame-selected-name)
+        (files--write-transport-frame-undo-state)))
+
+	(fset 'files--read-transport-tab-undo-state
       (lambda ()
         (let ((text (rdf (progn (setq files--transport-name "nemacs-tab-undo-state") (files--transport-path))))
               (index 0)
@@ -2062,12 +2132,89 @@
         (setq files--display-prefix-action "tab")
         nil))
 
-(fset 'other-frame-prefix
-      (lambda ()
-        (setq files--display-prefix-action "frame")
-        nil))
+	(fset 'other-frame-prefix
+	      (lambda ()
+	        (setq files--display-prefix-action "frame")
+	        nil))
 
-(fset 'buffer-file-name
+(fset 'make-frame-command
+      (lambda ()
+        (files--display-in-other-frame)))
+
+(fset 'clone-frame
+      (lambda ()
+        (files--display-in-other-frame)))
+
+(fset 'delete-frame
+      (lambda ()
+        (if (> files--frame-count 1)
+            (progn
+              (files--save-frame-undo-state)
+              (setq files--frame-count (- files--frame-count 1))
+              (if (>= files--frame-selected-index files--frame-count)
+                  (setq files--frame-selected-index (- files--frame-count 1))
+                nil)
+              (setq files--frame-selected-name (files--frame-selected-default-name)))
+          nil)
+        (files--write-transport-frame-state)
+        files--frame-selected-name))
+
+(fset 'delete-other-frames
+      (lambda ()
+        (if (> files--frame-count 1)
+            (progn
+              (setq files--frame-undo-active t)
+              (setq files--frame-undo-index 1)
+              (setq files--frame-undo-name "2")
+              (files--write-transport-frame-undo-state))
+          nil)
+        (setq files--frame-count 1)
+        (setq files--frame-selected-index 0)
+        (if (equal files--frame-selected-name "")
+            (setq files--frame-selected-name "1")
+          nil)
+        (files--write-transport-frame-state)
+        files--frame-selected-name))
+
+(fset 'other-frame
+      (lambda ()
+        (let ((delta 1))
+          (if (not (equal files--prefix-arg ""))
+              (setq delta (files--prefix-arg-number))
+            nil)
+          (if (< files--frame-count 1)
+              (setq files--frame-count 1)
+            nil)
+          (setq files--frame-selected-index (+ files--frame-selected-index delta))
+          (while (< files--frame-selected-index 0)
+            (setq files--frame-selected-index (+ files--frame-selected-index files--frame-count)))
+          (while (>= files--frame-selected-index files--frame-count)
+            (setq files--frame-selected-index (- files--frame-selected-index files--frame-count)))
+          (setq files--frame-selected-name (files--frame-selected-default-name))
+          (files--write-transport-frame-state)
+          files--frame-selected-name)))
+
+(fset 'undelete-frame
+      (lambda ()
+        (if files--frame-undo-active
+            (progn
+              (setq files--frame-count (+ files--frame-count 1))
+              (setq files--frame-selected-index files--frame-undo-index)
+              (if (< files--frame-selected-index 0)
+                  (setq files--frame-selected-index 0)
+                nil)
+              (if (>= files--frame-selected-index files--frame-count)
+                  (setq files--frame-selected-index (- files--frame-count 1))
+                nil)
+              (setq files--frame-selected-name files--frame-undo-name)
+              (setq files--frame-undo-active nil)
+              (setq files--frame-undo-name "")
+              (files--write-transport-frame-state)
+              (files--write-transport-frame-undo-state))
+          nil)
+        files--frame-selected-name))
+
+	(fset 'buffer-file-name
       (lambda ()
         files--current-file-name))
 
@@ -2479,6 +2626,14 @@
 				        (files--apply-display-prefix-for-other-window-command)
 				        (files--switch-to-buffer)))
 
+(fset 'switch-to-buffer-other-frame
+      (lambda ()
+        (let ((action files--display-prefix-action))
+          (setq files--display-prefix-action "frame")
+          (switch-to-buffer-other-window)
+          (setq files--display-prefix-action action))
+        files--buffer-name))
+
 (fset 'switch-to-buffer-other-tab
       (lambda ()
         (tab-new)
@@ -2487,6 +2642,10 @@
 	        (fset 'display-buffer
               (lambda ()
                 (switch-to-buffer-other-window)))
+
+(fset 'display-buffer-other-frame
+      (lambda ()
+        (switch-to-buffer-other-frame)))
 
 (fset 'files--register-path-from-arg
       (lambda ()
@@ -3259,6 +3418,14 @@
             (files--apply-display-prefix-for-other-window-command)
 	          nil)
 	        files--buffer-name))
+
+(fset 'dired-other-frame
+      (lambda ()
+        (let ((action files--display-prefix-action))
+          (setq files--display-prefix-action "frame")
+          (dired-other-window)
+          (setq files--display-prefix-action action))
+        files--buffer-name))
 
     (fset 'dired-other-tab
           (lambda ()
@@ -4090,6 +4257,144 @@
                                     (rdf status-file)
                                   (rdf root-file))
                               "project-vc-dir unavailable: no call-process substrate\n")))
+              (if (= status 0)
+                  (setq files--bridge-status "ok")
+                (setq files--bridge-status "error"))
+              (files--save-current-buffer-state)
+              status)))
+
+    (fset 'vc-diff
+          (lambda ()
+            (let ((directory (files--project-command-directory))
+                  (root-file (progn (setq files--transport-name "nemacs-vc-diff-root-output") (files--transport-path)))
+                  (diff-file (progn (setq files--transport-name "nemacs-vc-diff-output") (files--transport-path)))
+                  (file files--current-file-name)
+                  (scope "")
+                  (root "")
+                  (root-status 1)
+                  (status 1))
+              (files--save-current-buffer-state)
+              (if (if file (not (equal file "")) nil)
+                  (setq scope (concat " -- " (files--shell-quote-argument file)))
+                nil)
+              (nl-write-file root-file "")
+              (nl-write-file diff-file "")
+              (if (fboundp 'call-process)
+                  (setq root-status
+                        (call-process "/bin/sh" nil nil nil "-c"
+                                      (concat "git -C "
+                                              (files--shell-quote-argument directory)
+                                              " rev-parse --show-toplevel > "
+                                              (files--shell-quote-argument root-file)
+                                              " 2>&1")))
+                (setq root-status 127))
+              (setq root (files--strip-trailing-newlines (rdf root-file)))
+              (if (= root-status 0)
+                  (if (fboundp 'call-process)
+                      (setq status
+                            (call-process "/bin/sh" nil nil nil "-c"
+                                          (concat "git -C "
+                                                  (files--shell-quote-argument root)
+                                                  " diff"
+                                                  scope
+                                                  " > "
+                                                  (files--shell-quote-argument diff-file)
+                                                  " 2>&1")))
+                    (setq status 127))
+                (setq status root-status))
+              (setq files--buffer-list-name "*vc-diff*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*vc-diff*")
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (setq files--buffer-read-only-p t)
+              (setq files--buffer-string
+                    (concat "VC root: "
+                            (if (= root-status 0) root "(none)")
+                            "\n"
+                            "VC command: git diff"
+                            scope
+                            "\n"
+                            "Exit status: "
+                            (number-to-string status)
+                            "\n\n"
+                            (if (fboundp 'call-process)
+                                (if (= root-status 0)
+                                    (rdf diff-file)
+                                  (rdf root-file))
+                              "vc-diff unavailable: no call-process substrate\n")))
+              (if (= status 0)
+                  (setq files--bridge-status "ok")
+                (setq files--bridge-status "error"))
+              (files--save-current-buffer-state)
+              status)))
+
+    (fset 'vc-print-log
+          (lambda ()
+            (let ((directory (files--project-command-directory))
+                  (root-file (progn (setq files--transport-name "nemacs-vc-log-root-output") (files--transport-path)))
+                  (log-file (progn (setq files--transport-name "nemacs-vc-log-output") (files--transport-path)))
+                  (file files--current-file-name)
+                  (scope "")
+                  (root "")
+                  (root-status 1)
+                  (status 1))
+              (files--save-current-buffer-state)
+              (if (if file (not (equal file "")) nil)
+                  (setq scope (concat " -- " (files--shell-quote-argument file)))
+                nil)
+              (nl-write-file root-file "")
+              (nl-write-file log-file "")
+              (if (fboundp 'call-process)
+                  (setq root-status
+                        (call-process "/bin/sh" nil nil nil "-c"
+                                      (concat "git -C "
+                                              (files--shell-quote-argument directory)
+                                              " rev-parse --show-toplevel > "
+                                              (files--shell-quote-argument root-file)
+                                              " 2>&1")))
+                (setq root-status 127))
+              (setq root (files--strip-trailing-newlines (rdf root-file)))
+              (if (= root-status 0)
+                  (if (fboundp 'call-process)
+                      (setq status
+                            (call-process "/bin/sh" nil nil nil "-c"
+                                          (concat "git -C "
+                                                  (files--shell-quote-argument root)
+                                                  " log --oneline -n 50"
+                                                  scope
+                                                  " > "
+                                                  (files--shell-quote-argument log-file)
+                                                  " 2>&1")))
+                    (setq status 127))
+                (setq status root-status))
+              (setq files--buffer-list-name "*vc-change-log*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*vc-change-log*")
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (setq files--buffer-read-only-p t)
+              (setq files--buffer-string
+                    (concat "VC root: "
+                            (if (= root-status 0) root "(none)")
+                            "\n"
+                            "VC command: git log --oneline -n 50"
+                            scope
+                            "\n"
+                            "Exit status: "
+                            (number-to-string status)
+                            "\n\n"
+                            (if (fboundp 'call-process)
+                                (if (= root-status 0)
+                                    (rdf log-file)
+                                  (rdf root-file))
+                              "vc-print-log unavailable: no call-process substrate\n")))
               (if (= status 0)
                   (setq files--bridge-status "ok")
                 (setq files--bridge-status "error"))
@@ -10591,6 +10896,9 @@
             (if (equal emacs-minibuffer-gui-purpose "dired-other-window")
                 (setq emacs-minibuffer-gui-history-symbol "file-name-history")
               nil)
+            (if (equal emacs-minibuffer-gui-purpose "dired-other-frame")
+                (setq emacs-minibuffer-gui-history-symbol "file-name-history")
+              nil)
             (if (equal emacs-minibuffer-gui-purpose "dired-other-tab")
                 (setq emacs-minibuffer-gui-history-symbol "file-name-history")
               nil)
@@ -10612,6 +10920,9 @@
 	        (if (equal emacs-minibuffer-gui-purpose "switch-to-buffer-other-window")
 	            (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
 	          nil)
+        (if (equal emacs-minibuffer-gui-purpose "switch-to-buffer-other-frame")
+            (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
+          nil)
         (if (equal emacs-minibuffer-gui-purpose "switch-to-buffer-other-tab")
             (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
           nil)
@@ -10619,6 +10930,9 @@
             (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
           nil)
         (if (equal emacs-minibuffer-gui-purpose "display-buffer")
+            (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "display-buffer-other-frame")
             (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
           nil)
         (if (equal emacs-minibuffer-gui-purpose "kill-buffer")
@@ -10667,6 +10981,11 @@
 		                  (setq source (rdf files--buffer-list-file))
 		                nil)
 		            nil)
+              (if (equal files--minibuffer-purpose "switch-to-buffer-other-frame")
+                  (if (equal source "")
+                      (setq source (rdf files--buffer-list-file))
+                    nil)
+                nil)
               (if (equal files--minibuffer-purpose "switch-to-buffer-other-tab")
                   (if (equal source "")
                       (setq source (rdf files--buffer-list-file))
@@ -10678,6 +10997,11 @@
                     nil)
                 nil)
 		              (if (equal files--minibuffer-purpose "display-buffer")
+                  (if (equal source "")
+                      (setq source (rdf files--buffer-list-file))
+                    nil)
+                nil)
+              (if (equal files--minibuffer-purpose "display-buffer-other-frame")
                   (if (equal source "")
                       (setq source (rdf files--buffer-list-file))
                     nil)
@@ -10731,6 +11055,7 @@
 	                                            "dired-jump\n"
 			                                "dired-jump-other-window\n"
 	                                            "dired-other-window\n"
+                                                "dired-other-frame\n"
 	                                                "dired-other-tab\n"
                                                 "add-change-log-entry-other-window\n"
 				                                "insert-file\n"
@@ -10762,9 +11087,11 @@
 			                                "write-file\n"
 					                                "switch-to-buffer\n"
 					                                "switch-to-buffer-other-window\n"
+                                                    "switch-to-buffer-other-frame\n"
                                                     "switch-to-buffer-other-tab\n"
                                                     "project-switch-to-buffer\n"
 		                                                "display-buffer\n"
+                                                    "display-buffer-other-frame\n"
                                                 "rename-buffer\n"
                                                 "rename-uniquely\n"
                                                 "clone-buffer\n"
@@ -10801,6 +11128,8 @@
                                                 "project-find-regexp\n"
                                                 "project-query-replace-regexp\n"
                                                 "project-vc-dir\n"
+                                                "vc-diff\n"
+                                                "vc-print-log\n"
 			                                            "eval-expression\n"
                                             "font-lock-update\n"
                                             "insert-char\n"
@@ -11343,6 +11672,7 @@
               (if (equal files--minibuffer-purpose "list-directory") (setq ok t) nil)
               (if (equal files--minibuffer-purpose "dired") (setq ok t) nil)
               (if (equal files--minibuffer-purpose "dired-other-window") (setq ok t) nil)
+              (if (equal files--minibuffer-purpose "dired-other-frame") (setq ok t) nil)
               (if (equal files--minibuffer-purpose "dired-other-tab") (setq ok t) nil)
 	          (if (equal files--minibuffer-purpose "insert-file") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "insert-buffer") (setq ok t) nil)
@@ -12244,6 +12574,8 @@
           (if (eq files--bridge-command 'project-find-regexp) (setq ok t) nil)
           (if (eq files--bridge-command 'project-or-external-find-regexp) (setq ok t) nil)
           (if (eq files--bridge-command 'project-vc-dir) (setq ok t) nil)
+          (if (eq files--bridge-command 'vc-diff) (setq ok t) nil)
+          (if (eq files--bridge-command 'vc-print-log) (setq ok t) nil)
 			          (if (eq files--bridge-command 'repeat) (setq ok t) nil)
 	          (if (eq files--bridge-command 'universal-argument) (setq ok t) nil)
 	          (if (eq files--bridge-command 'digit-argument) (setq ok t) nil)
@@ -12279,6 +12611,7 @@
               (if (eq files--bridge-command 'dired-jump) (setq ok t) nil)
               (if (eq files--bridge-command 'dired-jump-other-window) (setq ok t) nil)
               (if (eq files--bridge-command 'dired-other-window) (setq ok t) nil)
+              (if (eq files--bridge-command 'dired-other-frame) (setq ok t) nil)
               (if (eq files--bridge-command 'dired-other-tab) (setq ok t) nil)
 	          (if (eq files--bridge-command 'insert-file) (setq ok t) nil)
           (if (eq files--bridge-command 'insert-buffer) (setq ok t) nil)
@@ -12332,6 +12665,12 @@
           (if (eq files--bridge-command 'tab-close-other) (setq ok t) nil)
           (if (eq files--bridge-command 'tab-detach) (setq ok t) nil)
           (if (eq files--bridge-command 'tab-window-detach) (setq ok t) nil)
+          (if (eq files--bridge-command 'delete-frame) (setq ok t) nil)
+          (if (eq files--bridge-command 'delete-other-frames) (setq ok t) nil)
+          (if (eq files--bridge-command 'make-frame-command) (setq ok t) nil)
+          (if (eq files--bridge-command 'other-frame) (setq ok t) nil)
+          (if (eq files--bridge-command 'clone-frame) (setq ok t) nil)
+          (if (eq files--bridge-command 'undelete-frame) (setq ok t) nil)
           (if (eq files--bridge-command 'tab-next) (setq ok t) nil)
           (if (eq files--bridge-command 'tab-previous) (setq ok t) nil)
           (if (eq files--bridge-command 'tab-duplicate) (setq ok t) nil)
@@ -12358,9 +12697,11 @@
 		          (if (eq files--bridge-command 'project-query-replace-regexp) (setq ok t) nil)
 					          (if (eq files--bridge-command 'switch-to-buffer) (setq ok t) nil)
 				          (if (eq files--bridge-command 'switch-to-buffer-other-window) (setq ok t) nil)
+                          (if (eq files--bridge-command 'switch-to-buffer-other-frame) (setq ok t) nil)
                           (if (eq files--bridge-command 'switch-to-buffer-other-tab) (setq ok t) nil)
                           (if (eq files--bridge-command 'project-switch-to-buffer) (setq ok t) nil)
 		          (if (eq files--bridge-command 'display-buffer) (setq ok t) nil)
+                  (if (eq files--bridge-command 'display-buffer-other-frame) (setq ok t) nil)
 	          (if (eq files--bridge-command 'rename-buffer) (setq ok t) nil)
 	          (if (eq files--bridge-command 'rename-uniquely) (setq ok t) nil)
 	          (if (eq files--bridge-command 'clone-buffer) (setq ok t) nil)
@@ -12574,6 +12915,8 @@
             (if (eq files--bridge-command 'project-find-regexp) (project-find-regexp) nil)
             (if (eq files--bridge-command 'project-or-external-find-regexp) (project-or-external-find-regexp) nil)
             (if (eq files--bridge-command 'project-vc-dir) (project-vc-dir) nil)
+            (if (eq files--bridge-command 'vc-diff) (vc-diff) nil)
+            (if (eq files--bridge-command 'vc-print-log) (vc-print-log) nil)
 				          (if (eq files--bridge-command 'repeat) (repeat) nil)
 	        (if (eq files--bridge-command 'universal-argument) (universal-argument) nil)
 	        (if (eq files--bridge-command 'digit-argument) (digit-argument) nil)
@@ -12609,6 +12952,7 @@
             (if (eq files--bridge-command 'dired-jump) (dired-jump) nil)
             (if (eq files--bridge-command 'dired-jump-other-window) (dired-jump-other-window) nil)
             (if (eq files--bridge-command 'dired-other-window) (dired-other-window) nil)
+            (if (eq files--bridge-command 'dired-other-frame) (dired-other-frame) nil)
             (if (eq files--bridge-command 'dired-other-tab) (dired-other-tab) nil)
 	        (if (eq files--bridge-command 'insert-file) (insert-file) nil)
             (if (eq files--bridge-command 'insert-buffer) (insert-buffer) nil)
@@ -12662,6 +13006,12 @@
         (if (eq files--bridge-command 'tab-close-other) (tab-close-other) nil)
         (if (eq files--bridge-command 'tab-detach) (tab-detach) nil)
         (if (eq files--bridge-command 'tab-window-detach) (tab-window-detach) nil)
+        (if (eq files--bridge-command 'delete-frame) (delete-frame) nil)
+        (if (eq files--bridge-command 'delete-other-frames) (delete-other-frames) nil)
+        (if (eq files--bridge-command 'make-frame-command) (make-frame-command) nil)
+        (if (eq files--bridge-command 'other-frame) (other-frame) nil)
+        (if (eq files--bridge-command 'clone-frame) (clone-frame) nil)
+        (if (eq files--bridge-command 'undelete-frame) (undelete-frame) nil)
         (if (eq files--bridge-command 'tab-next) (tab-next) nil)
         (if (eq files--bridge-command 'tab-previous) (tab-previous) nil)
         (if (eq files--bridge-command 'tab-duplicate) (tab-duplicate) nil)
@@ -12688,9 +13038,11 @@
 	        (if (eq files--bridge-command 'project-query-replace-regexp) (project-query-replace-regexp) nil)
 					        (if (eq files--bridge-command 'switch-to-buffer) (switch-to-buffer) nil)
 				        (if (eq files--bridge-command 'switch-to-buffer-other-window) (switch-to-buffer-other-window) nil)
+                        (if (eq files--bridge-command 'switch-to-buffer-other-frame) (switch-to-buffer-other-frame) nil)
                         (if (eq files--bridge-command 'switch-to-buffer-other-tab) (switch-to-buffer-other-tab) nil)
                         (if (eq files--bridge-command 'project-switch-to-buffer) (project-switch-to-buffer) nil)
 		        (if (eq files--bridge-command 'display-buffer) (display-buffer) nil)
+                (if (eq files--bridge-command 'display-buffer-other-frame) (display-buffer-other-frame) nil)
         (if (eq files--bridge-command 'rename-buffer) (rename-buffer) nil)
         (if (eq files--bridge-command 'rename-uniquely) (rename-uniquely) nil)
         (if (eq files--bridge-command 'clone-buffer) (clone-buffer) nil)
@@ -12975,6 +13327,7 @@
               (files--read-transport-tab-state)
               (files--read-transport-tab-undo-state)
               (files--read-transport-frame-state)
+              (files--read-transport-frame-undo-state)
           (if (equal files--bridge-keys "")
               nil
             (progn
@@ -13461,6 +13814,19 @@
 		                    (files--write-transport-window-start)
 			                    (setq files--bridge-status "written"))
 		                nil)
+                  (if (equal cmd "switch-to-buffer-other-frame")
+                      (progn
+                        (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                        (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                        (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                        (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                        (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                        (files--write-transport-frame-state)
+                        (files--write-transport-point)
+                        (files--write-transport-mark)
+                        (files--write-transport-window-start)
+                        (setq files--bridge-status "written"))
+                    nil)
                   (if (equal cmd "switch-to-buffer-other-tab")
                       (progn
                         (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
@@ -13481,6 +13847,19 @@
                     (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "display-buffer-other-frame")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-frame-state)
                     (files--write-transport-point)
                     (files--write-transport-mark)
                     (files--write-transport-window-start)
@@ -13741,6 +14120,19 @@
                     (files--write-transport-window-start)
                     (setq files--bridge-status "written"))
                 nil)
+              (if (equal cmd "dired-other-frame")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-frame-state)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
 	              (if (equal cmd "dired-other-tab")
 	                  (progn
 	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
@@ -13993,6 +14385,18 @@
                     (setq files--bridge-status "written"))
                 nil)
               (if (equal cmd "project-compile")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "vc-diff") t (equal cmd "vc-print-log"))
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
                     (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
