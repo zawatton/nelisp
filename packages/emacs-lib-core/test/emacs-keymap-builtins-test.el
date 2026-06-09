@@ -111,7 +111,11 @@
   (should (emacs-keymap-keymapp (emacs-keymap-current-global-map))))
 
 (ert-deftest emacs-keymap-builtins-test/key-description-bridge-in-source ()
-  (let ((file (locate-library "emacs-keymap-builtins")))
+  (let* ((file (locate-library "emacs-keymap-builtins"))
+         ;; Read the .el source, not a compiled .elc (binary) when present.
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file)))
     (should (and file (file-exists-p file)))
     (with-temp-buffer
       (insert-file-contents file)
