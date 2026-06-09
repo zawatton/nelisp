@@ -223,6 +223,26 @@
             (should (nelisp-ec-file-attributes (plist-get tree :file-a))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
+(ert-deftest dired-do-rename-renames-file-at-point ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree)))
+      (unwind-protect
+          (cl-letf (((symbol-function 'read-file-name)
+                     (lambda (&rest _) "renamed.txt")))
+            (dired (plist-get tree :root))
+            (emacs-dired-min-test--goto-entry "alpha.txt")
+            (dired-do-rename)
+            (should (member "  renamed.txt\t5\t-rw-rw-r--"
+                            (emacs-dired-min-test--buffer-lines)))
+            (should-not (cl-find-if
+                         (lambda (line) (string-match-p "alpha\\.txt" line))
+                         (emacs-dired-min-test--buffer-lines)))
+            (should (nelisp-ec-file-attributes
+                     (nelisp-ec-expand-file-name
+                      "renamed.txt" (plist-get tree :root))))
+            (should-not (nelisp-ec-file-attributes (plist-get tree :file-a))))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
 (provide 'emacs-dired-min-test)
 
 ;;; emacs-dired-min-test.el ends here
