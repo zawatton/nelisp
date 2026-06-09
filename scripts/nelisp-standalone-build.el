@@ -3357,6 +3357,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-stat-buf") . (nl_bi_syscall_stat_buf args out))
     ((:lit "nelisp--syscall-lstat-buf") . (nl_bi_syscall_lstat_buf args out))
     ((:lit "nelisp--syscall-readlink") . (nl_bi_syscall_readlink args out))
+    ((:lit "nelisp--syscall-readdir-names") . (nl_bi_syscall_readdir_names args out))
     ((:lit "nelisp--syscall-utimes") . (nl_bi_syscall_utimes args out))
     ((:lit "nelisp--syscall-statx-buf") . (nl_bi_syscall_statx_buf args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
@@ -3946,6 +3947,53 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
         (if (< n 0)
             (wf_write_nil out)
           (nl_seq2 (nl_alloc_str buf n out) 0))))
+    ;; nelisp--syscall-readdir-names PATH: openat(O_RDONLY|O_DIRECTORY) +
+    ;; getdents64 + close -- return every entry name in PATH as one
+    ;; newline-joined string ("." / ".." included; callers filter), or nil
+    ;; when PATH cannot be opened as a directory.  One flat string keeps the
+    ;; builtin list-free (same return shape as readlink / read-file).
+    ;; dirent64 layout: d_ino@0 d_off@8 d_reclen(u16)@16 d_type(u8)@18
+    ;; d_name@19 (NUL-terminated).  Output is clipped at 65535 bytes.
+    ;; Pure elisp, no new Rust.
+    (defun nl_bi_syscall_readdir_names (args out)
+      (let* ((path_sx (wf_arg_ptr args 0))
+             (cpath (nl_bi_make_cpath path_sx))
+             (fd (syscall-direct 257 -100 cpath 65536 0 0 0)))
+        (if (< fd 0)
+            (wf_write_nil out)
+          (let* ((dbuf (alloc-bytes 32768 8))
+                 (sbuf (alloc-bytes 65536 1))
+                 (slen 0)
+                 (n 1))
+            (seq
+             (while (> n 0)
+               (seq
+                (setq n (syscall-direct 217 fd dbuf 32768 0 0 0))
+                (if (> n 0)
+                    (let* ((pos 0))
+                      (while (< pos n)
+                        (let* ((reclen (+ (ptr-read-u8 dbuf (+ pos 16))
+                                          (* 256 (ptr-read-u8 dbuf (+ pos 17))))))
+                          (if (= reclen 0)
+                              (setq pos n)
+                            (let* ((np (+ pos 19)))
+                              (seq
+                               (while (and (< np (+ pos reclen))
+                                           (> (ptr-read-u8 dbuf np) 0)
+                                           (< slen 65535))
+                                 (seq
+                                  (ptr-write-u8 sbuf slen (ptr-read-u8 dbuf np))
+                                  (setq slen (+ slen 1))
+                                  (setq np (+ np 1))))
+                               (if (< slen 65536)
+                                   (seq
+                                    (ptr-write-u8 sbuf slen 10)
+                                    (setq slen (+ slen 1)))
+                                 0)
+                               (setq pos (+ pos reclen))))))))
+                  0)))
+             (syscall-direct 3 fd 0 0 0 0 0)
+             (nl_seq2 (nl_alloc_str sbuf slen out) 0))))))
     ;; nelisp--syscall-utimes PATH ATIME MTIME: utimes(2) (syscall 235) -- set
     ;; the access + modification times to ATIME / MTIME (seconds; usec = 0).
     ;; Builds a struct timeval[2] {atime.sec, atime.usec, mtime.sec, mtime.usec}
@@ -4880,6 +4928,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
     "nelisp--syscall-lstat-buf" "nelisp--syscall-readlink"
+    "nelisp--syscall-readdir-names"
     "nelisp--syscall-utimes" "nelisp--syscall-statx-buf"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nl-current-unix-time"
