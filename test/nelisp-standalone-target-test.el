@@ -287,6 +287,168 @@
         (should-not (tree-member-p '(syscall-direct 0 fd ptr len 0 0 0) forms))
         (should-not (tree-member-p '(syscall-direct 1 fd ptr len 0 0 0) forms))))))
 
+(ert-deftest nelisp-standalone-target-reader-installs-process-builtin ()
+  "The reader exposes the synchronous process substrate primitive."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (should (member "nelisp-process-call-process"
+                    nelisp-standalone--reader-builtins))
+    (should (member "nelisp-process-start"
+                    nelisp-standalone--reader-builtins))
+    (should (member "nelisp-process-object-p"
+                    nelisp-standalone--reader-builtins))
+    (should (member "nelisp-portable-syscall"
+                    nelisp-standalone--reader-builtins))
+    (should (member "nelisp-process-call-process"
+                    nelisp-standalone--applyfn-bf-builtins))
+    (should (member "nelisp-process-start"
+                    nelisp-standalone--applyfn-bf-builtins))
+    (should (member "nelisp-process-async-ready-p"
+                    nelisp-standalone--applyfn-bf-builtins))
+    (should (tree-member-p
+             '((:lit "nelisp-process-call-process") .
+               (nl_bi_process_call_process args out))
+             nelisp-standalone--applyfn-bf-arms))
+    (should (tree-member-p
+             '((:lit "nelisp-process-start") .
+               (nl_bi_process_start_process args out))
+             nelisp-standalone--applyfn-bf-arms))
+    (should (tree-member-p
+             '((:lit "nelisp-portable-syscall") .
+               (wf_write_int out (nl_bi_portable_syscall args)))
+             nelisp-standalone--applyfn-bf-arms))
+    (should (tree-member-p
+             '(defun nl_bi_process_call_process (args out)
+                (let* ((program_sx (wf_arg_ptr args 0))
+                       (infile_sx (wf_arg_ptr args 1))
+                       (destination_sx (wf_arg_ptr args 2))
+                       (arglst (nl_bi_process_drop args 4))
+                       (path (nl_bi_make_cpath program_sx))
+                       (argv (nl_bi_process_make_argv program_sx arglst))
+                       (envp (alloc-bytes 8 8))
+                       (pid 0))
+                  (seq
+                   (ptr-write-u64 envp 0 0)
+                   (setq pid (nl_os_process_fork))
+                   (if (= pid 0)
+                       (seq
+                        (if (= (nl_bi_process_setup_child_fds
+                                infile_sx destination_sx) 0)
+                            (nl_os_process_execve path argv envp)
+                          1)
+                        (nl_os_process_exit127))
+                     (if (< pid 0)
+                         (wf_write_int out 1)
+                       (wf_write_int out (nl_bi_process_wait_exit_code pid)))))))
+             nelisp-standalone--fileio-source))
+    (should (tree-member-p
+             '(defun nl_bi_process_make_object (pid outfd out)
+                (seq
+                 (vector-make 5 out)
+                 (nl_bi_process_set_int out 0 1886547811)
+                 (nl_bi_process_set_int out 1 pid)
+                 (nl_bi_process_set_int out 2 outfd)
+                 (nl_bi_process_set_int out 3 0)
+                 (nl_bi_process_set_int out 4 -1)
+                 0))
+             nelisp-standalone--fileio-source))
+    (should (tree-member-p
+             '(defun nl_bi_process_start_process (args out)
+                (let* ((program_sx (wf_arg_ptr args 0))
+                       (arglst (nl_cons_cdr_ptr args))
+                       (pipev (alloc-bytes 8 4))
+                       (envp (alloc-bytes 8 8))
+                       (pipe_rc 0)
+                       (pid 0))
+                  (seq
+                   (ptr-write-u64 envp 0 0)
+                   (setq pipe_rc (nl_os_process_pipe pipev))
+                   (if (< pipe_rc 0)
+                       (wf_write_nil out)
+                     (let* ((readfd (ptr-read-u32 pipev 0))
+                            (writefd (ptr-read-u32 pipev 4))
+                            (path (nl_bi_make_cpath program_sx))
+                            (argv (nl_bi_process_make_argv program_sx
+                                                           arglst)))
+                       (seq
+                        (setq pid (nl_os_process_fork))
+                        (if (= pid 0)
+                            (seq
+                             (nl_os_close_handle readfd)
+                             (nl_os_process_dup2 writefd 1)
+                             (nl_os_process_dup2 writefd 2)
+                             (nl_os_close_handle writefd)
+                             (nl_os_process_execve path argv envp)
+                             (nl_os_process_exit127))
+                          (if (< pid 0)
+                              (seq
+                               (nl_os_close_handle readfd)
+                               (nl_os_close_handle writefd)
+                               (wf_write_nil out))
+                            (seq
+                             (nl_os_close_handle writefd)
+                             (nl_os_process_set_nonblock readfd)
+                             (nl_bi_process_make_object pid readfd
+                                                        out))))))))))
+             nelisp-standalone--fileio-source))))
+
+(ert-deftest nelisp-standalone-target-reader-process-syscalls-are-targeted ()
+  "Process helper syscall numbers stay target-specific."
+  (cl-labels ((tree-member-p
+               (needle tree)
+               (cond
+                ((equal needle tree) t)
+                ((consp tree)
+                 (or (tree-member-p needle (car tree))
+                     (tree-member-p needle (cdr tree)))))))
+    (let ((nelisp-standalone--target 'linux-x86_64))
+      (let ((forms (nelisp-standalone--reader-os-source-forms)))
+        (should (tree-member-p '(syscall-direct 57 0 0 0 0 0 0) forms))
+        (should (tree-member-p '(syscall-direct 59 path argv envp 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 61 pid statusp options 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 33 oldfd newfd 0 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 22 pipev 0 0 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 72 fd 4 2048 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 62 pid sig 0 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 60 127 0 0 0 0 0)
+                               forms))))
+    (let ((nelisp-standalone--target 'macos-aarch64))
+      (let ((forms (nelisp-standalone--reader-os-source-forms)))
+        (should (tree-member-p '(syscall-direct 2 0 0 0 0 0 0) forms))
+        (should (tree-member-p '(syscall-direct 59 path argv envp 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 7 pid statusp options 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 90 oldfd newfd 0 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 42 pipev 0 0 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 92 fd 4 4 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 37 pid sig 0 0 0 0)
+                               forms))
+        (should (tree-member-p '(syscall-direct 1 127 0 0 0 0 0)
+                               forms))))
+    (let ((nelisp-standalone--target 'windows-x86_64))
+      (let ((forms (nelisp-standalone--reader-os-source-forms)))
+        (should (tree-member-p '(defun nl_os_process_fork nil -1) forms))
+        (should (tree-member-p '(defun nl_os_process_wait4
+                                  (pid statusp options) -1)
+                               forms))
+        (should (tree-member-p '(defun nl_os_process_pipe (pipev) -1)
+                               forms))))))
+
 (ert-deftest nelisp-standalone-target-reader-detects-shifted-argv ()
   "The reader driver can detect and normalize macOS LC_MAIN argv+1."
   (let ((nelisp-standalone--target 'macos-aarch64))

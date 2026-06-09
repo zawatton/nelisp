@@ -6,7 +6,7 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test
 
 EMACS ?= emacs
 
@@ -171,6 +171,24 @@ standalone-reader-fmt-smoke: standalone-reader
 	  echo "[standalone-reader-fmt-smoke] PASS: --load -> $$out"; \
 	else \
 	  echo "[standalone-reader-fmt-smoke] FAIL: --load -> $$out"; \
+	  exit 1; \
+	fi
+
+# Runtime smoke for the reader's process substrate (call-process /
+# start-process / pipe read, scripts/nelisp-standalone-build.el).  The host ERT
+# only checks the emitted C structure, NOT real fork/execve/wait4 behaviour, so
+# this exercises the freestanding binary against actual subprocesses.
+# POSIX-only (Windows builds emit -1 stubs, covered by the target ERT).
+standalone-reader-process-smoke: standalone-reader
+	@mkdir -p target
+	@printf '%s\n' '(nelisp-process-call-process "/bin/sh" nil nil nil "-c" "exit 7")' > target/standalone-reader-process-smoke-cp.el
+	@printf '%s\n' '(let ((p (nelisp-process-start "/bin/sh" "-c" "printf process-smoke-ok"))) (nelisp-process-wait p) (nelisp-process-read-output p 64))' > target/standalone-reader-process-smoke-async.el
+	@set +e; ./target/nelisp target/standalone-reader-process-smoke-cp.el; cp_rc=$$?; set -e; \
+	out="$$(./target/nelisp --load target/standalone-reader-process-smoke-async.el)"; \
+	if [ "$$cp_rc" = "7" ] && [ "$$out" = '"process-smoke-ok"' ]; then \
+	  echo "[standalone-reader-process-smoke] PASS: call-process exit=$$cp_rc, read-output -> $$out"; \
+	else \
+	  echo "[standalone-reader-process-smoke] FAIL: call-process exit=$$cp_rc, read-output -> $$out"; \
 	  exit 1; \
 	fi
 

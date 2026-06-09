@@ -58,6 +58,23 @@
   (should (listp (nelisp-startup-envp)))
   (should (= (nelisp-sys-startup-argc) (nelisp-startup-argc))))
 
+(ert-deftest nelisp-sys-portable-syscall-number-hides-platform-nrs ()
+  "Portable syscall lookup keeps raw target numbers behind nelisp-sys."
+  (should (= (nelisp-sys-syscall-number 'fork 'gnu/linux) 57))
+  (should (= (nelisp-sys-syscall-number "wait4" 'gnu/linux) 61))
+  (should (= (nelisp-sys-syscall-number 'fork 'darwin) 2))
+  (should (= (nelisp-sys-syscall-number 'wait4 'darwin) 7))
+  (should-error (nelisp-sys-syscall-number 'fork 'windows)
+                :type 'nelisp-sys-error))
+
+(ert-deftest nelisp-sys-portable-syscall-dispatches-through-runtime-binding ()
+  "Symbolic syscall invocation resolves the number before calling runtime."
+  (let (seen)
+    (cl-letf (((symbol-function 'nelisp--syscall)
+               (lambda (&rest args) (setq seen args) 123)))
+      (should (= (nelisp-sys-syscall 'kill 44 15) 123))
+      (should (equal seen '(62 44 15 0 0 0 0))))))
+
 (ert-deftest nelisp-sys-cstring-helpers-forward-to-os-layer ()
   "Doc 44 C string helpers allocate through the OS substrate."
   (let (freed)

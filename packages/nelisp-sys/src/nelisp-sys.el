@@ -44,6 +44,8 @@
 (declare-function nelisp-os--build-cstr-array "nelisp-stdlib-os" (strs))
 (declare-function nelisp-os--free "nelisp-stdlib-os" (ptr))
 (declare-function nelisp-os--free-cstr-array "nelisp-stdlib-os" (pair))
+(declare-function nelisp--syscall "ext:nelisp-runtime"
+                  (nr a0 a1 a2 a3 a4 a5))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-read-u64 "ext:nelisp-runtime" (ptr offset))
@@ -81,6 +83,26 @@ criterion 15: the release cadence differs from NeLisp core).")
 (defconst nelisp-sys-stderr 2)
 (defconst nelisp-sys-wnohang 1)
 
+(defconst nelisp-sys--portable-syscall-table
+  '((gnu/linux
+     (read . 0) (write . 1) (open . 2) (close . 3)
+     (poll . 7) (mmap . 9) (munmap . 11) (mprotect . 10)
+     (dup2 . 33) (fork . 57) (execve . 59) (exit . 60)
+     (wait4 . 61) (kill . 62) (fcntl . 72) (pipe . 22)
+     (stat . 4) (fstat . 5) (getpid . 39))
+    (darwin
+     (read . 3) (write . 4) (open . 5) (close . 6)
+     (fork . 2) (execve . 59) (exit . 1) (wait4 . 7)
+     (kill . 37) (dup2 . 90) (fcntl . 92) (poll . 230)
+     (mmap . 197) (munmap . 73) (mprotect . 74)
+     (stat . 188) (fstat . 189) (getpid . 20)))
+  "Portable syscall-name to target-number table.
+
+This is deliberately small: it covers the file/process/event-loop surface used
+by `nelisp-sys' and `nelisp-process'.  Callers should resolve by symbolic name
+through `nelisp-sys-syscall-number' / `nelisp-sys-syscall' rather than embedding
+Linux or Darwin numbers in package code.")
+
 (defvar nelisp-sys--cstring-array-owners (make-hash-table :test 'eql)
   "Pointer array ownership table for `nelisp-sys-cstring-array'.")
 
@@ -99,6 +121,43 @@ conservative fallback before loading the package."
   (unless (nelisp-sys--ensure-os)
     (signal 'nelisp-sys-error
             (list (format "%s requires nelisp-stdlib-os" operation)))))
+
+(defun nelisp-sys-current-platform ()
+  "Return the portable platform key used by `nelisp-sys' syscall tables."
+  (cond
+   ((eq system-type 'darwin) 'darwin)
+   ((memq system-type '(gnu/linux berkeley-unix)) 'gnu/linux)
+   ((eq system-type 'windows-nt) 'windows)
+   (t system-type)))
+
+(defun nelisp-sys-syscall-number (name &optional platform)
+  "Return syscall number for symbolic NAME on PLATFORM.
+
+NAME may be a symbol or string.  PLATFORM defaults to
+`nelisp-sys-current-platform'.  Signals `nelisp-sys-error' when the name is not
+available for the requested platform."
+  (let* ((key (if (symbolp name) name (intern name)))
+         (plat (or platform (nelisp-sys-current-platform)))
+         (table (cdr (assq plat nelisp-sys--portable-syscall-table)))
+         (entry (assq key table)))
+    (unless entry
+      (signal 'nelisp-sys-error
+              (list (format "unsupported syscall %S for %S" key plat))))
+    (cdr entry)))
+
+(defun nelisp-sys-syscall (name &optional a0 a1 a2 a3 a4 a5)
+  "Invoke portable syscall NAME with up to six integer/pointer arguments.
+
+The symbolic NAME is resolved through `nelisp-sys-syscall-number'.  This keeps
+platform syscall numbers behind the `nelisp-sys' boundary.  Hosted Emacs runs
+without the standalone syscall trampoline signal `nelisp-sys-error' rather than
+pretending the syscall path is available."
+  (unless (fboundp 'nelisp--syscall)
+    (signal 'nelisp-sys-error
+            (list "nelisp-sys-syscall requires nelisp--syscall runtime binding")))
+  (nelisp--syscall (nelisp-sys-syscall-number name)
+                   (or a0 0) (or a1 0) (or a2 0)
+                   (or a3 0) (or a4 0) (or a5 0)))
 
 (defun nelisp-sys--read-ptr-bytes (ptr len)
   "Return LEN bytes read from PTR as a unibyte string."

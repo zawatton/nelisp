@@ -360,9 +360,21 @@ flow through the trampoline + buffer capture path."
   (nelisp-process-test--fresh
    (let ((p (nelisp-make-process :name "pp" :command '("true"))))
      (should (nelisp-processp p))
+     (should (nelisp-process-object-p p))
      (should (not (nelisp-processp 42)))
+     (should (not (nelisp-process-object-p 42)))
      (should (not (nelisp-processp "string")))
      (should (not (nelisp-processp nil)))
+     (nelisp-process-wait-for-exit p 2.0))))
+
+(ert-deftest nelisp-process-async-ready-is-backed-by-process-object-api ()
+  "Async readiness is true only because the object/filter/sentinel path exists."
+  (nelisp-process-test--fresh
+   (should (eq t (nelisp-process-async-ready-p)))
+   (let ((p (nelisp-make-process :name "async-ready" :command '("true"))))
+     (should (nelisp-process-object-p p))
+     (should (functionp #'nelisp-set-process-filter))
+     (should (functionp #'nelisp-set-process-sentinel))
      (nelisp-process-wait-for-exit p 2.0))))
 
 (ert-deftest nelisp-process-emacs-compat-aliases-roundtrip ()

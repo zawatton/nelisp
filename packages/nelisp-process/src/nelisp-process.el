@@ -558,6 +558,25 @@ Returns the exit status or nil on timeout."
   "Return non-nil iff OBJECT is a `nelisp-process' wrap."
   (nelisp-process-p object))
 
+(defun nelisp-process-object-p (object)
+  "Return non-nil iff OBJECT is a real NeLisp process object.
+
+This is the process-package spelling used by portable callers that do not want
+to depend on the historical struct predicate name.  It is intentionally an
+alias for `nelisp-processp': hosted runs use the struct-backed async process
+object, while standalone reader builds expose the same predicate through their
+native process vector object."
+  (nelisp-processp object))
+
+(defun nelisp-process-async-ready-p ()
+  "Return non-nil when `nelisp-make-process' is a genuine async substrate.
+
+The hosted package path is backed by Emacs `make-process' plus NeLisp filter /
+sentinel trampolines and process objects, so async is ready here.  Standalone
+reader builds should only expose an equivalent true value once their pipe,
+nonblocking read, wait, and process-object builtins are installed."
+  t)
+
 ;; NOTE on Emacs-compat naming: cl-defstruct above auto-defines
 ;; `nelisp-process-name', `nelisp-process-id', `nelisp-process-buffer'
 ;; as slot accessors (returning the cached struct slot, NOT the live
