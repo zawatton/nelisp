@@ -481,7 +481,13 @@
 
 (ert-deftest files-test/save-some-buffers-saves-only-when-modified ()
   (files-test--with-shim-functions
-    (let (written)
+    ;; Exercise the standalone fallback modified-tracking (what this shim
+    ;; simulates): force the captured native `buffer-modified-p' off so the
+    ;; directly-set fallback flag `files--buffer-modified-p' is authoritative.
+    (let (written
+          (files--native-buffer-string nil)
+          (files--native-buffer-modified-p nil)
+          (files--native-set-buffer-modified-p nil))
       (set-visited-file-name "/tmp/nelisp-emacs-files-test-save.txt")
       (setq files--buffer-string "alpha"
             files--point 6
