@@ -627,6 +627,9 @@ or the toolchain is newer than the cached object."
 ;;   +112 (268435568): arena DATA-START absolute addr (first header) for
 ;;                     the sweep walker
 ;;   +120 (268435576): live-bytes-after-last-gc (advisory)
+;;   +144 (268435600): initial-stack envp pointer (char**), stashed by the
+;;                     driver so the process substrate's execve passes the
+;;                     parent environment to children (0 = unavailable)
 ;;   +216 (268435672): arena reservation size in bytes
 ;;   +704: chunk-head descriptor pointer
 ;;   +712: chunk-current descriptor pointer
@@ -3742,6 +3745,10 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
 	             (pid 0))
 	        (seq
 	         (ptr-write-u64 envp 0 0)
+	         ;; M11 env inherit: prefer the driver-stashed initial-stack envp.
+	         (if (= (ptr-read-u64 268435600 0) 0)
+	             0
+	           (setq envp (ptr-read-u64 268435600 0)))
 	         (setq pipe_rc (nl_os_process_pipe pipev))
 	         (if (< pipe_rc 0)
 	             (wf_write_nil out)
@@ -3779,6 +3786,10 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
              (pid 0))
         (seq
          (ptr-write-u64 envp 0 0)
+         ;; M11 env inherit: prefer the driver-stashed initial-stack envp.
+         (if (= (ptr-read-u64 268435600 0) 0)
+             0
+           (setq envp (ptr-read-u64 268435600 0)))
          (setq pid (nl_os_process_fork))
          (if (= pid 0)
              (seq
@@ -6260,6 +6271,14 @@ correctly."
 ;; that ceiling, so deep recursion (cnt(100000) -> 42) succeeds while still erroring
 ;; at the guard -- never SIGSEGV -- once it exceeds the budget.
 (ptr-write-u64 ctx 96 0) (ptr-write-u64 ctx 104 300000)
+        ;; M11 env inherit: stash the initial-stack envp (= sp0 + (argc+2)*8,
+        ;; the char** right after argv's NULL) in arena slot +144 (268435600)
+        ;; so the process substrate's execve passes the parent environment to
+        ;; children instead of an empty one.  0 = unavailable (no sp).
+        (ptr-write-u64 268435600 0
+                       (if (= sp0 0)
+                           0
+                         (+ sp0 (* (+ argc 2) 8))))
         (ptr-write-u64 268436448 0 32768)                       ; Doc 147 P1.5 — store the RAW parse-pool cap (32768 slots) for the GC pool arms.  Raised from 8192 after vendored eucjp-ms' 2069-entry generated alist exceeded the flat-list tail depth; 32768 => MAX_DEPTH ~8191 for the current 3+4*MAX_DEPTH reader slot shape.
         ;; GC trigger: collect at a form boundary once the bump offset
         ;; crosses this threshold.  Initial 512 MiB keeps small *and*
