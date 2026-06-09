@@ -28,7 +28,10 @@ DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
 SOAK_ITER="${SOAK_ITER:-0}"
-SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-360}"
+# 38 bridge scenarios (incl. the goto-line / save-and-transform mega-tests
+# and the dired/org/magit/tramp lanes) measure ~655s warm; 1200s leaves
+# headroom for cold image bakes without masking a hang.
+SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-1200}"
 
 # Resolve repo root from this script's location (works from any cwd).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
