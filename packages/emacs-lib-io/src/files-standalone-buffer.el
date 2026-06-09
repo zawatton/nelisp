@@ -85,6 +85,10 @@
   (and (fboundp 'file-attributes) (symbol-function 'file-attributes))
   "Native `file-attributes' captured before this fallback overrides it.")
 
+(defvar files--native-file-truename
+  (and (fboundp 'file-truename) (symbol-function 'file-truename))
+  "Native `file-truename' captured before this fallback overrides it.")
+
 (defvar files--native-buffer-string
   (and (fboundp 'buffer-string) (symbol-function 'buffer-string))
   "Native `buffer-string' captured before this fallback overrides it.")
@@ -800,12 +804,14 @@ the directory built so far."
       (if (= (length true) 0) "/" true))))
 
 (when (files--install-fallback-function-p 'file-truename)
-  (defun file-truename (filename &optional _counter _prev-dirs)
+  (defun file-truename (filename &optional counter prev-dirs)
     "Return the canonical name of FILENAME, resolving all symbolic links via
 readlink(2), component by component (interior links included).  COUNTER and
 PREV-DIRS are accepted for call compatibility and ignored.  `..' is only
 collapsed as far as the reader's `expand-file-name' does."
-    (files--truename-walk (files--expand-file-name filename) 0)))
+    (if files--native-file-truename
+        (funcall files--native-file-truename filename counter prev-dirs)
+      (files--truename-walk (files--expand-file-name filename) 0))))
 
 (defun files--toggle-case (str)
   "Return STR with the case of each ASCII letter toggled.
