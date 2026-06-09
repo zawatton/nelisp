@@ -87,6 +87,38 @@ Returns nil when no hook function applies."
               (emacs-capf--replace-region start end cp)))
           cands))))))
 
+;;; Curated source: Emacs-Lisp symbol completion ------------------------
+;;
+;; A concrete `completion-at-point' source (M6 curated workflow): complete
+;; the Emacs-Lisp symbol before point against the bound functions and
+;; variables.  Major modes add `emacs-capf-elisp-completion-at-point' to
+;; `completion-at-point-functions'.  Unsupported boundary: candidates are
+;; plain symbol names only -- no scope analysis, no signature/eldoc, no
+;; namespace-aware ranking.
+
+(defun emacs-capf-elisp-symbol-names (prefix)
+  "Return the bound function/variable symbol names that start with PREFIX."
+  (let (names)
+    (when (fboundp 'mapatoms)
+      (mapatoms (lambda (sym)
+                  (when (and (or (fboundp sym) (boundp sym))
+                             (string-prefix-p prefix (symbol-name sym)))
+                    (push (symbol-name sym) names)))))
+    names))
+
+(defun emacs-capf-elisp-completion-at-point ()
+  "`completion-at-point-functions' source for the Emacs-Lisp symbol at point.
+Returns (START END NAMES) where START..END is the symbol prefix before point
+and NAMES are matching bound symbols, or nil when there is no symbol prefix."
+  (let* ((point (nelisp-ec-point))
+         (before (nelisp-ec-buffer-substring (nelisp-ec-point-min) point))
+         (m (string-match "[A-Za-z0-9_-]+\\'" before)))
+    (when m
+      (let* ((prefix (substring before m))
+             (start (- point (length prefix))))
+        (when (> (length prefix) 0)
+          (list start point (emacs-capf-elisp-symbol-names prefix)))))))
+
 (provide 'emacs-capf)
 
 ;;; emacs-capf.el ends here
