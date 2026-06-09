@@ -194,6 +194,7 @@
                            "/tmp/nemacs-query-replace-regexp"
 	                           "/tmp/nemacs-rectangle-kill"
                            "/tmp/nemacs-bookmark-list"
+                           "/tmp/nemacs-abbrev-table"
 			                   "/tmp/nemacs-status"))
 	          (dirs '("/tmp/nemacs-buffer-store"
 	                  "/tmp/nemacs-buffer-file-store"
@@ -531,6 +532,11 @@
                                       "(fset 'compose-mail"
                                       "(fset 'compose-mail-other-window"
                                       "(fset 'compose-mail-other-frame"
+                                      "(fset 'calc-dispatch"
+                                      "(fset '2C-command"
+                                      "(fset '2C-two-columns"
+                                      "(fset '2C-associate-buffer"
+                                      "(fset '2C-split"
                                               "(fset 'project-find-dir"
                                               "(fset 'project-dired"
                                               "(fset 'project-any-command"
@@ -678,6 +684,14 @@
 		                      "(fset 'kill-word"
 	                      "(fset 'backward-kill-word"
 	                      "(fset 'zap-to-char"
+                          "(fset 'expand-abbrev"
+                          "(fset 'add-global-abbrev"
+                          "(fset 'add-mode-abbrev"
+                          "(fset 'inverse-add-global-abbrev"
+                          "(fset 'inverse-add-mode-abbrev"
+                          "(fset 'abbrev-prefix-mark"
+                          "(fset 'expand-jump-to-next-slot"
+                          "(fset 'expand-jump-to-previous-slot"
 	                      "(fset 'dabbrev-expand"
 	                      "(fset 'dabbrev-completion"
 	                      "(fset 'complete-symbol"
@@ -910,6 +924,24 @@
 		                      "C-M-u\\tbackward-up-list"
 		                      "M-(\\tinsert-parentheses"
 		                      "M-)\\tmove-past-close-and-reindent"
+                              "C-x '\\texpand-abbrev"
+                              "C-x a '\\texpand-abbrev"
+                              "C-x a e\\texpand-abbrev"
+                              "C-x a +\\tadd-mode-abbrev\\tAdd mode abbrev: "
+                              "C-x a C-a\\tadd-mode-abbrev\\tAdd mode abbrev: "
+                              "C-x a l\\tadd-mode-abbrev\\tAdd mode abbrev: "
+                              "C-x a g\\tadd-global-abbrev\\tAdd global abbrev: "
+                              "C-x a -\\tinverse-add-global-abbrev\\tExpansion for global abbrev: "
+                              "C-x a i g\\tinverse-add-global-abbrev\\tExpansion for global abbrev: "
+                              "C-x a i l\\tinverse-add-mode-abbrev\\tExpansion for mode abbrev: "
+                              "C-x a n\\texpand-jump-to-next-slot"
+                              "C-x a p\\texpand-jump-to-previous-slot"
+                              "C-x *\\tcalc-dispatch"
+                              "C-x 6\\t2C-command"
+                              "C-x 6 2\\t2C-two-columns"
+                              "C-x 6 b\\t2C-associate-buffer\\tAssociate buffer: "
+                              "C-x 6 s\\t2C-split"
+                              "M-'\\tabbrev-prefix-mark"
 		                      "M-/\\tdabbrev-expand"
 		                      "C-M-/\\tdabbrev-completion"
 		                      "C-M-i\\tcomplete-symbol"
@@ -1159,6 +1191,14 @@
 		                      "(if (equal cmd \"write-file\")"
                                       "(if (equal cmd \"frameset-to-register\")"
                                       "(if (equal cmd \"window-configuration-to-register\")"
+                                      "(if (equal cmd \"expand-abbrev\")"
+                                      "(if (equal cmd \"add-global-abbrev\")"
+                                      "(if (equal cmd \"add-mode-abbrev\")"
+                                      "(if (equal cmd \"inverse-add-global-abbrev\")"
+                                      "(if (equal cmd \"inverse-add-mode-abbrev\")"
+                                      "(if (equal cmd \"abbrev-prefix-mark\")"
+                                      "(if (equal cmd \"expand-jump-to-next-slot\")"
+                                      "(if (equal cmd \"expand-jump-to-previous-slot\")"
 					                      "(if (equal cmd \"switch-to-buffer\")"
 					                      "(if (equal cmd \"switch-to-buffer-other-window\")"
                                           "(if (equal cmd \"switch-to-buffer-other-frame\")"
@@ -1171,6 +1211,11 @@
                                       "(if (equal cmd \"compose-mail\")"
                                       "(if (equal cmd \"compose-mail-other-window\")"
                                       "(if (equal cmd \"compose-mail-other-frame\")"
+                                      "(if (equal cmd \"calc-dispatch\")"
+                                      "(if (equal cmd \"2C-command\")"
+                                      "(if (equal cmd \"2C-two-columns\")"
+                                      "(if (equal cmd \"2C-associate-buffer\")"
+                                      "(if (equal cmd \"2C-split\")"
 			                              "(if (equal cmd \"display-buffer\")"
 	                                      "(if (equal cmd \"display-buffer-other-frame\")"
                                       "(if (equal cmd \"delete-frame\")"
@@ -6324,6 +6369,93 @@
                            (nemacs-gui-file-bridge-runtime-test--slurp
                             "/tmp/nemacs-buf")))
             (nemacs-gui-file-bridge-runtime-test--should-point "M-)" 10)
+            (write-region "add-global-abbrev" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "hw" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "hello" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "5" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "hw\thello\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-abbrev-table")))
+            (write-region "expand-abbrev" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "hw" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "2" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "hello"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            (nemacs-gui-file-bridge-runtime-test--should-point "expand-abbrev" 5)
+            (write-region "add-mode-abbrev" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "mx" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "modeword" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "8" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "mx\tmodeword\n")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-abbrev-table")))
+            (write-region "inverse-add-global-abbrev" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "expanded" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "ix" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "2" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "ix\texpanded\n")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-abbrev-table")))
+            (write-region "inverse-add-mode-abbrev" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "mode-expanded" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "im" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "2" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "im\tmode-expanded\n")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-abbrev-table")))
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "M-'" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "foo bar" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "7" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (= 4 (nemacs-gui-file-bridge-runtime-test--mark-value)))
+            (write-region "expand-jump-to-next-slot" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "a <> b <> c" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (nemacs-gui-file-bridge-runtime-test--should-point
+             "expand-jump-to-next-slot" 3)
+            (write-region "expand-jump-to-previous-slot" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "a <> b <> c" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "11" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (nemacs-gui-file-bridge-runtime-test--should-point
+             "expand-jump-to-previous-slot" 8)
             (write-region "dabbrev-expand" nil "/tmp/nemacs-cmd" nil 'silent)
             (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
             (write-region "alpha alphabet al" nil "/tmp/nemacs-buf" nil 'silent)
@@ -6390,6 +6522,82 @@
                            (nemacs-gui-file-bridge-runtime-test--slurp
                             "/tmp/nemacs-buf")))
             (nemacs-gui-file-bridge-runtime-test--should-point "C-M-i" 23)
+            (write-region "calc-dispatch" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "source\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Calculator*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (string-match-p
+                     (regexp-quote "Calculator\n")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (write-region "2C-two-columns" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "left\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Two-Column*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (string-match-p
+                     (regexp-quote "Left buffer: main\nRight buffer: main")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (should (equal "vertical"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-layout")))
+            (should (equal "1"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-selected")))
+            (should (equal "1"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-read-only")))
+            (write-region "right\n" nil "/tmp/nemacs-buffer-store/other" nil 'silent)
+            (write-region "2C-associate-buffer" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "other" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "left\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "Right buffer: other")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (should (string-match-p
+                     (regexp-quote "--- right ---\nright\n")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (write-region "2C-split" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "split\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "vertical"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-layout")))
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-x 6" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "command\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Two-Column*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
             (write-region "count-words-region" nil "/tmp/nemacs-cmd" nil 'silent)
             (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
             (write-region "one two three\n" nil "/tmp/nemacs-buf" nil 'silent)
