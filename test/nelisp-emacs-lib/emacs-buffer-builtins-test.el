@@ -11,6 +11,7 @@
 
 (require 'ert)
 (require 'emacs-buffer-builtins)
+(require 'emacs-buffer)
 (require 'cl-lib)
 
 (defmacro emacs-buffer-builtins-test--with-fresh-world (&rest body)
@@ -36,7 +37,65 @@
 (ert-deftest emacs-buffer-builtins-test/require-loads-cleanly ()
   (should (featurep 'emacs-buffer-builtins))
   (should (fboundp 'buffer-string))
-  (should (fboundp 'with-current-buffer)))
+  (should (fboundp 'with-current-buffer))
+  (dolist (sym '(default-value default-boundp set-default get-char-property
+                 invisible-p next-property-change previous-property-change
+                 next-single-property-change previous-single-property-change
+                 next-single-char-property-change
+                 previous-single-char-property-change
+                 insert-and-inherit char-before char-after following-char
+                 preceding-char subst-char-in-region
+                 buffer-modified-tick buffer-chars-modified-tick))
+    (should (fboundp sym))))
+
+(ert-deftest emacs-buffer-builtins-test/default-and-char-property-bridges-in-source ()
+  (let ((file (locate-library "emacs-buffer-builtins")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (needle '("(defalias 'default-value #'emacs-buffer-default-value"
+                        "(defalias 'default-boundp #'emacs-buffer-default-boundp"
+                        "(defalias 'set-default #'emacs-buffer-set-default"
+                        "(defun get-char-property"
+                        "(defalias 'invisible-p #'emacs-buffer-builtins-invisible-p"
+                        "(defalias 'next-single-char-property-change"
+                        "(defalias 'previous-single-char-property-change"
+                        "(insert-and-inherit         . nelisp-ec-insert)"
+                        "(defalias 'subst-char-in-region"
+                        "(defalias 'buffer-modified-tick"
+                        "(defalias 'buffer-chars-modified-tick"))
+        (goto-char (point-min))
+        (should (search-forward needle nil t))))))
+
+(ert-deftest emacs-buffer-builtins-test/invisible-p-helper-matches-core-shapes ()
+  (let ((buffer-invisibility-spec t))
+    (should (eq t (emacs-buffer-builtins-invisible-p 'foo)))
+    (should (null (emacs-buffer-builtins-invisible-p nil))))
+  (let ((buffer-invisibility-spec nil))
+    (should (null (emacs-buffer-builtins-invisible-p 'foo))))
+  (let ((buffer-invisibility-spec '(foo (bar . t) baz)))
+    (should (eq t (emacs-buffer-builtins-invisible-p 'foo)))
+    (should (= 2 (emacs-buffer-builtins-invisible-p 'bar)))
+    (should (eq t (emacs-buffer-builtins-invisible-p 'baz)))
+    (should (null (emacs-buffer-builtins-invisible-p 'qux)))
+    (should (eq t (emacs-buffer-builtins-invisible-p '(foo qux))))))
+
+(ert-deftest emacs-buffer-builtins-test/property-change-bridges-use-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "props")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (emacs-buffer-put-text-property 3 5 'face 'bold buf)
+        (should (= 3 (emacs-buffer-builtins-next-property-change 1 buf nil)))
+        (should (= 5 (emacs-buffer-builtins-next-property-change 3 buf nil)))
+        (should (= 5 (emacs-buffer-builtins-next-single-property-change
+                      3 'face buf nil)))
+        (should (= 5 (emacs-buffer-builtins-previous-property-change
+                      6 buf nil)))
+        (should (= 5 (emacs-buffer-builtins-previous-single-property-change
+                      5 'face buf nil)))
+        (should (= 9 (emacs-buffer-builtins-next-single-property-change
+                      1 'face "string-object" 9)))))))
 
 (ert-deftest emacs-buffer-builtins-test/ensure-initial-buffer-creates-current ()
   (emacs-buffer-builtins-test--with-fresh-world
@@ -125,6 +184,34 @@
         (should (= 1 (nelisp-ec-buffer-text-tick buf)))
         (should (nelisp-ec-buffer-modified-p buf))
         (should (equal "a" (nelisp-ec-buffer-string)))))))
+
+(ert-deftest emacs-buffer-builtins-test/insert-accepts-character-codes ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "insert-char")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "a" ?b "c")
+        (should (equal "abc" (nelisp-ec-buffer-string)))
+        (should (= 4 (nelisp-ec-point)))
+        (should (= 3 (nelisp-ec-buffer-text-tick buf)))))))
+
+(ert-deftest emacs-buffer-builtins-test/char-accessors-and-subst-use-ec-buffer ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "chars")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abacad")
+        (nelisp-ec-goto-char 3)
+        (should (= ?b (emacs-buffer-builtins-char-before)))
+        (should (= ?a (emacs-buffer-builtins-char-after)))
+        (should (= ?b (emacs-buffer-builtins-preceding-char)))
+        (should (= ?a (emacs-buffer-builtins-following-char)))
+        (should (null (emacs-buffer-builtins-char-before
+                       (nelisp-ec-point-min))))
+        (should (null (emacs-buffer-builtins-char-after
+                       (nelisp-ec-point-max))))
+        (emacs-buffer-builtins-subst-char-in-region
+         1 (nelisp-ec-point-max) ?a ?x)
+        (should (equal "xbxcxd" (nelisp-ec-buffer-string)))
+        (should (= 3 (nelisp-ec-point)))))))
 
 ;;;; C. with-current-buffer restores selection
 

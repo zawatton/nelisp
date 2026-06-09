@@ -60,6 +60,15 @@ DOCSTRING is accepted for arglist parity and currently ignored
       (fset symbol definition))
     symbol))
 
+(unless (and (fboundp 'purecopy)
+             (not (get 'purecopy 'emacs-stub-bulk)))
+  (defun purecopy (object)
+    "Standalone polyfill: return OBJECT unchanged.
+NeLisp has no pure storage area, so copying into one has no runtime
+effect."
+    object)
+  (put 'purecopy 'emacs-stub-bulk nil))
+
 ;; `declare-function' — Emacs byte-compiler hint, signalling that a
 ;; function will be defined elsewhere at runtime.  Has no execution
 ;; semantics under interpreted Elisp.  Implementing as a no-op macro is
@@ -69,6 +78,39 @@ DOCSTRING is accepted for arglist parity and currently ignored
     "Polyfill: no-op macro (NeLisp standalone has no byte compiler)."
     (ignore fn file arglist fileonly)
     nil))
+
+(unless (and (fboundp 'format-message)
+             (not (get 'format-message 'emacs-stub-bulk)))
+  (defun format-message (string &rest objects)
+    "Standalone polyfill for `format-message'.
+Routes through `format' and intentionally omits Emacs's text-quoting
+substitution."
+    (apply #'format string objects))
+  (put 'format-message 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'with-local-quit)
+             (not (get 'with-local-quit 'emacs-stub-bulk)))
+  (defmacro with-local-quit (&rest body)
+    "Standalone polyfill: evaluate BODY with quits locally enabled."
+    (declare (indent 0) (debug (body)))
+    (cons 'let (cons '((inhibit-quit nil)) body)))
+  (put 'with-local-quit 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'with-demoted-errors)
+             (not (get 'with-demoted-errors 'emacs-stub-bulk)))
+  (defmacro with-demoted-errors (format &rest body)
+    "Standalone polyfill: run BODY and turn `error' signals into messages."
+    (declare (indent 1) (debug (form body)))
+    `(condition-case err
+         (progn ,@body)
+       (error
+        (let ((msg (if (fboundp 'error-message-string)
+                       (error-message-string err)
+                     (format "%S" err))))
+          (when (fboundp 'message)
+            (message ,format msg))
+          nil))))
+  (put 'with-demoted-errors 'emacs-stub-bulk nil))
 
 ;; `interactive' — Emacs special form marking a defun as interactively
 ;; callable + parsing arg-spec for `M-x'.  Under NeLisp standalone there

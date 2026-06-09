@@ -83,6 +83,99 @@
   "Return non-nil when the line containing NEEDLE is hidden."
   (org-outline--invisible-p (emacs-org-outline-test--line-start needle)))
 
+(ert-deftest org-list-bootstrap-callables-are-present ()
+  (should (featurep 'org-list))
+  (should (stringp (org-item-re)))
+  (should (string-prefix-p "^" (org-item-beginning-re)))
+  (should (fboundp 'org-list-get-item-begin))
+  (should (fboundp 'org-list-get-first-item))
+  (should (fboundp 'org-list-checkbox-radio-mode))
+  (should (fboundp 'org-list-to-lisp))
+  (should (fboundp 'org-toggle-checkbox)))
+
+(ert-deftest org-footnote-bootstrap-vars-are-present ()
+  (should (featurep 'org-footnote))
+  (should (stringp org-footnote-re))
+  (should (stringp org-footnote-definition-re))
+  (should (equal org-footnote-forbidden-blocks
+                 '("comment" "example" "export" "src"))))
+
+(ert-deftest org-entities-bootstrap-callables-are-present ()
+  (should (featurep 'org-entities))
+  (should (org-entities--user-safe-p nil))
+  (should (org-entities--user-safe-p
+           '(("demo" "\\demo{}" nil "&demo;" "demo" "demo" "demo"))))
+  (should-not (org-entities--user-safe-p '(("bad name" "" nil "" "" "" ""))))
+  (should (null (org-entity-get "missing")))
+  (should (fboundp 'org-entities-create-table))
+  (should (fboundp 'org-entities-help)))
+
+(ert-deftest org-element-ast-bootstrap-properties-work ()
+  (let ((node (list 'demo '(:key "old"))))
+    (should (equal (org-element-property :key node) "old"))
+    (should (eq (org-element-put-property node :key "new") node))
+    (should (equal (org-element-property :key node) "new"))
+    (should (equal (org-element-put-property-2 :extra "v" node) node))
+    (should (equal (org-element-property-raw :extra node) "v"))
+    (should (null (org-element-parent node)))))
+
+(ert-deftest org-macro-bootstrap-callables-are-present ()
+  (should (featurep 'org-macro))
+  (should (boundp 'org-macro-templates))
+  (should (boundp 'org-macro--counter-table))
+  (should (equal (org-macro--makeargs "$2 $1") '(&optional $1 $2 &rest _)))
+  (should (equal (org-macro--set-templates
+                  '(("name" . "old") ("name" . "new") ("empty")))
+                 '(("name" . "new") ("empty" . ""))))
+  (org-macro--counter-initialize)
+  (should (= 1 (org-macro--counter-increment " item ")))
+  (should (= 1 (org-macro--counter-increment "item" "-")))
+  (should (= 5 (org-macro--counter-increment "item" "5")))
+  (should (equal (org-macro-extract-arguments
+                  (org-macro-escape-arguments "a" "b"))
+                 '("a" "b")))
+  (should (equal (org-macro-expand '(:key "demo" :args ("x" "y"))
+                                   '(("demo" . "$2/$1")))
+                 "y/x"))
+  (org-macro-initialize-templates '(("demo" . "$1")))
+  (should (assoc "demo" org-macro-templates)))
+
+(ert-deftest ob-eval-bootstrap-callables-are-present ()
+  (should (featurep 'ob-eval))
+  (should (boundp 'org-babel-error-buffer-name))
+  (dolist (symbol '(org-babel-eval-error-notify
+                    org-babel-eval
+                    org-babel-eval-read-file
+                    org-babel--shell-command-on-region
+                    org-babel--write-temp-buffer-input-file
+                    org-babel-eval-wipe-error-buffer
+                    org-babel--get-shell-file-name))
+    (should (fboundp symbol)))
+  (should (stringp (org-babel--get-shell-file-name)))
+  (emacs-org-outline-test--with-temp-file path "babel.txt" "payload"
+    (should (equal (org-babel-eval-read-file path) "payload"))))
+
+(ert-deftest org-faces-bootstrap-tag-face-callable-is-present ()
+  (should (boundp 'org-level-faces))
+  (should (boundp 'org-todo-keyword-faces))
+  (should (boundp 'org-tag-faces))
+  (should (boundp 'org-tags-special-faces-re))
+  (should (fboundp 'org-set-tag-faces))
+  (let ((old-tag-faces org-tag-faces)
+        (old-tags-special-faces-re org-tags-special-faces-re))
+    (unwind-protect
+        (progn
+          (org-set-tag-faces 'org-tag-faces
+                             '(("work" . bold) ("home" . italic)))
+          (should (equal org-tag-faces
+                         '(("work" . bold) ("home" . italic))))
+          (should (string-match-p org-tags-special-faces-re ":work:"))
+          (org-set-tag-faces 'org-tag-faces nil)
+          (should (null org-tag-faces))
+          (should (null org-tags-special-faces-re)))
+      (setq org-tag-faces old-tag-faces)
+      (setq org-tags-special-faces-re old-tags-special-faces-re))))
+
 (ert-deftest org-mode-dispatches-on-org-extension ()
   (emacs-org-outline-test--with-fresh-world
     (should (equal 'org-mode

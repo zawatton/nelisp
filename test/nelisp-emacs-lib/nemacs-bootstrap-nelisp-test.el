@@ -273,15 +273,23 @@ NeLisp v2 file syscall bridge (`nl-syscall-read-file' /
                (concat
                 "(let ((bound (mapcar (function fboundp)"
                 "                     (list (quote find-file-noselect)"
+                "                           (quote find-file)"
                 "                           (quote save-buffer)"
+                "                           (quote write-file)"
                 "                           (quote write-region)"
                 "                           (quote insert-file-contents)"
                 "                           (quote buffer-file-name)"
-                "                           (quote set-visited-file-name)))))"
+                "                           (quote set-visited-file-name))))"
+                "      (commands (mapcar (function commandp)"
+                "                        (list (quote find-file)"
+                "                              (quote save-buffer)"
+                "                              (quote write-file)))))"
                 "  (if (fboundp (quote nelisp--write-stdout-bytes))"
                 "      (nelisp--write-stdout-bytes"
-                "       (if (memq nil bound) \"BOUND=nil\\n\" \"BOUND=t\\n\"))"
-                "    (princ (if (memq nil bound) \"BOUND=nil\\n\" \"BOUND=t\\n\"))))"))))
+                "       (if (or (memq nil bound) (memq nil commands))"
+                "           \"BOUND=nil\\n\" \"BOUND=t\\n\"))"
+                "    (princ (if (or (memq nil bound) (memq nil commands))"
+                "               \"BOUND=nil\\n\" \"BOUND=t\\n\"))))"))))
      (should (string-match-p "BOUND=t" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/file-write-read-round-trip ()

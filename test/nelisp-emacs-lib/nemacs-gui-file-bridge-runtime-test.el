@@ -153,8 +153,11 @@
 				                   "/tmp/nemacs-window-start"
 	                   "/tmp/nemacs-window-hscroll"
 	                   "/tmp/nemacs-window-split-delta"
+                       "/tmp/nemacs-window-dedicated"
+                       "/tmp/nemacs-side-windows-visible"
 	                                   "/tmp/nemacs-tab-state"
 	                                   "/tmp/nemacs-frame-state"
+                                       "/tmp/nemacs-frame-undo-state"
 						                   "/tmp/nemacs-cursor"
 					                   "/tmp/nemacs-modeline"
 							                   "/tmp/nemacs-prefix-arg"
@@ -240,6 +243,10 @@
 		             (write-region "0" nil "/tmp/nemacs-window-hscroll" nil 'silent))
 		           (unless (file-exists-p "/tmp/nemacs-window-split-delta")
 		             (write-region "0" nil "/tmp/nemacs-window-split-delta" nil 'silent))
+                   (unless (file-exists-p "/tmp/nemacs-window-dedicated")
+                     (write-region "0" nil "/tmp/nemacs-window-dedicated" nil 'silent))
+                   (unless (file-exists-p "/tmp/nemacs-side-windows-visible")
+                     (write-region "0" nil "/tmp/nemacs-side-windows-visible" nil 'silent))
 	                   (unless (file-exists-p "/tmp/nemacs-tab-state")
 	                     (write-region "0\t1\t1" nil "/tmp/nemacs-tab-state" nil 'silent))
 	                   (unless (file-exists-p "/tmp/nemacs-frame-state")
@@ -493,6 +500,8 @@
                                       "(fset 'insert-buffer"
                                       "(fset 'point-to-register"
                                       "(fset 'jump-to-register"
+                                      "(fset 'frameset-to-register"
+                                      "(fset 'window-configuration-to-register"
                                       "(fset 'copy-to-register"
                                       "(fset 'insert-register"
                                       "(fset 'number-to-register"
@@ -519,6 +528,9 @@
                                       "(fset 'dired-other-window"
                                       "(fset 'dired-other-frame"
                                               "(fset 'dired-other-tab"
+                                      "(fset 'compose-mail"
+                                      "(fset 'compose-mail-other-window"
+                                      "(fset 'compose-mail-other-frame"
                                               "(fset 'project-find-dir"
                                               "(fset 'project-dired"
                                               "(fset 'project-any-command"
@@ -578,6 +590,10 @@
                           "(fset 'files--write-transport-tab-state"
                           "(fset 'files--read-transport-frame-state"
                           "(fset 'files--write-transport-frame-state"
+                          "(fset 'files--read-transport-window-dedicated-state"
+                          "(fset 'files--write-transport-window-dedicated-state"
+                          "(fset 'files--read-transport-side-windows-state"
+                          "(fset 'files--write-transport-side-windows-state"
                           "(fset 'files--read-transport-frame-undo-state"
                           "(fset 'files--write-transport-frame-undo-state"
                           "(fset 'files--read-transport-tab-undo-state"
@@ -634,6 +650,13 @@
 		                      "(fset 'balance-windows"
 		                      "(fset 'shrink-window-if-larger-than-buffer"
 		                      "(fset 'fit-window-to-buffer"
+                          "(fset 'delete-windows-on"
+                          "(fset 'split-root-window-below"
+                          "(fset 'split-root-window-right"
+                          "(fset 'tear-off-window"
+                          "(fset 'toggle-window-dedicated"
+                          "(fset 'quit-window"
+                          "(fset 'window-toggle-side-windows"
 		                      "(fset 'enlarge-window"
 		                      "(fset 'shrink-window-horizontally"
 		                      "(fset 'enlarge-window-horizontally"
@@ -791,6 +814,8 @@
                       "nemacs-point"
 	                      "nemacs-mark"
 	                      "nemacs-window-hscroll"
+                          "nemacs-window-dedicated"
+                          "nemacs-side-windows-visible"
 	                          "nemacs-tab-state"
 	                          "nemacs-frame-state"
                               "nemacs-frame-undo-state"
@@ -838,6 +863,9 @@
 	                                  "C-x 4 d\\tdired-other-window\\tDired directory in other window: "
                                       "C-x 5 d\\tdired-other-frame\\tDired directory in other frame: "
 	                                  "C-x t d\\tdired-other-tab\\tDired directory in other tab: "
+                                      "C-x m\\tcompose-mail"
+                                      "C-x 4 m\\tcompose-mail-other-window"
+                                      "C-x 5 m\\tcompose-mail-other-frame"
 				                      "C-x C-w\\twrite-file\\tWrite file: "
 				                      "C-x C-s\\tsave-buffer"
                                       "C-x C-j\\tdired-jump"
@@ -899,6 +927,13 @@
 				                      "C-x +\\tbalance-windows"
 				                      "C-x -\\tshrink-window-if-larger-than-buffer"
                                       "C-x w -\\tfit-window-to-buffer"
+                                      "C-x w 0\\tdelete-windows-on\\tDelete windows on buffer: "
+                                      "C-x w 2\\tsplit-root-window-below"
+                                      "C-x w 3\\tsplit-root-window-right"
+                                      "C-x w ^ f\\ttear-off-window"
+                                      "C-x w d\\ttoggle-window-dedicated"
+                                      "C-x w q\\tquit-window"
+                                      "C-x w s\\twindow-toggle-side-windows"
 				                      "C-x ^\\tenlarge-window"
 				                      "C-x {\\tshrink-window-horizontally"
 				                      "C-x }\\tenlarge-window-horizontally"
@@ -958,6 +993,8 @@
                                   "C-x r C-@\\tpoint-to-register\\tPoint to register: "
                                   "C-x r C-SPC\\tpoint-to-register\\tPoint to register: "
                                   "C-x r j\\tjump-to-register\\tJump to register: "
+                                  "C-x r f\\tframeset-to-register\\tFrameset to register: "
+                                  "C-x r w\\twindow-configuration-to-register\\tWindow configuration to register: "
                                   "C-x r s\\tcopy-to-register\\tCopy to register: "
                                   "C-x r x\\tcopy-to-register\\tCopy to register: "
                                   "C-x r i\\tinsert-register\\tInsert register: "
@@ -1120,6 +1157,8 @@
 	                                      "(if (equal cmd \"add-change-log-entry-other-window\")"
 			                      "(if (equal cmd \"save-buffer\")"
 		                      "(if (equal cmd \"write-file\")"
+                                      "(if (equal cmd \"frameset-to-register\")"
+                                      "(if (equal cmd \"window-configuration-to-register\")"
 					                      "(if (equal cmd \"switch-to-buffer\")"
 					                      "(if (equal cmd \"switch-to-buffer-other-window\")"
                                           "(if (equal cmd \"switch-to-buffer-other-frame\")"
@@ -1129,6 +1168,9 @@
 	                                          "(if (equal cmd \"imenu\")"
 	                                      "(if (equal cmd \"dired-other-frame\")"
 		                                      "(if (equal cmd \"dired-other-tab\")"
+                                      "(if (equal cmd \"compose-mail\")"
+                                      "(if (equal cmd \"compose-mail-other-window\")"
+                                      "(if (equal cmd \"compose-mail-other-frame\")"
 			                              "(if (equal cmd \"display-buffer\")"
 	                                      "(if (equal cmd \"display-buffer-other-frame\")"
                                       "(if (equal cmd \"delete-frame\")"
@@ -1149,6 +1191,13 @@
 			                      "(if (equal cmd \"balance-windows\")"
 			                      "(if (equal cmd \"shrink-window-if-larger-than-buffer\")"
                                   "(if (equal cmd \"fit-window-to-buffer\")"
+                                  "(if (equal cmd \"delete-windows-on\")"
+                                  "(if (equal cmd \"split-root-window-below\")"
+                                  "(if (equal cmd \"split-root-window-right\")"
+                                  "(if (equal cmd \"tear-off-window\")"
+                                  "(if (equal cmd \"toggle-window-dedicated\")"
+                                  "(if (equal cmd \"quit-window\")"
+                                  "(if (equal cmd \"window-toggle-side-windows\")"
 			                      "(if (equal cmd \"enlarge-window\")"
 			                      "(if (equal cmd \"shrink-window-horizontally\")"
 			                      "(if (equal cmd \"enlarge-window-horizontally\")"
@@ -2109,6 +2158,51 @@
             (should (equal "00001"
                            (nemacs-gui-file-bridge-runtime-test--slurp
                             "/tmp/nemacs-window-start")))
+            (write-region "window-configuration-to-register" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "w" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "vertical" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "1" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "3" nil "/tmp/nemacs-window-split-delta" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "window\nvertical\n1\n3\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-register-store/119")))
+            (write-region "jump-to-register" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "w" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-split-delta" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "vertical"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-layout")))
+            (should (equal "1"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-selected")))
+            (should (equal "3"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-split-delta")))
+            (write-region "frameset-to-register" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "f" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "1\t3\t3" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "frame\n1\t3\t3"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-register-store/102")))
+            (write-region "jump-to-register" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "f" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "0\t1\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "1\t3\t3"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-state")))
             (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
             (write-region "C-x r SPC" nil "/tmp/nemacs-keys" nil 'silent)
             (write-region "b" nil "/tmp/nemacs-arg" nil 'silent)
@@ -4382,6 +4476,81 @@
                               "/tmp/nemacs-frame-state"))))
             (should (= 4 (nemacs-gui-file-bridge-runtime-test--point-value)))
             (should (= 2 (nemacs-gui-file-bridge-runtime-test--mark-value)))
+            (write-region "compose-mail" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "main text\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "/tmp/nemacs-main-file.txt" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main\n" nil "/tmp/nemacs-buffer-list" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*mail*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (equal "To: \nSubject: \n\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            (should (equal ""
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-file")))
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-read-only")))
+            (should (string-match-p
+                     (regexp-quote "*mail*\n")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buffer-list")))
+            (should (= 4 (nemacs-gui-file-bridge-runtime-test--point-value)))
+            (should (= 4 (nemacs-gui-file-bridge-runtime-test--mark-value)))
+            (write-region "compose-mail-other-window" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "main text\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "/tmp/nemacs-main-file.txt" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main\n" nil "/tmp/nemacs-buffer-list" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*mail*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (equal "vertical"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-layout")))
+            (ert-info ("compose-mail-other-window selects other window")
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected"))))
+            (write-region "compose-mail-other-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "main text\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "/tmp/nemacs-main-file.txt" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main\n" nil "/tmp/nemacs-buffer-list" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0\t1\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*mail*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (equal "single"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-layout")))
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-selected")))
+            (ert-info ("compose-mail-other-frame selects a new frame")
+              (should (equal "1\t2\t2"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-state"))))
             (write-region "project buffer\n" nil "/tmp/nemacs-buffer-store/proj" nil 'silent)
             (write-region "/tmp/nemacs-project-switch-test/proj.txt"
                           nil "/tmp/nemacs-buffer-file-store/proj" nil 'silent)
@@ -5104,9 +5273,11 @@
             (nemacs-gui-file-bridge-runtime-test--run-ok
              reader image "(nemacs-gui-file-bridge-run)")
             (should (equal "00000"
-                           (nemacs-gui-file-bridge-runtime-test--slurp
-                            "/tmp/nemacs-window-hscroll")))
-            (write-region "recenter-top-bottom" nil "/tmp/nemacs-cmd" nil 'silent)
+	                           (nemacs-gui-file-bridge-runtime-test--slurp
+	                            "/tmp/nemacs-window-hscroll")))
+            (write-region "00\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n"
+                          nil "/tmp/nemacs-buf" nil 'silent)
+	            (write-region "recenter-top-bottom" nil "/tmp/nemacs-cmd" nil 'silent)
             (write-region "61" nil "/tmp/nemacs-point" nil 'silent)
             (write-region "0" nil "/tmp/nemacs-window-start" nil 'silent)
             (nemacs-gui-file-bridge-runtime-test--run-ok
@@ -5884,6 +6055,96 @@
             (should (equal "0"
                            (nemacs-gui-file-bridge-runtime-test--slurp
                             "/tmp/nemacs-window-selected")))
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "split-root-window-right" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("split-root-window-right reuses vertical GUI window transport")
+              (should (equal "vertical"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout"))))
+            (write-region "split-root-window-below" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("split-root-window-below reuses horizontal GUI window transport")
+              (should (equal "horizontal"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout"))))
+            (write-region "1" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "7" nil "/tmp/nemacs-window-split-delta" nil 'silent)
+            (write-region "delete-windows-on" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("delete-windows-on collapses the current two-window facade")
+              (should (equal "single"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "0"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "0"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-split-delta"))))
+            (write-region "toggle-window-dedicated" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("toggle-window-dedicated writes the dedicated transport flag")
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-dedicated"))))
+            (write-region "toggle-window-dedicated" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-window-dedicated")))
+            (write-region "window-toggle-side-windows" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("window-toggle-side-windows writes the side-window visibility flag")
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-side-windows-visible"))))
+            (write-region "window-toggle-side-windows" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-side-windows-visible")))
+            (write-region "vertical" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "1" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "quit-window" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("quit-window removes the selected two-window facade pane")
+              (should (equal "single"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "0"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected"))))
+            (write-region "vertical" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "1" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0\t1\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (write-region "tear-off-window" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("tear-off-window transfers the selected window facade to a frame")
+              (should (equal "single"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "1\t2\t2"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-state"))))
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "C-x w 3" nil "/tmp/nemacs-keys" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (ert-info ("raw C-x w 3 dispatches through the runtime keymap")
+              (should (equal "vertical"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout"))))
             (write-region "one two_three 4\n" nil "/tmp/nemacs-buf" nil 'silent)
             (write-region "forward-word" nil "/tmp/nemacs-cmd" nil 'silent)
             (write-region "0" nil "/tmp/nemacs-point" nil 'silent)

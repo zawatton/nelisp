@@ -366,7 +366,12 @@ Bound by `call-interactively' from `prefix-arg' before it dispatches.")
    ((null arg) 1)
    ((eq arg '-) -1)
    ((integerp arg) arg)
-   ((consp arg) (or (car arg) 1))
+   ((consp arg)
+    (let ((head (car arg)))
+      (cond
+       ((eq head '-) -1)
+       ((integerp head) head)
+       (t 1))))
    (t 1)))
 
 (defun emacs-command-loop--build-args (spec)

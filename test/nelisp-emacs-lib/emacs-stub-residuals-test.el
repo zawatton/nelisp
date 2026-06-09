@@ -84,8 +84,19 @@
                   line-number-display-width
                   syntax-propertize-rules cc-require cc-provide
                   version< version<= combine-change-calls define-advice
-                  c-add-style))
+                  c-add-style
+                  android-read-build-system android-read-build-time
+                  emacs-version version
+                  emacs-repository-version-git
+                  emacs-repository-version-android
+                  emacs-repository-get-version
+                  emacs-repository-branch-android
+                  emacs-repository-branch-git
+                  emacs-repository-get-branch
+                  emacs-bzr-get-version
+                  make-help-screen help--help-screen))
     (should (fboundp sym)))
+  (should (featurep 'help-macro))
   (should (boundp 'emacs-display-system))
   (should (boundp 'emacs-basic-display))
   (should (boundp 'initial-window-system))
@@ -98,7 +109,9 @@
   (should (boundp 'outline-mode-syntax-table))
   (should (boundp 'text-mode-syntax-table))
   (should (integerp emacs-major-version))
-  (should (integerp emacs-minor-version)))
+  (should (integerp emacs-minor-version))
+  (should (boundp 'three-step-help))
+  (should (boundp 'help-for-help-use-variable-pitch)))
 
 (ert-deftest emacs-stub-residuals-test/display-line-number-core-defaults ()
   (should (integerp (line-number-display-width)))
@@ -314,6 +327,18 @@ must be able to overwrite early bootstrap stubs with real substrates."
         (should (string-match-p "defmacro define-advice" source))
         (should (string-match-p "defun c-add-style" source))
         (should (string-match-p "cpp-font-lock-keywords" source))))))
+
+(ert-deftest emacs-stub-residuals-test/help-macro-shims-present ()
+  (let ((file (emacs-stub-residuals-test--source-file "emacs-stub")))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((source (buffer-string)))
+        (should (string-match-p "defvar three-step-help" source))
+        (should (string-match-p "defvar help-for-help-use-variable-pitch" source))
+        (should (string-match-p "defun help--help-screen" source))
+        (should (string-match-p "defmacro make-help-screen" source))
+        (should (string-match-p "provide 'help-macro" source))))))
 
 (ert-deftest emacs-stub-residuals-test/version-compare-numeric-components ()
   (should (= -1 (emacs-stub--version-compare "27.1" "29")))

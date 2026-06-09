@@ -1,0 +1,127 @@
+#+TITLE: Runtime Callable Tiers
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-08
+
+* 0. Purpose
+
+This page fixes the runtime callable scope after the vendor standalone count
+proof.  The count proof and the callable surface are different deliverables:
+
+- The vendor proof may use load-only/drop-only handling for late vendor files.
+- Runtime callable progress is measured by user-visible editor behavior.
+- The next milestone is not "all missing symbols"; it is "Tier 1 UI/editor
+  commands work through the pure-Elisp UI bridge."
+
+* 1. Tier 1: UI/editor/file commands
+
+Tier 1 is the product surface.  These functions must have real semantics in
+=nelisp-emacs= because the UI repository only transports input and renders the
+returned state.
+
+| Area | Required callable surface |
+|------+---------------------------|
+| File visit/save | =find-file=, =find-file-noselect=, =save-buffer=, =write-file= |
+| Buffer switching | =switch-to-buffer=, =kill-buffer= |
+| File I/O primitives | =insert-file-contents=, =write-region= |
+| Editing | =self-insert-command=, deletion, movement, newline, region, kill/yank, undo |
+| Command dispatch | =command-execute=, =call-interactively=, minibuffer command arguments |
+| UI bridge result | updated buffer text, point, mark, modified state, visited filename, selected buffer/window, status/error |
+
+Tier 1 success is proved by a pure-Elisp UI smoke:
+
+1. =find-file= opens a file.
+2. The visited buffer is displayed.
+3. Text can be edited.
+4. =save-buffer= writes the visited file.
+5. =write-file= saves to another filename and updates buffer metadata.
+6. Minibuffer-equivalent input reaches command arguments.
+7. Errors are returned to the UI as status/error data instead of being hidden.
+
+Current proof anchors:
+
+- =test/emacs-fileio-test.el= and =test/emacs-fileio-builtins-test.el= cover
+  the regular =find-file=, =find-file-noselect=, =save-buffer=,
+  =write-file=, =insert-file-contents=, and =write-region= behavior.
+- =test/nemacs-main-test.el= covers TUI command prompt dispatch for
+  =find-file= and buffer switching.
+- =test/nemacs-gui-file-bridge-runtime-test.el= pins the pure-Elisp GUI bridge
+  command/transport/status contract; its standalone smoke is opt-in because it
+  requires a built NeLisp runtime reader and fixed =/tmp/nemacs-*= transport.
+- =make test-nemacs-gui-bridge= is the product smoke for the pure-Elisp GUI
+  bridge.  It drives file visit, display transport, editing, =save-buffer=,
+  =write-file=, minibuffer/M-x input, help/status, and error/status paths
+  through the standalone reader.
+
+* 2. Tier 2: load-only proof surface
+
+Tier 2 files are allowed to stay load-only/drop-only for the standalone count
+proof.  They are not counted as runtime callable gaps unless a Tier 1 smoke or
+real user workflow starts depending on their behavior.
+
+Examples:
+
+- generated loaddefs/autoload files,
+- obsolete compatibility files,
+- terminal/language/data tables,
+- late UI helpers whose value is feature/load compatibility rather than command
+  behavior,
+- proof-only vendor files currently listed in
+  =standalone-source-normalize-dropped-source-files=.
+
+Rule: a Tier 2 file can provide proof stability without installing callable
+functions.  If a command from that file becomes product-visible, promote only
+that command to Tier 1 or Tier 3; do not promote the entire subsystem by
+default.
+
+Current proof anchor:
+
+- =bin/vendor-coverage= writes =build/vendor-coverage-missing.tsv=.  A
+  header-only output means there are no currently ranked truly-missing vendor
+  func/macro symbols after subtracting the substrate and NeLisp stdlib.
+
+* 3. Tier 3: subsystem facades
+
+Tier 3 is for large subsystems where full implementation would dominate the
+schedule.  The first deliverable is a facade, not complete behavior.
+
+Examples:
+
+| Subsystem | First facade contract |
+|-----------+-----------------------|
+| =widget= | =(require 'widget)= and =(provide 'widget)= are stable; principal entrypoints are =fboundp=; unsupported operations fail explicitly or no-op predictably |
+| =calc= | load/provide compatibility plus minimal entrypoints needed by UI or help flows |
+| =gnus= | facade for feature/load and selected message helpers only |
+| =info= | enough facade for command discovery/help; full Info navigation is separate |
+| =treesit= | explicit unsupported facade until parser/runtime support exists |
+| =nxml=, =url=, =vc= | minimal entrypoints needed by callers; no broad subsystem claim |
+
+Tier 3 functions should either:
+
+- implement the narrow behavior required by Tier 1 smoke, or
+- signal a clear unsupported condition / return a documented no-op value.
+
+Current proof anchor:
+
+- =src/emacs-tier3-facades.el= provides explicit facades for =widget=,
+  =calc=, =gnus=, =info=, =treesit=, =nxml=, =url=, and =vc= when that
+  facade library is required.
+- Thin feature loaders in =src/widget.el=, =src/calc.el=, =src/gnus.el=,
+  =src/info.el=, =src/treesit.el=, =src/nxml.el=, =src/nxml-mode.el=,
+  =src/url.el=, and =src/vc.el= make direct =(require 'widget)= style
+  callers land on the same facade contract under the repo =load-path=.
+- =test/emacs-tier3-facades-test.el= pins =featurep=, principal =fboundp=,
+  loader resolution, no-op predicate behavior, and
+  =emacs-tier3-facade-unsupported= signaling.
+- The facade library is not loaded by the default bootstrap bundle.  Several
+  vendor files branch on =featurep= for these large subsystems; pre-providing
+  them during bootstrap changes vendor load behavior.  Keep Tier 3 opt-in
+  from the base image until a product path needs a specific facade there.
+
+* 4. Current priority
+
+1. Keep the vendor standalone count proof green for all =VENDOR_LOAD_FILES=.
+2. Drive Tier 1 UI/editor/file commands with tests and pure-Elisp UI smoke.
+3. Add Tier 3 facades only when a Tier 1 path requires a symbol to be
+   =fboundp= or loadable.
+4. Leave Tier 2 as drop-only unless evidence shows it is part of product
+   behavior.

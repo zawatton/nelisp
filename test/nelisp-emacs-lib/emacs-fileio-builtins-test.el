@@ -15,6 +15,9 @@
 (require 'emacs-fileio-builtins)
 (require 'cl-lib)
 
+(when (boundp 'native-comp-enable-subr-trampolines)
+  (setq native-comp-enable-subr-trampolines nil))
+
 (defvar emacs-fileio-builtins-test--tmp-counter 0)
 
 (defun emacs-fileio-builtins-test--tmp-path (suffix)
@@ -35,6 +38,19 @@
          (emacs-fileio--buffer-files nil))
      ,@body))
 
+(defun emacs-fileio-builtins-test--read-defun (file marker)
+  "Return the source of the form starting at MARKER in FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward marker nil t)
+      (let* ((form-start (match-beginning 0))
+             (form-end (save-excursion
+                         (goto-char form-start)
+                         (forward-sexp)
+                         (point))))
+        (buffer-substring form-start form-end)))))
+
 ;;;; A. Load cleanly + fboundp parity
 
 (ert-deftest emacs-fileio-builtins-test/require-loads-cleanly ()
@@ -54,6 +70,38 @@
                  save-buffer write-file revert-buffer))
     (should (fboundp sym)))
   (should (boundp 'emacs-fileio--buffer-files)))
+
+(ert-deftest emacs-fileio-builtins-test/install-p-uses-function-cell ()
+  "Standalone gates must not trust `fboundp' when the function cell is empty."
+  (let ((original-fboundp (symbol-function 'fboundp)))
+    (cl-letf (((symbol-function 'fboundp)
+               (lambda (symbol)
+                 (or (eq symbol 'emacs-fileio-builtins-test--missing)
+                     (funcall original-fboundp symbol)))))
+      (should (emacs-fileio-builtins--install-function-p
+               'emacs-fileio-builtins-test--missing)))))
+
+(ert-deftest emacs-fileio-builtins-test/file-commands-carry-interactive-forms ()
+  "The standalone polyfills must be commands, not just callable functions."
+  (let* ((file (locate-library "emacs-fileio-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (let ((s (emacs-fileio-builtins-test--read-defun
+              file "(when (emacs-fileio-builtins--install-function-p 'find-file)")))
+      (should s)
+      (should (string-match-p (regexp-quote "(interactive") s))
+      (should (string-match-p "read-file-name" s)))
+    (let ((s (emacs-fileio-builtins-test--read-defun
+              file "(when (emacs-fileio-builtins--install-function-p 'save-buffer)")))
+      (should s)
+      (should (string-match-p (regexp-quote "(interactive \"P\")") s)))
+    (let ((s (emacs-fileio-builtins-test--read-defun
+              file "(when (emacs-fileio-builtins--install-function-p 'write-file)")))
+      (should s)
+      (should (string-match-p (regexp-quote "(interactive") s))
+      (should (string-match-p "read-file-name" s)))))
 
 (ert-deftest emacs-fileio-builtins-test/file-name-quote-roundtrip ()
   (should (file-name-quoted-p (file-name-quote "/tmp/foo")))
@@ -97,6 +145,70 @@
       (delete-file missing))
     (should-not (nelisp-ec-file-exists-p missing))
     (should-not (nelisp-ec-file-readable-p missing))))
+
+(ert-deftest emacs-fileio-builtins-test/executable-find-prefers-nelisp-sys-access ()
+  (let ((seen nil)
+        (had-sys (fboundp 'nelisp-sys-access))
+        (before-sys (and (fboundp 'nelisp-sys-access)
+                         (symbol-function 'nelisp-sys-access)))
+        (had-nl (fboundp 'nl-syscall-access))
+        (before-nl (and (fboundp 'nl-syscall-access)
+                        (symbol-function 'nl-syscall-access))))
+    (unwind-protect
+        (progn
+          (fset 'nelisp-sys-access
+                (lambda (file mode)
+                  (setq seen (cons (list file mode) seen))
+                  (if (equal file "/tools/tool") 0 -1)))
+          (fset 'nl-syscall-access
+                (lambda (&rest _)
+                  (error "nelisp-sys-access should win")))
+          (cl-letf (((symbol-function 'getenv)
+                     (lambda (variable)
+                       (and (equal variable "PATH") "/tools"))))
+            (should (equal (nelisp-ec-executable-find "tool")
+                           "/tools/tool"))
+            (should (member '("/tools/tool" 1) seen))))
+      (if had-sys
+          (fset 'nelisp-sys-access before-sys)
+        (fmakunbound 'nelisp-sys-access))
+      (if had-nl
+          (fset 'nl-syscall-access before-nl)
+        (fmakunbound 'nl-syscall-access)))))
+
+(ert-deftest emacs-fileio-builtins-test/executable-find-uses-access-for-path-walk ()
+  (let ((seen nil))
+    (cl-letf (((symbol-function 'getenv)
+               (lambda (variable)
+                 (and (equal variable "PATH") "/nope:/tools")))
+              ((symbol-function 'nl-syscall-access)
+               (lambda (file mode)
+                 (setq seen (cons (list file mode) seen))
+                 (if (equal file "/tools/tool") 0 -1)))
+              ((symbol-function 'file-exists-p)
+               (lambda (&rest _)
+                 (error "must use nl-syscall-access")))
+              ((symbol-function 'file-executable-p)
+               (lambda (&rest _)
+                 (error "must use nl-syscall-access"))))
+      (should (equal (nelisp-ec-executable-find "tool") "/tools/tool"))
+      (should (member '("/nope/tool" 1) seen))
+      (should (member '("/tools/tool" 1) seen)))))
+
+(ert-deftest emacs-fileio-builtins-test/executable-find-uses-access-for-explicit-path ()
+  (cl-letf (((symbol-function 'nl-syscall-access)
+             (lambda (file mode)
+               (if (and (equal file "/tools/tool")
+                        (eq mode 1))
+                   0 -1)))
+            ((symbol-function 'file-exists-p)
+             (lambda (&rest _)
+               (error "must use nl-syscall-access")))
+            ((symbol-function 'file-executable-p)
+             (lambda (&rest _)
+               (error "must use nl-syscall-access"))))
+    (should (equal (nelisp-ec-executable-find "/tools/tool") "/tools/tool"))
+    (should-not (nelisp-ec-executable-find "/tools/not-executable"))))
 
 (ert-deftest emacs-fileio-builtins-test/locate-library-finds-el-file ()
   (let* ((dir (emacs-fileio-builtins-test--tmp-path "load-path"))

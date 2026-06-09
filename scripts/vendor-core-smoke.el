@@ -26,6 +26,9 @@
     (isearch . vendor-core-smoke--check-isearch)
     (minibuffer . vendor-core-smoke--check-minibuffer)
     (project . vendor-core-smoke--check-project)
+    (frame . vendor-core-smoke--check-frame)
+    (tab-bar . vendor-core-smoke--check-tab-bar)
+    (tab-line . vendor-core-smoke--check-tab-line)
     (hex-util . vendor-core-smoke--check-hex-util)
     (map-ynp . vendor-core-smoke--check-map-ynp)
     (charprop . vendor-core-smoke--check-charprop)
@@ -371,6 +374,69 @@ vendor-core candidate set.")
                              "project feature was not provided")
   (vendor-core-smoke--check-fbound
    '(project-current project-find-file project-switch-project))
+  'ok)
+
+(defun vendor-core-smoke--check-frame ()
+  "Load the daily-driver frame feature and verify frame API state."
+  (require 'frame)
+  (vendor-core-smoke--check-feature-provided 'frame)
+  (vendor-core-smoke--check-feature-provided 'emacs-frame-builtins)
+  (vendor-core-smoke--check-fbound
+   '(framep frame-live-p selected-frame frame-list make-frame
+            delete-frame delete-other-frames window-frame frame-width
+            frame-height frame-char-width frame-char-height
+            frame-pixel-width frame-pixel-height set-frame-size
+            set-frame-position frame-parameters frame-parameter
+            set-frame-parameter modify-frame-parameters frame-visible-p
+            make-frame-visible make-frame-invisible raise-frame
+            lower-frame select-frame frame-focus frame-windows
+            display-pixel-width display-pixel-height))
+  (let ((frame (selected-frame)))
+    (vendor-core-smoke--assert
+     (eq (framep frame) 'stub)
+     "selected-frame is not a stub frame")
+    (vendor-core-smoke--assert
+     (= (frame-width frame) 80)
+     "selected frame width is not 80")
+    (vendor-core-smoke--assert
+     (= (frame-height frame) 24)
+     "selected frame height is not 24"))
+  'ok)
+
+(defun vendor-core-smoke--check-tab-bar ()
+  "Load the daily-driver tab-bar feature and verify tab commands."
+  (require 'tab-bar)
+  (vendor-core-smoke--check-feature-provided 'tab-bar)
+  (vendor-core-smoke--check-fbound
+   '(tab-bar-tabs tab-bar-current-tab tab-bar-current-tab-index
+                  tab-bar-new-tab tab-bar-select-tab
+                  tab-bar-switch-to-next-tab tab-bar-switch-to-prev-tab
+                  tab-bar-close-tab tab-bar-rename-tab tab-bar-mode
+                  tab-bar-height tab-new tab-close tab-next tab-previous
+                  tab-select tab-rename))
+  (vendor-core-smoke--check-bound
+   '(tab-bar-mode tab-bar--tabs tab-bar--selected-index))
+  (tab-bar-tabs)
+  (vendor-core-smoke--assert
+   (>= (length tab-bar--tabs) 1)
+   "tab-bar did not create an initial tab")
+  'ok)
+
+(defun vendor-core-smoke--check-tab-line ()
+  "Load the daily-driver tab-line feature and verify tab-line commands."
+  (require 'tab-line)
+  (vendor-core-smoke--check-feature-provided 'tab-line)
+  (vendor-core-smoke--check-fbound
+   '(tab-line-mode global-tab-line-mode window-tab-line-height
+                   tab-line-tabs-buffer-list
+                   tab-line-tabs-window-buffers
+                   tab-line-tabs-fixed-window-buffers
+                   tab-line-tab-name-buffer))
+  (vendor-core-smoke--check-bound
+   '(tab-line-mode global-tab-line-mode tab-line-format))
+  (vendor-core-smoke--assert
+   (integerp (window-tab-line-height))
+   "window-tab-line-height did not return an integer")
   'ok)
 
 (defun vendor-core-smoke--check-hex-util ()

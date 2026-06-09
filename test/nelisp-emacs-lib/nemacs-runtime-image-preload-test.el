@@ -62,6 +62,135 @@
     project-current
     project-find-file
     project-switch-project
+    emacs-process--fallback-process-p
+    emacs-process--native-process-p
+    emacs-process--process-object-p
+    emacs-process--native-start-available-p
+    emacs-process--fallback-plist-get
+    emacs-process--native-metadata-cell
+    emacs-process--native-metadata
+    emacs-process--native-put-metadata
+    emacs-process--native-plist-put
+    emacs-process--native-set-metadata
+    emacs-process--fallback-buffer
+    emacs-process--native-status-code
+    emacs-process--native-status-symbol
+    emacs-process--native-exit-status
+    emacs-process--native-start
+    emacs-process--native-drain-output
+    emacs-process--native-maybe-fire-sentinel
+    emacs-process--native-live-processes
+    emacs-process--native-accept
+    emacs-process--native-delete
+    emacs-process--fallback-sentinel-event
+    emacs-process--fallback-make-process
+    emacs-process-call-process
+    call-process
+    emacs-process-call-process-region
+    call-process-region
+    emacs-process-start-process
+    start-process
+    emacs-process-make-process
+    make-process
+    emacs-process-processp
+    processp
+    emacs-process-process-list
+    process-list
+    emacs-process-process-status
+    process-status
+    emacs-process-process-exit-status
+    process-exit-status
+    emacs-process-process-buffer
+    process-buffer
+    emacs-process-process-name
+    process-name
+    emacs-process-process-command
+    process-command
+    emacs-process-process-live-p
+    process-live-p
+    emacs-process-process-id
+    process-id
+    emacs-process-process-mark
+    process-mark
+    emacs-process-set-process-filter
+    set-process-filter
+    emacs-process-set-process-sentinel
+    set-process-sentinel
+    emacs-process-accept-process-output
+    accept-process-output
+    emacs-process-signal-process
+    signal-process
+    emacs-process-kill-process
+    kill-process
+    emacs-process-process-send-string
+    process-send-string
+    emacs-process-process-send-eof
+    process-send-eof
+    emacs-process-delete-process
+    delete-process
+    emacs-process-shell-command
+    shell-command
+    emacs-process-shell-command-on-region
+    shell-command-on-region
+    emacs-process-async-shell-command
+    async-shell-command
+    emacs-process-shell-command-to-string
+    shell-command-to-string
+    framep
+    frame-live-p
+    selected-frame
+    frame-list
+    make-frame
+    delete-frame
+    delete-other-frames
+    window-frame
+    frame-width
+    frame-height
+    frame-char-width
+    frame-char-height
+    frame-pixel-width
+    frame-pixel-height
+    set-frame-size
+    set-frame-position
+    frame-parameters
+    frame-parameter
+    set-frame-parameter
+    modify-frame-parameters
+    frame-visible-p
+    make-frame-visible
+    make-frame-invisible
+    raise-frame
+    lower-frame
+    select-frame
+    frame-focus
+    frame-windows
+    display-pixel-width
+    display-pixel-height
+    emacs-frame-reset
+    tab-bar-tabs
+    tab-bar-current-tab
+    tab-bar-current-tab-index
+    tab-bar-new-tab
+    tab-bar-select-tab
+    tab-bar-switch-to-next-tab
+    tab-bar-switch-to-prev-tab
+    tab-bar-close-tab
+    tab-bar-rename-tab
+    tab-bar-mode
+    tab-bar-height
+    tab-new
+    tab-close
+    tab-next
+    tab-previous
+    tab-select
+    tab-rename
+    tab-line-mode
+    global-tab-line-mode
+    window-tab-line-height
+    tab-line-tabs-buffer-list
+    tab-line-tabs-window-buffers
+    tab-line-tabs-fixed-window-buffers
+    tab-line-tab-name-buffer
     open-line
     quoted-insert
     indent-for-tab-command
@@ -216,6 +345,16 @@
     narrow-to-defun-include-comments
     insert-pair-alist
     delete-pair-blink-delay
+    emacs-process--fallback-tag
+    emacs-process--fallback-processes
+    emacs-process--fallback-next-pid
+    emacs-process--native-process-metadata
+    shell-file-name
+    shell-command-switch
+    emacs-process-shell-file-name
+    emacs-process-shell-command-switch
+    emacs-process-call-process-region-input-file
+    emacs-process-shell-command-on-region-output-file
     lisp--mark
     mark-active
     case-table--standard
@@ -244,12 +383,29 @@
     skkdic-postfix
     curline
     curframe
-    curentry)
+    curentry
+    shell-file-name
+    shell-command-switch
+    emacs-process-shell-file-name
+    emacs-process-shell-command-switch
+    emacs-process-call-process-region-input-file
+    emacs-process-shell-command-on-region-output-file
+    emacs-frame--runtime-id-counter
+    emacs-frame--runtime-registry
+    emacs-frame--runtime-selected-frame
+    tab-bar-mode
+    tab-bar--tabs
+    tab-bar--selected-index
+    tab-line-mode
+    global-tab-line-mode
+    tab-line-format)
   "Global variables installed directly into vendor-core images.")
 
 (defconst nemacs-runtime-image-preload-test--direct-install-features
   '(files simple dired help-mode help-fns lisp-mode ielm isearch
           minibuffer project subr-x seq map lisp case-table cdl range regi
+          emacs-process emacs-process-builtins
+          frame emacs-frame-builtins tab-bar tab-line
           hex-util map-ynp charprop charscript emoji-labels iso-transl
           cp51932 eucjp-ms fontset idna-mapping ja-dic-utl)
   "Features installed directly into vendor-core images.")
@@ -312,6 +468,7 @@
                  nemacs-runtime-image-preload-vendor-core
                  nemacs-runtime-image-preload-vendor-core-extension
                  nemacs-runtime-image-preload--install-file-command
+                 nemacs-runtime-image-preload--function-cell-live-p
                  nemacs-runtime-image-preload--install-files-core
                  nemacs-runtime-image-preload--install-dired-command
                  nemacs-runtime-image-preload--install-dired-core
@@ -323,6 +480,10 @@
                  nemacs-runtime-image-preload--install-isearch-core
                  nemacs-runtime-image-preload--install-minibuffer-core
                  nemacs-runtime-image-preload--install-project-core
+                 nemacs-runtime-image-preload--install-process-core
+                 nemacs-runtime-image-preload--install-frame-core
+                 nemacs-runtime-image-preload--install-tab-core
+                 nemacs-runtime-image-preload--force-install-frame-tab-core
                  nemacs-runtime-image-preload--install-simple-core
                  nemacs-runtime-image-preload--install-subr-x-core
                  nemacs-runtime-image-preload--install-seq-core
@@ -374,7 +535,8 @@
 (ert-deftest nemacs-runtime-image-preload-test/preload-batch-requires-main ()
   (let ((setup-args nil)
         (bootstrap-args nil)
-        (required nil))
+        (required nil)
+        (loaded nil))
     (cl-letf (((symbol-function 'nemacs-runtime-image-setup-paths)
                (lambda (repo-root)
                  (setq setup-args (list repo-root))
@@ -386,11 +548,17 @@
               ((symbol-function 'require)
                (lambda (feature &optional _filename _noerror)
                  (push feature required)
-                 feature)))
+                 feature))
+              ((symbol-function 'load)
+               (lambda (file &optional _noerror _nomessage _nosuffix _must-suffix)
+                 (push file loaded)
+                 t)))
       (should (nemacs-runtime-image-preload-batch "/repo" "/bootstrap.el"))
       (should (equal setup-args '("/repo")))
       (should (equal bootstrap-args '("/bootstrap.el")))
-      (should (equal required '(nemacs-main))))))
+      (should (equal required '(nemacs-main)))
+      (should (equal loaded
+                     '("/repo/scripts/nemacs-runtime-frame-tab-preload.el"))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/preload-vendor-core-requires-files ()
   (let ((base-args nil)
@@ -442,6 +610,25 @@
                      '((require files-standalone-buffer)
                        (target 1 2)))))))
 
+(ert-deftest nemacs-runtime-image-preload-test/file-command-installs-when-fboundp-lies ()
+  (let ((original-fboundp (symbol-function 'fboundp)))
+    (unwind-protect
+        (progn
+          (when (fboundp 'nemacs-runtime-image-preload-test--public)
+            (fmakunbound 'nemacs-runtime-image-preload-test--public))
+          (cl-letf (((symbol-function 'fboundp)
+                     (lambda (symbol)
+                       (or (eq symbol
+                               'nemacs-runtime-image-preload-test--public)
+                           (funcall original-fboundp symbol)))))
+            (nemacs-runtime-image-preload--install-file-command
+             'nemacs-runtime-image-preload-test--public
+             'nemacs-runtime-image-preload-test--target))
+          (should (symbol-function
+                   'nemacs-runtime-image-preload-test--public)))
+      (when (fboundp 'nemacs-runtime-image-preload-test--public)
+        (fmakunbound 'nemacs-runtime-image-preload-test--public)))))
+
 (ert-deftest nemacs-runtime-image-preload-test/direct-install-creates-daily-core-surface ()
   (nemacs-runtime-image-preload-test--with-clean-direct-install
     (should-not (featurep 'files))
@@ -454,6 +641,12 @@
     (should-not (featurep 'isearch))
     (should-not (featurep 'minibuffer))
     (should-not (featurep 'project))
+    (should-not (featurep 'emacs-process))
+    (should-not (featurep 'emacs-process-builtins))
+    (should-not (featurep 'frame))
+    (should-not (featurep 'emacs-frame-builtins))
+    (should-not (featurep 'tab-bar))
+    (should-not (featurep 'tab-line))
     (should (nemacs-runtime-image-preload--install-files-core))
     (should (nemacs-runtime-image-preload--install-simple-core))
     (should (nemacs-runtime-image-preload--install-dired-core))
@@ -463,6 +656,9 @@
     (should (nemacs-runtime-image-preload--install-isearch-core))
     (should (nemacs-runtime-image-preload--install-minibuffer-core))
     (should (nemacs-runtime-image-preload--install-project-core))
+    (should (nemacs-runtime-image-preload--install-process-core))
+    (should (nemacs-runtime-image-preload--install-frame-core))
+    (should (nemacs-runtime-image-preload--install-tab-core))
     (should (nemacs-runtime-image-preload--install-support-core))
     (should (nemacs-runtime-image-preload--install-utility-i18n-core))
     (should (featurep 'files))
@@ -475,6 +671,12 @@
     (should (featurep 'isearch))
     (should (featurep 'minibuffer))
     (should (featurep 'project))
+    (should (featurep 'emacs-process))
+    (should (featurep 'emacs-process-builtins))
+    (should (featurep 'frame))
+    (should (featurep 'emacs-frame-builtins))
+    (should (featurep 'tab-bar))
+    (should (featurep 'tab-line))
     (dolist (feature '(subr-x seq map lisp case-table cdl range regi))
       (should (featurep feature)))
     (dolist (feature '(hex-util map-ynp charprop charscript emoji-labels
@@ -616,6 +818,179 @@
                    '(lambda (&rest args)
                       (require 'emacs-project)
                       (apply 'project-current args))))))
+
+(ert-deftest nemacs-runtime-image-preload-test/frame-and-tab-core-surface ()
+  "Runtime frame/tab core should provide usable daily-driver state."
+  (nemacs-runtime-image-preload-test--with-clean-direct-install
+    (should (nemacs-runtime-image-preload--install-frame-core))
+    (should (nemacs-runtime-image-preload--install-tab-core))
+    (should (featurep 'frame))
+    (should (featurep 'emacs-frame-builtins))
+    (should (featurep 'tab-bar))
+    (should (featurep 'tab-line))
+    (let ((f1 (selected-frame)))
+      (should (eq (framep f1) 'stub))
+      (should (eq (frame-live-p f1) 'stub))
+      (should (= (frame-width f1) 80))
+      (should (= (frame-height f1) 24))
+      (let ((f2 (make-frame '((width . 100)
+                              (height . 32)
+                              (name . "work")))))
+        (should (= 2 (length (frame-list))))
+        (should (= (frame-width f2) 100))
+        (should (= (frame-height f2) 32))
+        (should (equal (frame-parameter f2 'name) "work"))
+        (set-frame-size f2 120 40)
+        (should (= (frame-width f2) 120))
+        (select-frame f2)
+        (should (eq (selected-frame) f2))
+        (delete-other-frames f2)
+        (should (= 1 (length (frame-list))))
+        (should (eq (selected-frame) f2))))
+    (should (= 1 (length (tab-bar-tabs))))
+    (tab-new)
+    (should (= 2 (length (tab-bar-tabs))))
+    (should (= 1 (tab-bar-current-tab-index)))
+    (tab-previous)
+    (should (= 0 (tab-bar-current-tab-index)))
+    (tab-next)
+    (should (= 1 (tab-bar-current-tab-index)))
+    (tab-rename "work")
+    (should (equal "work" (cdr (assq 'name (tab-bar-current-tab)))))
+    (tab-close)
+    (should (= 1 (length (tab-bar-tabs))))
+    (should (= 0 (tab-bar-current-tab-index)))
+    (should (= 0 (tab-bar-height)))
+    (tab-bar-mode 1)
+    (should (= 1 (tab-bar-height)))
+    (should (= 0 (window-tab-line-height)))
+    (tab-line-mode 1)
+    (should (= 1 (window-tab-line-height)))))
+
+(ert-deftest nemacs-runtime-image-preload-test/process-core-delegates-or-fails-softly ()
+  "Runtime process core should expose call-process and use delegates when present."
+  (nemacs-runtime-image-preload-test--with-clean-direct-install
+    (should (nemacs-runtime-image-preload--install-process-core))
+    (should (featurep 'emacs-process))
+    (should (featurep 'emacs-process-builtins))
+    (should (eq (call-process "/bin/absent" nil nil nil) 1))
+    (let ((captured nil))
+      (unwind-protect
+          (progn
+            (fset 'nelisp-process-call-process
+                  (lambda (&rest args)
+                    (setq captured args)
+                    23))
+            (should (eq (call-process "/bin/tool" nil t nil "arg")
+                        23))
+            (should (equal captured '("/bin/tool" nil t nil "arg"))))
+        (fmakunbound 'nelisp-process-call-process)))))
+
+(ert-deftest nemacs-runtime-image-preload-test/process-core-region-and-async-surface ()
+  "Runtime process core should expose region and async shell command facades."
+  (nemacs-runtime-image-preload-test--with-clean-direct-install
+    (should (nemacs-runtime-image-preload--install-process-core))
+    (should (fboundp 'call-process-region))
+    (should (fboundp 'shell-command-on-region))
+    (should (fboundp 'async-shell-command))
+    (should (fboundp 'make-process))
+    (should (fboundp 'processp))
+    (should (fboundp 'process-status))
+    (should (fboundp 'process-exit-status))
+    (should (fboundp 'process-buffer))
+    (should (fboundp 'process-name))
+    (should (eq (call-process-region 1 2 "/bin/absent" nil nil nil) 1))
+    (let ((captured nil))
+      (unwind-protect
+          (progn
+            (fset 'nelisp-process-call-process-region
+                  (lambda (&rest args)
+                    (setq captured args)
+                    29))
+            (should (eq (call-process-region 1 3 "/bin/filter"
+                                             nil "/tmp/out" nil "-x")
+                        29))
+            (should (equal captured
+                           '(1 3 "/bin/filter" nil "/tmp/out" nil "-x"))))
+        (fmakunbound 'nelisp-process-call-process-region)))
+    (let ((captured nil)
+          (buffer nil))
+      (unwind-protect
+          (progn
+            (fset 'nelisp-process-call-process
+                  (lambda (&rest args)
+                    (setq captured args)
+                    0))
+            (let ((process (async-shell-command "echo async")))
+              (setq buffer (process-buffer process))
+              (should (processp process))
+              (should (eq (process-status process) 'exit))
+              (should (= (process-exit-status process) 0))
+              (should (equal (process-name process)
+                             "async-shell-command<echo async>"))
+              (should (equal (process-command process)
+                             '("/bin/sh" "-c" "echo async")))
+              (should (equal (nth 0 captured) "/bin/sh"))
+              (should (null (nth 1 captured)))
+              (should (eq (nth 2 captured) buffer))
+              (should (null (nth 3 captured)))
+              (should (equal (nthcdr 4 captured)
+                             '("-c" "echo async")))))
+        (when (and buffer (buffer-live-p buffer))
+          (kill-buffer buffer))
+        (fmakunbound 'nelisp-process-call-process)))
+    (let ((native (vector 'native-process))
+          (captured nil)
+          (status-code 0)
+          (output "native-output")
+          (events nil)
+          (buffer nil))
+      (unwind-protect
+          (progn
+            (fset 'nelisp-process-object-p
+                  (lambda (object) (eq object native)))
+            (fset 'nelisp-process-start-process
+                  (lambda (&rest args)
+                    (setq captured args)
+                    native))
+            (fset 'nelisp-process-status
+                  (lambda (_process) status-code))
+            (fset 'nelisp-process-exit-status
+                  (lambda (_process) 0))
+            (fset 'nelisp-process-read-output
+                  (lambda (_process _limit)
+                    (prog1 output
+                      (setq output nil))))
+            (setq buffer (generate-new-buffer " *native-process*"))
+            (let ((process (make-process
+                            :name "native"
+                            :buffer buffer
+                            :command '("/bin/sh" "-c" "printf native-output")
+                            :sentinel (lambda (_process event)
+                                        (push event events)))))
+              (should (eq process native))
+              (should (processp process))
+              (should (eq (process-status process) 'run))
+              (should (equal (process-name process) "native"))
+              (should (equal (process-command process)
+                             '("/bin/sh" "-c" "printf native-output")))
+              (should (equal captured
+                             '("/bin/sh" "-c" "printf native-output")))
+              (setq status-code 1)
+              (should (accept-process-output process 0 0 t))
+              (should (equal (with-current-buffer buffer (buffer-string))
+                             "native-output"))
+              (should (equal events '("finished\n")))
+              (should (eq (process-status process) 'exit))))
+        (dolist (symbol '(nelisp-process-object-p
+                          nelisp-process-start-process
+                          nelisp-process-status
+                          nelisp-process-exit-status
+                          nelisp-process-read-output))
+          (when (fboundp symbol)
+            (fmakunbound symbol)))
+        (when (and buffer (buffer-live-p buffer))
+          (kill-buffer buffer))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-satisfies-all-smoke-candidates ()
   "The runtime-image vendor-core extension must cover every smoke lane directly."

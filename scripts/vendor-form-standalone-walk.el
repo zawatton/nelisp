@@ -36,6 +36,14 @@ This is a diagnostic escape hatch for standalone-reader crashes while
 installing function bodies that contain float-literal comparisons.  The
 default nil path evaluates the raw vendor source.")
 
+(defvar vendor-form-standalone-short-load-name-files
+  '("org-element-ast.el"
+    "org-footnote.el"
+    "org-list.el"
+    "org-entities.el"
+    "org-macro.el")
+  "Basenames whose replay `load-file-name' is shortened to the basename.")
+
 (defvar vendor-form-standalone-repo-root
   (expand-file-name ".." (file-name-directory
                           (or load-file-name buffer-file-name)))
@@ -98,17 +106,23 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
                    (append form nil))))
    (t form)))
 
-(defun vendor-form-standalone--form-text (form)
+(defun vendor-form-standalone--form-text (form &optional current-file)
   "Return source text for FORM, applying diagnostic rewrites if enabled."
   (let ((text (plist-get form :text)))
     (condition-case nil
         (with-temp-buffer
-          (let ((rewritten
-                 (standalone-source-normalize-form
-                  (if vendor-form-standalone-normalize-floats
-                      (vendor-form-standalone--normalize-floats (read text))
-                    (read text)))))
-            (prin1 rewritten (current-buffer)))
+          (let* ((raw (if vendor-form-standalone-normalize-floats
+                          (vendor-form-standalone--normalize-floats
+                           (read text))
+                        (read text)))
+                 (rewritten
+                  (let ((standalone-source-normalize-current-file
+                         (or current-file
+                             standalone-source-normalize-current-file)))
+                    (standalone-source-normalize-top-level-forms raw))))
+            (dolist (top-level rewritten)
+              (insert (standalone-source-normalize-form-to-string top-level))
+              (insert "\n")))
           (buffer-string))
       (error text))))
 
@@ -129,12 +143,20 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
 
 (defun vendor-form-standalone--load-form (file)
   "Return a top-level standalone form that loads FILE."
-  (concat
-   (format "(setq load-file-name %S)\n" file)
-   (format "(setq buffer-file-name %S)\n" file)
-   (mapconcat #'vendor-form-standalone--eval-source-form
-              (standalone-source-normalize-file-to-form-strings file)
-              "")))
+  (let ((runtime-file (vendor-form-standalone--runtime-file-name file)))
+    (concat
+     (format "(setq load-file-name %S)\n" runtime-file)
+     (format "(setq buffer-file-name %S)\n" runtime-file)
+     (mapconcat #'vendor-form-standalone--eval-source-form
+                (standalone-source-normalize-file-to-form-strings file)
+                ""))))
+
+(defun vendor-form-standalone--runtime-file-name (file)
+  "Return FILE's runtime name for standalone form replay."
+  (let ((basename (file-name-nondirectory file)))
+    (if (member basename vendor-form-standalone-short-load-name-files)
+        basename
+      file)))
 
 (defun vendor-form-standalone--load-paths ()
   "Return the load paths needed for standalone vendor form probes."
@@ -157,20 +179,28 @@ Each descriptor is a plist with :index, :pos, :end, :head, and :text."
       (insert (format "(setq load-path '%S)\n"
                       (vendor-form-standalone--load-paths)))
       (when vendor-form-standalone-prelude
-        (insert (vendor-form-standalone--eval-source-form
-                 (vendor-form-standalone--read-file
-                  vendor-form-standalone-prelude))))
+        (dolist (source (standalone-source-normalize-file-to-form-strings
+                         vendor-form-standalone-prelude))
+          (insert (vendor-form-standalone--eval-source-form source))))
       (insert (vendor-form-standalone--read-file bootstrap))
       (insert "\n")
       (dolist (file preload-files)
         (insert (vendor-form-standalone--load-form file)))
-      (insert (format "(setq load-file-name %S)\n" vendor-file))
-      (insert (format "(setq buffer-file-name %S)\n" vendor-file))
-      (dolist (form forms)
-        (let ((index (plist-get form :index)))
-          (when (<= index upto)
-            (insert (vendor-form-standalone--form-text form))
-            (insert "\n"))))
+      (let ((runtime-file (vendor-form-standalone--runtime-file-name
+                           vendor-file)))
+        (insert (format "(setq load-file-name %S)\n" runtime-file))
+        (insert (format "(setq buffer-file-name %S)\n" runtime-file)))
+      (let ((standalone-source-normalize-current-file
+             (file-name-nondirectory vendor-file)))
+        (dolist (form forms)
+          (let ((index (plist-get form :index)))
+            (when (<= index upto)
+              (let ((text (vendor-form-standalone--form-text
+                           form
+                           standalone-source-normalize-current-file)))
+                (unless (string-empty-p text)
+                  (insert text)
+                  (insert "\n")))))))
       ;; The standalone reader currently reports Lisp errors as exit 0.
       ;; A successful probe must therefore reach this explicit sentinel.
       (insert "\n(exit 42)\n"))))

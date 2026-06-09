@@ -89,6 +89,76 @@ is non-nil, each returned line keeps its trailing newline when present."
           (setq start (if pos (1+ pos) len)))))
       (nreverse out))))
 
+(unless (and (fboundp 'string<)
+             (not (get 'string< 'emacs-stub-bulk)))
+  (defun string< (a b)
+    "Return non-nil if string A is lexicographically less than string B."
+    (let ((i 0)
+          (na (length a))
+          (nb (length b))
+          (answer nil)
+          (done nil))
+      (while (and (not done) (< i na) (< i nb))
+        (let ((ca (aref a i))
+              (cb (aref b i)))
+          (cond
+           ((< ca cb) (setq answer t done t))
+           ((> ca cb) (setq answer nil done t))
+           (t (setq i (1+ i))))))
+      (if done answer (< na nb))))
+  (put 'string< 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'char-equal)
+             (not (get 'char-equal 'emacs-stub-bulk)))
+  (defun char-equal (a b)
+    "Return non-nil when characters A and B are equal."
+    (= a b))
+  (put 'char-equal 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'string-width)
+             (not (get 'string-width 'emacs-stub-bulk)))
+  (defun string-width (string)
+    "Return display width of STRING.
+Standalone MVP treats every character as width 1."
+    (length string))
+  (put 'string-width 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'int-to-string)
+             (not (get 'int-to-string 'emacs-stub-bulk)))
+  (defun int-to-string (integer)
+    "Return decimal printed representation of INTEGER."
+    (format "%d" integer))
+  (put 'int-to-string 'emacs-stub-bulk nil))
+
+(unless (and (fboundp 'assoc-string)
+             (not (get 'assoc-string 'emacs-stub-bulk)))
+  (defun emacs-string--assoc-string-key (value)
+    "Return VALUE as a string key for `assoc-string', or nil."
+    (cond
+     ((stringp value) value)
+     ((symbolp value) (symbol-name value))
+     (t nil)))
+
+  (defun assoc-string (key list &optional case-fold)
+    "Return first alist element whose string key matches KEY.
+CASE-FOLD non-nil compares via `downcase'."
+    (let ((needle (emacs-string--assoc-string-key key))
+          (cur list)
+          (found nil))
+      (when case-fold
+        (setq needle (and needle (downcase needle))))
+      (when needle
+        (while (and cur (not found))
+          (let* ((cell (car cur))
+                 (head (emacs-string--assoc-string-key
+                        (if (consp cell) (car cell) cell))))
+            (when head
+              (let ((candidate (if case-fold (downcase head) head)))
+                (when (string= needle candidate)
+                  (setq found cell)))))
+          (setq cur (cdr cur))))
+      found))
+  (put 'assoc-string 'emacs-stub-bulk nil))
 
 (unless (fboundp 'string-lessp) (defun string-lessp (a b) (string< a b)))
 (unless (fboundp 'string-greaterp) (defun string-greaterp (a b) (string< b a)))

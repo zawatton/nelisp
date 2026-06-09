@@ -49,9 +49,63 @@
        (symbol-function 'insert-file-contents))
   "Native `insert-file-contents' captured before this fallback overrides it.")
 
+(defvar files--native-file-exists-p
+  (and (fboundp 'file-exists-p) (symbol-function 'file-exists-p))
+  "Native `file-exists-p' captured before this fallback overrides it.")
+
+(defvar files--native-file-readable-p
+  (and (fboundp 'file-readable-p) (symbol-function 'file-readable-p))
+  "Native `file-readable-p' captured before this fallback overrides it.")
+
+(defvar files--native-file-writable-p
+  (and (fboundp 'file-writable-p) (symbol-function 'file-writable-p))
+  "Native `file-writable-p' captured before this fallback overrides it.")
+
+(defvar files--native-file-executable-p
+  (and (fboundp 'file-executable-p) (symbol-function 'file-executable-p))
+  "Native `file-executable-p' captured before this fallback overrides it.")
+
+(defvar files--native-delete-file
+  (and (fboundp 'delete-file) (symbol-function 'delete-file))
+  "Native `delete-file' captured before this fallback overrides it.")
+
 (defvar files--native-buffer-string
   (and (fboundp 'buffer-string) (symbol-function 'buffer-string))
   "Native `buffer-string' captured before this fallback overrides it.")
+
+(defvar files--native-erase-buffer
+  (and (fboundp 'erase-buffer) (symbol-function 'erase-buffer))
+  "Native `erase-buffer' captured before this fallback overrides it.")
+
+(defvar files--native-insert
+  (and (fboundp 'insert) (symbol-function 'insert))
+  "Native `insert' captured before this fallback overrides it.")
+
+(defvar files--native-point-min
+  (and (fboundp 'point-min) (symbol-function 'point-min))
+  "Native `point-min' captured before this fallback overrides it.")
+
+(defvar files--native-point-max
+  (and (fboundp 'point-max) (symbol-function 'point-max))
+  "Native `point-max' captured before this fallback overrides it.")
+
+(defvar files--native-point
+  (and (fboundp 'point) (symbol-function 'point))
+  "Native `point' captured before this fallback overrides it.")
+
+(defvar files--native-goto-char
+  (and (fboundp 'goto-char) (symbol-function 'goto-char))
+  "Native `goto-char' captured before this fallback overrides it.")
+
+(defvar files--native-buffer-modified-p
+  (and (fboundp 'buffer-modified-p)
+       (symbol-function 'buffer-modified-p))
+  "Native `buffer-modified-p' captured before this fallback overrides it.")
+
+(defvar files--native-set-buffer-modified-p
+  (and (fboundp 'set-buffer-modified-p)
+       (symbol-function 'set-buffer-modified-p))
+  "Native `set-buffer-modified-p' captured before this fallback overrides it.")
 
 (defun files--expand-file-name (filename)
   "Expand FILENAME when the runtime supplies `expand-file-name'."
@@ -74,6 +128,24 @@
   "Return BUFFER's cell in ALIST."
   (let ((key (files--buffer-key buffer)))
     (and key (assq key (symbol-value alist)))))
+
+(defun files--host-buffer-available-p ()
+  "Return non-nil when captured host buffer primitives can be used."
+  (and files--native-buffer-string
+       (fboundp 'current-buffer)
+       (current-buffer)))
+
+(defun files--with-host-buffer (buffer thunk)
+  "Call THUNK with BUFFER current when host buffer primitives exist."
+  (if (and buffer (fboundp 'set-buffer))
+      (let ((old (and (fboundp 'current-buffer) (current-buffer))))
+        (unwind-protect
+            (progn
+              (set-buffer buffer)
+              (funcall thunk))
+          (when old
+            (set-buffer old))))
+    (funcall thunk)))
 
 (defun files--buffer-live-or-unknown-p (buffer)
   "Return non-nil when BUFFER is live or liveness cannot be checked."
@@ -111,8 +183,13 @@
 
 (defun files--buffer-string-value (&optional buffer)
   "Return BUFFER's fallback text."
-  (let ((cell (files--buffer-state-cell 'files--buffer-strings buffer)))
-    (if cell (cdr cell) files--buffer-string)))
+  (if (files--host-buffer-available-p)
+      (files--with-host-buffer
+       buffer
+       (lambda ()
+         (funcall files--native-buffer-string)))
+    (let ((cell (files--buffer-state-cell 'files--buffer-strings buffer)))
+      (if cell (cdr cell) files--buffer-string))))
 
 (defun files--set-buffer-string-value (string &optional buffer)
   "Set BUFFER's fallback text to STRING."
@@ -121,24 +198,44 @@
 
 (defun files--buffer-point-value (&optional buffer)
   "Return BUFFER's fallback point."
-  (let ((cell (files--buffer-state-cell 'files--buffer-points buffer)))
-    (if cell (cdr cell) files--point)))
+  (if (and files--native-point (files--host-buffer-available-p))
+      (files--with-host-buffer
+       buffer
+       (lambda ()
+         (funcall files--native-point)))
+    (let ((cell (files--buffer-state-cell 'files--buffer-points buffer)))
+      (if cell (cdr cell) files--point))))
 
 (defun files--set-buffer-point-value (point &optional buffer)
   "Set BUFFER's fallback point to POINT."
-  (setq files--point point)
-  (files--set-buffer-state-cell 'files--buffer-points point buffer))
+  (if (and files--native-goto-char (files--host-buffer-available-p))
+      (files--with-host-buffer
+       buffer
+       (lambda ()
+         (funcall files--native-goto-char point)))
+    (setq files--point point)
+    (files--set-buffer-state-cell 'files--buffer-points point buffer)))
 
 (defun files--buffer-modified-value (&optional buffer)
   "Return BUFFER's fallback modified flag."
-  (let ((cell (files--buffer-state-cell 'files--buffer-modified-flags
-                                        buffer)))
-    (if cell (cdr cell) files--buffer-modified-p)))
+  (if (and files--native-buffer-modified-p (files--host-buffer-available-p))
+      (files--with-host-buffer
+       buffer
+       (lambda ()
+         (funcall files--native-buffer-modified-p)))
+    (let ((cell (files--buffer-state-cell 'files--buffer-modified-flags
+                                          buffer)))
+      (if cell (cdr cell) files--buffer-modified-p))))
 
 (defun files--set-buffer-modified-value (flag &optional buffer)
   "Set BUFFER's fallback modified flag to FLAG."
-  (setq files--buffer-modified-p flag)
-  (files--set-buffer-state-cell 'files--buffer-modified-flags flag buffer))
+  (if (and files--native-set-buffer-modified-p (files--host-buffer-available-p))
+      (files--with-host-buffer
+       buffer
+       (lambda ()
+         (funcall files--native-set-buffer-modified-p flag)))
+    (setq files--buffer-modified-p flag)
+    (files--set-buffer-state-cell 'files--buffer-modified-flags flag buffer)))
 
 (defun files--buffer-file-name (&optional buffer)
   "Return BUFFER's fallback visited file name."
@@ -252,12 +349,16 @@
 (when (files--install-fallback-function-p 'point-min)
   (defun point-min ()
     "Return the first valid fallback buffer position."
-    1))
+    (if (and files--native-point-min (files--host-buffer-available-p))
+        (funcall files--native-point-min)
+      1)))
 
 (when (files--install-fallback-function-p 'point-max)
   (defun point-max ()
     "Return one past the last fallback buffer position."
-    (1+ (files--string-length (files--buffer-string-value)))))
+    (if (and files--native-point-max (files--host-buffer-available-p))
+        (funcall files--native-point-max)
+      (1+ (files--string-length (files--buffer-string-value))))))
 
 (when (files--install-fallback-function-p 'point)
   (defun point ()
@@ -281,23 +382,31 @@
 (when (files--install-fallback-function-p 'erase-buffer)
   (defun erase-buffer ()
     "Erase the fallback current buffer."
-    (files--set-buffer-string-value "")
-    (files--set-buffer-point-value 1)
-    (files--set-buffer-modified-value t)
+    (if (and files--native-erase-buffer (files--host-buffer-available-p))
+        (funcall files--native-erase-buffer)
+      (files--set-buffer-string-value "")
+      (files--set-buffer-point-value 1)
+      (files--set-buffer-modified-value t))
     nil))
+
+(defun files--fallback-insert-strings (strings)
+  "Insert STRINGS into the fallback text model."
+  (let ((text (files--concat-strings strings)))
+    (let* ((buffer-text (files--buffer-string-value))
+           (point (files--buffer-point-value))
+           (pos (1- (files--clip-point point)))
+           (before (substring buffer-text 0 pos))
+           (after (substring buffer-text pos)))
+      (files--set-buffer-string-value (concat before text after))
+      (files--set-buffer-point-value (+ point (length text)))
+      (files--set-buffer-modified-value t))))
 
 (when (files--install-fallback-function-p 'insert)
   (defun insert (&rest strings)
     "Insert STRINGS at fallback point."
-    (let ((text (files--concat-strings strings)))
-      (let* ((buffer-text (files--buffer-string-value))
-             (point (files--buffer-point-value))
-             (pos (1- (files--clip-point point)))
-             (before (substring buffer-text 0 pos))
-             (after (substring buffer-text pos)))
-        (files--set-buffer-string-value (concat before text after))
-        (files--set-buffer-point-value (+ point (length text)))
-        (files--set-buffer-modified-value t)))
+    (if (and files--native-insert (files--host-buffer-available-p))
+        (apply files--native-insert strings)
+      (files--fallback-insert-strings strings))
     nil))
 
 (when (files--install-fallback-function-p 'buffer-modified-p)
@@ -511,6 +620,18 @@
              (error nil))))
     (and (stringp s) (> (length s) 0))))
 
+(defun files--native-access-ok-p (filename mode)
+  "Return non-nil when a captured host predicate accepts FILENAME."
+  (cond
+   ((and (= mode files--ok-exist) files--native-file-exists-p)
+    (funcall files--native-file-exists-p filename))
+   ((and (= mode files--ok-read) files--native-file-readable-p)
+    (funcall files--native-file-readable-p filename))
+   ((and (= mode files--ok-write) files--native-file-writable-p)
+    (funcall files--native-file-writable-p filename))
+   ((and (= mode files--ok-exec) files--native-file-executable-p)
+    (funcall files--native-file-executable-p filename))))
+
 (defun files--access-ok-p (filename mode)
   "Return non-nil when access(2) on FILENAME with MODE succeeds (rc 0).
 Falls back to a read-based existence check when the reader exposes no
@@ -518,7 +639,8 @@ Falls back to a read-based existence check when the reader exposes no
   (if (fboundp 'nelisp--syscall-path-int)
       (= 0 (nelisp--syscall-path-int files--syscall-access
                                      (files--expand-file-name filename) mode))
-    (files--rdf-nonempty-p filename)))
+    (or (files--native-access-ok-p filename mode)
+        (files--rdf-nonempty-p filename))))
 
 (when (files--install-fallback-function-p 'file-exists-p)
   (defun file-exists-p (filename)
@@ -966,13 +1088,17 @@ assumed to already exist."
   (defun delete-file (filename &optional _trash)
     "Delete FILENAME via the reader's `nelisp--syscall-path' unlink(2).
 Signals `file-error' on kernel failure (rc < 0).  TRASH is ignored."
-    (if (fboundp 'nelisp--syscall-path)
+    (cond
+     (files--native-delete-file
+      (funcall files--native-delete-file filename))
+     ((fboundp 'nelisp--syscall-path)
         (let ((rc (nelisp--syscall-path files--syscall-unlink
                                         (files--expand-file-name filename))))
           (when (< rc 0)
-            (signal 'file-error (list "Removing old name" filename rc))))
+          (signal 'file-error (list "Removing old name" filename rc)))))
+     (t
       (signal 'file-error
-              (list "delete-file unavailable (no nelisp--syscall-path)" filename)))
+              (list "delete-file unavailable (no nelisp--syscall-path)" filename))))
     nil))
 
 (when (files--install-fallback-function-p 'delete-directory)

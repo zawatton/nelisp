@@ -2227,6 +2227,31 @@ is required."
   (defvar emacs-major-version 29))
 (unless (boundp 'emacs-minor-version)
   (defvar emacs-minor-version 1))
+(unless (boundp 'emacs-build-system)
+  (defvar emacs-build-system
+    (if (fboundp 'system-name) (system-name) "standalone")))
+(unless (boundp 'emacs-build-time)
+  (defvar emacs-build-time nil))
+(unless (boundp 'emacs-build-number)
+  (defvar emacs-build-number 1))
+(unless (boundp 'system-configuration)
+  (defvar system-configuration "nelisp-standalone"))
+(unless (boundp 'source-directory)
+  (defvar source-directory ""))
+(unless (boundp 'motif-version-string)
+  (defvar motif-version-string nil))
+(unless (boundp 'gtk-version-string)
+  (defvar gtk-version-string nil))
+(unless (boundp 'ns-version-string)
+  (defvar ns-version-string nil))
+(unless (boundp 'cairo-version-string)
+  (defvar cairo-version-string nil))
+(unless (boundp 'emacs-repository-version)
+  (defvar emacs-repository-version nil))
+(unless (boundp 'emacs-repository-branch)
+  (defvar emacs-repository-branch nil))
+(unless (boundp 'emacs-bzr-version)
+  (defvar emacs-bzr-version nil))
 (unless (boundp 'user-emacs-directory)
   (defvar user-emacs-directory ""))
 (unless (boundp 'user-init-file)
@@ -2238,13 +2263,107 @@ is required."
 (unless (boundp 'invocation-name)
   (defvar invocation-name "nelisp"))
 
+(unless (fboundp 'android-read-build-system)
+  (defun android-read-build-system ()
+    "Standalone compatibility shim: Android build system is unknown."
+    nil))
+
+(unless (fboundp 'android-read-build-time)
+  (defun android-read-build-time ()
+    "Standalone compatibility shim: Android build time is unknown."
+    nil))
+
+(unless (fboundp 'emacs-version)
+  (defun emacs-version (&optional here)
+    "Return or insert a lightweight Emacs-compatible version string."
+    (let ((version-string
+           (format "GNU Emacs %s (build %s, %s)"
+                   (if (boundp 'emacs-version) emacs-version "29.1")
+                   (if (boundp 'emacs-build-number) emacs-build-number 1)
+                   (if (boundp 'system-configuration)
+                       system-configuration
+                     "nelisp-standalone"))))
+      (if here
+          (insert version-string)
+        version-string))))
+
+(unless (fboundp 'version)
+  (defalias 'version 'emacs-version))
+
+(unless (fboundp 'emacs-repository-version-git)
+  (defun emacs-repository-version-git (&optional _dir)
+    "Standalone compatibility shim: repository revision is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-version-android)
+  (defun emacs-repository-version-android ()
+    "Standalone compatibility shim: Android repository revision is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-get-version)
+  (defun emacs-repository-get-version (&optional _dir _external)
+    "Standalone compatibility shim: repository revision is unknown."
+    nil))
+
+(unless (fboundp 'emacs-bzr-get-version)
+  (defalias 'emacs-bzr-get-version 'emacs-repository-get-version))
+
+(unless (fboundp 'emacs-repository-branch-android)
+  (defun emacs-repository-branch-android ()
+    "Standalone compatibility shim: Android repository branch is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-branch-git)
+  (defun emacs-repository-branch-git (&optional _dir)
+    "Standalone compatibility shim: repository branch is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-get-branch)
+  (defun emacs-repository-get-branch (&optional _dir)
+    "Standalone compatibility shim: repository branch is unknown."
+    nil))
+
+(unless (boundp 'three-step-help)
+  (defvar three-step-help nil))
+(unless (boundp 'help-for-help-use-variable-pitch)
+  (defvar help-for-help-use-variable-pitch t))
+
+(unless (fboundp 'help--help-screen)
+  (defun help--help-screen (help-line _help-text _helped-map _buffer-name)
+    "Standalone compatibility shim for `make-help-screen' dispatchers."
+    (let ((line (if (and (fboundp 'substitute-command-keys)
+                         (stringp help-line))
+                    (substitute-command-keys help-line)
+                  help-line)))
+      (when (and line (fboundp 'message))
+        (message "%s" line)))
+    nil))
+
+(unless (fboundp 'make-help-screen)
+  (defmacro make-help-screen (fname help-line help-text helped-map
+                                    &optional buffer-name)
+    "Construct a lightweight standalone help command named FNAME."
+    (list 'defun fname nil
+          "Help command."
+          (list 'interactive)
+          (list 'help--help-screen
+                help-line
+                help-text
+                helped-map
+                buffer-name))))
+
+(unless (featurep 'help-macro)
+  (provide 'help-macro))
+
 ;; Phase B5 — coding-string identity stubs.  Standalone NeLisp strings
 ;; are UTF-8 already; the bulk-stub no-op (returns nil) breaks JSON-RPC
 ;; parsing when callers wrap incoming strings with `decode-coding-string'.
 ;; Forward to identity so the round-trip is a no-op.
-(defun decode-coding-string (string &optional _coding-system _nocopy &rest _)
-  "Identity stub — return STRING unchanged.  NeLisp strings are UTF-8."
-  string)
-(defun encode-coding-string (string &optional _coding-system _nocopy &rest _)
-  "Identity stub — return STRING unchanged."
-  string)
+(when (emacs-stub--install-function-p 'decode-coding-string)
+  (defun decode-coding-string (string &optional _coding-system _nocopy &rest _)
+    "Identity stub — return STRING unchanged.  NeLisp strings are UTF-8."
+    string))
+(when (emacs-stub--install-function-p 'encode-coding-string)
+  (defun encode-coding-string (string &optional _coding-system _nocopy &rest _)
+    "Identity stub — return STRING unchanged."
+    string))

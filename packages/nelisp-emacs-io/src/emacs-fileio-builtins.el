@@ -67,9 +67,16 @@ on those semantics during bootstrap.")
 
 (defun emacs-fileio-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
-  (or (not (fboundp symbol))
+  (or (not (emacs-fileio-builtins--function-cell-live-p symbol))
       (and (not (boundp 'emacs-version))
            (memq symbol emacs-fileio-builtins--standalone-overrides))))
+
+(defun emacs-fileio-builtins--function-cell-live-p (symbol)
+  "Return non-nil when SYMBOL has a usable function cell."
+  (and (fboundp symbol)
+       (condition-case nil
+           (symbol-function symbol)
+         (error nil))))
 
 ;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
 ;;
@@ -286,6 +293,16 @@ NOWARN / RAWFILE / WILDCARDS are accepted for API parity but ignored
 (when (emacs-fileio-builtins--install-function-p 'find-file)
   (defun find-file (filename &optional wildcards)
     "Phase D polyfill: visit FILENAME and make it the current buffer."
+    (interactive
+     (list (if (fboundp 'read-file-name)
+               (read-file-name
+                "Find file: "
+                (and (boundp 'default-directory) default-directory)
+                nil nil)
+             (if (fboundp 'read-string)
+                 (read-string "Find file: ")
+               ""))
+           nil))
     (ignore wildcards)
     (let ((buf (find-file-noselect filename)))
       (nelisp-ec-set-buffer buf)
@@ -299,6 +316,7 @@ disambiguation (= multiple backup levels) has no MVP equivalent.
 
 Clears `(buffer-modified-p)' on success so the GUI mode-line `**'
 indicator drops back to `--' after a save."
+    (interactive "P")
     (ignore arg)
     (let* ((b (nelisp-ec-current-buffer))
            (f (and b (buffer-file-name b))))
@@ -319,6 +337,16 @@ confirmation prompt in MVP).
 
 Clears `(buffer-modified-p)' on success — `set-visited-file-name'
 takes the buffer's contents to be in-sync with the new path."
+    (interactive
+     (list (if (fboundp 'read-file-name)
+               (read-file-name
+                "Write file: "
+                (and (boundp 'default-directory) default-directory)
+                nil nil)
+             (if (fboundp 'read-string)
+                 (read-string "Write file: ")
+               ""))
+           nil))
     (ignore confirm)
     (let ((abs (nelisp-ec-expand-file-name filename)))
       (write-region (nelisp-ec-point-min) (nelisp-ec-point-max) abs)

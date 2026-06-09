@@ -475,7 +475,7 @@
 
 (ert-deftest emacs-command-loop-builtins-test/b5-fbound-parity ()
   (dolist (sym '(execute-extended-command universal-argument
-                 digit-argument negative-argument))
+                 digit-argument negative-argument prefix-numeric-value))
     (should (fboundp sym))))
 
 (ert-deftest emacs-command-loop-builtins-test/universal-argument-basic ()
@@ -493,6 +493,13 @@
     (emacs-command-loop-call-interactively
      'emacs-command-loop-universal-argument)
     (should (equal '(16) emacs-command-loop--prefix-arg))))
+
+(ert-deftest emacs-command-loop-builtins-test/prefix-numeric-value-helper ()
+  (should (= 1 (emacs-command-loop--prefix-numeric-value nil)))
+  (should (= -1 (emacs-command-loop--prefix-numeric-value '-)))
+  (should (= -1 (emacs-command-loop--prefix-numeric-value '(-))))
+  (should (= 4 (emacs-command-loop--prefix-numeric-value '(4))))
+  (should (= 7 (emacs-command-loop--prefix-numeric-value 7))))
 
 (ert-deftest emacs-command-loop-builtins-test/digit-argument-first-digit ()
   (emacs-command-loop-builtins-test--with-fresh-state

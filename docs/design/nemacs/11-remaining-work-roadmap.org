@@ -1,0 +1,417 @@
+#+TITLE: nelisp-emacs Doc 11 - Remaining Work Roadmap
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-09
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 01 architecture, Doc 02 v0.1 daily-driver, Doc 03 vendor migration, Doc 05 legacy omission scope, Doc 09 layer boundary, Doc 10 runtime callable tiers
+
+* 0. Purpose
+
+This document turns the remaining large work items into an implementation
+roadmap.  The current state is uneven:
+
+- Basic editing, file I/O, minibuffer, help, parts of window/tab, and shell
+  command have shipped enough behavior to serve as anchors.
+- The next large items are project/VC, frame/tab/window expansion,
+  coding/input-method, major-mode/package groups, and long-running stability.
+- Existing docs already define architecture, vendor migration, omission policy,
+  and callable tiers.  This document connects those into a product-oriented
+  order of work.
+
+The goal is not to chase every missing GNU Emacs feature.  The goal is a modern
+daily-driver editor on the NeLisp standalone path, with explicit compatibility
+lanes for the vendor and package surfaces that matter.
+
+* 1. Scope Model
+
+Work is divided into five lanes.
+
+| Lane | Purpose | Close signal |
+|------+---------+--------------|
+| A. Product-critical editor | Make the standalone/GUI editor usable for daily work | End-to-end command smokes pass through the UI bridge |
+| B. Daily-driver expansion | Add workflows users naturally expect after basic editing | Focused ERT + one interactive or bridge smoke per workflow |
+| C. Compatibility | Move vendor/package surfaces from load proof to callable behavior | Runtime callable tests, not only =featurep= / load count |
+| D. Display/runtime | Improve rendering, startup, and self-host path | Runtime image / redisplay / bridge smokes stay green |
+| E. Operations | Keep long sessions stable and regressions diagnosable | Soak, replay, leak, and differential gates |
+
+Doc 05 remains the omission policy.  Legacy-only subsystems should not be pulled
+into scope unless a concrete must-run workflow proves they are needed.
+
+* 2. Current Anchors
+
+These areas are already usable enough to build on:
+
+- Basic buffer/file commands: =find-file=, =find-file-noselect=, =save-buffer=,
+  =write-file=, =insert-file-contents=, =write-region=.
+- Basic editing: insertion, deletion, movement, newline, region, kill/yank,
+  undo/redo subset.
+- Command dispatch: =command-execute=, =call-interactively=,
+  =execute-extended-command=, minibuffer command arguments.
+- Minibuffer and completion subset: =read-from-minibuffer=,
+  =completing-read=, command/file/project prompts.
+- Help subset: describe function/variable/key and help buffers.
+- Window subset: split/delete/select/other-window, basic window state.
+- Frame/TUI substrate: stub mode plus TUI backend swap-in and event parsing.
+- Shell command subset: synchronous and asynchronous =shell-command=.
+- Project subset: VC-root detection and project file selection.
+- Vendor proof lanes: Class-A utility/i18n and daily-driver core feature
+  facades.
+- Runtime callable tiering: Doc 10 defines Tier 1/2/3 promotion rules.
+
+* 3. Remaining Work Inventory
+
+** 3.1 Product-critical editor surface
+
+These items should be treated as the next "usable editor" blockers.
+
+| Area | Remaining work | Notes |
+|------+----------------+-------|
+| Standalone daily-driver | Make =bin/nemacs --driver=nelisp= credible for daily editing, not only batch/proof smokes | Requires runtime image, bridge, startup, and error reporting to converge |
+| GUI bridge | Replace adapter-local reader paths with shared command/session behavior | GUI owns transport/paint; this repo owns command semantics per Doc 09 |
+| Raw key/session bridge | Prefer raw key sequence + snapshot over direct command fallback | Direct =/tmp/nemacs-cmd= style inputs remain migration-only |
+| File lifecycle | =revert-buffer=, auto-save, backup, lockfile, recent files, save-place | Keep Tramp separate until a concrete ssh-only scope is chosen |
+| Command errors/status | Return user-visible status/error data consistently through bridge and TUI | Must not hide command failure in transport code |
+
+Close gate:
+
+1. Standalone opens a file, edits, saves, writes another file, switches buffers,
+   runs =M-x=, and reports an invalid command error through one bridge smoke.
+2. The same command semantics are exercised through host ERT and standalone
+   reader smoke.
+3. GUI adapter no longer implements editor-state mutations that belong in
+   =nelisp-emacs=.
+
+** 3.2 Project and VC
+
+The shipped project subset is intentionally small.  The next useful step is a
+Git-first project/VC lane, not full historical VC compatibility.
+
+| Area | Remaining work |
+|------+----------------|
+| Project files | Ignore rules, large-tree performance, caching, refresh/invalidation |
+| Project commands | =project-switch-project= polish, project buffers, project shell, project grep |
+| Xref/imenu | Minimal jump-to-definition and symbol index path for Elisp/dev workflows |
+| VC Git facade | File state, branch, diff, log, annotate/blame, commit buffer handoff |
+| VC UI | Basic =vc-dir= or lightweight status buffer for Git only |
+
+Non-goals for this lane:
+
+- CVS/RCS/SCCS/Bzr/Mtn backends.
+- Magit compatibility as a first milestone.
+- Full EDE/Semantic project model.
+
+Close gate:
+
+1. In a Git repository, project root detection, file completion, project grep,
+   and project shell use the same root.
+2. A modified file reports Git state, shows a diff, and can open a log/status
+   buffer.
+3. Unsupported non-Git VC backends fail explicitly or remain omitted per Doc 05.
+
+** 3.3 Frame, tab, and window expansion
+
+The current window surface is enough for basic split editing.  Daily use needs
+state restoration, display-buffer policy, and tab/frame integration.
+
+| Area | Remaining work |
+|------+----------------|
+| Window layout | =display-buffer= rules, pop-to-buffer, side windows or explicit omission, winner-like restoration |
+| Window state | window-start/point persistence, selected window across buffers, scroll commands |
+| Frame integration | multi-frame semantics, selected-frame/window consistency, backend lifecycle |
+| Tab-bar/tab-line | Real tab selection/close/rename/move, buffer association, bridge rendering contract |
+| Minibuffer/help windows | Dedicated display policy for minibuffer, help, completion, info/status buffers |
+
+Close gate:
+
+1. Opening help/completion/project/status buffers uses predictable window rules.
+2. Tabs can be created, switched, renamed, and closed without losing buffer or
+   window state.
+3. Frame and window selection stay coherent under TUI and GUI bridge smokes.
+
+** 3.4 Coding and input method
+
+Doc 05 narrows coding scope aggressively.  The first implementation target is
+modern UTF-8 editor behavior, plus explicit omission for legacy systems.
+
+| Area | Remaining work |
+|------+----------------|
+| Coding systems | UTF-8, raw bytes, ASCII, binary read/write, coding metadata on buffers/files |
+| Newline handling | LF default, optional CRLF handling, no broad legacy platform heuristics |
+| File detection | BOM handling, invalid UTF-8 policy, binary file detection |
+| Input method | Direct UTF-8 input, composition boundary, optional small IM only on request |
+| International display | CJK width, combining characters, bidi/composition coordination with redisplay v2 |
+
+Non-goals for the first lane:
+
+- Full Quail/LEIM.
+- ISO-2022, EUC, Shift-JIS, Big5/GBK/GB18030, HZ, EBCDIC, and large codepage
+  families unless a must-run file requires one.
+
+Close gate:
+
+1. UTF-8 files round-trip through standalone and bridge paths.
+2. Binary/raw files can be opened and saved without corrupting bytes.
+3. Invalid encoding and unsupported input methods produce clear user-visible
+   errors.
+
+** 3.5 Major modes and package groups
+
+This lane should be curated.  Load compatibility is not enough; each promoted
+mode/package needs a small runtime workflow.
+
+| Group | First target |
+|-------+--------------|
+| Elisp/dev | =emacs-lisp-mode=, eval, imenu/xref, project grep, compile |
+| Text/org | Current org subset plus refile/archive/clock/agenda promotion only where daily workflows need it |
+| Dired | Mark/copy/rename/delete/sort/revert/recursive basics |
+| Programming modes | Fundamental/prog-mode/font-lock indentation facade, then selected language modes |
+| Package manager | Minimal =package.el= install/list/activate facade, archive and autoload policy |
+| Completion/LSP | CAPF and completion styles before company/eglot claims |
+| MELPA pilot | Real package onboarding for dash/s/ht/f/queue-class packages, then helm/ido/company/eglot candidates |
+
+Close gate:
+
+1. Each promoted mode has at least one load test, one runtime command test, and
+   one editor workflow smoke.
+2. Package activation does not mutate bootstrap order unpredictably.
+3. Unsupported package features signal documented unsupported conditions rather
+   than silently becoming no-ops.
+
+** 3.6 Vendor migration and autoload/dump
+
+Doc 03 and Doc 10 already define the broad vendor strategy.  The missing work is
+to turn load/count proof into callable runtime behavior.
+
+| Area | Remaining work |
+|------+----------------|
+| Vendor inventory | Keep Class A/B/C/D/E classification fresh and generated |
+| Autoload | loaddefs/autoload injection and stable lazy loading |
+| Dump/runtime image | Move from source replay toward real startup acceleration when NeLisp supports it |
+| Tier 2 | Keep load-only/drop-only proof separate from runtime progress |
+| Tier 3 | Promote facades only when a Tier 1 path needs callable behavior |
+| GNU comparison | Property comparison and selected ERT mirror tests for promoted APIs |
+
+Close gate:
+
+1. =make verify-vendor= stays green.
+2. Promoted vendor APIs are measured by callable behavior, not just =fboundp=.
+3. Autoloaded functions needed by promoted workflows resolve without manual
+   eager loading.
+
+** 3.7 Display, redisplay, fonts, and images
+
+Phase 3 MVP shipped.  The remaining work is mostly correctness and richer
+display semantics.
+
+| Area | Remaining work |
+|------+----------------|
+| Redisplay v2 | bidi, composition, display property real specs, mouse-face, dedicated mode-line row |
+| Fonts/faces | Font metrics, fontset realization, glyphless display, face inheritance under GUI |
+| Images | Image loading/display property integration and bridge/backend render contract |
+| Mouse/selection | Mouse events, selection, scroll wheel, drag/drop where backend supports it |
+| Performance | Large buffer scrolling, incremental invalidation, per-frame p99 under real sessions |
+
+Close gate:
+
+1. 10MB scrolling and 1h soak are repeatable diagnostics.
+2. Non-LTR/composition cases have either correct rendering or explicit degraded
+   behavior.
+3. GUI/TUI rendering receives the same editor state and reports backend-specific
+   unsupported display features consistently.
+
+** 3.8 Process, terminal, and command-running workflows
+
+=shell-command= is only the first process milestone.
+
+| Area | Remaining work |
+|------+----------------|
+| Process core | =make-process= practical behavior, filters, sentinels, process buffers |
+| PTY | Modern terminal/PTY support, Windows Terminal coordination if needed |
+| Comint | Shell/repl buffers, input history, prompt handling |
+| Compilation | =compile=, =grep=, next-error, project integration |
+| Eshell/term | Separate decision: facade, minimal runtime, or explicit omission for early daily-driver |
+
+Close gate:
+
+1. Async process output accumulates in a buffer and sentinel state is observable.
+2. =compile= or project grep can run, parse one error, and jump to a file.
+3. Unsupported PTY/terminal features fail explicitly.
+
+** 3.9 Help, Info, customize, and documentation UI
+
+The shipped help subset is enough for command discovery but not full Emacs
+documentation workflows.
+
+| Area | Remaining work |
+|------+----------------|
+| Help | apropos, describe-keymap, contextual help, help-window display rules |
+| Info | Directory, node parsing, next/prev/up, search, manual lookup |
+| Customize | defcustom persistence, customize buffer UI, user option editing |
+| Docs/assets | Distribution file viewing and stable help buffers through bridge |
+
+Close gate:
+
+1. =C-h i= opens Info directory and navigates between at least two nodes.
+2. =apropos= and =describe-keymap= produce useful help buffers.
+3. Custom variables can be edited and persisted without requiring full legacy
+   customize behavior.
+
+** 3.10 Long-running stability and operations
+
+This lane should become a release gate once the standalone editor is usable.
+
+| Area | Remaining work |
+|------+----------------|
+| Soak | 1h edit/search/save/window/process scenario |
+| Memory | Leak/RSS checks for large buffers, redisplay, process output, project scans |
+| Replay | Persistent REPL vendor replay and runtime image replay diagnostics |
+| Differential | GNU Emacs property comparison for promoted APIs |
+| CI shape | Fast host ERT, standalone smoke, opt-in long diagnostics, clear failure buckets |
+| Session | Desktop/session restore, server/emacsclient decision, daemon path if needed |
+
+Close gate:
+
+1. Fast =make test= remains the default development gate.
+2. Standalone smoke catches product regressions before vendor breadth tests.
+3. Long diagnostics are opt-in but scripted, documented, and reproducible.
+
+* 4. Suggested Milestones
+
+** M1. Standalone Product Smoke
+
+Focus:
+
+- Raw-key/session bridge.
+- File/edit/save/write-file/buffer switch/M-x/help/error status.
+- Remove or quarantine bridge-local editor semantics.
+
+Deliverable:
+
+- A single standalone smoke that proves the editor loop through the bridge.
+
+** M2. Project/Git Daily Workflow
+
+Focus:
+
+- Project cache/ignore/performance.
+- Project grep and project shell.
+- Git-only VC status/diff/log facade.
+
+Deliverable:
+
+- In a Git repo, edit a file, see modified state, show diff/log, run project
+  grep, and jump to a result.
+
+** M3. Window/Tab/Help Display Policy
+
+Focus:
+
+- =display-buffer= subset.
+- Help/completion/project/status window rules.
+- Real tab-bar/tab-line operations and bridge rendering.
+
+Deliverable:
+
+- Daily navigation across editing buffers, help buffers, project buffers, and
+  tabs without state loss.
+
+** M4. Coding/Input Modern Baseline
+
+Focus:
+
+- UTF-8/raw/ASCII round-trip.
+- Binary file handling.
+- Invalid encoding and unsupported input method status.
+
+Deliverable:
+
+- Modern coding behavior is explicit and tested; legacy omission remains
+  documented.
+
+** M5. Dired/Process/Search Expansion
+
+Focus:
+
+- Dired file operations.
+- Async process buffers and compilation/project grep.
+- Query replace/occur/xref/imenu basics.
+
+Deliverable:
+
+- Common editing and development workflows no longer require shell escape or
+  external Emacs for routine tasks.
+
+** M6. Package/Major-mode Promotion
+
+Focus:
+
+- Package activation policy.
+- Curated modes/packages with runtime workflows.
+- CAPF/completion style before company/eglot claims.
+
+Deliverable:
+
+- Each promoted package/mode has runtime tests and a documented unsupported
+  boundary.
+
+** M7. Runtime Image, Autoload, and Vendor Callable Promotion
+
+Focus:
+
+- Autoload/loaddefs integration.
+- Runtime image acceleration once NeLisp supports it.
+- Tier 3 facade promotion only when workflows require it.
+
+Deliverable:
+
+- Vendor progress is measured by callable workflows and startup stays bounded.
+
+** M8. Stability Release Gate
+
+Focus:
+
+- Soak, large-file, RSS, process, project-scan, and replay diagnostics.
+- Failure bucket reporting.
+
+Deliverable:
+
+- A reproducible release preflight for standalone daily-driver builds.
+
+* 5. Explicit Non-goals For Initial Roadmap
+
+These should not block the milestones above:
+
+- Full Gnus/Rmail/MH-E.
+- Full EDE/Semantic.
+- Legacy VC backends other than Git.
+- Full Quail/LEIM and legacy coding-system families.
+- Exotic terminal compatibility.
+- Full Tramp, unless a minimal ssh-only lane is explicitly accepted.
+- Full Magit compatibility.
+- Full org-mode parity.
+- Long-tail MELPA compatibility beyond curated pilots.
+
+* 6. Tracking Rules
+
+1. Promote behavior by workflow, not by file count.
+2. Keep load-only proof separate from runtime callable progress.
+3. Every promoted command needs a host ERT and, when user-visible, a standalone
+   or bridge smoke.
+4. Facades must either implement the narrow behavior required by a workflow or
+   signal a clear unsupported condition.
+5. Omitted legacy behavior should be documented once, then kept out of the
+   critical path.
+6. Do not move editor semantics into GUI/backend adapters.  Backends transport
+   input and render returned state; this repo decides command behavior.
+
+* 7. Open Questions
+
+- Is minimal ssh-only Tramp in scope before the first standalone daily-driver
+  release?
+- Which first real MELPA package should be the package promotion gate after the
+  existing dash/s/ht/f/queue-style pilots?
+- Should Git VC status be a lightweight local implementation or a thin command
+  wrapper around =git= output first?
+- Which coding legacy exceptions, if any, are must-run enough to keep despite
+  Doc 05?
+- Should server/emacsclient be part of the first stability milestone or deferred
+  until after standalone daily-driver editing is stable?

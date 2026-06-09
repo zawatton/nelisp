@@ -10,6 +10,14 @@
 
 (require 'ert)
 (require 'cl-lib)
+;; Ensure the standalone buffer shim is loaded before any fixture captures
+;; `files-test--shim-functions' originals.  Several fixtures capture the current
+;; function cells and restore them in cleanup; if `files-standalone-buffer' is
+;; only lazily loaded *inside* a fixture body, the captured originals are nil
+;; and cleanup `fmakunbound's shim functions (e.g. `files--expand-file-name'),
+;; leaving every later find-file/save-buffer/org/project test with a void
+;; `files--expand-file-name'.  Loading it here keeps the captured originals bound.
+(require 'files-standalone-buffer)
 
 (defconst files-test--root
   (file-name-directory
@@ -35,14 +43,33 @@
     write-file
     insert-file
     list-directory
+    file-exists-p
+    file-readable-p
+    file-writable-p
+    file-executable-p
+    file-directory-p
+    make-directory
+    delete-file
+    delete-directory
+    rename-file
+    add-name-to-file
+    make-symbolic-link
+    set-file-modes
+    files--standalone-runtime-p
     files--ensure-buffer-substrate
     files--call
     files--wrap
     files--install
+    files--lazy-wrapper
     files--install-nullary
+    files--lazy-nullary-wrapper
+    files--install-lazy
+    files--install-lazy-nullary
     files--buffer-key
     files--buffer-file-cell
     files--buffer-state-cell
+    files--host-buffer-available-p
+    files--with-host-buffer
     files--buffer-live-or-unknown-p
     files--live-buffer-cells
     files--prune-dead-buffer-state
@@ -67,6 +94,7 @@
     files--clip-point
     files--buffer-substring
     files--install-fallback-function-p
+    files--fallback-insert-strings
     files--read-file-text
     files--region-text
     files--write-file-text
@@ -75,6 +103,7 @@
     files--file-readable-or-unknown-p
     files--insert-file-if-readable
     files--load-file-into-buffer
+    files--native-access-ok-p
     point-min
     point-max
     point
@@ -139,7 +168,20 @@
     files--standalone-runtime-p
     files--native-write-region
     files--native-insert-file-contents
+    files--native-file-exists-p
+    files--native-file-readable-p
+    files--native-file-writable-p
+    files--native-file-executable-p
+    files--native-delete-file
     files--native-buffer-string
+    files--native-erase-buffer
+    files--native-insert
+    files--native-point-min
+    files--native-point-max
+    files--native-point
+    files--native-goto-char
+    files--native-buffer-modified-p
+    files--native-set-buffer-modified-p
     buffer-read-only)
   "Variables supplied by the lightweight files shim.")
 
@@ -195,15 +237,63 @@
                                 find-file-other-window find-file-other-frame))
       (should (fboundp symbol)))))
 
+(ert-deftest files-test/standalone-detected-when-nelisp-write-primitive-exists ()
+  (let ((originals
+         (mapcar (lambda (symbol)
+                   (cons symbol
+                         (and (fboundp symbol)
+                              (symbol-function symbol))))
+                 files-test--shim-functions))
+        (original-values
+         (mapcar (lambda (symbol)
+                   (cons symbol
+                         (and (boundp symbol)
+                              (symbol-value symbol))))
+                 files-test--shim-variables))
+        (original-features features)
+        (original-nl-write-file (and (fboundp 'nl-write-file)
+                                     (symbol-function 'nl-write-file)))
+        (native-comp-enable-subr-trampolines nil))
+    (unwind-protect
+        (progn
+          (dolist (symbol files-test--preload-unbind-functions)
+            (fmakunbound symbol))
+          (dolist (symbol files-test--shim-variables)
+            (makunbound symbol))
+          (fset 'nl-write-file (lambda (&rest _args) nil))
+          (let ((emacs-version "30.0"))
+            (setq features (remove 'files (remove 'files-standalone-buffer
+                                                  features)))
+            (load (expand-file-name "src/files.el" files-test--root)
+                  nil t))
+          (should files--standalone-p)
+          (should (fboundp 'find-file))
+          (should (fboundp 'save-buffer))
+          (should (fboundp 'write-file)))
+      (setq features original-features)
+      (dolist (cell originals)
+        (if (cdr cell)
+            (fset (car cell) (cdr cell))
+          (fmakunbound (car cell))))
+      (dolist (cell original-values)
+        (if (cdr cell)
+            (set (car cell) (cdr cell))
+          (makunbound (car cell))))
+      (if original-nl-write-file
+          (fset 'nl-write-file original-nl-write-file)
+        (when (fboundp 'nl-write-file)
+          (fmakunbound 'nl-write-file))))))
+
 (ert-deftest files-test/wrappers-avoid-lexical-closure-capture ()
   (files-test--with-shim-functions
     (should (equal (symbol-function 'find-file)
                    '(lambda (&rest args)
-                      (apply 'files--call 'files-standalone-find-file
-                             args))))
+                      (require 'files-standalone-buffer)
+                      (apply 'files-standalone-find-file args))))
     (should (equal (symbol-function 'save-buffer)
                    '(lambda (&rest _args)
-                      (files--call 'files-standalone-save-buffer))))))
+                      (require 'files-standalone-buffer)
+                      (funcall 'files-standalone-save-buffer))))))
 
 (ert-deftest files-test/installs-standard-c-x-file-bindings ()
   (files-test--with-shim-functions
@@ -232,18 +322,21 @@
 
 (ert-deftest files-test/find-file-read-only-uses-standalone-command ()
   (files-test--with-shim-functions
-    (let ((file (make-temp-file "nelisp-emacs-files-test-")))
+    (let ((file (make-temp-file "nelisp-emacs-files-test-"))
+          (host-delete-file (symbol-function 'delete-file)))
       (unwind-protect
           (progn
             (with-temp-file file
               (insert "alpha"))
             (setq buffer-read-only nil)
-            (cl-letf (((symbol-function 'nelisp--syscall-read-file)
+            (cl-letf (((symbol-function 'nelisp--syscall-path-int)
+                       (lambda (&rest _args) 0))
+                      ((symbol-function 'nelisp--syscall-read-file)
                        (lambda (_filename) "alpha")))
               (find-file-read-only file))
             (should buffer-read-only)
             (should (equal (buffer-string) "alpha")))
-        (delete-file file)))))
+        (funcall host-delete-file file)))))
 
 (ert-deftest files-test/find-file-reuses-existing-buffer-without-reload ()
   (files-test--with-shim-functions

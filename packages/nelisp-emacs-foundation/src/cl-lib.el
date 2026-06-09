@@ -171,6 +171,22 @@ this for sibling-list immutability)."
     "Return the first element of SEQUENCE for which PREDICATE is nil."
     (cl-find-if (lambda (x) (not (funcall predicate x))) sequence)))
 
+(unless (fboundp 'cl-member-if)
+  (defun cl-member-if (predicate list &rest _keys)
+    "Return the first tail of LIST whose car satisfies PREDICATE."
+    (let ((cur list)
+          (found nil))
+      (while (and cur (not found))
+        (if (funcall predicate (car cur))
+            (setq found cur)
+          (setq cur (cdr cur))))
+      found)))
+
+(unless (fboundp 'cl-member-if-not)
+  (defun cl-member-if-not (predicate list &rest _keys)
+    "Return the first tail of LIST whose car does not satisfy PREDICATE."
+    (cl-member-if (lambda (x) (not (funcall predicate x))) list)))
+
 ;;;; --- generalized place setter (setf) ---------------------------------
 ;;
 ;; nelisp driver では vendor/emacs-lisp/emacs-lisp/gv.el が reader 不

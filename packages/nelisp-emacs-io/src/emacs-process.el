@@ -16,9 +16,9 @@
 ;;   are thin pass-throughs to whatever the unprefixed name
 ;;   currently resolves to (= host's C impl).
 ;;
-;; - Under standalone NeLisp the substrate currently signals
-;;   `emacs-process-not-implemented' — a future phase will wire
-;;   NeLisp's process primitive (`anvil-process-spawn' etc.) here.
+;; - Under standalone NeLisp the substrate dispatches to registered
+;;   standalone primitives first, then to the loaded `nelisp-process'
+;;   facade when available.
 ;;
 ;; The two-mode test guards against recursion via
 ;; `indirect-function' equality: if the unprefixed name's resolved
@@ -52,7 +52,243 @@
   "Process operation not implemented in this environment"
   'emacs-process-error)
 
+(declare-function nelisp-call-process "nelisp-process"
+                  (program &optional infile destination display &rest args))
+(declare-function nelisp-call-process-region "nelisp-process"
+                  (start end program &optional delete destination display
+                         &rest args))
+(declare-function nelisp-process-call-process "nelisp-process"
+                  (program &optional infile destination display &rest args))
+(declare-function nelisp-process-call-process-region "nelisp-process"
+                  (start end program &optional delete destination display
+                         &rest args))
+
 ;;;; --- delegate plumbing ---------------------------------------------
+
+(defconst emacs-process--nelisp-delegates
+  '((call-process
+     nelisp-process-call-process
+     nelisp-call-process)
+    (call-process-region
+     nelisp-process-call-process-region
+     nelisp-call-process-region))
+  "Mapping from Emacs process API names to `nelisp-process' facades.
+The `nelisp-process-*' names are the current package-shaped primitive
+surface; the legacy `nelisp-*' names remain as compatibility fallbacks.")
+
+(defvar emacs-process--fallback-processes nil
+  "Process objects created by the standalone synchronous fallback.")
+
+(defvar emacs-process--fallback-next-pid 10000
+  "Synthetic pid counter for standalone fallback process objects.")
+
+(defconst emacs-process--fallback-tag 'emacs-process-fallback
+  "Vector tag used for standalone fallback process objects.")
+
+(defvar emacs-process--native-process-metadata nil
+  "Metadata alist for native NeLisp process objects.")
+
+(defun emacs-process--fallback-process-p (object)
+  "Return non-nil when OBJECT is a fallback process vector."
+  (and (vectorp object)
+       (<= 10 (length object))
+       (eq (aref object 0) emacs-process--fallback-tag)))
+
+(defun emacs-process--native-process-p (object)
+  "Return non-nil when OBJECT is a native NeLisp process object."
+  (and (fboundp 'nelisp-process-object-p)
+       (ignore-errors (nelisp-process-object-p object))))
+
+(defun emacs-process--process-object-p (object)
+  "Return non-nil when OBJECT is a process object owned here."
+  (or (emacs-process--fallback-process-p object)
+      (emacs-process--native-process-p object)))
+
+(defun emacs-process--native-start-available-p ()
+  "Return non-nil when native NeLisp async process start exists."
+  (or (fboundp 'nelisp-process-start-process)
+      (fboundp 'nelisp-process-start)))
+
+(defun emacs-process--native-metadata-cell (process)
+  "Return metadata cell for PROCESS."
+  (assoc process emacs-process--native-process-metadata))
+
+(defun emacs-process--native-metadata (process key)
+  "Return metadata KEY for PROCESS."
+  (plist-get (cdr (emacs-process--native-metadata-cell process)) key))
+
+(defun emacs-process--native-put-metadata (process plist)
+  "Store PLIST metadata for PROCESS."
+  (let ((cell (emacs-process--native-metadata-cell process)))
+    (if cell
+        (setcdr cell plist)
+      (push (cons process plist) emacs-process--native-process-metadata)))
+  process)
+
+(defun emacs-process--native-set-metadata (process key value)
+  "Set metadata KEY to VALUE for PROCESS."
+  (let ((cell (emacs-process--native-metadata-cell process)))
+    (if cell
+        (setcdr cell (plist-put (cdr cell) key value))
+      (emacs-process--native-put-metadata process (list key value))))
+  value)
+
+(defun emacs-process--native-status-code (process)
+  "Return native integer status code for PROCESS."
+  (if (fboundp 'nelisp-process-status)
+      (nelisp-process-status process)
+    3))
+
+(defun emacs-process--native-status-symbol (process)
+  "Return Emacs status symbol for native PROCESS."
+  (let ((code (emacs-process--native-status-code process)))
+    (cond
+     ((= code 0) 'run)
+     ((= code 1) 'exit)
+     ((= code 2) 'signal)
+     (t 'closed))))
+
+(defun emacs-process--native-exit-status (process)
+  "Return native PROCESS exit status."
+  (if (fboundp 'nelisp-process-exit-status)
+      (nelisp-process-exit-status process)
+    0))
+
+(defun emacs-process--native-start (name buffer command filter sentinel)
+  "Start native NeLisp COMMAND and attach Emacs metadata."
+  (let* ((launcher (cond
+                    ((fboundp 'nelisp-process-start-process)
+                     'nelisp-process-start-process)
+                    ((fboundp 'nelisp-process-start)
+                     'nelisp-process-start)
+                    (t nil)))
+         (process (and launcher command
+                       (apply launcher command))))
+    (when process
+      (emacs-process--native-put-metadata
+       process
+       (list :name name
+             :buffer (emacs-process--fallback-buffer buffer)
+             :command command
+             :filter filter
+             :sentinel sentinel
+             :sentinel-fired nil
+             :deleted nil)))
+    process))
+
+(defun emacs-process--native-drain-output (process)
+  "Drain native PROCESS output into buffer/filter."
+  (let ((observed nil)
+        (chunk t)
+        (buffer (emacs-process--native-metadata process :buffer))
+        (filter (emacs-process--native-metadata process :filter)))
+    (while (and (fboundp 'nelisp-process-read-output) chunk)
+      (setq chunk (nelisp-process-read-output process 4096))
+      (when (and (stringp chunk) (> (length chunk) 0))
+        (setq observed t)
+        (when buffer
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert chunk)))
+        (when (functionp filter)
+          (funcall filter process chunk))))
+    observed))
+
+(defun emacs-process--native-maybe-fire-sentinel (process)
+  "Fire native PROCESS sentinel once after exit or signal."
+  (let ((status (emacs-process--native-status-symbol process)))
+    (if (or (eq status 'run)
+            (emacs-process--native-metadata process :sentinel-fired))
+        nil
+      (let ((sentinel (emacs-process--native-metadata process :sentinel))
+            (event (if (eq status 'exit)
+                       "finished\n"
+                     (format "exited abnormally with code %s\n"
+                             (emacs-process--native-exit-status process)))))
+        (emacs-process--native-set-metadata process :sentinel-fired t)
+        (when (functionp sentinel)
+          (funcall sentinel process event))
+        t))))
+
+(defun emacs-process--native-live-processes ()
+  "Return known native processes not marked deleted."
+  (let ((processes nil))
+    (dolist (cell emacs-process--native-process-metadata)
+      (unless (plist-get (cdr cell) :deleted)
+        (push (car cell) processes)))
+    (nreverse processes)))
+
+(defun emacs-process--native-accept (processes)
+  "Drain output and sentinel events from PROCESSES."
+  (let ((observed nil))
+    (dolist (process processes)
+      (when (emacs-process--native-process-p process)
+        (when (emacs-process--native-drain-output process)
+          (setq observed t))
+        (when (emacs-process--native-maybe-fire-sentinel process)
+          (setq observed t))))
+    observed))
+
+(defun emacs-process--native-delete (process)
+  "Delete native PROCESS and mark metadata deleted."
+  (when (fboundp 'nelisp-process-delete)
+    (nelisp-process-delete process))
+  (emacs-process--native-set-metadata process :deleted t)
+  process)
+
+(defun emacs-process--fallback-process-deleted-p (process)
+  "Return non-nil when fallback PROCESS has been deleted."
+  (and (emacs-process--fallback-process-p process)
+       (aref process 8)))
+
+(defun emacs-process--fallback-buffer (buffer)
+  "Resolve BUFFER designator for fallback process output."
+  (cond
+   ((null buffer) nil)
+   ((and (fboundp 'bufferp) (bufferp buffer)) buffer)
+   ((and (stringp buffer) (fboundp 'get-buffer-create))
+    (get-buffer-create buffer))
+   (t buffer)))
+
+(defun emacs-process--fallback-sentinel-event (status)
+  "Return a process sentinel event string for exit STATUS."
+  (if (and (integerp status) (= status 0))
+      "finished\n"
+    (format "exited abnormally with code %s\n" status)))
+
+(defun emacs-process--fallback-make-process (&rest plist)
+  "Create a fallback process object and run its command synchronously.
+
+This is intentionally not the final async substrate.  It gives
+standalone NeLisp a process-shaped object for APIs such as
+`async-shell-command', `process-status', and process sentinels while
+the lower event loop / pipe implementation is still being integrated."
+  (let* ((name (or (plist-get plist :name) "process"))
+         (buffer (emacs-process--fallback-buffer (plist-get plist :buffer)))
+         (command (plist-get plist :command))
+         (sentinel (plist-get plist :sentinel))
+         (filter (plist-get plist :filter))
+         (pid emacs-process--fallback-next-pid)
+         (process (vector emacs-process--fallback-tag
+                          name buffer command 'run nil filter sentinel
+                          nil pid))
+         (status 1))
+    (setq emacs-process--fallback-next-pid
+          (+ emacs-process--fallback-next-pid 1))
+    (push process emacs-process--fallback-processes)
+    (setq status
+          (condition-case nil
+              (if (and (consp command) (car command))
+                  (apply #'emacs-process-call-process
+                         (car command) nil buffer nil (cdr command))
+                1)
+            (error 1)))
+    (aset process 4 'exit)
+    (aset process 5 status)
+    (when (functionp sentinel)
+      (funcall sentinel process
+               (emacs-process--fallback-sentinel-event status)))
+    process))
 
 (defun emacs-process--delegate-p (sym)
   "Return non-nil if SYM has a callable host binding distinct from us.
@@ -66,23 +302,42 @@ unprefixed name to one of our substrate functions."
              (not (eq (indirect-function sym)
                       (indirect-function our-prefixed)))))))
 
+(defun emacs-process--nelisp-delegate (sym)
+  "Return the `nelisp-process' delegate for SYM, or nil."
+  (let ((cell (assq sym emacs-process--nelisp-delegates))
+        (found nil))
+    (unless (catch 'available
+              (dolist (candidate (cdr cell))
+                (when (fboundp candidate)
+                  (throw 'available t)))
+              nil)
+      (require 'nelisp-process nil t))
+    (catch 'done
+      (dolist (candidate (cdr cell))
+        (when (fboundp candidate)
+          (setq found candidate)
+          (throw 'done nil))))
+    found))
+
 (defun emacs-process--delegate (sym args)
   "Apply SYM to ARGS through the host binding or standalone primitive.
 
 Lookup order:
   1. host-mode + host has a non-shadow binding → apply host.
   2. a standalone primitive is registered for SYM → dispatch.
-  3. otherwise signal `emacs-process-not-implemented'.
+  3. a loaded `nelisp-process' facade is available → dispatch.
+  4. otherwise signal `emacs-process-not-implemented'.
 
-Step 2 is what lets a future NeLisp primitive (= via
-`emacs-standalone-register-primitive') replace the signal without
-touching this file."
+Steps 2 and 3 are what let NeLisp replace the host primitive while
+keeping this file as the Emacs-shaped compatibility boundary."
   (cond
    ((and (not (emacs-standalone-mode-p))
          (emacs-process--delegate-p sym))
     (apply (indirect-function sym) args))
    ((emacs-standalone-has-primitive-p sym)
     (emacs-standalone-call-primitive sym args))
+   ((emacs-process--nelisp-delegate sym)
+    (apply (emacs-process--nelisp-delegate sym) args))
    (t (signal 'emacs-process-not-implemented (list sym)))))
 
 ;;;; --- synchronous: call-process / call-process-region --------------
@@ -117,53 +372,112 @@ later replace this through `emacs-standalone-register-primitive'."
 
 (defun emacs-process-start-process (name buffer program &rest program-args)
   "Start PROGRAM in BUFFER asynchronously.  Returns the process object."
-  (emacs-process--delegate 'start-process
-                           (cons name (cons buffer (cons program program-args)))))
+  (or (and (emacs-standalone-mode-p)
+           (emacs-process--native-start-available-p)
+           (ignore-errors
+             (emacs-process--native-start
+              name buffer (cons program program-args) nil nil)))
+      (condition-case nil
+          (emacs-process--delegate
+           'start-process
+           (cons name (cons buffer (cons program program-args))))
+        (emacs-process-not-implemented
+         (apply #'emacs-process--fallback-make-process
+                (list :name name
+                      :buffer buffer
+                      :command (cons program program-args)))))))
 
 (defun emacs-process-make-process (&rest plist)
   "Start a process described by PLIST (= keyword/value pairs)."
-  (emacs-process--delegate 'make-process plist))
+  (or (and (emacs-standalone-mode-p)
+           (emacs-process--native-start-available-p)
+           (ignore-errors
+             (emacs-process--native-start
+              (or (plist-get plist :name) "process")
+              (plist-get plist :buffer)
+              (plist-get plist :command)
+              (plist-get plist :filter)
+              (plist-get plist :sentinel))))
+      (condition-case nil
+          (emacs-process--delegate 'make-process plist)
+        (emacs-process-not-implemented
+         (apply #'emacs-process--fallback-make-process plist)))))
 
 ;;;; --- predicates / accessors ---------------------------------------
 
 (defun emacs-process-processp (object)
   "Return non-nil if OBJECT is a process."
   (cond
-   ((emacs-process--delegate-p 'processp)
+   ((emacs-process--fallback-process-p object) t)
+   ((emacs-process--native-process-p object) t)
+   ((and (not (emacs-standalone-mode-p))
+         (emacs-process--delegate-p 'processp))
     (funcall (indirect-function 'processp) object))
    (t nil)))
 
 (defun emacs-process-process-list ()
   "Return the list of currently-active processes."
   (cond
-   ((emacs-process--delegate-p 'process-list)
+   ((and (not (emacs-standalone-mode-p))
+         (emacs-process--delegate-p 'process-list))
     (funcall (indirect-function 'process-list)))
-   (t nil)))
+   (t
+    (let ((processes nil))
+      (dolist (process (emacs-process--native-live-processes))
+        (push process processes))
+      (dolist (process emacs-process--fallback-processes)
+        (unless (emacs-process--fallback-process-deleted-p process)
+          (push process processes)))
+      (nreverse processes)))))
 
 (defun emacs-process-process-status (process)
   "Return PROCESS's status symbol."
-  (emacs-process--delegate 'process-status (list process)))
+  (cond
+   ((emacs-process--fallback-process-p process) (aref process 4))
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-status-symbol process))
+   (t (emacs-process--delegate 'process-status (list process)))))
 
 (defun emacs-process-process-exit-status (process)
   "Return PROCESS's exit-status integer."
-  (emacs-process--delegate 'process-exit-status (list process)))
+  (cond
+   ((emacs-process--fallback-process-p process) (or (aref process 5) 0))
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-exit-status process))
+   (t (emacs-process--delegate 'process-exit-status (list process)))))
 
 (defun emacs-process-process-buffer (process)
   "Return PROCESS's associated buffer."
-  (emacs-process--delegate 'process-buffer (list process)))
+  (cond
+   ((emacs-process--fallback-process-p process) (aref process 2))
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-metadata process :buffer))
+   (t (emacs-process--delegate 'process-buffer (list process)))))
 
 (defun emacs-process-process-name (process)
   "Return PROCESS's name string."
-  (emacs-process--delegate 'process-name (list process)))
+  (cond
+   ((emacs-process--fallback-process-p process) (aref process 1))
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-metadata process :name))
+   (t (emacs-process--delegate 'process-name (list process)))))
 
 (defun emacs-process-process-command (process)
   "Return PROCESS's command (program + args) as a list."
-  (emacs-process--delegate 'process-command (list process)))
+  (cond
+   ((emacs-process--fallback-process-p process) (aref process 3))
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-metadata process :command))
+   (t (emacs-process--delegate 'process-command (list process)))))
 
 (defun emacs-process-process-live-p (process)
   "Return non-nil if PROCESS is alive (status = run/open/listen/connect/stop)."
   (cond
-   ((emacs-process--delegate-p 'process-live-p)
+   ((emacs-process--process-object-p process)
+    (memq (emacs-process-process-status process)
+          '(run open listen connect stop)))
+   ((and (not (emacs-standalone-mode-p))
+         (emacs-process--delegate-p 'process-live-p))
     (funcall (indirect-function 'process-live-p) process))
    (t
     ;; Standalone fallback: derive from process-status if available.
@@ -174,33 +488,68 @@ later replace this through `emacs-standalone-register-primitive'."
 
 (defun emacs-process-process-id (process)
   "Return PROCESS's OS pid integer (or nil if not yet running)."
-  (emacs-process--delegate 'process-id (list process)))
+  (cond
+   ((emacs-process--fallback-process-p process) (aref process 9))
+   ((emacs-process--native-process-p process)
+    (and (fboundp 'nelisp-process-pid)
+         (nelisp-process-pid process)))
+   (t (emacs-process--delegate 'process-id (list process)))))
 
 (defun emacs-process-process-mark (process)
   "Return PROCESS's filter mark (used by buffer-attached output)."
-  (emacs-process--delegate 'process-mark (list process)))
+  (if (emacs-process--process-object-p process)
+      nil
+    (emacs-process--delegate 'process-mark (list process))))
 
 (defun emacs-process-set-process-filter (process filter)
   "Install FILTER as PROCESS's stdout/stderr callback."
-  (emacs-process--delegate 'set-process-filter (list process filter)))
+  (cond
+   ((emacs-process--fallback-process-p process)
+    (aset process 6 filter)
+    filter)
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-set-metadata process :filter filter))
+   (t (emacs-process--delegate 'set-process-filter (list process filter)))))
 
 (defun emacs-process-set-process-sentinel (process sentinel)
   "Install SENTINEL as PROCESS's lifecycle callback."
-  (emacs-process--delegate 'set-process-sentinel (list process sentinel)))
+  (cond
+   ((emacs-process--fallback-process-p process)
+    (aset process 7 sentinel)
+    sentinel)
+   ((emacs-process--native-process-p process)
+    (emacs-process--native-set-metadata process :sentinel sentinel))
+   (t (emacs-process--delegate 'set-process-sentinel
+                               (list process sentinel)))))
 
 (defun emacs-process-accept-process-output (&optional process seconds millisec just-this-one)
   "Block until PROCESS produces output or SECONDS pass.
 
 Same calling convention as Emacs's `accept-process-output'.  When
 the host primitive is available, delegate.  Otherwise the
-substrate currently signals `emacs-process-not-implemented' —
-async I/O without an event loop is out of γ-MVP scope."
-  (emacs-process--delegate 'accept-process-output
-                           (list process seconds millisec just-this-one)))
+substrate returns nil when only synchronous fallback processes exist."
+  (condition-case nil
+      (if (or (emacs-process--native-process-p process)
+              (and (null process)
+                   emacs-process--native-process-metadata))
+          (emacs-process--native-accept
+           (if process
+               (list process)
+             (emacs-process--native-live-processes)))
+        (emacs-process--delegate 'accept-process-output
+                                 (list process seconds millisec just-this-one)))
+    (emacs-process-not-implemented nil)))
 
 (defun emacs-process-signal-process (process-or-pid signum)
   "Send SIGNUM (number or symbol) to PROCESS-OR-PID."
-  (emacs-process--delegate 'signal-process (list process-or-pid signum)))
+  (if (emacs-process--fallback-process-p process-or-pid)
+      (progn
+        (aset process-or-pid 4 'signal)
+        (aset process-or-pid 5 1)
+        process-or-pid)
+    (if (emacs-process--native-process-p process-or-pid)
+        (emacs-process--native-delete process-or-pid)
+      (emacs-process--delegate 'signal-process (list process-or-pid signum)))))
 
 (defun emacs-process-kill-process (process)
   "Send SIGKILL to PROCESS.
@@ -208,6 +557,8 @@ async I/O without an event loop is out of γ-MVP scope."
 Equivalent to `(signal-process PROCESS \\='KILL)'; provided as a
 top-level alias for parity with the Emacs API."
   (cond
+   ((emacs-process--process-object-p process)
+    (emacs-process-signal-process process 'KILL))
    ((emacs-process--delegate-p 'kill-process)
     (funcall (indirect-function 'kill-process) process))
    (t
@@ -217,15 +568,25 @@ top-level alias for parity with the Emacs API."
 
 (defun emacs-process-process-send-string (process string)
   "Send STRING to PROCESS's stdin."
-  (emacs-process--delegate 'process-send-string (list process string)))
+  (if (emacs-process--process-object-p process)
+      nil
+    (emacs-process--delegate 'process-send-string (list process string))))
 
 (defun emacs-process-process-send-eof (&optional process)
   "Send EOF to PROCESS's stdin."
-  (emacs-process--delegate 'process-send-eof (list process)))
+  (if (emacs-process--process-object-p process)
+      nil
+    (emacs-process--delegate 'process-send-eof (list process))))
 
 (defun emacs-process-delete-process (process)
   "Kill PROCESS."
-  (emacs-process--delegate 'delete-process (list process)))
+  (if (emacs-process--fallback-process-p process)
+      (progn
+        (aset process 8 t)
+        process)
+    (if (emacs-process--native-process-p process)
+        (emacs-process--native-delete process)
+      (emacs-process--delegate 'delete-process (list process)))))
 
 ;;;; --- shell-command / shell-command-to-string ----------------------
 

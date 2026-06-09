@@ -606,27 +606,29 @@ the general `&rest' / `dolist' string-insert path."
 ;;;###autoload
 (defun nelisp-ec-insert (&rest strings)
   "Insert STRINGS at POINT in the current buffer.  Return nil.
-POINT advances past the inserted text.  Each element of STRINGS must
-be a string; nil elements are ignored (Emacs forbids them, but our
-MVP is forgiving for callers that build arg lists dynamically)."
+POINT advances past the inserted text.  Each element of STRINGS may be
+a string or character code; nil elements are ignored (Emacs forbids
+them, but our MVP is forgiving for callers that build arg lists
+dynamically)."
   (let ((buf (nelisp-ec--ensure-current)))
     (dolist (s strings)
       (when s
-        (unless (stringp s)
-          (signal 'wrong-type-argument (list 'stringp s)))
-        (unless (string-empty-p s)
-          (let* ((insert-point (nelisp-ec-buffer-point buf))
-                 (n-chars (length s))
+        (unless (or (stringp s) (integerp s))
+          (signal 'wrong-type-argument (list 'string-or-char-p s)))
+        (let ((text (if (integerp s) (string s) s)))
+          (unless (string-empty-p text)
+            (let* ((insert-point (nelisp-ec-buffer-point buf))
+                 (n-chars (length text))
                  (new-point (+ insert-point n-chars))
                  (ne (nelisp-ec-buffer-narrow-end buf)))
-            (nelisp-ec--sync-cursor buf)
-            (text-buffer-insert (nelisp-ec--text buf) s)
-            (nelisp-ec--set-buffer-point buf new-point)
-            (nelisp-ec--set-buffer-modified-p buf t)
-            (nelisp-ec--bump-buffer-text-tick buf)
-            ;; Push narrow-end out when insertion occurred at or before it.
-            (when (and ne (<= insert-point ne))
-              (nelisp-ec--set-buffer-narrow-end buf (+ ne n-chars)))))))
+              (nelisp-ec--sync-cursor buf)
+              (text-buffer-insert (nelisp-ec--text buf) text)
+              (nelisp-ec--set-buffer-point buf new-point)
+              (nelisp-ec--set-buffer-modified-p buf t)
+              (nelisp-ec--bump-buffer-text-tick buf)
+              ;; Push narrow-end out when insertion occurred at or before it.
+              (when (and ne (<= insert-point ne))
+                (nelisp-ec--set-buffer-narrow-end buf (+ ne n-chars))))))))
     nil))
 
 ;;;###autoload
