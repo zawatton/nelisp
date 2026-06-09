@@ -6675,6 +6675,10 @@
             (write-region "" nil "/tmp/nemacs-kill" nil 'silent)
             (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
             (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            ;; A preceding project-query-replace-regexp shows *compilation*
+            ;; (read-only); declare this scratch buffer writable so the kill
+            ;; is not blocked (the front-end re-sends read-only per buffer).
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
             (nemacs-gui-file-bridge-runtime-test--run-ok
              reader image "(nemacs-gui-file-bridge-run)")
             (should (equal " qux\n"
