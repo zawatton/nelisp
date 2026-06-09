@@ -619,6 +619,12 @@
     (nelisp-ec-directory-files dirname))
    ((fboundp 'directory-files)
     (directory-files dirname))
+   ;; Reader builtin: newline-joined names ("." / ".." included).  Prefer
+   ;; this over `nelisp--syscall-readdir', which resolves to the standalone
+   ;; combiner's deferred-apply stash and aborts the caller.
+   ((fboundp 'nelisp--syscall-readdir-names)
+    (let ((text (nelisp--syscall-readdir-names dirname)))
+      (and text (split-string text "\n" t))))
    ((fboundp 'nelisp--syscall-readdir)
     (cdr (nelisp--syscall-readdir dirname)))
    (t nil)))
