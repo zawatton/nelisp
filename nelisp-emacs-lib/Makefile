@@ -570,7 +570,7 @@ test-nemacs-gui-bridge:
 
 SOAK_ITER ?= 20
 soak:
-	@$(EMACS) -L src $(NELISP_LOAD_PATH) --eval "(require 'standalone-soak)" --eval '(let ((r (standalone-soak-run $(SOAK_ITER)))) (princ (standalone-soak-report-string r)) (terpri) (kill-emacs (if (= 0 (plist-get r :errors)) 0 1)))'
+	@$(EMACS) -L src $(NELISP_LOAD_PATH) --eval "(require 'standalone-soak)" --eval '(let ((r (standalone-soak-run $(SOAK_ITER))) (p (standalone-soak-process)) (s (standalone-soak-project-scan "src"))) (princ (standalone-soak-report-string r)) (terpri) (princ (format "process: ran=%s ok=%s\n" (plist-get p :ran) (plist-get p :ok))) (princ (format "project-scan src: files=%s dirs=%s\n" (plist-get s :files) (plist-get s :dirs))) (kill-emacs (if (and (= 0 (plist-get r :errors)) (or (not (plist-get p :ran)) (plist-get p :ok))) 0 1)))'
 
 nemacs-gui-keymap-coverage:
 	@$(EMACS) -Q -L scripts \
