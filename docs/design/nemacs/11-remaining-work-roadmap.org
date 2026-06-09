@@ -376,6 +376,57 @@ Deliverable:
 
 - A reproducible release preflight for standalone daily-driver builds.
 
+** M9. Org Daily Lane
+
+Scope promotion (user 2026-06-10): org moves out of §5 non-goals.  The gate is
+the daily org workflow, not full org-mode parity (tracking rule 1).
+
+Focus:
+
+- Promote the existing host-proven subset (=emacs-org-outline=,
+  =emacs-org-todo=, =emacs-org-table=, =emacs-org-capture=,
+  =emacs-org-agenda=) to standalone/bridge runtime.
+- Gap-fill the daily GTD loop: open org file, cycle TODO state, fold/unfold
+  outline, edit a table, capture an entry, view an agenda.
+
+Deliverable:
+
+- The daily org loop runs through the bridge under the standalone reader with
+  runtime tests; omitted org features are documented once.
+
+** M10. Magit-min Lane
+
+Scope promotion (user 2026-06-10): a Magit-style porcelain moves out of §5
+non-goals.  The gate is the daily commit workflow, not Magit API
+compatibility.
+
+Focus:
+
+- A status buffer over =git status --porcelain= via the reader process
+  substrate.
+- Stage / unstage at point, commit with message, diff and log views.
+
+Deliverable:
+
+- In a Git repo: open status, stage a change, commit it, and view diff/log
+  entirely inside the standalone editor (host ERT + bridge smoke).
+
+** M11. Tramp ssh-only Lane
+
+Scope promotion (user 2026-06-10): answers the §7 open question — minimal
+ssh-only Tramp is in scope; full Tramp stays out.
+
+Focus:
+
+- =/ssh:HOST:/path= find-file → edit → save round-trip via ssh/scp
+  subprocesses.
+- Clear unsupported signaling for every other Tramp method.
+
+Deliverable:
+
+- A loopback-ssh round-trip test passes under the standalone runtime; remote
+  editing of one file works end-to-end.
+
 * 5. Explicit Non-goals For Initial Roadmap
 
 These should not block the milestones above:
@@ -385,9 +436,10 @@ These should not block the milestones above:
 - Legacy VC backends other than Git.
 - Full Quail/LEIM and legacy coding-system families.
 - Exotic terminal compatibility.
-- Full Tramp, unless a minimal ssh-only lane is explicitly accepted.
-- Full Magit compatibility.
-- Full org-mode parity.
+- Full Tramp beyond the M11 ssh-only lane (other methods signal unsupported).
+- Magit API compatibility beyond the M10 porcelain workflow.
+- Org-mode parity beyond the M9 daily lane (Babel, export, LaTeX preview,
+  advanced agenda views stay out until a workflow demands them).
 - Long-tail MELPA compatibility beyond curated pilots.
 
 * 6. Tracking Rules
@@ -405,8 +457,8 @@ These should not block the milestones above:
 
 * 7. Open Questions
 
-- Is minimal ssh-only Tramp in scope before the first standalone daily-driver
-  release?
+- (RESOLVED 2026-06-10 → M11) Minimal ssh-only Tramp is in scope; other
+  methods stay unsupported.
 - Which first real MELPA package should be the package promotion gate after the
   existing dash/s/ht/f/queue-style pilots?
 - Should Git VC status be a lightweight local implementation or a thin command
