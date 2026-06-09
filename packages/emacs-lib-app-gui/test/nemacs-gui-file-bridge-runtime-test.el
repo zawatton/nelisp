@@ -3132,6 +3132,11 @@
                             (write-region "C-x `" nil "/tmp/nemacs-keys" nil 'silent)
                             (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
                             (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+                            ;; The preceding xref scenarios used the minibuffer;
+                            ;; clear the minibuffer-active transport (as the
+                            ;; front-end would) so `C-x `' dispatches next-error
+                            ;; rather than being read as minibuffer input.
+                            (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
                             (nemacs-gui-file-bridge-runtime-test--run-ok
                              reader image "(nemacs-gui-file-bridge-run)")
                             (should (equal "*compilation*"
