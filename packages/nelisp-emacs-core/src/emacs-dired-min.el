@@ -35,6 +35,10 @@
     (emacs-keymap-define-key map (kbd "q") #'emacs-dired-min-quit-window)
     (emacs-keymap-define-key map (kbd "g") #'emacs-dired-min-revert-buffer)
     (emacs-keymap-define-key map (kbd "^") #'dired-up-directory)
+    (emacs-keymap-define-key map (kbd "m") #'dired-mark)
+    (emacs-keymap-define-key map (kbd "u") #'dired-unmark)
+    (emacs-keymap-define-key map (kbd "d") #'dired-flag-file-deletion)
+    (emacs-keymap-define-key map (kbd "x") #'dired-do-flagged-delete)
     map)
   "Keymap for `dired-mode'.")
 
@@ -77,13 +81,27 @@ Each value is a plist with keys:
           (push (cons name attrs) entries))))
     (nreverse entries)))
 
-(defun emacs-dired-min--format-entry (entry)
-  "Return the display line for ENTRY."
+(defun emacs-dired-min--mark-for (marks name)
+  "Return the mark char recorded for NAME in MARKS, or ?\\s when unmarked."
+  (or (cdr (assoc name marks)) ?\s))
+
+(defun emacs-dired-min--remove-mark (marks name)
+  "Return MARKS with any entry for NAME removed."
+  (let (kept)
+    (dolist (cell marks)
+      (unless (equal (car cell) name)
+        (push cell kept)))
+    (nreverse kept)))
+
+(defun emacs-dired-min--format-entry (entry mark-char)
+  "Return the display line for ENTRY prefixed with MARK-CHAR + a space.
+The mark column is a fixed width (two characters), so line offsets are
+independent of which mark is shown."
   (let* ((name (plist-get entry :name))
          (attrs (plist-get entry :attributes))
          (size (or (nth 7 attrs) 0))
          (modes (or (nth 8 attrs) "----------")))
-    (format "%s\t%s\t%s\n" name size modes)))
+    (format "%c %s\t%s\t%s\n" mark-char name size modes)))
 
 (defun emacs-dired-min--entries (directory)
   "Return dired entry plists for DIRECTORY."
@@ -102,7 +120,7 @@ Each value is a plist with keys:
         (starts nil))
     (dolist (entry entries)
       (push pos starts)
-      (setq pos (+ pos (length (emacs-dired-min--format-entry entry)))))
+      (setq pos (+ pos (length (emacs-dired-min--format-entry entry ?\s)))))
     (nreverse starts)))
 
 (defun emacs-dired-min--line-index-at-point (line-starts point)
@@ -137,16 +155,25 @@ Each value is a plist with keys:
          (entries (emacs-dired-min--entries dir))
          (line-starts (emacs-dired-min--line-starts-for-entries entries))
          (buffer (nelisp-ec-current-buffer))
-         (previous (plist-get (gethash buffer emacs-dired-min--state)
-                              :previous-buffer)))
+         (old (gethash buffer emacs-dired-min--state))
+         (previous (plist-get old :previous-buffer))
+         (old-marks (plist-get old :marks))
+         (marks (let (kept)
+                  (dolist (entry entries)
+                    (let ((cell (assoc (plist-get entry :name) old-marks)))
+                      (when cell (push cell kept))))
+                  (nreverse kept))))
     (nelisp-ec-erase-buffer)
     (dolist (entry entries)
-      (nelisp-ec-insert (emacs-dired-min--format-entry entry)))
+      (nelisp-ec-insert
+       (emacs-dired-min--format-entry
+        entry (emacs-dired-min--mark-for marks (plist-get entry :name)))))
     (puthash buffer
              (list :directory dir
                    :entries entries
                    :line-starts line-starts
-                   :previous-buffer previous)
+                   :previous-buffer previous
+                   :marks marks)
              emacs-dired-min--state)
     (when (> (length entries) 0)
       (nelisp-ec-goto-char 1))
@@ -263,6 +290,67 @@ PREVIOUS-BUFFER is remembered for quit behaviour."
     (when buffer
       (remhash buffer emacs-dired-min--state))
     nil))
+
+(defun emacs-dired-min--set-mark-and-advance (mark-char)
+  "Set the mark of the entry at point to MARK-CHAR, then move to the next line.
+A MARK-CHAR of ?\\s clears any existing mark."
+  (let* ((state (emacs-dired-min--current-state))
+         (entries (plist-get state :entries))
+         (line-starts (plist-get state :line-starts))
+         (index (emacs-dired-min--line-index-at-point
+                 line-starts (nelisp-ec-point)))
+         (entry (and entries (nth index entries))))
+    (when entry
+      (let* ((name (plist-get entry :name))
+             (marks (emacs-dired-min--remove-mark (plist-get state :marks) name)))
+        (unless (eq mark-char ?\s)
+          (setq marks (cons (cons name mark-char) marks)))
+        (puthash (nelisp-ec-current-buffer)
+                 (plist-put state :marks marks)
+                 emacs-dired-min--state)
+        (emacs-dired-min--render-current-buffer (plist-get state :directory))
+        (emacs-dired-min--goto-entry-index
+         (min (1+ index) (max 0 (1- (length entries)))))))
+    nil))
+
+;;;###autoload
+(defun dired-mark (&optional _arg)
+  "Mark the file on the current line with `*' and move to the next line."
+  (interactive "p")
+  (emacs-dired-min--set-mark-and-advance ?*))
+
+;;;###autoload
+(defun dired-unmark (&optional _arg)
+  "Remove any mark on the current line and move to the next line."
+  (interactive "p")
+  (emacs-dired-min--set-mark-and-advance ?\s))
+
+;;;###autoload
+(defun dired-flag-file-deletion (&optional _arg)
+  "Flag the file on the current line for deletion (`D') and move down."
+  (interactive "p")
+  (emacs-dired-min--set-mark-and-advance ?D))
+
+;;;###autoload
+(defun dired-do-flagged-delete ()
+  "Delete the files flagged for deletion (marked with `D').
+Directories are skipped (the minimal browser deletes regular files only).
+Returns the number of files deleted."
+  (interactive)
+  (let* ((state (emacs-dired-min--current-state))
+         (marks (plist-get state :marks))
+         (entries (plist-get state :entries))
+         (dir (plist-get state :directory))
+         (deleted 0))
+    (dolist (entry entries)
+      (let ((name (plist-get entry :name))
+            (path (plist-get entry :path)))
+        (when (and (eq (emacs-dired-min--mark-for marks name) ?D)
+                   (not (nelisp-ec-file-directory-p path)))
+          (nelisp-ec-delete-file path)
+          (setq deleted (1+ deleted)))))
+    (emacs-dired-min--render-current-buffer dir)
+    deleted))
 
 (provide 'emacs-dired-min)
 
