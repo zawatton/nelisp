@@ -7,14 +7,18 @@
 # while the fast `make test' stays the default developer gate.
 #
 # Stages (each bucketed PASS / FAIL / SKIP):
-#   1. fast-gate      : `make test'                  (host ERT, the fast gate)
-#   2. standalone-smoke: `make test-nemacs-gui-bridge' (reader-binary smoke)
-#   3. soak           : repeated standalone smoke runs (opt-in via SOAK_ITER)
+#   1. fast-gate         : `make test'                    (host ERT, fast gate)
+#   2. standalone-smoke  : `make test-nemacs-gui-bridge'  (reader-binary smoke)
+#   3. in-process-soak   : `make soak'                    (buffer soak, buckets)
+#   4. vendor-load-replay: `make diagnose-vendor-load-replay-fast'
+#                          (opt-in via REPLAY_CHECK=1; needs bootstrap bundle)
+#   5. soak              : repeated standalone smoke runs (opt-in via SOAK_ITER)
 #
 # Usage:
-#   scripts/release-preflight.sh              # run fast-gate + smoke
-#   SOAK_ITER=5 scripts/release-preflight.sh  # also soak: 5 extra smoke runs
-#   scripts/release-preflight.sh --dry-run    # list stages, run nothing
+#   scripts/release-preflight.sh                  # fast-gate + smoke + soak
+#   REPLAY_CHECK=1 scripts/release-preflight.sh   # also vendor-load replay
+#   SOAK_ITER=5 scripts/release-preflight.sh      # also 5 extra smoke runs
+#   scripts/release-preflight.sh --dry-run        # list stages, run nothing
 #
 # Exit status: 0 when every non-skipped stage passes, 1 otherwise.
 
@@ -67,7 +71,14 @@ run_stage "standalone-smoke" timeout "$SMOKE_TIMEOUT" make test-nemacs-gui-bridg
 # bucketed errors).  Complements the smoke; always run.
 run_stage "in-process-soak" make soak SOAK_ITER=50
 
-# Stage 4: soak (opt-in) -- repeat the smoke to surface intermittent / leak
+# Stage 4: vendor-load replay diagnostic (opt-in via REPLAY_CHECK=1).  Replays
+# vendor library loading through the standalone reader; needs the bootstrap
+# bundle (`make build-nelisp-bootstrap' once), hence opt-in.
+if [ "${REPLAY_CHECK:-0}" != "0" ]; then
+  run_stage "vendor-load-replay" make diagnose-vendor-load-replay-fast
+fi
+
+# Stage 5: soak (opt-in) -- repeat the smoke to surface intermittent / leak
 # failures.  Each iteration is its own bucket so a single flake is visible.
 if [ "$SOAK_ITER" -gt 0 ]; then
   i=1
