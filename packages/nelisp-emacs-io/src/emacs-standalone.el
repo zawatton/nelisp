@@ -66,6 +66,16 @@ for asserting host-mode behaviour deterministically).")
 (defvar emacs-standalone--initialized nil
   "Non-nil once `emacs-standalone-init' has been run.")
 
+(defvar emacs-standalone--native-make-process-at-load
+  (and (fboundp 'make-process) (fboundp 'subrp)
+       (subrp (symbol-function 'make-process)))
+  "Non-nil when `make-process' was a native subr at first load (= host Emacs).
+`defvar' so it captures the host state once and survives reloads.  Used to
+keep the `make-process'-is-not-a-subr standalone heuristic from misfiring
+when a bridge/preload later aliases `make-process' to a wrapper lambda in
+host Emacs (which would otherwise be read as a standalone signal and route
+the process facade into recursive nelisp delegation).")
+
 (defun emacs-standalone--detect ()
   "Run the auto-detection rules and cache the result.
 Returns t when standalone, nil otherwise."
@@ -76,8 +86,11 @@ Returns t when standalone, nil otherwise."
           ;; pure NeLisp the symbol may exist as a stub but its
           ;; implementation will not be a subr.  We treat absence of
           ;; `subrp' (= host's C-tag predicate) on `make-process'
-          ;; as the standalone signal.
-          ((and (fboundp 'make-process)
+          ;; as the standalone signal -- but only when host Emacs was
+          ;; NOT confirmed at load, so a later wrapper alias on
+          ;; `make-process' in host Emacs cannot flip detection.
+          ((and (not emacs-standalone--native-make-process-at-load)
+                (fboundp 'make-process)
                 (fboundp 'subrp)
                 (not (subrp (symbol-function 'make-process))))
            t)
