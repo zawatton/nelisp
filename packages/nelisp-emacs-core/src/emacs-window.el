@@ -975,6 +975,24 @@ direction doesn't match the requested axis."
 Inverse of `emacs-window-enlarge-window'.  Same constraints apply."
   (emacs-window-enlarge-window (- size) horizontal))
 
+(defun emacs-window--special-buffer-p (buffer)
+  "Return non-nil if BUFFER is a special buffer (name like `*...*').
+Special buffers (help, completion, compilation, grep, ...) follow the M3
+popup window rule rather than taking over an editing window."
+  (let ((name (and (nelisp-ec-buffer-p buffer)
+                   (nelisp-ec-buffer-name buffer))))
+    (and (stringp name) (string-prefix-p "*" name))))
+
+(defun emacs-window--popup-window (&optional except)
+  "Return a window already displaying a special buffer, or nil.
+A window showing EXCEPT (a buffer) is skipped so the same buffer is not
+counted as its own popup target."
+  (cl-loop for w in (emacs-window-window-list)
+           for b = (emacs-window-buffer w)
+           when (and (not (eq b except))
+                     (emacs-window--special-buffer-p b))
+           return w))
+
 (defun emacs-window-display-buffer (buffer-or-name &optional _action _frame)
   "Display BUFFER-OR-NAME in a window and return that window.
 
@@ -1000,7 +1018,12 @@ name present in `nelisp-ec--buffers')."
     (or existing
         (let* ((selected (emacs-window-selected-window))
                (others (delq selected (emacs-window-window-list)))
-               (target (or (car others)
+               ;; Special buffers reuse an existing popup window so help,
+               ;; completion and grep share one window instead of each
+               ;; splitting a new one.
+               (popup (and (emacs-window--special-buffer-p buffer)
+                           (emacs-window--popup-window buffer)))
+               (target (or popup (car others)
                            (emacs-window-split-window-below))))
           (emacs-window-set-window-buffer target buffer)
           target))))

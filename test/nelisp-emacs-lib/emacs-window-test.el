@@ -654,6 +654,25 @@
           (should (eq b2 (emacs-window-buffer
                           (emacs-window-selected-window)))))))))
 
+(ert-deftest emacs-window-display-buffer-special-buffers-share-popup ()
+  (emacs-window-test--with-fresh-world
+    (let ((edit (nelisp-ec-generate-new-buffer "t-edit"))
+          (help (nelisp-ec-generate-new-buffer "*Help*"))
+          (comp (nelisp-ec-generate-new-buffer "*Completions*")))
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 edit)
+        ;; first special buffer splits into a popup window
+        (let ((wh (emacs-window-display-buffer help)))
+          (should (not (eq wh w1)))
+          (should (= 2 (length (emacs-window-window-list))))
+          ;; second special buffer reuses the SAME popup window, not a new split
+          (let ((wc (emacs-window-display-buffer comp)))
+            (should (eq wc wh))
+            (should (eq comp (emacs-window-buffer wc)))
+            (should (= 2 (length (emacs-window-window-list))))
+            ;; the editing window is left untouched
+            (should (eq edit (emacs-window-buffer w1)))))))))
+
 ;;;; H. quit-window (M3 popup/help workflow)
 
 (ert-deftest emacs-window-quit-window-deletes-popup-window ()
