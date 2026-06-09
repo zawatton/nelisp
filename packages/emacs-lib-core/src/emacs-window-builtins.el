@@ -172,6 +172,14 @@ accepted for API parity and ignored (= single-frame Phase 1)."
 (when (emacs-window-builtins--install-function-p 'other-window)
   (defalias 'other-window #'emacs-window-other-window-impl))
 
+;;;; --- display-buffer / pop-to-buffer (M3 display policy) --------------
+
+(when (emacs-window-builtins--install-function-p 'display-buffer)
+  (defalias 'display-buffer #'emacs-window-display-buffer))
+
+(when (emacs-window-builtins--install-function-p 'pop-to-buffer)
+  (defalias 'pop-to-buffer #'emacs-window-pop-to-buffer))
+
 (provide 'emacs-window-builtins)
 
 ;;; emacs-window-builtins.el ends here
