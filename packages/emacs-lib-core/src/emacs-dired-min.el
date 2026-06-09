@@ -40,6 +40,7 @@
     (emacs-keymap-define-key map (kbd "d") #'dired-flag-file-deletion)
     (emacs-keymap-define-key map (kbd "x") #'dired-do-flagged-delete)
     (emacs-keymap-define-key map (kbd "R") #'dired-do-rename)
+    (emacs-keymap-define-key map (kbd "C") #'dired-do-copy)
     map)
   "Keymap for `dired-mode'.")
 
@@ -366,6 +367,35 @@ Returns the number of files deleted."
          (target (read-file-name (format "Rename %s to: " name) dir))
          (new-path (nelisp-ec-expand-file-name target dir)))
     (nelisp-ec-rename-file path new-path)
+    (emacs-dired-min--render-current-buffer dir)
+    new-path))
+
+(defun emacs-dired-min--copy-file (src dest)
+  "Copy file SRC to DEST through a temporary buffer.
+Content round-trips through the buffer encoder, which is UTF-8 oriented;
+this minimal browser targets text files."
+  (let ((buf (nelisp-ec-generate-new-buffer " *dired-copy*")))
+    (unwind-protect
+        (nelisp-ec-with-current-buffer buf
+          (nelisp-ec-insert-file-contents src)
+          (nelisp-ec-write-region (nelisp-ec-point-min)
+                                  (nelisp-ec-point-max)
+                                  dest))
+      (nelisp-ec-kill-buffer buf))))
+
+;;;###autoload
+(defun dired-do-copy (&optional _arg)
+  "Copy the file at point to a destination read from the minibuffer."
+  (interactive "p")
+  (let* ((entry (or (emacs-dired-min--current-entry)
+                    (user-error "No dired entry on this line")))
+         (name (plist-get entry :name))
+         (path (plist-get entry :path))
+         (state (emacs-dired-min--current-state))
+         (dir (plist-get state :directory))
+         (target (read-file-name (format "Copy %s to: " name) dir))
+         (new-path (nelisp-ec-expand-file-name target dir)))
+    (emacs-dired-min--copy-file path new-path)
     (emacs-dired-min--render-current-buffer dir)
     new-path))
 
