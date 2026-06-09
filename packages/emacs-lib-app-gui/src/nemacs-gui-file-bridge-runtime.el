@@ -257,6 +257,8 @@
 (setq files--cursor-column 0)
 (setq files--modeline-string "")
 (setq files--modeline-override "")
+(setq files--dired-marks "")
+(setq files--dired-directory "")
 (setq files--undo-buffer-string "")
 (setq files--undo-point 0)
 (setq files--undo-mark 0)
@@ -3756,7 +3758,31 @@
               (progn
                 (if (fboundp 'directory-files)
                     (setq entries (directory-files dir))
-                  (setq entries nil))
+                  (if (fboundp 'nelisp--syscall-readdir-names)
+                      (let ((names-text (nelisp--syscall-readdir-names dir))
+                            (scan 0)
+                            (line-start 0)
+                            (acc nil))
+                        (if names-text
+                            (progn
+                              (while (< scan (length names-text))
+                                (if (= (aref names-text scan) 10)
+                                    (progn
+                                      (setq acc (cons (substring names-text line-start scan) acc))
+                                      (setq line-start (+ scan 1)))
+                                  nil)
+                                (setq scan (+ scan 1)))
+                              (while acc
+                                (setq entries (cons (car acc) entries))
+                                (setq acc (cdr acc))))
+                          nil))
+                    (setq entries nil)))
+                (if (equal dir files--dired-directory)
+                    nil
+                  (progn
+                    (setq files--dired-directory dir)
+                    (setq files--dired-marks "")
+                    (files--write-dired-marks-state)))
                 (setq out (concat "Directory " dir "\n"))
                 (setq tail entries)
                 (while tail
@@ -3771,6 +3797,8 @@
                                 (concat dir "/" name)))
                         (setq out
                               (concat out
+                                      (files--dired-mark-char-for name)
+                                      " "
                                       name
                                       (if (if (fboundp 'file-directory-p)
                                               (file-directory-p path)
@@ -3859,6 +3887,495 @@
             (tab-new)
             (list-directory)
             files--buffer-name))
+
+(fset 'files--dired-marks-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-dired-marks") (files--transport-path))))
+
+(fset 'files--read-dired-marks-state
+      (lambda ()
+        (let ((text "")
+              (index 0)
+              (n 0)
+              (nl -1))
+          (if (files--file-exists-p (files--dired-marks-path))
+              (setq text (rdf (files--dired-marks-path)))
+            nil)
+          (setq n (length text))
+          (while (if (< index n) (< nl 0) nil)
+            (if (= (aref text index) 10)
+                (setq nl index)
+              nil)
+            (setq index (+ index 1)))
+          (if (< nl 0)
+              (progn
+                (setq files--dired-directory text)
+                (setq files--dired-marks ""))
+            (progn
+              (setq files--dired-directory (substring text 0 nl))
+              (setq files--dired-marks (substring text (+ nl 1)))))
+          files--dired-marks)))
+
+(fset 'files--write-dired-marks-state
+      (lambda ()
+        (nl-write-file (files--dired-marks-path)
+                       (concat files--dired-directory "\n" files--dired-marks))))
+
+(fset 'files--dired-mark-line-matches-p
+      (lambda (line name)
+        (if (> (length line) 2)
+            (if (= (aref line (- (length line) 2)) 9)
+                (equal (substring line 0 (- (length line) 2)) name)
+              nil)
+          nil)))
+
+(fset 'files--dired-mark-char-for
+      (lambda (name)
+        (let ((text files--dired-marks)
+              (index 0)
+              (line-start 0)
+              (result " ")
+              (n 0))
+          (setq n (length text))
+          (while (< index n)
+            (if (= (aref text index) 10)
+                (progn
+                  (let ((line (substring text line-start index)))
+                    (if (files--dired-mark-line-matches-p line name)
+                        (setq result (substring line (- (length line) 1)))
+                      nil))
+                  (setq line-start (+ index 1)))
+              nil)
+            (setq index (+ index 1)))
+          result)))
+
+(fset 'files--dired-remove-mark
+      (lambda (name)
+        (let ((text files--dired-marks)
+              (index 0)
+              (line-start 0)
+              (out "")
+              (n 0))
+          (setq n (length text))
+          (while (< index n)
+            (if (= (aref text index) 10)
+                (progn
+                  (let ((line (substring text line-start index)))
+                    (if (files--dired-mark-line-matches-p line name)
+                        nil
+                      (setq out (concat out line "\n"))))
+                  (setq line-start (+ index 1)))
+              nil)
+            (setq index (+ index 1)))
+          (setq files--dired-marks out)
+          files--dired-marks)))
+
+(fset 'files--dired-set-mark
+      (lambda (name mark)
+        (files--dired-remove-mark name)
+        (setq files--dired-marks
+              (concat files--dired-marks name "\t" mark "\n"))
+        files--dired-marks))
+
+(fset 'files--dired-name-at-point
+      (lambda ()
+        (let ((text files--buffer-string)
+              (bol 0)
+              (eol 0)
+              (line "")
+              (n 0)
+              (done nil))
+          (files--clamp-point)
+          (setq n (length text))
+          (setq bol files--point)
+          (while (if (> bol 0) (not done) nil)
+            (if (= (aref text (- bol 1)) 10)
+                (setq done t)
+              (setq bol (- bol 1))))
+          (setq eol files--point)
+          (setq done nil)
+          (while (if (< eol n) (not done) nil)
+            (if (= (aref text eol) 10)
+                (setq done t)
+              (setq eol (+ eol 1))))
+          (setq line (substring text bol eol))
+          (if (= bol 0)
+              ""
+            (progn
+              (if (> (length line) 2)
+                  (setq line (substring line 2))
+                (setq line ""))
+              (if (if (> (length line) 0)
+                      (= (aref line (- (length line) 1)) 47)
+                    nil)
+                  (setq line (substring line 0 (- (length line) 1)))
+                nil)
+              line)))))
+
+(fset 'files--dired-expand
+      (lambda (name)
+        (if (if (> (length name) 0) (= (aref name 0) 47) nil)
+            name
+          (if (equal files--dired-directory "/")
+              (concat "/" name)
+            (concat files--dired-directory "/" name)))))
+
+(fset 'files--dired-directory-p
+      (lambda (path)
+        (if (fboundp 'file-directory-p)
+            (file-directory-p path)
+          (if (fboundp 'nelisp--syscall-stat-field)
+              (let ((mode (nelisp--syscall-stat-field path 24)))
+                (if (< mode 0)
+                    nil
+                  (= (logand mode 61440) 16384)))
+            nil))))
+
+(fset 'files--dired-delete-file
+      (lambda (path)
+        (if (fboundp 'delete-file)
+            (progn (delete-file path) t)
+          (if (fboundp 'nelisp--syscall-path)
+              (= 0 (nelisp--syscall-path 87 path))
+            nil))))
+
+(fset 'files--dired-rename-file
+      (lambda (source target)
+        (if (fboundp 'rename-file)
+            (progn (rename-file source target) t)
+          (if (fboundp 'nelisp--syscall-path2)
+              (= 0 (nelisp--syscall-path2 82 source target))
+            nil))))
+
+(fset 'files--dired-rerender
+      (lambda ()
+        (let ((old-arg files--bridge-arg)
+              (old-point files--point)
+              (action files--display-prefix-action))
+          (setq files--display-prefix-action "")
+          (setq files--bridge-arg files--dired-directory)
+          (list-directory)
+          (setq files--display-prefix-action action)
+          (setq files--bridge-arg old-arg)
+          (setq files--point
+                (if (< old-point (length files--buffer-string))
+                    old-point
+                  (length files--buffer-string)))
+          (files--save-current-buffer-state)
+          files--buffer-name)))
+
+(fset 'files--dired-apply-mark
+      (lambda (mark)
+        (if (equal files--buffer-name "*Directory*")
+            (let ((name (files--dired-name-at-point)))
+              (if (equal name "")
+                  (next-line)
+                (progn
+                  (if (equal mark " ")
+                      (files--dired-remove-mark name)
+                    (files--dired-set-mark name mark))
+                  (files--write-dired-marks-state)
+                  (files--dired-rerender)
+                  (next-line))))
+          (setq files--bridge-status "unsupported"))
+        files--buffer-name))
+
+(fset 'dired-mark
+      (lambda ()
+        (files--dired-apply-mark "*")))
+
+(fset 'dired-unmark
+      (lambda ()
+        (files--dired-apply-mark " ")))
+
+(fset 'dired-flag-file-deletion
+      (lambda ()
+        (files--dired-apply-mark "D")))
+
+(fset 'dired-do-flagged-delete
+      (lambda ()
+        (if (equal files--buffer-name "*Directory*")
+            (let ((text files--dired-marks)
+                  (index 0)
+                  (line-start 0)
+                  (n 0)
+                  (name "")
+                  (path "")
+                  (deleted 0))
+              (setq n (length text))
+              (while (< index n)
+                (if (= (aref text index) 10)
+                    (progn
+                      (let ((line (substring text line-start index)))
+                        (if (if (> (length line) 2)
+                                (if (= (aref line (- (length line) 2)) 9)
+                                    (equal (substring line (- (length line) 1)) "D")
+                                  nil)
+                              nil)
+                            (progn
+                              (setq name (substring line 0 (- (length line) 2)))
+                              (setq path (files--dired-expand name))
+                              (if (not (files--dired-directory-p path))
+                                  (if (files--dired-delete-file path)
+                                      (progn
+                                        (setq deleted (+ deleted 1))
+                                        (files--dired-remove-mark name))
+                                    nil)
+                                nil))
+                          nil))
+                      (setq line-start (+ index 1)))
+                  nil)
+                (setq index (+ index 1)))
+              (files--write-dired-marks-state)
+              (files--dired-rerender)
+              (setq files--modeline-string
+                    (concat "Deleted " (number-to-string deleted) " files"))
+              (setq files--modeline-override files--modeline-string))
+          (setq files--bridge-status "unsupported"))
+        files--buffer-name))
+
+(fset 'dired-do-rename
+      (lambda ()
+        (if (equal files--buffer-name "*Directory*")
+            (let ((name (files--dired-name-at-point))
+                  (target files--bridge-arg)
+                  (source ""))
+              (if (if (equal name "") t (equal target ""))
+                  (setq files--bridge-status "unsupported")
+                (progn
+                  (setq source (files--dired-expand name))
+                  (setq target (files--dired-expand target))
+                  (if (files--file-exists-p source)
+                      (if (files--dired-rename-file source target)
+                          (progn
+                            (files--dired-remove-mark name)
+                            (files--write-dired-marks-state)
+                            (files--dired-rerender))
+                        (setq files--bridge-status "unsupported"))
+                    (setq files--bridge-status "file-not-found")))))
+          (setq files--bridge-status "unsupported"))
+        files--buffer-name))
+
+(fset 'dired-do-copy
+      (lambda ()
+        (if (equal files--buffer-name "*Directory*")
+            (let ((name (files--dired-name-at-point))
+                  (target files--bridge-arg)
+                  (source ""))
+              (if (if (equal name "") t (equal target ""))
+                  (setq files--bridge-status "unsupported")
+                (progn
+                  (setq source (files--dired-expand name))
+                  (setq target (files--dired-expand target))
+                  (if (files--file-exists-p source)
+                      (progn
+                        (files--write-file target (files--read-file source))
+                        (files--dired-rerender))
+                    (setq files--bridge-status "file-not-found")))))
+          (setq files--bridge-status "unsupported"))
+        files--buffer-name))
+
+(fset 'files--org-line-start
+      (lambda (pos)
+        (let ((bol pos)
+              (done nil))
+          (while (if (> bol 0) (not done) nil)
+            (if (= (aref files--buffer-string (- bol 1)) 10)
+                (setq done t)
+              (setq bol (- bol 1))))
+          bol)))
+
+(fset 'files--org-line-end
+      (lambda (pos)
+        (let ((eol pos)
+              (n (length files--buffer-string))
+              (done nil))
+          (while (if (< eol n) (not done) nil)
+            (if (= (aref files--buffer-string eol) 10)
+                (setq done t)
+              (setq eol (+ eol 1))))
+          eol)))
+
+(fset 'files--org-heading-level-at
+      (lambda (bol)
+        (let ((n (length files--buffer-string))
+              (idx bol)
+              (stars 0))
+          (while (if (< idx n) (= (aref files--buffer-string idx) 42) nil)
+            (setq stars (+ stars 1))
+            (setq idx (+ idx 1)))
+          (if (if (> stars 0)
+                  (if (< idx n) (= (aref files--buffer-string idx) 32) nil)
+                nil)
+              stars
+            0))))
+
+(fset 'files--org-rest-todo-p
+      (lambda (rest)
+        (if (equal rest "TODO")
+            t
+          (if (>= (length rest) 5)
+              (equal (substring rest 0 5) "TODO ")
+            nil))))
+
+(fset 'files--org-rest-done-p
+      (lambda (rest)
+        (if (equal rest "DONE")
+            t
+          (if (>= (length rest) 5)
+              (equal (substring rest 0 5) "DONE ")
+            nil))))
+
+(fset 'org-todo
+      (lambda ()
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point))
+              (eol 0)
+              (level 0)
+              (rest "")
+              (kw-end 0))
+          (setq eol (files--org-line-end files--point))
+          (setq level (files--org-heading-level-at bol))
+          (if (= level 0)
+              (setq files--bridge-status "unsupported")
+            (progn
+              (setq kw-end (+ bol level 1))
+              (setq rest (substring files--buffer-string kw-end eol))
+              (if (files--org-rest-todo-p rest)
+                  (setq rest (concat "DONE"
+                                     (if (equal rest "TODO")
+                                         ""
+                                       (concat " " (substring rest 5)))))
+                (if (files--org-rest-done-p rest)
+                    (setq rest (if (equal rest "DONE")
+                                   ""
+                                 (substring rest 5)))
+                  (setq rest (concat "TODO"
+                                     (if (equal rest "")
+                                         ""
+                                       (concat " " rest))))))
+              (setq files--buffer-string
+                    (concat (substring files--buffer-string 0 kw-end)
+                            rest
+                            (substring files--buffer-string eol)))
+              (setq files--point bol)
+              (setq files--buffer-modified-p t)
+              (files--save-current-buffer-state)))
+          files--buffer-name)))
+
+(fset 'org-narrow-to-subtree
+      (lambda ()
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point))
+              (level 0)
+              (n (length files--buffer-string))
+              (scan 0)
+              (subtree-end -1)
+              (old-point files--point)
+              (old-mark files--mark))
+          (setq level (files--org-heading-level-at bol))
+          (while (if (= level 0) (> bol 0) nil)
+            (setq bol (files--org-line-start (- bol 1)))
+            (setq level (files--org-heading-level-at bol)))
+          (if (= level 0)
+              (setq files--bridge-status "unsupported")
+            (progn
+              (setq scan (+ (files--org-line-end bol) 1))
+              (while (if (< scan n) (< subtree-end 0) nil)
+                (let ((sub-level (files--org-heading-level-at scan)))
+                  (if (if (> sub-level 0) (<= sub-level level) nil)
+                      (setq subtree-end scan)
+                    (setq scan (+ (files--org-line-end scan) 1)))))
+              (if (< subtree-end 0)
+                  (setq subtree-end n)
+                nil)
+              (setq files--narrow-bound-start bol)
+              (setq files--narrow-bound-end subtree-end)
+              (setq files--narrow-bound-old-point old-point)
+              (setq files--narrow-bound-old-mark old-mark)
+              (files--narrow-to-bounds)))
+          files--buffer-name)))
+
+(fset 'org-table-next-field
+      (lambda ()
+        (files--clamp-point)
+        (let ((n (length files--buffer-string))
+              (scan files--point)
+              (found -1))
+          (while (if (< scan n) (< found 0) nil)
+            (if (= (aref files--buffer-string scan) 124)
+                (if (if (< (+ scan 1) n)
+                        (not (= (aref files--buffer-string (+ scan 1)) 10))
+                      nil)
+                    (setq found scan)
+                  (setq scan (+ scan 1)))
+              (setq scan (+ scan 1))))
+          (if (< found 0)
+              (setq files--bridge-status "unsupported")
+            (progn
+              (setq files--point
+                    (if (if (< (+ found 1) n)
+                            (= (aref files--buffer-string (+ found 1)) 32)
+                          nil)
+                        (+ found 2)
+                      (+ found 1)))
+              (files--save-current-buffer-state)))
+          files--buffer-name)))
+
+(fset 'org-capture
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--bridge-status "unsupported")
+          (progn
+            (if (if (> (length files--buffer-string) 0)
+                    (not (= (aref files--buffer-string
+                                  (- (length files--buffer-string) 1))
+                            10))
+                  nil)
+                (setq files--buffer-string (concat files--buffer-string "\n"))
+              nil)
+            (setq files--buffer-string
+                  (concat files--buffer-string "* TODO " files--bridge-arg "\n"))
+            (setq files--buffer-modified-p t)
+            (files--save-current-buffer-state)))
+        files--buffer-name))
+
+(fset 'org-agenda
+      (lambda ()
+        (let ((src files--buffer-string)
+              (src-name files--buffer-name)
+              (n 0)
+              (scan 0)
+              (out "")
+              (eol 0)
+              (level 0))
+          (setq n (length src))
+          (setq out (concat "Org Agenda: TODO headings in " src-name "\n"))
+          (while (< scan n)
+            (setq level (files--org-heading-level-at scan))
+            (setq eol (files--org-line-end scan))
+            (if (> level 0)
+                (if (files--org-rest-todo-p
+                     (substring src (+ scan level 1) eol))
+                    (setq out (concat out (substring src scan eol) "\n"))
+                  nil)
+              nil)
+            (setq scan (+ eol 1)))
+          (files--save-current-buffer-state)
+          (setq files--buffer-list-name "*Org Agenda*")
+          (files--buffer-list-add)
+          (setq files--buffer-name "*Org Agenda*")
+          (setq files--buffer-string out)
+          (setq files--current-file-name "")
+          (setq files--point 0)
+          (setq files--mark 0)
+          (setq files--window-start 0)
+          (setq files--buffer-read-only-p t)
+          (setq files--buffer-modified-p nil)
+          (files--clear-narrow-state)
+          (files--save-current-buffer-state)
+          (files--apply-display-prefix-for-same-window-command)
+          files--buffer-name)))
 
     (fset 'files--compose-mail-core
           (lambda ()
@@ -12676,6 +13193,17 @@
 	                                            "dired-other-window\n"
                                                 "dired-other-frame\n"
 	                                                "dired-other-tab\n"
+	                                                "dired-mark\n"
+	                                                "dired-unmark\n"
+	                                                "dired-flag-file-deletion\n"
+	                                                "dired-do-flagged-delete\n"
+	                                                "dired-do-rename\n"
+	                                                "dired-do-copy\n"
+	                                                "org-todo\n"
+	                                                "org-narrow-to-subtree\n"
+	                                                "org-table-next-field\n"
+	                                                "org-capture\n"
+	                                                "org-agenda\n"
                                                 "compose-mail\n"
                                                 "compose-mail-other-window\n"
                                                 "compose-mail-other-frame\n"
@@ -14549,6 +15077,17 @@
           (if (eq files--bridge-command 'tear-off-window) (setq ok t) nil)
           (if (eq files--bridge-command 'toggle-window-dedicated) (setq ok t) nil)
           (if (eq files--bridge-command 'quit-window) (setq ok t) nil)
+          (if (eq files--bridge-command 'dired-mark) (setq ok t) nil)
+          (if (eq files--bridge-command 'dired-unmark) (setq ok t) nil)
+          (if (eq files--bridge-command 'dired-flag-file-deletion) (setq ok t) nil)
+          (if (eq files--bridge-command 'dired-do-flagged-delete) (setq ok t) nil)
+          (if (eq files--bridge-command 'dired-do-rename) (setq ok t) nil)
+          (if (eq files--bridge-command 'dired-do-copy) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-todo) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-narrow-to-subtree) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-table-next-field) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-capture) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-agenda) (setq ok t) nil)
           (if (eq files--bridge-command 'window-toggle-side-windows) (setq ok t) nil)
           (if (eq files--bridge-command 'enlarge-window) (setq ok t) nil)
           (if (eq files--bridge-command 'shrink-window-horizontally) (setq ok t) nil)
@@ -14967,6 +15506,17 @@
         (if (eq files--bridge-command 'tear-off-window) (tear-off-window) nil)
         (if (eq files--bridge-command 'toggle-window-dedicated) (toggle-window-dedicated) nil)
         (if (eq files--bridge-command 'quit-window) (quit-window) nil)
+        (if (eq files--bridge-command 'dired-mark) (dired-mark) nil)
+        (if (eq files--bridge-command 'dired-unmark) (dired-unmark) nil)
+        (if (eq files--bridge-command 'dired-flag-file-deletion) (dired-flag-file-deletion) nil)
+        (if (eq files--bridge-command 'dired-do-flagged-delete) (dired-do-flagged-delete) nil)
+        (if (eq files--bridge-command 'dired-do-rename) (dired-do-rename) nil)
+        (if (eq files--bridge-command 'dired-do-copy) (dired-do-copy) nil)
+        (if (eq files--bridge-command 'org-todo) (org-todo) nil)
+        (if (eq files--bridge-command 'org-narrow-to-subtree) (org-narrow-to-subtree) nil)
+        (if (eq files--bridge-command 'org-table-next-field) (org-table-next-field) nil)
+        (if (eq files--bridge-command 'org-capture) (org-capture) nil)
+        (if (eq files--bridge-command 'org-agenda) (org-agenda) nil)
         (if (eq files--bridge-command 'window-toggle-side-windows) (window-toggle-side-windows) nil)
         (if (eq files--bridge-command 'enlarge-window) (enlarge-window) nil)
         (if (eq files--bridge-command 'shrink-window-horizontally) (shrink-window-horizontally) nil)
@@ -15242,6 +15792,7 @@
               (files--read-highlight-state)
               (files--read-selective-display-state)
               (files--read-coding-input-state)
+              (files--read-dired-marks-state)
               (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-hscroll") (files--transport-path)))
               (files--read-number-file)
               (setq files--window-hscroll files--number-file-value)
@@ -16989,6 +17540,66 @@
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
                     (files--write-transport-window-split-delta)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "dired-mark")
+                      t
+                    (if (equal cmd "dired-unmark")
+                        t
+                      (equal cmd "dired-flag-file-deletion")))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "dired-do-rename")
+                      t
+                    (equal cmd "dired-do-copy"))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "dired-do-flagged-delete")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "org-todo")
+                      t
+                    (if (equal cmd "org-capture")
+                        t
+                      (if (equal cmd "org-table-next-field")
+                          t
+                        (equal cmd "org-narrow-to-subtree"))))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "org-agenda")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
                     (setq files--bridge-status "written"))
                 nil)
               (if (equal cmd "window-toggle-side-windows")
