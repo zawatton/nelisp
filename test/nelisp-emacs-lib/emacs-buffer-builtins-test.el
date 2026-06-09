@@ -49,7 +49,11 @@
     (should (fboundp sym))))
 
 (ert-deftest emacs-buffer-builtins-test/default-and-char-property-bridges-in-source ()
-  (let ((file (locate-library "emacs-buffer-builtins")))
+  (let* ((file (locate-library "emacs-buffer-builtins"))
+         ;; Read the .el source, not a compiled .elc (binary) when present.
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file)))
     (should (and file (file-exists-p file)))
     (with-temp-buffer
       (insert-file-contents file)

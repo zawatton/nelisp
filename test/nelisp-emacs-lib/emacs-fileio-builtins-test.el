@@ -113,7 +113,11 @@
                  (nelisp-ec-expand-file-name "org.el" "/tmp/")))
   (should (equal '("a" "b" "c")
                  (nelisp-ec--split-string-char "/a//b/c/" ?/ t)))
-  (let ((file (locate-library "nelisp-emacs-compat-fileio")))
+  (let* ((file (locate-library "nelisp-emacs-compat-fileio"))
+         ;; Read the .el source, not a compiled .elc (binary) when present.
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file)))
     (should (and file (file-readable-p file)))
     (with-temp-buffer
       (insert-file-contents file)

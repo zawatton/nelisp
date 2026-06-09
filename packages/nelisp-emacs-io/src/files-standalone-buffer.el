@@ -203,7 +203,7 @@
 
 (defun files--buffer-string-value (&optional buffer)
   "Return BUFFER's fallback text."
-  (if (files--host-buffer-available-p)
+  (if (and files--native-buffer-string (files--host-buffer-available-p))
       (files--with-host-buffer
        buffer
        (lambda ()

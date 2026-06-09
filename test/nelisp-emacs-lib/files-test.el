@@ -489,16 +489,20 @@
           (files--native-buffer-modified-p nil)
           (files--native-set-buffer-modified-p nil))
       (set-visited-file-name "/tmp/nelisp-emacs-files-test-save.txt")
-      (setq files--buffer-string "alpha"
-            files--point 6
-            files--buffer-modified-p nil)
+      (setq files--point 6)
+      ;; Set the per-buffer fallback content + modified flag through the
+      ;; proper setters, so the registered-buffer save path (which reads
+      ;; per-buffer state) sees them under both interpreted and byte-compiled
+      ;; loads -- not just the single-buffer global `files--buffer-string'.
+      (files--set-buffer-string-value "alpha")
+      (files--set-buffer-modified-value nil)
       (cl-letf (((symbol-function 'nl-write-file)
                  (lambda (filename text)
                    (setq written (cons filename text))
                    t)))
         (should-not (save-some-buffers))
         (should-not written)
-        (setq files--buffer-modified-p t)
+        (files--set-buffer-modified-value t)
         (should (save-some-buffers))
         (should (equal written
                        '("/tmp/nelisp-emacs-files-test-save.txt" . "alpha")))
