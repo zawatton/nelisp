@@ -130,10 +130,16 @@ nelisp_standalone_eval_value() {
   rc=$?
   set -e
   local trimmed="${out//[$' \t\r\n']/}"
-  # standalone-reader: `--eval' prints the value to stdout and exits 0
-  # (exit-with-value is the `--load' convention, not `--eval').
+  # The pure-Elisp standalone reader signals an `--eval' result either by
+  # printing the value and exiting 0, or by exiting *with* the value as the
+  # process exit code.  Accept both so the readiness probe stays convention-
+  # agnostic across reader builds.
   if [[ "$rc" == 0 && "$trimmed" == "$expected" ]]; then
     printf 'exit=%s value=%s\n' "$rc" "$out"
+    return 0
+  fi
+  if [[ "$rc" == "$expected" ]]; then
+    printf 'exit=%s value=%s\n' "$rc" "$rc"
     return 0
   fi
   printf 'exit=%s expected-value=%s\n' "$rc" "$expected"
