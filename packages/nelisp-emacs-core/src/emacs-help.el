@@ -56,10 +56,14 @@ Each value is a plist with keys:
   (get-buffer-create emacs-help--buffer-name))
 
 (defun emacs-help--show-buffer (buffer)
-  "Display BUFFER in the current window and return it."
-  (if (fboundp 'switch-to-buffer)
-      (switch-to-buffer buffer)
-    (set-buffer buffer))
+  "Display BUFFER in a help window and return it.
+Prefer `pop-to-buffer' so the help buffer appears in a separate window and
+the editing buffer stays visible (M3 help window rule); fall back to
+`switch-to-buffer' then `set-buffer' when those are unavailable."
+  (cond
+   ((fboundp 'pop-to-buffer) (pop-to-buffer buffer))
+   ((fboundp 'switch-to-buffer) (switch-to-buffer buffer))
+   (t (set-buffer buffer)))
   buffer)
 
 (defun emacs-help--quit-window ()
