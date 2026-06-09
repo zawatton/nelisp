@@ -578,11 +578,19 @@
                           "(fset 'files--write-transport-tab-state"
                           "(fset 'files--read-transport-frame-state"
                           "(fset 'files--write-transport-frame-state"
+                          "(fset 'files--read-transport-frame-undo-state"
+                          "(fset 'files--write-transport-frame-undo-state"
                           "(fset 'files--read-transport-tab-undo-state"
                           "(fset 'files--write-transport-tab-undo-state"
                           "(fset 'tab-new"
                           "(fset 'tab-new-to"
                           "(fset 'tab-group"
+                          "(fset 'delete-frame"
+                          "(fset 'delete-other-frames"
+                          "(fset 'make-frame-command"
+                          "(fset 'other-frame"
+                          "(fset 'clone-frame"
+                          "(fset 'undelete-frame"
                           "(fset 'tab-undo"
                           "(fset 'tab-move"
                           "(fset 'tab-move-to"
@@ -785,6 +793,7 @@
 	                      "nemacs-window-hscroll"
 	                          "nemacs-tab-state"
 	                          "nemacs-frame-state"
+                              "nemacs-frame-undo-state"
 	                          "nemacs-tab-undo-state"
 	                      "nemacs-minibuffer-text"
 	                      "nemacs-minibuffer-candidates"
@@ -1029,6 +1038,12 @@
 			                      "C-x <\\tscroll-left"
 			                      "C-x >\\tscroll-right"
                                   "C-x t 2\\ttab-new"
+                                  "C-x 5 0\\tdelete-frame"
+                                  "C-x 5 1\\tdelete-other-frames"
+                                  "C-x 5 2\\tmake-frame-command"
+                                  "C-x 5 c\\tclone-frame"
+                                  "C-x 5 o\\tother-frame"
+                                  "C-x 5 u\\tundelete-frame"
                                   "C-x t 0\\ttab-close"
                                   "C-x t 1\\ttab-close-other"
                                   "C-x t o\\ttab-next"
@@ -1112,11 +1127,17 @@
                                           "(if (equal cmd \"project-switch-to-buffer\")"
                                           "(if (equal cmd \"project-list-buffers\")"
 	                                          "(if (equal cmd \"imenu\")"
-                                      "(if (equal cmd \"dired-other-frame\")"
-	                                      "(if (equal cmd \"dired-other-tab\")"
-		                              "(if (equal cmd \"display-buffer\")"
-                                      "(if (equal cmd \"display-buffer-other-frame\")"
-                              "(if (equal cmd \"narrow-to-defun\")"
+	                                      "(if (equal cmd \"dired-other-frame\")"
+		                                      "(if (equal cmd \"dired-other-tab\")"
+			                              "(if (equal cmd \"display-buffer\")"
+	                                      "(if (equal cmd \"display-buffer-other-frame\")"
+                                      "(if (equal cmd \"delete-frame\")"
+                                      "(if (equal cmd \"delete-other-frames\")"
+                                      "(if (equal cmd \"make-frame-command\")"
+                                      "(if (equal cmd \"other-frame\")"
+                                      "(if (equal cmd \"clone-frame\")"
+                                      "(if (equal cmd \"undelete-frame\")"
+	                              "(if (equal cmd \"narrow-to-defun\")"
                               "(if (equal cmd \"narrow-to-region\")"
                               "(if (equal cmd \"narrow-to-page\")"
                               "(if (equal cmd \"widen\")"
@@ -1412,6 +1433,61 @@
             (should (equal ""
                            (nemacs-gui-file-bridge-runtime-test--slurp
                             "/tmp/nemacs-tab-undo-state")))
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-frame-undo-state" nil 'silent)
+            (write-region "0\t1\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (write-region "make-frame-command" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "1\t2\t2"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-state")))
+            (write-region "0\t2\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (write-region "clone-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "2\t3\t3"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-state")))
+            (write-region "0\t3\t1" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (write-region "other-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "1\t3\t2"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-state")))
+            (write-region "2\t3\t3" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-frame-undo-state" nil 'silent)
+            (write-region "delete-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "1\t2\t2"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-state")))
+            (should (equal "2\t3"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-undo-state")))
+            (write-region "undelete-frame" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "2\t3\t3"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-state")))
+            (should (equal ""
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-undo-state")))
+            (write-region "2\t4\t3" nil "/tmp/nemacs-frame-state" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-frame-undo-state" nil 'silent)
+            (write-region "delete-other-frames" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "0\t1\t1"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-state")))
+            (should (equal "1\t2"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-frame-undo-state")))
             (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
             (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
             (write-region "C-x t C-f" nil "/tmp/nemacs-keys" nil 'silent)
@@ -9159,6 +9235,33 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
                                        "/tmp/nemacs-buf")))))
         (when (file-exists-p image) (delete-file image))
         (when (file-directory-p repo) (delete-directory repo t))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-occur ()
+  "occur should list matching lines with line numbers in an *Occur* buffer."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             "(progn
+                (setq files--buffer-name \"main\")
+                (setq files--buffer-string \"alpha line\\nbeta line\\nalpha again\\ngamma\\n\")
+                (setq files--bridge-arg \"alpha\")
+                (occur)
+                (nl-write-file (progn (setq files--transport-name \"nemacs-buf\") (files--transport-path)) files--buffer-string)
+                (nl-write-file (progn (setq files--transport-name \"nemacs-buffer-name\") (files--transport-path)) files--buffer-name))")
+            (should (equal "*Occur*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (let ((occ (nemacs-gui-file-bridge-runtime-test--slurp "/tmp/nemacs-buf")))
+              (should (string-match-p "2 matches for" occ))
+              (should (string-match-p "1:alpha line" occ))
+              (should (string-match-p "3:alpha again" occ))
+              (should-not (string-match-p "beta line" occ))))
+        (when (file-exists-p image)
+          (delete-file image))))))
 
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
