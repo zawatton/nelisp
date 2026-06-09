@@ -55,6 +55,12 @@
 (setq files--kmacro-keys "")
 (setq files--kmacro-replaying nil)
 (setq files--kmacro-counter 0)
+(setq files--kmacro-ring "")
+(setq files--kmacro-name "")
+(setq files--kmacro-format "")
+(setq files--kmacro-bound-key "")
+(setq files--kmacro-register "")
+(setq files--kmacro-view-title "")
 (setq files--cycle-spacing-action "")
 (setq files--cycle-spacing-original-point 0)
 (setq files--cycle-spacing-original-whitespace "")
@@ -176,7 +182,44 @@
 (setq files--abbrev-expansion "")
 (setq files--abbrev-word-start 0)
 (setq files--abbrev-word-end 0)
+(setq files--emoji-zoom-level 0)
+(setq files--emoji-glyph "")
+(setq files--emoji-name "")
+(setq files--emoji-byte-length 0)
+(setq files--highlight-patterns "")
+(setq files--highlight-symbol "")
+(setq files--highlight-kind "")
+(setq files--highlight-line "")
+(setq files--highlight-out "")
+(setq files--selective-display 0)
+(setq files--input-method "")
+(setq files--transient-input-method "")
+(setq files--language-environment "")
+(setq files--buffer-file-coding-system "")
+(setq files--file-name-coding-system "")
+(setq files--keyboard-coding-system "")
+(setq files--terminal-coding-system "")
+(setq files--selection-coding-system "")
+(setq files--next-selection-coding-system "")
+(setq files--buffer-process-coding-system "")
+(setq files--universal-coding-system "")
+(setq files--coding-target "")
+(setq files--coding-label "")
+(setq files--emoji-grinning (concat (char-to-string 240) (char-to-string 159) (char-to-string 152) (char-to-string 128)))
+(setq files--emoji-smiley (concat (char-to-string 240) (char-to-string 159) (char-to-string 152) (char-to-string 131)))
+(setq files--emoji-joy (concat (char-to-string 240) (char-to-string 159) (char-to-string 152) (char-to-string 130)))
+(setq files--emoji-slight-smile (concat (char-to-string 240) (char-to-string 159) (char-to-string 153) (char-to-string 130)))
+(setq files--emoji-heart (concat (char-to-string 226) (char-to-string 157) (char-to-string 164)))
+(setq files--emoji-thumbs-up (concat (char-to-string 240) (char-to-string 159) (char-to-string 145) (char-to-string 141)))
+(setq files--emoji-party (concat (char-to-string 240) (char-to-string 159) (char-to-string 142) (char-to-string 137)))
+(setq files--emoji-check (concat (char-to-string 226) (char-to-string 156) (char-to-string 133)))
+(setq files--emoji-warning (concat (char-to-string 226) (char-to-string 154) (char-to-string 160)))
+(setq files--emoji-rocket (concat (char-to-string 240) (char-to-string 159) (char-to-string 154) (char-to-string 128)))
+(setq text-scale-mode-amount 0)
+(setq global-text-scale-mode-amount 0)
 (setq files--buffer-list-file (progn (setq files--transport-name "nemacs-buffer-list") (files--transport-path)))
+(setq files--emoji-recent-file (progn (setq files--transport-name "nemacs-emoji-recent") (files--transport-path)))
+(setq files--highlight-patterns-file (progn (setq files--transport-name "nemacs-highlight-patterns") (files--transport-path)))
 (setq files--buffer-list-name "")
 (setq files--window-layout "single")
 (setq files--window-selected "0")
@@ -200,6 +243,7 @@
 (setq files--frame-undo-active nil)
 (setq files--frame-undo-index 0)
 (setq files--frame-undo-name "")
+(setq files--frame-suspended-p nil)
 (setq rectangle-mark-mode nil)
 (setq files--narrow-active-p nil)
 (setq files--narrow-start 0)
@@ -255,11 +299,40 @@
               "C-x )\tkmacro-end-macro\n"
               "C-x '\texpand-abbrev\n"
               "C-x *\tcalc-dispatch\n"
+              "C-x $\tset-selective-display\n"
+              "C-\\\ttoggle-input-method\n"
               "C-x 6\t2C-command\n"
               "C-x 6 2\t2C-two-columns\n"
               "C-x 6 s\t2C-split\n"
+              "C-x 8 e +\temoji-zoom-increase\n"
+              "C-x 8 e -\temoji-zoom-decrease\n"
+              "C-x 8 e 0\temoji-zoom-reset\n"
+              "C-x 8 e l\temoji-list\n"
+              "C-x 8 e r\temoji-recent\n"
               "C-x e\tkmacro-end-and-call-macro\n"
               "C-x q\tkbd-macro-query\n"
+              "C-x C-k\tkmacro-keymap\n"
+              "C-x C-k C-d\tkmacro-delete-ring-head\n"
+              "C-x C-k C-e\tkmacro-edit-macro-repeat\n"
+              "C-x C-k C-f\tkmacro-set-format\n"
+              "C-x C-k C-k\tkmacro-end-or-call-macro-repeat\n"
+              "C-x C-k C-l\tkmacro-call-ring-2nd-repeat\n"
+              "C-x C-k C-n\tkmacro-cycle-ring-next\n"
+              "C-x C-k C-p\tkmacro-cycle-ring-previous\n"
+              "C-x C-k C-s\tkmacro-start-macro\n"
+              "C-x C-k C-t\tkmacro-swap-ring\n"
+              "C-x C-k C-v\tkmacro-view-macro-repeat\n"
+              "C-x C-k RET\tkmacro-edit-macro\n"
+              "C-x C-k SPC\tkmacro-step-edit-macro\n"
+              "C-x C-k b\tkmacro-bind-to-key\n"
+              "C-x C-k d\tkmacro-redisplay\n"
+              "C-x C-k e\tedit-kbd-macro\n"
+              "C-x C-k l\tkmacro-edit-lossage\n"
+              "C-x C-k n\tkmacro-name-last-macro\n"
+              "C-x C-k q\tkbd-macro-query\n"
+              "C-x C-k r\tapply-macro-to-region-lines\n"
+              "C-x C-k s\tkmacro-start-macro\n"
+              "C-x C-k x\tkmacro-to-register\n"
               "C-x C-k C-c\tkmacro-set-counter\n"
               "C-x C-k C-a\tkmacro-add-counter\n"
               "C-x C-k TAB\tkmacro-insert-counter\n"
@@ -289,6 +362,15 @@
               "C-x w s\twindow-toggle-side-windows\n"
               "C-x +\tbalance-windows\n"
               "C-x -\tshrink-window-if-larger-than-buffer\n"
+              "C-x C-+\ttext-scale-adjust\n"
+              "C-x C--\ttext-scale-adjust\n"
+              "C-x C-0\ttext-scale-adjust\n"
+              "C-x C-=\ttext-scale-adjust\n"
+              "C-x C-M-+\tglobal-text-scale-adjust\n"
+              "C-x C-M--\tglobal-text-scale-adjust\n"
+              "C-x C-M-0\tglobal-text-scale-adjust\n"
+              "C-x C-M-=\tglobal-text-scale-adjust\n"
+              "C-x C-z\tsuspend-frame\n"
               "C-x w -\tfit-window-to-buffer\n"
               "C-x ^\tenlarge-window\n"
               "C-x {\tshrink-window-horizontally\n"
@@ -296,8 +378,10 @@
 	              "C-x =\twhat-cursor-position\n"
 		              "C-x o\tother-window\n"
 		              "C-g\tkeyboard-quit\n"
-		              "M-ESC ESC\tkeyboard-escape-quit\n"
-		              "C-M-c\texit-recursive-edit\n"
+              "M-ESC ESC\tkeyboard-escape-quit\n"
+              "M-`\ttmm-menubar\n"
+              "C-z\tsuspend-frame\n"
+              "C-M-c\texit-recursive-edit\n"
 		              "C-]\tabort-recursive-edit\n"
 		              "C-u\tuniversal-argument\n"
 	              "C--\tnegative-argument\n"
@@ -358,6 +442,9 @@
               "M-s M-.\tisearch-forward-thing-at-point\n"
               "M-s _\tisearch-forward-symbol\n"
               "M-s w\tisearch-forward-word\n"
+              "M-s h .\thighlight-symbol-at-point\n"
+              "M-s h f\thi-lock-find-patterns\n"
+              "M-s h w\thi-lock-write-interactive-patterns\n"
               "M-s o\toccur\n"
               "M-g i\timenu\n"
               "C-M-\\\tindent-region\n"
@@ -613,6 +700,26 @@
                   "C-h R\tinfo-display-manual\tDisplay manual: \n"
                   "C-h S\tinfo-lookup-symbol\tLookup symbol: \n"
                   "C-x 8 RET\tinsert-char\tUnicode (name or hex): \n"
+                  "C-x 8 e d\temoji-describe\tDescribe emoji: \n"
+                  "C-x 8 e e\temoji-insert\tEmoji: \n"
+                  "C-x 8 e i\temoji-insert\tEmoji: \n"
+                          "C-x 8 e s\temoji-search\tSearch emoji: \n"
+                          "C-x \\\tactivate-transient-input-method\tTransient input method: \n"
+                          "C-x RET C-\\\tset-input-method\tSet input method: \n"
+                          "C-x RET F\tset-file-name-coding-system\tFile name coding system: \n"
+                          "C-x RET X\tset-next-selection-coding-system\tNext selection coding system: \n"
+                          "C-x RET c\tuniversal-coding-system-argument\tCoding system for next command: \n"
+                          "C-x RET f\tset-buffer-file-coding-system\tBuffer file coding system: \n"
+                          "C-x RET k\tset-keyboard-coding-system\tKeyboard coding system: \n"
+                          "C-x RET l\tset-language-environment\tLanguage environment: \n"
+                          "C-x RET p\tset-buffer-process-coding-system\tBuffer process coding system: \n"
+                          "C-x RET r\trevert-buffer-with-coding-system\tRevert buffer with coding system: \n"
+                          "C-x RET t\tset-terminal-coding-system\tTerminal coding system: \n"
+                          "C-x RET x\tset-selection-coding-system\tSelection coding system: \n"
+                          "M-s h l\thighlight-lines-matching-regexp\tHighlight lines matching regexp: \n"
+                  "M-s h p\thighlight-phrase\tHighlight phrase: \n"
+                  "M-s h r\thighlight-regexp\tHighlight regexp: \n"
+                  "M-s h u\tunhighlight-regexp\tUnhighlight regexp: \n"
                   "M-.\txref-find-definitions\tFind definitions of: \n"
                   "M-?\txref-find-references\tFind references of: \n"
                   "C-M-.\txref-find-apropos\tSearch for pattern (word list or regexp): \n"
@@ -1498,6 +1605,96 @@
           (setq files--transport-name "nemacs-rectangle-mark-mode")
           (files--transport-path))))
 
+(fset 'files--text-scale-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-text-scale")
+          (files--transport-path))))
+
+(fset 'files--global-text-scale-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-global-text-scale")
+          (files--transport-path))))
+
+(fset 'files--frame-suspended-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-frame-suspended")
+          (files--transport-path))))
+
+(fset 'files--selective-display-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-selective-display")
+          (files--transport-path))))
+
+(fset 'files--input-method-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-input-method")
+          (files--transport-path))))
+
+(fset 'files--transient-input-method-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-transient-input-method")
+          (files--transport-path))))
+
+(fset 'files--language-environment-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-language-environment")
+          (files--transport-path))))
+
+(fset 'files--buffer-file-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-buffer-file-coding-system")
+          (files--transport-path))))
+
+(fset 'files--file-name-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-file-name-coding-system")
+          (files--transport-path))))
+
+(fset 'files--keyboard-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-keyboard-coding-system")
+          (files--transport-path))))
+
+(fset 'files--terminal-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-terminal-coding-system")
+          (files--transport-path))))
+
+(fset 'files--selection-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-selection-coding-system")
+          (files--transport-path))))
+
+(fset 'files--next-selection-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-next-selection-coding-system")
+          (files--transport-path))))
+
+(fset 'files--buffer-process-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-buffer-process-coding-system")
+          (files--transport-path))))
+
+(fset 'files--universal-coding-system-path
+      (lambda ()
+        (progn
+          (setq files--transport-name "nemacs-universal-coding-system")
+          (files--transport-path))))
+
 (fset 'files--read-goal-column-state
       (lambda ()
         (let ((text (rdf (files--goal-column-path))))
@@ -1551,6 +1748,84 @@
       (lambda ()
         (nl-write-file (files--rectangle-mark-mode-path)
                        (if rectangle-mark-mode "1" "0"))))
+
+(fset 'files--read-text-scale-state
+      (lambda ()
+        (setq files--number-file-name (files--text-scale-path))
+        (files--read-signed-number-file)
+        (setq text-scale-mode-amount files--number-file-value)
+        (setq files--number-file-name (files--global-text-scale-path))
+        (files--read-signed-number-file)
+        (setq global-text-scale-mode-amount files--number-file-value)))
+
+(fset 'files--write-text-scale-state
+      (lambda ()
+        (nl-write-file (files--text-scale-path)
+                       (number-to-string text-scale-mode-amount))
+        (nl-write-file (files--global-text-scale-path)
+                       (number-to-string global-text-scale-mode-amount))))
+
+(fset 'files--read-frame-suspended-state
+      (lambda ()
+        (setq files--frame-suspended-p
+              (equal (rdf (files--frame-suspended-path)) "1"))
+        files--frame-suspended-p))
+
+(fset 'files--write-frame-suspended-state
+      (lambda ()
+        (nl-write-file (files--frame-suspended-path)
+                       (if files--frame-suspended-p "1" "0"))))
+
+(fset 'files--read-highlight-state
+      (lambda ()
+        (setq files--highlight-patterns
+              (rdf files--highlight-patterns-file))
+        files--highlight-patterns))
+
+(fset 'files--write-highlight-state
+      (lambda ()
+        (nl-write-file files--highlight-patterns-file
+                       files--highlight-patterns)))
+
+(fset 'files--read-selective-display-state
+      (lambda ()
+        (setq files--number-file-name (files--selective-display-path))
+        (files--read-number-file)
+        (setq files--selective-display files--number-file-value)
+        files--selective-display))
+
+(fset 'files--write-selective-display-state
+      (lambda ()
+        (nl-write-file (files--selective-display-path)
+                       (number-to-string files--selective-display))))
+
+(fset 'files--read-coding-input-state
+      (lambda ()
+        (setq files--input-method (rdf (files--input-method-path)))
+        (setq files--transient-input-method (rdf (files--transient-input-method-path)))
+        (setq files--language-environment (rdf (files--language-environment-path)))
+        (setq files--buffer-file-coding-system (rdf (files--buffer-file-coding-system-path)))
+        (setq files--file-name-coding-system (rdf (files--file-name-coding-system-path)))
+        (setq files--keyboard-coding-system (rdf (files--keyboard-coding-system-path)))
+        (setq files--terminal-coding-system (rdf (files--terminal-coding-system-path)))
+        (setq files--selection-coding-system (rdf (files--selection-coding-system-path)))
+        (setq files--next-selection-coding-system (rdf (files--next-selection-coding-system-path)))
+        (setq files--buffer-process-coding-system (rdf (files--buffer-process-coding-system-path)))
+        (setq files--universal-coding-system (rdf (files--universal-coding-system-path)))))
+
+(fset 'files--write-coding-input-state
+      (lambda ()
+        (nl-write-file (files--input-method-path) files--input-method)
+        (nl-write-file (files--transient-input-method-path) files--transient-input-method)
+        (nl-write-file (files--language-environment-path) files--language-environment)
+        (nl-write-file (files--buffer-file-coding-system-path) files--buffer-file-coding-system)
+        (nl-write-file (files--file-name-coding-system-path) files--file-name-coding-system)
+        (nl-write-file (files--keyboard-coding-system-path) files--keyboard-coding-system)
+        (nl-write-file (files--terminal-coding-system-path) files--terminal-coding-system)
+        (nl-write-file (files--selection-coding-system-path) files--selection-coding-system)
+        (nl-write-file (files--next-selection-coding-system-path) files--next-selection-coding-system)
+        (nl-write-file (files--buffer-process-coding-system-path) files--buffer-process-coding-system)
+        (nl-write-file (files--universal-coding-system-path) files--universal-coding-system)))
 
 (fset 'files--write-goal-column-state
       (lambda ()
@@ -9954,6 +10229,596 @@
             (setq files--modeline-override files--modeline-string)))
         files--point))
 
+(fset 'files--emoji-candidates
+      (lambda ()
+        (concat "grinning face\n"
+                "grinning face with big eyes\n"
+                "face with tears of joy\n"
+                "slightly smiling face\n"
+                "red heart\n"
+                "thumbs up\n"
+                "party popper\n"
+                "check mark button\n"
+                "warning\n"
+                "rocket\n")))
+
+(fset 'files--emoji-table-text
+      (lambda ()
+        (concat "grinning face\t" files--emoji-grinning "\n"
+                "grinning face with big eyes\t" files--emoji-smiley "\n"
+                "face with tears of joy\t" files--emoji-joy "\n"
+                "slightly smiling face\t" files--emoji-slight-smile "\n"
+                "red heart\t" files--emoji-heart "\n"
+                "thumbs up\t" files--emoji-thumbs-up "\n"
+                "party popper\t" files--emoji-party "\n"
+                "check mark button\t" files--emoji-check "\n"
+                "warning\t" files--emoji-warning "\n"
+                "rocket\t" files--emoji-rocket "\n")))
+
+(fset 'files--emoji-resolve
+      (lambda ()
+        (let ((query files--bridge-arg))
+          (setq files--emoji-name "")
+          (setq files--emoji-glyph "")
+          (setq files--emoji-byte-length 0)
+          (if (equal query "") (setq query "grinning face") nil)
+          (if (if (equal query "grinning face") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "grinning face")
+                     (setq files--emoji-glyph files--emoji-grinning)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "grinning") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "grinning face")
+                     (setq files--emoji-glyph files--emoji-grinning)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "grinning face with big eyes") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "grinning face with big eyes")
+                     (setq files--emoji-glyph files--emoji-smiley)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "face with tears of joy") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "face with tears of joy")
+                     (setq files--emoji-glyph files--emoji-joy)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "joy") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "face with tears of joy")
+                     (setq files--emoji-glyph files--emoji-joy)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "slightly smiling face") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "slightly smiling face")
+                     (setq files--emoji-glyph files--emoji-slight-smile)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "red heart") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "red heart")
+                     (setq files--emoji-glyph files--emoji-heart)
+                     (setq files--emoji-byte-length 3))
+            nil)
+          (if (if (equal query "heart") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "red heart")
+                     (setq files--emoji-glyph files--emoji-heart)
+                     (setq files--emoji-byte-length 3))
+            nil)
+          (if (if (equal query "thumbs up") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "thumbs up")
+                     (setq files--emoji-glyph files--emoji-thumbs-up)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "party popper") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "party popper")
+                     (setq files--emoji-glyph files--emoji-party)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query "check mark button") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "check mark button")
+                     (setq files--emoji-glyph files--emoji-check)
+                     (setq files--emoji-byte-length 3))
+            nil)
+          (if (if (equal query "warning") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "warning")
+                     (setq files--emoji-glyph files--emoji-warning)
+                     (setq files--emoji-byte-length 3))
+            nil)
+          (if (if (equal query "rocket") (equal files--emoji-glyph "") nil)
+              (progn (setq files--emoji-name "rocket")
+                     (setq files--emoji-glyph files--emoji-rocket)
+                     (setq files--emoji-byte-length 4))
+            nil)
+          (if (if (equal query files--emoji-glyph) (not (equal files--emoji-glyph "")) nil)
+              t
+            nil)
+          (not (equal files--emoji-glyph "")))))
+
+(fset 'files--emoji-open-buffer
+      (lambda ()
+        (files--save-current-buffer-state)
+        (files--buffer-list-add)
+        (setq files--current-file-name "")
+        (setq files--point 0)
+        (setq files--mark 0)
+        (setq files--window-start 0)
+        (setq files--buffer-read-only-p t)
+        (setq files--buffer-modified-p nil)
+        (files--clear-narrow-state)
+        (files--save-current-buffer-state)
+        files--buffer-name))
+
+(fset 'emoji-list
+      (lambda ()
+        (setq files--buffer-name "*Emoji List*")
+        (setq files--buffer-list-name files--buffer-name)
+        (setq files--buffer-string
+              (concat "Emoji List\n\n" (files--emoji-table-text)))
+        (files--emoji-open-buffer)))
+
+(fset 'emoji-recent
+      (lambda ()
+        (let ((recent (rdf files--emoji-recent-file)))
+          (setq files--buffer-name "*Emoji Recent*")
+          (setq files--buffer-list-name files--buffer-name)
+          (setq files--buffer-string
+                (concat "Recent Emoji\n\n"
+                        (if (equal recent "")
+                            "No recent emoji\n"
+                          recent)))
+          (files--emoji-open-buffer))))
+
+(fset 'emoji-search
+      (lambda ()
+        (setq files--buffer-name "*Emoji Search*")
+        (setq files--buffer-list-name files--buffer-name)
+        (setq files--buffer-string
+              (concat "Emoji Search: " files--bridge-arg "\n\n"
+                      (files--emoji-table-text)))
+        (files--emoji-open-buffer)))
+
+(fset 'emoji-describe
+      (lambda ()
+        (files--emoji-resolve)
+        (setq files--buffer-name "*Help*")
+        (setq files--buffer-list-name files--buffer-name)
+        (setq files--buffer-string
+              (if (equal files--emoji-glyph "")
+                  (concat "Emoji\n\nNo emoji named " files--bridge-arg "\n")
+                (concat "Emoji\n\n"
+                        files--emoji-glyph "\t" files--emoji-name "\n")))
+        (files--emoji-open-buffer)))
+
+(fset 'emoji-insert
+      (lambda ()
+        (files--clamp-point)
+        (files--emoji-resolve)
+        (if (equal files--emoji-glyph "")
+            (progn
+              (setq files--modeline-string
+                    (concat "Emoji: unknown emoji " files--bridge-arg))
+              (setq files--modeline-override files--modeline-string))
+          (progn
+            (setq files--buffer-string
+                  (concat (substring files--buffer-string 0 files--point)
+                          files--emoji-glyph
+                          (substring files--buffer-string files--point)))
+            (setq files--point (+ files--point files--emoji-byte-length))
+            (setq files--buffer-modified-p t)
+            (files--clamp-point)
+            (nl-write-file files--emoji-recent-file
+                           (concat files--emoji-name "\t" files--emoji-glyph "\n"))))
+        files--point))
+
+(fset 'files--emoji-write-zoom-modeline
+      (lambda ()
+        (setq files--number-file-value files--emoji-zoom-level)
+        (setq files--modeline-string
+              (concat "Emoji zoom: " (files--number-string)))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'emoji-zoom-increase
+      (lambda ()
+        (setq files--emoji-zoom-level (+ files--emoji-zoom-level 1))
+        (files--emoji-write-zoom-modeline)))
+
+(fset 'emoji-zoom-decrease
+      (lambda ()
+        (if (> files--emoji-zoom-level 0)
+            (setq files--emoji-zoom-level (- files--emoji-zoom-level 1))
+          nil)
+        (files--emoji-write-zoom-modeline)))
+
+(fset 'emoji-zoom-reset
+      (lambda ()
+        (setq files--emoji-zoom-level 0)
+        (files--emoji-write-zoom-modeline)))
+
+(fset 'files--scale-adjust-delta
+      (lambda ()
+        (let ((delta 1))
+          (if (if (equal files--bridge-keys "C-x C--")
+                  t
+                (if (equal files--bridge-keys "C-x C-M--")
+                    t
+                  (equal files--bridge-arg "-")))
+              (setq delta -1)
+            nil)
+          (if (if (equal files--bridge-keys "C-x C-0")
+                  t
+                (if (equal files--bridge-keys "C-x C-M-0")
+                    t
+                  (equal files--bridge-arg "0")))
+              (setq delta 0)
+            nil)
+          delta)))
+
+(fset 'text-scale-adjust
+      (lambda ()
+        (let ((delta (files--scale-adjust-delta)))
+          (if (= delta 0)
+              (setq text-scale-mode-amount 0)
+            (setq text-scale-mode-amount (+ text-scale-mode-amount delta)))
+          (files--write-text-scale-state)
+          (setq files--modeline-string
+                (concat "Text scale: " (number-to-string text-scale-mode-amount)))
+          (setq files--modeline-override files--modeline-string))))
+
+(fset 'global-text-scale-adjust
+      (lambda ()
+        (let ((delta (files--scale-adjust-delta)))
+          (if (= delta 0)
+              (setq global-text-scale-mode-amount 0)
+            (setq global-text-scale-mode-amount
+                  (+ global-text-scale-mode-amount delta)))
+          (files--write-text-scale-state)
+          (setq files--modeline-string
+                (concat "Global text scale: "
+                        (number-to-string global-text-scale-mode-amount)))
+          (setq files--modeline-override files--modeline-string))))
+
+(fset 'suspend-frame
+      (lambda ()
+        (setq files--frame-suspended-p t)
+        (files--write-frame-suspended-state)
+        (setq files--modeline-string "Frame suspended")
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'tmm-menubar
+      (lambda ()
+        (files--save-current-buffer-state)
+        (files--buffer-list-add)
+        (setq files--current-file-name "")
+        (setq files--buffer-name "*Menu Bar*")
+        (setq files--buffer-list-name files--buffer-name)
+        (setq files--buffer-string
+              (concat "Menu Bar\n\n"
+                      "File\tfind-file save-buffer write-file\n"
+                      "Edit\tundo undo-redo yank\n"
+                      "Search\tisearch-forward query-replace occur\n"
+                      "Buffers\tswitch-to-buffer list-buffers kill-buffer\n"
+                      "Help\tdescribe-key describe-function describe-variable\n"))
+        (setq files--point 0)
+        (setq files--mark 0)
+        (setq files--window-start 0)
+        (setq files--buffer-read-only-p t)
+        (setq files--buffer-modified-p nil)
+        (files--clear-narrow-state)
+        (files--save-current-buffer-state)
+        files--buffer-name))
+
+(fset 'files--highlight-word-at-point
+      (lambda ()
+        (files--clamp-point)
+        (let ((n (length files--buffer-string))
+              (i files--point)
+              (start files--point)
+              (end files--point))
+          (setq files--highlight-symbol "")
+          (if (if (> i 0)
+                  (progn
+                    (setq files--char-code
+                          (aref files--buffer-string (- i 1)))
+                    (files--word-char-p))
+                nil)
+              (progn
+                (while (if (> i 0)
+                           (progn
+                             (setq files--char-code
+                                   (aref files--buffer-string (- i 1)))
+                             (files--word-char-p))
+                         nil)
+                  (setq i (- i 1)))
+                (setq start i))
+            (progn
+              (while (if (< i n)
+                         (progn
+                           (setq files--char-code
+                                 (aref files--buffer-string i))
+                           (not (files--word-char-p)))
+                       nil)
+                (setq i (+ i 1)))
+              (setq start i)))
+          (setq i start)
+          (while (if (< i n)
+                     (progn
+                       (setq files--char-code (aref files--buffer-string i))
+                       (files--word-char-p))
+                   nil)
+            (setq i (+ i 1)))
+          (setq end i)
+          (if (< start end)
+              (setq files--highlight-symbol
+                    (substring files--buffer-string start end))
+            nil)
+          files--highlight-symbol)))
+
+(fset 'files--highlight-add
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            nil
+          (progn
+            (files--read-highlight-state)
+            (setq files--highlight-patterns
+                  (concat files--highlight-patterns
+                          files--highlight-kind
+                          "\t"
+                          files--bridge-arg
+                          "\n"))
+            (files--write-highlight-state)))))
+
+(fset 'files--highlight-remove
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--highlight-patterns "")
+          (let ((source files--highlight-patterns)
+                (index 0)
+                (start 0)
+                (tab 0)
+                (pattern "")
+                (line ""))
+            (setq files--highlight-out "")
+            (while (<= index (length source))
+              (if (if (= index (length source))
+                      t
+                    (= (aref source index) 10))
+                  (progn
+                    (setq line (substring source start index))
+                    (setq tab 0)
+                    (while (if (< tab (length line))
+                               (not (= (aref line tab) 9))
+                             nil)
+                      (setq tab (+ tab 1)))
+                    (setq pattern "")
+                    (if (< tab (length line))
+                        (setq pattern (substring line (+ tab 1)))
+                      nil)
+                    (if (if (equal line "")
+                            t
+                          (equal pattern files--bridge-arg))
+                        nil
+                      (setq files--highlight-out
+                            (concat files--highlight-out line "\n")))
+                    (setq start (+ index 1)))
+                nil)
+              (setq index (+ index 1)))
+            (setq files--highlight-patterns files--highlight-out)))
+        (files--write-highlight-state)))
+
+(fset 'files--highlight-count
+      (lambda ()
+        (let ((index 0)
+              (count 0))
+          (while (< index (length files--highlight-patterns))
+            (if (= (aref files--highlight-patterns index) 10)
+                (setq count (+ count 1))
+              nil)
+            (setq index (+ index 1)))
+          count)))
+
+(fset 'highlight-symbol-at-point
+      (lambda ()
+        (setq files--bridge-arg (files--highlight-word-at-point))
+        (setq files--highlight-kind "symbol")
+        (files--highlight-add)
+        (setq files--modeline-string
+              (concat "Highlight symbol: " files--bridge-arg))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'highlight-regexp
+      (lambda ()
+        (setq files--highlight-kind "regexp")
+        (files--highlight-add)
+        (setq files--modeline-string
+              (concat "Highlight regexp: " files--bridge-arg))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'highlight-phrase
+      (lambda ()
+        (setq files--highlight-kind "phrase")
+        (files--highlight-add)
+        (setq files--modeline-string
+              (concat "Highlight phrase: " files--bridge-arg))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'highlight-lines-matching-regexp
+      (lambda ()
+        (setq files--highlight-kind "line")
+        (files--highlight-add)
+        (setq files--modeline-string
+              (concat "Highlight lines: " files--bridge-arg))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'unhighlight-regexp
+      (lambda ()
+        (files--read-highlight-state)
+        (files--highlight-remove)
+        (setq files--modeline-string
+              (concat "Unhighlight regexp: " files--bridge-arg))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'hi-lock-write-interactive-patterns
+      (lambda ()
+        (files--read-highlight-state)
+        (files--write-highlight-state)
+        (setq files--number-file-value (files--highlight-count))
+        (setq files--modeline-string
+              (concat "Hi-lock patterns written: "
+                      (number-to-string files--number-file-value)))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'hi-lock-find-patterns
+      (lambda ()
+        (files--read-highlight-state)
+        (files--save-current-buffer-state)
+        (files--buffer-list-add)
+        (setq files--current-file-name "")
+        (setq files--buffer-name "*Hi Lock Patterns*")
+        (setq files--buffer-list-name files--buffer-name)
+        (setq files--buffer-string
+              (concat "Hi Lock Patterns\n\n"
+                      (if (equal files--highlight-patterns "")
+                          "No active patterns\n"
+                        files--highlight-patterns)))
+        (setq files--point 0)
+        (setq files--mark 0)
+        (setq files--window-start 0)
+        (setq files--buffer-read-only-p t)
+        (setq files--buffer-modified-p nil)
+        (files--clear-narrow-state)
+        (files--save-current-buffer-state)
+        files--buffer-name))
+
+(fset 'set-selective-display
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (if (= files--selective-display 0)
+                (setq files--selective-display 1)
+              (setq files--selective-display 0))
+          (if (equal files--bridge-arg "0")
+              (setq files--selective-display 0)
+            (setq files--selective-display 1)))
+        (files--write-selective-display-state)
+        (setq files--modeline-string
+              (concat "Selective display: "
+                      (number-to-string files--selective-display)))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'files--coding-input-value
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            "utf-8"
+          files--bridge-arg)))
+
+(fset 'files--coding-input-modeline
+      (lambda ()
+        (setq files--modeline-string
+              (concat files--coding-label ": " files--coding-target))
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'toggle-input-method
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (if (equal files--input-method "")
+                (setq files--input-method "default")
+              (setq files--input-method ""))
+          (setq files--input-method files--bridge-arg))
+        (setq files--coding-target
+              (if (equal files--input-method "") "none" files--input-method))
+        (setq files--coding-label "Input method")
+        (files--coding-input-modeline)))
+
+(fset 'activate-transient-input-method
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (if (equal files--input-method "")
+                (setq files--transient-input-method "transient")
+              (setq files--transient-input-method files--input-method))
+          (setq files--transient-input-method files--bridge-arg))
+        (setq files--coding-target files--transient-input-method)
+        (setq files--coding-label "Transient input method")
+        (files--coding-input-modeline)))
+
+(fset 'set-input-method
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--input-method "default")
+          (setq files--input-method files--bridge-arg))
+        (setq files--coding-target files--input-method)
+        (setq files--coding-label "Input method")
+        (files--coding-input-modeline)))
+
+(fset 'set-file-name-coding-system
+      (lambda ()
+        (setq files--file-name-coding-system (files--coding-input-value))
+        (setq files--coding-target files--file-name-coding-system)
+        (setq files--coding-label "File name coding")
+        (files--coding-input-modeline)))
+
+(fset 'set-next-selection-coding-system
+      (lambda ()
+        (setq files--next-selection-coding-system (files--coding-input-value))
+        (setq files--coding-target files--next-selection-coding-system)
+        (setq files--coding-label "Next selection coding")
+        (files--coding-input-modeline)))
+
+(fset 'universal-coding-system-argument
+      (lambda ()
+        (setq files--universal-coding-system (files--coding-input-value))
+        (setq files--coding-target files--universal-coding-system)
+        (setq files--coding-label "Universal coding")
+        (files--coding-input-modeline)))
+
+(fset 'set-buffer-file-coding-system
+      (lambda ()
+        (setq files--buffer-file-coding-system (files--coding-input-value))
+        (setq files--coding-target files--buffer-file-coding-system)
+        (setq files--coding-label "Buffer file coding")
+        (files--coding-input-modeline)))
+
+(fset 'set-keyboard-coding-system
+      (lambda ()
+        (setq files--keyboard-coding-system (files--coding-input-value))
+        (setq files--coding-target files--keyboard-coding-system)
+        (setq files--coding-label "Keyboard coding")
+        (files--coding-input-modeline)))
+
+(fset 'set-language-environment
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--language-environment "English")
+          (setq files--language-environment files--bridge-arg))
+        (setq files--coding-target files--language-environment)
+        (setq files--coding-label "Language environment")
+        (files--coding-input-modeline)))
+
+(fset 'set-buffer-process-coding-system
+      (lambda ()
+        (setq files--buffer-process-coding-system (files--coding-input-value))
+        (setq files--coding-target files--buffer-process-coding-system)
+        (setq files--coding-label "Buffer process coding")
+        (files--coding-input-modeline)))
+
+(fset 'revert-buffer-with-coding-system
+      (lambda ()
+        (setq files--buffer-file-coding-system (files--coding-input-value))
+        (revert-buffer)
+        (setq files--coding-target files--buffer-file-coding-system)
+        (setq files--coding-label "Reverted with coding")
+        (files--coding-input-modeline)))
+
+(fset 'set-terminal-coding-system
+      (lambda ()
+        (setq files--terminal-coding-system (files--coding-input-value))
+        (setq files--coding-target files--terminal-coding-system)
+        (setq files--coding-label "Terminal coding")
+        (files--coding-input-modeline)))
+
+(fset 'set-selection-coding-system
+      (lambda ()
+        (setq files--selection-coding-system (files--coding-input-value))
+        (setq files--coding-target files--selection-coding-system)
+        (setq files--coding-label "Selection coding")
+        (files--coding-input-modeline)))
+
 (fset 'quoted-insert
       (lambda ()
         (if (> (length files--bridge-arg) 0)
@@ -11297,6 +12162,176 @@
       (lambda ()
         nil))
 
+(fset 'files--kmacro-modeline
+      (lambda ()
+        (setq files--modeline-string files--kmacro-view-title)
+        (setq files--modeline-override files--modeline-string)))
+
+(fset 'files--kmacro-open-buffer
+      (lambda ()
+        (files--save-current-buffer-state)
+        (files--buffer-list-add)
+        (setq files--current-file-name "")
+        (setq files--buffer-name files--kmacro-view-title)
+        (setq files--buffer-list-name files--buffer-name)
+        (setq files--buffer-string
+              (concat files--kmacro-view-title
+                      "\n\nName: "
+                      files--kmacro-name
+                      "\nBound key: "
+                      files--kmacro-bound-key
+                      "\nRegister: "
+                      files--kmacro-register
+                      "\nFormat: "
+                      files--kmacro-format
+                      "\n\nKeys:\n"
+                      (if (equal files--kmacro-keys "")
+                          "No keyboard macro recorded\n"
+                        files--kmacro-keys)))
+        (setq files--point 0)
+        (setq files--mark 0)
+        (setq files--window-start 0)
+        (setq files--buffer-read-only-p nil)
+        (setq files--buffer-modified-p nil)
+        (files--clear-narrow-state)
+        (files--save-current-buffer-state)
+        files--buffer-name))
+
+(fset 'kmacro-keymap
+      (lambda ()
+        (setq files--kmacro-view-title "Keyboard macro prefix")
+        (files--kmacro-modeline)))
+
+(fset 'kmacro-delete-ring-head
+      (lambda ()
+        (setq files--kmacro-ring "")
+        (setq files--kmacro-keys "")
+        (setq files--kmacro-view-title "Keyboard macro deleted")
+        (files--kmacro-modeline)))
+
+(fset 'kmacro-edit-macro-repeat
+      (lambda ()
+        (setq files--kmacro-view-title "*Edit Keyboard Macro*")
+        (files--kmacro-open-buffer)))
+
+(fset 'kmacro-set-format
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--kmacro-format "%d")
+          (setq files--kmacro-format files--bridge-arg))
+        (setq files--kmacro-view-title
+              (concat "Keyboard macro format: " files--kmacro-format))
+        (files--kmacro-modeline)))
+
+(fset 'kmacro-end-or-call-macro-repeat
+      (lambda ()
+        (if files--kmacro-recording
+            (kmacro-end-macro)
+          (files--call-last-kbd-macro))
+        (setq files--kmacro-view-title "Keyboard macro end/call")
+        (files--kmacro-modeline)
+        files--buffer-string))
+
+(fset 'kmacro-call-ring-2nd-repeat
+      (lambda ()
+        (if (equal files--kmacro-ring "")
+            (files--call-last-kbd-macro)
+          (let ((saved files--kmacro-keys))
+            (setq files--kmacro-keys files--kmacro-ring)
+            (files--call-last-kbd-macro)
+            (setq files--kmacro-keys saved)))
+        files--buffer-string))
+
+(fset 'kmacro-cycle-ring-next
+      (lambda ()
+        (let ((saved files--kmacro-keys))
+          (setq files--kmacro-keys files--kmacro-ring)
+          (setq files--kmacro-ring saved))
+        (setq files--kmacro-view-title "Keyboard macro ring next")
+        (files--kmacro-modeline)))
+
+(fset 'kmacro-cycle-ring-previous
+      (lambda ()
+        (kmacro-cycle-ring-next)
+        (setq files--kmacro-view-title "Keyboard macro ring previous")
+        (files--kmacro-modeline)))
+
+(fset 'kmacro-swap-ring
+      (lambda ()
+        (kmacro-cycle-ring-next)
+        (setq files--kmacro-view-title "Keyboard macro ring swapped")
+        (files--kmacro-modeline)))
+
+(fset 'kmacro-view-macro-repeat
+      (lambda ()
+        (setq files--kmacro-view-title "*Keyboard Macro*")
+        (files--kmacro-open-buffer)
+        (setq files--buffer-read-only-p t)
+        (files--save-current-buffer-state)
+        files--buffer-name))
+
+(fset 'kmacro-edit-macro
+      (lambda ()
+        (setq files--kmacro-view-title "*Edit Keyboard Macro*")
+        (files--kmacro-open-buffer)))
+
+(fset 'kmacro-step-edit-macro
+      (lambda ()
+        (setq files--kmacro-view-title "*Step Edit Keyboard Macro*")
+        (files--kmacro-open-buffer)))
+
+(fset 'kmacro-bind-to-key
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--kmacro-bound-key "C-c C-k")
+          (setq files--kmacro-bound-key files--bridge-arg))
+        (setq files--kmacro-view-title
+              (concat "Keyboard macro bound to: " files--kmacro-bound-key))
+        (files--kmacro-modeline)))
+
+(fset 'kmacro-redisplay
+      (lambda ()
+        (setq files--kmacro-view-title
+              (concat "Keyboard macro keys: "
+                      (number-to-string (length files--kmacro-keys))))
+        (files--kmacro-modeline)))
+
+(fset 'edit-kbd-macro
+      (lambda ()
+        (setq files--kmacro-view-title "*Edit Keyboard Macro*")
+        (files--kmacro-open-buffer)))
+
+(fset 'kmacro-edit-lossage
+      (lambda ()
+        (setq files--kmacro-view-title "*Keyboard Macro Lossage*")
+        (files--kmacro-open-buffer)))
+
+(fset 'kmacro-name-last-macro
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--kmacro-name "last-kbd-macro")
+          (setq files--kmacro-name files--bridge-arg))
+        (setq files--kmacro-view-title
+              (concat "Keyboard macro named: " files--kmacro-name))
+        (files--kmacro-modeline)))
+
+(fset 'apply-macro-to-region-lines
+      (lambda ()
+        (files--call-last-kbd-macro)
+        (setq files--kmacro-view-title "Applied keyboard macro to region lines")
+        (files--kmacro-modeline)
+        files--buffer-string))
+
+(fset 'kmacro-to-register
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--kmacro-register "k")
+          (setq files--kmacro-register files--bridge-arg))
+        (setq files--kmacro-view-title
+              (concat "Keyboard macro stored in register: "
+                      files--kmacro-register))
+        (files--kmacro-modeline)))
+
 (fset 'kmacro-set-counter
       (lambda ()
         (setq files--kmacro-counter (files--prefix-arg-number))
@@ -11463,6 +12498,59 @@
         (if (equal emacs-minibuffer-gui-purpose "project-query-replace-regexp")
             (setq emacs-minibuffer-gui-history-symbol "regexp-history")
           nil)
+        (if (if (equal emacs-minibuffer-gui-purpose "emoji-insert")
+                t
+              (if (equal emacs-minibuffer-gui-purpose "emoji-search")
+                  t
+                (equal emacs-minibuffer-gui-purpose "emoji-describe")))
+            (setq emacs-minibuffer-gui-history-symbol "emoji-history")
+          nil)
+        (if (if (equal emacs-minibuffer-gui-purpose "highlight-regexp")
+                t
+              (if (equal emacs-minibuffer-gui-purpose
+                         "highlight-lines-matching-regexp")
+                  t
+                (equal emacs-minibuffer-gui-purpose "unhighlight-regexp")))
+            (setq emacs-minibuffer-gui-history-symbol "regexp-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "highlight-phrase")
+            (setq emacs-minibuffer-gui-history-symbol "search-ring")
+          nil)
+        (if (if (equal emacs-minibuffer-gui-purpose "set-input-method")
+                t
+              (equal emacs-minibuffer-gui-purpose "activate-transient-input-method"))
+            (setq emacs-minibuffer-gui-history-symbol "input-method-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-language-environment")
+            (setq emacs-minibuffer-gui-history-symbol "language-environment-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-file-name-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-next-selection-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "universal-coding-system-argument")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-buffer-file-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-keyboard-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-buffer-process-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "revert-buffer-with-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-terminal-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
+        (if (equal emacs-minibuffer-gui-purpose "set-selection-coding-system")
+            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+          nil)
 		        emacs-minibuffer-gui-history-symbol))
 
 (fset 'files--refresh-minibuffer-candidates
@@ -11513,6 +12601,15 @@
               (if (equal files--minibuffer-purpose "2C-associate-buffer")
                   (if (equal source "")
                       (setq source (rdf files--buffer-list-file))
+                    nil)
+                nil)
+              (if (if (equal files--minibuffer-purpose "emoji-insert")
+                      t
+                    (if (equal files--minibuffer-purpose "emoji-search")
+                        t
+                      (equal files--minibuffer-purpose "emoji-describe")))
+                  (if (equal source "")
+                      (setq source (files--emoji-candidates))
                     nil)
                 nil)
 		          (if (equal files--minibuffer-purpose "rename-buffer")
@@ -11574,6 +12671,14 @@
                                                 "2C-two-columns\n"
                                                 "2C-associate-buffer\n"
                                                 "2C-split\n"
+                                                "emoji-zoom-increase\n"
+                                                "emoji-zoom-decrease\n"
+                                                "emoji-zoom-reset\n"
+                                                "emoji-describe\n"
+                                                "emoji-insert\n"
+                                                "emoji-list\n"
+                                                "emoji-recent\n"
+                                                "emoji-search\n"
                                                 "add-change-log-entry-other-window\n"
 				                                "insert-file\n"
                                         "insert-buffer\n"
@@ -11658,12 +12763,56 @@
                                                 "vc-diff\n"
                                                 "vc-print-log\n"
 			                                            "eval-expression\n"
-                                            "font-lock-update\n"
-                                            "insert-char\n"
+	                                            "font-lock-update\n"
+	                                            "insert-char\n"
+	                                            "text-scale-adjust\n"
+	                                            "global-text-scale-adjust\n"
+	                                            "suspend-frame\n"
+	                                            "tmm-menubar\n"
+	                                            "set-selective-display\n"
+	                                            "toggle-input-method\n"
+	                                            "activate-transient-input-method\n"
+	                                            "set-input-method\n"
+	                                            "set-file-name-coding-system\n"
+	                                            "set-next-selection-coding-system\n"
+	                                            "universal-coding-system-argument\n"
+	                                            "set-buffer-file-coding-system\n"
+	                                            "set-keyboard-coding-system\n"
+	                                            "set-language-environment\n"
+	                                            "set-buffer-process-coding-system\n"
+	                                            "revert-buffer-with-coding-system\n"
+	                                            "set-terminal-coding-system\n"
+	                                            "set-selection-coding-system\n"
+	                                            "highlight-symbol-at-point\n"
+	                                            "highlight-regexp\n"
+	                                            "highlight-phrase\n"
+	                                            "highlight-lines-matching-regexp\n"
+	                                            "unhighlight-regexp\n"
+	                                            "hi-lock-find-patterns\n"
+	                                            "hi-lock-write-interactive-patterns\n"
                                             "kmacro-start-macro\n"
                                             "kmacro-end-macro\n"
                                             "kmacro-end-and-call-macro\n"
                                             "kbd-macro-query\n"
+                                            "kmacro-keymap\n"
+                                            "kmacro-delete-ring-head\n"
+                                            "kmacro-edit-macro-repeat\n"
+                                            "kmacro-set-format\n"
+                                            "kmacro-end-or-call-macro-repeat\n"
+                                            "kmacro-call-ring-2nd-repeat\n"
+                                            "kmacro-cycle-ring-next\n"
+                                            "kmacro-cycle-ring-previous\n"
+                                            "kmacro-swap-ring\n"
+                                            "kmacro-view-macro-repeat\n"
+                                            "kmacro-edit-macro\n"
+                                            "kmacro-step-edit-macro\n"
+                                            "kmacro-bind-to-key\n"
+                                            "kmacro-redisplay\n"
+                                            "edit-kbd-macro\n"
+                                            "kmacro-edit-lossage\n"
+                                            "kmacro-name-last-macro\n"
+                                            "apply-macro-to-region-lines\n"
+                                            "kmacro-to-register\n"
 				                                "replace-string\n"
 		                                "replace-regexp\n"
 		                                "query-replace\n"
@@ -12239,6 +13388,25 @@
           (if (equal files--minibuffer-purpose "project-or-external-find-regexp") (setq ok t) nil)
 			          (if (equal files--minibuffer-purpose "eval-expression") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "insert-char") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "emoji-describe") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "emoji-insert") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "emoji-search") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "highlight-regexp") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "highlight-phrase") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "highlight-lines-matching-regexp") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "unhighlight-regexp") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "activate-transient-input-method") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-input-method") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-file-name-coding-system") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-next-selection-coding-system") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "universal-coding-system-argument") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-buffer-file-coding-system") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-keyboard-coding-system") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-language-environment") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-buffer-process-coding-system") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "revert-buffer-with-coding-system") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-terminal-coding-system") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "set-selection-coding-system") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "xref-find-definitions") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "xref-find-references") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "xref-find-apropos") (setq ok t) nil)
@@ -12882,29 +14050,41 @@
         (setq files--kmacro-recording
               (equal (rdf (progn (setq files--transport-name "nemacs-kmacro-recording") (files--transport-path)))
                      "1"))
-        (if (if files--kmacro-recording
-                t
-              (if (eq files--bridge-command 'kmacro-start-macro)
-                  t
-                  (if (eq files--bridge-command 'kmacro-end-macro)
-                      t
-                    (if (eq files--bridge-command 'kmacro-end-and-call-macro)
-                        t
-                    (if (eq files--bridge-command 'kbd-macro-query)
-                        t
-                      (if (equal files--bridge-keys "C-x e")
-                          t
-                        (equal files--bridge-keys "C-x )")))))))
-            (setq files--kmacro-keys
-                  (rdf (progn (setq files--transport-name "nemacs-kmacro-keys") (files--transport-path))))
-          (setq files--kmacro-keys ""))))
+        (setq files--kmacro-ring
+              (rdf (progn (setq files--transport-name "nemacs-kmacro-ring") (files--transport-path))))
+        (setq files--kmacro-name
+              (rdf (progn (setq files--transport-name "nemacs-kmacro-name") (files--transport-path))))
+        (setq files--kmacro-format
+              (rdf (progn (setq files--transport-name "nemacs-kmacro-format") (files--transport-path))))
+        (setq files--kmacro-bound-key
+              (rdf (progn (setq files--transport-name "nemacs-kmacro-bound-key") (files--transport-path))))
+        (setq files--kmacro-register
+              (rdf (progn (setq files--transport-name "nemacs-kmacro-register") (files--transport-path))))
+        (setq files--number-file-name
+              (progn (setq files--transport-name "nemacs-kmacro-counter") (files--transport-path)))
+        (files--read-number-file)
+        (setq files--kmacro-counter files--number-file-value)
+        (setq files--kmacro-keys
+              (rdf (progn (setq files--transport-name "nemacs-kmacro-keys") (files--transport-path))))))
 
 (fset 'files--write-kmacro-state
       (lambda ()
         (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-recording") (files--transport-path))
                        (if files--kmacro-recording "1" "0"))
         (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-keys") (files--transport-path))
-                       files--kmacro-keys)))
+                       files--kmacro-keys)
+        (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-ring") (files--transport-path))
+                       files--kmacro-ring)
+        (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-name") (files--transport-path))
+                       files--kmacro-name)
+        (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-format") (files--transport-path))
+                       files--kmacro-format)
+        (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-bound-key") (files--transport-path))
+                       files--kmacro-bound-key)
+        (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-register") (files--transport-path))
+                       files--kmacro-register)
+        (nl-write-file (progn (setq files--transport-name "nemacs-kmacro-counter") (files--transport-path))
+                       (number-to-string files--kmacro-counter))))
 
 (fset 'files--kmacro-command-p
       (lambda ()
@@ -12913,6 +14093,25 @@
           (if (equal files--bridge-effective-command "kmacro-end-macro") (setq ok t) nil)
           (if (equal files--bridge-effective-command "kmacro-end-and-call-macro") (setq ok t) nil)
           (if (equal files--bridge-effective-command "kbd-macro-query") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-keymap") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-delete-ring-head") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-edit-macro-repeat") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-set-format") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-end-or-call-macro-repeat") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-call-ring-2nd-repeat") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-cycle-ring-next") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-cycle-ring-previous") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-swap-ring") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-view-macro-repeat") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-edit-macro") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-step-edit-macro") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-bind-to-key") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-redisplay") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "edit-kbd-macro") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-edit-lossage") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-name-last-macro") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "apply-macro-to-region-lines") (setq ok t) nil)
+          (if (equal files--bridge-effective-command "kmacro-to-register") (setq ok t) nil)
           ok)))
 
 (fset 'files--append-kmacro-key-if-needed
@@ -13075,6 +14274,39 @@
                       (if (eq files--bridge-command 'eval-expression) (setq ok t) nil)
                       (if (eq files--bridge-command 'font-lock-update) (setq ok t) nil)
                       (if (eq files--bridge-command 'insert-char) (setq ok t) nil)
+                      (if (eq files--bridge-command 'text-scale-adjust) (setq ok t) nil)
+                      (if (eq files--bridge-command 'global-text-scale-adjust) (setq ok t) nil)
+                      (if (eq files--bridge-command 'suspend-frame) (setq ok t) nil)
+                      (if (eq files--bridge-command 'tmm-menubar) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-selective-display) (setq ok t) nil)
+                      (if (eq files--bridge-command 'toggle-input-method) (setq ok t) nil)
+                      (if (eq files--bridge-command 'activate-transient-input-method) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-input-method) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-file-name-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-next-selection-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'universal-coding-system-argument) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-buffer-file-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-keyboard-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-language-environment) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-buffer-process-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'revert-buffer-with-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-terminal-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'set-selection-coding-system) (setq ok t) nil)
+                      (if (eq files--bridge-command 'highlight-symbol-at-point) (setq ok t) nil)
+                      (if (eq files--bridge-command 'highlight-regexp) (setq ok t) nil)
+                      (if (eq files--bridge-command 'highlight-phrase) (setq ok t) nil)
+                      (if (eq files--bridge-command 'highlight-lines-matching-regexp) (setq ok t) nil)
+                      (if (eq files--bridge-command 'unhighlight-regexp) (setq ok t) nil)
+                      (if (eq files--bridge-command 'hi-lock-find-patterns) (setq ok t) nil)
+                      (if (eq files--bridge-command 'hi-lock-write-interactive-patterns) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-zoom-increase) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-zoom-decrease) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-zoom-reset) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-describe) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-insert) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-list) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-recent) (setq ok t) nil)
+                      (if (eq files--bridge-command 'emoji-search) (setq ok t) nil)
                       (if (eq files--bridge-command 'kmacro-start-macro) (setq ok t) nil)
                       (if (eq files--bridge-command 'kmacro-end-macro) (setq ok t) nil)
                       (if (eq files--bridge-command 'kmacro-end-and-call-macro) (setq ok t) nil)
@@ -13082,6 +14314,25 @@
                       (if (eq files--bridge-command 'kmacro-set-counter) (setq ok t) nil)
                       (if (eq files--bridge-command 'kmacro-add-counter) (setq ok t) nil)
                       (if (eq files--bridge-command 'kmacro-insert-counter) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-keymap) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-delete-ring-head) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-edit-macro-repeat) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-set-format) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-end-or-call-macro-repeat) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-call-ring-2nd-repeat) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-cycle-ring-next) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-cycle-ring-previous) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-swap-ring) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-view-macro-repeat) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-edit-macro) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-step-edit-macro) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-bind-to-key) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-redisplay) (setq ok t) nil)
+                      (if (eq files--bridge-command 'edit-kbd-macro) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-edit-lossage) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-name-last-macro) (setq ok t) nil)
+                      (if (eq files--bridge-command 'apply-macro-to-region-lines) (setq ok t) nil)
+                      (if (eq files--bridge-command 'kmacro-to-register) (setq ok t) nil)
                       (if (eq files--bridge-command 'xref-go-back) (setq ok t) nil)
                       (if (eq files--bridge-command 'xref-go-forward) (setq ok t) nil)
                       (if (eq files--bridge-command 'xref-find-definitions) (setq ok t) nil)
@@ -13441,6 +14692,39 @@
                     (if (eq files--bridge-command 'eval-expression) (eval-expression) nil)
                     (if (eq files--bridge-command 'font-lock-update) (font-lock-update) nil)
                     (if (eq files--bridge-command 'insert-char) (insert-char) nil)
+                    (if (eq files--bridge-command 'text-scale-adjust) (text-scale-adjust) nil)
+                    (if (eq files--bridge-command 'global-text-scale-adjust) (global-text-scale-adjust) nil)
+                    (if (eq files--bridge-command 'suspend-frame) (suspend-frame) nil)
+                    (if (eq files--bridge-command 'tmm-menubar) (tmm-menubar) nil)
+                    (if (eq files--bridge-command 'set-selective-display) (set-selective-display) nil)
+                    (if (eq files--bridge-command 'toggle-input-method) (toggle-input-method) nil)
+                    (if (eq files--bridge-command 'activate-transient-input-method) (activate-transient-input-method) nil)
+                    (if (eq files--bridge-command 'set-input-method) (set-input-method) nil)
+                    (if (eq files--bridge-command 'set-file-name-coding-system) (set-file-name-coding-system) nil)
+                    (if (eq files--bridge-command 'set-next-selection-coding-system) (set-next-selection-coding-system) nil)
+                    (if (eq files--bridge-command 'universal-coding-system-argument) (universal-coding-system-argument) nil)
+                    (if (eq files--bridge-command 'set-buffer-file-coding-system) (set-buffer-file-coding-system) nil)
+                    (if (eq files--bridge-command 'set-keyboard-coding-system) (set-keyboard-coding-system) nil)
+                    (if (eq files--bridge-command 'set-language-environment) (set-language-environment) nil)
+                    (if (eq files--bridge-command 'set-buffer-process-coding-system) (set-buffer-process-coding-system) nil)
+                    (if (eq files--bridge-command 'revert-buffer-with-coding-system) (revert-buffer-with-coding-system) nil)
+                    (if (eq files--bridge-command 'set-terminal-coding-system) (set-terminal-coding-system) nil)
+                    (if (eq files--bridge-command 'set-selection-coding-system) (set-selection-coding-system) nil)
+                    (if (eq files--bridge-command 'highlight-symbol-at-point) (highlight-symbol-at-point) nil)
+                    (if (eq files--bridge-command 'highlight-regexp) (highlight-regexp) nil)
+                    (if (eq files--bridge-command 'highlight-phrase) (highlight-phrase) nil)
+                    (if (eq files--bridge-command 'highlight-lines-matching-regexp) (highlight-lines-matching-regexp) nil)
+                    (if (eq files--bridge-command 'unhighlight-regexp) (unhighlight-regexp) nil)
+                    (if (eq files--bridge-command 'hi-lock-find-patterns) (hi-lock-find-patterns) nil)
+                    (if (eq files--bridge-command 'hi-lock-write-interactive-patterns) (hi-lock-write-interactive-patterns) nil)
+                    (if (eq files--bridge-command 'emoji-zoom-increase) (emoji-zoom-increase) nil)
+                    (if (eq files--bridge-command 'emoji-zoom-decrease) (emoji-zoom-decrease) nil)
+                    (if (eq files--bridge-command 'emoji-zoom-reset) (emoji-zoom-reset) nil)
+                    (if (eq files--bridge-command 'emoji-describe) (emoji-describe) nil)
+                    (if (eq files--bridge-command 'emoji-insert) (emoji-insert) nil)
+                    (if (eq files--bridge-command 'emoji-list) (emoji-list) nil)
+                    (if (eq files--bridge-command 'emoji-recent) (emoji-recent) nil)
+                    (if (eq files--bridge-command 'emoji-search) (emoji-search) nil)
                     (if (eq files--bridge-command 'kmacro-start-macro) (kmacro-start-macro) nil)
                     (if (eq files--bridge-command 'kmacro-end-macro) (kmacro-end-macro) nil)
                     (if (eq files--bridge-command 'kmacro-end-and-call-macro) (kmacro-end-and-call-macro) nil)
@@ -13448,6 +14732,25 @@
                     (if (eq files--bridge-command 'kmacro-set-counter) (kmacro-set-counter) nil)
                     (if (eq files--bridge-command 'kmacro-add-counter) (kmacro-add-counter) nil)
                     (if (eq files--bridge-command 'kmacro-insert-counter) (kmacro-insert-counter) nil)
+                    (if (eq files--bridge-command 'kmacro-keymap) (kmacro-keymap) nil)
+                    (if (eq files--bridge-command 'kmacro-delete-ring-head) (kmacro-delete-ring-head) nil)
+                    (if (eq files--bridge-command 'kmacro-edit-macro-repeat) (kmacro-edit-macro-repeat) nil)
+                    (if (eq files--bridge-command 'kmacro-set-format) (kmacro-set-format) nil)
+                    (if (eq files--bridge-command 'kmacro-end-or-call-macro-repeat) (kmacro-end-or-call-macro-repeat) nil)
+                    (if (eq files--bridge-command 'kmacro-call-ring-2nd-repeat) (kmacro-call-ring-2nd-repeat) nil)
+                    (if (eq files--bridge-command 'kmacro-cycle-ring-next) (kmacro-cycle-ring-next) nil)
+                    (if (eq files--bridge-command 'kmacro-cycle-ring-previous) (kmacro-cycle-ring-previous) nil)
+                    (if (eq files--bridge-command 'kmacro-swap-ring) (kmacro-swap-ring) nil)
+                    (if (eq files--bridge-command 'kmacro-view-macro-repeat) (kmacro-view-macro-repeat) nil)
+                    (if (eq files--bridge-command 'kmacro-edit-macro) (kmacro-edit-macro) nil)
+                    (if (eq files--bridge-command 'kmacro-step-edit-macro) (kmacro-step-edit-macro) nil)
+                    (if (eq files--bridge-command 'kmacro-bind-to-key) (kmacro-bind-to-key) nil)
+                    (if (eq files--bridge-command 'kmacro-redisplay) (kmacro-redisplay) nil)
+                    (if (eq files--bridge-command 'edit-kbd-macro) (edit-kbd-macro) nil)
+                    (if (eq files--bridge-command 'kmacro-edit-lossage) (kmacro-edit-lossage) nil)
+                    (if (eq files--bridge-command 'kmacro-name-last-macro) (kmacro-name-last-macro) nil)
+                    (if (eq files--bridge-command 'apply-macro-to-region-lines) (apply-macro-to-region-lines) nil)
+                    (if (eq files--bridge-command 'kmacro-to-register) (kmacro-to-register) nil)
                     (if (eq files--bridge-command 'xref-go-back) (xref-go-back) nil)
                     (if (eq files--bridge-command 'xref-go-forward) (xref-go-forward) nil)
                     (if (eq files--bridge-command 'xref-find-definitions) (xref-find-definitions) nil)
@@ -13776,6 +15079,17 @@
           (if (eq files--bridge-command 'bookmark-set-no-overwrite) (setq ok t) nil)
           (if (eq files--bridge-command 'bookmark-jump) (setq ok t) nil)
           (if (eq files--bridge-command 'bookmark-bmenu-list) (setq ok t) nil)
+          (if (eq files--bridge-command 'emoji-list) (setq ok t) nil)
+          (if (eq files--bridge-command 'emoji-recent) (setq ok t) nil)
+          (if (eq files--bridge-command 'emoji-search) (setq ok t) nil)
+          (if (eq files--bridge-command 'emoji-describe) (setq ok t) nil)
+          (if (eq files--bridge-command 'emoji-zoom-increase) (setq ok t) nil)
+          (if (eq files--bridge-command 'emoji-zoom-decrease) (setq ok t) nil)
+          (if (eq files--bridge-command 'emoji-zoom-reset) (setq ok t) nil)
+          (if (eq files--bridge-command 'text-scale-adjust) (setq ok t) nil)
+          (if (eq files--bridge-command 'global-text-scale-adjust) (setq ok t) nil)
+          (if (eq files--bridge-command 'suspend-frame) (setq ok t) nil)
+          (if (eq files--bridge-command 'tmm-menubar) (setq ok t) nil)
           (if (eq files--bridge-command 'repeat) (setq ok t) nil)
           (if (eq files--bridge-command 'write-file) (setq ok t) nil)
           (if (eq files--bridge-command 'save-buffer) (setq ok t) nil)
@@ -13910,6 +15224,11 @@
               (files--read-global-mark-state)
               (files--read-truncate-lines-state)
               (files--read-rectangle-mark-mode-state)
+              (files--read-text-scale-state)
+              (files--read-frame-suspended-state)
+              (files--read-highlight-state)
+              (files--read-selective-display-state)
+              (files--read-coding-input-state)
               (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-hscroll") (files--transport-path)))
               (files--read-number-file)
               (setq files--window-hscroll files--number-file-value)
@@ -14042,6 +15361,7 @@
           (if (equal cmd "delete-backward-char") (files--save-undo-state) nil)
           (if (equal cmd "self-insert-command") (files--save-undo-state) nil)
           (if (equal cmd "insert-char") (files--save-undo-state) nil)
+          (if (equal cmd "emoji-insert") (files--save-undo-state) nil)
           (if (equal cmd "quoted-insert") (files--save-undo-state) nil)
           (if (equal cmd "indent-for-tab-command") (files--save-undo-state) nil)
           (if (equal cmd "tab-to-tab-stop") (files--save-undo-state) nil)
@@ -14803,15 +16123,63 @@
                     (files--write-transport-window-start)
                     (setq files--bridge-status "written"))
                 nil)
-              (if (if (equal cmd "calc-dispatch")
-                      t
-                    (if (equal cmd "2C-command")
-                        t
-                      (if (equal cmd "2C-two-columns")
-                          t
-                        (if (equal cmd "2C-associate-buffer")
-                            t
-                          (equal cmd "2C-split")))))
+              (if (equal cmd "calc-dispatch")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "2C-command")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "2C-two-columns")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "2C-associate-buffer")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "2C-split")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
                     (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
@@ -16069,6 +17437,77 @@
                     (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
                     (setq files--bridge-status "written"))
                 nil)
+              (if (equal cmd "emoji-insert")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "emoji-list")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "emoji-recent")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "emoji-search")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "emoji-describe")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "emoji-zoom-increase")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "emoji-zoom-decrease")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "emoji-zoom-reset")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
               (if (if (equal cmd "kmacro-start-macro")
                       t
                     (if (equal cmd "kmacro-end-macro")
@@ -16093,6 +17532,64 @@
                       t
                     (equal cmd "kmacro-add-counter"))
                   (setq files--bridge-status "written")
+                nil)
+              (if (if (equal cmd "kmacro-edit-macro-repeat")
+                      t
+                    (if (equal cmd "kmacro-view-macro-repeat")
+                        t
+                      (if (equal cmd "kmacro-edit-macro")
+                          t
+                        (if (equal cmd "kmacro-step-edit-macro")
+                            t
+                          (if (equal cmd "edit-kbd-macro")
+                              t
+                            (equal cmd "kmacro-edit-lossage"))))))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "kmacro-end-or-call-macro-repeat")
+                      t
+                    (if (equal cmd "kmacro-call-ring-2nd-repeat")
+                        t
+                      (equal cmd "apply-macro-to-region-lines")))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "kmacro-keymap")
+                      t
+                    (if (equal cmd "kmacro-delete-ring-head")
+                        t
+                      (if (equal cmd "kmacro-set-format")
+                          t
+                        (if (equal cmd "kmacro-cycle-ring-next")
+                            t
+                          (if (equal cmd "kmacro-cycle-ring-previous")
+                              t
+                            (if (equal cmd "kmacro-swap-ring")
+                                t
+                              (if (equal cmd "kmacro-bind-to-key")
+                                  t
+                                (if (equal cmd "kmacro-redisplay")
+                                    t
+                                  (if (equal cmd "kmacro-name-last-macro")
+                                      t
+                                    (equal cmd "kmacro-to-register"))))))))))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
                 nil)
               (if (equal cmd "quoted-insert")
                   (progn
@@ -16233,6 +17730,126 @@
                 nil)
               (if (equal cmd "font-lock-update")
                   (setq files--bridge-status "written")
+                nil)
+              (if (equal cmd "text-scale-adjust")
+                  (progn
+                    (files--write-text-scale-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "global-text-scale-adjust")
+                  (progn
+                    (files--write-text-scale-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "suspend-frame")
+                  (progn
+                    (files--write-frame-suspended-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "tmm-menubar")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "set-selective-display")
+                  (progn
+                    (files--write-selective-display-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "revert-buffer-with-coding-system")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (files--write-transport-point))
+                nil)
+              (if (if (equal cmd "toggle-input-method")
+                      t
+                    (if (equal cmd "activate-transient-input-method")
+                        t
+                      (if (equal cmd "set-input-method")
+                          t
+                        (if (equal cmd "set-file-name-coding-system")
+                            t
+                          (if (equal cmd "set-next-selection-coding-system")
+                              t
+                            (if (equal cmd "universal-coding-system-argument")
+                                t
+                              (if (equal cmd "set-buffer-file-coding-system")
+                                  t
+                                (if (equal cmd "set-keyboard-coding-system")
+                                    t
+                                  (if (equal cmd "set-language-environment")
+                                      t
+                                    (if (equal cmd "set-buffer-process-coding-system")
+                                        t
+                                      (if (equal cmd "revert-buffer-with-coding-system")
+                                          t
+                                        (if (equal cmd "set-terminal-coding-system")
+                                            t
+                                          (equal cmd "set-selection-coding-system")))))))))))))
+                  (progn
+                    (files--write-coding-input-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "highlight-symbol-at-point")
+                  (progn
+                    (files--write-highlight-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "highlight-regexp")
+                  (progn
+                    (files--write-highlight-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "highlight-phrase")
+                  (progn
+                    (files--write-highlight-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "highlight-lines-matching-regexp")
+                  (progn
+                    (files--write-highlight-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "unhighlight-regexp")
+                  (progn
+                    (files--write-highlight-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "hi-lock-write-interactive-patterns")
+                  (progn
+                    (files--write-highlight-state)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "hi-lock-find-patterns")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
                 nil)
               (if (equal cmd "mark-whole-buffer")
                   (progn
