@@ -71,6 +71,30 @@
             (should (eq (cadr (nth 1 (cadr forms))) 'ldb-fn))))
       (when (file-directory-p dir) (delete-directory dir t)))))
 
+(ert-deftest nemacs-loaddefs-defers-loading-until-called ()
+  "M7 deliverable: loaddefs autoloads keep startup bounded (a vendor feature
+stays unloaded until first call) while remaining a callable workflow."
+  (let* ((dir (make-temp-file "nemacs-ld-bound-" t))
+         (file (expand-file-name "ldbound.el" dir)))
+    (unwind-protect
+        (let ((load-path (cons dir load-path))
+              (features (copy-sequence features)))
+          (with-temp-file file
+            (insert ";;;###autoload\n"
+                    "(defun ld-bound-fn () 'loaded)\n"
+                    "(provide 'ldbound)\n"))
+          (let ((forms (nemacs-loaddefs-generate-for-file file)))
+            (fmakunbound 'ld-bound-fn)
+            (setq features (remove 'ldbound features))
+            (eval (car forms) t)
+            ;; startup stays bounded: the feature is NOT loaded yet
+            (should-not (featurep 'ldbound))
+            ;; ...but it is a callable workflow: the first call loads it
+            (should (eq 'loaded (ld-bound-fn)))
+            (should (featurep 'ldbound))))
+      (fmakunbound 'ld-bound-fn)
+      (when (file-directory-p dir) (delete-directory dir t)))))
+
 (provide 'nemacs-loaddefs-test)
 
 ;;; nemacs-loaddefs-test.el ends here
