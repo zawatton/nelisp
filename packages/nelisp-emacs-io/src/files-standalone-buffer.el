@@ -69,6 +69,22 @@
   (and (fboundp 'delete-file) (symbol-function 'delete-file))
   "Native `delete-file' captured before this fallback overrides it.")
 
+(defvar files--native-file-directory-p
+  (and (fboundp 'file-directory-p) (symbol-function 'file-directory-p))
+  "Native `file-directory-p' captured before this fallback overrides it.")
+
+(defvar files--native-delete-directory
+  (and (fboundp 'delete-directory) (symbol-function 'delete-directory))
+  "Native `delete-directory' captured before this fallback overrides it.")
+
+(defvar files--native-file-symlink-p
+  (and (fboundp 'file-symlink-p) (symbol-function 'file-symlink-p))
+  "Native `file-symlink-p' captured before this fallback overrides it.")
+
+(defvar files--native-file-attributes
+  (and (fboundp 'file-attributes) (symbol-function 'file-attributes))
+  "Native `file-attributes' captured before this fallback overrides it.")
+
 (defvar files--native-buffer-string
   (and (fboundp 'buffer-string) (symbol-function 'buffer-string))
   "Native `buffer-string' captured before this fallback overrides it.")
@@ -758,7 +774,9 @@ not a symlink / on error / when the reader provides no
   (defun file-symlink-p (filename)
     "Return the target of symbolic link FILENAME (a string), or nil when
 FILENAME is not a symbolic link (via readlink(2))."
-    (files--readlink filename)))
+    (if files--native-file-symlink-p
+        (funcall files--native-file-symlink-p filename)
+      (files--readlink filename))))
 
 (defun files--truename-walk (path depth)
   "Resolve symbolic links in absolute PATH component by component.
@@ -877,6 +895,8 @@ a single stat via `nelisp--syscall-lstat-buf' + `ptr-read-u64'.  Times are
 birth (creation) time as a (TICKS . HZ) timestamp via statx(2), or nil when
 unavailable.  Degraded: the MODES string omits setuid/setgid/sticky display.
 ID-FORMAT is ignored."
+    (if files--native-file-attributes
+        (funcall files--native-file-attributes filename _id-format)
     (let ((buf (or (files--lstat-buf filename) (files--stat-buf filename))))
       (when buf
         (let* ((mode (ptr-read-u64 buf files--stat-off-mode))
@@ -896,7 +916,7 @@ ID-FORMAT is ignored."
            nil
            (ptr-read-u64 buf files--stat-off-ino)
            (ptr-read-u64 buf files--stat-off-dev)
-           (files--statx-btime filename)))))))
+           (files--statx-btime filename))))))))
 
 (defun files--time-to-seconds (time)
   "Convert a Lisp TIME value to integer seconds since the epoch.
@@ -1062,6 +1082,8 @@ directory has a `.' entry -- and falls back to the trailing-slash heuristic
 when access(2) is unavailable."
     (cond
      ((not (stringp filename)) nil)
+     (files--native-file-directory-p
+      (funcall files--native-file-directory-p filename))
      ((fboundp 'nelisp--syscall-path-int)
       (let* ((d (files--expand-file-name filename))
              (n (length d))
@@ -1102,18 +1124,24 @@ Signals `file-error' on kernel failure (rc < 0).  TRASH is ignored."
     nil))
 
 (when (files--install-fallback-function-p 'delete-directory)
-  (defun delete-directory (directory &optional _recursive _trash)
-    "Delete the empty DIRECTORY via the reader's `nelisp--syscall-path' rmdir(2).
-Signals `file-error' on kernel failure (rc < 0).  RECURSIVE and TRASH are
-ignored -- only an empty directory can be removed."
-    (if (fboundp 'nelisp--syscall-path)
-        (let ((rc (nelisp--syscall-path files--syscall-rmdir
-                                        (files--expand-file-name directory))))
-          (when (< rc 0)
-            (signal 'file-error (list "Removing directory" directory rc))))
+  (defun delete-directory (directory &optional recursive trash)
+    "Delete DIRECTORY.
+When the native `delete-directory' is available (host runtime) it is used and
+honours RECURSIVE/TRASH.  On the standalone reader only an empty directory can
+be removed via `nelisp--syscall-path' rmdir(2); RECURSIVE and TRASH are then
+ignored.  Signals `file-error' on kernel failure (rc < 0)."
+    (cond
+     (files--native-delete-directory
+      (funcall files--native-delete-directory directory recursive trash))
+     ((fboundp 'nelisp--syscall-path)
+      (let ((rc (nelisp--syscall-path files--syscall-rmdir
+                                      (files--expand-file-name directory))))
+        (when (< rc 0)
+          (signal 'file-error (list "Removing directory" directory rc)))))
+     (t
       (signal 'file-error
               (list "delete-directory unavailable (no nelisp--syscall-path)"
-                    directory)))
+                    directory))))
     nil))
 
 (when (files--install-fallback-function-p 'rename-file)

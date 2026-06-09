@@ -136,6 +136,7 @@
 (setq files--register-store-dir (progn (setq files--transport-name "nemacs-register-store") (files--transport-path)))
 (setq files--bookmark-store-dir (progn (setq files--transport-name "nemacs-bookmark-store") (files--transport-path)))
 (setq files--bookmark-list-file (progn (setq files--transport-name "nemacs-bookmark-list") (files--transport-path)))
+(setq files--abbrev-table-file (progn (setq files--transport-name "nemacs-abbrev-table") (files--transport-path)))
 (setq files--register-path "")
 (setq files--register-point 0)
 (setq files--register-buffer-name "")
@@ -171,6 +172,10 @@
 (setq files--rectangle-line-text "")
 (setq files--rectangle-piece "")
 (setq files--rectangle-row-count 0)
+(setq files--abbrev-name "")
+(setq files--abbrev-expansion "")
+(setq files--abbrev-word-start 0)
+(setq files--abbrev-word-end 0)
 (setq files--buffer-list-file (progn (setq files--transport-name "nemacs-buffer-list") (files--transport-path)))
 (setq files--buffer-list-name "")
 (setq files--window-layout "single")
@@ -248,6 +253,11 @@
               "C-x t p\tproject-other-tab-command\tProject other tab command: \n"
               "C-x (\tkmacro-start-macro\n"
               "C-x )\tkmacro-end-macro\n"
+              "C-x '\texpand-abbrev\n"
+              "C-x *\tcalc-dispatch\n"
+              "C-x 6\t2C-command\n"
+              "C-x 6 2\t2C-two-columns\n"
+              "C-x 6 s\t2C-split\n"
               "C-x e\tkmacro-end-and-call-macro\n"
               "C-x q\tkbd-macro-query\n"
               "C-x C-k C-c\tkmacro-set-counter\n"
@@ -388,6 +398,7 @@
               "C-t\ttranspose-chars\n"
               "M-\\\tdelete-horizontal-space\n"
               "M-SPC\tcycle-spacing\n"
+              "M-'\tabbrev-prefix-mark\n"
               "M-~\tnot-modified\n"
               "M-^\tdelete-indentation\n"
               "M-;\tcomment-dwim\n"
@@ -444,6 +455,10 @@
               "C-x n n\tnarrow-to-region\n"
               "C-x n p\tnarrow-to-page\n"
               "C-x n w\twiden\n"
+              "C-x a '\texpand-abbrev\n"
+              "C-x a e\texpand-abbrev\n"
+              "C-x a n\texpand-jump-to-next-slot\n"
+              "C-x a p\texpand-jump-to-previous-slot\n"
               "C-x l\tcount-lines-page\n"
               "C-x [\tbackward-page\n"
               "C-x ]\tforward-page\n"
@@ -532,6 +547,14 @@
                   "C-x r w\twindow-configuration-to-register\tWindow configuration to register: \n"
                   "C-x r n\tnumber-to-register\tNumber to register: \n"
                   "C-x r +\tincrement-register\tIncrement register: \n"
+                  "C-x a +\tadd-mode-abbrev\tAdd mode abbrev: \n"
+                  "C-x a C-a\tadd-mode-abbrev\tAdd mode abbrev: \n"
+                  "C-x a l\tadd-mode-abbrev\tAdd mode abbrev: \n"
+                  "C-x a g\tadd-global-abbrev\tAdd global abbrev: \n"
+                  "C-x a -\tinverse-add-global-abbrev\tExpansion for global abbrev: \n"
+                  "C-x a i g\tinverse-add-global-abbrev\tExpansion for global abbrev: \n"
+                  "C-x a i l\tinverse-add-mode-abbrev\tExpansion for mode abbrev: \n"
+                  "C-x 6 b\t2C-associate-buffer\tAssociate buffer: \n"
 	                  "C-x r m\tbookmark-set\tSet bookmark: \n"
 	                  "C-x r M\tbookmark-set-no-overwrite\tSet bookmark: \n"
 	                  "C-x r b\tbookmark-jump\tJump to bookmark: \n"
@@ -3601,6 +3624,84 @@
               (compose-mail-other-window)
               (setq files--display-prefix-action action))
             files--buffer-name))
+
+    (fset 'calc-dispatch
+          (lambda ()
+            (files--save-current-buffer-state)
+            (setq files--buffer-name "*Calculator*")
+            (setq files--buffer-list-name files--buffer-name)
+            (files--buffer-list-add)
+            (setq files--buffer-string
+                  "Calculator\n\nEnter expressions with M-x eval-expression or edit this scratch buffer.\n")
+            (setq files--current-file-name "")
+            (setq files--point (length files--buffer-string))
+            (setq files--mark files--point)
+            (setq files--window-start 0)
+            (setq files--buffer-read-only-p nil)
+            (setq files--buffer-modified-p nil)
+            (files--clear-narrow-state)
+            (files--save-current-buffer-state)
+            files--buffer-name))
+
+    (fset 'files--two-column-open
+          (lambda (right-name)
+            (let ((left-name files--buffer-name)
+                  (left-text files--buffer-string)
+                  (right-text ""))
+              (if (equal left-name "")
+                  (setq left-name "main")
+                nil)
+              (if (equal right-name "")
+                  (setq right-name left-name)
+                nil)
+              (setq right-text
+                    (if (equal right-name left-name)
+                        left-text
+                      (rdf (concat files--buffer-store-dir "/" right-name))))
+              (files--save-current-buffer-state)
+              (setq files--buffer-name "*Two-Column*")
+              (setq files--buffer-list-name files--buffer-name)
+              (files--buffer-list-add)
+              (setq files--buffer-string
+                    (concat "Two-column view\n"
+                            "Left buffer: " left-name "\n"
+                            "Right buffer: " right-name "\n\n"
+                            "--- left ---\n"
+                            left-text
+                            (if (if (> (length left-text) 0)
+                                    (not (= (aref left-text (- (length left-text) 1)) 10))
+                                  nil)
+                                "\n"
+                              "")
+                            "--- right ---\n"
+                            right-text))
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-read-only-p t)
+              (setq files--buffer-modified-p nil)
+              (files--clear-narrow-state)
+              (files--save-current-buffer-state)
+              (setq files--window-layout "vertical")
+              (setq files--window-selected "1")
+              files--buffer-name)))
+
+    (fset '2C-two-columns
+          (lambda ()
+            (files--two-column-open "")))
+
+    (fset '2C-split
+          (lambda ()
+            (2C-two-columns)))
+
+    (fset '2C-associate-buffer
+          (lambda ()
+            (files--two-column-open files--bridge-arg)))
+
+    (fset '2C-command
+          (lambda ()
+            (2C-two-columns)))
 
     (fset 'add-change-log-entry-other-window
           (lambda ()
@@ -7807,6 +7908,191 @@
           (files--clamp-mark)
           files--point)))
 
+(fset 'files--abbrev-word-before-point
+      (lambda ()
+        (files--clamp-point)
+        (setq files--abbrev-word-end files--point)
+        (setq files--abbrev-word-start files--point)
+        (while (if (> files--abbrev-word-start 0)
+                   (progn
+                     (setq files--char-code
+                           (aref files--buffer-string
+                                 (- files--abbrev-word-start 1)))
+                     (files--word-char-p))
+                 nil)
+          (setq files--abbrev-word-start (- files--abbrev-word-start 1)))
+        (setq files--abbrev-name
+              (substring files--buffer-string
+                         files--abbrev-word-start
+                         files--abbrev-word-end))
+        files--abbrev-name))
+
+(fset 'files--abbrev-line-name
+      (lambda ()
+        (let ((index 0)
+              (name ""))
+          (while (if (< index (length files--abbrev-expansion))
+                     (not (= (aref files--abbrev-expansion index) 9))
+                   nil)
+            (setq index (+ index 1)))
+          (setq name (substring files--abbrev-expansion 0 index))
+          name)))
+
+(fset 'files--abbrev-lookup
+      (lambda ()
+        (let ((text (rdf files--abbrev-table-file))
+              (index 0)
+              (start 0)
+              (tab -1)
+              (line "")
+              (found nil))
+          (setq files--abbrev-expansion "")
+          (while (if (<= index (length text)) (not found) nil)
+            (if (if (= index (length text))
+                    t
+                  (= (aref text index) 10))
+                (progn
+                  (setq line (substring text start index))
+                  (setq tab -1)
+                  (let ((scan 0))
+                    (while (< scan (length line))
+                      (if (if (< tab 0) (= (aref line scan) 9) nil)
+                          (setq tab scan)
+                        nil)
+                      (setq scan (+ scan 1))))
+                  (if (if (> tab 0)
+                          (equal (substring line 0 tab) files--abbrev-name)
+                        nil)
+                      (progn
+                        (setq files--abbrev-expansion
+                              (substring line (+ tab 1)))
+                        (setq found t))
+                    nil)
+                  (setq start (+ index 1)))
+              nil)
+            (setq index (+ index 1)))
+          files--abbrev-expansion)))
+
+(fset 'files--abbrev-save
+      (lambda ()
+        (let ((text (rdf files--abbrev-table-file))
+              (index 0)
+              (start 0)
+              (tab -1)
+              (line "")
+              (out ""))
+          (while (<= index (length text))
+            (if (if (= index (length text))
+                    t
+                  (= (aref text index) 10))
+                (progn
+                  (setq line (substring text start index))
+                  (setq tab -1)
+                  (let ((scan 0))
+                    (while (< scan (length line))
+                      (if (if (< tab 0) (= (aref line scan) 9) nil)
+                          (setq tab scan)
+                        nil)
+                      (setq scan (+ scan 1))))
+                  (if (if (> tab 0)
+                          (equal (substring line 0 tab) files--abbrev-name)
+                        nil)
+                      nil
+                    (if (not (equal line ""))
+                        (setq out (concat out line "\n"))
+                      nil))
+                  (setq start (+ index 1)))
+              nil)
+            (setq index (+ index 1)))
+          (if (if (not (equal files--abbrev-name ""))
+                  (not (equal files--abbrev-expansion ""))
+                nil)
+              (nl-write-file files--abbrev-table-file
+                             (concat out
+                                     files--abbrev-name
+                                     "\t"
+                                     files--abbrev-expansion
+                                     "\n"))
+            (setq files--bridge-status "unsupported")))
+        files--abbrev-name))
+
+(fset 'add-global-abbrev
+      (lambda ()
+        (files--abbrev-word-before-point)
+        (setq files--abbrev-expansion files--abbrev-name)
+        (setq files--abbrev-name files--bridge-arg)
+        (files--abbrev-save)))
+
+(fset 'add-mode-abbrev
+      (lambda ()
+        (add-global-abbrev)))
+
+(fset 'inverse-add-global-abbrev
+      (lambda ()
+        (files--abbrev-word-before-point)
+        (setq files--abbrev-expansion files--bridge-arg)
+        (files--abbrev-save)))
+
+(fset 'inverse-add-mode-abbrev
+      (lambda ()
+        (inverse-add-global-abbrev)))
+
+(fset 'abbrev-prefix-mark
+      (lambda ()
+        (files--abbrev-word-before-point)
+        (setq files--mark files--abbrev-word-start)
+        files--mark))
+
+(fset 'expand-abbrev
+      (lambda ()
+        (files--abbrev-word-before-point)
+        (files--abbrev-lookup)
+        (if (not (equal files--abbrev-expansion ""))
+            (progn
+              (setq files--buffer-string
+                    (concat (substring files--buffer-string
+                                       0 files--abbrev-word-start)
+                            files--abbrev-expansion
+                            (substring files--buffer-string
+                                       files--abbrev-word-end)))
+              (setq files--point
+                    (+ files--abbrev-word-start
+                       (length files--abbrev-expansion)))
+              (setq files--buffer-modified-p t)
+              (files--clamp-mark))
+          nil)
+        files--point))
+
+(fset 'expand-jump-to-next-slot
+      (lambda ()
+        (let ((index files--point)
+              (found nil))
+          (while (if (< (+ index 1) (length files--buffer-string))
+                     (not found)
+                   nil)
+            (if (if (= (aref files--buffer-string index) 60)
+                    (= (aref files--buffer-string (+ index 1)) 62)
+                  nil)
+                (progn
+                  (setq files--point (+ index 1))
+                  (setq found t))
+              (setq index (+ index 1))))
+          files--point)))
+
+(fset 'expand-jump-to-previous-slot
+      (lambda ()
+        (let ((index (- files--point 2))
+              (found nil))
+          (while (if (>= index 0) (not found) nil)
+            (if (if (= (aref files--buffer-string index) 60)
+                    (= (aref files--buffer-string (+ index 1)) 62)
+                  nil)
+                (progn
+                  (setq files--point (+ index 1))
+                  (setq found t))
+              (setq index (- index 1))))
+          files--point)))
+
 (fset 'dabbrev-expand
       (lambda ()
         (files--clamp-point)
@@ -11150,6 +11436,9 @@
         (if (equal emacs-minibuffer-gui-purpose "display-buffer-other-frame")
             (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
           nil)
+        (if (equal emacs-minibuffer-gui-purpose "2C-associate-buffer")
+            (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
+          nil)
         (if (equal emacs-minibuffer-gui-purpose "kill-buffer")
             (setq emacs-minibuffer-gui-history-symbol "buffer-name-history")
           nil)
@@ -11221,6 +11510,11 @@
                       (setq source (rdf files--buffer-list-file))
                     nil)
                 nil)
+              (if (equal files--minibuffer-purpose "2C-associate-buffer")
+                  (if (equal source "")
+                      (setq source (rdf files--buffer-list-file))
+                    nil)
+                nil)
 		          (if (equal files--minibuffer-purpose "rename-buffer")
 		              (if (equal source "")
 		                  (setq source (rdf files--buffer-list-file))
@@ -11275,6 +11569,11 @@
                                                 "compose-mail\n"
                                                 "compose-mail-other-window\n"
                                                 "compose-mail-other-frame\n"
+                                                "calc-dispatch\n"
+                                                "2C-command\n"
+                                                "2C-two-columns\n"
+                                                "2C-associate-buffer\n"
+                                                "2C-split\n"
                                                 "add-change-log-entry-other-window\n"
 				                                "insert-file\n"
                                         "insert-buffer\n"
@@ -11305,6 +11604,14 @@
                                     "string-rectangle\n"
                                     "yank-rectangle\n"
 			                                "write-file\n"
+                                            "expand-abbrev\n"
+                                            "add-global-abbrev\n"
+                                            "add-mode-abbrev\n"
+                                            "inverse-add-global-abbrev\n"
+                                            "inverse-add-mode-abbrev\n"
+                                            "abbrev-prefix-mark\n"
+                                            "expand-jump-to-next-slot\n"
+                                            "expand-jump-to-previous-slot\n"
 					                                "switch-to-buffer\n"
 					                                "switch-to-buffer-other-window\n"
                                                     "switch-to-buffer-other-frame\n"
@@ -11911,6 +12218,11 @@
           (if (equal files--minibuffer-purpose "insert-register") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "number-to-register") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "increment-register") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "add-global-abbrev") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "add-mode-abbrev") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "inverse-add-global-abbrev") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "inverse-add-mode-abbrev") (setq ok t) nil)
+          (if (equal files--minibuffer-purpose "2C-associate-buffer") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "bookmark-set") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "bookmark-set-no-overwrite") (setq ok t) nil)
           (if (equal files--minibuffer-purpose "bookmark-jump") (setq ok t) nil)
@@ -12264,6 +12576,7 @@
         (if (eq files--bridge-command 'kill-sexp) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'backward-kill-word) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'zap-to-char) (files--save-undo-state) nil)
+        (if (eq files--bridge-command 'expand-abbrev) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'dabbrev-expand) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'dabbrev-completion) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'complete-symbol) (files--save-undo-state) nil)
@@ -12845,7 +13158,12 @@
               (if (eq files--bridge-command 'compose-mail) (setq ok t) nil)
               (if (eq files--bridge-command 'compose-mail-other-window) (setq ok t) nil)
               (if (eq files--bridge-command 'compose-mail-other-frame) (setq ok t) nil)
-          (if (eq files--bridge-command 'insert-file) (setq ok t) nil)
+              (if (eq files--bridge-command 'calc-dispatch) (setq ok t) nil)
+              (if (eq files--bridge-command '2C-command) (setq ok t) nil)
+              (if (eq files--bridge-command '2C-two-columns) (setq ok t) nil)
+              (if (eq files--bridge-command '2C-associate-buffer) (setq ok t) nil)
+              (if (eq files--bridge-command '2C-split) (setq ok t) nil)
+	          (if (eq files--bridge-command 'insert-file) (setq ok t) nil)
           (if (eq files--bridge-command 'insert-buffer) (setq ok t) nil)
           (if (eq files--bridge-command 'point-to-register) (setq ok t) nil)
           (if (eq files--bridge-command 'jump-to-register) (setq ok t) nil)
@@ -12989,6 +13307,14 @@
           (if (eq files--bridge-command 'kill-word) (setq ok t) nil)
           (if (eq files--bridge-command 'backward-kill-word) (setq ok t) nil)
           (if (eq files--bridge-command 'zap-to-char) (setq ok t) nil)
+          (if (eq files--bridge-command 'expand-abbrev) (setq ok t) nil)
+          (if (eq files--bridge-command 'add-global-abbrev) (setq ok t) nil)
+          (if (eq files--bridge-command 'add-mode-abbrev) (setq ok t) nil)
+          (if (eq files--bridge-command 'inverse-add-global-abbrev) (setq ok t) nil)
+          (if (eq files--bridge-command 'inverse-add-mode-abbrev) (setq ok t) nil)
+          (if (eq files--bridge-command 'abbrev-prefix-mark) (setq ok t) nil)
+          (if (eq files--bridge-command 'expand-jump-to-next-slot) (setq ok t) nil)
+          (if (eq files--bridge-command 'expand-jump-to-previous-slot) (setq ok t) nil)
           (if (eq files--bridge-command 'dabbrev-expand) (setq ok t) nil)
           (if (eq files--bridge-command 'dabbrev-completion) (setq ok t) nil)
           (if (eq files--bridge-command 'complete-symbol) (setq ok t) nil)
@@ -13198,7 +13524,12 @@
             (if (eq files--bridge-command 'compose-mail) (compose-mail) nil)
             (if (eq files--bridge-command 'compose-mail-other-window) (compose-mail-other-window) nil)
             (if (eq files--bridge-command 'compose-mail-other-frame) (compose-mail-other-frame) nil)
-            (if (eq files--bridge-command 'insert-file) (insert-file) nil)
+            (if (eq files--bridge-command 'calc-dispatch) (calc-dispatch) nil)
+            (if (eq files--bridge-command '2C-command) (2C-command) nil)
+            (if (eq files--bridge-command '2C-two-columns) (2C-two-columns) nil)
+            (if (eq files--bridge-command '2C-associate-buffer) (2C-associate-buffer) nil)
+            (if (eq files--bridge-command '2C-split) (2C-split) nil)
+	        (if (eq files--bridge-command 'insert-file) (insert-file) nil)
             (if (eq files--bridge-command 'insert-buffer) (insert-buffer) nil)
             (if (eq files--bridge-command 'point-to-register) (point-to-register) nil)
             (if (eq files--bridge-command 'jump-to-register) (jump-to-register) nil)
@@ -13342,6 +13673,14 @@
         (if (eq files--bridge-command 'kill-word) (kill-word) nil)
         (if (eq files--bridge-command 'backward-kill-word) (backward-kill-word) nil)
         (if (eq files--bridge-command 'zap-to-char) (zap-to-char) nil)
+        (if (eq files--bridge-command 'expand-abbrev) (expand-abbrev) nil)
+        (if (eq files--bridge-command 'add-global-abbrev) (add-global-abbrev) nil)
+        (if (eq files--bridge-command 'add-mode-abbrev) (add-mode-abbrev) nil)
+        (if (eq files--bridge-command 'inverse-add-global-abbrev) (inverse-add-global-abbrev) nil)
+        (if (eq files--bridge-command 'inverse-add-mode-abbrev) (inverse-add-mode-abbrev) nil)
+        (if (eq files--bridge-command 'abbrev-prefix-mark) (abbrev-prefix-mark) nil)
+        (if (eq files--bridge-command 'expand-jump-to-next-slot) (expand-jump-to-next-slot) nil)
+        (if (eq files--bridge-command 'expand-jump-to-previous-slot) (expand-jump-to-previous-slot) nil)
         (if (eq files--bridge-command 'dabbrev-expand) (dabbrev-expand) nil)
         (if (eq files--bridge-command 'dabbrev-completion) (dabbrev-completion) nil)
         (if (eq files--bridge-command 'complete-symbol) (complete-symbol) nil)
@@ -13672,6 +14011,7 @@
           (if (equal cmd "kill-sexp") (files--save-undo-state) nil)
           (if (equal cmd "backward-kill-word") (files--save-undo-state) nil)
           (if (equal cmd "zap-to-char") (files--save-undo-state) nil)
+          (if (equal cmd "expand-abbrev") (files--save-undo-state) nil)
           (if (equal cmd "dabbrev-expand") (files--save-undo-state) nil)
           (if (equal cmd "dabbrev-completion") (files--save-undo-state) nil)
           (if (equal cmd "complete-symbol") (files--save-undo-state) nil)
@@ -14458,6 +14798,28 @@
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
                     (files--write-transport-frame-state)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "calc-dispatch")
+                      t
+                    (if (equal cmd "2C-command")
+                        t
+                      (if (equal cmd "2C-two-columns")
+                          t
+                        (if (equal cmd "2C-associate-buffer")
+                            t
+                          (equal cmd "2C-split")))))
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
                     (files--write-transport-point)
                     (files--write-transport-mark)
                     (files--write-transport-window-start)
@@ -15380,6 +15742,55 @@
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
                     (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "expand-abbrev")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "add-global-abbrev")
+                  (progn
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "add-mode-abbrev")
+                  (progn
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "inverse-add-global-abbrev")
+                  (progn
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "inverse-add-mode-abbrev")
+                  (progn
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "abbrev-prefix-mark")
+                  (progn
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "expand-jump-to-next-slot")
+                  (progn
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (equal cmd "expand-jump-to-previous-slot")
+                  (progn
                     (files--write-transport-point)
                     (files--write-transport-mark)
                     (setq files--bridge-status "written"))
