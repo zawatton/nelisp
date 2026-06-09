@@ -39,6 +39,46 @@
   (should-error (package-refresh-contents) :type 'user-error)
   (should-error (package-install 'demo) :type 'user-error))
 
+(ert-deftest emacs-package-test/activate-loads-local-package ()
+  (let* ((dir (make-temp-file "nemacs-pkg-" t))
+         (file (expand-file-name "demopkg.el" dir)))
+    (unwind-protect
+        (let* ((desc (package-desc-create :name 'demopkg :dir dir))
+               (package-alist `((demopkg . (,desc))))
+               (package-activated-list nil)
+               (load-path load-path)
+               (features (copy-sequence features)))
+          (with-temp-file file
+            (insert "(provide 'demopkg)\n(defvar demopkg-test-loaded t)\n"))
+          (should (package-activate 'demopkg))
+          ;; the package's feature is loaded and its dir is on load-path
+          (should (featurep 'demopkg))
+          (should (member dir load-path))
+          (should (memq 'demopkg package-activated-list)))
+      (when (file-directory-p dir) (delete-directory dir t))
+      (setq features (remove 'demopkg features)))))
+
+(ert-deftest emacs-package-test/activate-all-activates-registry ()
+  (let* ((d1 (package-desc-create :name 'pkga))
+         (d2 (package-desc-create :name 'pkgb))
+         (package-alist `((pkga . (,d1)) (pkgb . (,d2))))
+         (package-activated-list nil)
+         (features (copy-sequence features)))
+    (package-activate-all)
+    (should (memq 'pkga package-activated-list))
+    (should (memq 'pkgb package-activated-list))))
+
+(ert-deftest emacs-package-test/initialize-activates-unless-no-activate ()
+  (let* ((d1 (package-desc-create :name 'pkgc))
+         (package-alist `((pkgc . (,d1))))
+         (package-activated-list nil)
+         (features (copy-sequence features)))
+    (package-initialize)
+    (should (memq 'pkgc package-activated-list))
+    (setq package-activated-list nil)
+    (package-initialize t)
+    (should-not (memq 'pkgc package-activated-list))))
+
 (provide 'emacs-package-test)
 
 ;;; emacs-package-test.el ends here
