@@ -293,7 +293,16 @@ image startup."
          (preload (and base
                        (expand-file-name
                         "nemacs-runtime-process-preload.el" base))))
-    (when (and preload (file-readable-p preload))
+    (when (and preload (file-readable-p preload)
+               ;; In host Emacs the native subr `make-process' already
+               ;; exists; loading the source-v1 preload would clobber it
+               ;; (and the other unprefixed process primitives) with wrapper
+               ;; lambdas that re-enter `emacs-process-*' and recurse.  Only
+               ;; load the preload when there is no native subr to preserve
+               ;; (= a real standalone reader / runtime image).
+               (not (and (fboundp 'make-process)
+                         (fboundp 'subrp)
+                         (subrp (symbol-function 'make-process)))))
       (load preload nil 'no-message)))
   (unless (boundp 'shell-file-name)
     (defvar shell-file-name "/bin/sh"))

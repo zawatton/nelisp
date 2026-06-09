@@ -76,6 +76,21 @@
 The `nelisp-process-*' names are the current package-shaped primitive
 surface; the legacy `nelisp-*' names remain as compatibility fallbacks.")
 
+(defvar emacs-process--native-primitives
+  (let (alist)
+    (dolist (sym '(call-process call-process-region make-process start-process
+                   start-process-shell-command process-file))
+      (when (and (fboundp sym) (subrp (indirect-function sym)))
+        (push (cons sym (symbol-function sym)) alist)))
+    alist)
+  "True native (subr) process primitives captured at first load.
+Captured before any bridge/preload `fset' can alias the unprefixed name
+to a wrapper that routes back into this facade.  `emacs-process--delegate'
+prefers these in host mode so a leaked wrapper (e.g. one installed by the
+runtime-image process preload, which would re-enter `emacs-process-*' and
+recurse) never shadows the real primitive.  `defvar' (not `defconst') so a
+re-load after a wrapper leak keeps the original subr capture.")
+
 (defvar emacs-process--fallback-processes nil
   "Process objects created by the standalone synchronous fallback.")
 
@@ -331,6 +346,12 @@ Lookup order:
 Steps 2 and 3 are what let NeLisp replace the host primitive while
 keeping this file as the Emacs-shaped compatibility boundary."
   (cond
+   ;; Host mode: use the true native subr captured at load, never the live
+   ;; unprefixed binding -- a bridge/preload may have aliased it to a wrapper
+   ;; that re-enters this facade (infinite recursion).  Force-mode skips this.
+   ((and (not (emacs-standalone-mode-p))
+         (assq sym emacs-process--native-primitives))
+    (apply (cdr (assq sym emacs-process--native-primitives)) args))
    ((and (not (emacs-standalone-mode-p))
          (emacs-process--delegate-p sym))
     (apply (indirect-function sym) args))
