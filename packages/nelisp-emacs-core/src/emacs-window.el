@@ -975,6 +975,44 @@ direction doesn't match the requested axis."
 Inverse of `emacs-window-enlarge-window'.  Same constraints apply."
   (emacs-window-enlarge-window (- size) horizontal))
 
+(defun emacs-window-display-buffer (buffer-or-name &optional _action _frame)
+  "Display BUFFER-OR-NAME in a window and return that window.
+
+Minimal `display-buffer' policy for the standalone editor:
+- if some live window already shows the buffer, reuse it;
+- else if there is more than one live window, reuse a non-selected one;
+- else split the selected window below and use the new window.
+
+ACTION and FRAME are accepted for call-compatibility and otherwise ignored.
+BUFFER-OR-NAME must resolve to an existing `nelisp-ec' buffer (object, or a
+name present in `nelisp-ec--buffers')."
+  (ignore _action _frame)
+  (emacs-window--ensure-root)
+  (let* ((buffer (cond
+                  ((nelisp-ec-buffer-p buffer-or-name) buffer-or-name)
+                  ((stringp buffer-or-name)
+                   (or (cdr (assoc buffer-or-name nelisp-ec--buffers))
+                       (signal 'emacs-window-error
+                               (list "no such buffer" buffer-or-name))))
+                  (t (signal 'wrong-type-argument
+                             (list 'nelisp-ec-buffer-p buffer-or-name)))))
+         (existing (emacs-window-get-buffer-window buffer)))
+    (or existing
+        (let* ((selected (emacs-window-selected-window))
+               (others (delq selected (emacs-window-window-list)))
+               (target (or (car others)
+                           (emacs-window-split-window-below))))
+          (emacs-window-set-window-buffer target buffer)
+          target))))
+
+(defun emacs-window-pop-to-buffer (buffer-or-name &optional action _norecord)
+  "Display BUFFER-OR-NAME via `emacs-window-display-buffer' and select its window.
+ACTION is forwarded to `emacs-window-display-buffer'; NORECORD is ignored.
+Returns the displayed buffer."
+  (let ((window (emacs-window-display-buffer buffer-or-name action)))
+    (emacs-window-select-window window)
+    (emacs-window-buffer window)))
+
 (provide 'emacs-window)
 
 ;;; emacs-window.el ends here

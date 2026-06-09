@@ -597,6 +597,63 @@
       (should-error (emacs-window-enlarge-window (1+ h2))
                     :type 'emacs-window-too-small))))
 
+;;;; G. display-buffer / pop-to-buffer (M3 display policy)
+
+(ert-deftest emacs-window-display-buffer-reuses-window-showing-buffer ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2)
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 b1)
+        (let ((w2 (emacs-window-split-window)))
+          (emacs-window-set-window-buffer w2 b2)
+          ;; b2 already shown in w2 -> display-buffer returns that window,
+          ;; with no new split.
+          (should (eq w2 (emacs-window-display-buffer b2)))
+          (should (= 2 (length (emacs-window-window-list)))))))))
+
+(ert-deftest emacs-window-display-buffer-splits-when-single-window ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2)
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 b1)
+        ;; only one window and b2 not shown -> split, show b2 in the new window
+        (let ((win (emacs-window-display-buffer b2)))
+          (should (not (eq win w1)))
+          (should (emacs-window-leaf-p win))
+          (should (eq b2 (emacs-window-buffer win)))
+          (should (= 2 (length (emacs-window-window-list)))))))))
+
+(ert-deftest emacs-window-display-buffer-reuses-other-window ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2 b3)
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 b1)
+        (let ((w2 (emacs-window-split-window)))
+          (emacs-window-set-window-buffer w2 b2)
+          (emacs-window-select-window w1)
+          ;; two windows, b3 not shown -> reuse the non-selected window,
+          ;; do not split again
+          (let ((win (emacs-window-display-buffer b3)))
+            (should (not (eq win w1)))
+            (should (eq b3 (emacs-window-buffer win)))
+            (should (= 2 (length (emacs-window-window-list))))))))))
+
+(ert-deftest emacs-window-display-buffer-rejects-unknown-name ()
+  (emacs-window-test--with-fresh-world
+    (should-error (emacs-window-display-buffer "no-such-buffer")
+                  :type 'emacs-window-error)))
+
+(ert-deftest emacs-window-pop-to-buffer-selects-window ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2)
+      (let ((w1 (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w1 b1)
+        (let ((buf (emacs-window-pop-to-buffer b2)))
+          (should (eq b2 buf))
+          ;; the selected window now shows b2
+          (should (eq b2 (emacs-window-buffer
+                          (emacs-window-selected-window)))))))))
+
 (provide 'emacs-window-test)
 
 ;;; emacs-window-test.el ends here
