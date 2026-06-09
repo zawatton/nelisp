@@ -489,7 +489,7 @@ TEST_INTEGRATION_FILES = \
 	test/nemacs-vendor-cache-set-test.el
 TEST_UNIT_FILES = $(filter-out $(TEST_INTEGRATION_FILES),$(TEST_FILES))
 
-.PHONY: compile test gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge nemacs-gui-keymap-coverage doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-repl-replay-fast verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test soak gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge nemacs-gui-keymap-coverage doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-repl-replay-fast verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
@@ -567,6 +567,10 @@ test-nemacs-gui-bridge:
 		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		-f ert-run-tests-batch-and-exit
+
+SOAK_ITER ?= 20
+soak:
+	@$(EMACS) -L src $(NELISP_LOAD_PATH) --eval "(require 'standalone-soak)" --eval '(let ((r (standalone-soak-run $(SOAK_ITER)))) (princ (standalone-soak-report-string r)) (terpri) (kill-emacs (if (= 0 (plist-get r :errors)) 0 1)))'
 
 nemacs-gui-keymap-coverage:
 	@$(EMACS) -Q -L scripts \
