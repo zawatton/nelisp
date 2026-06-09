@@ -1009,9 +1009,12 @@ name present in `nelisp-ec--buffers')."
   "Display BUFFER-OR-NAME via `emacs-window-display-buffer' and select its window.
 ACTION is forwarded to `emacs-window-display-buffer'; NORECORD is ignored.
 Returns the displayed buffer."
-  (let ((window (emacs-window-display-buffer buffer-or-name action)))
+  (let* ((window (emacs-window-display-buffer buffer-or-name action))
+         (buffer (emacs-window-buffer window)))
     (emacs-window-select-window window)
-    (emacs-window-buffer window)))
+    ;; Selecting a window makes its buffer current (as in Emacs).
+    (nelisp-ec-set-buffer buffer)
+    buffer))
 
 (defun emacs-window-quit-window (&optional kill window)
   "Quit WINDOW (default the selected window): stop displaying its buffer.
