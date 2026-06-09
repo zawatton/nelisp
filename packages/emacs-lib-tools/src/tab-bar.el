@@ -37,12 +37,43 @@
   "Return default tab name for zero-based INDEX."
   (number-to-string (1+ index)))
 
+;;; Per-tab window configuration ------------------------------------------
+;;
+;; Each tab carries its own window layout so switching tabs swaps the whole
+;; window configuration (the "real tab-bar" behaviour).  Capture/restore go
+;; through `emacs-window' when available and degrade to name-only tabs
+;; otherwise (guarded by `fboundp', so there is no hard load-order coupling).
+
+(defun tab-bar--capture-wc ()
+  "Return the current window configuration, or nil when unsupported."
+  (and (fboundp 'emacs-window-current-window-configuration)
+       (emacs-window-current-window-configuration)))
+
+(defun tab-bar--save-current-wc ()
+  "Store the live window configuration into the selected tab."
+  (let ((tab (nth tab-bar--selected-index tab-bar--tabs))
+        (wc (tab-bar--capture-wc)))
+    (when (and tab wc)
+      (let ((cell (assq 'wc tab)))
+        (if cell
+            (setcdr cell wc)
+          (nconc tab (list (cons 'wc wc))))))))
+
+(defun tab-bar--restore-selected-wc ()
+  "Restore the selected tab's window configuration, if it has one."
+  (let* ((tab (nth tab-bar--selected-index tab-bar--tabs))
+         (wc (cdr (assq 'wc tab))))
+    (when (and wc (fboundp 'emacs-window-set-window-configuration))
+      (emacs-window-set-window-configuration wc))))
+
 (defun tab-bar-new-tab (&optional _arg)
   "Create and select a new minimal tab."
   (interactive "P")
   (tab-bar--ensure-tabs)
+  (tab-bar--save-current-wc)
   (let ((tab `((name . ,(tab-bar--tab-name (length tab-bar--tabs)))
-               (explicit-name . nil))))
+               (explicit-name . nil)
+               (wc . ,(tab-bar--capture-wc)))))
     (setq tab-bar--tabs (append tab-bar--tabs (list tab)))
     (setq tab-bar--selected-index (1- (length tab-bar--tabs)))
     tab))
@@ -56,7 +87,9 @@
                  (>= index 0)
                  (< index (length tab-bar--tabs)))
       (user-error "No such tab: %s" tab-number))
+    (tab-bar--save-current-wc)
     (setq tab-bar--selected-index index)
+    (tab-bar--restore-selected-wc)
     (tab-bar-current-tab)))
 
 (defun tab-bar-switch-to-next-tab (&optional arg)
@@ -65,8 +98,10 @@
   (tab-bar--ensure-tabs)
   (let* ((count (max 1 (length tab-bar--tabs)))
          (step (or arg 1)))
+    (tab-bar--save-current-wc)
     (setq tab-bar--selected-index
           (mod (+ tab-bar--selected-index step) count))
+    (tab-bar--restore-selected-wc)
     (tab-bar-current-tab)))
 
 (defun tab-bar-switch-to-prev-tab (&optional arg)
@@ -90,6 +125,7 @@ The last remaining tab is kept, matching the daily-driver guardrail."
                       (nthcdr (1+ index) tab-bar--tabs)))
         (setq tab-bar--selected-index
               (min tab-bar--selected-index (1- (length tab-bar--tabs))))
+        (tab-bar--restore-selected-wc)
         (tab-bar-current-tab)))))
 
 (defun tab-bar-rename-tab (name &optional tab-number)
