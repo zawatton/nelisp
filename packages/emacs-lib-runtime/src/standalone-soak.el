@@ -16,6 +16,7 @@
 ;;; Code:
 
 (require 'nelisp-emacs-compat)
+(require 'nelisp-emacs-compat-fileio)
 
 (defun standalone-soak--iteration (n)
   "Run one soak iteration N: create a buffer, insert, search, kill it.
@@ -89,6 +90,40 @@ release gate without an external fixture."
             (list :lines lines :found found :rss-kb (standalone-soak-rss-kb))))
       (when (nelisp-ec-buffer-p buf)
         (nelisp-ec-kill-buffer buf)))))
+
+(defun standalone-soak-process ()
+  "Process diagnostic: run a trivial subprocess and verify its output.
+Returns a plist (:ran BOOL :ok BOOL :output STRING).  Exercises the process
+layer so the release gate catches a broken subprocess path."
+  (condition-case err
+      (if (fboundp 'call-process)
+          (let ((out (with-temp-buffer
+                       (call-process "echo" nil t nil "soak-process-ok")
+                       (buffer-string))))
+            (list :ran t
+                  :ok (and (stringp out)
+                           (string-match-p "soak-process-ok" out) t)
+                  :output (string-trim-right out)))
+        (list :ran nil :ok nil))
+    (error (list :ran nil :ok nil :error (format "%S" err)))))
+
+(defun standalone-soak-project-scan (dir)
+  "Project-scan diagnostic: recursively count files and directories under DIR.
+Returns a plist (:dir DIR :files N :dirs M).  Exercises directory traversal
+the way project-wide commands do."
+  (let ((files 0) (dirs 0) (stack (list dir)))
+    (while stack
+      (let ((d (pop stack)))
+        (dolist (name (condition-case nil
+                          (nelisp-ec-directory-files d nil nil nil nil)
+                        (error nil)))
+          (unless (member name '("." ".."))
+            (let ((path (nelisp-ec-expand-file-name name d)))
+              (if (nelisp-ec-file-directory-p path)
+                  (progn (setq dirs (1+ dirs))
+                         (push path stack))
+                (setq files (1+ files))))))))
+    (list :dir dir :files files :dirs dirs)))
 
 (defun standalone-soak-report-string (report)
   "Format a soak REPORT plist as a human-readable bucket summary string."
