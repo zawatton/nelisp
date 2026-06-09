@@ -8930,6 +8930,84 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-utf8-roundtrip ()
+  "UTF-8 files should round-trip byte-for-byte through find-file/save-buffer."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (src (make-temp-file "nemacs-m4-utf8-src-"))
+          (dst (make-temp-file "nemacs-m4-utf8-dst-")))
+      (unwind-protect
+          (progn
+            (let ((coding-system-for-write 'utf-8))
+              (write-region "café 日本語 🎌 end\n" nil src nil 'silent))
+            (nemacs-gui-file-bridge-runtime-test--with-transport
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image
+               (format
+                "(progn
+                   (setq files--buffer-read-only-p nil)
+                   (setq files--bridge-arg %S) (files--find-file-core)
+                   (setq files--current-file-name %S) (save-buffer))"
+                src dst))
+              (should (= 0 (call-process "cmp" nil nil nil "-s" src dst)))))
+        (dolist (f (list image src dst))
+          (when (and f (file-exists-p f)) (delete-file f)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-binary-roundtrip ()
+  "Binary files (incl NUL / high bytes) should round-trip without corruption."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (src (make-temp-file "nemacs-m4-bin-src-"))
+          (dst (make-temp-file "nemacs-m4-bin-dst-")))
+      (unwind-protect
+          (progn
+            (let ((coding-system-for-write 'binary))
+              (write-region (apply #'unibyte-string
+                                   (list 0 1 2 127 128 200 255 10 65 66 0 9))
+                            nil src nil 'silent))
+            (nemacs-gui-file-bridge-runtime-test--with-transport
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image
+               (format
+                "(progn
+                   (setq files--buffer-read-only-p nil)
+                   (setq files--bridge-arg %S) (files--find-file-core)
+                   (setq files--current-file-name %S) (save-buffer))"
+                src dst))
+              (should (= 0 (call-process "cmp" nil nil nil "-s" src dst)))))
+        (dolist (f (list image src dst))
+          (when (and f (file-exists-p f)) (delete-file f)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-coding-input-method-unsupported ()
+  "Coding-system and input-method commands should signal unsupported, not no-op."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "x" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (dolist (cmd '("toggle-input-method"
+                           "set-buffer-file-coding-system"
+                           "universal-coding-system-argument"
+                           "set-language-environment"))
+              (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+              (write-region cmd nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+              (when (file-exists-p "/tmp/nemacs-status")
+                (delete-file "/tmp/nemacs-status"))
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "unsupported"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-status")))))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
