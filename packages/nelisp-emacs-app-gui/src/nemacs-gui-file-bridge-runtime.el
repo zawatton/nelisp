@@ -10712,7 +10712,12 @@
       (lambda ()
         (setq files--modeline-string
               (concat files--coding-label ": " files--coding-target))
-        (setq files--modeline-override files--modeline-string)))
+        (setq files--modeline-override files--modeline-string)
+        ;; Coding-system / input-method commands are not supported in the
+        ;; standalone bridge (Doc 05 / M4 coding omission): show the modeline
+        ;; label as the user-visible indicator, and report `unsupported' so
+        ;; the front-end does not treat the command as a silent no-op.
+        (setq files--bridge-status "unsupported")))
 
 (fset 'toggle-input-method
       (lambda ()
