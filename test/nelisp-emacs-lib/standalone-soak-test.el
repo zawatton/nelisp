@@ -42,6 +42,15 @@
     (should (string-match-p "error=2"
                             (standalone-soak-report-string fail-report)))))
 
+(ert-deftest standalone-soak-large-file-builds-and-searches ()
+  (let ((nelisp-ec--buffers nil)
+        (nelisp-ec--current-buffer nil))
+    (let ((r (standalone-soak-large-file 200)))
+      (should (= 200 (plist-get r :lines)))
+      (should (plist-get r :found))
+      (let ((rss (plist-get r :rss-kb)))
+        (should (or (null rss) (integerp rss)))))))
+
 (provide 'standalone-soak-test)
 
 ;;; standalone-soak-test.el ends here
