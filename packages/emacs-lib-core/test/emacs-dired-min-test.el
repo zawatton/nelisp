@@ -74,15 +74,15 @@
             (dired (plist-get tree :root))
             (let ((lines (emacs-dired-min-test--buffer-lines)))
               (should (cl-find-if (lambda (line)
-                                    (string-prefix-p ".\t" line))
+                                    (string-prefix-p "  .\t" line))
                                   lines))
               (should (cl-find-if (lambda (line)
-                                    (string-prefix-p "..\t" line))
+                                    (string-prefix-p "  ..\t" line))
                                   lines))
-              (should (member "alpha.txt\t5\t-rw-rw-r--" lines))
-              (should (member "beta.txt\t4\t-rw-rw-r--" lines))
+              (should (member "  alpha.txt\t5\t-rw-rw-r--" lines))
+              (should (member "  beta.txt\t4\t-rw-rw-r--" lines))
               (should (cl-find-if (lambda (line)
-                                    (string-prefix-p "subdir\t" line))
+                                    (string-prefix-p "  subdir\t" line))
                                   lines))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
@@ -114,7 +114,7 @@
                               (plist-get tree :subdir))
                              (plist-get (gethash buffer emacs-dired-min--state)
                                         :directory)))
-              (should (member "nested.txt\t6\t-rw-rw-r--"
+              (should (member "  nested.txt\t6\t-rw-rw-r--"
                               (emacs-dired-min-test--buffer-lines)))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
@@ -140,11 +140,11 @@
           (progn
             (setq new-file (expand-file-name "gamma.txt" (plist-get tree :root)))
             (dired (plist-get tree :root))
-            (should-not (member "gamma.txt\t6\t-rw-rw-r--"
+            (should-not (member "  gamma.txt\t6\t-rw-rw-r--"
                                 (emacs-dired-min-test--buffer-lines)))
             (emacs-dired-min-test--write-file new-file "gamma!")
             (emacs-dired-min-revert-buffer)
-            (should (member "gamma.txt\t6\t-rw-rw-r--"
+            (should (member "  gamma.txt\t6\t-rw-rw-r--"
                             (emacs-dired-min-test--buffer-lines))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
@@ -172,6 +172,55 @@
             (dired (plist-get tree :root))
             (emacs-dired-min-test--goto-entry "beta.txt")
             (should-error (dired-find-file) :type 'user-error))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
+(ert-deftest dired-mark-marks-file-and-advances ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree)))
+      (unwind-protect
+          (progn
+            (dired (plist-get tree :root))
+            (emacs-dired-min-test--goto-entry "alpha.txt")
+            (let ((start (nelisp-ec-point)))
+              (dired-mark)
+              (should (member "* alpha.txt\t5\t-rw-rw-r--"
+                              (emacs-dired-min-test--buffer-lines)))
+              (should (> (nelisp-ec-point) start))))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
+(ert-deftest dired-unmark-clears-the-mark ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree)))
+      (unwind-protect
+          (progn
+            (dired (plist-get tree :root))
+            (emacs-dired-min-test--goto-entry "alpha.txt")
+            (dired-mark)
+            (should (member "* alpha.txt\t5\t-rw-rw-r--"
+                            (emacs-dired-min-test--buffer-lines)))
+            (emacs-dired-min-test--goto-entry "alpha.txt")
+            (dired-unmark)
+            (should (member "  alpha.txt\t5\t-rw-rw-r--"
+                            (emacs-dired-min-test--buffer-lines))))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
+(ert-deftest dired-flag-and-flagged-delete-removes-file ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((tree (emacs-dired-min-test--make-tree)))
+      (unwind-protect
+          (progn
+            (dired (plist-get tree :root))
+            (emacs-dired-min-test--goto-entry "beta.txt")
+            (dired-flag-file-deletion)
+            (should (member "D beta.txt\t4\t-rw-rw-r--"
+                            (emacs-dired-min-test--buffer-lines)))
+            (should (= 1 (dired-do-flagged-delete)))
+            (should-not (cl-find-if
+                         (lambda (line) (string-match-p "beta\\.txt" line))
+                         (emacs-dired-min-test--buffer-lines)))
+            (should-not (nelisp-ec-file-attributes (plist-get tree :file-b)))
+            ;; an unflagged file is untouched
+            (should (nelisp-ec-file-attributes (plist-get tree :file-a))))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
 (provide 'emacs-dired-min-test)
