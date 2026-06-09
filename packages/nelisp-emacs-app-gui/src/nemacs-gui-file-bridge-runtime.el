@@ -14038,10 +14038,7 @@
                 (call-interactively)
                 (setq count (- count 1)))
             (call-interactively))
-          (setq files--prefix-arg "")
-           (nl-write-file (progn (setq files--transport-name "nemacs-arg")
-                                 (files--transport-path))
-                          ""))))
+          (setq files--prefix-arg ""))))
 
 (fset 'files--write-prefix-arg-state
       (lambda ()
