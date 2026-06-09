@@ -321,11 +321,18 @@ unprefixed name to one of our substrate functions."
   "Return the `nelisp-process' delegate for SYM, or nil."
   (let ((cell (assq sym emacs-process--nelisp-delegates))
         (found nil))
-    (unless (catch 'available
-              (dolist (candidate (cdr cell))
-                (when (fboundp candidate)
-                  (throw 'available t)))
-              nil)
+    ;; Only pull in `nelisp-process' when SYM is actually one we can
+    ;; delegate (CELL non-nil) and no candidate is bound yet.  Without the
+    ;; CELL guard an unmapped SYM (e.g. `make-process') would still trigger
+    ;; the require, loading the vendor package and leaking its host-elisp
+    ;; `nelisp-call-process'/`nelisp-make-process' globally -- which then
+    ;; forms a delegation cycle in later tests.
+    (when (and cell
+               (not (catch 'available
+                      (dolist (candidate (cdr cell))
+                        (when (fboundp candidate)
+                          (throw 'available t)))
+                      nil)))
       (require 'nelisp-process nil t))
     (catch 'done
       (dolist (candidate (cdr cell))
