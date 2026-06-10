@@ -3992,6 +3992,87 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(defun nemacs-gui-file-bridge-runtime-test--wait-for (predicate timeout)
+  "Poll PREDICATE every 0.1s for up to TIMEOUT seconds; return its last value."
+  (let ((deadline (+ (float-time) timeout))
+        (value nil))
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (sleep-for 0.1))
+    value))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-session-bridge-roundtrip ()
+  "The persistent session loop serves requests with in-process buffer state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (proc nil))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "abc\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-session-request" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-session-response" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-session-shutdown" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-session-ready" nil 'silent)
+            (setq proc
+                  (start-process "nemacs-session-test" nil reader
+                                 "exec-runtime-image" image
+                                 "(nemacs-gui-file-bridge-session-run)"))
+            (should (nemacs-gui-file-bridge-runtime-test--wait-for
+                     (lambda ()
+                       (equal "1" (nemacs-gui-file-bridge-runtime-test--slurp
+                                   "/tmp/nemacs-session-ready")))
+                     60))
+            ;; Request 1: C-f moves point 0 -> 1.
+            (write-region "C-f" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "req-1" nil "/tmp/nemacs-session-request" nil 'silent)
+            (should (nemacs-gui-file-bridge-runtime-test--wait-for
+                     (lambda ()
+                       (equal "req-1"
+                              (nemacs-gui-file-bridge-runtime-test--slurp
+                               "/tmp/nemacs-session-response")))
+                     30))
+            (should (= 1 (nemacs-gui-file-bridge-runtime-test--point-value)))
+            ;; Request 2: poison the point transport; the session must keep
+            ;; its IN-PROCESS state, so a second C-f lands on 2 (not 1).
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "C-f" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "req-2" nil "/tmp/nemacs-session-request" nil 'silent)
+            (should (nemacs-gui-file-bridge-runtime-test--wait-for
+                     (lambda ()
+                       (equal "req-2"
+                              (nemacs-gui-file-bridge-runtime-test--slurp
+                               "/tmp/nemacs-session-response")))
+                     30))
+            (should (= 2 (nemacs-gui-file-bridge-runtime-test--point-value)))
+            ;; Shutdown: loop exits, ready flag drops, process dies.
+            (write-region "1" nil "/tmp/nemacs-session-shutdown" nil 'silent)
+            (should (nemacs-gui-file-bridge-runtime-test--wait-for
+                     (lambda ()
+                       (equal "0" (nemacs-gui-file-bridge-runtime-test--slurp
+                                   "/tmp/nemacs-session-ready")))
+                     30))
+            (should (nemacs-gui-file-bridge-runtime-test--wait-for
+                     (lambda () (not (process-live-p proc)))
+                     30)))
+        (when (and proc (process-live-p proc))
+          (kill-process proc))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-narrow-widen ()
   "In standalone NeLisp, narrowing should persist and widen should merge edits."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
