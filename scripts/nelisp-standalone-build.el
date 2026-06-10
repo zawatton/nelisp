@@ -2103,6 +2103,8 @@ argument (reachability + in-arena bounds checks).")
     ;; form boundaries) -> 60GB+ RSS.  These do the scan natively instead.
     ((:lit "str-count-nl")   . (seq (nl_bi_str_count_nl args out) 0))
     ((:lit "str-line-start") . (seq (nl_bi_str_line_start args out) 0))
+    ((:lit "str-kv-line")    . (seq (nl_bi_str_kv_line args out) 0))
+    ((:lit "str-filter-prefix-lines") . (seq (nl_bi_str_filter_prefix_lines args out) 0))
     ;; REPL/process termination.  Store code+1 so slot 0 remains "no exit".
     ((:u8 "exit") . (let* ((code (if (= args 0)
                                      0
@@ -3545,18 +3547,40 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
             (nl_bi_wf_withfd fd (nl_bi_strptr cont_sx) (nl_bi_strlen cont_sx))))))
     (defun wf_copy32_strnil (out)
       (nl_alloc_str (alloc-bytes 1 1) 0 out))
+    ;; Two-phase read (2026-06-10): rdf used to alloc-bytes a FIXED 8 MiB
+    ;; scratch per call.  On the bump arena that 8 MiB is unreclaimable until
+    ;; the enclosing top-level form returns, so a polling loop calling rdf on
+    ;; tiny transport files (the nemacs session bridge) leaked ~16 MiB per
+    ;; iteration -> ~60 GB over an 18h session.  Read 4 KiB first; only spill
+    ;; into the legacy 8 MiB buffer when the file is larger.  The 8 MiB cap
+    ;; itself is kept: leim/ja-dic/ja-dic.el is ~4.8 MiB; a 4 MiB cap
+    ;; truncated it mid-form -> reader SIGSEGV.
+    (defun nl_bi_rf_copy4k (src dst n)
+      (let ((i 0))
+        (seq
+         (while (< i n)
+           (seq (ptr-write-u8 dst i (ptr-read-u8 src i))
+                (setq i (+ i 1))))
+         0)))
+    (defun nl_bi_rf_read_rest (fd head n0 out)
+      (let* ((buf (alloc-bytes 8388608 1)))
+        (seq
+         (nl_bi_rf_copy4k head buf n0)
+         (let* ((n1 (nl_os_read_file_handle fd (+ buf n0) (- 8388608 n0))))
+           (nl_seq2 (nl_alloc_str buf (+ n0 (if (< n1 0) 0 n1)) out) 0)))))
     (defun nl_bi_rf_withfd (fd buf out)
       (if (< fd 0)
           (wf_copy32_strnil out)
-        ;; 8 MiB read cap: leim/ja-dic/ja-dic.el is ~4.8 MiB; a 4 MiB cap
-        ;; truncated it mid-form -> reader SIGSEGV.
-        (let* ((n (nl_os_read_file_handle fd buf 8388608)))
-          (nl_seq2 (nl_os_close_handle fd)
-                   (nl_seq2 (nl_alloc_str buf (if (< n 0) 0 n) out) 0)))))
+        (let* ((n (nl_os_read_file_handle fd buf 4096)))
+          (nl_seq2
+           (if (< n 4096)
+               (nl_seq2 (nl_alloc_str buf (if (< n 0) 0 n) out) 0)
+             (nl_bi_rf_read_rest fd buf n out))
+           (nl_seq2 (nl_os_close_handle fd) 0)))))
     (defun nl_bi_read_file (args out)
       (let* ((path_sx (wf_arg_ptr args 0)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
-               (buf (alloc-bytes 8388608 1))
+               (buf (alloc-bytes 4096 1))
                (fd (nl_os_open_read cpath)))
           (nl_bi_rf_withfd fd buf out))))
     (defun nl_bi_slen (args out)
@@ -3580,6 +3604,101 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
             (if (= (ptr-read-u8 ptr i) 10) (setq acc (+ acc 1)) 0)
             (setq i (+ i 1))))
          (wf_write_int out acc))))
+    ;; str-kv-line SOURCE KEY -> for the first line of SOURCE whose text
+    ;; before the first TAB equals KEY, return everything after that TAB;
+    ;; "" when no line matches.  Native scan for the nemacs GUI bridge
+    ;; keymap tables ("KEY\tcommand[\tprompt]" lines): the interpreted
+    ;; per-char walk over the ~keymap source allocated ~600MB per single
+    ;; key dispatch (string deep-copies per access, no intra-form GC).
+    (defun nl_bi_kv_match_at (sptr ls le kptr klen)
+      (if (< (- le ls) (+ klen 1)) 0
+        (if (= (ptr-read-u8 sptr (+ ls klen)) 9)
+            (let* ((i 0) (ok 1))
+              (seq
+               (while (if (< i klen) (= ok 1) 0)
+                 (seq
+                  (if (= (ptr-read-u8 sptr (+ ls i)) (ptr-read-u8 kptr i))
+                      0
+                    (setq ok 0))
+                  (setq i (+ i 1))))
+               ok))
+          0)))
+    (defun nl_bi_str_kv_line (args out)
+      (let* ((src (wf_arg_ptr args 0))
+             (key (wf_arg_ptr args 1))
+             (sptr (nl_bi_strptr src))
+             (n (nl_bi_strlen src))
+             (kptr (nl_bi_strptr key))
+             (klen (nl_bi_strlen key))
+             (ls 0)
+             (i 0)
+             (res 0))
+        (seq
+         (while (if (= res 0) (< i (+ n 1)) 0)
+           (seq
+            (if (if (= i n) 1 (if (= (ptr-read-u8 sptr i) 10) 1 0))
+                (seq
+                 (if (= (nl_bi_kv_match_at sptr ls i kptr klen) 1)
+                     (let* ((toff (+ ls (+ klen 1)))
+                            (tptr (+ sptr toff))
+                            (tlen (- i toff)))
+                       (seq
+                        (nl_alloc_str tptr tlen out)
+                        (setq res 1)))
+                   0)
+                 (setq ls (+ i 1)))
+              0)
+            (setq i (+ i 1))))
+         (if (= res 0) (nl_seq2 (wf_copy32_strnil out) 0) 0))))
+    ;; str-filter-prefix-lines SOURCE PREFIX -> the (non-empty) lines of
+    ;; SOURCE that start with PREFIX, each newline-terminated, concatenated.
+    ;; Native scan for the nemacs minibuffer completion-candidates refresh:
+    ;; the interpreted per-char filter + (concat out line) accumulation
+    ;; allocated ~hundreds of MB PER KEYSTROKE on multi-KB candidate tables.
+    (defun nl_bi_fpl_prefix_at (sptr ls le pptr plen)
+      (if (< (- le ls) plen) 0
+        (let* ((i 0) (ok 1))
+          (seq
+           (while (if (< i plen) (= ok 1) 0)
+             (seq
+              (if (= (ptr-read-u8 sptr (+ ls i)) (ptr-read-u8 pptr i))
+                  0
+                (setq ok 0))
+              (setq i (+ i 1))))
+           ok))))
+    (defun nl_bi_str_filter_prefix_lines (args out)
+      (let* ((src (wf_arg_ptr args 0))
+             (pre (wf_arg_ptr args 1))
+             (sptr (nl_bi_strptr src))
+             (n (nl_bi_strlen src))
+             (pptr (nl_bi_strptr pre))
+             (plen (nl_bi_strlen pre))
+             (buf (alloc-bytes (+ n 2) 1))
+             (w 0)
+             (ls 0)
+             (i 0))
+        (seq
+         (while (< i (+ n 1))
+           (seq
+            (if (if (= i n) 1 (if (= (ptr-read-u8 sptr i) 10) 1 0))
+                (seq
+                 (if (if (< ls i)
+                         (nl_bi_fpl_prefix_at sptr ls i pptr plen)
+                       0)
+                     (let* ((j ls))
+                       (seq
+                        (while (< j i)
+                          (seq
+                           (ptr-write-u8 buf w (ptr-read-u8 sptr j))
+                           (setq w (+ w 1))
+                           (setq j (+ j 1))))
+                        (ptr-write-u8 buf w 10)
+                        (setq w (+ w 1))))
+                   0)
+                 (setq ls (+ i 1)))
+              0)
+            (setq i (+ i 1))))
+         (nl_seq2 (nl_alloc_str buf w out) 0))))
     ;; str-line-start STRING POS -> offset of the first char of POS's line
     ;; (i.e. one past the previous \n), POS clamped to [0, len].  Companion to
     ;; str-count-nl: line = 1 + (str-count-nl S POS), column = POS - line-start.
@@ -4975,7 +5094,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--arena-stats" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
     ;; M7 file I/O
-    "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start"
+    "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
+    "str-filter-prefix-lines"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
