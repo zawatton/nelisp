@@ -138,7 +138,8 @@ and input transport.*
 | Command result semantics | =nelisp-emacs= | buffer text, point, mark, region, kill-ring, undo, modified flag, visited filename, current buffer, buffer list |
 | Command loop | =nelisp-emacs= | keymap lookup, =command-execute=, =call-interactively=, =execute-extended-command=, minibuffer completion/history/require-match |
 | Window semantics | =nelisp-emacs= | selected window, window layout, window-start changes caused by =split-window-right=, =other-window=, scrolling/recentering commands |
-| Display backend | =nelisp-gui= | X11 socket/wire protocol, window id, pixmap, GC, fonts, colors, glyph drawing, cursor drawing, modeline/minibuffer painting |
+| Face/fontset decision | =nelisp-emacs= | which face a region gets, face → concrete color resolution, fontset/script pick; transported as =nemacs-face-spans= / =nemacs-font= (M12) |
+| Display backend | =nelisp-gui= | X11 socket/wire protocol, window id, pixmap, GC, fonts, colors, glyph drawing, cursor drawing, modeline/minibuffer painting; paints the face spans and font it receives without re-deciding them |
 | Input adapter | =nelisp-gui= | X11 event decode, raw key sequence construction, =/tmp/nemacs-*= transport setup, runtime image/session startup |
 
 Hard rules:

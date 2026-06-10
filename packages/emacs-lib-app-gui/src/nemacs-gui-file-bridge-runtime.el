@@ -229,6 +229,17 @@
 (setq files--buffer-list-file (progn (setq files--transport-name "nemacs-buffer-list") (files--transport-path)))
 (setq files--emoji-recent-file (progn (setq files--transport-name "nemacs-emoji-recent") (files--transport-path)))
 (setq files--highlight-patterns-file (progn (setq files--transport-name "nemacs-highlight-patterns") (files--transport-path)))
+(setq files--face-spans-file (progn (setq files--transport-name "nemacs-face-spans") (files--transport-path)))
+(setq files--font-file (progn (setq files--transport-name "nemacs-font") (files--transport-path)))
+(setq files--face-span-cap 2048)
+(setq files--face-spans "")
+(setq files--face-comment-color "#b22222")
+(setq files--face-string-color "#8b2252")
+(setq files--face-keyword-color "#a020f0")
+(setq files--font-default-name "fixed")
+(setq files--font-cjk-name "-*-fixed-medium-r-normal--14-*-*-*-*-*-iso10646-1")
+(setq files--font-name "fixed")
+(setq files--font-script "latin")
 (setq files--buffer-list-name "")
 (setq files--window-layout "single")
 (setq files--window-selected "0")
@@ -14469,6 +14480,153 @@
           (setq emacs-minibuffer-gui-require-match (equal require-match-text "1"))
           (files--refresh-minibuffer-candidates))))
 
+;; M12 display/font lane: resolved face spans + fontset selection.
+;; The redisplay decision (which face a region gets and what concrete
+;; color/font that face resolves to) is owned by this repository;
+;; nelisp-gui only paints the spans it receives (Doc 09 section 6).
+;; The scan is bounded to files--face-span-cap chars from window-start
+;; so the interpreted per-char walk stays cheap on the standalone
+;; reader (value-semantics clones are bounded by the extracted
+;; substring, not the full buffer).  Span offsets share the
+;; nemacs-point coordinate space.  Omissions (images, shaping, bidi,
+;; variable-width glyphs) are documented once in Doc 11 M12.
+
+(fset 'files--elisp-buffer-p
+      (lambda ()
+        (let ((name files--current-file-name))
+          (if (if name (>= (length name) 3) nil)
+              (equal (substring name (- (length name) 3)) ".el")
+            nil))))
+
+(fset 'files--face-keyword-p
+      (lambda (sym)
+        (if (equal sym "defun") t
+          (if (equal sym "defvar") t
+            (if (equal sym "defconst") t
+              (if (equal sym "defmacro") t
+                (if (equal sym "lambda") t
+                  (if (equal sym "let") t
+                    (if (equal sym "if") t
+                      (if (equal sym "while") t
+                        (if (equal sym "setq") t
+                          (if (equal sym "fset") t
+                            (if (equal sym "progn") t
+                              (if (equal sym "require") t
+                                (if (equal sym "provide") t
+                                  nil)))))))))))))))
+
+(fset 'files--symbol-char-p
+      (lambda (c)
+        (if (<= c 32) nil
+          (if (= c 40) nil
+            (if (= c 41) nil
+              (if (= c 34) nil
+                (if (= c 59) nil
+                  t)))))))
+
+(fset 'files--face-span-line
+      (lambda (span-start span-end face color)
+        (concat (number-to-string span-start) "\t"
+                (number-to-string span-end) "\t"
+                face "\t"
+                color "\n")))
+
+(fset 'files--write-face-spans-state
+      (lambda ()
+        (let ((start files--window-start)
+              (limit 0)
+              (text "")
+              (elisp-p (files--elisp-buffer-p))
+              (spans "")
+              (cjk-p nil)
+              (i 0)
+              (n 0)
+              (ch 0)
+              (state 0)
+              (span-start 0)
+              (sym-start 0)
+              (sym ""))
+          (if (< start 0)
+              (setq start 0)
+            nil)
+          (if (> start (length files--buffer-string))
+              (setq start (length files--buffer-string))
+            nil)
+          (setq limit (+ start files--face-span-cap))
+          (if (> limit (length files--buffer-string))
+              (setq limit (length files--buffer-string))
+            nil)
+          (setq text (substring files--buffer-string start limit))
+          (setq n (length text))
+          (while (< i n)
+            (setq ch (aref text i))
+            ;; CJK heuristic: full char codes >= U+3000 (host Emacs path)
+            ;; or a 3-byte UTF-8 lead byte 0xE0..0xEF (standalone reader
+            ;; strings are raw bytes).  The 0xE0 band also matches some
+            ;; Latin-1 accents under a host Emacs load; acceptable for the
+            ;; M12 fontset heuristic and documented in Doc 11 M12.
+            (if (>= ch 12288)
+                (setq cjk-p t)
+              (if (if (>= ch 224) (< ch 240) nil)
+                  (setq cjk-p t)
+                nil))
+            (if (= state 1)
+                (progn
+                  (if (= ch 92)
+                      (setq i (+ i 1))
+                    (if (= ch 34)
+                        (progn
+                          (setq spans (concat spans (files--face-span-line (+ start span-start) (+ start i 1) "font-lock-string-face" files--face-string-color)))
+                          (setq state 0))
+                      nil))
+                  (setq i (+ i 1)))
+              (if (= state 2)
+                  (progn
+                    (if (= ch 10)
+                        (progn
+                          (setq spans (concat spans (files--face-span-line (+ start span-start) (+ start i) "font-lock-comment-face" files--face-comment-color)))
+                          (setq state 0))
+                      nil)
+                    (setq i (+ i 1)))
+                (if (if elisp-p (= ch 34) nil)
+                    (progn
+                      (setq state 1)
+                      (setq span-start i)
+                      (setq i (+ i 1)))
+                  (if (if elisp-p (= ch 59) nil)
+                      (progn
+                        (setq state 2)
+                        (setq span-start i)
+                        (setq i (+ i 1)))
+                    (if (if elisp-p (= ch 40) nil)
+                        (progn
+                          (setq sym-start (+ i 1))
+                          (setq i (+ i 1))
+                          (while (if (< i n) (files--symbol-char-p (aref text i)) nil)
+                            (setq i (+ i 1)))
+                          (setq sym (substring text sym-start i))
+                          (if (files--face-keyword-p sym)
+                              (setq spans (concat spans (files--face-span-line (+ start sym-start) (+ start i) "font-lock-keyword-face" files--face-keyword-color)))
+                            nil))
+                      (setq i (+ i 1))))))))
+          (if (= state 1)
+              (setq spans (concat spans (files--face-span-line (+ start span-start) (+ start n) "font-lock-string-face" files--face-string-color)))
+            (if (= state 2)
+                (setq spans (concat spans (files--face-span-line (+ start span-start) (+ start n) "font-lock-comment-face" files--face-comment-color)))
+              nil))
+          (setq files--face-spans spans)
+          (if cjk-p
+              (progn
+                (setq files--font-script "cjk")
+                (setq files--font-name files--font-cjk-name))
+            (progn
+              (setq files--font-script "latin")
+              (setq files--font-name files--font-default-name)))
+          (nl-write-file files--face-spans-file files--face-spans)
+          (nl-write-file files--font-file
+                         (concat "name\t" files--font-name
+                                 "\nscript\t" files--font-script "\n")))))
+
 (fset 'files--write-redisplay-state
       (lambda ()
         (files--clamp-point)
@@ -14533,7 +14691,8 @@
                 (setq files--modeline-string files--modeline-override)
                 (setq files--modeline-override ""))
             nil)
-          (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string))))
+          (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+          (files--write-face-spans-state))))
 
 (fset 'files--start-minibuffer
       (lambda ()

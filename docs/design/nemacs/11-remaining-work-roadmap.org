@@ -439,7 +439,7 @@ the loopback run needs one-time user setup):
 3. In the editor: =find-file /ssh:localhost:/tmp/real-tramp-probe.txt=, edit,
    =save-buffer=, then verify the file content from a shell.
 
-** M12. Display/Font Vendor Lane (next wave)
+** M12. Display/Font Vendor Lane (v1 CLOSED 2026-06-10)
 
 Focus (from §3.7): redisplay correctness beyond the current GUI bridge
 rendering — faces/fontsets on the native backend, image display policy,
@@ -450,6 +450,43 @@ Close gate:
 - A standalone scenario renders styled text (face + fontset selection)
   through the native GUI adapter and a host ERT covers the redisplay
   decision path; omissions (images, complex shaping) documented once.
+
+Close evidence (2026-06-10):
+
+- Bridge decision path: =files--write-face-spans-state= computes
+  resolved face spans (elisp keyword/string/comment with concrete
+  colors) plus the fontset pick (latin/cjk) for the visible region on
+  every redisplay and writes =nemacs-face-spans= / =nemacs-font=.
+  The face decision retired from the GUI: the GUI first-char line
+  heuristic survives only as a no-span-data migration fallback.
+- Host ERT: =host-face-span-decision-path= (face selection + color
+  resolution + fontset pick under host Emacs) and
+  =source-shape-face-spans-contract=; standalone reader runtime test:
+  =standalone-face-spans= (elisp + CJK scenarios over the real
+  transport).
+- Native GUI: =nemacs--patch-face-span-redisplay= /
+  =nemacs--patch-font-openfont= (nelisp-gui transport shaping) paint
+  per-line span colors and apply the substrate font pick at session
+  start.  Verified live on X11: keyword =#a020f0=, string =#8b2252=,
+  comment =#b22222= pixels rendered from a real GUI key → bridge →
+  reader round trip (xwd pixel check, 2026-06-10).
+
+Omissions (documented once, not in the critical path):
+
+- Images, bidi, composition/complex shaping, variable-width glyphs.
+- Intra-line span splitting in the native GUI (the GUI colors a line by
+  the first overlapping span; the bridge already transports exact span
+  boundaries for a later finer renderer).
+- Live font re-open mid-session (the fontset pick applies at GUI
+  session start; the decision channel updates every redisplay).
+- Span scan bound: =files--face-span-cap= (2048 chars from
+  window-start) keeps the interpreted per-char walk cheap on the
+  standalone reader.
+- Face spans are computed for elisp buffers; other major modes get
+  fontset selection only until their fontifiers are promoted.
+- The 0xE0–0xEF UTF-8 lead-byte CJK heuristic can match some Latin-1
+  accents under a host-Emacs load of the bridge (reader path is
+  byte-exact).
 
 ** M13. Info/Customize Lane (next wave)
 
