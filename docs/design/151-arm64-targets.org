@@ -1,7 +1,35 @@
 #+TITLE: Doc 151 — linux-aarch64 / windows-aarch64 standalone reader targets
 #+AUTHOR: nelisp / nelisp-emacs
 #+DATE: 2026-06-10
-#+STATUS: Phase A SHIPPED（両ターゲットのビルド + linux-aarch64 は qemu 実行検証済。Phase B = raw-NR 翻訳層 + 実機検証）
+#+STATUS: Phase A+B SHIPPED（ビルド + linux-aarch64 qemu 実行検証 + raw-NR 翻訳層。残 = 実機検証のみ）
+
+* §B Phase B 実装記録（2026-06-10 SHIPPED）
+
+- 翻訳境界 = `nelisp-standalone--os-syscall-xlat-forms`（per-target、os-source に append）。
+  fileio builtin 群（path/path2/path-int/stat-field/stat-buf/lstat-buf/readlink/
+  readdir/utimes/statx）は `nl_os_*` ラッパー経由に書き換え（12 箇所）。
+  - linux-x86_64: passthrough（従来番号そのまま）。
+  - linux-aarch64: NR + 引数形状の翻訳 — access(21)→faccessat(48,AT_FDCWD) /
+    unlink(87)・rmdir(84)→unlinkat(35[,AT_REMOVEDIR]) / mkdir(83)→mkdirat(34) /
+    chmod(90)→fchmodat(53) / rename(82)→renameat(38) / link(86)→linkat(37) /
+    symlink(88)→symlinkat(36、引数順注意) / stat(4)・lstat(6)→newfstatat(79[,256]) /
+    readlink(89)→readlinkat(78) / openat O_DIRECTORY は *0x4000*（x86 の 0x10000 と別値）/
+    getdents64 217→61 / utimes(235)→utimensat(88、timespec[2] は sec+0 で互換) /
+    statx 332→291 / nanosleep 35→101。
+  - *struct stat レイアウト shim*: 呼び出し側は x86_64 オフセットを語彙とするが、
+    arm64 は mode/nlink が逆配置（arm64: mode u32@16, nlink u32@20）。
+    `nl_os_stat_fixup` が private 144B バッファを x86 形（nlink u64@16,
+    mode u32@24）へ書き換え。他フィールド（dev/ino/uid/gid/size/a-m-ctime）は同一。
+  - macos/windows: 従来は共有 fileio unit が x86 生番号をそのまま発射していた
+    （= 異種 syscall 誤発火の潜在危険）→ -ENOSYS(-38) stub 化で安全側に。
+- 新 builtin `nl-nanosleep TS`（per-target nr; stub -38）。nemacs bridge の
+  session idle sleep は fboundp ゲートで本 builtin 優先（35 直叩きは旧 reader
+  フォールバックに格下げ — 35 は arm64 では io_setup）。
+- *qemu 検証（全 green）*: find-file が実ロード（buf 168000、Phase A 時は偽
+  file-not-found）/ access=0 / stat-field st_size=168000・mode@24=S_IFDIR・
+  nlink@16>0（shim 動作）/ readdir=ok / nl-nanosleep=0。
+- 回帰: x86_64 同 probe 全 green + reader smoke 5/5 + compile clean +
+  4 ターゲット全リンク。
 
 * §0 要旨
 

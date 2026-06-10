@@ -2153,6 +2153,12 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "str-line-start") . (seq (nl_bi_str_line_start args out) 0))
     ((:lit "str-kv-line")    . (seq (nl_bi_str_kv_line args out) 0))
     ((:lit "str-filter-prefix-lines") . (seq (nl_bi_str_filter_prefix_lines args out) 0))
+    ;; nl-nanosleep TS-PTR: per-target nanosleep (Doc 151 Phase B).  TS-PTR is
+    ;; a struct timespec pointer built by the caller (alloc-bytes + two
+    ;; ptr-write-u64).  Returns the raw kernel rc; -38 (ENOSYS stub) on
+    ;; targets without a wired sleep.  Replaces interpreted callers
+    ;; hardcoding (syscall-direct 35 ...) which is io_setup on arm64.
+    ((:lit "nl-nanosleep") . (wf_write_int out (nl_os_nanosleep (wf_argval args 0))))
     ;; REPL/process termination.  Store code+1 so slot 0 remains "no exit".
     ((:u8 "exit") . (let* ((code (if (= args 0)
                                      0
@@ -4088,7 +4094,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
       (let* ((nr (wf_argval args 0))
              (path_sx (wf_arg_ptr args 1))
              (cpath (nl_bi_make_cpath path_sx))
-             (rc (syscall-direct nr cpath 0 0 0 0 0)))
+             (rc (nl_os_syscall_path nr cpath)))
         (wf_write_int out rc)))
     ;; nelisp--syscall-path2 NR PATH1 PATH2: two-path-string syscall.  Marshals
     ;; PATH1/PATH2 to two NUL-terminated C strings (separate arena buffers via
@@ -4102,7 +4108,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
              (p2_sx (wf_arg_ptr args 2))
              (cpath1 (nl_bi_make_cpath p1_sx))
              (cpath2 (nl_bi_make_cpath p2_sx))
-             (rc (syscall-direct nr cpath1 cpath2 0 0 0 0)))
+             (rc (nl_os_syscall_path2 nr cpath1 cpath2)))
         (wf_write_int out rc)))
     ;; nelisp--syscall-path-int NR PATH INT: one-path + one-integer syscall.
     ;; Marshals PATH to a NUL-terminated C string (nl_bi_make_cpath), then
@@ -4115,7 +4121,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
              (path_sx (wf_arg_ptr args 1))
              (iarg (wf_argval args 2))
              (cpath (nl_bi_make_cpath path_sx))
-             (rc (syscall-direct nr cpath iarg 0 0 0 0)))
+             (rc (nl_os_syscall_path_int nr cpath iarg)))
         (wf_write_int out rc)))
     ;; nelisp--syscall-stat-field PATH OFFSET: stat(2) PATH into a 144-byte
     ;; struct stat buffer, then return the u64 at byte OFFSET (little-endian).
@@ -4128,7 +4134,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
              (offset (wf_argval args 1))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 144 8))
-             (rc (syscall-direct 4 cpath buf 0 0 0 0)))
+             (rc (nl_os_stat_path cpath buf)))
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out (ptr-read-u64 buf offset)))))
@@ -4140,7 +4146,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
       (let* ((path_sx (wf_arg_ptr args 0))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 144 8))
-             (rc (syscall-direct 4 cpath buf 0 0 0 0)))
+             (rc (nl_os_stat_path cpath buf)))
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out buf))))
@@ -4150,7 +4156,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
       (let* ((path_sx (wf_arg_ptr args 0))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 144 8))
-             (rc (syscall-direct 6 cpath buf 0 0 0 0)))
+             (rc (nl_os_lstat_path cpath buf)))
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out buf))))
@@ -4162,7 +4168,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
       (let* ((path_sx (wf_arg_ptr args 0))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 4096 1))
-             (n (syscall-direct 89 cpath buf 4096 0 0 0)))
+             (n (nl_os_readlink_path cpath buf 4096)))
         (if (< n 0)
             (wf_write_nil out)
           (nl_seq2 (nl_alloc_str buf n out) 0))))
@@ -4177,7 +4183,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
     (defun nl_bi_syscall_readdir_names (args out)
       (let* ((path_sx (wf_arg_ptr args 0))
              (cpath (nl_bi_make_cpath path_sx))
-             (fd (syscall-direct 257 -100 cpath 65536 0 0 0)))
+             (fd (nl_os_open_dir cpath)))
         (if (< fd 0)
             (wf_write_nil out)
           (let* ((dbuf (alloc-bytes 32768 8))
@@ -4187,7 +4193,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
             (seq
              (while (> n 0)
                (seq
-                (setq n (syscall-direct 217 fd dbuf 32768 0 0 0))
+                (setq n (nl_os_getdents64 fd dbuf 32768))
                 (if (> n 0)
                     (let* ((pos 0))
                       (while (< pos n)
@@ -4211,7 +4217,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
                                  0)
                                (setq pos (+ pos reclen))))))))
                   0)))
-             (syscall-direct 3 fd 0 0 0 0 0)
+             (nl_os_close_handle fd)
              (nl_seq2 (nl_alloc_str sbuf slen out) 0))))))
     ;; nelisp--syscall-utimes PATH ATIME MTIME: utimes(2) (syscall 235) -- set
     ;; the access + modification times to ATIME / MTIME (seconds; usec = 0).
@@ -4228,7 +4234,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
          (ptr-write-u64 buf 8 0)
          (ptr-write-u64 buf 16 mtime)
          (ptr-write-u64 buf 24 0)
-         (wf_write_int out (syscall-direct 235 cpath buf 0 0 0 0)))))
+         (wf_write_int out (nl_os_utimes_path cpath buf)))))
     ;; nelisp--syscall-statx-buf PATH FLAGS: statx(2) (syscall 332) into a
     ;; 256-byte struct statx buffer; return its pointer (positive) or the
     ;; negative kernel errno.  dirfd = AT_FDCWD (-100), mask = STATX_BASIC_STATS
@@ -4240,7 +4246,7 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
              (flags (wf_argval args 1))
              (cpath (nl_bi_make_cpath path_sx))
              (buf (alloc-bytes 256 8))
-             (rc (syscall-direct 332 (- 0 100) cpath flags 4095 buf 0)))
+             (rc (nl_os_statx_path cpath flags buf)))
         (if (< rc 0)
             (wf_write_int out rc)
           (wf_write_int out buf))))
@@ -5249,7 +5255,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--repr" "nelisp--arena-stats" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
-    "str-filter-prefix-lines"
+    "str-filter-prefix-lines" "nl-nanosleep"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
@@ -5854,8 +5860,104 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
            (nl_install_one globals unbound b ,len builtin_sym)))))
    nelisp-standalone--reader-builtins))
 
+(defun nelisp-standalone--os-syscall-xlat-forms ()
+  "Per-target raw-syscall wrappers for the path/stat/dirent fileio builtins.
+The interpreted layer (nemacs bridge, compat-fileio, anvil polyfills)
+passes *Linux x86_64* syscall numbers as its portable vocabulary
+(access=21, unlink=87, ...).  These wrappers are the single translation
+boundary (Doc 151 Phase B):
+- linux-x86_64: pass-through (numbers already native).
+- linux-aarch64: arm64 Linux has no legacy syscalls — map to the *at
+  family (faccessat/unlinkat/mkdirat/renameat/newfstatat/...) with
+  AT_FDCWD, preserving each builtin's return contract.
+- macos / windows: return -ENOSYS(-38) stubs.  Previously the shared
+  fileio unit fired the raw x86 numbers on those targets, i.e. random
+  foreign syscalls — the stub is strictly safer (callers already
+  handle negative rc as failure)."
+  (pcase nelisp-standalone--target
+    ('linux-aarch64
+     '((defun nl_os_syscall_path (nr cpath)
+         (if (= nr 87) (syscall-direct 35 (- 0 100) cpath 0 0 0 0)      ; unlink -> unlinkat
+           (if (= nr 84) (syscall-direct 35 (- 0 100) cpath 512 0 0 0)  ; rmdir -> unlinkat+AT_REMOVEDIR
+             (if (= nr 80) (syscall-direct 49 cpath 0 0 0 0 0)          ; chdir (native 49)
+               (syscall-direct nr cpath 0 0 0 0 0)))))
+       (defun nl_os_syscall_path_int (nr cpath iarg)
+         (if (= nr 21) (syscall-direct 48 (- 0 100) cpath iarg 0 0 0)   ; access -> faccessat
+           (if (= nr 90) (syscall-direct 53 (- 0 100) cpath iarg 0 0 0) ; chmod -> fchmodat
+             (if (= nr 83) (syscall-direct 34 (- 0 100) cpath iarg 0 0 0) ; mkdir -> mkdirat
+               (if (= nr 76) (syscall-direct 45 cpath iarg 0 0 0 0)     ; truncate (native 45)
+                 (syscall-direct nr cpath iarg 0 0 0 0))))))
+       (defun nl_os_syscall_path2 (nr c1 c2)
+         (if (= nr 82) (syscall-direct 38 (- 0 100) c1 (- 0 100) c2 0 0)   ; rename -> renameat
+           (if (= nr 86) (syscall-direct 37 (- 0 100) c1 (- 0 100) c2 0 0) ; link -> linkat
+             (if (= nr 88) (syscall-direct 36 c1 (- 0 100) c2 0 0 0)       ; symlink -> symlinkat
+               (syscall-direct nr c1 c2 0 0 0 0)))))
+       ;; struct stat layout shim: callers read fields at *x86_64* offsets
+       ;; (the portable vocabulary).  arm64 swaps mode/nlink (arm64:
+       ;; st_mode u32@16, st_nlink u32@20; x86_64: st_nlink u64@16,
+       ;; st_mode u32@24).  Everything else relevant (dev/ino/uid/gid/
+       ;; size/atime/mtime/ctime) sits at identical offsets.  Rewrite the
+       ;; private 144B buffer to the x86_64 shape after the syscall.
+       (defun nl_os_stat_fixup (rc buf)
+         (if (< rc 0)
+             rc
+           (let* ((mode (ptr-read-u32 buf 16))
+                  (nlink (ptr-read-u32 buf 20)))
+             (seq
+              (ptr-write-u64 buf 16 nlink)
+              (ptr-write-u32 buf 24 mode)
+              rc))))
+       (defun nl_os_stat_path (cpath buf)
+         (nl_os_stat_fixup
+          (syscall-direct 79 (- 0 100) cpath buf 0 0 0) buf))           ; newfstatat
+       (defun nl_os_lstat_path (cpath buf)
+         (nl_os_stat_fixup
+          (syscall-direct 79 (- 0 100) cpath buf 256 0 0) buf))         ; +AT_SYMLINK_NOFOLLOW
+       (defun nl_os_readlink_path (cpath buf cap)
+         (syscall-direct 78 (- 0 100) cpath buf cap 0 0))               ; readlinkat
+       (defun nl_os_open_dir (cpath)
+         (syscall-direct 56 (- 0 100) cpath 16384 0 0 0))               ; openat O_DIRECTORY=0x4000 on arm64
+       (defun nl_os_getdents64 (fd dbuf cap)
+         (syscall-direct 61 fd dbuf cap 0 0 0))
+       (defun nl_os_utimes_path (cpath buf)
+         (syscall-direct 88 (- 0 100) cpath buf 0 0 0))                 ; utimensat (timespec[2]; sec+0 compatible)
+       (defun nl_os_statx_path (cpath flags buf)
+         (syscall-direct 291 (- 0 100) cpath flags 4095 buf 0))
+       (defun nl_os_nanosleep (ts)
+         (syscall-direct 101 ts 0 0 0 0 0))))
+    ('linux-x86_64
+     '((defun nl_os_syscall_path (nr cpath) (syscall-direct nr cpath 0 0 0 0 0))
+       (defun nl_os_syscall_path_int (nr cpath iarg) (syscall-direct nr cpath iarg 0 0 0 0))
+       (defun nl_os_syscall_path2 (nr c1 c2) (syscall-direct nr c1 c2 0 0 0 0))
+       (defun nl_os_stat_path (cpath buf) (syscall-direct 4 cpath buf 0 0 0 0))
+       (defun nl_os_lstat_path (cpath buf) (syscall-direct 6 cpath buf 0 0 0 0))
+       (defun nl_os_readlink_path (cpath buf cap) (syscall-direct 89 cpath buf cap 0 0 0))
+       (defun nl_os_open_dir (cpath) (syscall-direct 257 (- 0 100) cpath 65536 0 0 0))
+       (defun nl_os_getdents64 (fd dbuf cap) (syscall-direct 217 fd dbuf cap 0 0 0))
+       (defun nl_os_utimes_path (cpath buf) (syscall-direct 235 cpath buf 0 0 0 0))
+       (defun nl_os_statx_path (cpath flags buf) (syscall-direct 332 (- 0 100) cpath flags 4095 buf 0))
+       (defun nl_os_nanosleep (ts) (syscall-direct 35 ts 0 0 0 0 0))))
+    (_
+     '((defun nl_os_syscall_path (_nr _cpath) (- 0 38))
+       (defun nl_os_syscall_path_int (_nr _cpath _iarg) (- 0 38))
+       (defun nl_os_syscall_path2 (_nr _c1 _c2) (- 0 38))
+       (defun nl_os_stat_path (_cpath _buf) (- 0 38))
+       (defun nl_os_lstat_path (_cpath _buf) (- 0 38))
+       (defun nl_os_readlink_path (_cpath _buf _cap) (- 0 38))
+       (defun nl_os_open_dir (_cpath) (- 0 38))
+       (defun nl_os_getdents64 (_fd _dbuf _cap) (- 0 38))
+       (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
+       (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
+       (defun nl_os_nanosleep (_ts) (- 0 38))))))
+
 (defun nelisp-standalone--reader-os-source-forms ()
   "Return target-specific OS helper defuns used by the reader driver/file I/O."
+  (append
+   (nelisp-standalone--os-syscall-xlat-forms)
+   (nelisp-standalone--reader-os-base-forms)))
+
+(defun nelisp-standalone--reader-os-base-forms ()
+  "Return the per-target base OS helper defuns (argv/file/process)."
   (pcase nelisp-standalone--target
     ((or 'windows-x86_64 'windows-aarch64)
      '((defun nl_win_wcs_utf8_dup (src)
