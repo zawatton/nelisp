@@ -237,7 +237,11 @@
 (setq files--face-string-color "#8b2252")
 (setq files--face-keyword-color "#a020f0")
 (setq files--font-default-name "fixed")
-(setq files--font-cjk-name "-*-fixed-medium-r-normal--14-*-*-*-*-*-iso10646-1")
+;; the misc-fixed "ja" face carries CJK glyphs at exactly twice the
+;; ASCII advance (6px / 12px), so the GUI's 2-cell layout stays exact
+(setq files--font-cjk-name "-misc-fixed-medium-r-normal-ja-13-120-75-75-c-120-iso10646-1")
+(setq files--font-cjk-cell-width 6)
+(setq files--font-default-cell-width 9)
 (setq files--font-name "fixed")
 (setq files--font-script "latin")
 (setq files--info-file "")
@@ -15092,7 +15096,13 @@
           (nl-write-file files--face-spans-file files--face-spans)
           (nl-write-file files--font-file
                          (concat "name\t" files--font-name
-                                 "\nscript\t" files--font-script "\n")))))
+                                 "\nscript\t" files--font-script
+                                 "\ncw\t"
+                                 (number-to-string
+                                  (if cjk-p
+                                      files--font-cjk-cell-width
+                                    files--font-default-cell-width))
+                                 "\n")))))
 
 (fset 'files--write-redisplay-state
       (lambda ()
@@ -15130,11 +15140,29 @@
           (setq line-string (files--number-string))
           (setq files--number-file-value files--cursor-column)
           (setq column-string (files--number-string))
-          (nl-write-file (progn (setq files--transport-name "nemacs-cursor") (files--transport-path))
-                         (concat "point\t" point-string
-                                 "\nline\t" line-string
-                                 "\ncolumn\t" column-string
-                                 "\n"))
+          ;; display cells from line start to point: UTF-8 lead bytes
+          ;; decide the advance (CJK 3/4-byte sequences take 2 cells) —
+          ;; the GUI must not re-decide layout semantics (M16)
+          (let ((ci2 (- files--point column))
+                (cells 0)
+                (b2 0))
+            (while (< ci2 files--point)
+              (setq b2 (aref files--buffer-string ci2))
+              (if (< b2 128)
+                  (progn (setq cells (+ cells 1)) (setq ci2 (+ ci2 1)))
+                (if (< b2 192)
+                    (setq ci2 (+ ci2 1))
+                  (if (< b2 224)
+                      (progn (setq cells (+ cells 1)) (setq ci2 (+ ci2 2)))
+                    (if (< b2 240)
+                        (progn (setq cells (+ cells 2)) (setq ci2 (+ ci2 3)))
+                      (progn (setq cells (+ cells 2)) (setq ci2 (+ ci2 4))))))))
+            (nl-write-file (progn (setq files--transport-name "nemacs-cursor") (files--transport-path))
+                           (concat "point\t" point-string
+                                   "\nline\t" line-string
+                                   "\ncolumn\t" column-string
+                                   "\ncells\t" (number-to-string cells)
+                                   "\n")))
           (setq state "--")
           (if files--buffer-read-only-p
               (if files--buffer-modified-p

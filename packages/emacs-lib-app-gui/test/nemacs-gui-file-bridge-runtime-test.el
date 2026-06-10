@@ -3689,6 +3689,31 @@
         (when (file-directory-p repo)
           (delete-directory repo t))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-cjk-cursor-cells ()
+  "M16: the cursor transport carries display cells (CJK = 2 cells)."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-b" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            ;; 日本語 = 9 bytes; C-b from byte 6 lands on byte 5 (inside
+            ;; 本): the cell walk counts 日 + 本 = 4 cells.
+            (write-region "日本語\nabc\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "6" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((cursor (nemacs-gui-file-bridge-runtime-test--slurp
+                           "/tmp/nemacs-cursor")))
+              (should (string-match-p "cells\t4" cursor))))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-user-init-lane ()
   "M15: wrapped ~/.nemacs.d init forms load with per-form isolation
 and the bridge reports applied/skipped instead of dying silently."
@@ -10319,6 +10344,8 @@ fontset decision for an elisp buffer and a CJK buffer."
       (defvar files--face-keyword-color)
       (defvar files--font-default-name)
       (defvar files--font-cjk-name)
+      (defvar files--font-default-cell-width)
+      (defvar files--font-cjk-cell-width)
       (defvar files--font-name)
       (defvar files--font-script)
       (defvar files--face-spans-file)
@@ -10333,6 +10360,8 @@ fontset decision for an elisp buffer and a CJK buffer."
             files--face-keyword-color "#a020f0"
             files--font-default-name "fixed"
             files--font-cjk-name "-*-fixed-medium-r-normal--14-*-*-*-*-*-iso10646-1"
+            files--font-default-cell-width 9
+            files--font-cjk-cell-width 6
             files--font-name ""
             files--font-script ""
             files--face-spans-file "spans"
@@ -10388,7 +10417,8 @@ fontset decision for an elisp buffer and a CJK buffer."
               (should (string-match-p "font-lock-string-face\t#8b2252" spans))
               (should (string-match-p "font-lock-comment-face\t#b22222" spans))
               (should (string-match-p "name\tfixed" font))
-              (should (string-match-p "script\tlatin" font)))
+              (should (string-match-p "script\tlatin" font))
+              (should (string-match-p "cw\t9" font)))
             ;; Scenario 2: CJK text buffer -> no spans, cjk fontset pick
             ;; (reader strings are raw bytes; the 3-byte UTF-8 lead drives
             ;; the decision).
@@ -10408,7 +10438,9 @@ fontset decision for an elisp buffer and a CJK buffer."
             (let ((font (nemacs-gui-file-bridge-runtime-test--slurp
                          "/tmp/nemacs-font")))
               (should (string-match-p "script\tcjk" font))
-              (should (string-match-p "iso10646" font))))
+              (should (string-match-p "iso10646" font))
+              (should (string-match-p "normal-ja" font))
+              (should (string-match-p "cw\t6" font))))
         (when (file-exists-p image)
           (delete-file image))))))
 
