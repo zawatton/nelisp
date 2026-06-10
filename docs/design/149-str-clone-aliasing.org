@@ -1,7 +1,27 @@
 #+TITLE: Doc 149 — Str clone aliasing: tag-5 deep copy の廃止（単一 form 内・大文字列ワークロードの最終ボトルネック）
 #+AUTHOR: nelisp / nelisp-emacs
 #+DATE: 2026-06-10
-#+STATUS: DRAFT（設計レビュー待ち。P0 調査は本セッションで完了、P1 spike 未着手）
+#+STATUS: P0-P2 SHIPPED（2026-06-10、flag 268435648 default ON、Linux ゲート全 green）。
+#+STATUS2: P3 残 = Windows/macOS target スモーク（クロスプラットフォーム CI 待ち）+ full 319-file vendor-load。
+
+* §X 実装・検証記録（2026-06-10 SHIPPED）
+
+- 実装: =nl_sci_dispatch= の tag-4/5 arm を flag 268435648 ゲートで =nl_sci_copy=
+  （32B slot copy、バッファ共有）に切替。boot init で flag=1（escape hatch = 0）。
+  tag-4 Symbol も同 flag で同時 SHIPPED（P2 を P1 に統合 — 同じ不変性論拠）。
+- 効果実測:
+  - =(setq tmp s)= ×2000（528KB）: *2.1GB → 80MB*（per-access deep copy 消滅）
+  - =aref= ループ ×20000（528KB）: *OOM(4GB+) → 533MB / 1.7s*（27s → 1.7s、残りは
+    文字列サイズ非依存の eval ガベージのみ = smallstr ベースラインと一致）
+  - nemacs bridge suite max RSS: 11.3GB → *5.8GB*、42/42 PASS（144s）
+- ゲート: standalone-reader-test 5/5 / prelude / fmt / process smokes /
+  reader-surface-audit / make compile(error-on-warn) / verify-vendor-core
+  （VENDOR-CORE-STANDALONE=ok）全 green。
+- 残渣の特定（per-PID step profiling）: goto-line 系の残り 0.8-1.7GB/step は
+  *蓄積状態（kill-ring/履歴 transport）× per-char 解釈ループ × eval ガベージ
+  ~20KB/iter* という文字列 clone と別系統の特性。系統対策 = form 内 free-list
+  再利用（Doc 150 候補）。大バッファの解釈ループ回避（native builtin 方針）は
+  引き続き必須（20KB/iter × 50万反復 = 10GB なので）。
 
 * §0 要旨
 

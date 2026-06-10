@@ -6464,6 +6464,13 @@ correctly."
         ;; this to 0 as an ESCAPE HATCH to fall back to mark+sweep should any
         ;; workload ever trip a moving-GC root-coverage gap (Doc 146 §2).
         (ptr-write-u64 268435608 0 1)
+        ;; ---- Doc 149: tag-4/5 String clone ALIASING is ON (flag 268435648 = 1). ----
+        ;; nl_sci_dispatch shares the char buffer on clone instead of deep
+        ;; copying it (strings/symbols are immutable in the reader; tracing
+        ;; GC keeps shared buffers alive).  Kills the O(len)-per-access arena
+        ;; cost that OOM'd the nemacs bridge on large buffer strings.
+        ;; Set to 0 as an ESCAPE HATCH to restore the legacy deep copy.
+        (ptr-write-u64 268435648 0 1)
         ;; BOOT WATERMARK: freeze the absolute address up to which everything
         ;; was allocated during install + driver setup (the mirror, all 60
         ;; builtins, the env/frame records, the fixed driver scratch slots).

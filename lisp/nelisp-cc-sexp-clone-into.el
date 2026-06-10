@@ -91,12 +91,26 @@
        (nl_sci_copy src dst)))
 
     ;; Dispatch on tag (threaded as a param to avoid AOT `let').
-    ;; tag 5 Str / 4 Symbol = deep String copy via nl_alloc_str/symbol
-    ;; (read buffer ptr@16 + len@24 from src, alloc+copy into dst).
+    ;; tag 5 Str / 4 Symbol = String clone.  Doc 149: behind flag 268435648
+    ;; (1 = ON, wired at reader boot init; 0 = legacy) the clone ALIASES the
+    ;; char buffer (plain 32B slot copy, buffer shared) instead of deep
+    ;; copying it.  Sound because tag-4/5 are immutable in the reader
+    ;; (bf_aset only mutates tag-8 vectors; in-place string mutation is the
+    ;; MutStr tag-6 path, which already rc-aliases) and the tracing GC keeps
+    ;; shared buffers alive via reachability (rc is vestigial, Doc 146 §2).
+    ;; Why: the deep copy made EVERY read/bind of a large string value cost
+    ;; O(len) arena (measured 1.5MB/iter on a 528KB string) with no
+    ;; intra-form GC -> the nemacs bridge OOM class.  Escape hatch: flag 0.
     ;; tag < 4 (0..3) = inline atom, plain copy. else (6..12) = boxed.
     (defun nl_sci_dispatch (src dst tag)
-      (if (= tag 5) (nl_alloc_str    (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst)
-        (if (= tag 4) (nl_alloc_symbol (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst)
+      (if (= tag 5)
+          (if (= (ptr-read-u64 268435648 0) 1)
+              (nl_sci_copy src dst)
+            (nl_alloc_str (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst))
+        (if (= tag 4)
+            (if (= (ptr-read-u64 268435648 0) 1)
+                (nl_sci_copy src dst)
+              (nl_alloc_symbol (ptr-read-u64 src 16) (ptr-read-u64 src 24) dst))
           (if (< tag 4) (nl_sci_copy src dst)
             (nl_sci_rc src dst tag)))))
 
