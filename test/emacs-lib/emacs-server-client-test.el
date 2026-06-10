@@ -100,7 +100,21 @@
               ;; the server survives multiple clients
               (let ((r4 (roundtrip "(* 6 7)")))
                 (should (equal 0 (car r4)))
-                (should (equal "42" (cdr r4))))))
+                (should (equal "42" (cdr r4))))
+              ;; M17: emacsclient -n FILE queues a find-file into the
+              ;; editor transport
+              (let ((status (call-process client nil nil nil
+                                          "-n" "-s" sock
+                                          "/tmp/nemacs-file-demo.txt")))
+                (should (equal 0 status)))
+              (with-temp-buffer
+                (insert-file-contents "/tmp/nemacs-cmd")
+                (should (equal "find-file" (buffer-string))))
+              (with-temp-buffer
+                (insert-file-contents "/tmp/nemacs-arg")
+                (should (equal "/tmp/nemacs-file-demo.txt" (buffer-string))))
+              (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-arg" nil 'silent)))
         (when (and proc (process-live-p proc))
           (kill-process proc))
         (when (file-exists-p sock)

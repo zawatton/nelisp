@@ -236,6 +236,9 @@
 (setq files--face-comment-color "#b22222")
 (setq files--face-string-color "#8b2252")
 (setq files--face-keyword-color "#a020f0")
+(setq files--face-org-heading-color "#1e90ff")
+(setq files--face-org-todo-color "#ff6347")
+(setq files--face-org-done-color "#98fb98")
 (setq files--font-default-name "fixed")
 ;; the misc-fixed "ja" face carries CJK glyphs at exactly twice the
 ;; ASCII advance (6px / 12px), so the GUI's 2-cell layout stays exact
@@ -15002,6 +15005,40 @@
                 face "\t"
                 color "\n")))
 
+;; M17: org daily-lane fontification — heading lines and their
+;; TODO/DONE keywords get resolved spans (colors picked for the dark
+;; default theme; the decision stays in this repository).
+(fset 'files--face-spans-org
+      (lambda (text start)
+        (let ((i 0)
+              (n (length text))
+              (bol 0)
+              (eol 0)
+              (stars 0)
+              (j 0)
+              (out ""))
+          (while (< i n)
+            (setq bol i)
+            (setq eol i)
+            (while (if (< eol n) (if (= (aref text eol) 10) nil t) nil)
+              (setq eol (+ eol 1)))
+            (setq stars 0)
+            (setq j bol)
+            (while (if (< j eol) (= (aref text j) 42) nil)
+              (setq j (+ j 1))
+              (setq stars (+ stars 1)))
+            (if (if (> stars 0) (if (< j eol) (= (aref text j) 32) nil) nil)
+                (progn
+                  (if (files--info-token-at text (+ j 1) "TODO ")
+                      (setq out (concat out (files--face-span-line (+ start (+ j 1)) (+ start (+ j 5)) "org-todo" files--face-org-todo-color)))
+                    (if (files--info-token-at text (+ j 1) "DONE ")
+                        (setq out (concat out (files--face-span-line (+ start (+ j 1)) (+ start (+ j 5)) "org-done" files--face-org-done-color)))
+                      nil))
+                  (setq out (concat out (files--face-span-line (+ start bol) (+ start eol) "org-level" files--face-org-heading-color))))
+              nil)
+            (setq i (+ eol 1)))
+          out)))
+
 (fset 'files--write-face-spans-state
       (lambda ()
         (let ((start files--window-start)
@@ -15085,6 +15122,9 @@
             (if (= state 2)
                 (setq spans (concat spans (files--face-span-line (+ start span-start) (+ start n) "font-lock-comment-face" files--face-comment-color)))
               nil))
+          (if (files--org-buffer-p)
+              (setq spans (concat (files--face-spans-org text start) spans))
+            nil)
           (setq files--face-spans spans)
           (if cjk-p
               (progn

@@ -3689,6 +3689,37 @@
         (when (file-directory-p repo)
           (delete-directory repo t))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-org-face-spans ()
+  "M17: org headings and TODO/DONE keywords get resolved face spans."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-f" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "/tmp/nemacs-face-demo.org" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "* TODO check\nplain text\n** DONE x\n"
+                          nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((spans (nemacs-gui-file-bridge-runtime-test--slurp
+                          "/tmp/nemacs-face-spans")))
+              ;; "* TODO check\n": TODO keyword at [2,6), heading [0,12)
+              (should (string-match-p "2\t6\torg-todo\t#ff6347" spans))
+              (should (string-match-p "0\t12\torg-level\t#1e90ff" spans))
+              ;; "** DONE x" at offset 24: DONE keyword at [27,31)
+              (should (string-match-p "27\t31\torg-done\t#98fb98" spans))
+              ;; plain line gets no span
+              (should-not (string-match-p "13\t" spans))))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-cjk-cursor-cells ()
   "M16: the cursor transport carries display cells (CJK = 2 cells)."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
@@ -10317,6 +10348,9 @@ and the bridge reports applied/skipped instead of dying silently."
               (when (and (consp form) (eq (car form) 'fset)
                          (memq (cadr (cadr form))
                                '(files--elisp-buffer-p
+                                 files--org-buffer-p
+                                 files--info-token-at
+                                 files--face-spans-org
                                  files--face-keyword-p
                                  files--symbol-char-p
                                  files--face-span-line
@@ -10332,7 +10366,7 @@ the transport write stubbed, then asserts the resolved spans and the
 fontset decision for an elisp buffer and a CJK buffer."
   (let ((forms (nemacs-gui-file-bridge-runtime-test--face-span-forms))
         (out (make-hash-table :test 'equal)))
-    (should (= 5 (length forms)))
+    (should (= 8 (length forms)))
     (cl-letf (((symbol-function 'nl-write-file)
                (lambda (path text) (puthash path text out))))
       (defvar files--current-file-name)
@@ -10362,6 +10396,9 @@ fontset decision for an elisp buffer and a CJK buffer."
             files--font-cjk-name "-*-fixed-medium-r-normal--14-*-*-*-*-*-iso10646-1"
             files--font-default-cell-width 9
             files--font-cjk-cell-width 6
+            files--face-org-heading-color "#1e90ff"
+            files--face-org-todo-color "#ff6347"
+            files--face-org-done-color "#98fb98"
             files--font-name ""
             files--font-script ""
             files--face-spans-file "spans"
