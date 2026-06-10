@@ -276,6 +276,19 @@ Close gate:
 
 * 4. Suggested Milestones
 
+Status (2026-06-10): every milestone below has reached its v1 close
+gate — M1 (binary smoke, 47/47 standalone scenarios), M2 (project/git
+daily workflow), M3 (window/tab/help display policy), M4
+(coding/input baseline), M5 (dired/process/search incl. bridge-side
+dired file-ops), M6 (package activation + CAPF), M7
+(loaddefs/autoload + runtime image), M8 (release preflight + soak
+diagnostics), M9 (org daily lane), M10 (Magit-min), M11 (Tramp
+ssh-only, hermetic stub gate), M12 (display/font), M13
+(info/customize).  Host gate: 1888 ERT, 0 unexpected.  The next wave
+should be drawn from §7 open questions (server/emacsclient, first
+real MELPA promotion gate) and from daily-driver soak findings —
+promote by workflow, not by file count (tracking rule 1).
+
 ** M1. Standalone Product Smoke
 
 Focus:
