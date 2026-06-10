@@ -243,21 +243,48 @@ commands are out of scope and simply ignored)."
                 (delete-process proc))
             (let ((tokens (emacs-server-client-polyfills--split
                            (substring string 0 (1- (length string)))))
-                  (exprs nil))
+                  (exprs nil)
+                  (files nil))
               (while tokens
-                (if (equal (car tokens) "-eval")
-                    (progn
-                      (when (cdr tokens)
-                        (setq exprs
-                              (cons (emacs-server-client-polyfills--unquote
-                                     (car (cdr tokens)))
-                                    exprs))
-                        (setq tokens (cdr tokens)))
-                      (setq tokens (cdr tokens)))
+                (cond
+                 ((equal (car tokens) "-eval")
+                  (when (cdr tokens)
+                    (setq exprs
+                          (cons (emacs-server-client-polyfills--unquote
+                                 (car (cdr tokens)))
+                                exprs))
+                    (setq tokens (cdr tokens)))
+                  (setq tokens (cdr tokens)))
+                 ((equal (car tokens) "-file")
+                  ;; M17: queue the file into the editor transport — the
+                  ;; GUI session poll loop picks it up as a find-file.
+                  ;; nemacs-cmd is the documented migration-fallback
+                  ;; channel; full client-buffer lifecycle (wait, C-x #)
+                  ;; stays out of scope.
+                  (when (cdr tokens)
+                    (setq files
+                          (cons (emacs-server-client-polyfills--unquote
+                                 (car (cdr tokens)))
+                                files))
+                    (setq tokens (cdr tokens)))
+                  (setq tokens (cdr tokens)))
+                 (t
                   ;; -dir / -current-frame / -env / -nowait / -tty /
-                  ;; -position / -file ... — out of the M14 subset.
-                  (setq tokens (cdr tokens))))
+                  ;; -position ... — out of the M14 subset.
+                  (setq tokens (cdr tokens)))))
               (setq exprs (nreverse exprs))
+              (setq files (nreverse files))
+              (while files
+                (nl-write-file "/tmp/nemacs-arg" (car files))
+                (nl-write-file "/tmp/nemacs-keys" "")
+                (nl-write-file "/tmp/nemacs-cmd" "find-file")
+                (server-send-string
+                 proc
+                 (concat "-print "
+                         (emacs-server-client-polyfills--quote
+                          (concat "queued " (car files)))
+                         "\n"))
+                (setq files (cdr files)))
               (while exprs
                 (server-eval-and-print (car exprs) proc)
                 (setq exprs (cdr exprs)))

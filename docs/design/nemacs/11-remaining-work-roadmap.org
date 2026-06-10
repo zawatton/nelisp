@@ -654,6 +654,22 @@ CHAR2B; modeline/minibuffer/tab strings still draw via ImageText8
 (ASCII-safe); C-f/C-b remain byte-wise in the bridge (mid-character
 points render at the spanning glyph's cells).
 
+** M17. Client/Org Polish (v1 CLOSED 2026-06-11; GUI intra-line split pending)
+
+Close evidence:
+
+- =emacsclient -n FILE= against the M14 server queues a find-file
+  into the editor transport (nemacs-cmd migration-fallback channel;
+  the GUI session poll loop consumes it) and replies =-print queued=.
+  Full client-buffer lifecycle (wait / C-x #) stays out of scope.
+  Test: extended standalone-emacsclient-roundtrip.
+- Org fontification spans: heading lines (=org-level= #1e90ff) and
+  their TODO (#ff6347) / DONE (#98fb98) keywords get resolved spans
+  from =files--face-spans-org=.  Test: standalone-org-face-spans.
+- Pending: GUI intra-line span splitting (the bridge already
+  transports exact span boundaries; the GUI still colors per line by
+  the first overlapping span).
+
 * 5. Explicit Non-goals For Initial Roadmap
 
 These should not block the milestones above:
