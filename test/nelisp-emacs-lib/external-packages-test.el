@@ -46,7 +46,9 @@
                (format "(load %S nil t)\n" s)
                ;; the server's eval path: read-from-string + eval
                "(nelisp--write-stderr-line (format \"R1=%S\" (eval (car (read-from-string \"(s-upcase \\\"abc\\\")\")) t)))\n"
-               "(nelisp--write-stderr-line (format \"R2=%S\" (eval (car (read-from-string \"(-map (lambda (x) (* x x)) (list 1 2 3))\")) t)))\n"))
+               "(nelisp--write-stderr-line (format \"R2=%S\" (eval (car (read-from-string \"(-map (lambda (x) (* x x)) (list 1 2 3))\")) t)))\n"
+               ;; identity must never be a nil no-op (s-join pipeline)
+               "(nelisp--write-stderr-line (format \"R3=%S\" (s-join \"-\" (-map (lambda (x) (number-to-string x)) (list 1 2 3)))))\n"))
             (with-temp-buffer
               (let ((status (call-process reader nil t nil
                                           "--eval"
@@ -55,7 +57,8 @@
                 (let ((out (buffer-string)))
                   ;; the reader's %S prints strings without quotes
                   (should (string-match-p "R1=ABC" out))
-                  (should (string-match-p "R2=(1 4 9)" out))))))
+                  (should (string-match-p "R2=(1 4 9)" out))
+                  (should (string-match-p "R3=1-2-3" out))))))
         (when (file-exists-p driver)
           (delete-file driver))))))
 
