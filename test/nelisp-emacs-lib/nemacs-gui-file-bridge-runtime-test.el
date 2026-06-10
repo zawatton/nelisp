@@ -10048,6 +10048,154 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/source-shape-face-spans-contract ()
+  "M12: the bridge source should carry the face-span/fontset decision path."
+  (let ((source
+         (nemacs-gui-file-bridge-runtime-test--slurp
+          nemacs-gui-file-bridge-runtime-test--source)))
+    (dolist (needle '("(fset 'files--write-face-spans-state"
+                      "(fset 'files--face-keyword-p"
+                      "(fset 'files--symbol-char-p"
+                      "(fset 'files--face-span-line"
+                      "(fset 'files--elisp-buffer-p"
+                      "\"nemacs-face-spans\""
+                      "\"nemacs-font\""
+                      "(files--write-face-spans-state)"))
+      (ert-info ((format "face-span contract %s" needle))
+        (should (string-match-p (regexp-quote needle) source))))))
+
+(defun nemacs-gui-file-bridge-runtime-test--face-span-forms ()
+  "Extract the M12 face-span `fset' forms from the bridge source."
+  (let ((forms nil))
+    (with-temp-buffer
+      (insert-file-contents nemacs-gui-file-bridge-runtime-test--source)
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (and (consp form) (eq (car form) 'fset)
+                         (memq (cadr (cadr form))
+                               '(files--elisp-buffer-p
+                                 files--face-keyword-p
+                                 files--symbol-char-p
+                                 files--face-span-line
+                                 files--write-face-spans-state)))
+                (push form forms))))
+        (end-of-file nil)))
+    (nreverse forms)))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/host-face-span-decision-path ()
+  "M12 host ERT: face selection + color resolution over a bounded region.
+Evaluates only the M12 forms from the bridge source under host Emacs with
+the transport write stubbed, then asserts the resolved spans and the
+fontset decision for an elisp buffer and a CJK buffer."
+  (let ((forms (nemacs-gui-file-bridge-runtime-test--face-span-forms))
+        (out (make-hash-table :test 'equal)))
+    (should (= 5 (length forms)))
+    (cl-letf (((symbol-function 'nl-write-file)
+               (lambda (path text) (puthash path text out))))
+      (defvar files--current-file-name)
+      (defvar files--window-start)
+      (defvar files--face-span-cap)
+      (defvar files--face-spans)
+      (defvar files--face-comment-color)
+      (defvar files--face-string-color)
+      (defvar files--face-keyword-color)
+      (defvar files--font-default-name)
+      (defvar files--font-cjk-name)
+      (defvar files--font-name)
+      (defvar files--font-script)
+      (defvar files--face-spans-file)
+      (defvar files--font-file)
+      (defvar files--buffer-string)
+      (setq files--current-file-name "/tmp/nemacs-face-demo.el"
+            files--window-start 0
+            files--face-span-cap 2048
+            files--face-spans ""
+            files--face-comment-color "#b22222"
+            files--face-string-color "#8b2252"
+            files--face-keyword-color "#a020f0"
+            files--font-default-name "fixed"
+            files--font-cjk-name "-*-fixed-medium-r-normal--14-*-*-*-*-*-iso10646-1"
+            files--font-name ""
+            files--font-script ""
+            files--face-spans-file "spans"
+            files--font-file "font"
+            files--buffer-string
+            "(defun foo ()\n  \"a \\\"str\\\"\" ; comment here\n  (setq x 1))\n")
+      (dolist (form forms) (eval form nil))
+      (files--write-face-spans-state)
+      (let ((spans (gethash "spans" out))
+            (font (gethash "font" out)))
+        ;; offsets: defun keyword at [1,6), the string literal at
+        ;; [16,27), the line comment at [28,42), setq at [46,50).
+        (should (string-match-p "^1\t6\tfont-lock-keyword-face\t#a020f0$" spans))
+        (should (string-match-p "^16\t27\tfont-lock-string-face\t#8b2252$" spans))
+        (should (string-match-p "^28\t42\tfont-lock-comment-face\t#b22222$" spans))
+        (should (string-match-p "^46\t50\tfont-lock-keyword-face\t#a020f0$" spans))
+        (should (string-match-p "^name\tfixed$" font))
+        (should (string-match-p "^script\tlatin$" font)))
+      ;; CJK buffer with a non-elisp name: no spans, cjk fontset pick.
+      (setq files--current-file-name "/tmp/nemacs-face-demo.txt"
+            files--buffer-string "日本語テキスト\n")
+      (files--write-face-spans-state)
+      (should (equal "" (gethash "spans" out)))
+      (should (string-match-p "^script\tcjk$" (gethash "font" out)))
+      (should (string-match-p "iso10646" (gethash "font" out))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-face-spans ()
+  "M12: the standalone bridge should emit resolved face spans + fontset pick."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            ;; Scenario 1: elisp buffer -> keyword/string/comment spans
+            ;; with resolved colors, latin fontset.
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-f" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "/tmp/nemacs-face-demo.el" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "(defun foo ()\n  \"str\" ; note\n  (setq x 1))\n"
+                          nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((spans (nemacs-gui-file-bridge-runtime-test--slurp
+                          "/tmp/nemacs-face-spans"))
+                  (font (nemacs-gui-file-bridge-runtime-test--slurp
+                         "/tmp/nemacs-font")))
+              (should (string-match-p "1\t6\tfont-lock-keyword-face\t#a020f0" spans))
+              (should (string-match-p "font-lock-string-face\t#8b2252" spans))
+              (should (string-match-p "font-lock-comment-face\t#b22222" spans))
+              (should (string-match-p "name\tfixed" font))
+              (should (string-match-p "script\tlatin" font)))
+            ;; Scenario 2: CJK text buffer -> no spans, cjk fontset pick
+            ;; (reader strings are raw bytes; the 3-byte UTF-8 lead drives
+            ;; the decision).
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-e" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "/tmp/nemacs-face-demo.txt" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "日本語テキスト\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "" (nemacs-gui-file-bridge-runtime-test--slurp
+                               "/tmp/nemacs-face-spans")))
+            (let ((font (nemacs-gui-file-bridge-runtime-test--slurp
+                         "/tmp/nemacs-font")))
+              (should (string-match-p "script\tcjk" font))
+              (should (string-match-p "iso10646" font))))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-raw-key-ignores-stale-command ()
   "In standalone NeLisp, raw key transport should take priority over old commands."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
