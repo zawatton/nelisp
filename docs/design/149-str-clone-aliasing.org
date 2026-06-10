@@ -1,0 +1,87 @@
+#+TITLE: Doc 149 — Str clone aliasing: tag-5 deep copy の廃止（単一 form 内・大文字列ワークロードの最終ボトルネック）
+#+AUTHOR: nelisp / nelisp-emacs
+#+DATE: 2026-06-10
+#+STATUS: DRAFT（設計レビュー待ち。P0 調査は本セッションで完了、P1 spike 未着手）
+
+* §0 要旨
+
+nemacs GUI bridge OOM 調査（2026-06-10、worklog 参照）で確定した残ボトルネック:
+*tag-5 Str の clone が char バッファごと deep copy* であるため、単一 top-level form 内で
+大文字列値にアクセスするたびに全バッファ複製が bump arena に蓄積する（GC は form 境界
+でしか走れない）。実測:
+
+- =(setq tmp s)= ループ（528KB 文字列）: *~1.5MB/反復*。size-census 差分で 528KB 級
+  ブロック ×144 個 / 50 反復（= アクセス 1 回あたり ~3 clone）を直接確認。
+- この特性が nemacs bridge の全 OOM（redisplay 61GB / key-dispatch 744MB / M-x 17.5GB /
+  goto-line 残渣 3GB 等）の共通根。個別 hot path は native builtin（str-count-nl /
+  str-kv-line / str-filter-prefix-lines、Doc 142 系修正）で回避済みだが、*解釈実行コードが
+  大文字列に触れた瞬間に再発する* 構造は残っている。
+
+*提案 = tag-5 Str の clone を buffer aliasing 化*（32B Sexp コピーのみ、char バッファ共有）。
+期待効果: 大文字列の変数 read/bind が ~1.5MB/iter → 32B/iter。残渣 step の系統的解消。
+
+* §1 現状コード（P0 調査結果、本セッションで確認済み）
+
+** 1.1 clone テーブル（=lisp/nelisp-cc-sexp-clone-into.el= ヘッダ）
+| tag | 型 | clone 挙動 |
+|-----+----+-----------|
+| 0-3 | Nil/T/Int/Float | inline 32B copy（Doc 146 で tagged immediate 化済） |
+| *4* | Symbol(String) | *deep copy*（nl_alloc_symbol、bytes-ptr@16 + len@24） |
+| *5* | Str(String) | *deep copy*（nl_alloc_str） |
+| 6 | MutStr(NlStrRef) | *refcount-bump aliasing*（nelisp_nlstr_clone） |
+| 7-12 | Cons/Vector/CharTable/BoolVector/Cell/Record | *refcount-bump aliasing* |
+
+= *deep copy は tag 4/5 だけ*。boxed 型は全て既に aliasing。
+
+** 1.2 tag-5 は事実上 immutable
+- =bf_aset=（scripts/nelisp-standalone-build.el:2949）: *tag 8 Vector のみ変異*。
+  非 vector は val をそのまま返すだけで arr に一切書かない。
+- 文字列の in-place 変異は MutStr(tag 6) 経路のみ（mut-str-* ops）。tag-6 は既に
+  rc-aliasing で共有されており、tag-5 → 6 の昇格パスは独立。
+- = tag-5 の char バッファを alias しても変異による別名破壊は *現行コードには存在しない*。
+
+** 1.3 rc は vestigial（Doc 146 §2 確定済み）
+pure tracing GC 化済みのため、バッファ共有に所有権追跡は不要。共有バッファは
+到達可能性だけで生存が決まり、mark は dedup される。
+
+* §2 設計
+
+** 2.1 変更点（最小形）
+=nelisp-cc-sexp-clone-into.el= の tag-5 arm を「inline 32B copy」（tag 0-3 と同じ素通し）に
+変更する。bytes-ptr@16 をそのまま書き写す = バッファ共有。
+
+- tag-4 Symbol は P2 に分離（symbol-name interning との相互作用を別途確認）。
+- escape hatch: Doc 146 の compacting GC フラグ（268435608）と同様、reserved slot に
+  =str-clone-aliasing= フラグを置き、0 で旧 deep copy に戻せるようにする。
+
+** 2.2 健全性分析
+| 懸念 | 判定 | 根拠 |
+|------+------+------|
+| aset による別名破壊 | 白 | §1.2 — tag-5 への書込み経路が存在しない |
+| moving GC の forwarding | 白（要ゲート確認） | 共有バッファは 1 ブロック。mark は dedup、phase-4 move 後の ptr rewrite は到達可能な全 Sexp の子を個別に書き換えるので全 referer が一貫して新アドレスを指す。MutStr の NlStr バッファ共有が既に同じ機構に依存して動作中 |
+| in-place macro caching（Doc 145 §3.1 B） | 白 | 書き換わるのは form の cons box。文字列バッファは対象外 |
+| reader parse pool の raw slot | 既存と同等 | pool 由来 Str も buffer ptr を持つ点は現行と同じ。alias が増えるだけで新種の参照形態は生まない |
+| boundary-reclaim 的 LIFO 巻き戻し | 対象外 | Doc 145 で恒久無効化済み。本設計は GC 経路に手を入れない |
+
+** 2.3 期待効果（実測ベースの見積り）
+- =(setq tmp s)= 528KB: 1.5MB/iter → 32B/iter（~50,000x）
+- nemacs 残渣 step（goto-line 3GB / save-and-transform / minibuffer-owned-help 11GB 級）:
+  支配項が消えるため百 MB 級以下へ（要実測）
+- vendor-load 等の多 form ワークロード: 効果は中立〜微益（Doc 146/147 で対策済みの領域）
+
+* §3 Phase 分割
+
+- *P0 調査（完了）*: §1 の 3 点確認（aset 棚卸し / clone テーブル / rc vestigial）。
+- *P1 spike*: tag-5 arm 変更 + escape flag。ゲート =make standalone-reader-test= +
+  nemacs bridge suite 42 本 + =(setq tmp s)= ループ・size-census のビフォーアフター。
+- *P2*: tag-4 Symbol の同種化（interning と重複しない範囲）+ 残渣 step 実測。
+- *P3*: full vendor-load（319 file）ゲート + Windows/macOS target スモーク → flag
+  default ON で SHIPPED 宣言。
+
+* §4 リスクと撤退基準
+
+- 未知の tag-5 変異経路が将来追加された場合に備え、escape flag は恒久保持
+  （Doc 146 の moving-GC flag と同じ扱い）。
+- P1 ゲートで ERT/suite に 1 件でも灰色が出たら default OFF で寝かせ、原因特定を
+  別セッションに分離（Doc 145 boundary-reclaim の教訓 = この層の「動いて見える」は
+  信用しない）。
