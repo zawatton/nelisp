@@ -429,6 +429,16 @@ Deliverable:
   works end-to-end.  Real-host ssh verification stays a manual checklist item
   because it depends on local sshd/key setup.
 
+Manual real-ssh checklist (2026-06-10 probe: sshd active on this host, but
+localhost key auth is not configured — publickey denied, password only — so
+the loopback run needs one-time user setup):
+
+1. =ssh-keygen -t ed25519= (if no key) and append the public key to
+   =~/.ssh/authorized_keys=.
+2. =ssh -o BatchMode=yes localhost true= must exit 0.
+3. In the editor: =find-file /ssh:localhost:/tmp/real-tramp-probe.txt=, edit,
+   =save-buffer=, then verify the file content from a shell.
+
 * 5. Explicit Non-goals For Initial Roadmap
 
 These should not block the milestones above:

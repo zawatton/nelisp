@@ -200,7 +200,9 @@
 			                   "/tmp/nemacs-magit-root"
 			                   "/tmp/nemacs-magit-output"
 			                   "/tmp/nemacs-tramp-output"
-			                   "/tmp/nemacs-tramp-stage"))
+			                   "/tmp/nemacs-tramp-stage"
+			                   "/tmp/nemacs-org-time"
+			                   "/tmp/nemacs-org-capture-file"))
 	          (dirs '("/tmp/nemacs-buffer-store"
 	                  "/tmp/nemacs-buffer-file-store"
 		                  "/tmp/nemacs-buffer-point-store"
@@ -553,6 +555,10 @@
                                       "(fset 'magit-log"
                                       "(fset 'files--tramp-read-file"
                                       "(fset 'files--tramp-write-file"
+                                      "(fset 'org-cycle"
+                                      "(fset 'org-shifttab"
+                                      "(fset 'org-table-align"
+                                      "(fset 'files--mode-keymap-source"
                                       "(fset 'compose-mail"
                                       "(fset 'compose-mail-other-window"
                                       "(fset 'compose-mail-other-frame"
@@ -3752,6 +3758,239 @@
         (dolist (dir (list stub-dir remote-dir))
           (when (file-directory-p dir)
             (delete-directory dir t)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-org-v2 ()
+  "M9 v2: CLOSED timestamps, org-cycle fold toggle, table align, capture file."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (capture-file "/tmp/nemacs-org-capture-target.org")
+          (org-text (concat "* TODO buy milk\n"
+                            "some body\n"
+                            "** sub task\n"
+                            "* second\n")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (when (file-exists-p capture-file)
+              (delete-file capture-file))
+            (when (file-exists-p "/tmp/nemacs-org-capture-file")
+              (delete-file "/tmp/nemacs-org-capture-file"))
+            ;; Step 1: TODO -> DONE adds a CLOSED stamp line.
+            (write-region "org-todo" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region org-text nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-prefix-p "* DONE buy milk\n  CLOSED: [" buf))
+              (should (string-match-p (regexp-quote "]\nsome body\n") buf)))
+            ;; Step 2: DONE -> none removes the keyword and the CLOSED line.
+            (write-region "org-todo" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-prefix-p "* buy milk\nsome body\n" buf))
+              (should-not (string-match-p (regexp-quote "CLOSED") buf)))
+            ;; Step 3: org-cycle on a heading narrows; org-cycle again widens.
+            (write-region org-text nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "org-cycle" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "* TODO buy milk\nsome body\n** sub task\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            (write-region "org-cycle" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal org-text
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            ;; Step 4: org-table-align pads ragged columns and separators.
+            (let ((table "| a | bbb |\n|---+--|\n| cc | d |\n"))
+              (write-region table nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+              (write-region "org-table-align" nil "/tmp/nemacs-cmd" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "| a  | bbb |\n|----+-----|\n| cc | d   |\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf"))))
+            ;; Step 5: org-shifttab renders the headings-only overview.
+            (write-region org-text nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "org-shifttab" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Org Overview*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "* TODO buy milk\n") buf))
+              (should (string-match-p (regexp-quote "** sub task\n") buf))
+              (should-not (string-match-p (regexp-quote "some body") buf)))
+            ;; Step 6: org-capture appends to the configured capture file.
+            (write-region capture-file nil "/tmp/nemacs-org-capture-file" nil 'silent)
+            (write-region org-text nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "org-capture" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "captured item" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "* TODO captured item\n"
+                           (with-temp-buffer
+                             (insert-file-contents capture-file)
+                             (buffer-string))))
+            (should (equal org-text
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf"))))
+        (when (file-exists-p capture-file)
+          (delete-file capture-file))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-mode-local-keys ()
+  "Mode-local raw keys dispatch in *Directory* / *magit* / .org buffers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (dir "/tmp/nemacs-modekey-dired-test")
+          (repo "/tmp/nemacs-modekey-magit-test")
+          (org-file "/tmp/nemacs-modekey-note.org"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            ;; --- dired keys: d flags, x deletes, C copies (prompted) ---
+            (when (file-directory-p dir)
+              (delete-directory dir t))
+            (make-directory dir t)
+            (write-region "alpha\n" nil (concat dir "/a.txt") nil 'silent)
+            (when (file-exists-p "/tmp/nemacs-dired-marks")
+              (delete-file "/tmp/nemacs-dired-marks"))
+            (write-region "dired" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region dir nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "old\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let* ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                         "/tmp/nemacs-buf"))
+                   (pos (string-match (regexp-quote "  a.txt") buf)))
+              (should pos)
+              (write-region (number-to-string pos)
+                            nil "/tmp/nemacs-point" nil 'silent))
+            ;; prompted copy: C with arg pre-filled
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "b.txt" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (file-exists-p (concat dir "/b.txt")))
+            ;; flag a.txt with raw key d, then delete with x
+            (let* ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                         "/tmp/nemacs-buf"))
+                   (pos (string-match (regexp-quote "  a.txt") buf)))
+              (should pos)
+              (write-region (number-to-string pos)
+                            nil "/tmp/nemacs-point" nil 'silent))
+            (write-region "d" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "D a.txt") buf)))
+            (write-region "x" nil "/tmp/nemacs-keys" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should-not (file-exists-p (concat dir "/a.txt")))
+            ;; --- magit keys: s stages, c commits (prompted) ---
+            (when (file-directory-p repo)
+              (delete-directory repo t))
+            (make-directory repo t)
+            (let ((default-directory repo))
+              (shell-command-to-string "git init -q .")
+              (shell-command-to-string "git config user.email nemacs@test")
+              (shell-command-to-string "git config user.name nemacs")
+              (write-region "one\n" nil (concat repo "/file.txt") nil 'silent)
+              (shell-command-to-string "git add file.txt")
+              (shell-command-to-string "git commit -q -m init"))
+            (write-region "one\ntwo\n" nil (concat repo "/file.txt") nil 'silent)
+            (write-region "magit-status" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region repo nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "old\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let* ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                         "/tmp/nemacs-buf"))
+                   (pos (string-match (regexp-quote " M file.txt") buf)))
+              (should pos)
+              (write-region (number-to-string pos)
+                            nil "/tmp/nemacs-point" nil 'silent))
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "s" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "M  file.txt") buf)))
+            (write-region "c" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "key commit" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "key commit") buf))
+              (should (string-match-p (regexp-quote "(clean)") buf)))
+            ;; --- org TAB: org-cycle narrows in a .org buffer ---
+            (write-region "TAB-org\n" nil org-file nil 'silent)
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "TAB" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region org-file nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "* head\nbody\n* tail\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "* head\nbody\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf"))))
+        (dolist (d (list dir repo))
+          (when (file-directory-p d)
+            (delete-directory d t)))
+        (when (file-exists-p org-file)
+          (delete-file org-file))
+        (when (file-exists-p image)
+          (delete-file image))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-narrow-widen ()
   "In standalone NeLisp, narrowing should persist and widen should merge edits."
