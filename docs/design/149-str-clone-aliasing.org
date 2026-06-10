@@ -8,8 +8,14 @@
 - =verify-vendor-core= : VENDOR-CORE-STANDALONE=ok（aliasing ON）。
 - =diagnose-vendor-load-replay=（full 319 files）: *SEGV @ ~100s* — ただし
   *aliasing 無関係* と A/B で確定: flag 268435648=0（legacy deep copy）でも同一 SEGV、
-  さらに私の作業前 f424ea26 の reader でも同一 SEGV（96.8s）。= 既存破損
-  （直近の process-substrate 系 or それ以前由来、要別 bisect）。
+  さらに私の作業前 f424ea26 の reader でも同一 SEGV（96.8s）。= 既存破損。
+- *bisect 完了（2026-06-10、範囲 4819cc67..f424ea26）*: first bad =
+  *7e6b0dcc「fix(standalone): repair Doc147 reader list handling」*（2026-06-08）。
+  変更 = bf-args-nth-ptr / bf-precompute の list handling 改修 + macro-expansion
+  in-place cache patch 撤去 + nl_bf_bind_rest の clone-into-fresh-slot 差し替え。
+  skip になった 4a9aa4b3（val-load.o manifest 追加、reader link 不能）は
+  「7e6b0dcc の dedup 部分のみ適用で exit=42 good」の追加実験で無罪確定 —
+  SEGV は 7e6b0dcc の意味的変更由来。commit 内のどの部分かは未分割（次の調査）。
 - CI（github）は履歴上全 run 赤の既存債務。stale literal 2 件は a581db2b で修正済み。
   残りの CI 失敗（http binary body / call-process false 等）はローカル green の
   環境依存系 + 既存 float-unwrap fail。
