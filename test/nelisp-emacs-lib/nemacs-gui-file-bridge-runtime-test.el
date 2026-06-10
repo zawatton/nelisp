@@ -3689,6 +3689,72 @@
         (when (file-directory-p repo)
           (delete-directory repo t))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-user-init-lane ()
+  "M15: wrapped ~/.nemacs.d init forms load with per-form isolation
+and the bridge reports applied/skipped instead of dying silently."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (init-dir (make-temp-file "nemacs-init-test" t)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            ;; Fixture init: three applicable forms + one the substrate
+            ;; cannot apply.
+            (write-region "(setq nemacs-theme-bg \"#000000\")\n"
+                          nil (expand-file-name "early-init.el" init-dir)
+                          nil 'silent)
+            (write-region (concat "(setq fill-column 84)\n"
+                                  "(this-function-does-not-exist 1)\n"
+                                  "(defun my-init-fn (x) (* x 2))\n")
+                          nil (expand-file-name "init.el" init-dir)
+                          nil 'silent)
+            ;; Generate the wrapper with the REAL generator.
+            (load (expand-file-name "scripts/nemacs-wrap-init.el"
+                                    nemacs-gui-file-bridge-runtime-test--repo-root)
+                  nil t)
+            (should (= 4 (nemacs-wrap-init
+                          "/tmp/nemacs-init-wrapped"
+                          (expand-file-name "early-init.el" init-dir)
+                          (expand-file-name "init.el" init-dir))))
+            (when (file-exists-p "/tmp/nemacs-init-report")
+              (delete-file "/tmp/nemacs-init-report"))
+            ;; Any bridge run loads the wrapper once per mtime.
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-f" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "abc\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((report (nemacs-gui-file-bridge-runtime-test--slurp
+                           "/tmp/nemacs-init-report")))
+              (should (string-match-p "total\t4" report))
+              (should (string-match-p "applied\t3" report))
+              (should (string-match-p "skipped\t1" report))
+              (should (string-match-p
+                       (regexp-quote "this-function-does-not-exist") report)))
+            ;; The applied setq is live in the same runtime image flow:
+            ;; customize renders the init.el value.
+            (write-region "customize-variable" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "fill-column" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "Value: 84")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf"))))
+        (dolist (f '("/tmp/nemacs-init-wrapped" "/tmp/nemacs-init-report"))
+          (when (file-exists-p f)
+            (delete-file f)))
+        (when (file-directory-p init-dir)
+          (delete-directory init-dir t))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-info-node-navigation ()
   "M13: open a real .info file, render the Top node, navigate n/p/u."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader

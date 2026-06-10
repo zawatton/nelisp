@@ -4828,6 +4828,105 @@
           (files--apply-display-prefix-for-same-window-command)
           files--buffer-name)))
 
+;; M15 user-init lane.
+;; The launcher generates nemacs-init-wrapped (scripts/nemacs-wrap-init.el)
+;; from ~/.nemacs.d/early-init.el + init.el: every user form bracketed
+;; by the marker calls below.  files--load-user-init loads it once per
+;; wrapper mtime and writes nemacs-init-report (mtime/total/applied/
+;; skipped + one failed line per form the substrate could not apply).
+;; A form that hard-aborts loses its ok marker; the next begin (or the
+;; final flush) records it as failed instead of dying silently.
+
+(setq nemacs-init--pending "")
+(setq nemacs-init--applied 0)
+(setq nemacs-init--seen 0)
+(setq nemacs-init--failed "")
+
+(fset 'nemacs-init--begin
+      (lambda (n hint)
+        (if (equal nemacs-init--pending "")
+            nil
+          (setq nemacs-init--failed
+                (concat nemacs-init--failed "failed\t" nemacs-init--pending "\n")))
+        (setq nemacs-init--pending hint)
+        (setq nemacs-init--seen n)
+        n))
+
+(fset 'nemacs-init--ok
+      (lambda (n)
+        (setq nemacs-init--applied (+ nemacs-init--applied 1))
+        (setq nemacs-init--pending "")
+        n))
+
+(fset 'files--init-wrapper-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-init-wrapped") (files--transport-path))))
+
+(fset 'files--init-report-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-init-report") (files--transport-path))))
+
+(fset 'files--init-report-mtime
+      (lambda (report)
+        ;; first line is "mtime\tN" — return N as a string ("" when absent)
+        (let ((i 0)
+              (n (length report))
+              (ts -1)
+              (out ""))
+          (while (if (< i n) (if (= (aref report i) 10) nil t) nil)
+            (if (if (< ts 0) (= (aref report i) 9) nil)
+                (setq ts i)
+              nil)
+            (setq i (+ i 1)))
+          (if (> ts 0)
+              (if (equal (substring report 0 ts) "mtime")
+                  (setq out (substring report (+ ts 1) i))
+                nil)
+            nil)
+          out)))
+
+(setq nemacs-init--loaded-mtime "")
+
+(fset 'files--load-user-init
+      (lambda ()
+        (if (fboundp 'nelisp--syscall-stat-field)
+            (let ((wrapper (files--init-wrapper-path))
+                  (mtime 0)
+                  (mstr "")
+                  (skipped 0))
+              (if (files--file-exists-p wrapper)
+                  (progn
+                    (setq mtime (nelisp--syscall-stat-field wrapper 88))
+                    (setq mstr (number-to-string mtime))
+                    ;; the guard is process-local: every fresh one-shot
+                    ;; bridge process re-applies the init (its globals
+                    ;; start from defaults), a session process applies
+                    ;; once per wrapper mtime
+                    (if (equal nemacs-init--loaded-mtime mstr)
+                        nil
+                      (progn
+                        (setq nemacs-init--pending "")
+                        (setq nemacs-init--applied 0)
+                        (setq nemacs-init--seen 0)
+                        (setq nemacs-init--failed "")
+                        (setq nemacs-init--loaded-mtime mstr)
+                        (load wrapper nil t)
+                        (if (equal nemacs-init--pending "")
+                            nil
+                          (progn
+                            (setq nemacs-init--failed
+                                  (concat nemacs-init--failed "failed\t" nemacs-init--pending "\n"))
+                            (setq nemacs-init--pending "")))
+                        (setq skipped (- nemacs-init--seen nemacs-init--applied))
+                        (nl-write-file (files--init-report-path)
+                                       (concat "mtime\t" mstr "\n"
+                                               "total\t" (number-to-string nemacs-init--seen) "\n"
+                                               "applied\t" (number-to-string nemacs-init--applied) "\n"
+                                               "skipped\t" (number-to-string skipped) "\n"
+                                               nemacs-init--failed)))))
+                nil))
+          nil)))
+
 ;; M13 info/customize lane.
 ;; Info reader subset: parse \x1f-separated nodes from a real .info
 ;; file, render one node into the existing *info* buffer (the node
@@ -17095,6 +17194,10 @@
               (files--read-dired-marks-state)
               (files--read-magit-root-state)
               (files--read-info-state)
+              ;; init first, persisted customize values after — a saved
+              ;; customization outranks the same setq in init.el (the
+              ;; custom-file-loads-last convention of host Emacs)
+              (files--load-user-init)
               (files--read-custom-state)
               (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-hscroll") (files--transport-path)))
               (files--read-number-file)
@@ -19993,14 +20096,21 @@
 
 (fset 'files--session-idle-sleep
       (lambda ()
-        ;; 50ms nanosleep via the raw syscall builtin (Linux reader only;
-        ;; readers without syscall-direct fall back to busy-poll).
-        (if (fboundp 'syscall-direct)
+        ;; 50ms nanosleep.  Prefer the per-target nl-nanosleep builtin
+        ;; (Doc 151 Phase B: 35 is nanosleep only on x86_64 Linux — it is
+        ;; io_setup on arm64).  Old readers fall back to the raw x86_64
+        ;; syscall; anything else busy-polls.
+        (if (fboundp 'nl-nanosleep)
             (let ((ts (alloc-bytes 16 8)))
               (ptr-write-u64 ts 0 0)
               (ptr-write-u64 ts 8 50000000)
-              (syscall-direct 35 ts 0 0 0 0 0))
-          nil)))
+              (nl-nanosleep ts))
+          (if (fboundp 'syscall-direct)
+              (let ((ts (alloc-bytes 16 8)))
+                (ptr-write-u64 ts 0 0)
+                (ptr-write-u64 ts 8 50000000)
+                (syscall-direct 35 ts 0 0 0 0 0))
+            nil))))
 
 (fset 'nemacs-gui-file-bridge-session-run
       (lambda ()
