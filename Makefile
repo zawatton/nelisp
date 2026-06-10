@@ -139,6 +139,14 @@ standalone-reader:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 
+# fboundp-liar audit: every name in the reader's builtin fboundp list must
+# have a dispatch arm (or be combiner-handled), so `fboundp' never lies the
+# way `nelisp--syscall-readdir' did (2026-06-10).
+reader-surface-audit:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l reader-surface-audit -f nelisp-reader-surface-audit
+
 standalone-reader-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
