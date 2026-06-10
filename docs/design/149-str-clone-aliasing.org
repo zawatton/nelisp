@@ -2,7 +2,17 @@
 #+AUTHOR: nelisp / nelisp-emacs
 #+DATE: 2026-06-10
 #+STATUS: P0-P2 SHIPPED（2026-06-10、flag 268435648 default ON、Linux ゲート全 green）。
-#+STATUS2: P3 残 = Windows/macOS target スモーク（クロスプラットフォーム CI 待ち）+ full 319-file vendor-load。
+#+STATUS2: P3 = vendor-core ok / full 319-file vendor-load は *既存 SEGV*（下記）/ Windows・macOS smoke は CI 修復待ち。
+
+* §P3 記録（2026-06-10）
+- =verify-vendor-core= : VENDOR-CORE-STANDALONE=ok（aliasing ON）。
+- =diagnose-vendor-load-replay=（full 319 files）: *SEGV @ ~100s* — ただし
+  *aliasing 無関係* と A/B で確定: flag 268435648=0（legacy deep copy）でも同一 SEGV、
+  さらに私の作業前 f424ea26 の reader でも同一 SEGV（96.8s）。= 既存破損
+  （直近の process-substrate 系 or それ以前由来、要別 bisect）。
+- CI（github）は履歴上全 run 赤の既存債務。stale literal 2 件は a581db2b で修正済み。
+  残りの CI 失敗（http binary body / call-process false 等）はローカル green の
+  環境依存系 + 既存 float-unwrap fail。
 
 * §X 実装・検証記録（2026-06-10 SHIPPED）
 

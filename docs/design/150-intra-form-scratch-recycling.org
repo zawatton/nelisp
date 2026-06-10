@@ -1,0 +1,89 @@
+#+TITLE: Doc 150 — form 内 eval scaffolding の eager free-list 再利用（~15KB/iter の解消）
+#+AUTHOR: nelisp / nelisp-emacs
+#+DATE: 2026-06-10
+#+STATUS: DRAFT（P0 実測完了。設計レビュー待ち、実装未着手）
+
+* §0 要旨
+
+Doc 149（Str/Symbol clone aliasing）で文字列サイズ依存の form 内蓄積は消えたが、
+*解釈実行ループは値と無関係に ~15KB/反復* を bump arena に積み続ける（GC は form 境界のみ、
+free-list は sweep でしか補充されない）。50 万反復の full-buffer walk なら 7.5GB —
+nemacs bridge の残渣 step（goto-line 系 0.8-1.7GB/step）の正体。
+
+*提案 = eval エンジン内部の「絶対に escape しない scratch」を死亡点で明示的に
+free-list へ返す*（eager recycling）。ループは O(1) メモリになり、sweep 不要・
+GC 設計（Doc 146 moving GC）にも手を入れない。
+
+* §1 P0 実測（2026-06-10、aliasing reader = main 60198492）
+
+trivial loop =(while (< i N) (setq acc (+ acc 1)) (setq i (+ i 1)))= の
+size-census 差分（baseline → 20,000 反復）:
+
+| bucket | Δ | Δ/iter | 同定 |
+|--------+----+--------+------|
+| 33-64B blocks | +242.4MB | *~12.1KB（~300 個）* | 32B Sexp slot + 8B header = 40B。eval の arg/result/scratch slot |
+| ≤32B blocks | +47.5MB（+2.32M 個） | ~2.4KB（*116 個*） | symentry 名前 buf / cell 等の小 scratch |
+| 65-256B | +3.8MB | ~190B | 11-slot bind vector 等 |
+| cons(88B) | 0 | 0 | — |
+| 合計 | +293.8MB | *~14.7KB/iter* | |
+
+= 支配項は *32B Sexp slot ~300 個/iter*。値そのものではなく eval の足場。
+
+* §2 現行機構（再利用の現在地）
+
+- =nl_alloc_bytes=（arena unit）: (1) *exact-fit free-list reuse* → (2) bump。
+  ただし free-list は *nl_gc_sweep が補充する* — 単一 form 内では GC が走れない
+  （moving GC が native stack を root にできない、Doc 145 §3.1 で LIFO 巻き戻し unsound 確定）
+  ため、form 内ガベージは全て bump 行き。
+- DEBUG knob 既設: 268435624=1 で reuse 無効、268435656 で reuse 最小サイズ。
+- Doc 145 §2.1 に transient 一覧の調査済み台帳がある（11-slot bind scratch /
+  symentry box / out_vec_slot / frame-push scratch / name 比較 buf / arg-list eval
+  slot ×2/arg / let collect pairs — いずれも「return 直後に死ぬ・どこにも保持されない」
+  ことがコード上証明済み）。
+
+* §3 設計
+
+** 3.1 機構: =nl_freelist_put= の死亡点呼び出し
+sweep が使う free-list 投入関数（または同等の =nl_freelist_put block=）を、
+Doc 145 §2.1 の各 scratch の *死亡点直後* に明示挿入する。
+- 対象 call site（優先順 = §1 の寄与順）:
+  1. =nl_eval_arg_list_walk= の arg slot ×2/arg（32B×2、formals bind 後に死亡）
+  2. =nl_logic_build_scratch= の 11-slot vector + symentry box（bind 直後）
+  3. =nl_apply_name_eq_*= / =nl_apply_sym_eq_bytes= の名前比較 buf（compare 後、1 call 最大 18 個）
+  4. =nl_logic_frame_push_scratch= の 7-slot + 2 sym slot（frame_push 後）
+- exact-fit list なので 40B/24B/96B 等のサイズ別ヒット率は高い（同じ eval ループは
+  同じサイズ列を再要求する）。
+
+** 3.2 健全性
+- *escape しない証明済み* の scratch のみ対象（Doc 145 §2.1 の「crux」欄）。値・Cell・
+  frame record・closure capture は対象外（従来どおり tracing GC 管轄）。
+- LIFO 巻き戻しと違い cursor は触らない。escape 列挙が 1 件漏れても巻き戻し UAF では
+  なく「早すぎる再利用」= 同サイズ別 block への上書き — 依然 UAF だが、対象を
+  「呼び出し側が直後に手放すことがコード上自明な block」に限定して列挙する。
+  per-site に flag を割り当て、bisect 可能にする（268435624 系 DEBUG knob の隣に
+  site 別 disable mask を 1 slot 追加）。
+- moving GC との関係: free-list の block は sweep 由来と同じ扱い（mark 0）。GC 中に
+  free-list へ入れる訳ではない（eval 実行中のみ）ので衝突しない。
+
+** 3.3 期待効果
+- trivial loop ~14.7KB/iter のうち arg slot + bind scratch + name buf で ~80-90% を
+  カバー → *~1-3KB/iter* へ。50 万反復 walk = 7.5GB → 0.5-1.5GB。さらに残渣は
+  name-buf 等の細粒で、site を増やすほど 0 へ漸近。
+- nemacs bridge 残渣 step（goto-line 61.8s/3GB 級）は時間も短縮
+  （alloc 頻度が支配項のため）。
+
+* §4 Phase 分割
+
+- *P0（完了）*: 組成実測（§1）+ 既存機構の棚卸し（§2）。
+- *P1*: =nl_freelist_put= 公開 + site 1（arg slot）のみ recycling + site-mask knob。
+  ゲート: reader-test / bridge suite 42 本 / trivial-loop census（40B bucket が
+  ~フラットになること）。
+- *P2*: site 2-4 を順次追加（各 site 後に同ゲート）。
+- *P3*: vendor-load full + nemacs 残渣 step 実測（goto-line / save-and-transform /
+  minibuffer-owned-help の wall & peak）→ SHIPPED 判定。
+
+* §5 リスク・撤退基準
+
+- 「早すぎる再利用」由来の corruption は症状が遠隔化しやすい（Doc 145 G1 の教訓）。
+  site 別 mask で常時 bisect 可能にし、1 site でも灰色なら該当 site だけ OFF で出荷。
+- exact-fit list の断片化逆効果（多サイズ堆積）は census で監視（free bucket Δ）。
