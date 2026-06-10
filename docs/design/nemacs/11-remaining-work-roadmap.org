@@ -439,6 +439,28 @@ the loopback run needs one-time user setup):
 3. In the editor: =find-file /ssh:localhost:/tmp/real-tramp-probe.txt=, edit,
    =save-buffer=, then verify the file content from a shell.
 
+** M12. Display/Font Vendor Lane (next wave)
+
+Focus (from §3.7): redisplay correctness beyond the current GUI bridge
+rendering — faces/fontsets on the native backend, image display policy,
+window-internal redisplay invariants under the vendor modules.
+
+Close gate:
+
+- A standalone scenario renders styled text (face + fontset selection)
+  through the native GUI adapter and a host ERT covers the redisplay
+  decision path; omissions (images, complex shaping) documented once.
+
+** M13. Info/Customize Lane (next wave)
+
+Focus (from §3.9): =info= reader subset (node parse + navigation) and a
+customize-lite (read/set/save a defcustom) workflow.
+
+Close gate:
+
+- Open an .info file, navigate nodes, and round-trip one defcustom
+  set+save under the standalone runtime with runtime tests.
+
 * 5. Explicit Non-goals For Initial Roadmap
 
 These should not block the milestones above:
