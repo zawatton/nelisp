@@ -244,6 +244,12 @@ String arguments are marshalled to NUL-terminated C buffers."
   (defun /= (a b)
     "Reader polyfill: only = < > <= >= ship as numeric builtins."
     (not (= a b)))
+  (defmacro declare (&rest _specs)
+    "Reader polyfill: in host Emacs `declare' inside a defun body is
+consumed by the defun machinery; the reader's plain defun executes
+the body, so without this no-op every dash/s/ht style function that
+carries a declare form aborts at call time."
+    nil)
   (defmacro ignore-errors (&rest body)
     "Reader polyfill: the macro is absent and vendor server.el
 relies on it (`condition-case' itself works)."
@@ -255,7 +261,7 @@ symbols with function bindings and (closure ...) / (lambda ...) forms."
     (cond
      ((null f) nil)
      ((symbolp f) (fboundp f))
-     ((consp f) (if (memq (car f) '(lambda closure)) t nil))
+     ((consp f) (if (memq (car f) '(lambda closure builtin)) t nil))
      (t nil)))
   (defun string-bytes (s)
     "Byte length of S (reader polyfill: strings are raw byte arrays,

@@ -4848,6 +4848,23 @@
 (setq nemacs-init--applied 0)
 (setq nemacs-init--seen 0)
 (setq nemacs-init--failed "")
+(setq nemacs-init--files nil)
+(setq nemacs-init--last-load-path-dir nil)
+
+(fset 'nemacs-init--note-file
+      (lambda (f)
+        (setq nemacs-init--files (cons f nemacs-init--files))
+        f))
+
+(fset 'nemacs-init--file-loaded-p
+      (lambda (f)
+        (let ((xs nemacs-init--files)
+              (hit nil))
+          (while xs
+            (if (equal (car xs) f)
+                (progn (setq hit t) (setq xs nil))
+              (setq xs (cdr xs))))
+          hit)))
 
 (fset 'nemacs-init--begin
       (lambda (n hint)

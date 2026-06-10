@@ -54,6 +54,25 @@
                             nemacs-server-loop-dir
                           "/tmp/nemacs-server"))
 
+;; M18: apply the user's wrapped init (load-path requires resolved to
+;; absolute loads by scripts/nemacs-wrap-init.el) so emacsclient evals
+;; see the user's packages.  The marker calls are satisfied by these
+;; counters; the GUI bridge owns the report file, so the server only
+;; tallies for its own log line.
+(defvar nemacs-init--applied 0)
+(defvar nemacs-init--last-load-path-dir nil)
+(defun nemacs-init--begin (n _hint) n)
+(defun nemacs-init--ok (n)
+  (setq nemacs-init--applied (+ nemacs-init--applied 1))
+  n)
+(if (file-exists-p "/tmp/nemacs-init-wrapped")
+    (progn
+      (load "/tmp/nemacs-init-wrapped" nil t)
+      (nelisp--write-stderr-line
+       (concat "nemacs-server-loop: user init applied forms="
+               (number-to-string nemacs-init--applied))))
+  nil)
+
 (nemacs-server-start)
 (nelisp--write-stderr-line
  (concat "nemacs-server-loop: listening on " (server--file-name)))
