@@ -3689,6 +3689,156 @@
         (when (file-directory-p repo)
           (delete-directory repo t))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-info-node-navigation ()
+  "M13: open a real .info file, render the Top node, navigate n/p/u."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (fixture "/tmp/nemacs-info-fixture.info"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region
+             (concat
+              "Test fixture preamble.\n"
+              "\037\nFile: fixture.info,  Node: Top,  Next: First,  Up: (dir)\n"
+              "\nTop node body line.\n\n* Menu:\n\n* First::\n* Second::\n"
+              "\037\nFile: fixture.info,  Node: First,  Next: Second,  Prev: Top,  Up: Top\n"
+              "\nFirst node body line.\n"
+              "\037\nFile: fixture.info,  Node: Second,  Prev: First,  Up: Top\n"
+              "\nSecond node body line.\n")
+             nil fixture nil 'silent)
+            (when (file-exists-p "/tmp/nemacs-info-state")
+              (delete-file "/tmp/nemacs-info-state"))
+            ;; Step 1: open the file -> Top node in *info*.
+            (write-region "info" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region fixture nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "x" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*info*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (equal "1" (nemacs-gui-file-bridge-runtime-test--slurp
+                                "/tmp/nemacs-read-only")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "Node: Top") buf))
+              (should (string-match-p (regexp-quote "Top node body line.") buf)))
+            ;; Step 2: n -> First (raw key through the *info* mode keymap).
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "n" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "Node: First") buf))
+              (should (string-match-p (regexp-quote "First node body line.") buf)))
+            ;; Step 3: n -> Second.
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "n" nil "/tmp/nemacs-keys" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "Second node body line.")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            ;; Step 4: p -> back to First.
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "p" nil "/tmp/nemacs-keys" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "Node: First")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            ;; Step 5: u -> Top.
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "u" nil "/tmp/nemacs-keys" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "Node: Top")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf"))))
+        (when (file-exists-p fixture)
+          (delete-file fixture))
+        (when (file-exists-p "/tmp/nemacs-info-state")
+          (delete-file "/tmp/nemacs-info-state"))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-customize-set-save ()
+  "M13: round-trip one defcustom-style variable set+save."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (when (file-exists-p "/tmp/nemacs-custom-store")
+              (delete-file "/tmp/nemacs-custom-store"))
+            (when (file-exists-p "/tmp/nemacs-custom-file")
+              (delete-file "/tmp/nemacs-custom-file"))
+            ;; Step 1: open the customize surface for fill-column.
+            (write-region "customize-variable" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "fill-column" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "x" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Customize*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p (regexp-quote "Customize: fill-column") buf))
+              (should (string-match-p (regexp-quote "Value: 70") buf)))
+            ;; Step 2: set and save a new value.
+            (write-region "customize-save-variable" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "84" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "Saved fill-column"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-modeline")))
+            (should (string-match-p
+                     (regexp-quote "Value: 84")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (should (string-match-p
+                     "fill-column\t84"
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-custom-store")))
+            (let ((custom (nemacs-gui-file-bridge-runtime-test--slurp
+                           "/tmp/nemacs-custom-file")))
+              (should (string-match-p (regexp-quote "(custom-set-variables") custom))
+              (should (string-match-p (regexp-quote "'(fill-column 84)") custom)))
+            ;; Step 3: a fresh bridge process re-applies the persisted
+            ;; value (the store survives the one-shot process).
+            (write-region "customize-variable" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "fill-column" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (string-match-p
+                     (regexp-quote "Value: 84")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf"))))
+        (when (file-exists-p "/tmp/nemacs-custom-store")
+          (delete-file "/tmp/nemacs-custom-store"))
+        (when (file-exists-p "/tmp/nemacs-custom-file")
+          (delete-file "/tmp/nemacs-custom-file"))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-tramp-ssh-roundtrip ()
   "M11: /ssh:HOST:/path find-file -> edit -> save round-trip (stub ssh)."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
