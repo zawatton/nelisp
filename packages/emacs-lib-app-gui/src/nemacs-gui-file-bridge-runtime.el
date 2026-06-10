@@ -91,6 +91,15 @@
 (setq files--bridge-session-stop nil)
 (setq files--bridge-session-request-count 0)
 (setq files--bridge-session-max-requests 512)
+;; Idle-poll pacing + recycle (2026-06-10): every poll iteration leaks a
+;; little interpreter garbage that cannot be GC'd while the session form is
+;; live (GC only runs at top-level form boundaries), so an unbounded
+;; busy-poll grew an 18h session process to ~60GB.  Pace idle polls with a
+;; 50ms nanosleep and recycle the process after ~5 min of continuous idle
+;; (the client sees session-ready=0 and respawns; all state round-trips
+;; through the /tmp transports, so a recycle is transparent).
+(setq files--bridge-session-idle-count 0)
+(setq files--bridge-session-max-idle-polls 6000)
 (setq files--async-shell-process nil)
 (setq files--async-shell-command "")
 (setq files--async-shell-output "")
@@ -14222,21 +14231,28 @@
                           (concat source (files--key-list-from-source))))
                 nil)
             nil)
-          (while (<= index (length source))
-            (if (if (= index (length source))
-                    t
-                  (= (aref source index) 10))
-                (let ((line (substring source start index)))
-                  (if (if (not (equal line ""))
-                          (if (<= (length prefix) (length line))
-                              (equal (substring line 0 (length prefix)) prefix)
+          ;; Prefix-filter the candidate lines.  The interpreted per-char
+          ;; walk + (concat out line) accumulation allocates ~hundreds of MB
+          ;; per keystroke on the standalone reader (string deep-copies per
+          ;; access, GC only at form boundaries) — prefer the native scan.
+          (if (fboundp 'str-filter-prefix-lines)
+              (setq out (str-filter-prefix-lines source prefix))
+            (progn
+              (while (<= index (length source))
+                (if (if (= index (length source))
+                        t
+                      (= (aref source index) 10))
+                    (let ((line (substring source start index)))
+                      (if (if (not (equal line ""))
+                              (if (<= (length prefix) (length line))
+                                  (equal (substring line 0 (length prefix)) prefix)
+                                nil)
                             nil)
+                          (setq out (concat out line "\n"))
                         nil)
-                      (setq out (concat out line "\n"))
-                    nil)
-                  (setq start (+ index 1)))
-              nil)
-            (setq index (+ index 1)))
+                      (setq start (+ index 1)))
+                  nil)
+                (setq index (+ index 1)))))
           (setq files--minibuffer-candidates out)
           files--minibuffer-candidates)))
 
@@ -15031,6 +15047,17 @@
 
 (fset 'files--lookup-key-sequence
       (lambda ()
+        ;; Keymap-table line lookup.  The interpreted per-char fallback walk
+        ;; allocates ~hundreds of MB per key dispatch on the standalone
+        ;; reader (string deep-copies per access, GC only at form
+        ;; boundaries) — prefer the native scan builtin.
+        (if (fboundp 'str-kv-line)
+            (str-kv-line (concat (files--mode-keymap-source) files--keymap-source)
+                         files--bridge-keys)
+          (files--lookup-key-sequence-interp))))
+
+(fset 'files--lookup-key-sequence-interp
+      (lambda ()
         (let ((source (concat (files--mode-keymap-source) files--keymap-source))
               (index 0)
               (start 0)
@@ -15056,6 +15083,30 @@
           found)))
 
 (fset 'files--maybe-start-minibuffer-from-keymap
+      (lambda ()
+        ;; Same native-scan-first split as files--lookup-key-sequence.
+        (if (fboundp 'str-kv-line)
+            (let ((rest (str-kv-line (concat (files--mode-minibuffer-keymap-source)
+                                             files--minibuffer-keymap-source)
+                                     files--bridge-keys))
+                  (tab 0))
+              (if (equal rest "")
+                  nil
+                (progn
+                  (while (if (< tab (length rest))
+                             (not (= (aref rest tab) 9))
+                           nil)
+                    (setq tab (+ tab 1)))
+                  (if (< tab (length rest))
+                      (progn
+                        (setq files--minibuffer-purpose (substring rest 0 tab))
+                        (setq files--minibuffer-prompt (substring rest (+ tab 1)))
+                        (files--start-minibuffer)
+                        t)
+                    nil))))
+          (files--maybe-start-minibuffer-from-keymap-interp))))
+
+(fset 'files--maybe-start-minibuffer-from-keymap-interp
       (lambda ()
         (let ((source (concat (files--mode-minibuffer-keymap-source)
                               files--minibuffer-keymap-source))
@@ -19380,6 +19431,17 @@
 	                    (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status))
 	                nil))))))))))
 
+(fset 'files--session-idle-sleep
+      (lambda ()
+        ;; 50ms nanosleep via the raw syscall builtin (Linux reader only;
+        ;; readers without syscall-direct fall back to busy-poll).
+        (if (fboundp 'syscall-direct)
+            (let ((ts (alloc-bytes 16 8)))
+              (ptr-write-u64 ts 0 0)
+              (ptr-write-u64 ts 8 50000000)
+              (syscall-direct 35 ts 0 0 0 0 0))
+          nil)))
+
 (fset 'nemacs-gui-file-bridge-session-run
       (lambda ()
         (let ((last-request "")
@@ -19388,6 +19450,7 @@
           (setq files--bridge-session-active t)
           (setq files--bridge-session-initialized nil)
           (setq files--bridge-session-stop nil)
+          (setq files--bridge-session-idle-count 0)
           (setq files--bridge-session-request-count 0)
           (nl-write-file (progn (setq files--transport-name "nemacs-session-ready") (files--transport-path)) "1")
           (nl-write-file (progn (setq files--transport-name "nemacs-session-response") (files--transport-path)) "")
@@ -19402,6 +19465,7 @@
                   nil)
 	                (progn
 	                  (setq last-request request)
+	                  (setq files--bridge-session-idle-count 0)
 	                  (nemacs-gui-file-bridge-run)
                     (files--async-shell-poll)
                     (setq files--bridge-session-request-count
@@ -19412,7 +19476,13 @@
                           (setq files--bridge-session-stop t))
                       nil)
 	                  (nl-write-file (progn (setq files--transport-name "nemacs-session-response") (files--transport-path)) request))
-	              nil))
+	              (progn
+	                (setq files--bridge-session-idle-count
+	                      (+ files--bridge-session-idle-count 1))
+	                (if (>= files--bridge-session-idle-count
+	                        files--bridge-session-max-idle-polls)
+	                    (setq files--bridge-session-stop t)
+	                  (files--session-idle-sleep)))))
           (nl-write-file (progn (setq files--transport-name "nemacs-session-ready") (files--transport-path)) "0")
           (setq files--bridge-session-active nil)
           nil)))
