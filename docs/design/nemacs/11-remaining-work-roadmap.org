@@ -488,7 +488,7 @@ Omissions (documented once, not in the critical path):
   accents under a host-Emacs load of the bridge (reader path is
   byte-exact).
 
-** M13. Info/Customize Lane (next wave)
+** M13. Info/Customize Lane (v1 CLOSED 2026-06-10)
 
 Focus (from §3.9): =info= reader subset (node parse + navigation) and a
 customize-lite (read/set/save a defcustom) workflow.
@@ -497,6 +497,39 @@ Close gate:
 
 - Open an .info file, navigate nodes, and round-trip one defcustom
   set+save under the standalone runtime with runtime tests.
+
+Close evidence (2026-06-10):
+
+- Info reader subset: =info FILE= parses the \x1f-separated nodes of a
+  real .info file and renders one node into the existing =*info*=
+  buffer (the node header stays the first buffer line); =Info-next= /
+  =Info-prev= / =Info-up= re-parse the header pointers and jump.
+  Mode-local keys n/p/u in =*info*=.  State survives one-shot bridge
+  processes via the =nemacs-info-state= transport file.
+- Customize-lite: =customize-variable SYMBOL= renders a =*Customize*=
+  buffer with the live value; =customize-save-variable VALUE= (key =s=
+  with minibuffer prompt) persists NAME/VALUE rows in
+  =nemacs-custom-store=, regenerates a =custom-set-variables= artifact
+  in =nemacs-custom-file=, and re-applies known numeric symbols
+  (=fill-column=, =comment-column=) to the live globals on every
+  bridge run.
+- Runtime tests on the standalone reader:
+  =standalone-info-node-navigation= (open → n → n → p → u over a
+  3-node fixture) and =standalone-customize-set-save= (render 70 →
+  save 84 → fresh process renders 84 + custom file content).
+
+Omissions (documented once):
+
+- Compressed (.info.gz) manuals and =/usr/share/info= dir aggregation;
+  the argument-less =info= keeps the legacy directory facade.
+- Cross-file node references ("(libc)Node" style), menus as actionable
+  links, index search.
+- Custom types beyond string serialization; only the known numeric
+  symbols are re-applied live; =custom-file= loading into a host Emacs
+  is the user's call (the artifact is standard
+  =custom-set-variables= text).
+- Info node scan is bounded by =files--info-scan-cap= (64KB, the GUI
+  text transport limit).
 
 * 5. Explicit Non-goals For Initial Roadmap
 

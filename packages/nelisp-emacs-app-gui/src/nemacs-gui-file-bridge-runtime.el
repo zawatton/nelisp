@@ -240,6 +240,10 @@
 (setq files--font-cjk-name "-*-fixed-medium-r-normal--14-*-*-*-*-*-iso10646-1")
 (setq files--font-name "fixed")
 (setq files--font-script "latin")
+(setq files--info-file "")
+(setq files--info-node "")
+(setq files--info-scan-cap 65536)
+(setq files--customize-symbol "")
 (setq files--buffer-list-name "")
 (setq files--window-layout "single")
 (setq files--window-selected "0")
@@ -4824,6 +4828,346 @@
           (files--apply-display-prefix-for-same-window-command)
           files--buffer-name)))
 
+;; M13 info/customize lane.
+;; Info reader subset: parse \x1f-separated nodes from a real .info
+;; file, render one node into the existing *info* buffer (the node
+;; header stays the first buffer line so Next/Prev/Up re-parse from
+;; it), navigate by header pointers.  The scan is bounded by
+;; files--info-scan-cap; compressed manuals and /usr/share/info dir
+;; aggregation stay documented omissions (Doc 11 M13).
+
+(fset 'files--info-token-at
+      (lambda (text idx token)
+        (let ((k 0)
+              (ok t)
+              (n (length token)))
+          (if (> (+ idx n) (length text))
+              (setq ok nil)
+            (while (< k n)
+              (if (= (aref text (+ idx k)) (aref token k))
+                  nil
+                (progn
+                  (setq ok nil)
+                  (setq k n)))
+              (setq k (+ k 1))))
+          ok)))
+
+(fset 'files--info-header-field
+      (lambda (header field)
+        (let ((i 0)
+              (n (length header))
+              (start -1)
+              (end 0)
+              (out ""))
+          (while (< i n)
+            (if (files--info-token-at header i field)
+                (progn
+                  (setq start (+ i (length field)))
+                  (setq i n))
+              (setq i (+ i 1))))
+          (if (>= start 0)
+              (progn
+                (setq end start)
+                (while (if (< end n)
+                           (if (= (aref header end) 44) nil t)
+                         nil)
+                  (setq end (+ end 1)))
+                (setq out (substring header start end)))
+            nil)
+          out)))
+
+(fset 'files--info-state-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-info-state") (files--transport-path))))
+
+(fset 'files--read-info-state
+      (lambda ()
+        (let ((text (rdf (files--info-state-path)))
+              (i 0)
+              (n 0))
+          (setq n (length text))
+          (while (if (< i n) (if (= (aref text i) 9) nil t) nil)
+            (setq i (+ i 1)))
+          (if (< i n)
+              (progn
+                (setq files--info-file (substring text 0 i))
+                (setq files--info-node (substring text (+ i 1) n)))
+            nil))))
+
+(fset 'files--write-info-state
+      (lambda ()
+        (nl-write-file (files--info-state-path)
+                       (concat files--info-file "\t" files--info-node))))
+
+(fset 'files--info-render-node
+      (lambda (target)
+        (let ((text (rdf files--info-file))
+              (i 0)
+              (n 0)
+              (hs 0)
+              (he 0)
+              (name "")
+              (node-start -1)
+              (node-end -1))
+          (setq n (length text))
+          (if (> n files--info-scan-cap)
+              (setq n files--info-scan-cap)
+            nil)
+          (while (< i n)
+            (if (= (aref text i) 31)
+                (if (>= node-start 0)
+                    (progn
+                      (setq node-end i)
+                      (setq i n))
+                  (progn
+                    (setq hs (+ i 1))
+                    (if (if (< hs n) (= (aref text hs) 10) nil)
+                        (setq hs (+ hs 1))
+                      nil)
+                    (setq he hs)
+                    (while (if (< he n) (if (= (aref text he) 10) nil t) nil)
+                      (setq he (+ he 1)))
+                    (setq name (files--info-header-field (substring text hs he) "Node: "))
+                    (if (if (equal target "") (> (length name) 0) (equal name target))
+                        (progn
+                          (setq node-start hs)
+                          (setq files--info-node name))
+                      nil)
+                    (setq i he)))
+              (setq i (+ i 1))))
+          (if (>= node-start 0)
+              (progn
+                (if (< node-end 0)
+                    (setq node-end n)
+                  nil)
+                (setq files--help-title (substring text node-start node-end))
+                (setq files--help-body
+                      (concat "[Info file: " files--info-file "]"))
+                (files--show-info-buffer)
+                t)
+            nil))))
+
+(fset 'files--info-current-header
+      (lambda ()
+        (let ((i 0)
+              (n (length files--buffer-string)))
+          (while (if (< i n) (if (= (aref files--buffer-string i) 10) nil t) nil)
+            (setq i (+ i 1)))
+          (substring files--buffer-string 0 i))))
+
+(fset 'files--info-goto-pointer
+      (lambda (field)
+        (if (if (equal files--buffer-name "*info*")
+                (not (equal files--info-file ""))
+              nil)
+            (let ((name (files--info-header-field (files--info-current-header) field)))
+              (if (equal name "")
+                  (setq files--bridge-status "unsupported")
+                (if (files--info-render-node name)
+                    (files--write-info-state)
+                  (setq files--bridge-status "unsupported"))))
+          (setq files--bridge-status "unsupported"))
+        files--buffer-name))
+
+(fset 'Info-next
+      (lambda ()
+        (files--info-goto-pointer "Next: ")))
+
+(fset 'Info-prev
+      (lambda ()
+        (files--info-goto-pointer "Prev: ")))
+
+(fset 'Info-up
+      (lambda ()
+        (files--info-goto-pointer "Up: ")))
+
+;; Customize-lite: read/set/save a known defcustom-style variable.
+;; Values persist as NAME\tVALUE rows in the nemacs-custom-store
+;; transport file (re-applied to the live globals on every bridge
+;; run) and as a generated custom-set-variables artifact in
+;; nemacs-custom-file.  v1 serializes values as strings and re-applies
+;; only the known numeric symbols; richer custom types stay documented
+;; omissions (Doc 11 M13).
+
+(fset 'files--custom-store-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-custom-store") (files--transport-path))))
+
+(fset 'files--custom-file-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-custom-file") (files--transport-path))))
+
+(fset 'files--custom-store-get
+      (lambda (name)
+        (let ((text (rdf (files--custom-store-path)))
+              (i 0)
+              (n 0)
+              (ls 0)
+              (le 0)
+              (ts -1)
+              (out ""))
+          (setq n (length text))
+          (while (< i n)
+            (setq ls i)
+            (setq le i)
+            (setq ts -1)
+            (while (if (< le n) (if (= (aref text le) 10) nil t) nil)
+              (if (if (< ts 0) (= (aref text le) 9) nil)
+                  (setq ts le)
+                nil)
+              (setq le (+ le 1)))
+            (if (if (> ts 0) (equal (substring text ls ts) name) nil)
+                (progn
+                  (setq out (substring text (+ ts 1) le))
+                  (setq i n))
+              (setq i (+ le 1))))
+          out)))
+
+(fset 'files--custom-apply-known
+      (lambda (name value)
+        (if (equal name "fill-column")
+            (setq fill-column (string-to-number value))
+          (if (equal name "comment-column")
+              (setq comment-column (string-to-number value))
+            nil))))
+
+(fset 'files--read-custom-state
+      (lambda ()
+        (let ((text (rdf (files--custom-store-path)))
+              (i 0)
+              (n 0)
+              (ls 0)
+              (le 0)
+              (ts -1))
+          (setq n (length text))
+          (while (< i n)
+            (setq ls i)
+            (setq le i)
+            (setq ts -1)
+            (while (if (< le n) (if (= (aref text le) 10) nil t) nil)
+              (if (if (< ts 0) (= (aref text le) 9) nil)
+                  (setq ts le)
+                nil)
+              (setq le (+ le 1)))
+            (if (> ts 0)
+                (files--custom-apply-known (substring text ls ts)
+                                           (substring text (+ ts 1) le))
+              nil)
+            (setq i (+ le 1))))))
+
+(fset 'files--custom-store-set
+      (lambda (name value)
+        (let ((text (rdf (files--custom-store-path)))
+              (i 0)
+              (n 0)
+              (ls 0)
+              (le 0)
+              (ts -1)
+              (out "")
+              (seen nil))
+          (setq n (length text))
+          (while (< i n)
+            (setq ls i)
+            (setq le i)
+            (setq ts -1)
+            (while (if (< le n) (if (= (aref text le) 10) nil t) nil)
+              (if (if (< ts 0) (= (aref text le) 9) nil)
+                  (setq ts le)
+                nil)
+              (setq le (+ le 1)))
+            (if (if (> ts 0) (equal (substring text ls ts) name) nil)
+                (progn
+                  (setq out (concat out name "\t" value "\n"))
+                  (setq seen t))
+              (if (> le ls)
+                  (setq out (concat out (substring text ls le) "\n"))
+                nil))
+            (setq i (+ le 1)))
+          (if seen
+              nil
+            (setq out (concat out name "\t" value "\n")))
+          (nl-write-file (files--custom-store-path) out))))
+
+(fset 'files--write-custom-file
+      (lambda ()
+        (let ((text (rdf (files--custom-store-path)))
+              (i 0)
+              (n 0)
+              (ls 0)
+              (le 0)
+              (ts -1)
+              (out ";; nemacs custom file (customize-lite v1)\n(custom-set-variables\n"))
+          (setq n (length text))
+          (while (< i n)
+            (setq ls i)
+            (setq le i)
+            (setq ts -1)
+            (while (if (< le n) (if (= (aref text le) 10) nil t) nil)
+              (if (if (< ts 0) (= (aref text le) 9) nil)
+                  (setq ts le)
+                nil)
+              (setq le (+ le 1)))
+            (if (> ts 0)
+                (setq out (concat out
+                                  " '("
+                                  (substring text ls ts)
+                                  " "
+                                  (substring text (+ ts 1) le)
+                                  ")\n"))
+              nil)
+            (setq i (+ le 1)))
+          (setq out (concat out ")\n"))
+          (nl-write-file (files--custom-file-path) out))))
+
+(fset 'files--custom-live-value
+      (lambda (name)
+        (if (equal name "fill-column")
+            (number-to-string fill-column)
+          (if (equal name "comment-column")
+              (number-to-string comment-column)
+            (files--custom-store-get name)))))
+
+(fset 'files--customize-render
+      (lambda ()
+        (files--magit-render-special
+         "*Customize*"
+         (concat "Customize: " files--customize-symbol "\n"
+                 "Value: " (files--custom-live-value files--customize-symbol) "\n"
+                 "\n"
+                 "s  set value and save\n"))))
+
+(fset 'customize-variable
+      (lambda ()
+        (if (equal files--bridge-arg "")
+            (setq files--bridge-status "unsupported")
+          (progn
+            (setq files--customize-symbol files--bridge-arg)
+            (files--customize-render)))
+        files--buffer-name))
+
+(fset 'customize-save-variable
+      (lambda ()
+        ;; the customized symbol is re-derived from the *Customize*
+        ;; buffer's first line so the command survives one-shot bridge
+        ;; processes (the buffer text persists in the transport)
+        (let ((sym (files--info-header-field (files--info-current-header)
+                                             "Customize: ")))
+          (if (if (equal files--buffer-name "*Customize*")
+                  (not (equal sym ""))
+                nil)
+              (if (equal files--bridge-arg "")
+                  (setq files--bridge-status "unsupported")
+                (progn
+                  (setq files--customize-symbol sym)
+                  (files--custom-store-set sym files--bridge-arg)
+                  (files--custom-apply-known sym files--bridge-arg)
+                  (files--write-custom-file)
+                  (setq files--modeline-string (concat "Saved " sym))
+                  (setq files--modeline-override files--modeline-string)
+                  (files--customize-render)))
+            (setq files--bridge-status "unsupported")))
+        files--buffer-name))
+
 (fset 'files--magit-root-path
       (lambda ()
         (progn (setq files--transport-name "nemacs-magit-root") (files--transport-path))))
@@ -6275,6 +6619,9 @@
           (if (equal cmd "xref-find-definitions-other-frame") (setq ok t) nil)
           (if (equal cmd "repeat-complex-command") (setq ok t) nil)
           (if (equal cmd "info") (setq ok t) nil)
+          (if (equal cmd "Info-next") (setq ok t) nil)
+          (if (equal cmd "Info-prev") (setq ok t) nil)
+          (if (equal cmd "Info-up") (setq ok t) nil)
           (if (equal cmd "info-other-window") (setq ok t) nil)
           (if (equal cmd "info-emacs-manual") (setq ok t) nil)
           (if (equal cmd "info-display-manual") (setq ok t) nil)
@@ -6621,10 +6968,26 @@
 
 (fset 'info
       (lambda ()
-        (setq files--help-title "Info Directory")
-        (setq files--help-body
-              "Info directory navigation is represented by this read-only Info buffer.  Full Info node parsing remains a nelisp-emacs task.")
-        (files--show-info-buffer)))
+        ;; M13: a real .info file argument gets node parsing; the
+        ;; argument-less call keeps the legacy directory facade.
+        (if (if (equal files--bridge-arg "")
+                nil
+              (files--file-exists-p files--bridge-arg))
+            (progn
+              (setq files--info-file files--bridge-arg)
+              (setq files--info-node "")
+              (if (files--info-render-node "Top")
+                  nil
+                (if (files--info-render-node "")
+                    nil
+                  (setq files--bridge-status "unsupported")))
+              (files--write-info-state))
+          (progn
+            (setq files--help-title "Info Directory")
+            (setq files--help-body
+                  "Info directory navigation is represented by this read-only Info buffer.  Pass an .info file path argument for node parsing; /usr/share/info dir aggregation remains future work.")
+            (files--show-info-buffer)))
+        files--buffer-name))
 
 (fset 'info-other-window
       (lambda ()
@@ -13848,6 +14211,11 @@
 	                                                "magit-commit\n"
 	                                                "magit-diff\n"
 	                                                "magit-log\n"
+	                                                "Info-next\n"
+	                                                "Info-prev\n"
+	                                                "Info-up\n"
+	                                                "customize-variable\n"
+	                                                "customize-save-variable\n"
 	                                                "org-cycle\n"
 	                                                "org-shifttab\n"
 	                                                "org-table-align\n"
@@ -15190,10 +15558,14 @@
                       "d\tmagit-diff\n"
                       "l\tmagit-log\n"
                       "g\tmagit-status\n")
-            (if (files--org-buffer-p)
-                (concat "TAB\torg-cycle\n"
-                        "S-TAB\torg-shifttab\n")
-              "")))))
+            (if (equal files--buffer-name "*info*")
+                (concat "n\tInfo-next\n"
+                        "p\tInfo-prev\n"
+                        "u\tInfo-up\n")
+              (if (files--org-buffer-p)
+                  (concat "TAB\torg-cycle\n"
+                          "S-TAB\torg-shifttab\n")
+                ""))))))
 
 (fset 'files--mode-minibuffer-keymap-source
       (lambda ()
@@ -15202,7 +15574,9 @@
                     "C\tdired-do-copy\tCopy to: \n")
           (if (equal files--buffer-name "*magit*")
               "c\tmagit-commit\tCommit message: \n"
-            ""))))
+            (if (equal files--buffer-name "*Customize*")
+                "s\tcustomize-save-variable\tSet and save value: \n"
+              "")))))
 
 (fset 'files--lookup-key-sequence
       (lambda ()
@@ -15982,6 +16356,11 @@
           (if (eq files--bridge-command 'magit-commit) (setq ok t) nil)
           (if (eq files--bridge-command 'magit-diff) (setq ok t) nil)
           (if (eq files--bridge-command 'magit-log) (setq ok t) nil)
+          (if (eq files--bridge-command 'Info-next) (setq ok t) nil)
+          (if (eq files--bridge-command 'Info-prev) (setq ok t) nil)
+          (if (eq files--bridge-command 'Info-up) (setq ok t) nil)
+          (if (eq files--bridge-command 'customize-variable) (setq ok t) nil)
+          (if (eq files--bridge-command 'customize-save-variable) (setq ok t) nil)
           (if (eq files--bridge-command 'org-cycle) (setq ok t) nil)
           (if (eq files--bridge-command 'org-shifttab) (setq ok t) nil)
           (if (eq files--bridge-command 'org-table-align) (setq ok t) nil)
@@ -16425,6 +16804,11 @@
         (if (eq files--bridge-command 'magit-commit) (magit-commit) nil)
         (if (eq files--bridge-command 'magit-diff) (magit-diff) nil)
         (if (eq files--bridge-command 'magit-log) (magit-log) nil)
+        (if (eq files--bridge-command 'Info-next) (Info-next) nil)
+        (if (eq files--bridge-command 'Info-prev) (Info-prev) nil)
+        (if (eq files--bridge-command 'Info-up) (Info-up) nil)
+        (if (eq files--bridge-command 'customize-variable) (customize-variable) nil)
+        (if (eq files--bridge-command 'customize-save-variable) (customize-save-variable) nil)
         (if (eq files--bridge-command 'org-cycle) (org-cycle) nil)
         (if (eq files--bridge-command 'org-shifttab) (org-shifttab) nil)
         (if (eq files--bridge-command 'org-table-align) (org-table-align) nil)
@@ -16710,6 +17094,8 @@
               (files--read-coding-input-state)
               (files--read-dired-marks-state)
               (files--read-magit-root-state)
+              (files--read-info-state)
+              (files--read-custom-state)
               (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-hscroll") (files--transport-path)))
               (files--read-number-file)
               (setq files--window-hscroll files--number-file-value)
@@ -18548,6 +18934,21 @@
                     (setq files--bridge-status "written"))
                 nil)
               (if (equal cmd "magit-commit")
+                  (progn
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                                   (if files--buffer-read-only-p "1" "0"))
+                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+                    (files--write-transport-point)
+                    (files--write-transport-mark)
+                    (files--write-transport-window-start)
+                    (setq files--bridge-status "written"))
+                nil)
+              (if (if (equal cmd "customize-variable")
+                      t
+                    (equal cmd "customize-save-variable"))
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
                     (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
