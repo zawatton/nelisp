@@ -445,6 +445,8 @@
               "C-M-s\tisearch-forward-regexp\n"
               "C-M-r\tisearch-backward-regexp\n"
               "C-M-i\tcomplete-symbol\n"
+              "M-s M-w\teww-search-words\n"
+              "M-$\tispell-word\n"
               "M-s .\tisearch-forward-symbol-at-point\n"
               "M-s M-.\tisearch-forward-thing-at-point\n"
               "M-s _\tisearch-forward-symbol\n"
@@ -695,6 +697,8 @@
                           "C-x p v\tproject-vc-dir\n"
                           "C-x v =\tvc-diff\n"
                           "C-x v l\tvc-print-log\n"
+                          "C-x v !\tvc-edit-next-command\n"
+                          "C-x v D\tvc-root-diff\n"
                           "C-x p x\tproject-execute-extended-command\tProject M-x \n"
                           "C-x t p\tproject-other-tab-command\tProject other tab command: \n"
                           "C-x t RET\ttab-switch\tSwitch to tab: \n"
@@ -4957,6 +4961,39 @@
               (setq out "(no commits)\n")
             nil)
           (files--magit-render-special "*magit-log*" out))))
+
+(fset 'vc-root-diff
+      (lambda ()
+        (let ((old-root files--magit-root))
+          (if (equal files--magit-root "")
+              (setq files--magit-root (files--project-command-directory))
+            nil)
+          (let ((out (files--magit-git "diff")))
+            (if (equal out "")
+                (setq out "(no unstaged changes)\n")
+              nil)
+            (setq files--magit-root old-root)
+            (files--magit-render-special "*vc-diff*" out)))))
+
+(fset 'vc-edit-next-command
+      (lambda ()
+        (setq files--bridge-status "unsupported")
+        files--buffer-name))
+
+(fset 'vc-next-action
+      (lambda ()
+        (setq files--bridge-status "unsupported")
+        files--buffer-name))
+
+(fset 'ispell-word
+      (lambda ()
+        (setq files--bridge-status "unsupported")
+        files--buffer-name))
+
+(fset 'eww-search-words
+      (lambda ()
+        (setq files--bridge-status "unsupported")
+        files--buffer-name))
 
     (fset 'files--compose-mail-core
           (lambda ()
@@ -13794,6 +13831,11 @@
 	                                                "org-cycle\n"
 	                                                "org-shifttab\n"
 	                                                "org-table-align\n"
+	                                                "vc-root-diff\n"
+	                                                "vc-edit-next-command\n"
+	                                                "vc-next-action\n"
+	                                                "ispell-word\n"
+	                                                "eww-search-words\n"
                                                 "compose-mail\n"
                                                 "compose-mail-other-window\n"
                                                 "compose-mail-other-frame\n"
@@ -15722,6 +15764,11 @@
           (if (eq files--bridge-command 'org-cycle) (setq ok t) nil)
           (if (eq files--bridge-command 'org-shifttab) (setq ok t) nil)
           (if (eq files--bridge-command 'org-table-align) (setq ok t) nil)
+          (if (eq files--bridge-command 'vc-root-diff) (setq ok t) nil)
+          (if (eq files--bridge-command 'vc-edit-next-command) (setq ok t) nil)
+          (if (eq files--bridge-command 'vc-next-action) (setq ok t) nil)
+          (if (eq files--bridge-command 'ispell-word) (setq ok t) nil)
+          (if (eq files--bridge-command 'eww-search-words) (setq ok t) nil)
           (if (eq files--bridge-command 'window-toggle-side-windows) (setq ok t) nil)
           (if (eq files--bridge-command 'enlarge-window) (setq ok t) nil)
           (if (eq files--bridge-command 'shrink-window-horizontally) (setq ok t) nil)
@@ -16160,6 +16207,11 @@
         (if (eq files--bridge-command 'org-cycle) (org-cycle) nil)
         (if (eq files--bridge-command 'org-shifttab) (org-shifttab) nil)
         (if (eq files--bridge-command 'org-table-align) (org-table-align) nil)
+        (if (eq files--bridge-command 'vc-root-diff) (vc-root-diff) nil)
+        (if (eq files--bridge-command 'vc-edit-next-command) (vc-edit-next-command) nil)
+        (if (eq files--bridge-command 'vc-next-action) (vc-next-action) nil)
+        (if (eq files--bridge-command 'ispell-word) (ispell-word) nil)
+        (if (eq files--bridge-command 'eww-search-words) (eww-search-words) nil)
         (if (eq files--bridge-command 'window-toggle-side-windows) (window-toggle-side-windows) nil)
         (if (eq files--bridge-command 'enlarge-window) (enlarge-window) nil)
         (if (eq files--bridge-command 'shrink-window-horizontally) (shrink-window-horizontally) nil)
@@ -18260,7 +18312,9 @@
                           t
                         (if (equal cmd "magit-diff")
                             t
-                          (equal cmd "magit-log")))))
+                          (if (equal cmd "magit-log")
+                              t
+                            (equal cmd "vc-root-diff"))))))
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
                     (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
