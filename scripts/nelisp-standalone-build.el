@@ -3155,17 +3155,27 @@ unresolved at link time."
          ;; entries) overflows a fixed 32768-slot pool -> reader SIGSEGV.  4x
          ;; source bounds node count; floor 32768, cap 4194304 (the cap avoids
          ;; over-allocating ~19M slots on the 4.8MB ja-dic.el).
+         ;; NESTED-LOAD cap restore (2026-06-11): the cap word @268436448
+         ;; must match the pool the CURRENT loop passes to the GC arms.  A
+         ;; nested big (load ...) used to leave ITS larger cap behind, so
+         ;; the outer loop's GC walked far past its own (smaller) pool ->
+         ;; silent abort / SIGSEGV after returning from the inner load
+         ;; (found loading dash.el from the wrapped user init, M18).
          (let* ((cap (let ((n (* 4 (str-len src))))
                        (if (< n 32768) 32768 (if (> n 4194304) 4194304 n))))
-                (pool (alloc-bytes (* cap 32) 8)))
+                (pool (alloc-bytes (* cap 32) 8))
+                (prevcap (ptr-read-u64 268436448 0)))
            (seq
             (ptr-write-u64 268436448 0 cap)
             (if (= (bf_load_eval_loop src cursor result pool env out bsym 1) 2)
-                1
+                (seq
+                 (ptr-write-u64 268436448 0 prevcap)
+                 1)
               (seq
                (ptr-write-u64 268435472 0 0)
                (wf_dirty)
                (wf_write_t out)
+               (ptr-write-u64 268436448 0 prevcap)
                0)))))))
     (defun bf_eval_source_string (args env out)
       ;; Doc 147 Phase 1.5 Group P — RAW parse-pool buffer (cap*32 bytes),
@@ -3186,7 +3196,9 @@ unresolved at link time."
                                      (if (< n 256) 256 (if (> n 32768) 32768 n)))
                                    32)
                                 8))
-             (bsym (alloc-bytes 32 8)))
+             (bsym (alloc-bytes 32 8))
+             ;; same nested cap-restore contract as bf_load (2026-06-11)
+             (prevcap (ptr-read-u64 268436448 0)))
         (seq
          (ptr-write-u64 bsym 0 0) (ptr-write-u64 bsym 8 0)
          (ptr-write-u64 268435624 0 0)
@@ -3194,8 +3206,8 @@ unresolved at link time."
          (ptr-write-u64 268436448 0 (let ((n (* 4 (str-len src))))
                                       (if (< n 256) 256 (if (> n 32768) 32768 n))))
          (if (= (bf_eval_source_string_loop src cursor result pool env out bsym 1) 2)
-             1
-           (seq (wf_dirty) 0)))))
+             (seq (ptr-write-u64 268436448 0 prevcap) 1)
+           (seq (wf_dirty) (ptr-write-u64 268436448 0 prevcap) 0)))))
     ;; length that also handles vectors (tag 8) -> vector-len; else m5_length.
     (defun bf_length (p)
       (if (= (ptr-read-u64 p 0) 8) (vector-len p) (m5_length p)))
