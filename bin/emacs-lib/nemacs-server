@@ -19,6 +19,15 @@ NELISP=${NELISP:-$ROOT/vendor/nelisp/target/nelisp}
 
 # The reader's getenv is a stub; configuration travels in a generated
 # preamble (same pattern as the anvil-runtime daemon launcher).
+# M18 SIGSEGV root-cause (2026-06-11, deterministic 4/4 vs 4/4 A/B):
+# when server-ensure-safe-dir's mkdir BRANCH runs on the reader with
+# the package heap loaded, the first client request later segfaults;
+# with the socket dir pre-created (attrs branch) the same server is
+# stable.  Pre-create the dir here — the make-directory polyfill path
+# stays quarantined as a recorded reader finding.
+mkdir -p "$SOCK_DIR"
+chmod 700 "$SOCK_DIR"
+
 PRE=$(mktemp /tmp/nemacs-server-preamble.XXXXXX.el)
 trap 'rm -f "$PRE"' EXIT
 # The whole driver is generated FLAT so every load runs at nesting
@@ -85,5 +94,7 @@ cat >>"$PRE" <<EOF
 EOF
 # large pure-elisp loads (user packages) need the same stack headroom
 # the Makefile bake targets use
-ulimit -s unlimited 2>/dev/null || true
+# M18 finding: ulimit -s unlimited moves the address-space layout and collides
+# with the reader fixed control region (deterministic SIGSEGV on the first
+# request once the package heap is loaded) - default stack is the safe choice.
 exec "$NELISP" --eval "(load \"$PRE\" nil t)"
