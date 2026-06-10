@@ -608,6 +608,52 @@ Omissions (one-time list):
 - Linux x86_64 syscall numbers only (the only reader target today).
 - =nl-ffi-free= is a no-op (arena-owned buffers, small per-request).
 
+** M15. User Init Lane (v1 CLOSED 2026-06-11)
+
+Close gate: the user's ~/.nemacs.d/early-init.el + init.el load into
+the standalone runtime with per-form isolation and an
+applied/skipped report.
+
+Close evidence: scripts/nemacs-wrap-init.el lowers init forms to the
+runtime-image dialect (defun→fset+lambda, defvar/defcustom→
+boundp-guarded setq; the image evaluator silently drops defun) and
+brackets each with a begin marker + a same-form ok marker;
+files--load-user-init loads once per process+mtime (init first,
+persisted customize values after) and writes nemacs-init-report.
+Real ~/.nemacs.d: 14 forms, applied 14.  Test:
+standalone-user-init-lane.  Omissions: the full ~/.emacs.d init
+(10k+ lines of package/use-package machinery) is a progressive
+target driven by the report, not a v1 gate.
+
+** M16. CJK Glyph Lane (v1 CLOSED 2026-06-11)
+
+Close gate: Japanese text renders in the native GUI with correct
+2-cell advances and the cursor lands on display cells, verified
+live on X11.
+
+Close evidence:
+
+- Bridge: the fontset pick now names the misc-fixed "ja" iso10646
+  face (ASCII 6px / CJK 12px — exactly 2 cells) and transports the
+  cell width (=cw=) in nemacs-font; nemacs-cursor gains =cells=
+  (UTF-8 lead-byte walk from line start to point, CJK = 2 cells).
+  Test: standalone-cjk-cursor-cells + extended standalone-face-spans.
+- GUI (nemacs-editor-transport.el): =nemacs--patch-cjk-text-draw=
+  replaces both per-line ImageText8 emissions with a UTF-8→UCS-2
+  decoder + ImageText16; =nemacs--patch-cjk-cursor= swaps the cursor
+  byte scan for the cell scan and drives every cursor x off the
+  substrate's cw (cfgbuf byte 200); =nemacs--patch-cjk-font-cw=
+  parses the cw hint at session start.
+- Live verification (2026-06-11, X11 :0): a Japanese org buffer
+  renders 「* 日本語テスト / ああああ / abcd / 点検予定: …」with
+  correct glyphs, colors, and 2-cell layout (xwd screenshot).
+
+Omissions: hscroll + multibyte misreads continuation bytes (the
+hscroll shift rewrites only lead-byte reads); per-line glyph cap 120
+CHAR2B; modeline/minibuffer/tab strings still draw via ImageText8
+(ASCII-safe); C-f/C-b remain byte-wise in the bridge (mid-character
+points render at the spanning glyph's cells).
+
 * 5. Explicit Non-goals For Initial Roadmap
 
 These should not block the milestones above:
