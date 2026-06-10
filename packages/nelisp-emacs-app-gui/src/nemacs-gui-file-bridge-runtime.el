@@ -4347,27 +4347,322 @@
             (progn
               (setq kw-end (+ bol level 1))
               (setq rest (substring files--buffer-string kw-end eol))
-              (if (files--org-rest-todo-p rest)
-                  (setq rest (concat "DONE"
-                                     (if (equal rest "TODO")
-                                         ""
-                                       (concat " " (substring rest 5)))))
-                (if (files--org-rest-done-p rest)
-                    (setq rest (if (equal rest "DONE")
-                                   ""
-                                 (substring rest 5)))
-                  (setq rest (concat "TODO"
-                                     (if (equal rest "")
-                                         ""
-                                       (concat " " rest))))))
-              (setq files--buffer-string
-                    (concat (substring files--buffer-string 0 kw-end)
-                            rest
-                            (substring files--buffer-string eol)))
+              (let ((transition 0))
+                (if (files--org-rest-todo-p rest)
+                    (progn
+                      (setq transition 1)
+                      (setq rest (concat "DONE"
+                                         (if (equal rest "TODO")
+                                             ""
+                                           (concat " " (substring rest 5))))))
+                  (if (files--org-rest-done-p rest)
+                      (progn
+                        (setq transition 2)
+                        (setq rest (if (equal rest "DONE")
+                                       ""
+                                     (substring rest 5))))
+                    (setq rest (concat "TODO"
+                                       (if (equal rest "")
+                                           ""
+                                         (concat " " rest))))))
+                (setq files--buffer-string
+                      (concat (substring files--buffer-string 0 kw-end)
+                              rest
+                              (substring files--buffer-string eol)))
+                (if (= transition 1)
+                    (let ((ts (files--org-current-timestamp))
+                          (new-eol (+ kw-end (length rest))))
+                      (if (equal ts "")
+                          nil
+                        (setq files--buffer-string
+                              (concat (substring files--buffer-string 0
+                                                 (if (< new-eol (length files--buffer-string))
+                                                     (+ new-eol 1)
+                                                   new-eol))
+                                      (if (< new-eol (length files--buffer-string))
+                                          ""
+                                        "\n")
+                                      "  CLOSED: [" ts "]\n"
+                                      (substring files--buffer-string
+                                                 (if (< new-eol (length files--buffer-string))
+                                                     (+ new-eol 1)
+                                                   new-eol))))))
+                  (if (= transition 2)
+                      (files--org-remove-closed-after (+ kw-end (length rest)))
+                    nil)))
               (setq files--point bol)
               (setq files--buffer-modified-p t)
               (files--save-current-buffer-state)))
           files--buffer-name)))
+
+(fset 'files--org-table-line-p
+      (lambda (bol)
+        (let ((idx bol)
+              (n (length files--buffer-string)))
+          (while (if (< idx n) (= (aref files--buffer-string idx) 32) nil)
+            (setq idx (+ idx 1)))
+          (if (< idx n)
+              (= (aref files--buffer-string idx) 124)
+            nil))))
+
+(fset 'org-cycle
+      (lambda ()
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point)))
+          (if (files--org-table-line-p bol)
+              (org-table-next-field)
+            (if (> (files--org-heading-level-at bol) 0)
+                (if files--narrow-active-p
+                    (widen)
+                  (org-narrow-to-subtree))
+              (setq files--bridge-status "unsupported"))))
+        files--buffer-name))
+
+(fset 'org-shifttab
+      (lambda ()
+        (let ((src files--buffer-string)
+              (src-name files--buffer-name)
+              (n 0)
+              (scan 0)
+              (out "")
+              (eol 0))
+          (setq n (length src))
+          (setq out (concat "Org Overview: " src-name "\n"))
+          (while (< scan n)
+            (setq eol (files--org-line-end scan))
+            (if (> (files--org-heading-level-at scan) 0)
+                (setq out (concat out (substring src scan eol) "\n"))
+              nil)
+            (setq scan (+ eol 1)))
+          (files--save-current-buffer-state)
+          (setq files--buffer-list-name "*Org Overview*")
+          (files--buffer-list-add)
+          (setq files--buffer-name "*Org Overview*")
+          (setq files--buffer-string out)
+          (setq files--current-file-name "")
+          (setq files--point 0)
+          (setq files--mark 0)
+          (setq files--window-start 0)
+          (setq files--buffer-read-only-p t)
+          (setq files--buffer-modified-p nil)
+          (files--clear-narrow-state)
+          (files--save-current-buffer-state)
+          (files--apply-display-prefix-for-same-window-command)
+          files--buffer-name)))
+
+(fset 'files--org-table-split-cells
+      (lambda (line)
+        (let ((cells nil)
+              (idx 0)
+              (start -1)
+              (n (length line)))
+          (while (< idx n)
+            (if (= (aref line idx) 124)
+                (progn
+                  (if (< start 0)
+                      nil
+                    (let ((cell (substring line start idx))
+                          (b 0)
+                          (e 0))
+                      (setq e (length cell))
+                      (while (if (< b e) (= (aref cell b) 32) nil)
+                        (setq b (+ b 1)))
+                      (while (if (> e b) (= (aref cell (- e 1)) 32) nil)
+                        (setq e (- e 1)))
+                      (setq cells (cons (substring cell b e) cells))))
+                  (setq start (+ idx 1)))
+              nil)
+            (setq idx (+ idx 1)))
+          (let ((rev nil))
+            (while cells
+              (setq rev (cons (car cells) rev))
+              (setq cells (cdr cells)))
+            rev))))
+
+(fset 'files--org-table-separator-line-p
+      (lambda (line)
+        (let ((idx 0)
+              (ok nil)
+              (valid t))
+          (while (< idx (length line))
+            (let ((ch (aref line idx)))
+              (if (= ch 45)
+                  (setq ok t)
+                (if (if (= ch 124)
+                        t
+                      (if (= ch 43)
+                          t
+                        (= ch 32)))
+                    nil
+                  (setq valid nil))))
+            (setq idx (+ idx 1)))
+          (if valid ok nil))))
+
+(fset 'files--org-table-pad
+      (lambda (text width pad)
+        (let ((out text))
+          (while (< (length out) width)
+            (setq out (concat out pad)))
+          out)))
+
+(fset 'org-table-align
+      (lambda ()
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point)))
+          (if (not (files--org-table-line-p bol))
+              (setq files--bridge-status "unsupported")
+            (let ((table-start bol)
+                  (table-end 0)
+                  (n (length files--buffer-string))
+                  (rows nil)
+                  (widths nil)
+                  (out ""))
+              (while (if (> table-start 0)
+                         (files--org-table-line-p
+                          (files--org-line-start (- table-start 1)))
+                       nil)
+                (setq table-start (files--org-line-start (- table-start 1))))
+              (setq table-end (files--org-line-end table-start))
+              (while (if (< (+ table-end 1) n)
+                         (files--org-table-line-p (+ table-end 1))
+                       nil)
+                (setq table-end (files--org-line-end (+ table-end 1))))
+              (let ((scan table-start))
+                (while (< scan table-end)
+                  (let ((eol (files--org-line-end scan))
+                        (line ""))
+                    (setq line (substring files--buffer-string scan eol))
+                    (if (files--org-table-separator-line-p line)
+                        (setq rows (cons 0 rows))
+                      (setq rows
+                            (cons (files--org-table-split-cells line)
+                                  rows)))
+                    (setq scan (+ eol 1)))))
+              (let ((rev nil))
+                (while rows
+                  (setq rev (cons (car rows) rev))
+                  (setq rows (cdr rows)))
+                (setq rows rev))
+              (let ((row-scan rows))
+                (while row-scan
+                  (if (consp (car row-scan))
+                      (let ((cell-scan (car row-scan))
+                            (col 0))
+                        (while cell-scan
+                          (let ((w (length (car cell-scan)))
+                                (cur widths)
+                                (idx 0)
+                                (found nil))
+                            (while cur
+                              (if (= idx col)
+                                  (progn
+                                    (setq found t)
+                                    (if (> w (car cur))
+                                        (setcar cur w)
+                                      nil))
+                                nil)
+                              (setq idx (+ idx 1))
+                              (setq cur (cdr cur)))
+                            (if found
+                                nil
+                              (if widths
+                                  (let ((tail widths))
+                                    (while (cdr tail)
+                                      (setq tail (cdr tail)))
+                                    (setcdr tail (cons w nil)))
+                                (setq widths (cons w nil)))))
+                          (setq col (+ col 1))
+                          (setq cell-scan (cdr cell-scan))))
+                    nil)
+                  (setq row-scan (cdr row-scan))))
+              (let ((row-scan rows))
+                (while row-scan
+                  (if (consp (car row-scan))
+                      (let ((cell-scan (car row-scan))
+                            (w-scan widths)
+                            (line "|"))
+                        (while cell-scan
+                          (let ((w (if w-scan (car w-scan) 0)))
+                            (setq line (concat line " "
+                                               (files--org-table-pad
+                                                (car cell-scan) w " ")
+                                               " |")))
+                          (setq cell-scan (cdr cell-scan))
+                          (setq w-scan (if w-scan (cdr w-scan) nil)))
+                        (setq out (concat out line "\n")))
+                    (let ((w-scan widths)
+                          (line "|")
+                          (first t))
+                      (while w-scan
+                        (setq line (concat line
+                                           (if first "" "+")
+                                           (files--org-table-pad
+                                            "" (+ (car w-scan) 2) "-")))
+                        (setq first nil)
+                        (setq w-scan (cdr w-scan)))
+                      (setq out (concat out line "|\n"))))
+                  (setq row-scan (cdr row-scan))))
+              (setq files--buffer-string
+                    (concat (substring files--buffer-string 0 table-start)
+                            out
+                            (substring files--buffer-string
+                                       (if (< table-end n)
+                                           (+ table-end 1)
+                                         table-end))))
+              (setq files--point table-start)
+              (setq files--buffer-modified-p t)
+              (files--save-current-buffer-state))))
+        files--buffer-name))
+
+(fset 'files--org-current-timestamp
+      (lambda ()
+        (let ((output-file (progn (setq files--transport-name "nemacs-org-time") (files--transport-path)))
+              (status 1)
+              (text ""))
+          (if (fboundp 'call-process)
+              (progn
+                (nl-write-file output-file "")
+                (setq status
+                      (call-process "/bin/sh" nil nil nil "-c"
+                                    (concat "exec > " output-file " 2>&1\n"
+                                            "date '+%Y-%m-%d %a %H:%M'")))
+                (if (= status 0)
+                    (progn
+                      (setq text (rdf output-file))
+                      (if (if (> (length text) 0)
+                              (= (aref text (- (length text) 1)) 10)
+                            nil)
+                          (setq text (substring text 0 (- (length text) 1)))
+                        nil))
+                  nil))
+            nil)
+          text)))
+
+(fset 'files--org-remove-closed-after
+      (lambda (heading-eol)
+        (let ((next-bol (+ heading-eol 1))
+              (next-eol 0)
+              (line ""))
+          (if (< next-bol (length files--buffer-string))
+              (progn
+                (setq next-eol (files--org-line-end next-bol))
+                (setq line (substring files--buffer-string next-bol next-eol))
+                (let ((trim 0))
+                  (while (if (< trim (length line))
+                             (= (aref line trim) 32)
+                           nil)
+                    (setq trim (+ trim 1)))
+                  (if (if (>= (- (length line) trim) 7)
+                          (equal (substring line trim (+ trim 7)) "CLOSED:")
+                        nil)
+                      (setq files--buffer-string
+                            (concat (substring files--buffer-string 0 next-bol)
+                                    (substring files--buffer-string
+                                               (if (< next-eol (length files--buffer-string))
+                                                   (+ next-eol 1)
+                                                 next-eol))))
+                    nil)))
+            nil))))
 
 (fset 'org-narrow-to-subtree
       (lambda ()
@@ -4428,22 +4723,44 @@
               (files--save-current-buffer-state)))
           files--buffer-name)))
 
+(fset 'files--org-capture-file
+      (lambda ()
+        (let ((path (progn (setq files--transport-name "nemacs-org-capture-file") (files--transport-path))))
+          (if (files--file-exists-p path)
+              (rdf path)
+            ""))))
+
 (fset 'org-capture
       (lambda ()
         (if (equal files--bridge-arg "")
             (setq files--bridge-status "unsupported")
-          (progn
-            (if (if (> (length files--buffer-string) 0)
-                    (not (= (aref files--buffer-string
-                                  (- (length files--buffer-string) 1))
-                            10))
+          (let ((target (files--org-capture-file)))
+            (if (equal target "")
+                (progn
+                  (if (if (> (length files--buffer-string) 0)
+                          (not (= (aref files--buffer-string
+                                        (- (length files--buffer-string) 1))
+                                  10))
+                        nil)
+                      (setq files--buffer-string (concat files--buffer-string "\n"))
+                    nil)
+                  (setq files--buffer-string
+                        (concat files--buffer-string "* TODO " files--bridge-arg "\n"))
+                  (setq files--buffer-modified-p t)
+                  (files--save-current-buffer-state))
+              (let ((existing (if (files--file-exists-p target)
+                                  (files--read-file target)
+                                "")))
+                (if (if (> (length existing) 0)
+                        (not (= (aref existing (- (length existing) 1)) 10))
+                      nil)
+                    (setq existing (concat existing "\n"))
                   nil)
-                (setq files--buffer-string (concat files--buffer-string "\n"))
-              nil)
-            (setq files--buffer-string
-                  (concat files--buffer-string "* TODO " files--bridge-arg "\n"))
-            (setq files--buffer-modified-p t)
-            (files--save-current-buffer-state)))
+                (files--write-file target
+                                   (concat existing
+                                           "* TODO " files--bridge-arg "\n"))
+                (setq files--modeline-string (concat "Captured to " target))
+                (setq files--modeline-override files--modeline-string)))))
         files--buffer-name))
 
 (fset 'org-agenda
@@ -4563,7 +4880,11 @@
       (lambda ()
         (let ((dir files--bridge-arg))
           (if (equal dir "")
-              (setq dir (files--project-command-directory))
+              (if (if (equal files--buffer-name "*magit*")
+                      (not (equal files--magit-root ""))
+                    nil)
+                  (setq dir files--magit-root)
+                (setq dir (files--project-command-directory)))
             nil)
           (setq files--magit-root dir)
           (files--write-magit-root-state)
@@ -13470,6 +13791,9 @@
 	                                                "magit-commit\n"
 	                                                "magit-diff\n"
 	                                                "magit-log\n"
+	                                                "org-cycle\n"
+	                                                "org-shifttab\n"
+	                                                "org-table-align\n"
                                                 "compose-mail\n"
                                                 "compose-mail-other-window\n"
                                                 "compose-mail-other-frame\n"
@@ -14618,9 +14942,43 @@
         (if (eq files--bridge-command 'insert-register) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'increment-register) (files--save-undo-state) nil)))
 
+(fset 'files--org-buffer-p
+      (lambda ()
+        (let ((name files--current-file-name))
+          (if (if name (>= (length name) 4) nil)
+              (equal (substring name (- (length name) 4)) ".org")
+            nil))))
+
+(fset 'files--mode-keymap-source
+      (lambda ()
+        (if (equal files--buffer-name "*Directory*")
+            (concat "m\tdired-mark\n"
+                    "u\tdired-unmark\n"
+                    "d\tdired-flag-file-deletion\n"
+                    "x\tdired-do-flagged-delete\n")
+          (if (equal files--buffer-name "*magit*")
+              (concat "s\tmagit-stage-file\n"
+                      "u\tmagit-unstage-file\n"
+                      "d\tmagit-diff\n"
+                      "l\tmagit-log\n"
+                      "g\tmagit-status\n")
+            (if (files--org-buffer-p)
+                (concat "TAB\torg-cycle\n"
+                        "S-TAB\torg-shifttab\n")
+              "")))))
+
+(fset 'files--mode-minibuffer-keymap-source
+      (lambda ()
+        (if (equal files--buffer-name "*Directory*")
+            (concat "R\tdired-do-rename\tRename to: \n"
+                    "C\tdired-do-copy\tCopy to: \n")
+          (if (equal files--buffer-name "*magit*")
+              "c\tmagit-commit\tCommit message: \n"
+            ""))))
+
 (fset 'files--lookup-key-sequence
       (lambda ()
-        (let ((source files--keymap-source)
+        (let ((source (concat (files--mode-keymap-source) files--keymap-source))
               (index 0)
               (start 0)
               (found ""))
@@ -14646,7 +15004,8 @@
 
 (fset 'files--maybe-start-minibuffer-from-keymap
       (lambda ()
-        (let ((source files--minibuffer-keymap-source)
+        (let ((source (concat (files--mode-minibuffer-keymap-source)
+                              files--minibuffer-keymap-source))
               (index 0)
               (start 0)
               (found nil))
@@ -15360,6 +15719,9 @@
           (if (eq files--bridge-command 'magit-commit) (setq ok t) nil)
           (if (eq files--bridge-command 'magit-diff) (setq ok t) nil)
           (if (eq files--bridge-command 'magit-log) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-cycle) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-shifttab) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-table-align) (setq ok t) nil)
           (if (eq files--bridge-command 'window-toggle-side-windows) (setq ok t) nil)
           (if (eq files--bridge-command 'enlarge-window) (setq ok t) nil)
           (if (eq files--bridge-command 'shrink-window-horizontally) (setq ok t) nil)
@@ -15795,6 +16157,9 @@
         (if (eq files--bridge-command 'magit-commit) (magit-commit) nil)
         (if (eq files--bridge-command 'magit-diff) (magit-diff) nil)
         (if (eq files--bridge-command 'magit-log) (magit-log) nil)
+        (if (eq files--bridge-command 'org-cycle) (org-cycle) nil)
+        (if (eq files--bridge-command 'org-shifttab) (org-shifttab) nil)
+        (if (eq files--bridge-command 'org-table-align) (org-table-align) nil)
         (if (eq files--bridge-command 'window-toggle-side-windows) (window-toggle-side-windows) nil)
         (if (eq files--bridge-command 'enlarge-window) (enlarge-window) nil)
         (if (eq files--bridge-command 'shrink-window-horizontally) (shrink-window-horizontally) nil)
@@ -17861,7 +18226,11 @@
                         t
                       (if (equal cmd "org-table-next-field")
                           t
-                        (equal cmd "org-narrow-to-subtree"))))
+                        (if (equal cmd "org-cycle")
+                            t
+                          (if (equal cmd "org-table-align")
+                              t
+                            (equal cmd "org-narrow-to-subtree"))))))
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
                     (files--write-transport-point)
@@ -17869,7 +18238,9 @@
                     (files--write-transport-window-start)
                     (setq files--bridge-status "written"))
                 nil)
-              (if (equal cmd "org-agenda")
+              (if (if (equal cmd "org-agenda")
+                      t
+                    (equal cmd "org-shifttab"))
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
                     (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
