@@ -21,10 +21,69 @@ NELISP=${NELISP:-$ROOT/vendor/nelisp/target/nelisp}
 # preamble (same pattern as the anvil-runtime daemon launcher).
 PRE=$(mktemp /tmp/nemacs-server-preamble.XXXXXX.el)
 trap 'rm -f "$PRE"' EXIT
+# The whole driver is generated FLAT so every load runs at nesting
+# depth 2 — the reader still mis-handles big package files at deeper
+# nesting (M18 finding; the nested-load cap-restore fix in
+# nelisp-standalone-build.el is necessary but not sufficient).
 cat >"$PRE" <<EOF
-(setq nemacs-server-loop-root "$ROOT")
-(setq nemacs-server-loop-name "$NAME")
-(setq nemacs-server-loop-dir "$SOCK_DIR")
-(load "$ROOT/scripts/nemacs-server-loop.el" nil t)
+(load "$ROOT/src/emacs-stub.el" nil t)
+(load "$ROOT/src/emacs-stub-bulk.el" nil t)
+(load "$ROOT/src/emacs-network-syscall-shim.el" nil t)
+(load "$ROOT/src/emacs-network-ffi.el" nil t)
+(load "$ROOT/src/emacs-process-events.el" nil t)
+(load "$ROOT/src/emacs-eventloop.el" nil t)
+(load "$ROOT/src/emacs-server-polyfills.el" nil t)
+(load "$ROOT/src/emacs-server-client-polyfills.el" nil t)
+(load "$ROOT/vendor/emacs-lisp/server.el" nil t)
+(emacs-server-client-polyfills-install)
+(setq server-name "$NAME")
+(setq server-use-tcp nil)
+(setq server-socket-dir "$SOCK_DIR")
+(defvar nemacs-init--applied 0)
+(defvar nemacs-init--last-load-path-dir nil)
+(defvar nemacs-init--files nil)
+(defun nemacs-init--begin (n _hint) n)
+(defun nemacs-init--ok (n)
+  (setq nemacs-init--applied (+ nemacs-init--applied 1))
+  n)
+(defun nemacs-init--note-file (f)
+  (setq nemacs-init--files (cons f nemacs-init--files)))
+(defun nemacs-init--file-loaded-p (f)
+  (let ((xs nemacs-init--files)
+        (hit nil))
+    (while xs
+      (if (equal (car xs) f)
+          (progn (setq hit t) (setq xs nil))
+        (setq xs (cdr xs))))
+    hit))
 EOF
+# M18: the user's resolved packages, still at depth 2; the wrapped
+# init's registry guards skip the re-loads (the reader's provide
+# registers nothing, so featurep cannot be the guard).
+if [ -f /tmp/nemacs-init-wrapped-packages ]; then
+  while IFS= read -r pkg; do
+    if [ -f "$pkg" ]; then
+      printf '(nemacs-init--note-file "%s")\n' "$pkg" >>"$PRE"
+      printf '(load "%s" nil t)\n' "$pkg" >>"$PRE"
+    fi
+  done < /tmp/nemacs-init-wrapped-packages
+fi
+cat >>"$PRE" <<EOF
+(if (file-exists-p "/tmp/nemacs-init-wrapped")
+    (progn
+      (load "/tmp/nemacs-init-wrapped" nil t)
+      (nelisp--write-stderr-line
+       (concat "nemacs-server: user init applied forms="
+               (number-to-string nemacs-init--applied))))
+  nil)
+(nemacs-server-start)
+(nelisp--write-stderr-line
+ (concat "nemacs-server: listening on " (server--file-name)))
+(let ((alive t))
+  (while alive
+    (accept-process-output nil 0 200)))
+EOF
+# large pure-elisp loads (user packages) need the same stack headroom
+# the Makefile bake targets use
+ulimit -s unlimited 2>/dev/null || true
 exec "$NELISP" --eval "(load \"$PRE\" nil t)"
