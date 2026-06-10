@@ -2418,10 +2418,16 @@ inline more `cmp imm32' instructions)."
    :type 'nelisp-aot-compiler-error))
 
 (ert-deftest nelisp-aot-compiler/emit-sexp-float-unwrap-produces-bytes ()
-  "Emit phase for `sexp-float-unwrap' compiles to a non-empty .o file
-matching the byte-pattern of `sexp-int-unwrap' (= identical payload
-offset 8 read; only the tag interpretation differs at the type-system
-level, not in the emitted machine code)."
+  "Emit phase for `sexp-float-unwrap' compiles to a non-empty .o file.
+
+Historically this asserted byte-identity with `sexp-int-unwrap' (both
+were a plain payload read at offset 8).  Since Doc 146 §3.0 step 7
+\(commit 21108e63) `sexp-int-unwrap' is immediate-aware (low-bit
+dispatch + `sar' path) and emits MORE code than the still-plain
+float read, so the identity premise no longer holds.  Keep the
+weaker invariants: both emit non-empty objects, and the
+immediate-aware int unwrap is at least as large as the plain float
+payload read."
   (let ((path-fl (nelisp-aot-compiler-test--tmp-binary "sfu"))
         (path-in (nelisp-aot-compiler-test--tmp-binary "siu")))
     (unwind-protect
@@ -2434,7 +2440,8 @@ level, not in the emitted machine code)."
                 (sz-in (nth 7 (file-attributes path-in))))
             (should (integerp sz-fl))
             (should (integerp sz-in))
-            (should (= sz-fl sz-in))))
+            (should (> sz-fl 0))
+            (should (>= sz-in sz-fl))))
       (ignore-errors (delete-file path-fl))
       (ignore-errors (delete-file path-in)))))
 

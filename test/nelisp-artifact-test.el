@@ -407,6 +407,11 @@ actually executes and returns the correct result — end-to-end elisp ->
 AOT native .o -> embed -> extract -> link -> run.  Covers the
 reloc-free leaf arithmetic subset (plain C integer ABI).  Skipped
 without a host C toolchain."
+  ;; The embedded object is a System V x86_64 ELF relocatable — only an
+  ;; ELF host can link + exec it.  The Windows CI runner DOES expose
+  ;; `cc'/`objcopy' (mingw), so the toolchain gate alone is not enough
+  ;; there: the link/exec step misbehaves instead of skipping.
+  (skip-unless (memq system-type '(gnu/linux berkeley-unix)))
   (skip-unless (and (executable-find "cc") (executable-find "objcopy")))
   (let* ((temp-dir (make-temp-file "nelisp-artifact-nx-" t))
          (source-path (expand-file-name "m.el" temp-dir))

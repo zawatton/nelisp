@@ -478,6 +478,10 @@ giving Emacs `process-NAME' parity at the call surface."
    (should (eql 0 (nelisp-call-process "true")))))
 
 (ert-deftest nelisp-process-call-process-false-returns-nonzero ()
+  ;; `false' is a POSIX coreutil — absent on the Windows CI runner
+  ;; (nelisp-call-process errors "executable not found: false").
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (executable-find "false"))
   (nelisp-process-test--fresh
    (let ((rc (nelisp-call-process "false")))
      (should (integerp rc))
@@ -658,6 +662,10 @@ second buffer."
    (should-error (nelisp-call-process 42))))
 
 (ert-deftest nelisp-process-call-process-region-pipes-stdin ()
+  ;; `cat' is a POSIX coreutil — absent on the Windows CI runner
+  ;; (nelisp-call-process-region errors "executable not found: cat").
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (executable-find "cat"))
   (nelisp-process-test--fresh
    (let* ((src (generate-new-buffer " *np-cpr-src*"))
           (out (generate-new-buffer " *np-cpr-out*")))

@@ -39,6 +39,11 @@
 
 (ert-deftest nelisp-sys-executable-find-searches-path ()
   "Doc 44 executable resolver searches PATH and checks X_OK."
+  ;; POSIX-only: the probe is an extension-less `#!/bin/sh' script made
+  ;; executable via chmod #o755 — on the Windows CI runner there is no
+  ;; X_OK mode bit and only PATHEXT suffixes count as executable, so
+  ;; the resolver (correctly) does not find it there.
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (let* ((dir (make-temp-file "nelisp-sys-path-" t))
          (exe (expand-file-name "tool" dir))
          (process-environment (list (concat "PATH=" dir))))
@@ -68,12 +73,19 @@
                 :type 'nelisp-sys-error))
 
 (ert-deftest nelisp-sys-portable-syscall-dispatches-through-runtime-binding ()
-  "Symbolic syscall invocation resolves the number before calling runtime."
-  (let (seen)
+  "Symbolic syscall invocation resolves the number before calling runtime.
+`nelisp-sys-syscall' resolves NAME through the CURRENT platform's
+table (kill = 62 on gnu/linux but 37 on darwin), so the expected
+number must be looked up per-host instead of hardcoding the Linux
+value.  Skipped on platforms without a syscall table (windows)."
+  (skip-unless (assq (nelisp-sys-current-platform)
+                     nelisp-sys--portable-syscall-table))
+  (let ((kill-nr (nelisp-sys-syscall-number 'kill))
+        seen)
     (cl-letf (((symbol-function 'nelisp--syscall)
                (lambda (&rest args) (setq seen args) 123)))
       (should (= (nelisp-sys-syscall 'kill 44 15) 123))
-      (should (equal seen '(62 44 15 0 0 0 0))))))
+      (should (equal seen (list kill-nr 44 15 0 0 0 0))))))
 
 (ert-deftest nelisp-sys-cstring-helpers-forward-to-os-layer ()
   "Doc 44 C string helpers allocate through the OS substrate."

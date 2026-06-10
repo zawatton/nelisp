@@ -820,7 +820,11 @@
            (elapsed (float-time (time-subtract (current-time) start))))
       (should (= (length bytes) nbytes))
       (should (= (nelisp-asm-x86_64-buffer-pos b) nbytes))
-      (should (< elapsed 5.0)))))
+      ;; Shared GitHub Actions runners are slow + noisy-neighbour
+      ;; afflicted; keep the 5 s perf gate for developer machines but
+      ;; widen the budget under CI (GA always sets CI=true) so timing
+      ;; jitter does not flake the whole suite.
+      (should (< elapsed (if (getenv "CI") 25.0 5.0))))))
 
 (ert-deftest nelisp-asm-x86_64-92d-buffer-pos-cached-o1 ()
   ;; §92.d: `buffer-pos' must read from cached :length field (= O(1))

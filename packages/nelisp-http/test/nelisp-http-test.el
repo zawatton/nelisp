@@ -10,6 +10,18 @@
 
 (defvar nelisp-http-test--tmpdir nil)
 
+;; In the full `make test' suite, `nelisp-network' (which sorts AFTER
+;; this package in TESTS) also defines a `nelisp-http-get' (host
+;; url-retrieve based, real network I/O) and clobbers the Doc 44
+;; curl-bridge definition at load time — by the time ERT actually runs,
+;; calling `nelisp-http-get' would do a REAL fetch instead of going
+;; through the mocked `nelisp-http-get-binary' (observed on CI as the
+;; test receiving live example.com HTML).  Stash the Doc 44 definition
+;; here, right after `(require 'nelisp-http)' and before nelisp-network
+;; can load, so tests can pin it back with `cl-letf'.
+(defvar nelisp-http-test--doc44-http-get (symbol-function 'nelisp-http-get)
+  "The Doc 44 curl-bridge `nelisp-http-get', captured at load time.")
+
 (defmacro nelisp-http-test--with-fresh-db (&rest body)
   "Bind `nelisp-state-db-path' to a fresh temp DB and disable robots
 so the http cache + robots namespaces start empty for each test."
@@ -526,7 +538,9 @@ so the http cache + robots namespaces start empty for each test."
 
 (ert-deftest nelisp-http-test-get-decodes-binary-body-to-text ()
   "Text adapter preserves the Doc 44 response shape."
-  (cl-letf (((symbol-function 'nelisp-http-get-binary)
+  (cl-letf (((symbol-function 'nelisp-http-get)
+             nelisp-http-test--doc44-http-get)
+            ((symbol-function 'nelisp-http-get-binary)
              (lambda (_url &rest _args)
                (list :status 200
                      :headers '(("content-type" . "text/plain"))
