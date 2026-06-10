@@ -1,7 +1,31 @@
 #+TITLE: Doc 150 — form 内 eval scaffolding の eager free-list 再利用（~15KB/iter の解消）
 #+AUTHOR: nelisp / nelisp-emacs
 #+DATE: 2026-06-10
-#+STATUS: DRAFT（P0 実測完了。設計レビュー待ち、実装未着手）
+#+STATUS: P1 SHIPPED（2026-06-10、flag 268435680 default ON。trivial loop 14.7KB/iter → 7.1KB/iter = -52%）
+
+* §X P1 実装記録（2026-06-10）
+
+- 機構: =nl_gc_free_block= を死亡点から直接呼ぶ（sweep と同じ size-bucket 投入、
+  boot-watermark ガード内蔵）。flag 268435680（boot init = 1、0 = legacy）。
+- SHIPPED した site（escape 不能の証明付き）:
+  1. *immediate-result arg slot*（=nl_eval_arg_list_walk= + =nl_arg_slot_recycle=）:
+     =nl_val_store_word= が slot ポインタ自身を返した場合（heap 値）は escape する
+     ので残し、immediate word（Nil/T/Int）に変換された slot だけ回収。
+     WORD==SLOT が正確な判別子（slot は 8-aligned ポインタ、imm は odd/3/7）。
+  2. *nl_apply_sym_eq_bytes の tmp/result slot + name buf*（combiner-apply）:
+     比較結果 int を返すのみ、3 block とも即死。
+  3. *nl_sp_eq_\* の name buf ×13*（combiner-cons 11 + build script の catch/throw 2）:
+     special-form 名判定は form 評価ごとに ~11 回走る — ≤32B garbage の支配源だった。
+- 実測（trivial loop ×20000 census 差分）:
+  | bucket | P1 前 | P1 後 |
+  | ≤32B count/iter | 116 | *22* |
+  | 33-64B bytes/iter | 12.1KB | 6.5KB |
+  | 合計/iter | 14.7KB | *7.1KB（-52%）* |
+  free bucket が非ゼロ化 = exact-fit 再利用が form 内で初めて駆動。
+- 副知見: combiner-cons の特別形式 eval slot（40B、setq/while/if の値 slot）が
+  残り支配項 = *P2 対象*。これらは env cell への installed-value と slot の
+  alias 関係（=nl_env_set_value= 系の clone/参照semantics）の per-site 解析が必要。
+- ゲート: reader smoke 5/5 / compile clean / bridge suite 42 本（実行記録は worklog）。
 
 * §0 要旨
 

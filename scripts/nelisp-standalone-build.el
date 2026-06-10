@@ -4334,13 +4334,15 @@ from the patched combiner-cons (see `nelisp-standalone--patch-combiner-cons').")
   '(defun nl_sp_eq_catch (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 448345170275)
-            (nl_cons_sym_eq name_ptr buf 5)))))
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
 
 (defconst nelisp-standalone--sp-eq-throw
   '(defun nl_sp_eq_throw (name_ptr)
      (let* ((buf (alloc-bytes 8 1)))
        (seq (ptr-write-u64 buf 0 512970877044)
-            (nl_cons_sym_eq name_ptr buf 5)))))
+            (let* ((eqr (nl_cons_sym_eq name_ptr buf 5)))
+              (seq (if (= (ptr-read-u64 268435680 0) 1) (nl_gc_free_block (- buf 8)) 0) eqr))))))
 
 (defun nelisp-standalone--patch-apply-special (form)
   "Rewrite the nl_apply_special defun FORM: replace its terminal else `2'
@@ -4518,6 +4520,24 @@ void-function fixes, and leave macro expansion uncached."
     (defun nl_write_nil_slot (slot)
       (seq (ptr-write-u64 slot 0 0) (ptr-write-u64 (+ slot 8) 0 0)
            (ptr-write-u64 (+ slot 16) 0 0) (ptr-write-u64 (+ slot 24) 0 0) 0))
+    ;; Doc 150 P1: immediate-result arg-slot recycling.  nl_val_store_word
+    ;; returns the SLOT POINTER itself for heap-tagged values (the slot IS
+    ;; the value box -> escapes into the cons; never free those), but for
+    ;; Nil/T/Int it returns an immediate WORD (3 / 7 / odd fixnum) -- the
+    ;; 32B slot's address was never exposed anywhere, so it is provably
+    ;; dead scratch.  Push it straight back onto the size-segregated
+    ;; free-list (nl_gc_free_block; boot-watermark guard included), making
+    ;; interpreted loops with int/nil-valued args ~O(1) on arg slots
+    ;; instead of leaking 32B+hdr per arg per iteration (GC cannot run
+    ;; intra-form).  WORD==SLOT is the exact escape discriminator: slots
+    ;; are 8-aligned pointers, immediates are odd or 3/7.
+    ;; Flag 268435680 (boot init = 1) gates the recycling; 0 = legacy.
+    (defun nl_arg_slot_recycle (slot word)
+      (if (= word slot)
+          word
+        (if (= (ptr-read-u64 268435680 0) 1)
+            (nl_seq2 (nl_gc_free_block (- slot 8)) word)
+          word)))
     (defun nl_eval_arg_list_walk (cur_ptr env_ptr acc_slot)
       (if (= (ptr-read-u64 cur_ptr 0) 7)
           (let* ((car_ptr (nl_cons_car_ptr cur_ptr)) (cdr_ptr (nl_cons_cdr_ptr cur_ptr))
@@ -4530,14 +4550,14 @@ void-function fixes, and leave macro expansion uncached."
             (if (< (nl_val_tag car_ptr) 4)
                 (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
                   (if (= rc_rest 0)
-                      (seq (nelisp_cons_construct (nl_val_store_word car_ptr) (nl_val_store_word rest_slot) acc_slot) 0)
+                      (seq (nelisp_cons_construct (nl_val_store_word car_ptr) (nl_arg_slot_recycle rest_slot (nl_val_store_word rest_slot)) acc_slot) 0)
                     1))
               (let* ((eval_slot (alloc-bytes 32 8))
                      (rc_eval (nelisp_eval_call car_ptr env_ptr eval_slot)))
                 (if (= rc_eval 0)
                     (let* ((rc_rest (nl_eval_arg_list_walk cdr_ptr env_ptr rest_slot)))
                       (if (= rc_rest 0)
-                          (seq (nelisp_cons_construct (nl_val_store_word eval_slot) (nl_val_store_word rest_slot) acc_slot) 0)
+                          (seq (nelisp_cons_construct (nl_arg_slot_recycle eval_slot (nl_val_store_word eval_slot)) (nl_arg_slot_recycle rest_slot (nl_val_store_word rest_slot)) acc_slot) 0)
                         1))
                   1))))
         (nl_write_nil_slot acc_slot)))
@@ -6471,6 +6491,12 @@ correctly."
         ;; cost that OOM'd the nemacs bridge on large buffer strings.
         ;; Set to 0 as an ESCAPE HATCH to restore the legacy deep copy.
         (ptr-write-u64 268435648 0 1)
+        ;; ---- Doc 150 P1: immediate-result arg-slot recycling ON (268435680 = 1). ----
+        ;; nl_eval_arg_list_walk pushes arg slots whose value became an
+        ;; immediate word back onto the free-list at the cons-construct
+        ;; site (the slot provably never escapes).  0 = legacy (leak the
+        ;; slot until the next form-boundary GC).
+        (ptr-write-u64 268435680 0 1)
         ;; BOOT WATERMARK: freeze the absolute address up to which everything
         ;; was allocated during install + driver setup (the mirror, all 60
         ;; builtins, the env/frame records, the fixed driver scratch slots).
