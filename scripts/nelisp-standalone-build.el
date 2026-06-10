@@ -161,14 +161,14 @@ still uses the historical fixed first arena.")
 (defun nelisp-standalone--target-arena-base (&optional target)
   "Return standalone arena base for TARGET."
   (pcase (or target nelisp-standalone--target)
-    ('windows-x86_64 nelisp-standalone--windows-arena-base)
+    ((or 'windows-x86_64 'windows-aarch64) nelisp-standalone--windows-arena-base)
     ('macos-aarch64 nelisp-standalone--macos-arena-base)
     (_ nelisp-standalone--arena-base)))
 
 (defun nelisp-standalone--target-arena-size (&optional target)
   "Return standalone arena size for TARGET."
   (pcase (or target nelisp-standalone--target)
-    ('windows-x86_64 nelisp-standalone--windows-arena-size)
+    ((or 'windows-x86_64 'windows-aarch64) nelisp-standalone--windows-arena-size)
     ('macos-aarch64 nelisp-standalone--macos-arena-size)
     (_ nelisp-standalone--linux-arena-size)))
 
@@ -180,14 +180,17 @@ still uses the historical fixed first arena.")
   "Return the compiler ABI for standalone TARGET."
   (pcase (or target nelisp-standalone--target)
     ('linux-x86_64 'sysv)
-    ('macos-aarch64 'aapcs64)
+    ;; Windows on ARM64 passes the first 8 integer args in x0-x7 with no
+    ;; shadow space — AAPCS64-compatible for everything this codebase emits
+    ;; (fixed-arity integer/pointer calls).
+    ((or 'macos-aarch64 'linux-aarch64 'windows-aarch64) 'aapcs64)
     ('windows-x86_64 'win64)
     (other (error "standalone: unsupported target %S" other))))
 
 (defun nelisp-standalone--target-arch (&optional target)
   "Return the Phase47 architecture for standalone TARGET."
   (pcase (or target nelisp-standalone--target)
-    ('macos-aarch64 'aarch64)
+    ((or 'macos-aarch64 'linux-aarch64 'windows-aarch64) 'aarch64)
     ((or 'linux-x86_64 'windows-x86_64) 'x86_64)
     (other (error "standalone: unsupported target %S" other))))
 
@@ -195,8 +198,8 @@ still uses the historical fixed first arena.")
   "Return the Phase47 OS tag for standalone TARGET."
   (pcase (or target nelisp-standalone--target)
     ('macos-aarch64 'darwin)
-    ('windows-x86_64 'windows)
-    ('linux-x86_64 'linux)
+    ((or 'windows-x86_64 'windows-aarch64) 'windows)
+    ((or 'linux-x86_64 'linux-aarch64) 'linux)
     (other (error "standalone: unsupported target %S" other))))
 
 (defun nelisp-standalone--target-object-name (name &optional target)
@@ -243,6 +246,17 @@ link-unit names, and build logs."
     ('windows-x86_64 (if reader-p
                          nelisp-standalone--windows-reader-out
                        nelisp-standalone--windows-out))
+    ;; Cross-built targets get arch-suffixed outputs so they never clobber
+    ;; the host-arch target/nelisp.
+    ('linux-aarch64 (concat (if reader-p
+                                nelisp-standalone--reader-out
+                              nelisp-standalone--out)
+                            "-aarch64"))
+    ('windows-aarch64 (concat (if reader-p
+                                  nelisp-standalone--reader-out
+                                nelisp-standalone--out)
+                              "-aarch64.exe"))
+    ('macos-aarch64 (if reader-p nelisp-standalone--reader-out nelisp-standalone--out))
     (_ (if reader-p nelisp-standalone--reader-out nelisp-standalone--out))))
 
 (defun nelisp-standalone--dep-files ()
@@ -326,7 +340,8 @@ chunk 0 via a NULL-based OS allocation, seeds `nl_arena_base' from the runtime
 return value, and may carry reservation SIZE literals that must never be
 confused with a fixed base immediate."
   (if (not (memq nelisp-standalone--target
-                 '(linux-x86_64 windows-x86_64 macos-aarch64)))
+                 '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64
+                   windows-aarch64)))
       source
     (let ((base (nelisp-standalone--target-arena-base))
           (span nelisp-standalone--arena-rebase-span))
@@ -368,7 +383,8 @@ storage — not an arena reservation."
 (defun nelisp-standalone--target-uses-dynamic-arena-base-p (&optional target)
   "Return non-nil when TARGET stores chunk 0's runtime base in `nl_arena_base'."
   (memq (or target nelisp-standalone--target)
-        '(linux-x86_64 windows-x86_64 macos-aarch64)))
+        '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64
+          windows-aarch64)))
 
 ;; ===================================================================
 ;; my-compile-to-unit — Phase47 source -> in-memory link-unit.
@@ -1013,6 +1029,31 @@ addressing by a runtime base, never by a fixed reservation."
     (defun nl_os_alloc_fail ()
       (syscall-direct 60 88 0 0 0 0 0))))
 
+(defun nelisp-standalone--linux-aarch64-alloc-chunk-form ()
+  "Return Linux arm64 chunk allocation forms.
+Same shape as `nelisp-standalone--linux-alloc-chunk-form' but with the
+aarch64 Linux syscall numbers (mmap=222, munmap=215, exit_group=94 —
+arm64 Linux has no legacy x86 numbering)."
+  '((defun nl_os_alloc_chunk (size)
+      (let ((p (syscall-direct 222 0 size 3 34 -1 0)))
+        (if (< p 4096) 0 p)))
+    (defun nl_os_free_chunk (base size)
+      (syscall-direct 215 base size 0 0 0 0))  ; munmap(base, size)
+    ;; mmap demand-pages on first touch, so explicit range commit is a no-op.
+    (defun nl_os_commit_range (base old new) 1)
+    (defun nl_os_alloc_fail ()
+      (syscall-direct 94 88 0 0 0 0 0))))
+
+(defun nelisp-standalone--linux-aarch64-intern-region-init-form ()
+  "Return arm64 Linux `nl_intern_region_init' (mmap=222)."
+  '(defun nl_intern_region_init ()
+     (let ((rbase (syscall-direct 222 0 67108864 3 34 -1 0)))
+       (if (< rbase 4096)
+           0
+         (seq
+          (ptr-write-u64 268436288 0 rbase)
+          (ptr-write-u64 268436296 0 (+ rbase 16777216)))))))
+
 (defun nelisp-standalone--windows-arena-init-form ()
   "Return the Windows `nl_arena_init' form using VirtualAlloc(NULL, ...)."
   `(defun nl_arena_init ()
@@ -1114,21 +1155,28 @@ addressing by a runtime base, never by a fixed reservation."
 (defun nelisp-standalone--target-arena-source ()
   "Return the arena source adjusted for the current standalone target."
   (pcase nelisp-standalone--target
-    ((or 'linux-x86_64 'windows-x86_64 'macos-aarch64)
+    ((or 'linux-x86_64 'windows-x86_64 'macos-aarch64 'linux-aarch64
+         'windows-aarch64)
      (let* ((init-form (pcase nelisp-standalone--target
-                        ('linux-x86_64 (nelisp-standalone--linux-arena-init-form))
-                        ('windows-x86_64 (nelisp-standalone--windows-arena-init-form))
+                        ((or 'linux-x86_64 'linux-aarch64)
+                         (nelisp-standalone--linux-arena-init-form))
+                        ((or 'windows-x86_64 'windows-aarch64)
+                         (nelisp-standalone--windows-arena-init-form))
                         ('macos-aarch64 (nelisp-standalone--macos-arena-init-form))))
            (chunk-forms (pcase nelisp-standalone--target
                           ('linux-x86_64 (nelisp-standalone--linux-alloc-chunk-form))
-                          ('windows-x86_64 (nelisp-standalone--windows-alloc-chunk-form))
+                          ('linux-aarch64 (nelisp-standalone--linux-aarch64-alloc-chunk-form))
+                          ((or 'windows-x86_64 'windows-aarch64)
+                           (nelisp-standalone--windows-alloc-chunk-form))
                           ('macos-aarch64 (nelisp-standalone--macos-alloc-chunk-form))))
            (intern-form (pcase nelisp-standalone--target
-                          ('windows-x86_64 (nelisp-standalone--windows-intern-region-init-form))
+                          ((or 'windows-x86_64 'windows-aarch64)
+                           (nelisp-standalone--windows-intern-region-init-form))
                           ('macos-aarch64 (nelisp-standalone--macos-intern-region-init-form))
+                          ('linux-aarch64 (nelisp-standalone--linux-aarch64-intern-region-init-form))
                           (_ nil)))
            (try-alloc-form (pcase nelisp-standalone--target
-                             ('windows-x86_64
+                             ((or 'windows-x86_64 'windows-aarch64)
                               (nelisp-standalone--windows-chunk-try-alloc-form))
                              (_ nil)))
            ;; nl_os_commit_range is defined by every platform's chunk-forms
@@ -4802,11 +4850,88 @@ calling the reader driver."
       (nelisp-standalone--macos-aarch64-reader-start-unit)
     (nelisp-standalone--macos-aarch64-basic-start-unit)))
 
+(defun nelisp-standalone--linux-aarch64-start-unit ()
+  "Return the Linux arm64 ELF `_start' unit.
+The kernel enters `_start' with argc at [sp] and argv inline after it —
+exactly the entry-stack shape the reader driver consumes, so unlike the
+macOS trampoline no argv re-packing is needed.  Mirrors the x86_64 unit:
+mmap a large anonymous native stack, switch onto it, call `driver' with
+the ORIGINAL sp as arg0, then exit(driver-return) via SVC #0 (x8=93)."
+  (require 'nelisp-asm-arm64)
+  (let* ((size nelisp-standalone--native-stack-size)
+         (buf (nelisp-asm-arm64-make-buffer))
+         (reloc-off nil))
+    (nelisp-asm-arm64-add-imm buf 'x19 'sp 0)    ; x19 = original sp (argc/argv)
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)       ; addr = NULL
+    (nelisp-asm-arm64-mov-imm64 buf 'x1 size)
+    (nelisp-asm-arm64-mov-imm64 buf 'x2 3)       ; PROT_READ|PROT_WRITE
+    (nelisp-asm-arm64-mov-imm64 buf 'x3 #x20022) ; MAP_PRIVATE|MAP_ANON|MAP_STACK
+    (nelisp-asm-arm64-mov-imm64 buf 'x4 -1)      ; fd
+    (nelisp-asm-arm64-mov-imm64 buf 'x5 0)       ; offset
+    (nelisp-asm-arm64-mov-imm64 buf 'x8 222)     ; mmap (arm64 Linux)
+    (nelisp-asm-arm64-svc buf 0)
+    (nelisp-asm-arm64-mov-imm64 buf 'x10 (- size 16))
+    (nelisp-asm-arm64-add-reg-reg buf 'x9 'x0 'x10) ; page-aligned base + size-16
+    (nelisp-asm-arm64-add-imm buf 'sp 'x9 0)     ; switch onto the native stack
+    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x19)  ; arg0 = original entry sp
+    (setq reloc-off (nelisp-asm-arm64-buffer-pos buf))
+    (nelisp-asm-arm64-emit-reloc buf 'b26-pc "driver")
+    (nelisp-asm-arm64--emit-word buf #x94000000) ; bl driver
+    (nelisp-asm-arm64-mov-imm64 buf 'x8 93)      ; exit (arm64 Linux)
+    (nelisp-asm-arm64-svc buf 0)
+    (nelisp-link-unit-make
+     (nelisp-standalone--target-object-name "start.o")
+     (list (cons 'text (nelisp-asm-arm64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_start" 0
+                               :section 'text :bind 'global :type 'func))
+     (list (list :offset reloc-off
+                 :type 'b26-pc
+                 :symbol "driver"
+                 :addend 0
+                 :section 'text)))))
+
+(defun nelisp-standalone--windows-aarch64-start-unit ()
+  "Return the Windows ARM64 PE `_start' unit.
+Windows enters the CRT-free entry directly with a 16-aligned sp.  Pass
+NULL as driver arg0 (the Windows reader builds argv from
+GetCommandLineW, not the entry stack), then exit through
+KERNEL32!ExitProcess with the driver return already in x0/w0."
+  (require 'nelisp-asm-arm64)
+  (let* ((buf (nelisp-asm-arm64-make-buffer))
+         (driver-off nil)
+         (exit-off nil))
+    (nelisp-asm-arm64-sub-imm buf 'sp 'sp 16)    ; scratch, keep 16-aligned
+    (nelisp-asm-arm64-mov-imm64 buf 'x0 0)       ; driver arg0 = NULL
+    (setq driver-off (nelisp-asm-arm64-buffer-pos buf))
+    (nelisp-asm-arm64-emit-reloc buf 'b26-pc "driver")
+    (nelisp-asm-arm64--emit-word buf #x94000000) ; bl driver
+    (setq exit-off (nelisp-asm-arm64-buffer-pos buf))
+    (nelisp-asm-arm64-emit-reloc buf 'b26-pc "ExitProcess")
+    (nelisp-asm-arm64--emit-word buf #x94000000) ; bl ExitProcess (w0 = code)
+    (nelisp-asm-arm64--emit-word buf #xD4200000) ; brk #0 (not reached)
+    (nelisp-link-unit-make
+     (nelisp-standalone--target-object-name "start.o")
+     (list (cons 'text (nelisp-asm-arm64-buffer-bytes buf)))
+     (list (nelisp-link-symbol "_start" 0
+                               :section 'text :bind 'global :type 'func))
+     (list (list :offset driver-off
+                 :type 'b26-pc
+                 :symbol "driver"
+                 :addend 0
+                 :section 'text)
+           (list :offset exit-off
+                 :type 'b26-pc
+                 :symbol "ExitProcess"
+                 :addend 0
+                 :section 'text)))))
+
 (defun nelisp-standalone--target-start-unit (&optional reader-p)
   "Return the target-specific standalone start unit."
   (pcase nelisp-standalone--target
     ('windows-x86_64 (nelisp-standalone--windows-start-unit))
+    ('windows-aarch64 (nelisp-standalone--windows-aarch64-start-unit))
     ('macos-aarch64 (nelisp-standalone--macos-aarch64-start-unit reader-p))
+    ('linux-aarch64 (nelisp-standalone--linux-aarch64-start-unit))
     (_ (nelisp-standalone--start-unit))))
 
 ;; ===================================================================
@@ -4992,10 +5117,19 @@ units)."
                                '("ExitProcess" "VirtualAlloc" "VirtualFree")
                                (list :stack-reserve
                                      nelisp-standalone--windows-stack-reserve)))
+      ('windows-aarch64
+       (nelisp-link-units-pe32 out units "_start"
+                               '("ExitProcess" "VirtualAlloc" "VirtualFree")
+                               (list :machine 'aarch64
+                                     :stack-reserve
+                                     nelisp-standalone--windows-stack-reserve)))
       ('macos-aarch64
        (nelisp-link-units-macho-exec out units "_main" 'aarch64)
        (set-file-modes out #o755)
        (nelisp-standalone--codesign-macos-adhoc out))
+      ('linux-aarch64
+       (nelisp-link-units out units "_start" nil 'aarch64)
+       (set-file-modes out #o755))
       (_
        (nelisp-link-units out units)
        (set-file-modes out #o755)))
@@ -5723,7 +5857,7 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
 (defun nelisp-standalone--reader-os-source-forms ()
   "Return target-specific OS helper defuns used by the reader driver/file I/O."
   (pcase nelisp-standalone--target
-    ('windows-x86_64
+    ((or 'windows-x86_64 'windows-aarch64)
      '((defun nl_win_wcs_utf8_dup (src)
          (let* ((n (extern-call WideCharToMultiByte 65001 0 src -1 0 0 0 0))
                 (cap (if (< n 1) 1 n))
@@ -5907,6 +6041,62 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
 	       (defun nl_os_syscall_nr_poll () 230)
 	       (defun nl_os_syscall_nr_fcntl () 92)
 	       (defun nl_os_syscall_nr_exit () 1)))
+    ('linux-aarch64
+     ;; arm64 Linux has no legacy x86 syscalls: open/dup2/pipe/fork/poll are
+     ;; absent — use openat(56, AT_FDCWD=-100)/dup3(24)/pipe2(59)/clone(220,
+     ;; flags=SIGCHLD)/ppoll(73).  Entry stack already has the Linux
+     ;; argc/argv shape, so argv init is the identity, same as x86_64.
+     '((defun nl_os_argv_init (sp) sp)
+       (defun nl_os_open_read (path)
+         (syscall-direct 56 -100 path 0 0 0 0))
+       (defun nl_os_open_write_truncate (path)
+         (syscall-direct 56 -100 path 577 420 0 0))
+       (defun nl_os_close_handle (fd)
+         (syscall-direct 57 fd 0 0 0 0 0))
+       (defun nl_os_read_file_handle (fd ptr len)
+         (if (< fd 0) -1 (syscall-direct 63 fd ptr len 0 0 0)))
+       (defun nl_os_write_file_handle (fd ptr len)
+         (if (< fd 0)
+             -1
+           (syscall-direct 64 fd ptr len 0 0 0)))
+       (defun nl_os_read_file_cpath (path buf len)
+         (let* ((fd (nl_os_open_read path))
+                (n (nl_os_read_file_handle fd buf len)))
+           (nl_seq2 (nl_os_close_handle fd) n)))
+       (defun nl_os_read_stdin (ptr len)
+         (syscall-direct 63 0 ptr len 0 0 0))
+       (defun nl_os_write_stdout (ptr len)
+         (syscall-direct 64 1 ptr len 0 0 0))
+       (defun nl_os_write_stderr (ptr len)
+         (syscall-direct 64 2 ptr len 0 0 0))
+       (defun nl_os_process_fork ()
+         (syscall-direct 220 17 0 0 0 0 0))   ; clone(SIGCHLD,...)
+       (defun nl_os_process_execve (path argv envp)
+         (syscall-direct 221 path argv envp 0 0 0))
+       (defun nl_os_process_wait4 (pid statusp options)
+         (syscall-direct 260 pid statusp options 0 0 0))
+       (defun nl_os_process_dup2 (oldfd newfd)
+         (syscall-direct 24 oldfd newfd 0 0 0 0))  ; dup3(old,new,0)
+       (defun nl_os_process_pipe (pipev)
+         (syscall-direct 59 pipev 0 0 0 0 0))      ; pipe2(pipev,0)
+       (defun nl_os_process_set_nonblock (fd)
+         (syscall-direct 25 fd 4 2048 0 0 0))      ; fcntl(F_SETFL,O_NONBLOCK)
+       (defun nl_os_process_kill (pid sig)
+         (syscall-direct 129 pid sig 0 0 0 0))
+       (defun nl_os_process_exit127 ()
+         (syscall-direct 93 127 0 0 0 0 0))
+       (defun nl_os_syscall_nr_getpid () 172)
+       (defun nl_os_syscall_nr_fork () 220)
+       (defun nl_os_syscall_nr_wait4 () 260)
+       (defun nl_os_syscall_nr_kill () 129)
+       (defun nl_os_syscall_nr_pipe () 59)
+       (defun nl_os_syscall_nr_read () 63)
+       (defun nl_os_syscall_nr_write () 64)
+       (defun nl_os_syscall_nr_close () 57)
+       (defun nl_os_syscall_nr_dup2 () 24)
+       (defun nl_os_syscall_nr_poll () 73)         ; ppoll — caller must pass a timespec, not ms
+       (defun nl_os_syscall_nr_fcntl () 25)
+       (defun nl_os_syscall_nr_exit () 93)))
     (_
      '((defun nl_os_argv_init (sp) sp)
        (defun nl_os_open_read (path)
@@ -7290,10 +7480,19 @@ before executing." out out))
                                (nelisp-standalone--reader-pe-imports)
                                (list :stack-reserve
                                      nelisp-standalone--windows-stack-reserve)))
+      ('windows-aarch64
+       (nelisp-link-units-pe32 out units "_start"
+                               (nelisp-standalone--reader-pe-imports)
+                               (list :machine 'aarch64
+                                     :stack-reserve
+                                     nelisp-standalone--windows-stack-reserve)))
       ('macos-aarch64
        (nelisp-link-units-macho-exec out units "_main" 'aarch64)
        (set-file-modes out #o755)
        (nelisp-standalone--codesign-macos-adhoc out))
+      ('linux-aarch64
+       (nelisp-link-units out units "_start" nil 'aarch64)
+       (set-file-modes out #o755))
       (_
        (nelisp-link-units out units)
        (set-file-modes out #o755)))

@@ -71,6 +71,9 @@
 
 ;; ---- COFF format constants (= Microsoft PE/COFF spec §3) ----
 
+(defconst nelisp-pe--machine-arm64 #xAA64
+  "IMAGE_FILE_MACHINE_ARM64 — PE32+ machine id for Windows on ARM64.")
+
 (defconst nelisp-pe--machine-amd64 #x8664
   "IMAGE_FILE_MACHINE_AMD64 (= x86_64 Windows 64-bit).")
 
@@ -2837,7 +2840,8 @@ SPEC keys:
     (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
     (nelisp-pe--write-pe-file-header
      cbuf
-     (list :num-sections num-sections
+     (list :machine (plist-get spec :machine)  ; nil -> amd64 default
+           :num-sections num-sections
            :characteristics
            (logior nelisp-pe--characteristic-executable
                    nelisp-pe--characteristic-large-address-aware)))

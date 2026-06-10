@@ -773,39 +773,68 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
         (push name names)))
     (nreverse names)))
 
+(defun nelisp-link--pe-thunk-size (machine)
+  "Per-import thunk size in bytes for MACHINE (`x86_64' / `aarch64')."
+  (if (eq machine 'aarch64) 16 6))
+
+(defun nelisp-link--pe-arm64-thunk-words (thunk-va iat-va)
+  "Return the 4 instruction words of an ARM64 IAT thunk at THUNK-VA.
+ADRP x16, IAT-page; ADD x16, x16, #IAT-lo12; LDR x16, [x16]; BR x16.
+The ADD+LDR(0) split tolerates IAT slots that are only 4-aligned (the
+PE idata builder packs the IAT after the name table without 8-byte
+padding).  The static linker knows both absolute VAs, so the words are
+fully resolved here (no relocs)."
+  (let* ((page-delta (- (logand iat-va (lognot 4095))
+                        (logand thunk-va (lognot 4095))))
+         (page-imm (ash page-delta -12))
+         (immlo (logand page-imm 3))
+         (immhi (logand (ash page-imm -2) #x7ffff))
+         (adrp (logior #x90000010 (ash immlo 29) (ash immhi 5)))
+         (lo12 (logand iat-va 4095))
+         (add (logior #x91000210 (ash lo12 10)))
+         (ldr #xF9400210)
+         (br #xD61F0200))
+    (list adrp add ldr br)))
+
 (defun nelisp-link--pe-import-thunk-unit (imports text-va text-offset
-                                                  idata-info)
+                                                  idata-info &optional machine)
   "Return a link-unit exporting import thunks for IMPORTS.
-Each thunk is `jmp qword ptr [rip+disp32]' and is named after the imported
-function so direct `call rel32 Function' relocations can target it."
+On x86_64 each thunk is `jmp qword ptr [rip+disp32]'; on aarch64 it is
+`adrp x16 / ldr x16 / br x16'.  Thunks are named after the imported
+function so direct call relocations can target them."
   (require 'nelisp-pe-write)
   (let ((cbuf (nelisp-pe--make-buffer))
         (symbols nil)
         (iat-map (plist-get idata-info :iat-rva-alist))
+        (size (nelisp-link--pe-thunk-size machine))
         (cursor 0))
     (dolist (name (nelisp-link--pe-import-names imports))
       (let* ((iat-rva (or (cdr (assoc name iat-map))
                           (error "nelisp-link: missing IAT slot for %S" name)))
              (thunk-va (+ text-va text-offset cursor))
-             (iat-va (+ nelisp-link--pe-image-base iat-rva))
-             (disp (- iat-va (+ thunk-va 6))))
+             (iat-va (+ nelisp-link--pe-image-base iat-rva)))
         (push (nelisp-link-symbol name cursor
                                   :section 'text :bind 'global :type 'func)
               symbols)
-        (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x25))
-        (nelisp-pe--write-le32 cbuf disp)
-        (setq cursor (+ cursor 6))))
+        (if (eq machine 'aarch64)
+            (dolist (w (nelisp-link--pe-arm64-thunk-words thunk-va iat-va))
+              (nelisp-pe--write-le32 cbuf w))
+          (let ((disp (- iat-va (+ thunk-va 6))))
+            (nelisp-pe--write-bytes cbuf (unibyte-string #xff #x25))
+            (nelisp-pe--write-le32 cbuf disp)))
+        (setq cursor (+ cursor size))))
     (nelisp-link-unit-make "pe-import-thunks.o"
                            (list (cons 'text (nelisp-pe--buffer-bytes cbuf)))
                            (nreverse symbols)
                            nil)))
 
-(defun nelisp-link--pe-empty-import-thunk-unit (imports)
+(defun nelisp-link--pe-empty-import-thunk-unit (imports &optional machine)
   "Return a size-only import thunk unit for PE layout prediction."
   (nelisp-link-unit-make
    "pe-import-thunks.o"
-   (list (cons 'text (make-string (* 6 (length (nelisp-link--pe-import-names
-                                                imports)))
+   (list (cons 'text (make-string (* (nelisp-link--pe-thunk-size machine)
+                                     (length (nelisp-link--pe-import-names
+                                              imports)))
                                   0)))
    nil nil))
 
@@ -818,11 +847,12 @@ Imported function names are resolved by synthesized in-image thunks, so normal
 Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
   (require 'nelisp-pe-write)
   (let* ((entry (or entry-sym "_start"))
+         (machine (or (plist-get options :machine) 'x86_64))
          (normalized-imports (nelisp-pe--normalize-imports imports))
          (predict-units (if normalized-imports
                             (append units
                                     (list (nelisp-link--pe-empty-import-thunk-unit
-                                           normalized-imports)))
+                                           normalized-imports machine)))
                           units))
          (predict-combined (nelisp-link-combine-sections predict-units))
          (predict-rvas (nelisp-link--pe-section-rvas predict-combined
@@ -840,7 +870,7 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
                         (append units
                                 (list (nelisp-link--pe-import-thunk-unit
                                        normalized-imports text-va
-                                       orig-text-size idata-info)))
+                                       orig-text-size idata-info machine)))
                       units))
          (combined (nelisp-link-combine-sections all-units))
          (layout (nelisp-link--pe-layout combined normalized-imports))
@@ -864,6 +894,9 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
            :data data
            :entry-rva entry-rva
            :imports normalized-imports
+           :machine (when (eq machine 'aarch64)
+                      (progn (require 'nelisp-pe-write)
+                             nelisp-pe--machine-arm64))
            :stack-reserve (plist-get options :stack-reserve)
            :stack-commit (plist-get options :stack-commit)
            :heap-reserve (plist-get options :heap-reserve)

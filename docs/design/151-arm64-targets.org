@@ -1,0 +1,68 @@
+#+TITLE: Doc 151 — linux-aarch64 / windows-aarch64 standalone reader targets
+#+AUTHOR: nelisp / nelisp-emacs
+#+DATE: 2026-06-10
+#+STATUS: Phase A SHIPPED（両ターゲットのビルド + linux-aarch64 は qemu 実行検証済。Phase B = raw-NR 翻訳層 + 実機検証）
+
+* §0 要旨
+
+`NELISP_STANDALONE_TARGET=linux-aarch64 / windows-aarch64` で standalone reader を
+クロスビルド可能にした。既存資産（AAPCS64 emit / arm64 reloc / ELF aarch64 writer /
+crt0-arm64 の svc#0 規約 / `nelisp-aot-compiler--os` による syscall 規約切替）が揃って
+いたため、追加は per-target dispatch の配線 + arm64 Linux syscall 番号層 + PE ARM64
+化 + start unit ×2 のみ。
+
+* §1 linux-aarch64（qemu で実行検証済み）
+
+- 配線: abi=aapcs64 / arch=aarch64 / os=linux（= syscall-direct が x8+SVC#0 で emit）、
+  arena/chunk/intern は mmap=222 / munmap=215 / exit_group=94 の専用 form、
+  os-source は arm64 番号 + *レガシー syscall 不在の翻訳*
+  （open→openat(56, AT_FDCWD) / fork→clone(220, SIGCHLD) / dup2→dup3(24) /
+  pipe→pipe2(59) / poll→ppoll(73)※timespec 形状差あり）。
+- start unit: 1GiB native stack を mmap → 切替 → `bl driver`（エントリ sp が
+  そのまま Linux argv 形状なので macOS のような再パックは不要）→ exit(93)。
+- 出力: `target/nelisp-aarch64`（host バイナリと衝突しない arch サフィックス）。
+  unit cache は `target-cache-dir` の symbol-name 分離で自動隔離。
+- *検証 (qemu-user 10.0.8)*: REPL 起動 / --load → 43 / REPL eval (* 6 7) → 42 /
+  rdf+wrf round-trip + exit(7) / **nemacs GUI bridge runtime image 完走**
+  （goto-line point=4、str-kv-line / str-count-nl / str-filter-prefix-lines 全正答）。
+
+** 既知の残課題（Phase B）
+1. *raw-NR 翻訳層*: interpreted 層（nemacs bridge 等）は `nelisp--syscall-path-int 21
+   …` のように **x86_64 番号をポータブル語彙として渡す**。arm64 では
+   access(21)→faccessat(48, AT_FDCWD, path, mode) 等の番号 + 引数形状変換が必要
+   （実測: find-file の存在チェックが偽 false で file-not-found になる）。
+   設計: `nl_bi_syscall_path*` 境界に per-target NR map（21→48 等、AT_FDCWD 前置）
+   を入れる。対象 = access/unlink(87→unlinkat 35)/rmdir(84→unlinkat+AT_REMOVEDIR)/
+   mkdir(83→mkdirat 34)/chmod(90→fchmodat 53)/rename(82→renameat 38)/
+   link(86→linkat 37)/symlink(88→symlinkat 36)/stat系(4,6,332→fstatat 79・statx 291)/
+   readlink(89→readlinkat 78)/getdents64(217→61)/nanosleep(35→101)。
+2. nemacs bridge の `(syscall-direct 35 …)`（nanosleep 直叩き）も同層で吸収するか
+   sleep builtin 化する。
+3. process substrate（clone/execve/pipe2）は qemu-user では execve 検証不可。
+   実機 or binfmt 環境で要スモーク。
+
+* §2 windows-aarch64（構造検証まで。実機は Windows 11 arm64 が必要）
+
+- 配線: abi=aapcs64（Win ARM64 の整数引数 = x0-x7、shadow space 無し — 本コード
+  ベースの fixed-arity 呼び出しでは AAPCS64 互換）、os=windows（os-source/arena/
+  chunk/intern/try-alloc は **windows-x86_64 の extern-call form をそのまま共有**）。
+- PE ARM64 化:
+  - `nelisp-pe--machine-arm64` (#xAA64) + generic exe builder が spec の :machine を
+    file header へ通す（従来は amd64 ハードコード）。
+  - import thunk を per-machine 化: x86 `jmp [rip+disp32]`(6B) / arm64
+    `adrp x16; add x16,#lo12; ldr x16,[x16]; br x16`(16B)。ADD+LDR(0) 分割は
+    **IAT が 4-align しか保証されない**ため（scaled LDR の 8-align 要求を回避）。
+    リンカが両 VA を確定済みなので reloc 無しの直値 encode。
+  - layout 予測用 empty thunk unit も per-machine サイズ。
+- start unit: `sub sp,#16; mov x0,#0; bl driver; bl ExitProcess; brk #0`
+  （Windows reader の argv は GetCommandLineW 経由なのでエントリ sp 不要）。
+- 出力: `target/nelisp-aarch64.exe`。検証: machine=0xAA64 / PE32+ / 3 sections、
+  `file` が "PE32+ executable … ARM64" と認識。
+- *残課題*: 実行検証（Windows 11 arm64 実機）。SEH unwind 情報は x86_64 版同様
+  省略（純 leaf 連鎖 + 自前 stack のため現行ポリシー踏襲）。
+
+* §3 回帰ゲート
+
+- linux-x86_64: standalone-reader-test 5/5 PASS（thunk/linker 共有コード変更後）。
+- windows-x86_64: リンク成功（機械語 amd64 維持）。
+- make compile (error-on-warn): clean。
