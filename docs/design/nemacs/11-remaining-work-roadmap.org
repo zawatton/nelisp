@@ -284,7 +284,9 @@ dired file-ops), M6 (package activation + CAPF), M7
 (loaddefs/autoload + runtime image), M8 (release preflight + soak
 diagnostics), M9 (org daily lane), M10 (Magit-min), M11 (Tramp
 ssh-only, hermetic stub gate), M12 (display/font), M13
-(info/customize).  Host gate: 1888 ERT, 0 unexpected.  The next wave
+(info/customize), and M14 (server/emacsclient: a real
+=emacsclient -e= round-trip against the standalone reader,
+2026-06-11).  Host gate: 1888 ERT, 0 unexpected.  The next wave
 should be drawn from §7 open questions (server/emacsclient, first
 real MELPA promotion gate) and from daily-driver soak findings —
 promote by workflow, not by file count (tracking rule 1).
@@ -544,6 +546,68 @@ Omissions (documented once):
 - Info node scan is bounded by =files--info-scan-cap= (64KB, the GUI
   text transport limit).
 
+** M14. Server/emacsclient Lane (v1 CLOSED 2026-06-11)
+
+Scope promotion: resolves the §7 open question — server/emacsclient
+is in scope as a post-M13 lane.  The gate is the real-client eval
+round-trip, not full client surface parity.
+
+Close gate:
+
+- A REAL =emacsclient -s SOCK -e EXPR= round-trips (value printed,
+  exit 0, server survives repeat clients) against vendor server.el
+  running on the standalone reader, with runtime tests.
+
+Close evidence (2026-06-11):
+
+- =src/emacs-network-syscall-shim.el= re-creates the =nl-ffi-*=
+  surface the K1 network stack was written against on top of the
+  pure-elisp reader's =syscall-direct= / =alloc-bytes= /
+  =ptr-read-u64= / =ptr-write-u64= — the K1 modules and vendor
+  server.el run unmodified.  It also carries reader-gap polyfills the
+  lane uncovered: =/== (only = < > <= >= ship), =functionp= (the
+  builtin returns nil for closures, silently skipping every process
+  filter), =ignore-errors=, phantom =truncate= / =string-bytes=.
+- =src/emacs-server-client-polyfills.el=: the
+  filter-path stub surface + three overrides installed after vendor
+  load — =nemacs-server-start= (vendor =server-start= still trips
+  reader gaps in its prologue), a minimal =server-process-filter=
+  (local =-eval= subset; quote/unquote re-implemented without the
+  vendor's regexp-lambda), and a buffer-free =server-eval-and-print=.
+- =scripts/nemacs-server-loop.el= + =bin/nemacs-server=: preamble
+  launcher (reader =getenv= is stub-nil) → load stack → listen →
+  serve.  Verified live: =(+ 1 2)= → 3, =(concat ...)= → "hello",
+  =(mapcar (lambda (x) (* x x)) ...)= → (1 4 9), repeat clients OK.
+- Tests: =emacs-server-client-test/source-shape= (host) and
+  =standalone-emacsclient-roundtrip= (boots the real server loop on
+  the reader, drives it with the real emacsclient binary).
+- =emacs-process-events.el=: accepted children now inherit the
+  listener's plist (Emacs semantics; vendor server.el authenticates
+  local clients via the child's =:authenticated=).
+
+Reader semantics discovered (documented once — they shaped the lane):
+
+- A call to a MISSING function hard-aborts the whole enclosing
+  top-level form and is NOT catchable by =condition-case= /
+  =ignore-errors=; the same holds for unbound variable references.
+  Diagnosis is silent.  This is why the lane prefers many small
+  load-bearing stubs over relying on vendor error paths, and why the
+  serve loop is the last form of the driver.
+- =--load FILE= resolves nested relative =load= calls against FILE's
+  directory and isolates per-form errors; =--eval '(load ...)'= stops
+  at the first failing form.  The lane drives everything through
+  =--eval= + absolute paths.
+- =?\\700=-style octal char literals misread (55, not 448) — avoided.
+
+Omissions (one-time list):
+
+- Vendor =server-start= / full =server-process-filter= surface
+  (frames, tty, =-file= visiting, =-env=, TCP + auth-key) — the
+  minimal filter ignores those tokens; TCP stays unsupported.
+- emacsclient file-visiting and =-nowait= window semantics.
+- Linux x86_64 syscall numbers only (the only reader target today).
+- =nl-ffi-free= is a no-op (arena-owned buffers, small per-request).
+
 * 5. Explicit Non-goals For Initial Roadmap
 
 These should not block the milestones above:
@@ -582,5 +646,7 @@ These should not block the milestones above:
   wrapper around =git= output first?
 - Which coding legacy exceptions, if any, are must-run enough to keep despite
   Doc 05?
-- Should server/emacsclient be part of the first stability milestone or deferred
-  until after standalone daily-driver editing is stable?
+- (RESOLVED 2026-06-11 → M14) server/emacsclient shipped as a
+  post-M13 lane: real =emacsclient -e= round-trips against the
+  standalone reader; full client surface (frames/tty/files/TCP) stays
+  out until a workflow demands it.

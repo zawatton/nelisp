@@ -88,6 +88,11 @@ libffi primitive is available).")
 ;; Minor mode book-keeping — `push'ed by `server-start' when it flips
 ;; `server-mode' on.
 (defvar global-minor-modes nil)
+;; server-start builds the listener :coding from this C-level scalar;
+;; on the standalone reader an unbound variable reference hard-aborts
+;; the whole form (it does not signal through `condition-case'), so
+;; the defvar is load-bearing for M14 (2026-06-11).
+(defvar locale-coding-system nil)
 
 ;; Frame / TTY globals — only consulted inside `daemonp' branches we
 ;; never take, but stubbed for safety.

@@ -262,7 +262,11 @@ returns the new process or nil on EAGAIN / error."
                     (process-filter server)
                     (process-sentinel server)
                     (process-buffer server)
-                    nil ; plist
+                    ;; Inherit a shallow copy of the listener's plist —
+                    ;; vendor server.el authenticates local clients via
+                    ;; the child's `(process-get proc :authenticated)'
+                    ;; which Emacs copies from the server (M14).
+                    (append (process-plist server) nil)
                     (emacs-process-events--get server 9) ; coding
                     sfd
                     id)))
