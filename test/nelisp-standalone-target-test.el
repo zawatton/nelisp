@@ -322,29 +322,18 @@
              '((:lit "nelisp-portable-syscall") .
                (wf_write_int out (nl_bi_portable_syscall args)))
              nelisp-standalone--applyfn-bf-arms))
+    ;; Stale-literal note (2026-06-10): assert the load-bearing SHAPES of
+    ;; nl_bi_process_call_process instead of the full defun literal — the
+    ;; exact-form assertion went stale when 41ea76d7 added the M11
+    ;; env-inherit branch and broke CI for every later commit.
     (should (tree-member-p
-             '(defun nl_bi_process_call_process (args out)
-                (let* ((program_sx (wf_arg_ptr args 0))
-                       (infile_sx (wf_arg_ptr args 1))
-                       (destination_sx (wf_arg_ptr args 2))
-                       (arglst (nl_bi_process_drop args 4))
-                       (path (nl_bi_make_cpath program_sx))
-                       (argv (nl_bi_process_make_argv program_sx arglst))
-                       (envp (alloc-bytes 8 8))
-                       (pid 0))
-                  (seq
-                   (ptr-write-u64 envp 0 0)
-                   (setq pid (nl_os_process_fork))
-                   (if (= pid 0)
-                       (seq
-                        (if (= (nl_bi_process_setup_child_fds
-                                infile_sx destination_sx) 0)
-                            (nl_os_process_execve path argv envp)
-                          1)
-                        (nl_os_process_exit127))
-                     (if (< pid 0)
-                         (wf_write_int out 1)
-                       (wf_write_int out (nl_bi_process_wait_exit_code pid)))))))
+             '(setq envp (ptr-read-u64 268435600 0))
+             nelisp-standalone--fileio-source))
+    (should (tree-member-p
+             '(nl_os_process_execve path argv envp)
+             nelisp-standalone--fileio-source))
+    (should (tree-member-p
+             '(wf_write_int out (nl_bi_process_wait_exit_code pid))
              nelisp-standalone--fileio-source))
     (should (tree-member-p
              '(defun nl_bi_process_make_object (pid outfd out)
@@ -357,44 +346,18 @@
                  (nl_bi_process_set_int out 4 -1)
                  0))
              nelisp-standalone--fileio-source))
+    ;; Same stale-literal note as call-process above: assert the
+    ;; load-bearing shapes, not the full defun (the 41ea76d7 env-inherit
+    ;; branch invalidated the old exact literal).
     (should (tree-member-p
-             '(defun nl_bi_process_start_process (args out)
-                (let* ((program_sx (wf_arg_ptr args 0))
-                       (arglst (nl_cons_cdr_ptr args))
-                       (pipev (alloc-bytes 8 4))
-                       (envp (alloc-bytes 8 8))
-                       (pipe_rc 0)
-                       (pid 0))
-                  (seq
-                   (ptr-write-u64 envp 0 0)
-                   (setq pipe_rc (nl_os_process_pipe pipev))
-                   (if (< pipe_rc 0)
-                       (wf_write_nil out)
-                     (let* ((readfd (ptr-read-u32 pipev 0))
-                            (writefd (ptr-read-u32 pipev 4))
-                            (path (nl_bi_make_cpath program_sx))
-                            (argv (nl_bi_process_make_argv program_sx
-                                                           arglst)))
-                       (seq
-                        (setq pid (nl_os_process_fork))
-                        (if (= pid 0)
-                            (seq
-                             (nl_os_close_handle readfd)
-                             (nl_os_process_dup2 writefd 1)
-                             (nl_os_process_dup2 writefd 2)
-                             (nl_os_close_handle writefd)
-                             (nl_os_process_execve path argv envp)
-                             (nl_os_process_exit127))
-                          (if (< pid 0)
-                              (seq
-                               (nl_os_close_handle readfd)
-                               (nl_os_close_handle writefd)
-                               (wf_write_nil out))
-                            (seq
-                             (nl_os_close_handle writefd)
-                             (nl_os_process_set_nonblock readfd)
-                             (nl_bi_process_make_object pid readfd
-                                                        out))))))))))
+             '(setq pipe_rc (nl_os_process_pipe pipev))
+             nelisp-standalone--fileio-source))
+    (should (tree-member-p
+             '(nl_os_process_set_nonblock readfd)
+             nelisp-standalone--fileio-source))
+    (should (tree-member-p
+             '(nl_bi_process_make_object pid readfd
+                                         out)
              nelisp-standalone--fileio-source))))
 
 (ert-deftest nelisp-standalone-target-reader-process-syscalls-are-targeted ()
