@@ -2097,6 +2097,12 @@ argument (reachability + in-arena bounds checks).")
     ((:u8 "wrf")  . (seq (nl_bi_write_file args out) 0))
     ((:u8 "rdf")  . (seq (nl_bi_read_file args out) 0))
     ((:u8 "slen") . (seq (nl_bi_slen args out) 0))
+    ;; Native buffer-scan helpers (Doc 142 Gate 5 OOM fix): an interpreted
+    ;; per-char while over a ~500KB buffer string churns ~1MB of arena PER
+    ;; ITERATION (value-semantics clones + per-form eval garbage, GC only at
+    ;; form boundaries) -> 60GB+ RSS.  These do the scan natively instead.
+    ((:lit "str-count-nl")   . (seq (nl_bi_str_count_nl args out) 0))
+    ((:lit "str-line-start") . (seq (nl_bi_str_line_start args out) 0))
     ;; REPL/process termination.  Store code+1 so slot 0 remains "no exit".
     ((:u8 "exit") . (let* ((code (if (= args 0)
                                      0
@@ -3555,6 +3561,41 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
           (nl_bi_rf_withfd fd buf out))))
     (defun nl_bi_slen (args out)
       (wf_write_int out (nl_bi_strlen (wf_arg_ptr args 0))))
+    ;; str-count-nl STRING END -> number of \n bytes in STRING[0, min(END,len)).
+    ;; Native byte loop so callers (e.g. the nemacs GUI bridge modeline) can
+    ;; derive a cursor line number from a large buffer string without an
+    ;; interpreted per-char walk (which allocates per iteration and cannot be
+    ;; GC'd until the enclosing top-level form returns).
+    (defun nl_bi_str_count_nl (args out)
+      (let* ((sx (wf_arg_ptr args 0))
+             (end (ptr-read-u64 (wf_arg_ptr args 1) 8))
+             (ptr (nl_bi_strptr sx))
+             (n (nl_bi_strlen sx))
+             (lim (if (< end n) end n))
+             (i 0)
+             (acc 0))
+        (seq
+         (while (< i lim)
+           (seq
+            (if (= (ptr-read-u8 ptr i) 10) (setq acc (+ acc 1)) 0)
+            (setq i (+ i 1))))
+         (wf_write_int out acc))))
+    ;; str-line-start STRING POS -> offset of the first char of POS's line
+    ;; (i.e. one past the previous \n), POS clamped to [0, len].  Companion to
+    ;; str-count-nl: line = 1 + (str-count-nl S POS), column = POS - line-start.
+    (defun nl_bi_str_line_start (args out)
+      (let* ((sx (wf_arg_ptr args 0))
+             (pos (ptr-read-u64 (wf_arg_ptr args 1) 8))
+             (ptr (nl_bi_strptr sx))
+             (n (nl_bi_strlen sx))
+             (i (if (< pos n) pos n))
+             (done 0))
+        (seq
+         (while (if (> i 0) (if (= done 0) 1 0) 0)
+           (if (= (ptr-read-u8 ptr (- i 1)) 10)
+               (setq done 1)
+             (setq i (- i 1))))
+         (wf_write_int out i))))
     (defun nl_bi_write_stdout_bytes (args out)
       (let* ((sx (wf_arg_ptr args 0)))
         (seq
@@ -4934,7 +4975,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
     "nelisp--repr" "nelisp--arena-stats" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
     ;; M7 file I/O
-    "wrf" "rdf" "slen" "load"
+    "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start"
     "nelisp--eval-source-string" "nelisp--syscall-read-file" "nl-write-file"
     "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
     "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf"
