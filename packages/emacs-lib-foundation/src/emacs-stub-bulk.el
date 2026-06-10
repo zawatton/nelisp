@@ -5,6 +5,19 @@
 
 ;; auto-mode-alist moved to emacs-mode-builtins (Track H).
 
+;; Pure value-passing functions must NEVER fall into the nil no-op
+;; bulk below — a nil-returning `identity' silently breaks every
+;; `(mapconcat 'identity ...)' pipeline (s.el's s-join returned
+;; "nil-nil-..." on the standalone reader, found 2026-06-11).
+(unless (fboundp 'identity)
+  (defun identity (arg)
+    "Return ARG unchanged."
+    arg))
+(unless (fboundp 'int-to-string)
+  (defun int-to-string (n)
+    "Alias of `number-to-string' (same nil no-op hazard as `identity')."
+    (number-to-string n)))
+
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n)
     "Doc 51 Track B (2026-05-04) MVP `backward-char'.
@@ -175,9 +188,9 @@ Forwarder to `forward-char' with negated count."
     garbage-collect generate-new-buffer-name get get-advertised-calling-convention get-buffer get-buffer-create get-buffer-process get-char-property
     getenv gethash get-load-suffixes get-register get-text-property gnus goto-char grep
     hack-local-variables handler-bind-1 hash-table-p help help-add-fundoc-usage help-buffer help--docstring-quote help-form-show
-    help-function-arglist help-insert-xref-button help-mode help-setup-xref help-split-fundoc hs-minor-mode iconify-frame identity
+    help-function-arglist help-insert-xref-button help-mode help-setup-xref help-split-fundoc hs-minor-mode iconify-frame
     indent-to indent-to-column indirect-function info input-pending-p insert insert-buffer-substring integerp
-    intern internal-event-symbol-parse-modifiers internal--labeled-narrow-to-region internal--labeled-widen internal--track-mouse intern-soft int-to-string invocation-directory
+    intern internal-event-symbol-parse-modifiers internal--labeled-narrow-to-region internal--labeled-widen internal--track-mouse intern-soft invocation-directory
     invocation-name isearch-mode key-binding keyboard-coding-system key-description keymap-global-lookup keymap-global-set keymap-global-unset
     keymap-local-lookup keymap-local-set keymap-local-unset keymapp keymap-parent keymap-prompt keymap-set-after keymap-substitute
     key-parse key-translate keywordp kill-buffer kill-emacs kill-local-variable kmacro-end-macro length
