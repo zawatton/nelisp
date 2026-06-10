@@ -14463,13 +14463,24 @@
               (line-string "")
               (column-string "")
               (state ""))
-          (while (< index files--point)
-            (if (= (aref files--buffer-string index) 10)
-                (progn
-                  (setq line (+ line 1))
-                  (setq column 0))
-              (setq column (+ column 1)))
-            (setq index (+ index 1)))
+          ;; Line/column at point.  On the standalone reader an interpreted
+          ;; per-char while over the buffer string allocates ~1MB of arena PER
+          ;; ITERATION (value-semantics clones, GC only at form boundaries),
+          ;; so a 500KB buffer OOM'd the host (Doc 142 Gate 5, 2026-06-10).
+          ;; Use the native scan builtins when present; keep the interpreted
+          ;; walk only as a host-Emacs / old-reader fallback.
+          (if (fboundp 'str-count-nl)
+              (progn
+                (setq line (+ 1 (str-count-nl files--buffer-string files--point)))
+                (setq column (- files--point
+                                (str-line-start files--buffer-string files--point))))
+            (while (< index files--point)
+              (if (= (aref files--buffer-string index) 10)
+                  (progn
+                    (setq line (+ line 1))
+                    (setq column 0))
+                (setq column (+ column 1)))
+              (setq index (+ index 1))))
           (setq files--cursor-line line)
           (setq files--cursor-column column)
           (setq files--number-file-value files--point)

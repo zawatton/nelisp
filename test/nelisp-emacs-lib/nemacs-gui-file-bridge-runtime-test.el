@@ -4073,6 +4073,93 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-large-org-file ()
+  "Daily-driver scale: ~500KB org file find-file / edit / org-todo / save."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (big-file "/tmp/nemacs-large-org-test.org")
+          (content nil))
+      (with-temp-buffer
+        (dotimes (i 6000)
+          (insert (format "* TODO task %04d entry heading line\n" i))
+          (insert (format "body text for entry %04d with some padding text\n" i)))
+        (setq content (buffer-string)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region content nil big-file nil 'silent)
+            (should (> (file-attribute-size (file-attributes big-file))
+                       400000))
+            ;; Step 1: find-file loads the whole file through the bridge.
+            (write-region "find-file" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region big-file nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "old\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (let ((start (float-time)))
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (princ (format "[large-org] find-file %.1fs\n"
+                             (- (float-time) start))))
+            (should (equal content
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            ;; Step 2: org-todo on a deep heading near the end.
+            (let ((pos (string-match (regexp-quote "* TODO task 5990") content)))
+              (should pos)
+              (write-region (number-to-string pos)
+                            nil "/tmp/nemacs-point" nil 'silent))
+            (write-region "org-todo" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (let ((start (float-time)))
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (princ (format "[large-org] org-todo %.1fs\n"
+                             (- (float-time) start))))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              (should (string-match-p
+                       (regexp-quote "* DONE task 5990 entry heading line")
+                       buf)))
+            ;; Step 3: save-buffer writes the edited 500KB back to disk.
+            (write-region "save-buffer" nil "/tmp/nemacs-cmd" nil 'silent)
+            (let ((start (float-time)))
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (princ (format "[large-org] save-buffer %.1fs\n"
+                             (- (float-time) start))))
+            (let ((on-disk (with-temp-buffer
+                             (insert-file-contents big-file)
+                             (buffer-string))))
+              (should (string-match-p
+                       (regexp-quote "* DONE task 5990 entry heading line")
+                       on-disk))
+              (should (string-match-p (regexp-quote "  CLOSED: [") on-disk))
+              ;; everything except the one edited heading + CLOSED line
+              ;; survives byte-identically
+              (should (string-prefix-p
+                       (substring content 0
+                                  (string-match (regexp-quote "* TODO task 5990")
+                                                content))
+                       on-disk))
+              (should (string-suffix-p
+                       (substring content
+                                  (string-match (regexp-quote "body text for entry 5990")
+                                                content))
+                       on-disk))))
+        (when (file-exists-p big-file)
+          (delete-file big-file))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-narrow-widen ()
   "In standalone NeLisp, narrowing should persist and widen should merge edits."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
