@@ -4934,6 +4934,28 @@
                         (setq nemacs-init--seen 0)
                         (setq nemacs-init--failed "")
                         (setq nemacs-init--loaded-mtime mstr)
+                        ;; pre-note every resolved package file from the
+                        ;; companion list: the IMAGE evaluator drops their
+                        ;; defuns anyway, and a big nested package load
+                        ;; inside the image replay crashes the reader —
+                        ;; the registry guards then skip those forms
+                        ;; (package use in the editor = M19-2 transpile)
+                        (let ((plist2 (rdf (concat wrapper "-packages")))
+                              (pi2 0)
+                              (pn2 0)
+                              (pls2 0))
+                          (setq pn2 (length plist2))
+                          (while (< pi2 pn2)
+                            (setq pls2 pi2)
+                            (while (if (< pi2 pn2)
+                                       (if (= (aref plist2 pi2) 10) nil t)
+                                     nil)
+                              (setq pi2 (+ pi2 1)))
+                            (if (> pi2 pls2)
+                                (nemacs-init--note-file
+                                 (substring plist2 pls2 pi2))
+                              nil)
+                            (setq pi2 (+ pi2 1))))
                         (load wrapper nil t)
                         (if (equal nemacs-init--pending "")
                             nil
@@ -11807,19 +11829,148 @@
       (lambda ()
         (backward-delete-char)))
 
-(fset 'self-insert-command
-      (lambda ()
+(fset 'files--insert-text
+      (lambda (text)
         (files--clamp-point)
-        (if (> (length files--bridge-arg) 0)
+        (if (> (length text) 0)
             (progn
               (setq files--buffer-string
                     (concat (substring files--buffer-string 0 files--point)
-                            files--bridge-arg
+                            text
                             (substring files--buffer-string files--point)))
-              (setq files--point (+ files--point (length files--bridge-arg)))
+              (setq files--point (+ files--point (length text)))
               (setq files--buffer-modified-p t)
               (files--clamp-point))
           files--point)))
+
+;; M19-3 Japanese input v1: romaji -> hiragana compose inside the
+;; bridge.  Active while files--input-method (nemacs-input-method
+;; transport) is non-empty; single a-z keys feed the composer instead
+;; of self-inserting.  Kanji conversion (candidates via the user's
+;; google-ime-server.el on the M14 server) is the recorded follow-up.
+(setq files--ime-pending "")
+(setq files--ime-emit "")
+(setq files--ime-table "")
+
+(fset 'files--ime-table-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-table") (files--transport-path))))
+
+(fset 'files--ime-ensure-table
+      (lambda ()
+        ;; the kana strings live in src/nemacs-ime-romaji.tsv and reach
+        ;; the runtime through the transport copy the launcher seeds --
+        ;; multibyte literals inside the source-v1 image crash the
+        ;; replay reader (same constraint as the emoji byte-concat)
+        (if (equal files--ime-table "")
+            (setq files--ime-table (rdf (files--ime-table-path)))
+          nil)
+        files--ime-table))
+
+(fset 'files--ime-lookup
+      (lambda (key)
+        ;; TABLE line scan: KEY\tKANA\n -> kana or ""
+        (files--ime-ensure-table)
+        (let ((text files--ime-table)
+              (i 0)
+              (n 0)
+              (ls 0)
+              (le 0)
+              (ts -1)
+              (out ""))
+          (setq n (length text))
+          (while (< i n)
+            (setq ls i)
+            (setq le i)
+            (setq ts -1)
+            (while (if (< le n) (if (= (aref text le) 10) nil t) nil)
+              (if (if (< ts 0) (= (aref text le) 9) nil)
+                  (setq ts le)
+                nil)
+              (setq le (+ le 1)))
+            (if (if (> ts 0) (equal (substring text ls ts) key) nil)
+                (progn
+                  (setq out (substring text (+ ts 1) le))
+                  (setq i n))
+              (setq i (+ le 1))))
+          out)))
+
+(fset 'files--ime-vowel-p
+      (lambda (c)
+        (if (= c 97) t
+          (if (= c 105) t
+            (if (= c 117) t
+              (if (= c 101) t
+                (if (= c 111) t nil)))))))
+
+(fset 'files--ime-pending-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-pending") (files--transport-path))))
+
+(fset 'files--ime-feed
+      (lambda ()
+        ;; one lowercase key in files--bridge-arg; the compose state
+        ;; lives in the nemacs-ime-pending transport so it survives
+        ;; one-shot bridge processes (one key = one process)
+        (let ((ch (aref files--bridge-arg 0))
+              (cand "")
+              (kana ""))
+          (setq files--ime-pending (rdf (files--ime-pending-path)))
+          (setq files--ime-emit "")
+          ;; pending "n" + non-vowel/non-y/non-n -> nn-kana then continue
+          (if (if (equal files--ime-pending "n")
+                  (if (files--ime-vowel-p ch)
+                      nil
+                    (if (= ch 121) nil (if (= ch 110) nil t)))
+                nil)
+              (progn
+                (setq files--ime-emit (files--ime-lookup "nn"))
+                (setq files--ime-pending ""))
+            nil)
+          ;; same consonant twice -> xtu-kana, keep latest as pending
+          (if (if (> (length files--ime-pending) 0)
+                  (if (= (aref files--ime-pending
+                               (- (length files--ime-pending) 1)) ch)
+                      (if (files--ime-vowel-p ch) nil (if (= ch 110) nil t))
+                    nil)
+                nil)
+              (progn
+                (setq files--ime-emit (concat files--ime-emit (files--ime-lookup "xtu")))
+                (setq files--ime-pending ""))
+            nil)
+          (setq cand (concat files--ime-pending files--bridge-arg))
+          (setq kana (files--ime-lookup cand))
+          (if (equal kana "")
+              (if (< (length cand) 4)
+                  (setq files--ime-pending cand)
+                ;; overflow: drop the stuck prefix, restart from this key
+                (progn
+                  (setq files--ime-pending files--bridge-arg)
+                  (setq kana (files--ime-lookup files--bridge-arg))
+                  (if (equal kana "")
+                      nil
+                    (progn
+                      (setq files--ime-emit (concat files--ime-emit kana))
+                      (setq files--ime-pending "")))))
+            (progn
+              (setq files--ime-emit (concat files--ime-emit kana))
+              (setq files--ime-pending "")))
+          (nl-write-file (files--ime-pending-path) files--ime-pending)
+          (if (equal files--ime-emit "")
+              files--point
+            (files--insert-text files--ime-emit)))))
+
+(fset 'self-insert-command
+      (lambda ()
+        (files--clamp-point)
+        (if (if (equal files--input-method "")
+                nil
+              (if (= (length files--bridge-arg) 1)
+                  (let ((c (aref files--bridge-arg 0)))
+                    (if (>= c 97) (<= c 122) nil))
+                nil))
+            (files--ime-feed)
+          (files--insert-text files--bridge-arg))))
 
 (fset 'files--hex-digit
       (lambda ()
@@ -12375,6 +12526,9 @@
                 (setq files--input-method "default")
               (setq files--input-method ""))
           (setq files--input-method files--bridge-arg))
+        ;; persist: the romaji IME hook reads this state in later
+        ;; one-shot processes (M19-3)
+        (files--write-coding-input-state)
         (setq files--coding-target
               (if (equal files--input-method "") "none" files--input-method))
         (setq files--coding-label "Input method")
