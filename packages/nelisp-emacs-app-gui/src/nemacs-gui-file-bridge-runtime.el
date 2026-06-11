@@ -15537,8 +15537,61 @@
           (nl-write-file (progn (setq files--transport-name "nemacs-view-start") (files--transport-path))
                          (number-to-string (- files--window-start vs))))))
 
+;; M20b: the launcher seeds the theme's font-lock palette here so
+;; syntax/org spans follow the user's color theme instead of the
+;; bridge's built-in defaults (which stay as the no-theme fallback).
+(setq files--face-theme-loaded nil)
+
+(fset 'files--face-theme-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-face-theme") (files--transport-path))))
+
+(fset 'files--face-theme-field
+      (lambda (text key)
+        (let ((i 0)
+              (n (length text))
+              (ls 0)
+              (le 0)
+              (ts -1)
+              (out ""))
+          (while (< i n)
+            (setq ls i)
+            (setq le i)
+            (setq ts -1)
+            (while (if (< le n) (if (= (aref text le) 10) nil t) nil)
+              (if (if (< ts 0) (= (aref text le) 9) nil)
+                  (setq ts le)
+                nil)
+              (setq le (+ le 1)))
+            (if (if (> ts 0) (equal (substring text ls ts) key) nil)
+                (progn
+                  (setq out (substring text (+ ts 1) le))
+                  (setq i n))
+              (setq i (+ le 1))))
+          out)))
+
+(fset 'files--load-face-theme
+      (lambda ()
+        (if files--face-theme-loaded
+            nil
+          (let ((text (rdf (files--face-theme-path)))
+                (v ""))
+            (setq files--face-theme-loaded t)
+            (if (equal text "")
+                nil
+              (progn
+                (setq v (files--face-theme-field text "comment"))
+                (if (equal v "") nil (setq files--face-comment-color v))
+                (setq v (files--face-theme-field text "keyword"))
+                (if (equal v "") nil (setq files--face-keyword-color v))
+                (setq v (files--face-theme-field text "string"))
+                (if (equal v "") nil (setq files--face-string-color v))
+                (setq v (files--face-theme-field text "heading"))
+                (if (equal v "") nil (setq files--face-org-heading-color v))))))))
+
 (fset 'files--write-face-spans-state
       (lambda ()
+        (files--load-face-theme)
         (let ((start files--window-start)
               (limit 0)
               (text "")

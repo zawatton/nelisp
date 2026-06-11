@@ -135,6 +135,10 @@
   `(let* ((paths '("/tmp/nemacs-cmd"
                    "/tmp/nemacs-keys"
                    "/tmp/nemacs-file"
+                   "/tmp/nemacs-face-theme"
+                   "/tmp/nemacs-view"
+                   "/tmp/nemacs-view-point"
+                   "/tmp/nemacs-view-start"
 	                   "/tmp/nemacs-arg"
 	                   "/tmp/nemacs-minibuffer-text"
 	                   "/tmp/nemacs-minibuffer-arg"
@@ -10537,6 +10541,9 @@ and the bridge reports applied/skipped instead of dying silently."
                                  files--face-keyword-p
                                  files--symbol-char-p
                                  files--face-span-line
+                                 files--face-theme-path
+                                 files--face-theme-field
+                                 files--load-face-theme
                                  files--write-face-spans-state)))
                 (push form forms))))
         (end-of-file nil)))
@@ -10549,7 +10556,7 @@ the transport write stubbed, then asserts the resolved spans and the
 fontset decision for an elisp buffer and a CJK buffer."
   (let ((forms (nemacs-gui-file-bridge-runtime-test--face-span-forms))
         (out (make-hash-table :test 'equal)))
-    (should (= 8 (length forms)))
+    (should (= 11 (length forms)))
     (cl-letf (((symbol-function 'nl-write-file)
                (lambda (path text) (puthash path text out))))
       (defvar files--current-file-name)
@@ -10567,6 +10574,7 @@ fontset decision for an elisp buffer and a CJK buffer."
       (defvar files--font-script)
       (defvar files--face-spans-file)
       (defvar files--view-rebase)
+      (defvar files--face-theme-loaded)
       (defvar files--font-file)
       (defvar files--buffer-string)
       (setq files--current-file-name "/tmp/nemacs-face-demo.el"
@@ -10584,6 +10592,7 @@ fontset decision for an elisp buffer and a CJK buffer."
             files--face-org-todo-color "#ff6347"
             files--face-org-done-color "#98fb98"
             files--view-rebase 0
+            files--face-theme-loaded t
             files--font-name ""
             files--font-script ""
             files--face-spans-file "spans"
