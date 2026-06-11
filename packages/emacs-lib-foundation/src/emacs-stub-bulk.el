@@ -9,6 +9,39 @@
 ;; bulk below — a nil-returning `identity' silently breaks every
 ;; `(mapconcat 'identity ...)' pipeline (s.el's s-join returned
 ;; "nil-nil-..." on the standalone reader, found 2026-06-11).
+(unless (fboundp 'float)
+  (defun float (x)
+    "Numeric coercion (never a nil no-op: same hazard as `identity')."
+    (+ x 0.0)))
+(unless (fboundp 'floor)
+  (defun floor (x &optional d)
+    ;; integer pair: exact flooring division without floats (the
+    ;; reader's float division/`integerp' are unreliable - recorded
+    ;; caveat); float input falls back to truncate-and-adjust
+    (if (and d (integerp x) (integerp d))
+        (let ((q (/ x d)))
+          (if (and (/= (* q d) x) (< (* x d) 0))
+              (1- q)
+            q))
+      (progn
+        (when d (setq x (/ (float x) d)))
+        (if (integerp x)
+            x
+          (let ((tr (truncate x)))
+            (if (> (float tr) x) (1- tr) tr)))))))
+(unless (fboundp 'ceiling)
+  (defun ceiling (x &optional d)
+    (when d (setq x (/ (float x) d)))
+    (if (integerp x)
+        x
+      (let ((tr (truncate x)))
+        (if (< (float tr) x) (1+ tr) tr)))))
+(unless (fboundp 'round)
+  (defun round (x &optional d)
+    (when d (setq x (/ (float x) d)))
+    (if (integerp x)
+        x
+      (truncate (if (< x 0) (- x 0.5) (+ x 0.5))))))
 (unless (fboundp 'identity)
   (defun identity (arg)
     "Return ARG unchanged."
@@ -161,7 +194,7 @@ Forwarder to `forward-char' with negated count."
     bool-vector-p boundp bounds-of-thing-at-point buffer-file-name buffer-list buffer-live-p buffer-local-value buffer-modified-p
     buffer-name bufferp buffer-size buffer-string buffer-substring buffer-substring-no-properties byte-code byte-code-function-p
     byte-compile byte-compile-disable-warning byte-compile-enable-warning byte-compile-warning-enabled-p byte-compile-warn-obsolete byte-run--set-speed cancel-timer capitalize-word
-    car car-less-than-car car-safe cdr cdr-safe ceiling characterp char-after
+    car car-less-than-car car-safe cdr cdr-safe characterp char-after
     char-before char-syntax char-table-p char-table-range char-to-string chmod cl--assertion-failed cl--class-allparents
     cl--class-docstring cl--class-index-table cl--class-name cl--class-parents cl--class-slots cl-generic-combine-methods cl--generic-dispatches cl--generic-generalizer-name
     cl--generic-generalizer-p cl--generic-generalizer-priority cl-generic-generalizers cl--generic-generalizer-specializers-function cl--generic-generalizer-tagcode-function cl--generic-make cl-generic-make-generalizer cl--generic-make-method
@@ -181,7 +214,7 @@ Forwarder to `forward-char' with negated count."
     execute-extended-command-for-buffer exit-minibuffer exp expand-file-name face-background-pixmap face-font face-stipple face-underline-p
     fboundp featurep fetch-bytecode field-beginning field-end file-exists-p file-modes file-name-absolute-p
     file-name-extension file-name-nondirectory file-name-sans-extension file-newer-than-file-p file-relative-name file-truename fillarray find-function-search-for-symbol
-    find-lisp-object-file-name flatten-list float floatp float-time floor fmakunbound format
+    find-lisp-object-file-name flatten-list floatp float-time fmakunbound format
     format-message format-prompt format-spec forward-char forward-line forward-sexp forward-word frame-char-height
     frame-char-width frame-height frame-live-p framep frame-parameter frame-parameters frame-selected-window frame-toggle-on-screen-keyboard
     frame-visible-p frame-width fset funcall funcall-with-delayed-message function-documentation functionp function-put
@@ -217,7 +250,7 @@ Forwarder to `forward-char' with negated count."
     put-text-property raise-frame random rassq read read-from-minibuffer read-from-string read-kbd-macro
     read-library-name read-string recenter recenter-top-bottom record recordp redirect-frame-focus regexp-opt
     regexp-quote remember remove-list-of-text-properties rename-buffer repeat replace-match re-search-backward re-search-forward
-    restore-buffer-modified-p reverse round rplaca rplacd run-hooks run-hook-with-args run-hook-with-args-until-success
+    restore-buffer-modified-p reverse rplaca rplacd run-hooks run-hook-with-args run-hook-with-args-until-success
     run-hook-wrapped run-window-configuration-change-hook run-with-idle-timer safe-length save-current-buffer save-excursion save-restriction scroll-bar-scale
     scroll-down scroll-down-command scroll-left scroll-other-window scroll-other-window-down scroll-right scroll-up scroll-up-command
     search-backward-regexp search-forward search-forward-regexp secure-hash selected-frame selected-window select-frame select-window
