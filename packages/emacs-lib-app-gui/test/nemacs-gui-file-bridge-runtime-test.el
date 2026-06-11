@@ -3794,6 +3794,67 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-ime-kanji-convert ()
+  "M19-3b: SPC converts the segment, SPC cycles, a letter commits.
+Hermetic via a PATH-injected fake curl (the M11 stub-ssh pattern)."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let* ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+           (image (nemacs-gui-file-bridge-runtime-test--write-image))
+           (fakebin (make-temp-file "ime-fakecurl" t))
+           (process-environment
+            (cons (concat "PATH=" fakebin ":" (getenv "PATH"))
+                  process-environment)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (with-temp-file (expand-file-name "curl" fakebin)
+              (insert "#!/bin/bash\nprintf '[[\"きょう\",[\"今日\",\"京\"]]]'\n"))
+            (set-file-modes (expand-file-name "curl" fakebin) #o755)
+            (copy-file (expand-file-name
+                        "src/nemacs-ime-romaji.tsv"
+                        nemacs-gui-file-bridge-runtime-test--repo-root)
+                       "/tmp/nemacs-ime-table" t)
+            (write-region "japanese" nil "/tmp/nemacs-input-method" nil 'silent)
+            (dolist (f '("/tmp/nemacs-ime-pending" "/tmp/nemacs-ime-seg"
+                         "/tmp/nemacs-ime-cands" "/tmp/nemacs-ime-idx"))
+              (write-region "" nil f nil 'silent))
+            (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (cl-flet ((key (k)
+                        (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+                        (write-region k nil "/tmp/nemacs-keys" nil 'silent)
+                        (nemacs-gui-file-bridge-runtime-test--run-ok
+                         reader image "(nemacs-gui-file-bridge-run)")))
+              (dolist (k '("k" "y" "o" "u")) (key k))
+              (should (equal "きょう"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (key "SPC")
+              (should (equal "今日"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (key "SPC")
+              (should (equal "京"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (dolist (k '("d" "e")) (key k))
+              (should (equal "京で"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))))
+        (write-region "" nil "/tmp/nemacs-input-method" nil 'silent)
+        (dolist (f '("/tmp/nemacs-ime-pending" "/tmp/nemacs-ime-seg"
+                     "/tmp/nemacs-ime-cands" "/tmp/nemacs-ime-idx"))
+          (when (file-exists-p f)
+            (write-region "" nil f nil 'silent)))
+        (when (file-directory-p fakebin)
+          (delete-directory fakebin t))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-cjk-cursor-cells ()
   "M16: the cursor transport carries display cells (CJK = 2 cells)."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
