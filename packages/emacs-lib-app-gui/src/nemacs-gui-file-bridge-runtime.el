@@ -4957,6 +4957,13 @@
                               nil)
                             (setq pi2 (+ pi2 1))))
                         (load wrapper nil t)
+                        ;; M19-2: the lowered package transpile gives the
+                        ;; image evaluator callable package functions
+                        ;; (raw files drop their defuns there); forms it
+                        ;; cannot evaluate abort alone per top-level unit
+                        (if (files--file-exists-p (concat wrapper "-pkgs-lowered"))
+                            (load (concat wrapper "-pkgs-lowered") nil t)
+                          nil)
                         (if (equal nemacs-init--pending "")
                             nil
                           (progn
@@ -11828,6 +11835,76 @@
 (fset 'delete-backward-char
       (lambda ()
         (backward-delete-char)))
+
+;; M19-2: list-mapping primitives for the transpiled packages.  The
+;; image evaluator has funcall but no mapcar/mapconcat; gate on
+;; fboundp so a host-Emacs load of this file never clobbers the real
+;; builtins.
+(if (fboundp 'mapcar)
+    nil
+  (fset 'mapcar
+        (lambda (f xs)
+          (let ((out nil)
+                (rev nil))
+            (while xs
+              (setq out (cons (funcall f (car xs)) out))
+              (setq xs (cdr xs)))
+            (while out
+              (setq rev (cons (car out) rev))
+              (setq out (cdr out)))
+            rev))))
+
+(if (fboundp 'mapconcat)
+    nil
+  (fset 'mapconcat
+        (lambda (f xs sep)
+          (let ((out "")
+                (first t))
+            (while xs
+              (if first
+                  (setq first nil)
+                (setq out (concat out sep)))
+              (setq out (concat out (funcall f (car xs))))
+              (setq xs (cdr xs)))
+            out))))
+
+(if (fboundp 'identity)
+    nil
+  (fset 'identity (lambda (x) x)))
+
+(if (fboundp 'upcase)
+    nil
+  (fset 'upcase
+        (lambda (s)
+          (let ((out "")
+                (i 0)
+                (n (length s))
+                (c 0))
+            (while (< i n)
+              (setq c (aref s i))
+              (if (if (>= c 97) (<= c 122) nil)
+                  (setq c (- c 32))
+                nil)
+              (setq out (concat out (char-to-string c)))
+              (setq i (+ i 1)))
+            out))))
+
+(if (fboundp 'downcase)
+    nil
+  (fset 'downcase
+        (lambda (s)
+          (let ((out "")
+                (i 0)
+                (n (length s))
+                (c 0))
+            (while (< i n)
+              (setq c (aref s i))
+              (if (if (>= c 65) (<= c 90) nil)
+                  (setq c (+ c 32))
+                nil)
+              (setq out (concat out (char-to-string c)))
+              (setq i (+ i 1)))
+            out))))
 
 (fset 'files--insert-text
       (lambda (text)

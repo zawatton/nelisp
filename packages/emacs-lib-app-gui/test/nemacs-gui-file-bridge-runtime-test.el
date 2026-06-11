@@ -3720,6 +3720,38 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-pkg-transpile-in-image ()
+  "M19-2: transpiled user packages are callable inside the editor image."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (lowered "/tmp/nemacs-init-wrapped-pkgs-lowered"))
+      (unless (and (file-readable-p "/tmp/nemacs-init-wrapped")
+                   (file-readable-p lowered))
+        (ert-skip "wrapped user init / lowered packages not present"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (when (file-exists-p "/tmp/nemacs-init-report")
+              (delete-file "/tmp/nemacs-init-report"))
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-f" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "abc" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             "(progn (nemacs-gui-file-bridge-run) (nl-write-file \"/tmp/nemacs-m192-probe\" (s-join \"-\" (-map (lambda (x) (number-to-string x)) (list 1 2 3)))))")
+            (should (equal "1-2-3"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-m192-probe"))))
+        (when (file-exists-p "/tmp/nemacs-m192-probe")
+          (delete-file "/tmp/nemacs-m192-probe"))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-ime-romaji-compose ()
   "M19-3: C-\\ enables the romaji IME; keys compose hiragana."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
