@@ -3720,6 +3720,48 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-ime-romaji-compose ()
+  "M19-3: C-\\ enables the romaji IME; keys compose hiragana."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (copy-file (expand-file-name
+                        "src/nemacs-ime-romaji.tsv"
+                        nemacs-gui-file-bridge-runtime-test--repo-root)
+                       "/tmp/nemacs-ime-table" t)
+            (write-region "" nil "/tmp/nemacs-ime-pending" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-input-method" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            ;; enable via C-\ (toggles files--input-method to non-empty)
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-\\" nil "/tmp/nemacs-keys" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "default"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-input-method")))
+            (dolist (k '("k" "a" "n" "n" "n" "i"))
+              (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region k nil "/tmp/nemacs-keys" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)"))
+            (should (equal "かんに"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf"))))
+        (dolist (f '("/tmp/nemacs-ime-pending" "/tmp/nemacs-input-method"))
+          (when (file-exists-p f)
+            (write-region "" nil f nil 'silent)))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-cjk-cursor-cells ()
   "M16: the cursor transport carries display cells (CJK = 2 cells)."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
