@@ -670,6 +670,44 @@ Close evidence:
   transports exact span boundaries; the GUI still colors per line by
   the first overlapping span).
 
+** M19. User Config / Japanese Input / Packages-in-Editor (v1 CLOSED 2026-06-11)
+
+User-directed lane bundle (order 1→3→2→4):
+
+- M19-1 custom-lisp: all 30 ~/.nemacs.d/custom-lisp files load on the
+  reader; the Japanese-input trio is wired into init.el and its
+  functions run on the server (=(google-ime--throttle-p "てすと")= →
+  t).
+- M19-3 Japanese input v1: =C-\= toggles a romaji→hiragana composer
+  on the bridge (119-entry table in src/nemacs-ime-romaji.tsv,
+  transported — multibyte bytes anywhere in a source-v1 image crash
+  the replay; compose state in the nemacs-ime-pending transport).
+  Verified: kannnitiha tesuto → かんにちはてすと.  Kanji conversion
+  (candidates via the user's google-ime-server.el on the M14 server)
+  is the recorded follow-up: its HTTP path needs url/json polyfills.
+- M19-2 packages in the editor: the generator transpiles resolved
+  packages to the image dialect (OUT-pkgs-lowered; defun→fset,
+  declare/interactive stripped, pure-ASCII); the bridge loads it and
+  gained gated mapcar/mapconcat/identity/upcase/downcase.  Verified
+  inside the editor image: dash -map → (1 4 9), s-join combo →
+  "1-2-3".
+- M19-4 partials: identity/int-to-string + floor/float/ceiling/round
+  rescued from the nil no-op bulk stub list (integer floor exact);
+  package-heap server SIGSEGV fixed earlier (socket-dir pre-create).
+
+Omissions / next wave (documented once):
+
+- Kanji conversion UI (pending→candidates→commit) and katakana mode.
+- Modeline/minibuffer ImageText16 (Japanese file names still draw
+  via the 8-bit path); GUI intra-line span splitting.
+- ht's constructor/runtime path on the reader; dash's defmacro
+  surface inside the image.
+- Server-path wrapper partial-apply (one init form aborts the
+  remaining wrapper forms there; the bridge path applies fully).
+- Reader findings to upstream: nested-load cap restore shipped; the
+  mkdir-branch heap poisoning, depth-3+ big-file nested loads, float
+  division /=integerp-on-floats, float-input round remain recorded.
+
 * 5. Explicit Non-goals For Initial Roadmap
 
 These should not block the milestones above:
