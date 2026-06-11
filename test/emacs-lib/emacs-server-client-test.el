@@ -66,6 +66,12 @@
     (let* ((sock-dir (make-temp-file "nemacs-server-test" t))
            (sock (expand-file-name "m14test" sock-dir))
            (proc nil))
+      ;; isolate from any wrapped user init left in /tmp by other lanes
+      ;; (a heavy package init can crash the bare reader server)
+      (dolist (f '("/tmp/nemacs-init-wrapped"
+                   "/tmp/nemacs-init-wrapped-packages"
+                   "/tmp/nemacs-init-wrapped-pkgs-lowered"))
+        (when (file-exists-p f) (ignore-errors (delete-file f))))
       (unwind-protect
           (progn
             (setq proc
