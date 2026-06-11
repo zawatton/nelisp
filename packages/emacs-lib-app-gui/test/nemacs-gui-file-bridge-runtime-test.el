@@ -10965,6 +10965,11 @@ fontset decision for an elisp buffer and a CJK buffer."
               (should (equal "unsupported"
                              (nemacs-gui-file-bridge-runtime-test--slurp
                               "/tmp/nemacs-status")))))
+        ;; toggle-input-method now PERSISTS its state (M19-3) — leave
+        ;; the IM off so later tests' letter keys self-insert instead
+        ;; of feeding the romaji composer
+        (write-region "" nil "/tmp/nemacs-input-method" nil 'silent)
+        (write-region "" nil "/tmp/nemacs-transient-input-method" nil 'silent)
         (when (file-exists-p image)
           (delete-file image))))))
 
