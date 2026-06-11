@@ -62,6 +62,30 @@
         (when (file-exists-p driver)
           (delete-file driver))))))
 
-(provide 'external-packages-test)
+
 
 ;;; external-packages-test.el ends here
+
+(ert-deftest external-packages-test/numeric-stubs-not-noop ()
+  "floor/float/ceiling/round are real implementations on the reader."
+  (let ((reader (external-packages-test--reader)))
+    (unless reader (ert-skip "no reader"))
+    (let ((driver (make-temp-file "m194-num" nil ".el")))
+      (unwind-protect
+          (progn
+            (with-temp-file driver
+              (insert
+               (format "(load %S nil t)\n"
+                       (expand-file-name "src/emacs-stub.el" external-packages-test--root))
+               (format "(load %S nil t)\n"
+                       (expand-file-name "src/emacs-stub-bulk.el" external-packages-test--root))
+               (format "(load %S nil t)\n"
+                       (expand-file-name "src/emacs-network-syscall-shim.el" external-packages-test--root))
+               "(nelisp--write-stderr-line (format \"NUM=%S\" (list (floor 7 2) (floor -7 2) (ceiling 3.2) (float 3) (floor 3.7))))\n"))
+            (with-temp-buffer
+              (let ((status (call-process reader nil t nil "--eval"
+                                          (format "(load %S nil t)" driver))))
+                (should (equal 0 status))
+                (should (string-match-p "NUM=(3 -4 4 3 3)" (buffer-string))))))
+        (when (file-exists-p driver) (delete-file driver))))))
+(provide 'external-packages-test)
