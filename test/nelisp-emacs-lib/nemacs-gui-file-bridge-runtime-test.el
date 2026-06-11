@@ -3794,6 +3794,54 @@
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-view-slice ()
+  "M20: buffers beyond the view cap reach the GUI as a rebased slice
+on the view channel while nemacs-buf keeps the full round-trip text."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let* ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+           (image (nemacs-gui-file-bridge-runtime-test--write-image))
+           (content (mapconcat (lambda (i) (format "line-%05d" i))
+                               (number-sequence 1 10000) "\n"))
+           (ws (* 11 9000))   ; line-09001 starts here (11 bytes per line)
+           (pt (+ ws 25)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-f" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region content nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region (number-to-string pt) nil "/tmp/nemacs-point" nil 'silent)
+            (write-region (number-to-string ws) nil "/tmp/nemacs-window-start" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            ;; full text still round-trips on nemacs-buf
+            (should (equal content
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            ;; the GUI view is the window-start slice, rebased
+            (let ((view (nemacs-gui-file-bridge-runtime-test--slurp
+                         "/tmp/nemacs-view")))
+              (should (equal (substring content ws
+                                        (min (length content) (+ ws 49152)))
+                             view))
+              (should (string-prefix-p "line-09001" view)))
+            (should (equal (number-to-string (+ 25 1))
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-view-point")))
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-view-start"))))
+        (dolist (f '("/tmp/nemacs-view" "/tmp/nemacs-view-point"
+                     "/tmp/nemacs-view-start"))
+          (when (file-exists-p f)
+            (delete-file f)))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-ime-kanji-convert ()
   "M19-3b: SPC converts the segment, SPC cycles, a letter commits.
 Hermetic via a PATH-injected fake curl (the M11 stub-ssh pattern)."
@@ -10518,6 +10566,7 @@ fontset decision for an elisp buffer and a CJK buffer."
       (defvar files--font-name)
       (defvar files--font-script)
       (defvar files--face-spans-file)
+      (defvar files--view-rebase)
       (defvar files--font-file)
       (defvar files--buffer-string)
       (setq files--current-file-name "/tmp/nemacs-face-demo.el"
@@ -10534,6 +10583,7 @@ fontset decision for an elisp buffer and a CJK buffer."
             files--face-org-heading-color "#1e90ff"
             files--face-org-todo-color "#ff6347"
             files--face-org-done-color "#98fb98"
+            files--view-rebase 0
             files--font-name ""
             files--font-script ""
             files--face-spans-file "spans"

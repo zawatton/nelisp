@@ -232,6 +232,11 @@
 (setq files--face-spans-file (progn (setq files--transport-name "nemacs-face-spans") (files--transport-path)))
 (setq files--font-file (progn (setq files--transport-name "nemacs-font") (files--transport-path)))
 (setq files--face-span-cap 2048)
+;; M20 view slice: buffers beyond files--view-cap reach the GUI as a
+;; window-start slice on the nemacs-view channel (nemacs-buf keeps the
+;; FULL text for the bridge round-trip and the test contract)
+(setq files--view-cap 49152)
+(setq files--view-rebase 0)
 (setq files--face-spans "")
 (setq files--face-comment-color "#b22222")
 (setq files--face-string-color "#8b2252")
@@ -15457,8 +15462,10 @@
 
 (fset 'files--face-span-line
       (lambda (span-start span-end face color)
-        (concat (number-to-string span-start) "\t"
-                (number-to-string span-end) "\t"
+        ;; offsets are rebased to the GUI view slice (0 for small
+        ;; buffers, window-start when the view is sliced — M20)
+        (concat (number-to-string (- span-start files--view-rebase)) "\t"
+                (number-to-string (- span-end files--view-rebase)) "\t"
                 face "\t"
                 color "\n")))
 
@@ -15495,6 +15502,40 @@
               nil)
             (setq i (+ eol 1)))
           out)))
+
+(fset 'files--view-base
+      (lambda ()
+        (if (> (length files--buffer-string) files--view-cap)
+            (let ((vs files--window-start))
+              (if (> vs (length files--buffer-string))
+                  (setq vs (length files--buffer-string))
+                nil)
+              (if (< vs 0) (setq vs 0) nil)
+              vs)
+          0)))
+
+(fset 'files--write-view-transport
+      (lambda ()
+        ;; the GUI reads ONLY this channel (its text buffer is 64KB and
+        ;; its state words are u16); small buffers pass through whole,
+        ;; so the rel values equal the abs ones there
+        (let ((vs (files--view-base))
+              (ve 0)
+              (rp 0))
+          (setq files--view-rebase vs)
+          (setq ve (+ vs files--view-cap))
+          (if (> ve (length files--buffer-string))
+              (setq ve (length files--buffer-string))
+            nil)
+          (nl-write-file (progn (setq files--transport-name "nemacs-view") (files--transport-path))
+                         (substring files--buffer-string vs ve))
+          (setq rp (- files--point vs))
+          (if (< rp 0) (setq rp 0) nil)
+          (if (> rp (- ve vs)) (setq rp (- ve vs)) nil)
+          (nl-write-file (progn (setq files--transport-name "nemacs-view-point") (files--transport-path))
+                         (number-to-string rp))
+          (nl-write-file (progn (setq files--transport-name "nemacs-view-start") (files--transport-path))
+                         (number-to-string (- files--window-start vs))))))
 
 (fset 'files--write-face-spans-state
       (lambda ()
@@ -15684,6 +15725,7 @@
                 (setq files--modeline-override ""))
             nil)
           (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+          (files--write-view-transport)
           (files--write-face-spans-state))))
 
 (fset 'files--start-minibuffer
