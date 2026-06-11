@@ -11984,6 +11984,194 @@
       (lambda ()
         (progn (setq files--transport-name "nemacs-ime-pending") (files--transport-path))))
 
+;; M19-3b kanji conversion UI: SPC converts the current hiragana
+;; segment through the Google transliterate CGI (the same backend the
+;; user's google-ime-server.el wraps), SPC again cycles candidates,
+;; any letter key commits and starts the next segment.  Candidates
+;; replace the segment IN THE BUFFER (ImageText16 already renders
+;; Japanese there; the minibuffer is still 8-bit — recorded omission).
+;; All conversion state lives in transports (one key = one process).
+
+(fset 'files--ime-seg-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-seg") (files--transport-path))))
+
+(fset 'files--ime-cands-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-cands") (files--transport-path))))
+
+(fset 'files--ime-idx-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-idx") (files--transport-path))))
+
+(fset 'files--ime-raw-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-raw") (files--transport-path))))
+
+(fset 'files--ime-read-num
+      (lambda (path)
+        (let ((text (rdf path))
+              (i 0)
+              (v 0)
+              (any nil))
+          (while (< i (length text))
+            (let ((c (aref text i)))
+              (if (if (>= c 48) (< c 58) nil)
+                  (progn
+                    (setq v (+ (* v 10) (- c 48)))
+                    (setq any t))
+                nil))
+            (setq i (+ i 1)))
+          (if any v -1))))
+
+(fset 'files--ime-commit-state
+      (lambda ()
+        (nl-write-file (files--ime-seg-path) "")
+        (nl-write-file (files--ime-cands-path) "")
+        (nl-write-file (files--ime-idx-path) "")))
+
+(setq files--ime-hex "0123456789ABCDEF")
+
+(fset 'files--url-encode
+      (lambda (text)
+        (let ((out "")
+              (i 0)
+              (n (length text))
+              (c 0))
+          (while (< i n)
+            (setq c (aref text i))
+            (if (if (>= c 48) (< c 58) nil)
+                (setq out (concat out (char-to-string c)))
+              (if (if (>= c 97) (<= c 122) nil)
+                  (setq out (concat out (char-to-string c)))
+                (if (if (>= c 65) (<= c 90) nil)
+                    (setq out (concat out (char-to-string c)))
+                  (setq out (concat out "%"
+                                    (char-to-string (aref files--ime-hex (/ c 16)))
+                                    (char-to-string (aref files--ime-hex (- c (* (/ c 16) 16)))))))))
+            (setq i (+ i 1)))
+          out)))
+
+(fset 'files--ime-fetch
+      (lambda (reading)
+        ;; -> newline-joined candidates ("" on any failure); the fake
+        ;; curl on PATH makes the smoke hermetic (M11 stub-ssh pattern)
+        (if (fboundp 'call-process)
+            (let ((raw "")
+                  (out "")
+                  (i 0)
+                  (n 0)
+                  (in-str nil)
+                  (cur "")
+                  (count 0)
+                  (done nil))
+              (nl-write-file (files--ime-raw-path) "")
+              (call-process "/bin/sh" nil nil nil "-c"
+                            (concat "exec > " (files--ime-raw-path)
+                                    " 2>/dev/null\ncurl -s -m 4 'https://www.google.com/transliterate?langpair=ja-Hira%7Cja&text="
+                                    (files--url-encode reading)
+                                    "'"))
+              (setq raw (rdf (files--ime-raw-path)))
+              (setq n (length raw))
+              (while (if (< i n) (not done) nil)
+                (let ((c (aref raw i)))
+                  (if in-str
+                      (if (= c 34)
+                          (progn
+                            (setq in-str nil)
+                            (if (> count 0)
+                                (setq out (concat out cur "\n"))
+                              nil)
+                            (setq count (+ count 1))
+                            (setq cur ""))
+                        (if (= c 92)
+                            (setq i (+ i 1))
+                          (setq cur (concat cur (char-to-string c)))))
+                    (if (= c 34)
+                        (setq in-str t)
+                      (if (if (= c 93) (if (< (+ i 1) n) (= (aref raw (+ i 1)) 93) nil) nil)
+                          (setq done t)
+                        nil))))
+                (setq i (+ i 1)))
+              out)
+          "")))
+
+(fset 'files--ime-nth-cand
+      (lambda (cands idx)
+        (let ((i 0)
+              (n (length cands))
+              (row 0)
+              (ls 0)
+              (out ""))
+          (while (< i n)
+            (setq ls i)
+            (while (if (< i n) (if (= (aref cands i) 10) nil t) nil)
+              (setq i (+ i 1)))
+            (if (= row idx)
+                (progn
+                  (setq out (substring cands ls i))
+                  (setq i n))
+              nil)
+            (setq row (+ row 1))
+            (setq i (+ i 1)))
+          out)))
+
+(fset 'files--ime-cands-count
+      (lambda (cands)
+        (let ((i 0)
+              (n 0))
+          (while (< i (length cands))
+            (if (= (aref cands i) 10)
+                (setq n (+ n 1))
+              nil)
+            (setq i (+ i 1)))
+          n)))
+
+(fset 'files--ime-replace-segment
+      (lambda (text seg)
+        (files--clamp-point)
+        (setq files--buffer-string
+              (concat (substring files--buffer-string 0 seg)
+                      text
+                      (substring files--buffer-string files--point)))
+        (setq files--point (+ seg (length text)))
+        (setq files--buffer-modified-p t)
+        (files--clamp-point)))
+
+(fset 'files--ime-convert
+      (lambda ()
+        (let ((seg (files--ime-read-num (files--ime-seg-path)))
+              (cands (rdf (files--ime-cands-path)))
+              (idx 0)
+              (reading "")
+              (pick ""))
+          (if (equal cands "")
+              ;; first SPC on the segment: fetch
+              (if (if (>= seg 0) (< seg files--point) nil)
+                  (progn
+                    (setq reading (substring files--buffer-string seg files--point))
+                    (setq cands (files--ime-fetch reading))
+                    (if (equal cands "")
+                        (progn
+                          (setq files--modeline-override "IME: no candidates")
+                          files--point)
+                      (progn
+                        (nl-write-file (files--ime-cands-path) cands)
+                        (nl-write-file (files--ime-idx-path) "0")
+                        (files--ime-replace-segment
+                         (files--ime-nth-cand cands 0) seg))))
+                ;; no live segment: plain space
+                (files--insert-text files--bridge-arg))
+            ;; cycling
+            (progn
+              (setq idx (+ (files--ime-read-num (files--ime-idx-path)) 1))
+              (if (>= idx (files--ime-cands-count cands))
+                  (setq idx 0)
+                nil)
+              (nl-write-file (files--ime-idx-path) (number-to-string idx))
+              (files--ime-replace-segment
+               (files--ime-nth-cand cands idx) seg))))))
+
 (fset 'files--ime-feed
       (lambda ()
         ;; one lowercase key in files--bridge-arg; the compose state
@@ -12035,18 +12223,39 @@
           (nl-write-file (files--ime-pending-path) files--ime-pending)
           (if (equal files--ime-emit "")
               files--point
-            (files--insert-text files--ime-emit)))))
+            (progn
+              ;; a letter after a conversion commits the picked
+              ;; candidate and opens a fresh segment here
+              (if (equal (rdf (files--ime-cands-path)) "")
+                  nil
+                (progn
+                  (files--ime-commit-state)
+                  (nl-write-file (files--ime-seg-path) "")))
+              (files--insert-text files--ime-emit)
+              ;; segment bookkeeping: starts at this kana when no live
+              ;; segment exists
+              (let ((seg (files--ime-read-num (files--ime-seg-path))))
+                (if (if (>= seg 0) (<= seg (- files--point (length files--ime-emit))) nil)
+                    nil
+                  (nl-write-file (files--ime-seg-path)
+                                 (number-to-string
+                                  (- files--point (length files--ime-emit))))))
+              files--point)))))
 
 (fset 'self-insert-command
       (lambda ()
         (files--clamp-point)
         (if (if (equal files--input-method "")
                 nil
-              (if (= (length files--bridge-arg) 1)
-                  (let ((c (aref files--bridge-arg 0)))
-                    (if (>= c 97) (<= c 122) nil))
-                nil))
-            (files--ime-feed)
+              (= (length files--bridge-arg) 1))
+            (let ((c (aref files--bridge-arg 0)))
+              (if (= c 32)
+                  (files--ime-convert)
+                (if (if (>= c 97) (<= c 122) nil)
+                    (files--ime-feed)
+                  (progn
+                    (files--ime-commit-state)
+                    (files--insert-text files--bridge-arg)))))
           (files--insert-text files--bridge-arg))))
 
 (fset 'files--hex-digit
@@ -16430,12 +16639,17 @@
                 nil
               (let ((resolved (files--lookup-key-sequence)))
                 (if (if (equal resolved "")
-                        (if (= (length files--bridge-keys) 1) t nil)
+                        (if (= (length files--bridge-keys) 1)
+                            t
+                          (equal files--bridge-keys "SPC"))
                       nil)
                     (progn
                       (setq resolved "self-insert-command")
                       (if (equal files--bridge-arg "")
-                          (setq files--bridge-arg files--bridge-keys)
+                          (setq files--bridge-arg
+                                (if (equal files--bridge-keys "SPC")
+                                    " "
+                                  files--bridge-keys))
                         nil))
                   nil)
                 (if (equal resolved "")
