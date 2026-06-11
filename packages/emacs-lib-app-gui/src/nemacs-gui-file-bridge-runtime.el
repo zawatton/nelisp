@@ -15503,6 +15503,26 @@
             (setq i (+ eol 1)))
           out)))
 
+;; M22 tool bar: the bridge owns the tool-bar definition (which
+;; buttons exist, their label, and the key sequence each sends when
+;; clicked); the GUI only paints the strip and forwards a click to the
+;; key channel.  Mirrors the stock Emacs -Q tool bar's core file/edit
+;; items.  Format on nemacs-toolbar: LABEL<TAB>KEYS lines, in order.
+(setq files--toolbar-spec
+      (concat "New\tC-x C-f\n"
+              "Open\tC-x C-f\n"
+              "Save\tC-x C-s\n"
+              "Undo\tC-/\n"
+              "Cut\tC-w\n"
+              "Copy\tM-w\n"
+              "Paste\tC-y\n"
+              "Search\tC-s\n"))
+
+(fset 'files--write-toolbar-state
+      (lambda ()
+        (nl-write-file (progn (setq files--transport-name "nemacs-toolbar") (files--transport-path))
+                       files--toolbar-spec)))
+
 (fset 'files--view-base
       (lambda ()
         (if (> (length files--buffer-string) files--view-cap)
@@ -15779,6 +15799,7 @@
             nil)
           (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
           (files--write-view-transport)
+          (files--write-toolbar-state)
           (files--write-face-spans-state))))
 
 (fset 'files--start-minibuffer
