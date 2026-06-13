@@ -57,17 +57,22 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
 - **✅ nl-unix-time-usec builtin SHIPPED (21d8c2cb)**: gettimeofday(96) → sec*1e6+usec を単一
   INTEGER で返す (f64 無しの sub-second 整数 timing)。float-time の前段で発見した foundation。
 - **残 (P1 続き)**: (b') `mod` の float (稀)。current-time (float-time と同様 hand-asm でいける)。
-- **★P2 = runtime stdlib prelude (最重要 next frontier、2026-06-14 精密診断)**: `--load` でも bridge
-  (exec-runtime-image) でも **stdlib prelude 全体が未ロード**と実証: `(nthcdr ...)` (関数)、`(when ...)`
-  (macro)、`(defun ...)` 全て abort。動くのは **native builtin (+, fset, funcall, format, syscall, …) と
-  lambda/funcall のみ**。原因: prelude (`nelisp-standalone--reader-repl-prelude-forms`) は **`--repl`
-  経路でしか load されない** (entry 7014/7033/7066)。eval は runtime macro 展開を**持っている**
-  (`nl_cons_is_macro` + `nl_cons_macro_apply_eval`、combiner-cons) ので、prelude さえ env に入れば
-  `defun`/`when`/`dash`/`s`/`ht` 等は動く見込み。user `~/.nemacs.d` が動くのは wrap-init (build-time) が
-  prelude+展開を bake するから。**→ fix 方向**: bridge image (nemacs-gui-file-bridge.nlri) の preload か
-  exec-runtime-image 経路に **stdlib prelude を bake/load** する (= --repl と同じ prelude を user-code
-  eval env に供給)。これで実行時 `(load kkc.el)` 等の外部 package 直 load が開通。= 日本語入力で
-  google-ime/kkc/skk を **実行時 load** する道。current-time/mod より leverage 大。focused session 向き。
+- **★P2 = runtime stdlib prelude (最重要 next frontier)**: 診断 — `--load`/bridge とも **stdlib
+  prelude 全体が未ロード**で `(defun)`/`(when)`/`(nthcdr)` が abort、native builtin + lambda/funcall のみ
+  動いていた。prelude は `--repl`/`eval` 経路でしか load されず、eval 自体は runtime macro 展開を持つ
+  (`nl_cons_is_macro`/`nl_cons_macro_apply_eval`)。user `~/.nemacs.d` が動くのは wrap-init (build-time)
+  が prelude+展開を bake するから。
+  - **✅ `--load` 経路 SHIPPED (dev/nelisp 0648c718)**: `load` branch に `--repl`/`eval` と同じ
+    `reader-repl-prelude-forms` を注入 → **`target/nelisp --load pkg.el` で実 elisp が動く**。検証:
+    `(defun my-double (x)(* x 2))`→42、`(defun a()1)(defun b()(+ (a)10))`→`(b)`=11、`(fact 5)`=120 (再帰)、
+    `(when t (defun f()42))`→`(f)`=42 (macro 内 defun)、`(nthcdr 1 '(10 20 30))`=(20 30)、float-time 併存。
+    smoke + surface-audit 全 PASS、退行なし。
+  - **残 = bridge 経路 (exec-runtime-image)**: GUI が使う `nemacs-gui-file-bridge.nlri` の **boot env に
+    prelude が無い** (exec-runtime-image は form を eval するだけで prelude を load しない、nelisp-runtime-image.el)。
+    → fix: bridge image の bake (nelisp-emacs `make bake-*-runtime-image` の preload) に stdlib-prelude を
+    含める、または exec-runtime-image が form 前に prelude を load。prelude は自前で bootstrap する
+    (`(fset 'defmacro ...)`→defun→…、fset は動く) ので image に 1 回 load させれば良い。これで GUI 上で
+    実行時 `(load kkc.el/skk.el/google-ime.el)` が開通 = 日本語入力を実行時 load する道。focused session。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
