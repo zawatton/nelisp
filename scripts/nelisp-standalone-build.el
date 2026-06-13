@@ -2504,6 +2504,16 @@ unresolved at link time."
         (if (= (f64-gt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
             (+ t0 1)
           t0)))
+    ;; float-time wrapper: the nl_os_float_time extern must be called from a
+    ;; helper defun (its own frame), not inline in a dispatch arm -- an inline
+    ;; extern call from the spliced dispatch if-chain aborts at runtime (same as
+    ;; nl_sexp_write_float, which only works from wf_fsum/wf_fprod helpers).
+    ;; Write into a fresh scratch slot, then copy to `out' -- exactly like the
+    ;; float arithmetic (nl_sexp_write_float -> scratch, wf_copy32 -> out).
+    ;; Calling the extern with `out' (the dispatch result slot) directly aborts.
+    (defun wf_float_time (out)
+      (let* ((sc (alloc-bytes 32 8)))
+        (seq (nl_os_float_time sc) (wf_copy32 out sc))))
     )
   "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
 
@@ -3558,6 +3568,11 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; nelisp-emacs `float-time'/`current-time' polyfills) read wall-clock
     ;; time without process-exiting on an undispatched builtin.
     ((:lit "nl-current-unix-time") . (wf_write_int out (syscall-direct 201 0 0 0 0 0 0)))
+    ;; float-time: gettimeofday + f64 done entirely in the hand-asm
+    ;; nl_os_float_time extern (so the AOT never emits a syscall<->f64 sequence,
+    ;; which aborts).  Dispatched here in bf-arms (where :lit works) via the
+    ;; wf_float_time helper (an inline extern call from a dispatch arm aborts).
+    ((:lit "float-time") . (wf_float_time out))
     ;; nl-unix-time-usec: microseconds since the epoch as a single INTEGER via
     ;; gettimeofday(2) (__NR_gettimeofday=96): sec*1e6 + usec.  Pure integer math
     ;; after the syscall (no f64), which is the half that works -- f64 production
@@ -5366,6 +5381,56 @@ baked-form path never references; these units resolve them.")
                                :section 'text :bind 'global :type 'func))
      nil)))
 
+;; nl_os_float_time: gettimeofday(2) + the f64 division done INLINE in asm,
+;; bypassing the AOT compiler's syscall<->f64 codegen bug (any AOT-generated
+;; nl_sexp_write_float / f64 op after a `syscall' aborts at runtime; no elisp
+;; polyfill can express float-time -- proven exhaustively).  Same hand-asm
+;; approach as `nl_sexp_write_float' above.  Signature:
+;;   extern "C" fn(out: *mut Sexp) -> *mut Sexp
+;; rdi = out (32-byte slot); fills it with a Float Sexp = tv_sec + tv_usec*1e-6
+;; and returns out.  linux-x86_64 only (__NR_gettimeofday=96), matching the
+;; x86_64-specific reader-float.o; other arches need their own stub.
+(defun nelisp-standalone--float-time-unit ()
+  "Return the raw link unit exporting `nl_os_float_time'."
+  (let ((text (apply #'unibyte-string
+                     ;; rcx/r11 are saved across the body: the `syscall'
+                     ;; instruction clobbers them, and the AOT extern-call model
+                     ;; assumes the callee leaves them intact -- so without this
+                     ;; float-time works at top level but corrupts the
+                     ;; interpreter and aborts when called from inside a defun
+                     ;; (where those registers are live).
+                     '(#x53                              ; push rbx
+                       #x48 #x89 #xfb                    ; mov rbx, rdi  (save out)
+                       #x51                              ; push rcx
+                       #x41 #x53                         ; push r11
+                       #x48 #x83 #xec #x10               ; sub rsp, 16   (timeval)
+                       #x48 #x89 #xe7                    ; mov rdi, rsp  (&tv)
+                       #x31 #xf6                         ; xor esi, esi  (tz = NULL)
+                       #xb8 #x60 #x00 #x00 #x00          ; mov eax, 96   (gettimeofday)
+                       #x0f #x05                         ; syscall
+                       #xf2 #x48 #x0f #x2a #x04 #x24     ; cvtsi2sd xmm0, [rsp]    (sec)
+                       #xf2 #x48 #x0f #x2a #x4c #x24 #x08 ; cvtsi2sd xmm1, [rsp+8] (usec)
+                       #x48 #xb8 #x00 #x00 #x00 #x00 #x80 #x84 #x2e #x41 ; mov rax, bits(1e6)
+                       #x66 #x48 #x0f #x6e #xd0          ; movq xmm2, rax  (= 1000000.0)
+                       #xf2 #x0f #x5e #xca               ; divsd xmm1, xmm2 (usec/1e6)
+                       #xf2 #x0f #x58 #xc1               ; addsd xmm0, xmm1 (sec + usec/1e6)
+                       #x48 #xc7 #x03 #x03 #x00 #x00 #x00 ; mov qword [rbx], 3 (tag Float)
+                       #x66 #x0f #xd6 #x43 #x08          ; movq [rbx+8], xmm0 (f64 bits)
+                       #x48 #xc7 #x43 #x10 #x00 #x00 #x00 #x00 ; mov qword [rbx+16], 0
+                       #x48 #xc7 #x43 #x18 #x00 #x00 #x00 #x00 ; mov qword [rbx+24], 0
+                       #x48 #x89 #xd8                    ; mov rax, rbx  (return out)
+                       #x48 #x83 #xc4 #x10               ; add rsp, 16
+                       #x41 #x5b                         ; pop r11
+                       #x59                              ; pop rcx
+                       #x5b                              ; pop rbx
+                       #xc3))))                          ; ret
+    (nelisp-link-unit-make
+     (nelisp-standalone--target-object-name "float-time.o")
+     (list (cons 'text text))
+     (list (nelisp-link-symbol "nl_os_float_time" 0
+                               :section 'text :bind 'global :type 'func))
+     nil)))
+
 (defun nelisp-standalone--reader-src ()
   "Embedded source text for the reader build (NELISP_SRC; default \"(+ 40 2)\")."
   (or (getenv "NELISP_SRC") "(+ 40 2)"))
@@ -5399,7 +5464,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-readdir-names"
     "nelisp--syscall-utimes" "nelisp--syscall-statx-buf"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
-    "nl-current-unix-time" "nl-unix-time-usec"
+    "nl-current-unix-time" "nl-unix-time-usec" "float-time"
     "exit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
@@ -7602,6 +7667,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
          (extras (mapcar #'nelisp-standalone--reader-extra-unit
                          nelisp-standalone--reader-extra-manifest))
          (float-stub (nelisp-standalone--reader-float-unit))
+         (float-time-stub (nelisp-standalone--float-time-unit))
          ;; real-sf: all real special-form units EXCEPT sf-cc.o (built from the
          ;; WAVE-2 PATCH-4 source below) and the two PERSISTENT-INSTALL escape
          ;; sites (sf-frame-ensure-cap.o / sf-env-set-value2.o), which are built
@@ -7683,7 +7749,7 @@ genuine general interpreter for the 11 special forms + installed builtins."
                        (nelisp-standalone--arena-base-slot-unit))))
     (append (list start driver applyfn) helpers
             (list eval-inner combiner-cons combiner)
-            extras (list float-stub) real-sf
+            extras (list float-stub float-time-stub) real-sf
             (list sf-cc capture errstub fileio catch-throw boundary
                   eval-source neln-demo gc arena)
             (delq nil (list arena-base)))))
