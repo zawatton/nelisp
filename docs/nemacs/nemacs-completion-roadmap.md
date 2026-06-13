@@ -14,6 +14,20 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
 ## 完遂までの残作業 (優先度順)
 
 ### P1. float 算術の core 修正 ★最深 blocker
+- **✅ +/-/* SHIPPED (dev/nelisp ff25f457, 2026-06-14)**: standalone interpreter で
+  `(+ 2.5 2.5)`=5.0, `(* 2.5 2)`=5.0, `(- 5.0 2.0)`=3.0, `(- 2.5)`=-2.5,
+  `(+ 1 2.5)`=3.5 (contagion), multi-arg, `(floatp (+ 2.5 2.5))`=t / `(floatp (+ 1 2))`=nil
+  全 green、integer folds 不変、load/fmt/realrt/process smoke 全 PASS。pure elisp (Rust 0)。
+  真因: `scripts/nelisp-standalone-build.el` の applyfn `wf_sum`/`wf_prod`/`wf_subtail`/`wf_diff`
+  が operand slot+8 を **tag 無検査で raw i64 読み** → Float(tag 3, IEEE-754 bits inline @+8)
+  を整数として fold → garbage。tag-aware fold (`wf_fsum`/`wf_fprod`/`wf_fsubtail`/`wf_fdiff`、
+  acc を u64 bits で carry、f64 は inline のみ、`nl_sexp_write_float` で結果 Sexp 化) を追加。
+- **残 (P1 続き)**: (a) **bridge image への伝播** — nemacs GUI が使う `nemacs-gui-file-bridge.nlri`
+  (nelisp-emacs) が同 applyfn-source を baked 経路で使うか + `reader-float.o`/`nl_sexp_write_float`
+  link 要確認 → 再ビルドで GUI に反映。(b) `/` (division, f64-div で同パターン)、`mod`、`1+`/`1-`
+  の float 化。(c) **float-time / current-time / floor / truncate** (日本語入力 google-ime
+  `(floor (* 1000 (float-time)))` に必須、別 primitive 群)。
+- **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
 - **確定 root cause**: bridge image は `nelisp--add2`/`-float` を含まず `+`/`*` が
