@@ -11,6 +11,17 @@ C-x C-f 開く / 編集 / C-x C-s 保存 (disk write) / M-x (411候補補完) / 
 cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
 動作。user の `~/.nemacs.d` 設定 24/24 適用、dash/s/ht 関数定義済。
 
+## ★日本語入力 E2E 検証 (2026-06-14, P1+P2 後)
+user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-lib/json/url) が
+**bridge (GUI runtime) で full load + client logic 動作**を実証:
+- `(load gime.el)` 完走 (defun/defvar 全 install、require は silent-success)。
+- `google-ime--now-ms` = `(floor (* 1000 (float-time)))` = 正しい ms (P1 float-time)。
+- EWMA RTT float 演算 (`(+ (* 0.75 120.0) (* 0.25 80.0))`=110.0) ✓ (P1 float 算術)。
+- request gating 実行: throttle-p=t / circuit-open-p=nil (now-ms 依存ロジック稼働)。
+- cache: puthash/gethash で CJK 文字列 "値" 往復 ✓。now-ms monotone ✓。
+未検証 = google-ime server への実 network round-trip (server 起動要)。**= 日本語入力の client 側
+全ロジックが GUI runtime で機能。P1 (float-time) + P2 (runtime package load) が実物を unblock した。**
+
 ## 完遂までの残作業 (優先度順)
 
 ### P1. float 算術の core 修正 ★最深 blocker
