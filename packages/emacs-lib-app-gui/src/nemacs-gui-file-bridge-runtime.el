@@ -2602,6 +2602,28 @@
           (files--clamp-point)
           nil)))
 
+;; kill-ring function API for custom commands (the interactive kill-region /
+;; copy-region-as-kill / yank already exist; these are the programmatic entry
+;; points, built on the same files--kill-ring-push / -head machinery).
+(fset 'kill-new
+      (lambda (text &rest _)
+        (setq files--kill-ring-push-text text)
+        (setq files--kill-ring-push-backward nil)
+        (files--kill-ring-push)
+        nil))
+
+(fset 'kill-append
+      (lambda (text before &rest _)
+        (setq files--kill-ring-push-text text)
+        (setq files--kill-ring-push-backward (if before t nil))
+        (files--kill-ring-push)
+        nil))
+
+(fset 'current-kill
+      (lambda (_n &rest _)
+        ;; the most recent kill (the head); older ring entries are not exposed
+        files--kill-ring-head))
+
 (fset 'set-buffer-modified-p
       (lambda (flag)
         (setq files--buffer-modified-p flag)
@@ -13979,51 +14001,75 @@
                 files--point))))))
 
 (fset 'kill-region
-      (lambda ()
-        (files--clamp-point)
-        (files--clamp-mark)
-        (let ((b files--point)
-              (e files--mark))
-          (if (> b e)
-              (let ((tmp b))
-                (setq b e)
-                (setq e tmp))
-            nil)
-          (if (< b e)
-              (progn
-                (setq files--kill-ring-push-text
-                      (substring files--buffer-string b e))
-                (setq files--kill-ring-push-backward nil)
-                (files--kill-ring-push)
-                (setq files--buffer-string
-                      (concat (substring files--buffer-string 0 b)
-                              (substring files--buffer-string e)))
-                (setq files--point b)
-                (setq files--mark b)
-                (setq files--buffer-modified-p t)
-                (files--clamp-point)
-                (files--clamp-mark))
-            files--point))))
+      (lambda (&rest args)
+        (if args
+            ;; function form: (kill-region START END) for custom commands --
+            ;; kill the text to the ring and delete it.
+            (let ((b (car args)) (e (car (cdr args))))
+              (if (> b e) (let ((tmp b)) (setq b e) (setq e tmp)) nil)
+              (if (< b e)
+                  (progn
+                    (kill-new (substring files--buffer-string b e))
+                    (delete-region b e))
+                nil)
+              nil)
+          ;; interactive form: kill the region between point and mark
+          (progn
+            (files--clamp-point)
+            (files--clamp-mark)
+            (let ((b files--point)
+                  (e files--mark))
+              (if (> b e)
+                  (let ((tmp b))
+                    (setq b e)
+                    (setq e tmp))
+                nil)
+              (if (< b e)
+                  (progn
+                    (setq files--kill-ring-push-text
+                          (substring files--buffer-string b e))
+                    (setq files--kill-ring-push-backward nil)
+                    (files--kill-ring-push)
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 b)
+                                  (substring files--buffer-string e)))
+                    (setq files--point b)
+                    (setq files--mark b)
+                    (setq files--buffer-modified-p t)
+                    (files--clamp-point)
+                    (files--clamp-mark))
+                files--point))))))
 
 (fset 'copy-region-as-kill
-      (lambda ()
-        (files--clamp-point)
-        (files--clamp-mark)
-        (let ((b files--point)
-              (e files--mark))
-          (if (> b e)
-              (let ((tmp b))
-                (setq b e)
-                (setq e tmp))
-            nil)
-          (if (< b e)
-              (progn
-                (setq files--kill-ring-push-text
-                      (substring files--buffer-string b e))
-                (setq files--kill-ring-push-backward nil)
-                (files--kill-ring-push))
-            nil)
-          files--point)))
+      (lambda (&rest args)
+        (if args
+            ;; function form: (copy-region-as-kill START END) -- copy to the
+            ;; ring without deleting.
+            (let ((b (car args)) (e (car (cdr args))))
+              (if (> b e) (let ((tmp b)) (setq b e) (setq e tmp)) nil)
+              (if (< b e)
+                  (kill-new (substring files--buffer-string b e))
+                nil)
+              nil)
+          ;; interactive form: copy the region between point and mark
+          (progn
+            (files--clamp-point)
+            (files--clamp-mark)
+            (let ((b files--point)
+                  (e files--mark))
+              (if (> b e)
+                  (let ((tmp b))
+                    (setq b e)
+                    (setq e tmp))
+                nil)
+              (if (< b e)
+                  (progn
+                    (setq files--kill-ring-push-text
+                          (substring files--buffer-string b e))
+                    (setq files--kill-ring-push-backward nil)
+                    (files--kill-ring-push))
+                nil)
+              files--point)))))
 
 (fset 'kill-ring-save
       (lambda ()

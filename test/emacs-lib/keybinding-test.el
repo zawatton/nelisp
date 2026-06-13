@@ -314,6 +314,46 @@ including loops with length-changing replacements."
             (should (string-match-p "pad=\\[N\\] \\[N\\] \\[N\\]" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-kill-yank ()
+  "kill-new / current-kill / yank and the function forms of kill-region /
+copy-region-as-kill give custom commands full copy-paste."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (nl-write-file (progn (setq files--transport-name \"nemacs-last-command\")
+                        (files--transport-path)) \"\")
+  ;; kill-new + current-kill + yank
+  (kill-new \"clip\")
+  (setq files--buffer-string \"abXcd\") (setq files--point 2) (yank)
+  (princ (concat \"yank=\" files--buffer-string \"\\n\"))
+  ;; kill-region function form (kill + delete)
+  (setq files--buffer-string \"hello world\") (setq files--point 11)
+  (kill-region 0 5)
+  (princ (concat \"killfn=\" files--buffer-string \"|\" (current-kill 0) \"\\n\"))
+  ;; copy-region-as-kill function form (copy, no delete)
+  (setq files--buffer-string \"abcdef\") (setq files--point 0)
+  (copy-region-as-kill 1 4)
+  (princ (concat \"copyfn=\" files--buffer-string \"|\" (current-kill 0) \"\\n\"))
+  ;; kill-region INTERACTIVE (no args) still works on point/mark
+  (setq files--buffer-string \"hello world\") (setq files--point 2) (setq files--mark 5)
+  (kill-region)
+  (princ (concat \"killint=\" files--buffer-string \"\\n\"))
+  ;; realistic command: move text via kill + yank
+  (setq files--buffer-string \"AB12\") (setq files--point 0)
+  (defun move-digits () (kill-region 2 4) (goto-char 0) (yank))
+  (move-digits)
+  (princ (concat \"move=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "yank=abclipXcd" out))
+            (should (string-match-p "killfn= world|hello" out))
+            (should (string-match-p "copyfn=abcdef|bcd" out))
+            (should (string-match-p "killint=he world" out))
+            (should (string-match-p "move=12AB" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here
