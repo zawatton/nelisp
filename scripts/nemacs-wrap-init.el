@@ -27,6 +27,12 @@
 ;; (so it is available here) and lowers each define-inline to a plain
 ;; fset the bridge runtime can load — see `nemacs-wrap-init--lower'.
 (require 'inline)
+;; cl-lib / subr-x supply the macros (cl-loop, cl-return-from, cl-incf,
+;; when-let, …) that the bridge runtime cannot define (it has no defmacro);
+;; the lowering macroexpand-all's each defun body here so they reach the
+;; bridge as primitives — see `nemacs-wrap-init--expand-defun-body'.
+(require 'cl-lib)
+(require 'subr-x)
 
 (defun nemacs-wrap-init--find-defalias (form)
   "Find a (defalias \\='NAME #\\='(lambda ...)) node anywhere in FORM.
@@ -102,6 +108,22 @@ absolute file or nil."
             (setq found cand)))))
     found))
 
+(defun nemacs-wrap-init--expand-defun-body (name body)
+  "Lower a defun BODY (of function NAME) to bridge-runnable primitives.
+Strips declare/interactive and a leading docstring, wraps the rest in
+`cl-block' NAME, and `macroexpand-all's it (this full Emacs has cl-lib /
+subr-x) so cl-loop / cl-return-from / cl-incf / pcase / when-let etc. lower
+to catch/throw/let/while/if/setq.  Returns a one-element list (the expanded
+form) for splicing; on any expansion error falls back to the cleaned body
+forms verbatim (no worse than before)."
+  (let ((clean (seq-remove (lambda (f) (memq (car-safe f) '(declare interactive)))
+                           body)))
+    (when (and (stringp (car clean)) (cdr clean))
+      (setq clean (cdr clean)))
+    (condition-case nil
+        (list (macroexpand-all (cons 'cl-block (cons name clean))))
+      (error clean))))
+
 (defun nemacs-wrap-init--lower (form)
   "Lower FORM to the runtime-image dialect the bridge executes.
 The image replay evaluator does not wire `defun' / `defvar' /
@@ -112,14 +134,12 @@ report's failed list."
   (cond
    ((not (consp form)) form)
    ((and (eq (car form) 'defun) (>= (length form) 3))
-    ;; strip declare/interactive: the image evaluator executes lambda
-    ;; bodies verbatim and has neither macro
+    ;; the image evaluator executes lambda bodies verbatim and has no
+    ;; macro layer, so macroexpand the body to primitives here
     `(fset ',(nth 1 form)
            (lambda ,(nth 2 form)
-             ,@(let ((body (nthcdr 3 form)))
-                 (seq-remove (lambda (f)
-                               (memq (car-safe f) '(declare interactive)))
-                             body)))))
+             ,@(nemacs-wrap-init--expand-defun-body (nth 1 form)
+                                                    (nthcdr 3 form)))))
    ((and (memq (car form) '(defvar defcustom)) (>= (length form) 3))
     `(if (boundp ',(nth 1 form)) nil (setq ,(nth 1 form) ,(nth 2 form))))
    ((and (eq (car form) 'defconst) (>= (length form) 3))
