@@ -12062,9 +12062,14 @@
         ;; Local SKK CDB conversion first (no network, no curl) via the baked
         ;; nemacs-runtime-skk.el; fall through to the Google transliterate curl
         ;; path on a miss / when the local dictionary is unavailable.
-        (let ((skk-out (if (fboundp 'skk-convert-string)
-                           (skk-convert-string reading)
-                         nil)))
+        ;; `skk-convert-auto' covers both nouns (okuri-nasi: みらい -> 未来) and
+        ;; conjugated verbs / adjectives (auto okuri-ari: はしる -> 走る, かく ->
+        ;; 核 ... 書く), so the SPC-cycle reaches the verb form too.
+        (let ((skk-out (cond ((fboundp 'skk-convert-auto)
+                              (skk-convert-auto reading))
+                             ((fboundp 'skk-convert-string)
+                              (skk-convert-string reading))
+                             (t nil))))
         (if skk-out
             skk-out
         ;; -> newline-joined candidates ("" on any failure); the fake

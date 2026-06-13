@@ -57,6 +57,19 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
     xdotool の画面打鍵テストは **user の実機 (実 display あり) か Xvfb 入り CI でのみ可能**。本 sandbox の
     最大証明 = 上記 function-level keystroke E2E。X11 keypress→bridge dispatch 経路は editor の編集/M-x/
     toolbar で既に実証済、IME 変換関数も実証済 = conversion 正しさは確定、画面 render のみ本環境で未確認。
+- **✅✅ 送り仮名 (okuri-ari) SHIPPED — 動詞/形容詞の活用変換 (2026-06-14)**: 名詞 (okuri-nasi) だけ
+  だった変換を **活用語まで拡張**。SKK okuri-ari key = 読み幹 + 送り仮名先頭かなの五十音「列」字
+  (か行→k, ら行→r, ま行→m, が行→g…; 母音始まり送り = 母音自身 い→i/う→u) で、辞書値 = 漢字「幹」
+  (かk→/書/)、editor が送り仮名を付け戻す (書+く=書く)。実装 = `nemacs-runtime-skk.el` に
+  `skk-okuri--column` 表 + `skk-convert-okuri` / `-first` / `-string` + `skk-convert-auto` (shift 無しで
+  bare 読みを noun+verb 両候補に merge)。**byte-string model 対応** (substring は byte index、かな=3byte)、
+  `equal` のみ依存 (assoc 非使用)。
+  - **engine 検証 10/10 PASS**: 書く 走る 読む 泳ぐ 話す 待つ 高い 買う 食べる 新しい (godan/ichidan/形容詞 全)。
+  - **配線**: `files--ime-fetch` を `skk-convert-auto` に切替 = noun も verb も同じ SPC-cycle で到達。
+    はしる→走る/迸る/奔る、たかい→他界/高井/高い、かう→斯う/買う/飼う/交う。
+  - **✅ keystroke E2E (実 bridge image、buffer 変換)**: `はしる` +SPC→**走る**→迸る→奔る (cycle)、
+    `たかい` +SPC→他界→高井→**高い**。= 名詞 E2E (みらい→未来→味蕾) を**動詞・形容詞まで拡張**、
+    bridge 無傷で boot、ローカル SKK 辞書、network 無し。
 
 ## 🎌★✅ ローカル日本語変換エンジン SHIPPED (2026-06-14, GUI runtime で実動作・network 不要)
 **SKK CDB 辞書経由の kana-kanji 変換が GUI runtime で動く** (canonical image に bake 済、stress 100 PASS)。
