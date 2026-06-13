@@ -335,6 +335,39 @@ to 格 (the learned choice floated to the front)."
         (delete-file image)
         (delete-file cdb)))))
 
+(ert-deftest skk-okuri-conversion-test/standalone-dict-builder ()
+  "build-skk-dict.sh produces a working CDB the runtime can convert against.
+Builds from a UTF-8 fixture jisyo (the iconv/EUC path is exercised by the real
+system dict) and checks a runtime lookup against the result."
+  (skk-okuri-conversion-test--skip-unless-standalone
+    (let* ((reader (skk-okuri-conversion-test--reader))
+           (image (skk-okuri-conversion-test--build-image t))
+           (script (skk-okuri-conversion-test--path "scripts/build-skk-dict.sh"))
+           (src (make-temp-file "skk-builder-src-" nil ".tsv"))
+           (out (make-temp-file "skk-builder-out-" nil ".cdb")))
+      (unwind-protect
+          (progn
+            (should (file-readable-p script))
+            (with-temp-file src
+              (insert "みらい /未来/味蕾/\nかんじ /漢字/幹事/\n"))
+            ;; make-temp-file created OUT; remove it so the builder does not
+            ;; treat it as an up-to-date CDB and skip.
+            (delete-file out)
+            (should (equal 0 (call-process "sh" nil nil nil script src out)))
+            (should (file-exists-p out))
+            (should (> (nth 7 (file-attributes out)) 2048)) ; header + records
+            (let ((res (skk-okuri-conversion-test--run
+                        reader image
+                        (format "(progn (setq skk-cdb-dict-path %S)
+  (princ (concat \"mirai=\" (or (skk-convert-first \"みらい\") \"NIL\")
+                 \" kanji=\" (or (skk-convert-first \"かんじ\") \"NIL\") \"\\n\")))"
+                                out))))
+              (should (string-match-p "mirai=未来" res))
+              (should (string-match-p "kanji=漢字" res))))
+        (when (file-exists-p src) (delete-file src))
+        (when (file-exists-p out) (delete-file out))
+        (delete-file image)))))
+
 (provide 'skk-okuri-conversion-test)
 
 ;;; skk-okuri-conversion-test.el ends here
