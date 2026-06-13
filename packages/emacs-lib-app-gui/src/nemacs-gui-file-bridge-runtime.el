@@ -7633,7 +7633,10 @@
       (lambda ()
         (files--save-current-buffer-state)
         (let ((bindings ""))
-          (setq files--key-list-source files--keymap-source)
+          ;; user bindings (global-set-key overlay) first, so describe-bindings
+          ;; lists what the dispatch actually runs
+          (setq files--key-list-source
+                (concat (rdf (files--user-keymap-path)) files--keymap-source))
           (setq bindings (files--binding-list-from-source))
           (setq files--key-list-source files--minibuffer-keymap-source)
           (setq bindings (concat bindings
