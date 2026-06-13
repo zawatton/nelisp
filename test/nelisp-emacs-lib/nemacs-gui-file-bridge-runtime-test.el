@@ -139,6 +139,7 @@
                    "/tmp/nemacs-view"
                    "/tmp/nemacs-view-point"
                    "/tmp/nemacs-view-start"
+                   "/tmp/nemacs-toolbar-click"
 	                   "/tmp/nemacs-arg"
 	                   "/tmp/nemacs-minibuffer-text"
 	                   "/tmp/nemacs-minibuffer-arg"

@@ -15523,6 +15523,38 @@
         (nl-write-file (progn (setq files--transport-name "nemacs-toolbar") (files--transport-path))
                        files--toolbar-spec)))
 
+;; M22: map a tool-bar click x-coordinate to the clicked button's key
+;; sequence.  Mirrors the GUI strip layout (nemacs--toolbar-draw-form):
+;; buttons start at x=6 and each is (14 + LABEL-chars*9) px wide, in spec
+;; order.  Returns "" when the click lands past the last button.
+(fset 'files--toolbar-keys-at-x
+      (lambda (clickx)
+        (let ((spec files--toolbar-spec)
+              (i 0) (n 0) (tx 6) (found "") (done nil))
+          (setq n (length spec))
+          (while (if (< i n) (not done) nil)
+            (let ((lstart i) (llen 0) (keys ""))
+              (while (if (< i n)
+                         (if (= (aref spec i) 9) nil (if (= (aref spec i) 10) nil t))
+                       nil)
+                (setq i (+ i 1)))
+              (setq llen (- i lstart))
+              (if (if (< i n) (= (aref spec i) 9) nil)
+                  (progn
+                    (setq i (+ i 1))
+                    (let ((ks i))
+                      (while (if (< i n) (if (= (aref spec i) 10) nil t) nil)
+                        (setq i (+ i 1)))
+                      (setq keys (substring spec ks i))))
+                nil)
+              (if (if (< i n) (= (aref spec i) 10) nil) (setq i (+ i 1)) nil)
+              (let ((bw (+ 14 (* llen 9))))
+                (if (if (>= clickx tx) (< clickx (+ tx bw)) nil)
+                    (progn (setq found keys) (setq done t))
+                  nil)
+                (setq tx (+ tx bw)))))
+          found)))
+
 (fset 'files--view-base
       (lambda ()
         (if (> (length files--buffer-string) files--view-cap)
@@ -17836,6 +17868,30 @@
           (setq files--bridge-target target)
           (setq files--bridge-arg arg)
 	          (setq files--bridge-keys keys)
+	          ;; M22: a tool-bar click arrives as the button's x-coordinate on
+	          ;; nemacs-toolbar-click; resolve it to that button's key sequence
+	          ;; so the normal key-dispatch path runs the command, then clear
+	          ;; the channel so a following keypress fork does not re-fire it.
+	          (let* ((tbpath (progn (setq files--transport-name "nemacs-toolbar-click")
+	                                (files--transport-path)))
+	                 (tbclick (rdf tbpath)))
+	            (if (equal tbclick "")
+	                nil
+	              (progn
+	                (nl-write-file tbpath "")
+	                ;; a click drives the bridge solely through the resolved
+	                ;; key sequence; clear any stale cmd so it cannot fire, and
+	                ;; an out-of-range click (keys "") becomes a clean no-op
+	                (setq files--bridge-command nil)
+	                (setq files--bridge-effective-command "")
+	                (let ((cx 0) (ci 0))
+	                  (while (< ci (length tbclick))
+	                    (let ((ch (aref tbclick ci)))
+	                      (if (if (>= ch 48) (< ch 58) nil)
+	                          (setq cx (+ (* cx 10) (- ch 48)))
+	                        nil))
+	                    (setq ci (+ ci 1)))
+	                  (setq files--bridge-keys (files--toolbar-keys-at-x cx))))))
 			          (setq files--bridge-minibuffer-text minibuffer-text)
 				          (setq files--bridge-minibuffer-arg minibuffer-arg)
 				          (setq files--prefix-arg prefix-arg-text)
