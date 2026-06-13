@@ -48,6 +48,12 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
   minibuffer ("Find file: ")、out-of-range → no-op、キーボード併存。
 - 注意: Xephyr GUI テスト前に **stale な bridge session + session-pid を必ずクリア**
   (残骸が "session did not respond" で全 input 不調に見える)。
+- **M23b ハードニング (gui 5074068)**: mx.sh が FIFO書込ブロック(3s)/無応答(5s)を検出
+  した楔(wedge)化セッションを自動退役 (kill + ready/response 除去) → 次リクエストで
+  ensure_nelisp_bridge_session が新セッションを再生成。これにより上記「全 input 不調・
+  手動 kill まで復旧不能」が **稼働中は次キーで自動復旧** に緩和 (Xephyr 前の手動クリアは
+  残骸 process 一掃の保険として依然推奨)。検証: 抽出 2 関数で両 failure branch を駆動
+  (FIFO blocked / no-response) → 退役確認、stress-nemacs-session.sh 100 happy-path green。
 
 ### P4. 安定した視覚テスト基盤 ✅ SHIPPED (nelisp-gui 7a39b47)
 - 旧状態: nemacs GUI binary は X socket path に表示番号 '0' をハードコード (sa[18]=48) し
