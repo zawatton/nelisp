@@ -17887,7 +17887,22 @@
               nil
             (progn
 	            (setq files--current-file-name target)
-	            (setq files--buffer-string snapshot)
+	            ;; M20 Stage 2: large files reach the GUI only as a <=48KB
+	            ;; slice (its text buffer is 64KB), so its nemacs-buf snapshot is
+	            ;; capped.  The launcher seeds the authoritative FULL buffer into
+	            ;; the buffer store (cp INITBUF buffer-store/main); on the GUI's
+	            ;; first SESSION call, prefer it when it carries more than the
+	            ;; snapshot so editing/saving a big file operates on the whole
+	            ;; text (no truncation).  This is gated on session mode: per-call
+	            ;; command lanes (ERT, mx.sh fallback) drive the store directly
+	            ;; and must keep loading the snapshot verbatim.
+	            (if files--bridge-session-active
+	                (let ((store-full (rdf (concat files--buffer-store-dir "/"
+	                                               (if (equal buffer-name "") "main" buffer-name)))))
+	                  (if (> (length store-full) (length snapshot))
+	                      (setq files--buffer-string store-full)
+	                    (setq files--buffer-string snapshot)))
+	              (setq files--buffer-string snapshot))
 		          (setq files--kill-ring-head kill-text)
 		          (setq files--kill-ring kill-ring-text)
                   (setq files--rectangle-kill rectangle-kill-text)
