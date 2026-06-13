@@ -2531,6 +2531,45 @@
 (fset 'current-column
       (lambda () (- files--point (line-beginning-position))))
 
+;; save-excursion: save point, run BODY, restore point (even on non-local exit
+;; -- unwind-protect works as a special form here).  Single-buffer model, so
+;; only point is saved.  save-restriction is a no-op wrapper (no narrowing).
+(defmacro save-excursion (&rest body)
+  (list 'let (list (list '--save-excursion-point-- 'files--point))
+        (list 'unwind-protect
+              (cons 'progn body)
+              (list 'setq 'files--point '--save-excursion-point--))))
+
+(defmacro save-restriction (&rest body)
+  (cons 'progn body))
+
+;; looking-at: non-nil if REGEXP matches the text starting AT point.  Anchors
+;; by checking the match begins at offset 0 of the from-point substring; sets
+;; the nlre match-data so match-beginning/-end work after.
+(fset 'looking-at
+      (lambda (regexp)
+        (let ((m (nlre-string-match regexp
+                                    (substring files--buffer-string files--point))))
+          (if m (= m 0) nil))))
+
+(fset 'looking-at-p
+      (lambda (regexp) (looking-at regexp)))
+
+;; re-search-forward: search from point; on a match move point to the match end
+;; and return it.  Returns nil on no match (i.e. behaves as NOERROR -- the
+;; bridge has no error-signalling search path for custom commands).
+(fset 're-search-forward
+      (lambda (regexp &rest _)
+        (let* ((start files--point)
+               (m (nlre-string-match regexp
+                                     (substring files--buffer-string start))))
+          (if m
+              (progn
+                (setq files--point (+ start (nlre-match-end 0)))
+                (files--clamp-point)
+                files--point)
+            nil))))
+
 (fset 'set-buffer-modified-p
       (lambda (flag)
         (setq files--buffer-modified-p flag)
@@ -13864,27 +13903,48 @@
           nil)))
 
 (fset 'delete-region
-      (lambda ()
+      (lambda (&rest args)
         (files--clamp-point)
-        (files--clamp-mark)
-        (let ((b files--point)
-              (e files--mark))
-          (if (> b e)
-              (let ((tmp b))
-                (setq b e)
-                (setq e tmp))
-            nil)
-          (if (< b e)
-              (progn
-                (setq files--buffer-string
-                      (concat (substring files--buffer-string 0 b)
-                              (substring files--buffer-string e)))
-                (setq files--point b)
-                (setq files--mark b)
-                (setq files--buffer-modified-p t)
-                (files--clamp-point)
-                (files--clamp-mark))
-            files--point))))
+        (if args
+            ;; function form: (delete-region START END) for custom commands.
+            ;; Point shifts left past the deletion (Emacs semantics), so it is
+            ;; not collapsed to the region start like the interactive form.
+            (let ((b (car args))
+                  (e (car (cdr args))))
+              (if (> b e) (let ((tmp b)) (setq b e) (setq e tmp)) nil)
+              (if (< b e)
+                  (progn
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 b)
+                                  (substring files--buffer-string e)))
+                    (if (> files--point e)
+                        (setq files--point (- files--point (- e b)))
+                      (if (> files--point b) (setq files--point b) nil))
+                    (setq files--buffer-modified-p t)
+                    (files--clamp-point))
+                nil)
+              nil)
+          ;; interactive form: delete the region between point and mark
+          (progn
+            (files--clamp-mark)
+            (let ((b files--point)
+                  (e files--mark))
+              (if (> b e)
+                  (let ((tmp b))
+                    (setq b e)
+                    (setq e tmp))
+                nil)
+              (if (< b e)
+                  (progn
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 b)
+                                  (substring files--buffer-string e)))
+                    (setq files--point b)
+                    (setq files--mark b)
+                    (setq files--buffer-modified-p t)
+                    (files--clamp-point)
+                    (files--clamp-mark))
+                files--point))))))
 
 (fset 'kill-region
       (lambda ()
