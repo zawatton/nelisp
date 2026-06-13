@@ -7556,7 +7556,10 @@
 	          (if (equal key "")
 	              (setq key "unknown")
 	            nil)
-	          (setq files--lookup-key-source files--keymap-source)
+	          ;; include user bindings (global-set-key overlay) so describe-key
+	          ;; reports what the dispatch would actually run
+	          (setq files--lookup-key-source
+	                (concat (rdf (files--user-keymap-path)) files--keymap-source))
 	          (setq files--lookup-key-target key)
 	          (setq command
 	                (files--lookup-key-command-in-source))
@@ -7691,7 +7694,10 @@
               (setq command "unknown")
             nil)
           (setq files--lookup-key-target command)
-          (setq files--key-list-source files--keymap-source)
+          ;; include user bindings (global-set-key overlay) so where-is reports
+          ;; the keys a user actually bound to the command
+          (setq files--key-list-source
+                (concat (rdf (files--user-keymap-path)) files--keymap-source))
           (setq keys (files--keys-for-command-in-source))
           (setq files--key-list-source files--minibuffer-keymap-source)
           (setq keys

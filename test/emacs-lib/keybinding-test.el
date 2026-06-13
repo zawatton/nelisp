@@ -43,6 +43,9 @@
                       "(fset 'files--user-keymap-remove"
                       "(rdf (files--user-keymap-path))"))
       (should (string-match-p (regexp-quote needle) source)))
+    ;; describe-key / where-is must include the user overlay in their source
+    (should (string-match-p (regexp-quote "so describe-key") source))
+    (should (string-match-p (regexp-quote "so where-is reports") source))
     ;; the funcall fallback so a user defun bound to a key actually runs
     (should (string-match-p
              (regexp-quote "(fboundp files--bridge-command)") source))))
@@ -189,6 +192,27 @@ keybindings from the user's own config work, not just programmatic calls."
               (should (string-match-p "config=abcZ" out))))
         (delete-file image)
         (when (file-directory-p tdir) (delete-directory tdir t))))))
+
+(ert-deftest keybinding-test/standalone-discoverability ()
+  "describe-key / where-is reflect user bindings (the global-set-key overlay)."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"abc\") (setq files--point 0)
+  (nl-write-file (files--user-keymap-path) \"\")
+  (defun kb-disc-cmd () nil)
+  (global-set-key \"C-t\" 'kb-disc-cmd)
+  (setq files--bridge-arg \"C-t\") (describe-key)
+  (princ (concat \"dk=\" files--buffer-string \"\\n\"))
+  (setq files--bridge-arg \"kb-disc-cmd\") (where-is)
+  (princ (concat \"wi=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "dk=C-t runs the command kb-disc-cmd" out))
+            (should (string-match-p "wi=kb-disc-cmd is on C-t" out)))
+        (delete-file image)))))
 
 (provide 'keybinding-test)
 
