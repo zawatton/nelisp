@@ -41,11 +41,14 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
   を GUI IR に追加してクリックで command 送信。
 - 視覚検証は P4 が前提。
 
-### P4. 安定した視覚テスト基盤
-- nemacs GUI binary は X socket path に表示番号 '0' をハードコードし **DISPLAY env を
-  無視** → Xephyr/Xvfb で視覚テスト不可、:0 は WM focus-stealing で xdotool 不安定。
-- 修正: launcher が DISPLAY 番号を transport file に書き、GUI IR が socket path 構築で
-  それを読む (現状ハードコード byte 48 を可変に)。これで Xephyr 上の決定的な視覚回帰が可能。
+### P4. 安定した視覚テスト基盤 ✅ SHIPPED (nelisp-gui 7a39b47)
+- 旧状態: nemacs GUI binary は X socket path に表示番号 '0' をハードコード (sa[18]=48) し
+  DISPLAY を無視 → Xephyr/Xvfb で視覚テスト不可、:0 は WM focus-stealing で xdotool 不安定。
+- 修正済: transport transform `nemacs--patch-x-display` が sa[18] を 48+NEMACS_X_DISPLAY_NUM
+  (単一桁, default 0=透過) に bake。bin/nemacs が DISPLAY (=:N) から桁を導出し build へ渡し、
+  変更時 rebuild (nemacs-win.x-display で追跡)。**Xephyr で `DISPLAY=:2 bin/nemacs FILE` が
+  :2 に window 出現を実証** (820x540 IsViewable)。:0/unset は 48 で byte 不変=回帰なし。
+- → M20 scroll / M22 等の **WM-free な決定的視覚回帰が可能に**。残: :10+ (2桁 display) 未対応。
 - memory: `feedback_nemacs_gui_binary_hardcodes_display_zero`
 
 ### P5. テスト健全化 (task #25)
