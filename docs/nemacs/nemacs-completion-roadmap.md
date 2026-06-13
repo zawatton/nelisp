@@ -52,6 +52,11 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   `未来` (第1候補)、cands=`未来\n味蕾`、もう一度 SPC → `味蕾` (cycle)。= **editor の実 IME 関数で
   みらい→未来→味蕾 と buffer が変換**、ローカル SKK 辞書、network 無し。= 漢字変換 keystroke E2E 完了。
   残 = Xephyr 上の visual 確認 (xdotool で romaji 打鍵→画面に漢字) のみ = 純粋な visual 検証。
+  - **⚠️ visual test は本 headless sandbox では実行不可 (環境制約)**: X server 無し (Xvfb 不在 +
+    passwordless sudo 無し + Xorg は HW/root 要)、`verify-nemacs-gui.sh` は既存 DISPLAY 前提。= Xephyr/
+    xdotool の画面打鍵テストは **user の実機 (実 display あり) か Xvfb 入り CI でのみ可能**。本 sandbox の
+    最大証明 = 上記 function-level keystroke E2E。X11 keypress→bridge dispatch 経路は editor の編集/M-x/
+    toolbar で既に実証済、IME 変換関数も実証済 = conversion 正しさは確定、画面 render のみ本環境で未確認。
 
 ## 🎌★✅ ローカル日本語変換エンジン SHIPPED (2026-06-14, GUI runtime で実動作・network 不要)
 **SKK CDB 辞書経由の kana-kanji 変換が GUI runtime で動く** (canonical image に bake 済、stress 100 PASS)。
