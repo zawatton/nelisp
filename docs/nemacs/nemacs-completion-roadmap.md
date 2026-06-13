@@ -30,9 +30,11 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
 - ⚠️ **url-util (`url-hexify-string`)** = `(load url-util.el)` 単体では動くが **source-v1 progn replay に
   bake すると top-level form が abort** し以降 (bridge source) を巻き添えにする (bridge-fn=nil + stress 失敗)。
   → bake から除外。url-hexify は google-ime で 1 箇所のみ。follow-up (どの form が abort か特定 or load 経路化)。
-- ⚠️ **network (`make-network-process`/`process-send-string`/`url-retrieve-synchronously`)** = bridge image に
-  未登録 (fboundp nil)。memory `project_nelisp_emacs_network_stack` では実装済 → image への wire-in が要。
-  google-ime の実 round-trip に必須。= 次の focused piece。
+- ✅ **network (`make-network-process`/`process-send-string`)** = `emacs-network-syscall-shim` +
+  `emacs-network-ffi` + `emacs-process` + `emacs-process-events` (~1800行) を **bridge image に bake**
+  (gui 8025ec2、dep 順)。これらは source-v1 replay でクリーンに load (url-util と異なり bridge 無傷)、
+  canonical image で fboundp=t、stress test 100 PASS。**= google-ime の依存は url-hexify 以外全て GUI
+  runtime に存在** (json/network/cl macro/float-time)。残 = 実 IME server 起動 + 実 round-trip 検証。
 
 ## 完遂までの残作業 (優先度順)
 
