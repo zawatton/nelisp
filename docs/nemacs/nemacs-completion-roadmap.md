@@ -36,10 +36,18 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
 - → これらが揃うと user の日本語入力 (google-ime / kkc / skk) が動く。
 - memory: `project_nemacs_user_config_parity_map`
 
-### P3. M22 toolbar (task, GUI)
-- bridge 定義の toolbar を GUI が描画 (render は M22 で配線済) → **ButtonPress decode**
-  を GUI IR に追加してクリックで command 送信。
-- 視覚検証は P4 が前提。
+### P3. M22 toolbar ✅ SHIPPED (bridge 15c0467 + gui 0a065dd)
+- bridge 定義の toolbar を GUI が描画 → クリックで command 送信、end-to-end 完成。
+- bridge: `files--toolbar-keys-at-x` が click-x を strip layout (x=6 から幅 14+chars*9)
+  で walk して該当ボタンの keys を解決 → 通常の key dispatch。out-of-range は no-op。
+- GUI: (1) **event-mask に ButtonPress(0x4) を追加 (32769→32773)** ← 最大の落とし穴、
+  これが無いとクリックが window に届かない。(2) et=4 ButtonPress 分岐を additive 追加
+  (eventY<18 で eventX を nemacs-toolbar-click へ書込+fork)。(3) mx.sh が非空
+  toolbar-click を supported 扱いで forward。
+- **Xephyr :2 で検証**: Save → disk 保存 (hello→zhello)、New/Open → find-file
+  minibuffer ("Find file: ")、out-of-range → no-op、キーボード併存。
+- 注意: Xephyr GUI テスト前に **stale な bridge session + session-pid を必ずクリア**
+  (残骸が "session did not respond" で全 input 不調に見える)。
 
 ### P4. 安定した視覚テスト基盤 ✅ SHIPPED (nelisp-gui 7a39b47)
 - 旧状態: nemacs GUI binary は X socket path に表示番号 '0' をハードコード (sa[18]=48) し
