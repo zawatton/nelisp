@@ -214,6 +214,60 @@
     (should (equal (nelisp-ec-executable-find "/tools/tool") "/tools/tool"))
     (should-not (nelisp-ec-executable-find "/tools/not-executable"))))
 
+;;;; A'. Standalone reader: access(2) via `nelisp--syscall-path-int'
+;; On nemacs the only working access backend is the raw syscall-by-number
+;; primitive (`nelisp-sys-access' / `nl-syscall-access' are unbound and
+;; `nelisp--syscall-stat' misreports).  These tests mock that primitive so
+;; the access-preferring branches are exercised under host Emacs too.
+
+(ert-deftest emacs-fileio-builtins-test/access-prefers-syscall-path-int ()
+  "`nelisp-ec--access' routes through `nelisp--syscall-path-int' when present."
+  (let ((seen nil))
+    (cl-letf (((symbol-function 'nelisp--syscall-path-int)
+               (lambda (nr file mode)
+                 (setq seen (cons (list nr file mode) seen))
+                 (if (and (equal file "/bin/sh") (eq mode 0)) 0 -1)))
+              ;; The legacy access backends must not be consulted.
+              ((symbol-function 'nelisp-sys-access)
+               (lambda (&rest _) (error "path-int must win")))
+              ((symbol-function 'nl-syscall-access)
+               (lambda (&rest _) (error "path-int must win"))))
+      (should (eq 0 (nelisp-ec--access "/bin/sh" 0)))
+      (should (member (list nelisp-ec--syscall-access-number "/bin/sh" 0) seen))
+      (should (eq -1 (nelisp-ec--access "/bin/sh" 1))))))
+
+(ert-deftest emacs-fileio-builtins-test/file-exists-p-uses-access-f-ok ()
+  "`nelisp-ec-file-exists-p' uses access(F_OK), not the misreporting stat."
+  (cl-letf (((symbol-function 'nelisp--syscall-path-int)
+             (lambda (_nr file mode)
+               (if (and (equal file "/exists") (eq mode 0)) 0 -1)))
+            ((symbol-function 'nelisp--syscall-stat)
+             (lambda (&rest _) (error "access F_OK must win"))))
+    (should (nelisp-ec-file-exists-p "/exists"))
+    (should-not (nelisp-ec-file-exists-p "/missing"))))
+
+(ert-deftest emacs-fileio-builtins-test/file-executable-p-uses-access-x-ok ()
+  "`nelisp-ec-file-executable-p' wraps access(X_OK) through the primitive."
+  (cl-letf (((symbol-function 'nelisp--syscall-path-int)
+             (lambda (_nr file mode)
+               (if (and (equal file "/bin/tool") (eq mode 1)) 0 -1))))
+    (should (nelisp-ec-file-executable-p "/bin/tool"))
+    (should-not (nelisp-ec-file-executable-p "/bin/data"))
+    (should-error (nelisp-ec-file-executable-p 42))))
+
+(ert-deftest emacs-fileio-builtins-test/executable-find-uses-syscall-path-int ()
+  "`nelisp-ec-executable-find' walks PATH with X_OK via the syscall primitive."
+  (let ((seen nil))
+    (cl-letf (((symbol-function 'getenv)
+               (lambda (v) (and (equal v "PATH") "/nope:/tools")))
+              ((symbol-function 'nelisp--syscall-path-int)
+               (lambda (_nr file mode)
+                 (setq seen (cons (list file mode) seen))
+                 (if (equal file "/tools/tool") 0 -1))))
+      (should (equal "/tools/tool" (nelisp-ec-executable-find "tool")))
+      (should (member '("/nope/tool" 1) seen))
+      (should (member '("/tools/tool" 1) seen)))))
+
 (ert-deftest emacs-fileio-builtins-test/locate-library-finds-el-file ()
   (let* ((dir (emacs-fileio-builtins-test--tmp-path "load-path"))
          (file (expand-file-name "sample-lib.el" dir))
