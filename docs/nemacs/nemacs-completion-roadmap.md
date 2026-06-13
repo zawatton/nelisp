@@ -44,12 +44,17 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   (open=2/pread64=17/close=3)、hash = 整数 djb (64-bit、32-bit overflow 無し)、header は hash-table cache。
 - stdlib-extra に `substring-no-properties`(=substring) + `%`(=mod; 未定義 `%` は **segfault**、builtin は mod のみ) 追加。
 - vendor core に nemacs-runtime-cdb.el を bake (gui 1e52744)。
-- **検証 (canonical image)**: test CDB に対し みらい→`/未来/みらい/ミライ/`、にほん→`/日本/二本/`、
-  へんかん→`/変換/`、miss→nil。bridge/network/float-time 無傷。= **GUI 上で実際の日本語変換 (yomi→漢字) が
-  network 無しで動作**。task #29 (buffer-free file-read) の核 = 実装完了。
-- 残: skk-convert.el の CDB 生成 (with-temp-buffer 依存、要 buffer or syscall write 経路) と実 SKK-JISYO.L
-  からの CDB build (host で 1 回 build すれば bridge は lookup のみで動く)。google-ime upstream (url-retrieve +
-  buffer) は別経路だが、skk CDB が network 不要で動くため日本語入力の**最短路は完成に近い**。
+- **✅ 実辞書で検証済 (canonical image)**: user の実 **SKK-JISYO.L.utf8 (175,774 entries, 10MB)** から CDB を
+  build (`nelisp-emacs/scripts/skk-jisyo-to-cdb.py`、host-free python、ddskk の with-temp-buffer builder 不要) し、
+  bridge GUI runtime で cdb-get が**実際の辞書候補を返す**:
+  - みらい→`/未来/味蕾/`、にほん→`/日本/二本/`、とうきょう→`/東京/東教/`、
+    かんじ→`/漢字/幹事;manager/監事;inspector/感じ/…` (注釈付)、あい→`/愛/相/藍/間/合/…`。
+  - 辞書原文と完全一致。10MB 辞書でも pread の range read で軽量 (全 load しない)。
+  - = **GUI runtime で本物の日本語変換 (yomi→漢字候補) が network 無し・実辞書で動作**。
+- 残: (1) cdb-get を skk の**入力ループ**に配線 (editor key → yomi 蓄積 → cdb-get → 候補選択 → 挿入) =
+  input-method の editor 側統合。(2) CDB は host で 1 回 build (上記 script、bridge は lookup のみ)。
+  google-ime upstream (url-retrieve+buffer) は別経路で skk が network 不要のため必須でない。
+  **= 日本語変換エンジンは実辞書で完動。残は editor 入力ループ配線 (operational)。**
 
 **★✅ network round-trip COMPLETE (2026-06-14、bridge で full E2E 動作)**: make-network-process →
 process-send-string → accept-process-output → filter で **echo server から "ECHO:ping" 受信成功**
