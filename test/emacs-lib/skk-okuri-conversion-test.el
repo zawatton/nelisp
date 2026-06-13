@@ -179,7 +179,8 @@ exact key forms the engine derives -- so the test depends on no host dict."
       (insert "かk /書/描/\n")
       (insert "たかi /高/\n")
       (insert ";; okuri-nasi entries.\n")
-      (insert "みらい /未来/味蕾/\n"))
+      (insert "みらい /未来/味蕾/\n")
+      (insert "かく /核/格/各/角/\n"))
     (let ((status (call-process "python3" nil nil nil
                                 skk-okuri-conversion-test--cdb-builder
                                 dict cdb)))
@@ -248,6 +249,47 @@ merged stream is fine."
                               cdb))))
             (should (string-match-p "spc1=走る" out))
             (should (string-match-p "spc2=迸る" out)))
+        (delete-file image)
+        (delete-file cdb)))))
+
+(ert-deftest skk-okuri-conversion-test/standalone-okuri-marking-keystrokes ()
+  "SKK okuri marking: a mid-reading capital routes the okurigana so the verb
+converts directly.  か K u SPC -> 書く (not the noun 核 the plain reading gives).
+Drives the real self-insert-command dispatch (lowercase compose, capital marker,
+SPC convert)."
+  (skk-okuri-conversion-test--skip-unless-standalone
+    (let ((reader (skk-okuri-conversion-test--reader))
+          (image (skk-okuri-conversion-test--build-image t))
+          (cdb (skk-okuri-conversion-test--build-fixture-cdb)))
+      (unwind-protect
+          (let ((out (skk-okuri-conversion-test--run
+                      reader image
+                      (format "(progn (setq skk-cdb-dict-path %S)
+  (setq files--input-method \"default\")
+  ;; --- か K u SPC : capital K marks the okurigana start ---
+  (setq files--buffer-string \"\") (setq files--point 0)
+  (files--ime-commit-state) (nl-write-file (files--ime-pending-path) \"\")
+  (setq files--bridge-arg \"k\") (self-insert-command)
+  (setq files--bridge-arg \"a\") (self-insert-command)
+  (setq files--bridge-arg \"K\") (self-insert-command)
+  (setq files--bridge-arg \"u\") (self-insert-command)
+  (princ (concat \"reading=\" files--buffer-string
+                 \" mark=\" (number-to-string (files--ime-read-num (files--ime-okuri-path))) \"\\n\"))
+  (setq files--bridge-arg \" \") (self-insert-command)
+  (princ (concat \"okuri=\" files--buffer-string \"\\n\"))
+  ;; --- plain か く SPC : no capital -> the noun, unchanged ---
+  (setq files--buffer-string \"\") (setq files--point 0)
+  (files--ime-commit-state) (nl-write-file (files--ime-pending-path) \"\")
+  (setq files--bridge-arg \"k\") (self-insert-command)
+  (setq files--bridge-arg \"a\") (self-insert-command)
+  (setq files--bridge-arg \"k\") (self-insert-command)
+  (setq files--bridge-arg \"u\") (self-insert-command)
+  (setq files--bridge-arg \" \") (self-insert-command)
+  (princ (concat \"noun=\" files--buffer-string \"\\n\")))"
+                              cdb))))
+            (should (string-match-p "reading=かく mark=3" out))
+            (should (string-match-p "okuri=書く" out))
+            (should (string-match-p "noun=核" out)))
         (delete-file image)
         (delete-file cdb)))))
 

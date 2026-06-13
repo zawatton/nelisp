@@ -12013,6 +12013,13 @@
       (lambda ()
         (progn (setq files--transport-name "nemacs-ime-raw") (files--transport-path))))
 
+;; SKK okuri (送り仮名) marker: byte position in the buffer where the
+;; okurigana starts, set when a capital letter is typed mid-reading.  "" / -1
+;; means no marker (plain noun conversion).
+(fset 'files--ime-okuri-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-okuri") (files--transport-path))))
+
 (fset 'files--ime-read-num
       (lambda (path)
         (let ((text (rdf path))
@@ -12033,7 +12040,8 @@
       (lambda ()
         (nl-write-file (files--ime-seg-path) "")
         (nl-write-file (files--ime-cands-path) "")
-        (nl-write-file (files--ime-idx-path) "")))
+        (nl-write-file (files--ime-idx-path) "")
+        (nl-write-file (files--ime-okuri-path) "")))
 
 (setq files--ime-hex "0123456789ABCDEF")
 
@@ -12168,7 +12176,25 @@
               (if (if (>= seg 0) (< seg files--point) nil)
                   (progn
                     (setq reading (substring files--buffer-string seg files--point))
-                    (setq cands (files--ime-fetch reading))
+                    ;; okuri-ari (送り仮名) path: a marker set by a mid-reading
+                    ;; capital splits the reading into stem + okurigana, so the
+                    ;; verb/adjective converts directly (か|く -> 書く) instead of
+                    ;; cycling past the noun homophones.
+                    (let ((omark (files--ime-read-num (files--ime-okuri-path))))
+                      (if (if (>= omark 0)
+                              (if (> omark seg) (< omark files--point) nil)
+                            nil)
+                          (let ((stem (substring files--buffer-string seg omark))
+                                (oku (substring files--buffer-string
+                                                omark files--point)))
+                            (setq cands
+                                  (if (fboundp 'skk-convert-okuri-string)
+                                      (or (skk-convert-okuri-string stem oku) "")
+                                    ""))
+                            (if (equal cands "")
+                                (setq cands (files--ime-fetch reading))
+                              nil))
+                        (setq cands (files--ime-fetch reading))))
                     (if (equal cands "")
                         (progn
                           (setq files--modeline-override "IME: no candidates")
@@ -12271,9 +12297,26 @@
                   (files--ime-convert)
                 (if (if (>= c 97) (<= c 122) nil)
                     (files--ime-feed)
-                  (progn
-                    (files--ime-commit-state)
-                    (files--insert-text files--bridge-arg)))))
+                  ;; A-Z mid-reading = SKK okuri marker: lowercase + feed it,
+                  ;; and record the okurigana-start position (the point just
+                  ;; before this kana) so SPC converts via the okuri-ari path.
+                  (if (if (>= c 65) (<= c 90) nil)
+                      (let ((pre files--point)
+                            (seg (files--ime-read-num (files--ime-seg-path))))
+                        (setq files--bridge-arg (char-to-string (+ c 32)))
+                        (files--ime-feed)
+                        (if (if (>= seg 0)
+                                (if (< seg pre)
+                                    (< (files--ime-read-num
+                                        (files--ime-okuri-path)) 0)
+                                  nil)
+                              nil)
+                            (nl-write-file (files--ime-okuri-path)
+                                           (number-to-string pre))
+                          nil))
+                    (progn
+                      (files--ime-commit-state)
+                      (files--insert-text files--bridge-arg))))))
           (files--insert-text files--bridge-arg))))
 
 (fset 'files--hex-digit
