@@ -48,7 +48,14 @@
                       "(defmacro when-let* "
                       "(defmacro if-let* "
                       "(defmacro when-let "
-                      "(defmacro if-let "))
+                      "(defmacro if-let "
+                      "(unless (fboundp 'add-to-list)"
+                      "(unless (fboundp 'ignore)"
+                      "(unless (fboundp 'string-blank-p)"
+                      "(unless (fboundp 'string-remove-prefix)"
+                      "(unless (fboundp 'string-remove-suffix)"
+                      "(unless (fboundp 'cl-find)"
+                      "(unless (fboundp 'cl-remove-duplicates)"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -129,6 +136,35 @@
             (should (string-match-p "wl-miss=nil" out))
             (should (string-match-p "il-else=else" out))
             (should (string-match-p "wl-single=84" out)))
+        (delete-file image)))))
+
+(ert-deftest runtime-stdlib-extra-test/standalone-init-helpers ()
+  "add-to-list + string/cl helpers behave correctly on the standalone runtime."
+  (runtime-stdlib-extra-test--skip-unless-standalone
+    (let ((reader (runtime-stdlib-extra-test--reader))
+          (image (runtime-stdlib-extra-test--build-image)))
+      (unwind-protect
+          (let ((out (runtime-stdlib-extra-test--run
+                      reader image
+                      "(progn
+  (set 'lp '(\"/b\")) (add-to-list 'lp \"/a\") (add-to-list 'lp \"/b\") (add-to-list 'lp \"/c\" t)
+  (princ (concat
+    \"atl=\" (format \"%S\" (symbol-value 'lp)) \"\\n\"
+    \"atl-fresh=\" (format \"%S\" (add-to-list 'fresh-var 'x)) \"\\n\"
+    \"ignore=\" (format \"%S\" (ignore 1 2)) \" always=\" (format \"%S\" (always 9)) \"\\n\"
+    \"blank-y=\" (format \"%S\" (string-blank-p \"   \")) \" blank-n=\" (format \"%S\" (string-blank-p \" x \")) \"\\n\"
+    \"rmpre=\" (string-remove-prefix \"foo-\" \"foo-bar\") \" rmsuf=\" (string-remove-suffix \".el\" \"init.el\") \"\\n\"
+    \"clfind=\" (format \"%S\" (cl-find 3 '(1 2 3 4))) \"\\n\"
+    \"clfind-key=\" (format \"%S\" (cl-find 2 '((a 1) (b 2)) :key 'cadr)) \"\\n\"
+    \"clrmdup=\" (format \"%S\" (cl-remove-duplicates '(1 2 1 3 2))) \"\\n\")))")))
+            (should (string-match-p "atl=(\"/a\" \"/b\" \"/c\")" out))
+            (should (string-match-p "atl-fresh=(x)" out))
+            (should (string-match-p "ignore=nil always=t" out))
+            (should (string-match-p "blank-y=0 blank-n=nil" out))
+            (should (string-match-p "rmpre=bar rmsuf=init" out))
+            (should (string-match-p "clfind=3" out))
+            (should (string-match-p "clfind-key=(b 2)" out))
+            (should (string-match-p "clrmdup=(1 3 2)" out)))
         (delete-file image)))))
 
 (provide 'runtime-stdlib-extra-test)
