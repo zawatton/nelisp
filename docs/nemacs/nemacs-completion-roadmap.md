@@ -36,7 +36,20 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   canonical image で fboundp=t、stress test 100 PASS。**= google-ime の依存は url-hexify 以外全て GUI
   runtime に存在** (json/network/cl macro/float-time)。
 
-## 🎌★✅ ローカル日本語変換 SHIPPED (2026-06-14, GUI runtime で実動作・network 不要)
+## 🎌★✅ 日本語入力 編集ループ 完成 (2026-06-14, romaji→かな→漢字 が editor で動作・network 不要)
+**bridge editor で full Japanese input loop が動く** (canonical image、stress 100 PASS、退行なし)。
+- bridge は既に romaji→hiragana 合成 (M19-3、`files--ime-feed`) を持ち、SPC で `files--ime-convert`
+  → `files--ime-fetch` → 候補 → segment 置換/cycle する仕組みがあった。`files--ime-fetch` は Google
+  transliterate の curl 経路のみで、漢字変換は "recorded follow-up" だった。
+- **配線 (bridge 6de320b)**: `files--ime-fetch` が **baked 済 local SKK CDB (`skk-convert-string`) を最初に
+  試し**、miss 時のみ curl fallback。= **network 無しで romaji→かな→SPC→漢字候補→SPC で cycle**。
+- **検証 (canonical image)**: `files--ime-fetch "みらい"`→`未来\n味蕾\n`、`"にほん"`→`日本\n二本\n`、
+  `files--ime-nth-cand "かんじ"`→漢字、`cands-count`=12。既存 IME 候補 machinery (nth-cand/count/replace/cycle)
+  と統合。stress 100 PASS、bridge 無傷。
+- **= 編集器で実際に日本語が打てる** (romaji→かな→漢字、ローカル辞書、network 不要)。残 = Xephyr 上の
+  実キーストローク visual E2E (M19-3 合成 + この変換配線の通し確認) のみ = visual 検証 task。
+
+## 🎌★✅ ローカル日本語変換エンジン SHIPPED (2026-06-14, GUI runtime で実動作・network 不要)
 **SKK CDB 辞書経由の kana-kanji 変換が GUI runtime で動く** (canonical image に bake 済、stress 100 PASS)。
 - `nemacs-runtime-cdb.el` (nelisp-emacs 5096c73) = **buffer-free syscall CDB reader**。ddskk cdb.el は
   buffer (with-current-buffer/insert-file-contents-literal/buffer-substring) + string `aset` 依存で bridge 不可、
