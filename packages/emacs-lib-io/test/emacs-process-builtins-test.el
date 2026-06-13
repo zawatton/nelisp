@@ -388,6 +388,52 @@
                          sym)
                  nil t))))))
 
+;;;; K. Standalone-reader stdout capture (nelisp-process async primitives)
+;; These exercise the capture path logic directly with mocked
+;; `nelisp-process-*' primitives, so they run under host Emacs (where
+;; the live `call-process' stays native and the path is gated off).
+
+(ert-deftest emacs-process-builtins-test/capture-available-p ()
+  (cl-letf (((symbol-function 'nelisp-process-start) (lambda (&rest _) nil))
+            ((symbol-function 'nelisp-process-wait) (lambda (&rest _) nil))
+            ((symbol-function 'nelisp-process-read-output) (lambda (&rest _) nil)))
+    (should (emacs-process--standalone-capture-available-p))))
+
+(ert-deftest emacs-process-builtins-test/call-process-target-buffer ()
+  (with-temp-buffer
+    (should (null (emacs-process--call-process-target-buffer nil)))
+    (should (null (emacs-process--call-process-target-buffer 0)))
+    (should (eq (current-buffer) (emacs-process--call-process-target-buffer t)))
+    ;; A list uses its car (the stdout destination).
+    (should (eq (current-buffer) (emacs-process--call-process-target-buffer '(t "errs"))))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-captures-stdout ()
+  "stdout is drained chunk-by-chunk (to the nil EOF marker) into DESTINATION."
+  (let ((chunks (list "hello " "world\n"))
+        (waited nil))
+    (cl-letf (((symbol-function 'nelisp-process-start)
+               (lambda (program &rest _args) (list 'proc program)))
+              ((symbol-function 'nelisp-process-read-output)
+               (lambda (_proc _n) (pop chunks)))
+              ((symbol-function 'nelisp-process-wait)
+               (lambda (_proc) (setq waited t) 0)))
+      (with-temp-buffer
+        (let ((rc (emacs-process--standalone-call-process "/bin/echo" t '("hi"))))
+          (should (eq rc 0))
+          (should waited)
+          (should (equal (buffer-string) "hello world\n")))))))
+
+(ert-deftest emacs-process-builtins-test/standalone-call-process-discards-and-keeps-rc ()
+  "nil DESTINATION discards stdout but the non-zero exit code survives."
+  (let ((chunks (list "noise-should-be-dropped")))
+    (cl-letf (((symbol-function 'nelisp-process-start) (lambda (&rest _) 'p))
+              ((symbol-function 'nelisp-process-read-output) (lambda (_p _n) (pop chunks)))
+              ((symbol-function 'nelisp-process-wait) (lambda (_p) 3)))
+      (with-temp-buffer
+        (let ((rc (emacs-process--standalone-call-process "/bin/false" nil '())))
+          (should (eq rc 3))
+          (should (equal (buffer-string) "")))))))
+
 (provide 'emacs-process-builtins-test)
 
 ;;; emacs-process-builtins-test.el ends here
