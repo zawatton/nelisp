@@ -34,7 +34,17 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   `emacs-network-ffi` + `emacs-process` + `emacs-process-events` (~1800行) を **bridge image に bake**
   (gui 8025ec2、dep 順)。これらは source-v1 replay でクリーンに load (url-util と異なり bridge 無傷)、
   canonical image で fboundp=t、stress test 100 PASS。**= google-ime の依存は url-hexify 以外全て GUI
-  runtime に存在** (json/network/cl macro/float-time)。残 = 実 IME server 起動 + 実 round-trip 検証。
+  runtime に存在** (json/network/cl macro/float-time)。
+
+**★network round-trip の実 blocker 特定 (2026-06-14)**: make-network-process は baked + 呼べるが、実
+ipv4 connect が `(error PORT)` で失敗。真因 = **`emacs-network-ffi.el` の ipv4 path 全体 (inet_pton /
+make-sockaddr-in / connect / setsockopt) が `nl-ffi-call` (libffi) ベース**で、standalone bridge には
+**FFI が無い** (`ffi-call`/`dlopen` fboundp=nil、`syscall-direct` のみ=t)。FFI は撤去された build-tool/Rust
+由来。memory の「TCP round-trip 検証済」は FFI 有り context の話。**→ fix = ipv4 socket path を FFI でなく
+`syscall-direct` で再実装**: socket(__NR=41) / connect(__NR=42) / setsockopt、`sockaddr_in` (16B: family=2,
+port BE u16, addr BE u32, 8B zero) を alloc-bytes+ptr-write で手組、inet_pton は "a.b.c.d" の手動 split
+(FFI 不要)。UNIX socket path (connect-unix) も同様に FFI 依存か要確認。= 日本語入力 live round-trip の
+最後の focused piece。bridge は syscall-direct を持つので実装可能 (GUI event loop が既に syscall 使用)。
 
 ## 完遂までの残作業 (優先度順)
 
