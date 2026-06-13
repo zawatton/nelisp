@@ -67,12 +67,14 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
     `(defun my-double (x)(* x 2))`→42、`(defun a()1)(defun b()(+ (a)10))`→`(b)`=11、`(fact 5)`=120 (再帰)、
     `(when t (defun f()42))`→`(f)`=42 (macro 内 defun)、`(nthcdr 1 '(10 20 30))`=(20 30)、float-time 併存。
     smoke + surface-audit 全 PASS、退行なし。
-  - **残 = bridge 経路 (exec-runtime-image)**: GUI が使う `nemacs-gui-file-bridge.nlri` の **boot env に
-    prelude が無い** (exec-runtime-image は form を eval するだけで prelude を load しない、nelisp-runtime-image.el)。
-    → fix: bridge image の bake (nelisp-emacs `make bake-*-runtime-image` の preload) に stdlib-prelude を
-    含める、または exec-runtime-image が form 前に prelude を load。prelude は自前で bootstrap する
-    (`(fset 'defmacro ...)`→defun→…、fset は動く) ので image に 1 回 load させれば良い。これで GUI 上で
-    実行時 `(load kkc.el/skk.el/google-ime.el)` が開通 = 日本語入力を実行時 load する道。focused session。
+  - **✅ bridge 経路 SHIPPED (gui cbb9648)**: bridge image (`nemacs-gui-file-bridge.nlri`) は source-v1
+    (bridge source を progn 包み) で exec-runtime-image が replay する。mx.sh `build_nelisp_bridge_image`
+    が **stdlib prelude を image source 先頭に prepend** → boot env に full library 供給。prelude は
+    fset で self-bootstrap (defmacro→defun→…) するので source-v1 replay で load 完走、bridge source
+    (fset-based、後勝ち) は無傷。検証: canonical image rebuild 後 runtime `(defun dd (x)(* x 2))`→`(dd 21)`=42、
+    `(when t 7)`=7、float-time 併存、bridge 関数 fboundp=t、**session stress test 100 PASS (退行なし)**。
+    → **GUI 上で実行時 `(load pkg.el)` で実 elisp が動く** = google-ime/kkc/skk を実行時 load する道が開通。
+  - **= P2 完了 (--load + bridge 両経路)**。残は外部 package の実依存 (cl-lib 関数, json, url 等) の充足。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
