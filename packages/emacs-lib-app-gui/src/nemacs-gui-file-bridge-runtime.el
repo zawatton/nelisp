@@ -2543,11 +2543,17 @@
 (defmacro save-restriction (&rest body)
   (cons 'progn body))
 
+;; The absolute buffer offset the last bridge search/looking-at matched against
+;; (the nlre match-data is relative to a from-point substring, so the bridge
+;; match-beginning/-end add this to translate to absolute buffer positions).
+(setq files--last-match-offset 0)
+
 ;; looking-at: non-nil if REGEXP matches the text starting AT point.  Anchors
-;; by checking the match begins at offset 0 of the from-point substring; sets
-;; the nlre match-data so match-beginning/-end work after.
+;; by checking the match begins at offset 0 of the from-point substring; records
+;; the offset so match-beginning/-end / replace-match see absolute positions.
 (fset 'looking-at
       (lambda (regexp)
+        (setq files--last-match-offset files--point)
         (let ((m (nlre-string-match regexp
                                     (substring files--buffer-string files--point))))
           (if m (= m 0) nil))))
@@ -2563,12 +2569,38 @@
         (let* ((start files--point)
                (m (nlre-string-match regexp
                                      (substring files--buffer-string start))))
+          (setq files--last-match-offset start)
           (if m
               (progn
                 (setq files--point (+ start (nlre-match-end 0)))
                 (files--clamp-point)
                 files--point)
             nil))))
+
+;; Absolute buffer positions of the last bridge search's group N (the from-point
+;; offset + the nlre relative position).  Kept bridge-local (not as the global
+;; match-beginning/-end, which other baked code uses with relative semantics) so
+;; replace-match and search-and-replace commands get absolute positions safely.
+(fset 'files--match-beginning-abs
+      (lambda (n) (+ files--last-match-offset (nlre-match-beginning n))))
+(fset 'files--match-end-abs
+      (lambda (n) (+ files--last-match-offset (nlre-match-end n))))
+
+;; replace-match: replace the text of the last match (group 0) with NEWTEXT,
+;; leaving point at the end of the replacement.  Enables search-and-replace
+;; custom commands (re-search-forward / looking-at then replace-match).
+(fset 'replace-match
+      (lambda (newtext &rest _)
+        (let ((b (files--match-beginning-abs 0))
+              (e (files--match-end-abs 0)))
+          (setq files--buffer-string
+                (concat (substring files--buffer-string 0 b)
+                        newtext
+                        (substring files--buffer-string e)))
+          (setq files--point (+ b (length newtext)))
+          (setq files--buffer-modified-p t)
+          (files--clamp-point)
+          nil)))
 
 (fset 'set-buffer-modified-p
       (lambda (flag)

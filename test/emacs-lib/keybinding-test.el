@@ -283,6 +283,37 @@ form) compose into a non-trivial custom command."
             (should (string-match-p "strip=ab2c3" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-search-replace ()
+  "re-search-forward + replace-match compose into search-and-replace commands,
+including loops with length-changing replacements."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  ;; single replace
+  (setq files--buffer-string \"say foo now\") (setq files--point 0)
+  (re-search-forward \"foo\") (replace-match \"bar\")
+  (princ (concat \"one=\" files--buffer-string \"\\n\"))
+  ;; replace-all loop
+  (setq files--buffer-string \"a foo b foo c foo\") (setq files--point 0)
+  (defun rep-all () (goto-char 0)
+    (while (re-search-forward \"foo\") (replace-match \"X\")))
+  (rep-all)
+  (princ (concat \"all=\" files--buffer-string \"\\n\"))
+  ;; length-changing replacement in a loop (offsets must advance correctly)
+  (setq files--buffer-string \"1 2 3\") (setq files--point 0)
+  (defun pad () (goto-char 0)
+    (while (re-search-forward \"[0-9]\") (replace-match \"[N]\")))
+  (pad)
+  (princ (concat \"pad=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "one=say bar now" out))
+            (should (string-match-p "all=a X b X c X" out))
+            (should (string-match-p "pad=\\[N\\] \\[N\\] \\[N\\]" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here
