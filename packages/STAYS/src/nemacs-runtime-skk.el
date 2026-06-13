@@ -47,6 +47,18 @@ miss or if the dictionary is unavailable (so callers can fall back)."
   "Return the first (most-likely) kanji candidate for YOMI, or nil."
   (car (skk-convert yomi)))
 
+(defun skk-convert-string (yomi)
+  "Newline-joined candidate string for YOMI, or nil on a miss.
+This is the shape the bridge's `files--ime-fetch' wants (one candidate per
+line), so it can use the local SKK CDB before any network fallback."
+  (let ((c (skk-convert yomi)))
+    (when c
+      (let ((out "") (l c))
+        (while l
+          (setq out (concat out (car l) "\n"))
+          (setq l (cdr l)))
+        out))))
+
 (provide 'nemacs-runtime-skk)
 
 ;;; nemacs-runtime-skk.el ends here

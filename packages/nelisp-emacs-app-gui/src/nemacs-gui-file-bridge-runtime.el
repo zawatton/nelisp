@@ -12059,6 +12059,14 @@
 
 (fset 'files--ime-fetch
       (lambda (reading)
+        ;; Local SKK CDB conversion first (no network, no curl) via the baked
+        ;; nemacs-runtime-skk.el; fall through to the Google transliterate curl
+        ;; path on a miss / when the local dictionary is unavailable.
+        (let ((skk-out (if (fboundp 'skk-convert-string)
+                           (skk-convert-string reading)
+                         nil)))
+        (if skk-out
+            skk-out
         ;; -> newline-joined candidates ("" on any failure); the fake
         ;; curl on PATH makes the smoke hermetic (M11 stub-ssh pattern)
         (if (fboundp 'call-process)
@@ -12099,7 +12107,7 @@
                         nil))))
                 (setq i (+ i 1)))
               out)
-          "")))
+          "")))))
 
 (fset 'files--ime-nth-cand
       (lambda (cands idx)
