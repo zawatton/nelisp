@@ -22,11 +22,16 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
   が operand slot+8 を **tag 無検査で raw i64 読み** → Float(tag 3, IEEE-754 bits inline @+8)
   を整数として fold → garbage。tag-aware fold (`wf_fsum`/`wf_fprod`/`wf_fsubtail`/`wf_fdiff`、
   acc を u64 bits で carry、f64 は inline のみ、`nl_sexp_write_float` で結果 Sexp 化) を追加。
-- **残 (P1 続き)**: (a) **bridge image への伝播** — nemacs GUI が使う `nemacs-gui-file-bridge.nlri`
-  (nelisp-emacs) が同 applyfn-source を baked 経路で使うか + `reader-float.o`/`nl_sexp_write_float`
-  link 要確認 → 再ビルドで GUI に反映。(b) `/` (division, f64-div で同パターン)、`mod`、`1+`/`1-`
-  の float 化。(c) **float-time / current-time / floor / truncate** (日本語入力 google-ime
-  `(floor (* 1000 (float-time)))` に必須、別 primitive 群)。
+- **✅ /,1+,1- も SHIPPED (ff25f457 + c9e80897)**: `(/ 5.0 2)`=2.5, `(1+ 2.5)`=3.5,
+  `(1- 2.5)`=1.5 全 green、integer 経路不変。= **基本算術 +,-,*,/,1+,1- が全 float 対応**。
+- **✅ GUI 伝播 SHIPPED**: float 算術 primitive は **runtime binary (target/nelisp) 側**にあり、
+  既存 .nlri image を新 binary で実行するだけで反映 (bridge image 再ビルド不要を実証:
+  `exec-runtime-image <image> '(load fl.el)'` → fadd/fmul=t)。GUI が使う snapshot
+  (/tmp/nelisp-snap/nelisp) を sync-nelisp-snap.sh で更新済 + `bin/nemacs` に staleness
+  `-nt` 自動 resync を追加 (gui 386b050) → 今後の runtime 修正も GUI に自動到達。
+- **残 (P1 続き)**: (b') `mod` の float (稀)。(c) **float-time / current-time / floor / truncate**
+  (日本語入力 google-ime `(floor (* 1000 (float-time)))` に必須、算術演算子でなく
+  time-access + float 生成 primitive 群 = 次の focused piece)。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
