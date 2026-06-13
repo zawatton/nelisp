@@ -43,7 +43,17 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
   (b) `nl_sexp_write_float` 同様の **hand-asm extern `nl_os_float_time`** (gettimeofday +
   cvtsi2sd + divsd/addsd + Float Sexp write を 1 asm stub で) を reader-float.o 方式で追加し
   AOT の syscall↔f64 経路を完全回避。current-time も同様。= 次の focused piece。
-- **残 (P1 続き)**: (b') `mod` の float (稀)。上記 float-time/current-time。
+- **✅ nl-unix-time-usec builtin SHIPPED (21d8c2cb)**: gettimeofday(96) → sec*1e6+usec を
+  単一 INTEGER で返す (syscall 後 純 int 演算 = 動く半分)。sub-second 時刻を f64 無しで取得可能。
+- **⚠️ float-time の elisp 合成は不可能と確定 (2026-06-14 追検証)**: 当初 `(/ (nl-unix-time-usec)
+  1000000.0)` が **top-level loaded form** では動いた (sub-second float) ので polyfill 化を試みたが、
+  **同じ式を user defun 内 ((defun float-time () ...)) に入れて呼ぶと abort**。= syscall→f64 の
+  汚染は呼ばれた関数 frame 内で必ず発症し、top-level eval だけ免れる。さらに `(and (fboundp X)
+  (nl-unix-time-usec))` も abort (and+syscall)。→ **elisp/dispatch/prelude のどの経路でも
+  float-time は作れない**。emacs-time.el polyfill 改修は revert (int-seconds fallback より悪化する)。
+  **= 上記 (b) hand-asm extern `nl_os_float_time` が唯一の道**と確定。nl-unix-time-usec は int 系
+  timing には即使える foundation として残す。
+- **残 (P1 続き)**: (b') `mod` の float (稀)。float-time/current-time = hand-asm extern (上記)。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
