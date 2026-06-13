@@ -22,6 +22,18 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
 未検証 = google-ime server への実 network round-trip (server 起動要)。**= 日本語入力の client 側
 全ロジックが GUI runtime で機能。P1 (float-time) + P2 (runtime package load) が実物を unblock した。**
 
+**外部依存の flush (google-ime の実 require 関数の充足状況)**:
+- ✅ cl-lib macro (`cl-incf`/`cl-return-from`) = prelude で動作。
+- ✅ **json (`json-read-from-string`)** = `src/json.el` を **bridge image に bake** (gui c519d31)。
+  実 IME 応答 `[["みらい",["未来","みらい","ミライ"]]]` → `(("みらい" ("未来" "みらい" "ミライ")))` 正常
+  (CJK 込)。stress test 100 PASS、bridge 無傷。これが google-ime の core data path。
+- ⚠️ **url-util (`url-hexify-string`)** = `(load url-util.el)` 単体では動くが **source-v1 progn replay に
+  bake すると top-level form が abort** し以降 (bridge source) を巻き添えにする (bridge-fn=nil + stress 失敗)。
+  → bake から除外。url-hexify は google-ime で 1 箇所のみ。follow-up (どの form が abort か特定 or load 経路化)。
+- ⚠️ **network (`make-network-process`/`process-send-string`/`url-retrieve-synchronously`)** = bridge image に
+  未登録 (fboundp nil)。memory `project_nelisp_emacs_network_stack` では実装済 → image への wire-in が要。
+  google-ime の実 round-trip に必須。= 次の focused piece。
+
 ## 完遂までの残作業 (優先度順)
 
 ### P1. float 算術の core 修正 ★最深 blocker
