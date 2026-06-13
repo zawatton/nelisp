@@ -40,6 +40,16 @@
     (defun replace-regexp-in-string (re rep s &optional fc lit subexp start)
       (nlre-replace-regexp-in-string re rep s))))
 
+;; `substring-no-properties' = `substring' here (strings carry no text
+;; properties in the standalone reader); many packages (e.g. ddskk's cdb.el)
+;; use it.  `%' (integer modulo) is not a reader builtin -- only `mod' is --
+;; and calling the undefined `%' segfaults, so alias it to `mod' (they agree
+;; for the non-negative indices cdb/hashing use).
+(unless (fboundp 'substring-no-properties)
+  (defun substring-no-properties (s &optional from to) (substring s from to)))
+(unless (fboundp '%)
+  (defun % (a b) (mod a b)))
+
 (unless (fboundp 'url-hexify-string)
   (defun url-hexify-string (string)
     "Percent-encode STRING (RFC 3986 unreserved set kept).
