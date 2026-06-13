@@ -245,6 +245,44 @@ keybinding customization + editing primitives together."
             (should (string-match-p "pmax=13" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-structural-editing ()
+  "save-excursion / looking-at / re-search-forward / delete-region (function
+form) compose into a non-trivial custom command."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  ;; delete-region function form
+  (setq files--buffer-string \"hello world\") (setq files--point 11)
+  (delete-region 5 11)
+  (princ (concat \"del=\" files--buffer-string \"\\n\"))
+  ;; save-excursion restores point across an edit
+  (setq files--buffer-string \"abcdef\") (setq files--point 1)
+  (save-excursion (goto-char 4) (insert \"X\"))
+  (princ (concat \"save=\" files--buffer-string \"|\" (number-to-string (point)) \"\\n\"))
+  ;; looking-at / re-search-forward
+  (setq files--buffer-string \"foo123bar\") (setq files--point 0)
+  (princ (concat \"la=\" (if (looking-at \"foo\") \"y\" \"n\")
+                 (if (looking-at \"bar\") \"y\" \"n\") \"\\n\"))
+  (setq files--point 0) (re-search-forward \"[0-9]+\")
+  (princ (concat \"rsf=\" (number-to-string (point)) \"\\n\"))
+  ;; realistic command composing them
+  (setq files--buffer-string \"a1b2c3\") (setq files--point 0)
+  (defun strip-first-digit ()
+    (save-excursion (goto-char 0)
+      (if (re-search-forward \"[0-9]\") (delete-region (- (point) 1) (point)) nil)))
+  (strip-first-digit)
+  (princ (concat \"strip=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "del=hello\n" out))
+            (should (string-match-p "save=abcdXef|1" out))
+            (should (string-match-p "la=yn" out))
+            (should (string-match-p "rsf=6" out))
+            (should (string-match-p "strip=ab2c3" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here
