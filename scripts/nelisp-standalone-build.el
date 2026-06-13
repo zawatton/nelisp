@@ -3558,6 +3558,17 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; nelisp-emacs `float-time'/`current-time' polyfills) read wall-clock
     ;; time without process-exiting on an undispatched builtin.
     ((:lit "nl-current-unix-time") . (wf_write_int out (syscall-direct 201 0 0 0 0 0 0)))
+    ;; nl-unix-time-usec: microseconds since the epoch as a single INTEGER via
+    ;; gettimeofday(2) (__NR_gettimeofday=96): sec*1e6 + usec.  Pure integer math
+    ;; after the syscall (no f64), which is the half that works -- f64 production
+    ;; (e.g. `(/ (nl-unix-time-usec) 1000000.0)') is then done in a SEPARATE
+    ;; builtin dispatch across an eval-loop boundary, sidestepping the
+    ;; syscall<->f64 codegen abort.  Lets `float-time' be a pure-elisp polyfill.
+    ((:lit "nl-unix-time-usec") . (let* ((buf (alloc-bytes 16 8)))
+                                    (seq (syscall-direct 96 buf 0 0 0 0 0)
+                                         (wf_write_int out
+                                           (+ (* (ptr-read-u64 buf 0) 1000000)
+                                              (ptr-read-u64 buf 8))))))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ((:lit "ash")     . (wf_write_int out (bf_ash (wf_argval args 0) (wf_argval args 1))))
     ((:lit "logand")  . (wf_write_int out (wf_logand_fold args (- 0 1))))
@@ -5388,7 +5399,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-readdir-names"
     "nelisp--syscall-utimes" "nelisp--syscall-statx-buf"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
-    "nl-current-unix-time"
+    "nl-current-unix-time" "nl-unix-time-usec"
     "exit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
