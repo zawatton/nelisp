@@ -16,13 +16,22 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
 ### P1. float 算術の core 修正 ★最深 blocker
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
-- **確定 root cause**: bridge image は `nelisp--add2`/`-float` を含まず `+`/`*` は
-  native/Rust builtin で、その native 算術が float を壊す。
-- **修正二択**: (A) `nelisp-stdlib.el` の elisp `+` + `nelisp--add2-float` + JIT
-  trampoline `nl_jit_float_add/sub/mul` を bridge image build に wire-in (要 hot-path
-  性能影響評価 — 全算術が elisp 経由になると redisplay 等が遅くなる懸念)。(B) native
-  `+`/`*` に float 分岐追加 (Rust なら Rust-LOC-never-increase 制約)。JIT path の
-  `nelisp--add2-float` (nelisp-jit-strategy.el) が実装参照。
+- **確定 root cause**: bridge image は `nelisp--add2`/`-float` を含まず `+`/`*` が
+  AOT-emit された integer-only 算術 (f64 path 未 emit) で、float を壊す。
+- **★de-risk (2026-06-14 調査)**: dev/nelisp の **live build に Rust は無い**
+  (`.rs` 951件は全て `.claude/worktrees/` の旧 wave 残骸、live build 対象外。
+  Makefile:107「static ELF. No cargo/rustc」、`target/nelisp` は elisp-AOT 産)。
+  → **float 修正は必然的に pure-elisp** = **Rust-LOC-never-increase 制約は moot**
+  (旧 Doc 110 §110.E の「Rust 分岐」前提・option(B) は obsolete)。f64 の機械語 emit
+  自体が elisp: `nelisp-aot-compiler--emit-f64-binop` (lisp/nelisp-aot-compiler.el:10282,
+  flag `--emit-f64-binop`)。elisp 実装は既存: `nelisp--add2-float`
+  (lisp/nelisp-jit-strategy.el:624)、JIT trampoline (lisp/nelisp-cc-jit-float.el)。
+- **修正 (どちらも pure-elisp、Rust なし)**: (A) bridge image build に `nelisp-stdlib`
+  の elisp `+`/`nelisp--add2-float` を wire-in (hot-path 性能評価要)。(B) bridge image
+  の AOT build で `+`/`*` に `--emit-f64-binop` を有効化し native f64 emit させる
+  (性能◎、より native)。次セッション着手点: nelisp-emacs の .nlri build recipe
+  (VENDOR_LOAD_PRELUDE=scripts/nelisp-stdlib-prelude.el, scripts/nemacs-runtime-image-preload.el)
+  が arithmetic を AOT-emit するか elisp 経由かを確定 → 該当経路に f64 を通す。
 - **検証**: real loader 経由 (`load` したファイルから `nl-write-file` + `=` 比較)。
   fboundp は native に nil を返すので不可。
 - memory: `feedback_nemacs_bridge_runtime_float_broken`
