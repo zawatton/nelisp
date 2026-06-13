@@ -177,6 +177,103 @@ Accepts the single-binding `(SYM VALUE)' form and the list-of-bindings form."
     (nemacs--if-let-expand (nemacs--if-let-normalize bindings)
                            (cons 'progn body) nil)))
 
+;; `add-to-list' -- pervasive in real init.el (load-path, auto-mode-alist,
+;; package-archives, ...).  Its absence breaks almost any config, so it is the
+;; single highest-value init-parity helper.
+(unless (fboundp 'add-to-list)
+  (defun add-to-list (list-var element &optional append compare-fn)
+    "Add ELEMENT to the list in symbol LIST-VAR if not already present.
+Prepends by default, or appends when APPEND is non-nil.  Membership is tested
+with COMPARE-FN (default `equal').  Returns the new list value."
+    (let ((lst (if (boundp list-var) (symbol-value list-var) nil))
+          (cmp (or compare-fn #'equal))
+          (found nil))
+      (let ((l lst))
+        (while (and l (not found))
+          (when (funcall cmp element (car l)) (setq found t))
+          (setq l (cdr l))))
+      (if found
+          lst
+        (let ((new (if append (append lst (list element)) (cons element lst))))
+          (set list-var new)
+          new)))))
+
+(unless (fboundp 'ignore)
+  (defun ignore (&rest _) "Do nothing and return nil." nil))
+(unless (fboundp 'always)
+  (defun always (&rest _) "Do nothing and return t." t))
+
+;; subr-x string predicates / trimmers (string-prefix-p is present; do the
+;; suffix + blank checks by hand to depend on nothing extra).
+(unless (fboundp 'string-blank-p)
+  (defun string-blank-p (string)
+    "Return 0 if STRING is empty or all whitespace, else nil."
+    (let ((i 0) (n (length string)) (blank t))
+      (while (and (< i n) blank)
+        (let ((c (aref string i)))
+          (unless (or (= c 32) (= c 9) (= c 10) (= c 13)) (setq blank nil)))
+        (setq i (1+ i)))
+      (if blank 0 nil))))
+
+(unless (fboundp 'string-remove-prefix)
+  (defun string-remove-prefix (prefix string)
+    "Remove PREFIX from STRING if present (byte-wise)."
+    (let ((pn (length prefix)))
+      (if (and (>= (length string) pn)
+               (equal (substring string 0 pn) prefix))
+          (substring string pn)
+        string))))
+
+(unless (fboundp 'string-remove-suffix)
+  (defun string-remove-suffix (suffix string)
+    "Remove SUFFIX from STRING if present (byte-wise)."
+    (let ((sn (length suffix)) (n (length string)))
+      (if (and (>= n sn)
+               (equal (substring string (- n sn) n) suffix))
+          (substring string 0 (- n sn))
+        string))))
+
+;; cl-find / cl-remove-duplicates: hand-scanned keywords (no `plist-*'), and
+;; `equal' as the default test (`eql' is not guaranteed in the bare prelude).
+(unless (fboundp 'cl-find)
+  (defun cl-find (item seq &rest keys)
+    "Return the first element of SEQ matching ITEM, or nil.  Supports :test/:key."
+    (let ((test nil) (key nil) (k keys) (result nil) (found nil) (l (append seq nil)))
+      (while k
+        (cond ((eq (car k) :test) (setq test (car (cdr k))))
+              ((eq (car k) :key) (setq key (car (cdr k)))))
+        (setq k (cdr (cdr k))))
+      (let ((tst (or test #'equal)))
+        (while (and l (not found))
+          (let ((cand (if key (funcall key (car l)) (car l))))
+            (when (funcall tst item cand) (setq result (car l) found t)))
+          (setq l (cdr l))))
+      result)))
+
+(unless (fboundp 'cl-remove-duplicates)
+  (defun cl-remove-duplicates (seq &rest keys)
+    "Return a copy of SEQ with duplicates removed (order preserved).
+Supports :test/:key.  Keeps the LAST occurrence, matching cl-lib's default."
+    (let ((test nil) (key nil) (k keys))
+      (while k
+        (cond ((eq (car k) :test) (setq test (car (cdr k))))
+              ((eq (car k) :key) (setq key (car (cdr k)))))
+        (setq k (cdr (cdr k))))
+      (let* ((tst (or test #'equal))
+             (lst (append seq nil))
+             (out nil) (l lst))
+        (while l
+          (let* ((elt (car l))
+                 (ev (if key (funcall key elt) elt))
+                 (dup nil) (rest (cdr l)))
+            (while (and rest (not dup))
+              (let ((rv (if key (funcall key (car rest)) (car rest))))
+                (when (funcall tst ev rv) (setq dup t)))
+              (setq rest (cdr rest)))
+            (unless dup (setq out (cons elt out))))
+          (setq l (cdr l)))
+        (nreverse out)))))
+
 (provide 'nemacs-runtime-stdlib-extra)
 
 ;;; nemacs-runtime-stdlib-extra.el ends here
