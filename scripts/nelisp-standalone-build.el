@@ -7040,17 +7040,26 @@ correctly."
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_load path) 1)
           (if (= (nl_cli_one_arg_p arg2 arg3) 1)
-              (let* ((n (nl_os_read_file_cpath
-                         arg2 fbuf
-                         ,nelisp-standalone--reader-read-cap)))
-                (if (< n 0)
-                    (seq (nl_cli_write_help fbuf) 2)
-                  (seq
-                   (nl_alloc_str fbuf n src)
-                   (nl_eval_source_all src cursor result pool out ctx builtin_sym)
-                   (if (= (ptr-read-u64 268435464 0) 0)
-                       (nl_cli_write_value fbuf out)
-                     (- (ptr-read-u64 268435464 0) 1)))))
+              (seq
+               ;; Run the stdlib prelude before the user file so `--load file.el'
+               ;; has the same library (defun / defmacro / when / dash / s / ht /
+               ;; cl-lib macros) as the REPL and `eval' paths, not just the bare
+               ;; native builtins.  Without this, a loaded file that does
+               ;; `(defun ...)' / `(when ...)' aborts (void-function), which blocks
+               ;; runtime loading of any real elisp package.
+               ,@(nelisp-standalone--reader-repl-prelude-forms
+                  'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)
+               (let* ((n (nl_os_read_file_cpath
+                          arg2 fbuf
+                          ,nelisp-standalone--reader-read-cap)))
+                 (if (< n 0)
+                     (seq (nl_cli_write_help fbuf) 2)
+                   (seq
+                    (nl_alloc_str fbuf n src)
+                    (nl_eval_source_all src cursor result pool out ctx builtin_sym)
+                    (if (= (ptr-read-u64 268435464 0) 0)
+                        (nl_cli_write_value fbuf out)
+                      (- (ptr-read-u64 268435464 0) 1))))))
             (seq (nl_cli_write_help fbuf) 2)))
          ((= (nl_cstr_eq_neln_selftest path) 1)
           (nl_neln_demo_exec ctx 41))
