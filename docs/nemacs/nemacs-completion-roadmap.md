@@ -70,6 +70,14 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   - **✅ keystroke E2E (実 bridge image、buffer 変換)**: `はしる` +SPC→**走る**→迸る→奔る (cycle)、
     `たかい` +SPC→他界→高井→**高い**。= 名詞 E2E (みらい→未来→味蕾) を**動詞・形容詞まで拡張**、
     bridge 無傷で boot、ローカル SKK 辞書、network 無し。
+- **✅✅✅ SKK 送り仮名 marking SHIPPED — 大文字で動詞を直接変換 (2026-06-14, cbb75ff)**: auto-okuri は
+  verb を打てるが noun homophone に埋もれる (かく→核/格/各/角…書く は数 SPC 先)。本物の SKK は**大文字**で
+  送り仮名開始を marking する。bridge IME に配線: `files--ime-okuri-path` (送り仮名開始 byte位置の transport
+  marker、commit-state で clear)、`self-insert-command` で読み途中の A-Z を小文字化 feed しつつ marker を記録
+  (stem 既存時のみ、first capital wins)、`files--ime-convert` で marker 有時は読みを stem+送り仮名に分割し
+  `skk-convert-okuri-string` で変換 (miss 時 noun fetch fallback)。**結果: か K u SPC→書く 直接、plain かく
+  SPC→核 (noun 不変)** = 動詞/名詞を SKK 流に明示制御。実 self-insert-command dispatch で検証
+  (keystroke deftest: reading=かく mark=3 / okuri=書く / noun=核)、SKK suite 6/6、bridge boot、launcher PASS。
 
 ## 🎌★✅ ローカル日本語変換エンジン SHIPPED (2026-06-14, GUI runtime で実動作・network 不要)
 **SKK CDB 辞書経由の kana-kanji 変換が GUI runtime で動く** (canonical image に bake 済、stress 100 PASS)。
