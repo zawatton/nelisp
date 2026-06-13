@@ -61,6 +61,8 @@
                       "(unless (fboundp 'run-hooks)"
                       "(unless (fboundp 'eval-after-load)"
                       "(unless (fboundp 'with-eval-after-load)"
+                      "(unless (fboundp 'setq-local)"
+                      "(unless (fboundp 'cl-pushnew)"
                       "(unless (fboundp 'cl-sort)"))
       (should (string-match-p (regexp-quote needle) source)))))
 
@@ -205,6 +207,50 @@
             (should (string-match-p "cont=continued" out))
             (should (string-match-p "clsort=(1 2 3)" out))
             (should (string-match-p "clsort-key=((2 \"a\") (1 \"c\"))" out)))
+        (delete-file image)))))
+
+(ert-deftest runtime-stdlib-extra-test/standalone-realistic-config ()
+  "Capstone: a realistic init.el-style config loads + applies on the runtime.
+Exercises the whole init-parity surface together (require, add-to-list,
+setq/setq-local, cl-pushnew, add-hook + run-hooks, with-eval-after-load,
+when-let, assoc-default, cl-remove-duplicates, cl-sort) -- the concrete goal
+of the init-parity substrate (task #26)."
+  (runtime-stdlib-extra-test--skip-unless-standalone
+    (let ((reader (runtime-stdlib-extra-test--reader))
+          (image (runtime-stdlib-extra-test--build-image)))
+      (unwind-protect
+          (let ((out (runtime-stdlib-extra-test--run
+                      reader image
+                      "(progn
+  (require 'cl-lib) (require 'subr-x)
+  (defvar my-load-path nil)
+  (add-to-list 'my-load-path \"/opt/lisp\")
+  (add-to-list 'my-load-path \"/usr/lisp\")
+  (add-to-list 'my-load-path \"/opt/lisp\")
+  (setq my-tab-width 4)
+  (setq-local my-indent 2)
+  (defvar my-modes nil)
+  (cl-pushnew 'prog-mode my-modes) (cl-pushnew 'text-mode my-modes) (cl-pushnew 'prog-mode my-modes)
+  (defun my-prog-setup () (setq my-prog-configured t))
+  (add-hook 'prog-mode-hook 'my-prog-setup)
+  (with-eval-after-load 'cl-lib (setq my-deferred 'ran))
+  (setq my-found (when-let ((v (assoc-default 'b '((a . 1) (b . 2))))) v))
+  (setq my-uniq (cl-remove-duplicates '(1 2 1 3 2)))
+  (setq my-sorted (cl-sort '(3 1 2) '<))
+  (run-hooks 'prog-mode-hook)
+  (princ (concat
+    \"load-path=\" (format \"%S\" my-load-path) \"\\n\"
+    \"tab=\" (format \"%S\" my-tab-width) \" indent=\" (format \"%S\" my-indent) \"\\n\"
+    \"modes=\" (format \"%S\" my-modes) \"\\n\"
+    \"prog-configured=\" (format \"%S\" my-prog-configured) \"\\n\"
+    \"deferred=\" (format \"%S\" my-deferred) \"\\n\"
+    \"found=\" (format \"%S\" my-found) \" uniq=\" (format \"%S\" my-uniq) \" sorted=\" (format \"%S\" my-sorted) \"\\n\")))")))
+            (should (string-match-p "load-path=(\"/usr/lisp\" \"/opt/lisp\")" out))
+            (should (string-match-p "tab=4 indent=2" out))
+            (should (string-match-p "modes=(text-mode prog-mode)" out))
+            (should (string-match-p "prog-configured=t" out))
+            (should (string-match-p "deferred=ran" out))
+            (should (string-match-p "found=2 uniq=(1 3 2) sorted=(1 2 3)" out)))
         (delete-file image)))))
 
 (provide 'runtime-stdlib-extra-test)

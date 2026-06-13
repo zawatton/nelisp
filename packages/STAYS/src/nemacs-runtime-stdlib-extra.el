@@ -336,6 +336,28 @@ Supports :test/:key.  Keeps the LAST occurrence, matching cl-lib's default."
     "Arrange to evaluate BODY after FILE is loaded (or now if already loaded)."
     (list 'eval-after-load file (list 'quote (cons 'progn body)))))
 
+;; `setq-local' -- common in mode hooks.  No per-buffer variables in this
+;; runtime, so it degrades to a global `set' of each symbol (correct for the
+;; many configs whose mode setup just sets values).
+(unless (fboundp 'setq-local)
+  (defmacro setq-local (&rest pairs)
+    "Set each SYM to VALUE in PAIRS (global fallback for buffer-local)."
+    (let ((forms nil) (p pairs))
+      (while p
+        (setq forms (cons (list 'set (list 'quote (car p)) (car (cdr p))) forms))
+        (setq p (cdr (cdr p))))
+      (cons 'progn (nreverse forms)))))
+
+;; `cl-pushnew' -- add X to the front of the list in PLACE unless already a
+;; member (equal).  Simple-variable PLACE only (the common config case); the
+;; generalized-place / :test / :key variants are not supported.
+(unless (fboundp 'cl-pushnew)
+  (defmacro cl-pushnew (x place &rest _keys)
+    "Add X to the list variable PLACE unless already a member."
+    (list 'if (list 'member x place)
+          place
+          (list 'setq place (list 'cons x place)))))
+
 (unless (fboundp 'cl-sort)
   (defun cl-sort (seq predicate &rest keys)
     "Sort a copy of SEQ by PREDICATE; supports :key."
