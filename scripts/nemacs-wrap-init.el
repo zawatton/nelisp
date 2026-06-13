@@ -23,6 +23,27 @@
 ;;; Code:
 
 (require 'seq)
+;; inline.el supplies `define-inline'; the wrapper runs in a full Emacs
+;; (so it is available here) and lowers each define-inline to a plain
+;; fset the bridge runtime can load — see `nemacs-wrap-init--lower'.
+(require 'inline)
+
+(defun nemacs-wrap-init--find-defalias (form)
+  "Find a (defalias \\='NAME #\\='(lambda ...)) node anywhere in FORM.
+`define-inline' macroexpands to such a node for its non-inlined
+callable; the bridge runtime has no inline machinery, so we hoist
+that lambda out as the package function."
+  (cond
+   ((not (consp form)) nil)
+   ((and (eq (car form) 'defalias)
+         (eq (car-safe (nth 1 form)) 'quote)
+         (memq (car-safe (nth 2 form)) '(function lambda)))
+    form)
+   (t (let ((res nil) (xs form))
+        (while (and (consp xs) (not res))
+          (setq res (nemacs-wrap-init--find-defalias (car xs)))
+          (setq xs (cdr xs)))
+        res))))
 
 (defun nemacs-wrap-init--forms (file)
   "Read all top-level forms of FILE; return a list of forms."
@@ -133,6 +154,33 @@ report's failed list."
                  (nemacs-init--note-file ,file)
                  (load ,file nil t))))
         '(nemacs-init--require-unresolved))))
+   ;; define-inline (ht.el and many modern libs) defines its functions
+   ;; through the inline DSL the bridge runtime lacks.  Macroexpand it
+   ;; here (full Emacs has inline.el), hoist the non-inlined lambda out
+   ;; of the generated defalias, and emit it in the bridge's fset
+   ;; dialect — the same shape `defun' lowers to.  Falls back to the raw
+   ;; form if anything unexpected turns up (it then lands in the report).
+   ((eq (car form) 'define-inline)
+    (condition-case nil
+        (let* ((exp (macroexpand-all form))
+               (da (nemacs-wrap-init--find-defalias exp)))
+          (if da
+              (let* ((fn (nth 2 da))
+                     (lam (if (eq (car-safe fn) 'function) (nth 1 fn) fn)))
+                (if (eq (car-safe lam) 'lambda)
+                    (let ((lbody (seq-remove
+                                  (lambda (f)
+                                    (memq (car-safe f) '(declare interactive)))
+                                  (nthcdr 2 lam))))
+                      ;; drop a leading docstring: the image evaluator runs
+                      ;; the body verbatim and a stray multiline string is
+                      ;; pure bloat (and trips the source-v1 replay reader)
+                      (when (and (stringp (car lbody)) (cdr lbody))
+                        (setq lbody (cdr lbody)))
+                      `(fset ,(nth 1 da) (lambda ,(nth 1 lam) ,@lbody)))
+                  form))
+            form))
+      (error form)))
    (t form)))
 
 (defun nemacs-wrap-init (out &rest files)
