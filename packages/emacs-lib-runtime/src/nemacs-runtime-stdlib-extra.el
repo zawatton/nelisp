@@ -274,6 +274,81 @@ Supports :test/:key.  Keeps the LAST occurrence, matching cl-lib's default."
           (setq l (cdr l)))
         (nreverse out)))))
 
+;; Hook + deferred-load config constructs -- after `add-to-list', the most
+;; common things a real init.el does (configure modes via `add-hook', defer
+;; config via `with-eval-after-load').  Buffer-local hooks (the LOCAL arg) are
+;; treated as global here -- the standalone runtime has no per-buffer hook
+;; machinery in user context; the global path covers typical config.
+(unless (fboundp 'add-hook)
+  (defun add-hook (hook function &optional append _local)
+    "Add FUNCTION to the hook variable HOOK (prepend, or append if APPEND)."
+    (let ((current (if (boundp hook) (symbol-value hook) nil)))
+      (when (and current (not (listp current)))
+        (setq current (list current)))
+      (if (member function current)
+          current
+        (let ((new (if append
+                       (append current (list function))
+                     (cons function current))))
+          (set hook new)
+          new)))))
+
+(unless (fboundp 'remove-hook)
+  (defun remove-hook (hook function &optional _local)
+    "Remove FUNCTION from the hook variable HOOK."
+    (when (boundp hook)
+      (let ((current (symbol-value hook)))
+        (when (listp current)
+          (set hook (delete function current)))))))
+
+(unless (fboundp 'run-hooks)
+  (defun run-hooks (&rest hooks)
+    "Run each function on each hook variable in HOOKS."
+    (let ((hs hooks))
+      (while hs
+        (let ((hook (car hs)))
+          (when (boundp hook)
+            (let ((fns (symbol-value hook)))
+              (when (listp fns)
+                (let ((l fns))
+                  (while l
+                    (unless (eq (car l) t) (funcall (car l)))
+                    (setq l (cdr l))))))))
+        (setq hs (cdr hs))))))
+
+;; `eval-after-load' / `with-eval-after-load': run BODY when FILE is loaded.
+;; This runtime has no deferred-load machinery and `featurep' does not round-trip
+;; (`provide' does not make `featurep' true), so deferring would mean BODY never
+;; runs -- a silent no-op.  Instead evaluate BODY immediately (the typical config
+;; pattern is `(require 'pkg)' then `(with-eval-after-load 'pkg ...)', where
+;; immediate is correct), with errors swallowed so a block referencing a
+;; not-yet-defined symbol does not abort the rest of init.
+(unless (boundp 'after-load-alist)
+  (defvar after-load-alist nil
+    "Provided for compatibility; this runtime evaluates after-load forms eagerly."))
+(unless (fboundp 'eval-after-load)
+  (defun eval-after-load (_file form)
+    "Evaluate FORM now (errors swallowed).  See the note above for why eager."
+    (condition-case nil (eval form) (error nil))
+    nil))
+(unless (fboundp 'with-eval-after-load)
+  (defmacro with-eval-after-load (file &rest body)
+    "Arrange to evaluate BODY after FILE is loaded (or now if already loaded)."
+    (list 'eval-after-load file (list 'quote (cons 'progn body)))))
+
+(unless (fboundp 'cl-sort)
+  (defun cl-sort (seq predicate &rest keys)
+    "Sort a copy of SEQ by PREDICATE; supports :key."
+    (let ((key nil) (k keys))
+      (while k
+        (when (eq (car k) :key) (setq key (car (cdr k))))
+        (setq k (cdr (cdr k))))
+      (let ((lst (copy-sequence seq)))
+        (if key
+            (sort lst (lambda (a b)
+                        (funcall predicate (funcall key a) (funcall key b))))
+          (sort lst predicate))))))
+
 (provide 'nemacs-runtime-stdlib-extra)
 
 ;;; nemacs-runtime-stdlib-extra.el ends here

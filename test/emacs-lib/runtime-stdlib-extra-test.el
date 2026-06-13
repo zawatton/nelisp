@@ -55,7 +55,13 @@
                       "(unless (fboundp 'string-remove-prefix)"
                       "(unless (fboundp 'string-remove-suffix)"
                       "(unless (fboundp 'cl-find)"
-                      "(unless (fboundp 'cl-remove-duplicates)"))
+                      "(unless (fboundp 'cl-remove-duplicates)"
+                      "(unless (fboundp 'add-hook)"
+                      "(unless (fboundp 'remove-hook)"
+                      "(unless (fboundp 'run-hooks)"
+                      "(unless (fboundp 'eval-after-load)"
+                      "(unless (fboundp 'with-eval-after-load)"
+                      "(unless (fboundp 'cl-sort)"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -165,6 +171,40 @@
             (should (string-match-p "clfind=3" out))
             (should (string-match-p "clfind-key=(b 2)" out))
             (should (string-match-p "clrmdup=(1 3 2)" out)))
+        (delete-file image)))))
+
+(ert-deftest runtime-stdlib-extra-test/standalone-hooks-and-load ()
+  "add-hook / run-hooks / with-eval-after-load / cl-sort on the standalone runtime."
+  (runtime-stdlib-extra-test--skip-unless-standalone
+    (let ((reader (runtime-stdlib-extra-test--reader))
+          (image (runtime-stdlib-extra-test--build-image)))
+      (unwind-protect
+          (let ((out (runtime-stdlib-extra-test--run
+                      reader image
+                      "(progn
+  (set 'my-hook nil) (defun fa () 'a) (defun fb () 'b)
+  (add-hook 'my-hook 'fa) (add-hook 'my-hook 'fb) (add-hook 'my-hook 'fa)
+  (set 'ran nil) (defun rec () (set 'ran (cons 'x (symbol-value 'ran))))
+  (set 'h2 nil) (add-hook 'h2 'rec) (run-hooks 'h2) (run-hooks 'h2)
+  (set 'eal nil) (defun hookfn () nil)
+  (with-eval-after-load 'anypkg (set 'eal 'applied) (add-hook 'h2 'hookfn))
+  (set 'cont 'continued)
+  (with-eval-after-load 'pkg2 (+ 1 (car 5)))   ; catchable error -> swallowed
+  (princ (concat
+    \"hook=\" (format \"%S\" (symbol-value 'my-hook)) \"\\n\"
+    \"removed=\" (progn (remove-hook 'my-hook 'fa) (format \"%S\" (symbol-value 'my-hook))) \"\\n\"
+    \"ran=\" (format \"%S\" (symbol-value 'ran)) \"\\n\"
+    \"eal=\" (format \"%S\" (symbol-value 'eal)) \"\\n\"
+    \"cont=\" (format \"%S\" (symbol-value 'cont)) \"\\n\"
+    \"clsort=\" (format \"%S\" (cl-sort '(3 1 2) '<)) \"\\n\"
+    \"clsort-key=\" (format \"%S\" (cl-sort '((1 \"c\") (2 \"a\")) 'string< :key 'cadr)) \"\\n\")))")))
+            (should (string-match-p "hook=(fb fa)" out))
+            (should (string-match-p "removed=(fb)" out))
+            (should (string-match-p "ran=(x x)" out))
+            (should (string-match-p "eal=applied" out))
+            (should (string-match-p "cont=continued" out))
+            (should (string-match-p "clsort=(1 2 3)" out))
+            (should (string-match-p "clsort-key=((2 \"a\") (1 \"c\"))" out)))
         (delete-file image)))))
 
 (provide 'runtime-stdlib-extra-test)
