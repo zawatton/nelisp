@@ -48,6 +48,10 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   と統合。stress 100 PASS、bridge 無傷。
 - **= 編集器で実際に日本語が打てる** (romaji→かな→漢字、ローカル辞書、network 不要)。残 = Xephyr 上の
   実キーストローク visual E2E (M19-3 合成 + この変換配線の通し確認) のみ = visual 検証 task。
+- **✅ 編集 E2E 実証 (bridge 関数で keystroke 通し)**: buffer `みらい` + SPC (`files--ime-convert`) → buffer
+  `未来` (第1候補)、cands=`未来\n味蕾`、もう一度 SPC → `味蕾` (cycle)。= **editor の実 IME 関数で
+  みらい→未来→味蕾 と buffer が変換**、ローカル SKK 辞書、network 無し。= 漢字変換 keystroke E2E 完了。
+  残 = Xephyr 上の visual 確認 (xdotool で romaji 打鍵→画面に漢字) のみ = 純粋な visual 検証。
 
 ## 🎌★✅ ローカル日本語変換エンジン SHIPPED (2026-06-14, GUI runtime で実動作・network 不要)
 **SKK CDB 辞書経由の kana-kanji 変換が GUI runtime で動く** (canonical image に bake 済、stress 100 PASS)。
