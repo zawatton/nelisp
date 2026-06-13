@@ -150,6 +150,46 @@
             (should (string-match-p "multikey=abcXXX" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-config-binding ()
+  "A user init's global-set-key takes effect on a dispatched key.
+Seeds a wrapped user init (defun + global-set-key) into the transport dir, runs
+the real files--load-user-init lane, then dispatches the bound key -- proving
+keybindings from the user's own config work, not just programmatic calls."
+  (keybinding-test--skip-unless-standalone
+    (let* ((reader (keybinding-test--reader))
+           (image (keybinding-test--build-image))
+           (tdir (make-temp-file "keybinding-config-" t)))
+      (unwind-protect
+          (progn
+            ;; the wrapped init the launcher would generate (marker-bracketed)
+            (with-temp-file (expand-file-name "nemacs-init-wrapped" tdir)
+              (insert "(nemacs-init--begin 1 \"defun\")\n")
+              (insert "(defun kb-cfg-cmd () (setq files--buffer-string"
+                      " (concat files--buffer-string \"Z\")))\n")
+              (insert "(nemacs-init--ok 1)\n")
+              (insert "(nemacs-init--begin 2 \"global-set-key\")\n")
+              (insert "(global-set-key \"C-t\" (quote kb-cfg-cmd))\n")
+              (insert "(nemacs-init--ok 2)\n"))
+            (let ((out (with-temp-buffer
+                         (let ((status
+                                (call-process
+                                 reader nil (current-buffer) nil
+                                 "exec-runtime-image" image
+                                 (format "(progn (setq files--transport-dir %S)
+  (setq files--buffer-string \"abc\") (setq files--point 0)
+  (nl-write-file (files--user-keymap-path) \"\")
+  (files--load-user-init)
+  (setq files--bridge-keys \"C-t\") (setq files--bridge-arg \"\")
+  (files--dispatch-key-sequence)
+  (princ (concat \"config=\" files--buffer-string \"\\n\")))" tdir))))
+                           (unless (equal 0 status)
+                             (ert-fail (format "status=%S\n%s"
+                                               status (buffer-string))))
+                           (buffer-string)))))
+              (should (string-match-p "config=abcZ" out))))
+        (delete-file image)
+        (when (file-directory-p tdir) (delete-directory tdir t))))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here
