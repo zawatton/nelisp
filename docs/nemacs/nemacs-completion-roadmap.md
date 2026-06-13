@@ -45,14 +45,21 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
     (2) **helper `wf_float_time` 経由** (dispatch arm に inline extern call すると abort)、
     (3) helper は **scratch slot に書いて wf_copy32 で out へ** (extern を out 直書きすると abort)、
     (4) rcx/r11 を syscall 跨ぎで save (防御)。
-  - ⚠️ **重要な別問題発見**: bare `target/nelisp --load` では **user-defun 呼出自体が abort**
-    (`(defun g () 5)(g)` すら abort、float-time 無関係)。= reader harness の限界で float-time とは
-    直交。bridge (nelisp-emacs full eval) では user 関数が動く (GUI が動作中) ので float-time も
-    そこで呼べる想定。bare --load の user-defun-call は別 task。
+  - ℹ️ **runtime 生 defun は登録されない (= wrap-init 設計、bug ではない)**: `--load` でも bridge
+    (exec-runtime-image) でも `(defun g () 5)(g)` は abort、`(fboundp 'g)`=nil。一方 **`fset` は両方で
+    動く** (`(fset 'g (lambda (x)(+ x 1)))(g 41)`=42)、`funcall`+lambda も動く。= 原因は runtime が
+    macro 展開しないこと: `defun` は macro で、本来 `(fset 'NAME (lambda...))` へ展開される。NeLisp の
+    設計は **全 user code を full Emacs の wrap-init で build-time macroexpand してから bake**
+    ([[feedback_nemacs_define_inline_lowered_at_wrap]])。だから user の `~/.nemacs.d` は 24/24 適用済
+    (pre-expand されている)。runtime `(load 生.el)` の defun だけが未対応。**含意**: runtime に
+    elisp package を直 load する経路 (kkc/skk を実行時 load) は wrap-init を通すか fset 展開が要る。
+    float-time は builtin なので無関係 (この制約の影響を受けない)。
 - **✅ nl-unix-time-usec builtin SHIPPED (21d8c2cb)**: gettimeofday(96) → sec*1e6+usec を単一
   INTEGER で返す (f64 無しの sub-second 整数 timing)。float-time の前段で発見した foundation。
 - **残 (P1 続き)**: (b') `mod` の float (稀)。current-time (float-time と同様 hand-asm でいける)。
-  bare --load の user-defun-call abort (別 task、bridge は影響外の見込み)。
+- **P2 候補 (runtime package 経路)**: 実行時 `(load パッケージ.el)` で defun が効く経路 (= wrap-init
+  相当の build-time macroexpand を runtime に持込む or 実行時 macroexpand)。runtime に kkc/skk 等の
+  外部 package を直 load したい場合の前提。現状は wrap-init 経由 (build-time) のみ。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
