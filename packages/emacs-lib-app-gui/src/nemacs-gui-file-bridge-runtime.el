@@ -12153,6 +12153,74 @@
             (setq i (+ i 1)))
           n)))
 
+;; --- SKK candidate learning (MRU 個人辞書) ---------------------------------
+;; The reading of the active conversion (so the cycling branch knows what to
+;; learn) and the persistent learned-choice file ("reading\tcandidate\n" lines,
+;; most-recent first).  The learned file is NOT cleared by commit-state.
+(fset 'files--ime-reading-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-reading") (files--transport-path))))
+(fset 'files--ime-learn-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-ime-learn") (files--transport-path))))
+
+(fset 'files--ime-learn-lookup
+      (lambda (reading)
+        ;; first candidate previously chosen for READING, or "".
+        (let ((data (rdf (files--ime-learn-path)))
+              (i 0) (result "") (found nil))
+          (let ((n (length data)) (ls 0))
+            (while (if (< i n) (not found) nil)
+              (setq ls i)
+              (while (if (< i n) (if (= (aref data i) 10) nil t) nil)
+                (setq i (+ i 1)))
+              (let ((line (substring data ls i)))
+                (let ((tab -1) (j 0) (ln (length line)))
+                  (while (if (< j ln) (if (>= tab 0) nil t) nil)
+                    (if (= (aref line j) 9) (setq tab j) nil)
+                    (setq j (+ j 1)))
+                  (if (>= tab 0)
+                      (if (equal (substring line 0 tab) reading)
+                          (progn
+                            (setq result (substring line (+ tab 1) (length line)))
+                            (setq found t))
+                        nil)
+                    nil)))
+              (setq i (+ i 1))))
+          result)))
+
+(fset 'files--ime-learn-record
+      (lambda (reading cand)
+        ;; prepend READING\tCAND so the most recent choice wins; cap total size.
+        (if (if (equal cand "") t (equal reading ""))
+            nil
+          (let ((entry (concat reading (char-to-string 9) cand (char-to-string 10)))
+                (old (rdf (files--ime-learn-path))))
+            (let ((combined (concat entry old)))
+              (if (> (length combined) 8192)
+                  (setq combined (substring combined 0 8192))
+                nil)
+              (nl-write-file (files--ime-learn-path) combined))))))
+
+(fset 'files--ime-reorder
+      (lambda (cands learned)
+        ;; move LEARNED (a candidate line) to the front of newline-joined CANDS.
+        (if (equal learned "")
+            cands
+          (let ((i 0) (n (length cands)) (ls 0) (rest "") (hit nil) (nl (char-to-string 10)))
+            (while (< i n)
+              (setq ls i)
+              (while (if (< i n) (if (= (aref cands i) 10) nil t) nil)
+                (setq i (+ i 1)))
+              (let ((line (substring cands ls i)))
+                (if (equal line learned)
+                    (setq hit t)
+                  (if (equal line "")
+                      nil
+                    (setq rest (concat rest line nl)))))
+              (setq i (+ i 1)))
+            (if hit (concat learned nl rest) cands)))))
+
 (fset 'files--ime-replace-segment
       (lambda (text seg)
         (files--clamp-point)
@@ -12200,6 +12268,13 @@
                           (setq files--modeline-override "IME: no candidates")
                           files--point)
                       (progn
+                        ;; learning: remember the reading, and float a
+                        ;; previously-chosen candidate to the front so the
+                        ;; user's last pick is the default next time.
+                        (nl-write-file (files--ime-reading-path) reading)
+                        (setq cands
+                              (files--ime-reorder
+                               cands (files--ime-learn-lookup reading)))
                         (nl-write-file (files--ime-cands-path) cands)
                         (nl-write-file (files--ime-idx-path) "0")
                         (files--ime-replace-segment
@@ -12213,6 +12288,11 @@
                   (setq idx 0)
                 nil)
               (nl-write-file (files--ime-idx-path) (number-to-string idx))
+              ;; learning: record the cycled-to choice for this reading; the
+              ;; last one shown before commit becomes the future default.
+              (files--ime-learn-record
+               (rdf (files--ime-reading-path))
+               (files--ime-nth-cand cands idx))
               (files--ime-replace-segment
                (files--ime-nth-cand cands idx) seg))))))
 

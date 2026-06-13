@@ -266,6 +266,7 @@ SPC convert)."
                       reader image
                       (format "(progn (setq skk-cdb-dict-path %S)
   (setq files--input-method \"default\")
+  (nl-write-file (files--ime-learn-path) \"\")  ; isolate from MRU learning
   ;; --- か K u SPC : capital K marks the okurigana start ---
   (setq files--buffer-string \"\") (setq files--point 0)
   (files--ime-commit-state) (nl-write-file (files--ime-pending-path) \"\")
@@ -290,6 +291,33 @@ SPC convert)."
             (should (string-match-p "reading=かく mark=3" out))
             (should (string-match-p "okuri=書く" out))
             (should (string-match-p "noun=核" out)))
+        (delete-file image)
+        (delete-file cdb)))))
+
+(ert-deftest skk-okuri-conversion-test/standalone-candidate-learning ()
+  "SKK candidate learning (MRU): a cycled-to choice becomes the future default.
+かく first converts to 核; after cycling to 格, a fresh かく conversion defaults
+to 格 (the learned choice floated to the front)."
+  (skk-okuri-conversion-test--skip-unless-standalone
+    (let ((reader (skk-okuri-conversion-test--reader))
+          (image (skk-okuri-conversion-test--build-image t))
+          (cdb (skk-okuri-conversion-test--build-fixture-cdb)))
+      (unwind-protect
+          (let ((out (skk-okuri-conversion-test--run
+                      reader image
+                      (format "(progn (setq skk-cdb-dict-path %S)
+  (nl-write-file (files--ime-learn-path) \"\")
+  (setq files--buffer-string \"かく\") (setq files--point (length files--buffer-string))
+  (nl-write-file (files--ime-seg-path) \"0\") (nl-write-file (files--ime-cands-path) \"\") (nl-write-file (files--ime-idx-path) \"\")
+  (files--ime-convert) (princ (concat \"first=\" files--buffer-string \"\\n\"))
+  (files--ime-convert) (princ (concat \"cycled=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"かく\") (setq files--point (length files--buffer-string))
+  (nl-write-file (files--ime-seg-path) \"0\") (nl-write-file (files--ime-cands-path) \"\") (nl-write-file (files--ime-idx-path) \"\")
+  (files--ime-convert) (princ (concat \"second-default=\" files--buffer-string \"\\n\")))"
+                              cdb))))
+            (should (string-match-p "first=核" out))
+            (should (string-match-p "cycled=格" out))
+            (should (string-match-p "second-default=格" out)))
         (delete-file image)
         (delete-file cdb)))))
 
