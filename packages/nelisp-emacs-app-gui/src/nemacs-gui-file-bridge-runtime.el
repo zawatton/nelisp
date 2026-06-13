@@ -2474,13 +2474,62 @@
 
 (fset 'insert
       (lambda (&rest strings)
+        ;; Insert at point and advance point (Emacs semantics), via the
+        ;; point-aware files--insert-text -- the old append-to-end behaviour
+        ;; broke custom commands that goto-char then insert.  (When point is at
+        ;; the buffer end, this is identical to appending, so existing callers
+        ;; that insert at end are unaffected.)
         (let ((text ""))
           (while strings
             (setq text (concat text (car strings)))
             (setq strings (cdr strings)))
-          (setq files--buffer-string (concat files--buffer-string text))
-          (setq files--buffer-modified-p t))
+          (files--insert-text text))
         nil))
+
+;; --- query primitives for custom commands (0-based byte model) -------------
+;; point is files--point (0-based byte offset into files--buffer-string), so
+;; point-min is 0 and point-max is the buffer length; columns/char-after are
+;; byte-based (exact for ASCII, approximate for multibyte).
+(fset 'point-min (lambda () 0))
+(fset 'point-max (lambda () (length files--buffer-string)))
+
+(fset 'char-after
+      (lambda (&rest pos)
+        (let ((p (if pos (car pos) files--point)))
+          (if (if (>= p 0) (< p (length files--buffer-string)) nil)
+              (aref files--buffer-string p)
+            nil))))
+
+(fset 'char-before
+      (lambda (&rest pos)
+        (let ((p (if pos (car pos) files--point)))
+          (if (> p 0) (aref files--buffer-string (- p 1)) nil))))
+
+(fset 'buffer-substring
+      (lambda (start end) (substring files--buffer-string start end)))
+(fset 'buffer-substring-no-properties
+      (lambda (start end) (substring files--buffer-string start end)))
+
+(fset 'line-beginning-position
+      (lambda (&rest _)
+        (let ((i files--point))
+          (while (if (> i 0)
+                     (if (= (aref files--buffer-string (- i 1)) 10) nil t)
+                   nil)
+            (setq i (- i 1)))
+          i)))
+
+(fset 'line-end-position
+      (lambda (&rest _)
+        (let ((n (length files--buffer-string)) (i files--point))
+          (while (if (< i n)
+                     (if (= (aref files--buffer-string i) 10) nil t)
+                   nil)
+            (setq i (+ i 1)))
+          i)))
+
+(fset 'current-column
+      (lambda () (- files--point (line-beginning-position))))
 
 (fset 'set-buffer-modified-p
       (lambda (flag)

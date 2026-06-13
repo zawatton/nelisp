@@ -217,6 +217,34 @@ keybindings from the user's own config work, not just programmatic calls."
             (should (string-match-p "db=has-binding" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-custom-command-edits ()
+  "A custom command bound to a key does real editing via the query/insert
+primitives (insert at point, line-beginning-position) -- the payoff of
+keybinding customization + editing primitives together."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (nl-write-file (files--user-keymap-path) \"\")
+  ;; a command that prefixes the current line with \"> \"
+  (defun kb-quote-line ()
+    (goto-char (line-beginning-position))
+    (insert \"> \"))
+  (global-set-key (kbd \"C-c q\") 'kb-quote-line)
+  (setq files--buffer-string \"hello\\nworld\") (setq files--point 8)
+  (setq files--bridge-keys \"C-c q\") (setq files--bridge-arg \"\")
+  (files--dispatch-key-sequence)
+  ;; point was on the 2nd line (world); it should become \"> world\"
+  (princ (concat \"edited=\" files--buffer-string \"\\n\"))
+  ;; query primitives reflect the edit
+  (princ (concat \"pmax=\" (number-to-string (point-max)) \"\\n\")))")))
+            (should (string-match-p "edited=hello\n> world" out))
+            (should (string-match-p "pmax=13" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here
