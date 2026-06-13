@@ -62,6 +62,9 @@
 (declare-function nelisp-process-call-process-region "nelisp-process"
                   (start end program &optional delete destination display
                          &rest args))
+(declare-function nelisp-process-start "nelisp-process" (program &rest args))
+(declare-function nelisp-process-wait "nelisp-process" (proc))
+(declare-function nelisp-process-read-output "nelisp-process" (proc n))
 
 ;;;; --- delegate plumbing ---------------------------------------------
 
@@ -370,23 +373,86 @@ keeping this file as the Emacs-shaped compatibility boundary."
 
 ;;;; --- synchronous: call-process / call-process-region --------------
 
+(defun emacs-process--standalone-capture-available-p ()
+  "Return non-nil when the nelisp-process async capture primitives exist.
+These (`nelisp-process-start' / `-wait' / `-read-output') let the
+standalone reader run a child with its stdout on a pipe and read it
+back -- which the synchronous `nelisp-process-call-process' facade does
+not do (it returns only an exit code and leaks stdout to the parent)."
+  (and (fboundp 'nelisp-process-start)
+       (fboundp 'nelisp-process-wait)
+       (fboundp 'nelisp-process-read-output)))
+
+(defun emacs-process--call-process-target-buffer (destination)
+  "Resolve the stdout buffer for call-process DESTINATION, or nil to discard.
+Covers the part of the Emacs DESTINATION contract we support: nil / 0
+discard; t = current buffer; a string names a buffer; a buffer object is
+used directly; a list uses its car (the stdout destination)."
+  (cond
+   ((null destination) nil)
+   ((eq destination 0) nil)
+   ((eq destination t) (current-buffer))
+   ((stringp destination) (get-buffer-create destination))
+   ((consp destination)
+    (emacs-process--call-process-target-buffer (car destination)))
+   ((and (fboundp 'bufferp) (not (bufferp destination))) (current-buffer))
+   (t destination)))
+
+(defun emacs-process--standalone-call-process (program destination args)
+  "Run PROGRAM with ARGS synchronously via the nelisp-process async
+primitives, capturing stdout and inserting it per call-process
+DESTINATION.  Returns the child's integer exit code.
+
+This is the standalone-reader path that gives `call-process' real output
+capture: the synchronous `nelisp-process-call-process' facade only
+returns an exit code and leaks the child's stdout to the parent.
+
+`nelisp-process-read-output' is non-blocking (it returns nil when no
+data is buffered *yet*, not only at EOF), so we `nelisp-process-wait'
+for the child to exit first and then drain the buffered stdout to the
+nil EOF marker -- the ordering the reader's own process smoke uses.
+Stdin redirection (INFILE) is not handled here; the caller routes INFILE
+cases to the generic delegate instead.
+
+Caveat: draining after exit assumes the child's total stdout fits the
+reader's stdout buffer; multi-megabyte streaming output is out of scope
+for this synchronous path."
+  (let* ((proc (apply #'nelisp-process-start program args))
+         (rc (nelisp-process-wait proc))
+         (out "")
+         (chunk nil))
+    (while (setq chunk (nelisp-process-read-output proc 65536))
+      (setq out (concat out chunk)))
+    (let ((target (emacs-process--call-process-target-buffer destination)))
+      (when (and target (> (length out) 0))
+        (with-current-buffer target (insert out)))
+      (if (integerp rc) rc 0))))
+
 (defun emacs-process-call-process (program &optional infile destination
                                            display &rest args)
   "Synchronous program execution.  See `call-process' for semantics.
 
-When no host binding and no standalone primitive exists, degrade
-GRACEFULLY: return a non-zero exit code (1, = \"program failed\")
+On the standalone reader, when stdin is not redirected (INFILE nil) and
+the nelisp-process async capture primitives are available, route through
+`emacs-process--standalone-call-process' so stdout is actually captured
+into DESTINATION (the synchronous facade returns only an exit code and
+leaks stdout to the parent).
+
+Otherwise, when no host binding and no standalone primitive exists,
+degrade GRACEFULLY: return a non-zero exit code (1, = \"program failed\")
 instead of signalling `emacs-process-not-implemented'.  Load-time
 feature/tool detection in vendor packages (e.g. org.el probing for
-external tools via `(eq 0 (call-process ...))') then treats the tool
-as unavailable and proceeds, rather than aborting the whole load.
-A real implementation (via the NeLisp OS surface fork/execve) can
-later replace this through `emacs-standalone-register-primitive'."
-  (condition-case nil
-      (emacs-process--delegate 'call-process
-                               (cons program (cons infile (cons destination
-                                                                (cons display args)))))
-    (emacs-process-not-implemented 1)))
+external tools via `(eq 0 (call-process ...))') then treats the tool as
+unavailable and proceeds, rather than aborting the whole load."
+  (if (and (emacs-standalone-mode-p)
+           (null infile)
+           (emacs-process--standalone-capture-available-p))
+      (emacs-process--standalone-call-process program destination args)
+    (condition-case nil
+        (emacs-process--delegate 'call-process
+                                 (cons program (cons infile (cons destination
+                                                                  (cons display args)))))
+      (emacs-process-not-implemented 1))))
 
 (defun emacs-process-call-process-region (start end program &optional
                                                 delete buffer display
