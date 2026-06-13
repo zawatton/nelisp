@@ -36,6 +36,21 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   canonical image で fboundp=t、stress test 100 PASS。**= google-ime の依存は url-hexify 以外全て GUI
   runtime に存在** (json/network/cl macro/float-time)。
 
+## 🎌★✅ ローカル日本語変換 SHIPPED (2026-06-14, GUI runtime で実動作・network 不要)
+**SKK CDB 辞書経由の kana-kanji 変換が GUI runtime で動く** (canonical image に bake 済、stress 100 PASS)。
+- `nemacs-runtime-cdb.el` (nelisp-emacs 5096c73) = **buffer-free syscall CDB reader**。ddskk cdb.el は
+  buffer (with-current-buffer/insert-file-contents-literal/buffer-substring) + string `aset` 依存で bridge 不可、
+  `(require 'cdb)` は no-op なので自前で cdb-init/cdb-get/cdb-uninit を提供: file read = `syscall-direct`
+  (open=2/pread64=17/close=3)、hash = 整数 djb (64-bit、32-bit overflow 無し)、header は hash-table cache。
+- stdlib-extra に `substring-no-properties`(=substring) + `%`(=mod; 未定義 `%` は **segfault**、builtin は mod のみ) 追加。
+- vendor core に nemacs-runtime-cdb.el を bake (gui 1e52744)。
+- **検証 (canonical image)**: test CDB に対し みらい→`/未来/みらい/ミライ/`、にほん→`/日本/二本/`、
+  へんかん→`/変換/`、miss→nil。bridge/network/float-time 無傷。= **GUI 上で実際の日本語変換 (yomi→漢字) が
+  network 無しで動作**。task #29 (buffer-free file-read) の核 = 実装完了。
+- 残: skk-convert.el の CDB 生成 (with-temp-buffer 依存、要 buffer or syscall write 経路) と実 SKK-JISYO.L
+  からの CDB build (host で 1 回 build すれば bridge は lookup のみで動く)。google-ime upstream (url-retrieve +
+  buffer) は別経路だが、skk CDB が network 不要で動くため日本語入力の**最短路は完成に近い**。
+
 **★✅ network round-trip COMPLETE (2026-06-14、bridge で full E2E 動作)**: make-network-process →
 process-send-string → accept-process-output → filter で **echo server から "ECHO:ping" 受信成功**
 (google-ime の connect/send/recv パターンそのもの)。canonical image で stress test 100 PASS、bridge 無傷。
