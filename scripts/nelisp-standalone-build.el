@@ -2061,9 +2061,23 @@ argument (reachability + in-arena bounds checks).")
 ;; (:lit "NAME") -> the `sexp-name-eq' grammar op (full-length compare, ANY
 ;; length, required for "make-hash-table"/"string-to-number"/... > 8 bytes).
 (defconst nelisp-standalone--applyfn-dispatch-table
-  '(((:u8 "+")    . (wf_write_int out (wf_sum args 0)))
-    ((:u8 "-")    . (wf_write_int out (wf_diff args)))
-    ((:u8 "*")    . (wf_write_int out (wf_prod args 1)))
+  '(((:u8 "+")    . (if (= (wf_any_float args) 1)
+                        ;; The fold leaves the final Float Sexp in `sc'; copy it
+                        ;; out.  (Re-materializing via `(nl_sexp_write_float out
+                        ;; (bits-to-f64 (wf_fsum ...)))' fails: the extern-call
+                        ;; f64-arg classifier mishandles a bits-to-f64 wrapping a
+                        ;; CALL.  Inside the helpers bits-to-f64 only wraps refs.)
+                        (let* ((sc (alloc-bytes 32 8)))
+                          (seq (wf_fsum args 0 sc) (wf_copy32 out sc)))
+                      (wf_write_int out (wf_sum args 0))))
+    ((:u8 "-")    . (if (= (wf_any_float args) 1)
+                        (let* ((sc (alloc-bytes 32 8)))
+                          (seq (wf_fdiff args sc) (wf_copy32 out sc)))
+                      (wf_write_int out (wf_diff args))))
+    ((:u8 "*")    . (if (= (wf_any_float args) 1)
+                        (let* ((sc (alloc-bytes 32 8)))
+                          (seq (wf_fprod args (wf_int_fbits 1 sc) sc) (wf_copy32 out sc)))
+                      (wf_write_int out (wf_prod args 1))))
     ((:u8 "/")    . (wf_write_int out (/ (wf_argval args 0) (wf_argval args 1))))
     ((:u8 "mod")  . (wf_write_int out (mod (wf_argval args 0) (wf_argval args 1))))
     ((:u8 "1+")   . (wf_write_int out (+ (wf_argval args 0) 1)))
@@ -2391,7 +2405,59 @@ unresolved at link time."
             ;; elisp `-': 1-arg `(- x)' = NEGATION (-x), not x; n-arg subtracts
             ;; the tail from the first.  The old `first' fallthrough made `(- 5)'
             ;; return 5, breaking every `(ash v (- (* i 8)))' byte-extraction.
-            (if (= (ptr-read-u64 rest 0) 7) (wf_subtail rest first) (- 0 first))) 0)))
+            (if (= (ptr-read-u64 rest 0) 7) (wf_subtail rest first) (- 0 first))) 0))
+    ;; --- FLOAT-AWARE arithmetic.  The integer wf_sum/wf_prod/wf_subtail/wf_diff
+    ;; above read slot+8 as a raw i64 with NO tag check, so a Float operand
+    ;; (tag 3, IEEE-754 bits inline at +8) is folded as garbage and written via
+    ;; wf_write_int (tag 2 Int) -> `(+ 2.5 2.5)' returned a huge Int, not 5.0.
+    ;; These mirror the tag-aware wf_num_lt family + the reader's nl_str_to_float
+    ;; production idiom: the accumulator is carried as u64 BITS (i64-typed, safe
+    ;; across recursion); an f64 value appears ONLY inline as an arg to
+    ;; f64-add/sub/mul + nl_sexp_write_float (no f64 local/param — the same
+    ;; discipline every proven float producer in this layer uses).  There is no
+    ;; f64-to-bits op, so we recover result bits by round-tripping through a
+    ;; scratch slot that nl_sexp_write_float (reader-float.o, linked by the
+    ;; reader build) fills with {tag=3, xmm0 bits @ +8}.
+    (defun wf_any_float (list_ptr)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (if (= (ptr-read-u64 (nl_cons_car_ptr list_ptr) 0) 3)
+              1
+            (wf_any_float (nl_cons_cdr_ptr list_ptr)))
+        0))
+    (defun wf_elem_fbits (car_ptr scratch)
+      (if (= (ptr-read-u64 car_ptr 0) 3)
+          (ptr-read-u64 car_ptr 8)
+        (seq (nl_sexp_write_float scratch (i64-to-f64 (ptr-read-u64 car_ptr 8)))
+             (ptr-read-u64 scratch 8))))
+    (defun wf_int_fbits (n scratch)
+      (seq (nl_sexp_write_float scratch (i64-to-f64 n)) (ptr-read-u64 scratch 8)))
+    (defun wf_fsum (list_ptr acc_bits scratch)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (let* ((vb (wf_elem_fbits (nl_cons_car_ptr list_ptr) scratch)))
+            (seq (nl_sexp_write_float scratch (f64-add (bits-to-f64 acc_bits) (bits-to-f64 vb)))
+                 (wf_fsum (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 scratch 8) scratch)))
+        acc_bits))
+    (defun wf_fprod (list_ptr acc_bits scratch)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (let* ((vb (wf_elem_fbits (nl_cons_car_ptr list_ptr) scratch)))
+            (seq (nl_sexp_write_float scratch (f64-mul (bits-to-f64 acc_bits) (bits-to-f64 vb)))
+                 (wf_fprod (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 scratch 8) scratch)))
+        acc_bits))
+    (defun wf_fsubtail (list_ptr acc_bits scratch)
+      (if (= (ptr-read-u64 list_ptr 0) 7)
+          (let* ((vb (wf_elem_fbits (nl_cons_car_ptr list_ptr) scratch)))
+            (seq (nl_sexp_write_float scratch (f64-sub (bits-to-f64 acc_bits) (bits-to-f64 vb)))
+                 (wf_fsubtail (nl_cons_cdr_ptr list_ptr) (ptr-read-u64 scratch 8) scratch)))
+        acc_bits))
+    (defun wf_fdiff (list_ptr scratch)
+      (let* ((first_b (wf_elem_fbits (nl_cons_car_ptr list_ptr) scratch))
+             (rest (nl_cons_cdr_ptr list_ptr)))
+        ;; elisp `-': 1-arg = negation (0.0 - x); n-arg = first - rest.
+        (if (= (ptr-read-u64 rest 0) 7)
+            (wf_fsubtail rest first_b scratch)
+          (seq (nl_sexp_write_float scratch (f64-sub (i64-to-f64 0) (bits-to-f64 first_b)))
+               (ptr-read-u64 scratch 8)))))
+    )
   "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
 
 ;; bf_size_census arena-diagnostic family (Doc 08 §8.14): BLOCK_TOTAL histogram
