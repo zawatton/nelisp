@@ -29,9 +29,21 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
   `exec-runtime-image <image> '(load fl.el)'` → fadd/fmul=t)。GUI が使う snapshot
   (/tmp/nelisp-snap/nelisp) を sync-nelisp-snap.sh で更新済 + `bin/nemacs` に staleness
   `-nt` 自動 resync を追加 (gui 386b050) → 今後の runtime 修正も GUI に自動到達。
-- **残 (P1 続き)**: (b') `mod` の float (稀)。(c) **float-time / current-time / floor / truncate**
-  (日本語入力 google-ime `(floor (* 1000 (float-time)))` に必須、算術演算子でなく
-  time-access + float 生成 primitive 群 = 次の focused piece)。
+- **✅ floor / truncate / ceiling SHIPPED (dev/nelisp 12d1cb9d)**: float→int を
+  `f64-to-i64-trunc` で実装 ((floor 2.7)=2, (floor -2.3)=-3, (truncate -2.3)=-2,
+  (ceiling 2.1)=3, integer 恒等)。`nelisp-standalone--reader-builtins` 登録 +
+  core dispatch arm。reader-surface-audit + 全 smoke PASS、GUI 伝播済。
+- **⚠️ float-time BLOCKED (codegen bug、2026-06-14, 9 rebuild で確定)**: `gettimeofday(2)`
+  syscall (__NR=96) は**動く** ((float-time) を int で返すと host 時刻が正しく出る) が、
+  **`nl_sexp_write_float` (f64→Float Sexp 生成) を `syscall-direct` の後 (同一実行経路) で
+  呼ぶと runtime abort** — 別 defun frame に分離しても persist。= syscall が SSE/f64 状態を
+  汚す (or AOT の syscall emit が xmm を保存しない) **深い codegen bug**。syscall 無しの f64
+  生成 (算術 +,-,*,/) と syscall 単体 (時刻 int) は各々動くが、**組合せ**が壊れる。
+  → 修正案: (a) AOT compiler の `syscall-direct` emit を SSE-clobber-safe に、または
+  (b) `nl_sexp_write_float` 同様の **hand-asm extern `nl_os_float_time`** (gettimeofday +
+  cvtsi2sd + divsd/addsd + Float Sexp write を 1 asm stub で) を reader-float.o 方式で追加し
+  AOT の syscall↔f64 経路を完全回避。current-time も同様。= 次の focused piece。
+- **残 (P1 続き)**: (b') `mod` の float (稀)。上記 float-time/current-time。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
