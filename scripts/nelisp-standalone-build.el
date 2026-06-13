@@ -2095,6 +2095,18 @@ argument (reachability + in-arena bounds checks).")
                             (seq (nl_sexp_write_float sc (f64-sub (bits-to-f64 (ptr-read-u64 p 8)) (i64-to-f64 1)))
                                  (wf_copy32 out sc)))
                         (wf_write_int out (- (wf_argval args 0) 1)))))
+    ((:u8 "floor")    . (let* ((p (wf_arg_ptr args 0)))
+                          (if (= (ptr-read-u64 p 0) 3)
+                              (wf_write_int out (wf_ffloor p))
+                            (wf_write_int out (ptr-read-u64 p 8)))))
+    ((:u8 "truncate") . (let* ((p (wf_arg_ptr args 0)))
+                          (if (= (ptr-read-u64 p 0) 3)
+                              (wf_write_int out (wf_ftrunc p))
+                            (wf_write_int out (ptr-read-u64 p 8)))))
+    ((:u8 "ceiling")  . (let* ((p (wf_arg_ptr args 0)))
+                          (if (= (ptr-read-u64 p 0) 3)
+                              (wf_write_int out (wf_fceil p))
+                            (wf_write_int out (ptr-read-u64 p 8)))))
     ((:u8 "=")    . (if (= (wf_num_eq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
     ((:u8 "<")    . (if (= (wf_num_lt (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
     ((:u8 ">")    . (if (= (wf_num_gt (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1) (wf_write_t out) (wf_write_nil out)))
@@ -2475,6 +2487,23 @@ unresolved at link time."
       (let* ((ab (wf_elem_fbits (wf_arg_ptr args 0) scratch))
              (bb (wf_elem_fbits (wf_arg_ptr args 1) scratch)))
         (nl_sexp_write_float scratch (f64-div (bits-to-f64 ab) (bits-to-f64 bb)))))
+    ;; float -> int conversions (each takes a Float Sexp ptr; integer args are
+    ;; handled as identity in the dispatch arm).  f64-to-i64-trunc rounds toward
+    ;; zero (= truncate); floor rounds toward -inf, ceiling toward +inf.  Cross-
+    ;; arch safe (no syscall).  Note: `round' (banker's rounding) and `float-time'
+    ;; (needs a per-arch clock_gettime OS helper) are deferred.
+    (defun wf_ftrunc (p)
+      (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p))))
+    (defun wf_ffloor (p)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
+        (if (= (f64-lt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+            (- t0 1)
+          t0)))
+    (defun wf_fceil (p)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
+        (if (= (f64-gt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+            (+ t0 1)
+          t0)))
     )
   "Core wf_* dispatch helpers (shared by baked + reader applyfn).")
 
@@ -5339,7 +5368,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     (dolist (f forms r) (setq r (eval f t)))))
 
 (defconst nelisp-standalone--reader-builtins
-  '("+" "-" "*" "/" "mod" "1+" "1-" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not"
+  '("+" "-" "*" "/" "mod" "1+" "1-" "floor" "truncate" "ceiling" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not"
     ;; Globals shim bridge for user-loaded .el files (`defvar' / `defconst'
     ;; in the standalone prelude lower through this entry).
     "nelisp--env-globals-op"
