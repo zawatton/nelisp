@@ -191,19 +191,34 @@ exact key forms the engine derives -- so the test depends on no host dict."
 
 (defun skk-okuri-conversion-test--run (reader image form)
   "Run READER exec-runtime-image IMAGE FORM; return captured output (fail on error).
+FORM runs in a per-call ISOLATED transport directory (files--transport-dir is
+set to a fresh temp dir before FORM), so standalone tests never share the
+/tmp/nemacs-* transport state -- including the persistent IME learning file
+that would otherwise leak across tests (task #25).
 Captures into a buffer (stdout + stderr merged).  A buffer destination is used
 rather than `(list stdout-file stderr-file)' because the file-redirect form of
 `call-process' yields empty files under some sandboxed nested-Emacs hosts,
 whereas buffer capture is reliable; the assertions match substrings, so the
 merged stream is fine."
-  (with-temp-buffer
-    (let ((status (call-process reader nil (current-buffer) nil
-                                "exec-runtime-image" image form)))
-      (unless (equal 0 status)
-        (ert-fail
-         (format "exec-runtime-image failed: status=%S\noutput:\n%s"
-                 status (buffer-string))))
-      (buffer-string))))
+  (let ((tdir (make-temp-file "skk-okuri-transport-" t)))
+    ;; Seed the romaji table resource into the isolated dir: the IME composer
+    ;; reads it from <transport-dir>/nemacs-ime-table (it is a static resource,
+    ;; not ephemeral state), so a fresh dir needs it for keystroke composition.
+    (let ((tsv (skk-okuri-conversion-test--path "src/nemacs-ime-romaji.tsv")))
+      (when (file-readable-p tsv)
+        (copy-file tsv (expand-file-name "nemacs-ime-table" tdir) t)))
+    (unwind-protect
+        (let ((wrapped (format "(progn (setq files--transport-dir %S) %s)"
+                               tdir form)))
+          (with-temp-buffer
+            (let ((status (call-process reader nil (current-buffer) nil
+                                        "exec-runtime-image" image wrapped)))
+              (unless (equal 0 status)
+                (ert-fail
+                 (format "exec-runtime-image failed: status=%S\noutput:\n%s"
+                         status (buffer-string))))
+              (buffer-string))))
+      (when (file-directory-p tdir) (delete-directory tdir t)))))
 
 (ert-deftest skk-okuri-conversion-test/standalone-engine ()
   "Standalone runtime converts nouns + conjugated verbs / adjectives."
@@ -266,7 +281,6 @@ SPC convert)."
                       reader image
                       (format "(progn (setq skk-cdb-dict-path %S)
   (setq files--input-method \"default\")
-  (nl-write-file (files--ime-learn-path) \"\")  ; isolate from MRU learning
   ;; --- か K u SPC : capital K marks the okurigana start ---
   (setq files--buffer-string \"\") (setq files--point 0)
   (files--ime-commit-state) (nl-write-file (files--ime-pending-path) \"\")

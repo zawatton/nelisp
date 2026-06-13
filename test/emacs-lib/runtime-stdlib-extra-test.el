@@ -110,7 +110,10 @@
     image))
 
 (defun runtime-stdlib-extra-test--run (reader image form)
-  "Run READER exec-runtime-image IMAGE FORM; return captured output (buffer)."
+  "Run READER exec-runtime-image IMAGE FORM; return captured output (buffer).
+No transport isolation needed here: each call-process is a fresh runtime with
+fresh globals and these forms write no /tmp/nemacs-* state (unlike the SKK
+suite, whose persistent IME learning file leaks on disk)."
   (with-temp-buffer
     (let ((status (call-process reader nil (current-buffer) nil
                                 "exec-runtime-image" image form)))
