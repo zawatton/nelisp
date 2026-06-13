@@ -36,17 +36,20 @@ user 実物 `~/.nemacs.d/custom-lisp/google-ime-server.el` (292行, requires cl-
   canonical image で fboundp=t、stress test 100 PASS。**= google-ime の依存は url-hexify 以外全て GUI
   runtime に存在** (json/network/cl macro/float-time)。
 
-**★network round-trip の実 blocker 特定 (2026-06-14)**: make-network-process は baked + 呼べるが、実
-ipv4 connect が `(error PORT)` で失敗。真因 = **`emacs-network-ffi.el` の ipv4 path 全体 (inet_pton /
-make-sockaddr-in / connect / setsockopt) が `nl-ffi-call` (libffi) ベース**で、standalone bridge には
-**FFI が無い** (`ffi-call`/`dlopen` fboundp=nil、`syscall-direct` のみ=t)。FFI は撤去された build-tool/Rust
-由来。memory の「TCP round-trip 検証済」は FFI 有り context の話。**→ fix = ipv4 socket path を FFI でなく
-`syscall-direct` で再実装**: socket(__NR=41) / connect(__NR=42) / setsockopt、`sockaddr_in` (16B: family=2,
-port BE u16, addr BE u32, 8B zero) を alloc-bytes+ptr-write で手組、inet_pton は "a.b.c.d" の手動 split
-(FFI 不要)。UNIX socket path (connect-unix) も同様に FFI 依存か要確認。
-**✅ syscall TCP round-trip を bridge で実証済 (2026-06-14、FFI 不要を確定)**: echo server 相手に
-socket(41)→connect(42)→write(1)→read(0)→close(3) が全て動作 (fd>=0, connect=0, write=4, read=9
-"ECHO:ping")。**動く recipe**:
+**★✅ network round-trip COMPLETE (2026-06-14、bridge で full E2E 動作)**: make-network-process →
+process-send-string → accept-process-output → filter で **echo server から "ECHO:ping" 受信成功**
+(google-ime の connect/send/recv パターンそのもの)。canonical image で stress test 100 PASS、bridge 無傷。
+- 経緯: 当初 ipv4 connect が `(error PORT)` で失敗 (`:family` 無しで UNIX path に誤 fallback、port を
+  socket path 扱い) → `:family 'ipv4` で client-tcp は connect 成功 (fd) するが make-network-process が
+  abort。調査で **`emacs-network-ffi.el` の ipv4 path は libffi (`nl-ffi-call`) ベースだが、それを
+  `syscall-direct` に map する `emacs-network-syscall-shim.el` が既存**と判明 (socket=41/connect=42/
+  sendto=44/recvfrom=45/poll=7、inet_pton は pure-elisp dotted-quad)。shim は baked + 動作 (socket→fd=3)。
+  真の欠落 = **`accept-process-output` を定義する `emacs-eventloop.el` を bake していなかった** (recv+filter
+  経路が undefined → abort)。→ vendor core に emacs-eventloop.el を追加 (gui 674837e) で full round-trip 開通。
+- **= FFI 不要で TCP networking が bridge で完全動作** (socket/connect/send/recv/filter)。**google-ime の
+  依存は url-hexify 以外全て揃い、socket round-trip も動く**。残 = 実 google-ime server 相手の実変換。
+**✅ raw syscall TCP round-trip recipe (参考、shim 不在時の手組)**: echo server 相手に
+socket(41)→connect(42)→write(1)→read(0)→close(3) (fd>=0, connect=0, write=4, read=9 "ECHO:ping")：
 ```
 sa=(alloc-bytes 16 8); sa0=(logior 2 (ash (logand 255 (ash port -8)) 16) (ash (logand 255 port) 24)
                               (ash 127 32) (ash 1 56)); (ptr-write-u64 sa 0 sa0)(ptr-write-u64 sa 8 0)
