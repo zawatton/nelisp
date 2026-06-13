@@ -15539,6 +15539,17 @@
         ;; the GUI reads ONLY this channel (its text buffer is 64KB and
         ;; its state words are u16); small buffers pass through whole,
         ;; so the rel values equal the abs ones there
+        ;; M20: for buffers beyond the view cap, keep point inside the
+        ;; published slice by re-anchoring the window start near point when
+        ;; point has moved outside [window-start, window-start+cap) (e.g.
+        ;; after M->, goto-line, or a big scroll).
+        (if (> (length files--buffer-string) files--view-cap)
+            (if (< files--point files--window-start)
+                (files--set-window-start-near-point)
+              (if (>= files--point (+ files--window-start files--view-cap))
+                  (files--set-window-start-near-point)
+                nil))
+          nil)
         (let ((vs (files--view-base))
               (ve 0)
               (rp 0))
