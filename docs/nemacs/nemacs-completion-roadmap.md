@@ -33,27 +33,26 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
   `f64-to-i64-trunc` で実装 ((floor 2.7)=2, (floor -2.3)=-3, (truncate -2.3)=-2,
   (ceiling 2.1)=3, integer 恒等)。`nelisp-standalone--reader-builtins` 登録 +
   core dispatch arm。reader-surface-audit + 全 smoke PASS、GUI 伝播済。
-- **⚠️ float-time BLOCKED (codegen bug、2026-06-14, 9 rebuild で確定)**: `gettimeofday(2)`
-  syscall (__NR=96) は**動く** ((float-time) を int で返すと host 時刻が正しく出る) が、
-  **`nl_sexp_write_float` (f64→Float Sexp 生成) を `syscall-direct` の後 (同一実行経路) で
-  呼ぶと runtime abort** — 別 defun frame に分離しても persist。= syscall が SSE/f64 状態を
-  汚す (or AOT の syscall emit が xmm を保存しない) **深い codegen bug**。syscall 無しの f64
-  生成 (算術 +,-,*,/) と syscall 単体 (時刻 int) は各々動くが、**組合せ**が壊れる。
-  → 修正案: (a) AOT compiler の `syscall-direct` emit を SSE-clobber-safe に、または
-  (b) `nl_sexp_write_float` 同様の **hand-asm extern `nl_os_float_time`** (gettimeofday +
-  cvtsi2sd + divsd/addsd + Float Sexp write を 1 asm stub で) を reader-float.o 方式で追加し
-  AOT の syscall↔f64 経路を完全回避。current-time も同様。= 次の focused piece。
-- **✅ nl-unix-time-usec builtin SHIPPED (21d8c2cb)**: gettimeofday(96) → sec*1e6+usec を
-  単一 INTEGER で返す (syscall 後 純 int 演算 = 動く半分)。sub-second 時刻を f64 無しで取得可能。
-- **⚠️ float-time の elisp 合成は不可能と確定 (2026-06-14 追検証)**: 当初 `(/ (nl-unix-time-usec)
-  1000000.0)` が **top-level loaded form** では動いた (sub-second float) ので polyfill 化を試みたが、
-  **同じ式を user defun 内 ((defun float-time () ...)) に入れて呼ぶと abort**。= syscall→f64 の
-  汚染は呼ばれた関数 frame 内で必ず発症し、top-level eval だけ免れる。さらに `(and (fboundp X)
-  (nl-unix-time-usec))` も abort (and+syscall)。→ **elisp/dispatch/prelude のどの経路でも
-  float-time は作れない**。emacs-time.el polyfill 改修は revert (int-seconds fallback より悪化する)。
-  **= 上記 (b) hand-asm extern `nl_os_float_time` が唯一の道**と確定。nl-unix-time-usec は int 系
-  timing には即使える foundation として残す。
-- **残 (P1 続き)**: (b') `mod` の float (稀)。float-time/current-time = hand-asm extern (上記)。
+- **✅ float-time SHIPPED (hand-asm extern, fe221c3c)**: `(float-time)`=1781370652.5
+  (sub-second float, floatp=t)、**google-ime の `(floor (* 1000 (float-time)))`=...ms 動作**、
+  `(truncate (float-time))`=sec。= 日本語入力の最後の float blocker 解消。
+  - 真因: AOT が `syscall` の後に emit する f64/`nl_sexp_write_float` は必ず abort (SSE/f64 を
+    syscall が汚す)。elisp/dispatch/prelude のどの経路でも float-time は作れない (検証済)。
+  - 解: **hand-asm extern `nl_os_float_time` (float-time.o)** = gettimeofday(96) + cvtsi2sd×2 +
+    divsd + addsd + Float Sexp write を全部 asm で行い、AOT の syscall↔f64 を回避
+    (reader-float.o の `nl_sexp_write_float` と同方式)。配線で各 1 build を要した点:
+    (1) dispatch は **bf-arms table の :lit** (core table の :lit は abort)、
+    (2) **helper `wf_float_time` 経由** (dispatch arm に inline extern call すると abort)、
+    (3) helper は **scratch slot に書いて wf_copy32 で out へ** (extern を out 直書きすると abort)、
+    (4) rcx/r11 を syscall 跨ぎで save (防御)。
+  - ⚠️ **重要な別問題発見**: bare `target/nelisp --load` では **user-defun 呼出自体が abort**
+    (`(defun g () 5)(g)` すら abort、float-time 無関係)。= reader harness の限界で float-time とは
+    直交。bridge (nelisp-emacs full eval) では user 関数が動く (GUI が動作中) ので float-time も
+    そこで呼べる想定。bare --load の user-defun-call は別 task。
+- **✅ nl-unix-time-usec builtin SHIPPED (21d8c2cb)**: gettimeofday(96) → sec*1e6+usec を単一
+  INTEGER で返す (f64 無しの sub-second 整数 timing)。float-time の前段で発見した foundation。
+- **残 (P1 続き)**: (b') `mod` の float (稀)。current-time (float-time と同様 hand-asm でいける)。
+  bare --load の user-defun-call abort (別 task、bridge は影響外の見込み)。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
