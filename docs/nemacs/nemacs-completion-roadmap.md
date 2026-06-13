@@ -57,9 +57,17 @@ cl-return-from / pcase / when-let / define-inline) が wrap-init macroexpand で
 - **✅ nl-unix-time-usec builtin SHIPPED (21d8c2cb)**: gettimeofday(96) → sec*1e6+usec を単一
   INTEGER で返す (f64 無しの sub-second 整数 timing)。float-time の前段で発見した foundation。
 - **残 (P1 続き)**: (b') `mod` の float (稀)。current-time (float-time と同様 hand-asm でいける)。
-- **P2 候補 (runtime package 経路)**: 実行時 `(load パッケージ.el)` で defun が効く経路 (= wrap-init
-  相当の build-time macroexpand を runtime に持込む or 実行時 macroexpand)。runtime に kkc/skk 等の
-  外部 package を直 load したい場合の前提。現状は wrap-init 経由 (build-time) のみ。
+- **★P2 = runtime stdlib prelude (最重要 next frontier、2026-06-14 精密診断)**: `--load` でも bridge
+  (exec-runtime-image) でも **stdlib prelude 全体が未ロード**と実証: `(nthcdr ...)` (関数)、`(when ...)`
+  (macro)、`(defun ...)` 全て abort。動くのは **native builtin (+, fset, funcall, format, syscall, …) と
+  lambda/funcall のみ**。原因: prelude (`nelisp-standalone--reader-repl-prelude-forms`) は **`--repl`
+  経路でしか load されない** (entry 7014/7033/7066)。eval は runtime macro 展開を**持っている**
+  (`nl_cons_is_macro` + `nl_cons_macro_apply_eval`、combiner-cons) ので、prelude さえ env に入れば
+  `defun`/`when`/`dash`/`s`/`ht` 等は動く見込み。user `~/.nemacs.d` が動くのは wrap-init (build-time) が
+  prelude+展開を bake するから。**→ fix 方向**: bridge image (nemacs-gui-file-bridge.nlri) の preload か
+  exec-runtime-image 経路に **stdlib prelude を bake/load** する (= --repl と同じ prelude を user-code
+  eval env に供給)。これで実行時 `(load kkc.el)` 等の外部 package 直 load が開通。= 日本語入力で
+  google-ime/kkc/skk を **実行時 load** する道。current-time/mod より leverage 大。focused session 向き。
 - **(以下は完了前の調査メモ)**
 - **症状**: bridge runtime で `(+ 2.5 2.5)`≠5.0, `(* 2.5 2)` abort (integer は OK、
   比較 `<`/`=` は float でも OK)。float-time/current-time/floor も abort。
