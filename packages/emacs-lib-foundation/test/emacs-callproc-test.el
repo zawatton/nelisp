@@ -125,6 +125,50 @@
     (should (equal (getenv "BAR") "baz"))))
 
 
+;;;; --- standalone-reader environment seeding (/proc/self/environ) ---------
+
+(ert-deftest emacs-callproc-test/split-on-nul-drops-empties ()
+  (should (equal (emacs-callproc--split-on-nul "PATH=/bin\0HOME=/root\0")
+                 '("PATH=/bin" "HOME=/root")))
+  (should (equal (emacs-callproc--split-on-nul "A=1") '("A=1")))
+  (should (null (emacs-callproc--split-on-nul "")))
+  (should (null (emacs-callproc--split-on-nul "\0\0"))))
+
+(ert-deftest emacs-callproc-test/read-proc-environ-uses-rdf ()
+  "`emacs-callproc--read-proc-environ' parses `rdf' of /proc/self/environ."
+  (let ((seen nil))
+    (cl-letf (((symbol-function 'rdf)
+               (lambda (file)
+                 (setq seen file)
+                 "PATH=/usr/bin:/bin\0HOME=/home/x\0")))
+      (should (equal (emacs-callproc--read-proc-environ)
+                     '("PATH=/usr/bin:/bin" "HOME=/home/x")))
+      (should (equal seen emacs-callproc--proc-self-environ)))))
+
+(ert-deftest emacs-callproc-test/read-proc-environ-nil-without-rdf ()
+  "Without `rdf' (= host Emacs) the reader yields nil rather than erroring."
+  (let ((had (fboundp 'rdf))
+        (before (and (fboundp 'rdf) (symbol-function 'rdf))))
+    (unwind-protect
+        (progn
+          (when had (fmakunbound 'rdf))
+          (should (null (emacs-callproc--read-proc-environ))))
+      (when had (fset 'rdf before)))))
+
+(ert-deftest emacs-callproc-test/populate-seeds-only-when-empty ()
+  "Populate seeds an empty `process-environment' and leaves a full one alone."
+  (cl-letf (((symbol-function 'rdf)
+             (lambda (_file) "PATH=/seeded\0")))
+    ;; Empty -> seeded from rdf.
+    (let ((process-environment nil))
+      (emacs-callproc-populate-process-environment)
+      (should (equal process-environment '("PATH=/seeded")))
+      (should (equal (getenv "PATH") "/seeded")))
+    ;; Already populated -> untouched.
+    (let ((process-environment '("PATH=/real")))
+      (emacs-callproc-populate-process-environment)
+      (should (equal process-environment '("PATH=/real"))))))
+
 (provide 'emacs-callproc-test)
 
 ;;; emacs-callproc-test.el ends here

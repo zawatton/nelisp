@@ -104,6 +104,7 @@ on those semantics during bootstrap.")
            ;; --- predicates / attributes
            file-exists-p
            file-readable-p
+           file-executable-p
            file-directory-p
            file-attributes
            directory-files
@@ -116,6 +117,25 @@ on those semantics during bootstrap.")
   (when (emacs-fileio-builtins--install-function-p --name--)
     (defalias --name--
       (intern (concat "nelisp-ec-" (symbol-name --name--))))))
+
+;; --- access(2)-backed predicates for the standalone reader ----------
+;; The `emacs-fileio-builtins--install-function-p' standalone clause keys
+;; off `(not (boundp 'emacs-version))', but nemacs binds `emacs-version'
+;; (for vendor compatibility), so that clause never fires here.  Its
+;; native `file-exists-p' meanwhile resolves to a stat path that
+;; misreports on the reader (always nil), and `file-executable-p' is
+;; absent.  When the verified access(2) primitive `nelisp--syscall-path-int'
+;; is present we therefore force-install the `nelisp-ec-*' access-backed
+;; predicates over whatever the runtime bound.  This block is inert under
+;; host Emacs (no `nelisp--syscall-path-int'), so the C builtins stand.
+(when (fboundp 'nelisp--syscall-path-int)
+  (defalias 'file-exists-p #'nelisp-ec-file-exists-p)
+  (defalias 'file-readable-p #'nelisp-ec-file-readable-p)
+  (defalias 'file-executable-p #'nelisp-ec-file-executable-p)
+  ;; `executable-find' is in `--standalone-overrides' but, like the
+  ;; predicates above, that clause does not fire on nemacs; an earlier
+  ;; `emacs-stub' stub otherwise shadows the working `nelisp-ec' PATH walk.
+  (defalias 'executable-find #'nelisp-ec-executable-find))
 
 ;;;; --- file-name parsing ----------------------------------------------
 

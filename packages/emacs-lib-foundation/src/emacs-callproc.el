@@ -20,6 +20,7 @@
 
 (declare-function nl-syscall-getenv "nelisp-runtime" (variable))
 (declare-function nelisp-sys-getenv "nelisp-sys" (variable))
+(declare-function rdf "nelisp-runtime" (file))
 
 (defconst emacs-callproc--sys-getenv-functions
   '(nelisp-sys-getenv nl-syscall-getenv)
@@ -100,6 +101,62 @@ parity and ignored (= no `$VAR' interpolation in the polyfill)."
                   (cons (concat variable "=" value) forward)
                 forward))))
     value))
+
+
+;;;; --- standalone-reader environment seeding --------------------------
+;;
+;; On nemacs `process-environment' starts empty and there is no native
+;; getenv backend wired (`nelisp-sys-getenv' / `nl-syscall-getenv' are
+;; unbound, and nothing captures the startup envp), so `getenv' --
+;; hence `executable-find's PATH walk -- would always see an empty
+;; environment.  The reader does expose a working file reader (`rdf'),
+;; so we seed `process-environment' once from Linux `/proc/self/environ'
+;; (NUL-separated `KEY=VALUE' entries).  Inert on host Emacs, where
+;; `process-environment' is already populated and `rdf' is unbound.
+
+(defconst emacs-callproc--proc-self-environ "/proc/self/environ"
+  "Linux pseudo-file exposing the process environment (NUL-separated).")
+
+(defun emacs-callproc--split-on-nul (string)
+  "Split STRING on NUL (?\\0) bytes, dropping empty substrings."
+  (let ((parts nil)
+        (start 0)
+        (i 0)
+        (len (length string)))
+    (while (< i len)
+      (when (eq (aref string i) 0)
+        (when (> i start)
+          (setq parts (cons (substring string start i) parts)))
+        (setq start (1+ i)))
+      (setq i (1+ i)))
+    (when (> len start)
+      (setq parts (cons (substring string start len) parts)))
+    (nreverse parts)))
+
+(defun emacs-callproc--read-proc-environ ()
+  "Return the OS environment as a list of `KEY=VALUE' strings, or nil.
+Reads Linux `/proc/self/environ' through the standalone reader's `rdf'
+primitive.  Returns nil on host Emacs, non-Linux, or when `rdf' or the
+pseudo-file is unavailable."
+  (when (fboundp 'rdf)
+    (let ((raw (condition-case nil
+                   (rdf emacs-callproc--proc-self-environ)
+                 (error nil))))
+      (and (stringp raw) (> (length raw) 0)
+           (emacs-callproc--split-on-nul raw)))))
+
+(defun emacs-callproc-populate-process-environment ()
+  "Seed `process-environment' from the OS env when it is empty.
+No-op when `process-environment' already has entries (= host Emacs) or
+no source is available.  Returns the (possibly updated) value."
+  (when (null process-environment)
+    (let ((env (emacs-callproc--read-proc-environ)))
+      (when env
+        (setq process-environment env))))
+  process-environment)
+
+;; Seed at load time: harmless on host, effective on the standalone reader.
+(emacs-callproc-populate-process-environment)
 
 
 (provide 'emacs-callproc)

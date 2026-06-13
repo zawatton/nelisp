@@ -124,18 +124,35 @@
   '(nelisp-sys-access nl-syscall-access)
   "Candidate access(2)-style functions, in preferred order.")
 
+(declare-function nelisp--syscall-path-int "nelisp-runtime")
+
+(defconst nelisp-ec--syscall-access-number 21
+  "Linux x86_64 access(2) syscall number, for `nelisp--syscall-path-int'.")
+
 (defun nelisp-ec--access (file mode)
   "Call the first available access(2)-style backend for FILE and MODE.
 Returns the integer backend result, or nil when no backend is wired."
-  (catch 'done
-    (dolist (fn nelisp-ec--access-functions)
-      (when (fboundp fn)
-        (let ((rc (condition-case nil
-                      (funcall fn file mode)
-                    (error nil))))
-          (when (integerp rc)
-            (throw 'done rc)))))
-    nil))
+  (cond
+   ;; Standalone reader (nemacs): access(2) addressed by raw syscall
+   ;; number.  This is the only working access backend there --
+   ;; `nelisp-sys-access' / `nl-syscall-access' are unbound and
+   ;; `nelisp--syscall-stat' misreports -- so it is preferred when
+   ;; present.  Absent under host Emacs, where the dolist backends and
+   ;; host predicates take over unchanged.
+   ((fboundp 'nelisp--syscall-path-int)
+    (condition-case nil
+        (nelisp--syscall-path-int nelisp-ec--syscall-access-number file mode)
+      (error nil)))
+   (t
+    (catch 'done
+      (dolist (fn nelisp-ec--access-functions)
+        (when (fboundp fn)
+          (let ((rc (condition-case nil
+                        (funcall fn file mode)
+                      (error nil))))
+            (when (integerp rc)
+              (throw 'done rc)))))
+      nil))))
 
 (defun nelisp-ec--stat-kind (file)
   "Return a coarse standalone stat kind for FILE, or nil when unavailable."
@@ -391,6 +408,12 @@ invoked beyond reading `default-directory' for the seed CWD."
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (cond
+   ;; Standalone reader (nemacs): access(2) F_OK is the verified-working
+   ;; existence probe; `nelisp--syscall-stat' misreports here.  Host
+   ;; Emacs (no `nelisp--syscall-path-int') keeps the stat path below.
+   ((fboundp 'nelisp--syscall-path-int)
+    (let ((rc (nelisp-ec--access file 0))) ;; F_OK = 0
+      (and (integerp rc) (zerop rc))))
    ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
     (let ((rc (nelisp-ec--safe-stat-ex file)))
       (and rc (>= (or (plist-get rc :rc) 0) 0))))
@@ -578,6 +601,16 @@ When OK-IF-ALREADY-EXISTS is nil and NEWNAME exists, signals
       (eq (nelisp-ec--stat-kind file) 'file))
      (t (and (file-exists-p file)
              (file-executable-p file))))))
+
+;;;###autoload
+(defun nelisp-ec-file-executable-p (file)
+  "Return non-nil if FILE exists and is executable.  Wraps access(X_OK).
+On the standalone reader this resolves through `nelisp-ec--access'
+(access(2) X_OK); under host Emacs callers normally keep the C builtin
+because the `emacs-fileio-builtins' defalias is gated on `fboundp'."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (nelisp-ec--executable-p file))
 
 ;;;###autoload
 (defun nelisp-ec-executable-find (command &optional remote)
