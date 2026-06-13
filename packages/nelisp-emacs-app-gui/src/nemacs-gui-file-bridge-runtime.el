@@ -16497,6 +16497,57 @@
                 "s\tcustomize-save-variable\tSet and save value: \n"
               "")))))
 
+;; --- user keybindings: global-set-key / define-key -------------------------
+;; The keymap is a "KEY\tCOMMAND\n" table; user bindings live in a persistent
+;; overlay (the nemacs-user-keymap transport file) that the lookup consults
+;; BEFORE the static keymap, so a user binding overrides the default.  `kbd' is
+;; identity here -- keys are matched by their human description ("C-c a").
+;; define-key / local-set-key treat every map as the global map (the runtime
+;; has no separate keymap objects), enough for "make this key run my command".
+(fset 'files--user-keymap-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-user-keymap")
+               (files--transport-path))))
+
+(unless (fboundp 'kbd)
+  (fset 'kbd (lambda (s) s)))
+
+(fset 'files--user-keymap-remove
+      (lambda (source key)
+        ;; drop any "KEY\t...\n" line for KEY from SOURCE
+        (let ((i 0) (n (length source)) (ls 0) (out "") (nl (char-to-string 10)))
+          (while (< i n)
+            (setq ls i)
+            (while (if (< i n) (if (= (aref source i) 10) nil t) nil)
+              (setq i (+ i 1)))
+            (let ((line (substring source ls i)))
+              (let ((tab 0) (ln (length line)))
+                (while (if (< tab ln) (not (= (aref line tab) 9)) nil)
+                  (setq tab (+ tab 1)))
+                (if (if (< tab ln) (equal (substring line 0 tab) key) nil)
+                    nil
+                  (if (equal line "") nil (setq out (concat out line nl))))))
+            (setq i (+ i 1)))
+          out)))
+
+(fset 'global-set-key
+      (lambda (key command)
+        (let ((kname (if (symbolp command) (symbol-name command) command))
+              (old (rdf (files--user-keymap-path))))
+          (nl-write-file
+           (files--user-keymap-path)
+           (concat key (char-to-string 9) kname (char-to-string 10)
+                   (files--user-keymap-remove old key)))
+          command)))
+
+(fset 'define-key
+      (lambda (_keymap key command)
+        (global-set-key key command)))
+
+(fset 'local-set-key
+      (lambda (key command)
+        (global-set-key key command)))
+
 (fset 'files--lookup-key-sequence
       (lambda ()
         ;; Keymap-table line lookup.  The interpreted per-char fallback walk
@@ -16504,13 +16555,15 @@
         ;; reader (string deep-copies per access, GC only at form
         ;; boundaries) — prefer the native scan builtin.
         (if (fboundp 'str-kv-line)
-            (str-kv-line (concat (files--mode-keymap-source) files--keymap-source)
+            (str-kv-line (concat (rdf (files--user-keymap-path))
+                                 (files--mode-keymap-source) files--keymap-source)
                          files--bridge-keys)
           (files--lookup-key-sequence-interp))))
 
 (fset 'files--lookup-key-sequence-interp
       (lambda ()
-        (let ((source (concat (files--mode-keymap-source) files--keymap-source))
+        (let ((source (concat (rdf (files--user-keymap-path))
+                              (files--mode-keymap-source) files--keymap-source))
               (index 0)
               (start 0)
               (found ""))
@@ -17965,9 +18018,16 @@
                   (if (equal files--prefix-arg "")
                       (call-interactively)
                     (files--execute-with-prefix-arg)))))
-          (progn
-            (setq files--bridge-status "unsupported")
-            nil))))
+          ;; Not a known built-in command, but if the symbol names a bound
+          ;; function (e.g. a user `defun' bound via global-set-key), run it.
+          (if (fboundp files--bridge-command)
+              (progn
+                (funcall files--bridge-command)
+                (setq files--bridge-status "ok")
+                nil)
+            (progn
+              (setq files--bridge-status "unsupported")
+              nil)))))
 
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
