@@ -174,6 +174,34 @@
             (should (string-match-p "top=\\* top" out)))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-subtree-move ()
+  "org-move-subtree-down / -up reorder whole subtrees (with children, and the
+trailing-no-newline last-subtree edge)."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* A\\nbody A\\n* B\\nbody B\") (setq files--point 0)
+  (org-move-subtree-down)
+  (princ (concat \"d1=\" files--buffer-string \"|\" (number-to-string (point)) \"\\n\"))
+  (setq files--buffer-string \"* A\\n** a1\\n* B\\n** b1\") (setq files--point 0)
+  (org-move-subtree-down)
+  (princ (concat \"dc=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* A\\n* B\") (setq files--point 0)
+  (org-move-subtree-down)
+  (princ (concat \"dt=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* A\\n* B\") (setq files--point 4)
+  (org-move-subtree-up)
+  (princ (concat \"up=\" files--buffer-string \"|\" (number-to-string (point)) \"\\n\")))")))
+            (should (string-match-p "d1=\\* B\nbody B\n\\* A\nbody A|11" out))
+            (should (string-match-p "dc=\\* B\n\\*\\* b1\n\\* A\n\\*\\* a1" out))
+            (should (string-match-p "dt=\\* B\n\\* A" out))
+            (should (string-match-p "up=\\* B\n\\* A|0" out)))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here

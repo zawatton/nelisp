@@ -4727,6 +4727,87 @@
 (fset 'org-metaright (lambda (&rest _) (org-demote)))
 (fset 'org-metaleft (lambda (&rest _) (org-promote)))
 
+;; --- org subtree reordering (move whole subtrees up/down) -------------------
+(fset 'files--org-subtree-end
+      (lambda (bol)
+        ;; end (exclusive) of the subtree at heading BOL = bol of the next
+        ;; heading with level <= this heading's, or buffer end.
+        (let ((level (files--org-heading-level-at bol))
+              (pos bol) (nlen (length files--buffer-string))
+              (result -1) (done nil))
+          (while (not done)
+            (let ((next (files--org-scan-heading-forward pos)))
+              (if (< next 0)
+                  (progn (setq result nlen) (setq done t))
+                (let ((lvl (files--org-heading-level-at next)))
+                  (if (<= lvl level)
+                      (progn (setq result next) (setq done t))
+                    (setq pos next))))))
+          result)))
+
+(fset 'files--org-swap-subtrees
+      (lambda (bol mid end follow-first)
+        ;; swap [bol,mid) (s1) and [mid,end) (s2); reposition point onto the
+        ;; subtree it was in (s1 if FOLLOW-FIRST, else s2).
+        (let* ((s1 (substring files--buffer-string bol mid))
+               (s2 (substring files--buffer-string mid end))
+               (s2-term (= (aref s2 (- (length s2) 1)) 10))
+               (newregion "") (s1-new 0) (s2-new 0))
+          (if s2-term
+              (progn (setq newregion (concat s2 s1))
+                     (setq s1-new (length s2)))
+            ;; s2 is the last subtree (no trailing newline): terminate s2 and
+            ;; drop s1's trailing newline so s1 becomes the new buffer end.
+            (let ((s1-stripped (substring s1 0 (- (length s1) 1))))
+              (setq newregion (concat s2 "\n" s1-stripped))
+              (setq s1-new (+ (length s2) 1))))
+          (setq files--buffer-string
+                (concat (substring files--buffer-string 0 bol)
+                        newregion
+                        (substring files--buffer-string end)))
+          (if follow-first
+              (setq files--point (+ bol s1-new (- files--point bol)))
+            (setq files--point (+ bol s2-new (- files--point mid))))
+          (setq files--buffer-modified-p t)
+          (files--clamp-point)
+          files--point)))
+
+(fset 'org-move-subtree-down
+      (lambda (&rest _)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let ((level (files--org-heading-level-at bol))
+                    (mid (files--org-subtree-end bol)))
+                (if (if (< mid (length files--buffer-string))
+                        (= (files--org-heading-level-at mid) level)
+                      nil)
+                    (files--org-swap-subtrees
+                     bol mid (files--org-subtree-end mid) t)
+                  nil))
+            nil)
+          files--point)))
+
+(fset 'org-move-subtree-up
+      (lambda (&rest _)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let ((level (files--org-heading-level-at bol))
+                    (prev (files--org-scan-heading-backward files--point)))
+                ;; previous SIBLING: scan back to a heading of the same level,
+                ;; stopping if we hit a higher-level (parent) heading first.
+                (let ((sib -1) (scan prev) (stop nil))
+                  (while (if (>= scan 0) (if (not stop) (< sib 0) nil) nil)
+                    (let ((lvl (files--org-heading-level-at scan)))
+                      (if (= lvl level) (setq sib scan)
+                        (if (< lvl level) (setq stop t)
+                          (setq scan (files--org-scan-heading-backward scan))))))
+                  (if (>= sib 0)
+                      (files--org-swap-subtrees sib bol
+                                                (files--org-subtree-end bol) nil)
+                    nil)))
+            nil)
+          files--point)))
+
 (fset 'org-todo
       (lambda ()
         (files--clamp-point)
