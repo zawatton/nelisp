@@ -563,3 +563,38 @@ suite 内の長い loop / 再帰を含むテストが同じ機構で 1 GiB stack
 - §11.11/12/13: GAP-1/2 dead、chunk-growth/memory/reuse/rec_max を順に排除。
 - **§11.14: run-suite の真の blocker = `while` 特殊形式の TCO 無し CPS 再帰による native stack 溢れ**。
   GC とは完全に無関係。修正は host-while 書き換え（局所）で gate-G に到達可能。
+
+* §11.15 `while` host-iterate fix SHIPPED + suite の残 crash は別バグ（浅い dangling-cons）（2026-06-15）
+§11.14 の方針1（host-iterate）を実装し commit。count-loop は完全修正、ただし anvil-pkg suite は *別の*
+crash が残ることが判明。§11.12 の「suite = chunk-growth/stack-overflow」枠組みを訂正する。
+
+** `while` fix SHIPPED（commit a0d28544）
+=lisp/nelisp-cc-sf-while.el= を host-iterate に書換（public =nl_sf_while= が host =(while (= status 0)
+(setq status (nl_sf_while_step args env out 0)))= で回す、step は 1 iteration→status を返し再帰しない）。
+- 検証完了: =(while (< i N) (setq s (+ s 1)) (setq i (1+ i)))= で N=700k/1M/1.5M/2M/3M すべて s=N i=N EXIT=0
+  （旧は ~650k で SIGSEGV）。correctness（sum0to4=10 / ゼロ反復 body 不実行 / tick 順）も OK。net -18 LOC。
+- = while 由来の native stack 溢れ（深い ~1.3 GiB 消費の crash）は解消。
+
+** suite の残 crash は STACK OVERFLOW ではない（§11.12 訂正）
+while fix 後も suite は SIGSEGV するが、crash 状態が count-loop と *全く異なる*:
+- =rsp=0x7ffff7dfb948= = 1 GiB native stack の TOP から僅か **~18 KiB**、**FRAME_DEPTH=87**（浅い）。
+  = stack overflow ではない。count-loop は rsp が stack 底（~1.3 GiB 消費）= 深い溢れ、だった。両者は別物。
+- backtrace: =#0 nl_cons_cdr_ptr= ← =#1 nl_sf_let_setup_done= = **`let` の binding cons の cdr を読む際に
+  dangling/garbage ポインタを deref**。
+- **collect 無効（gate=1）でも crash** = GC root gap でもない。**reuse**（§11.12）でも、**stack overflow** でも、
+  **GC** でもない、浅い深さの genuine な memory corruption / dangling-cons bug。
+- = §11.12 の「suite crash = chunk-growth allocator」も、その後の「stack overflow」想定も *誤り*。suite の crash は
+  独立した浅い dangling-cons バグ。while の stack 溢れ（= count-loop / arena-stats-interleave 再現で見ていたもの）
+  とは別系統で、while fix では解消されない。
+
+** 次フェーズ（独立タスク）
+suite の浅い dangling-cons crash を別途診断: =nl_sf_let_setup_done= が読む binding cons がどこで dangling 化するか
+（collect off でも起きる = allocator が live cons に重なる alloc を返すか、特定 primitive が cons を壊すか）。
+gdb watchpoint で当該 cons の car/cdr 破壊点を捕捉する（while の時と同手法）。
+
+** Doc 152 総括（更新）
+- §11.10: GC は有効・健全。
+- §11.11/12/13: GAP-1/2 dead、chunk-growth/memory/reuse/rec_max 排除。
+- §11.14: count-loop blocker = `while` の TCO 無し CPS 再帰 → §11.15 で host-iterate 修正 SHIPPED（検証済）。
+- §11.15: suite には *別の* 浅い dangling-cons バグ（=nl_sf_let= 経由、GC/stack/reuse 非該当）が残る。gate-G には
+  これの独立修正が要る。
