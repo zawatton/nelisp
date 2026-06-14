@@ -955,7 +955,13 @@
               t
             (if (if (>= files--char-code 97) (< files--char-code 123) nil)
                 t
-              (= files--char-code 95))))))
+              (if (= files--char-code 95)
+                  t
+                ;; treat any multibyte byte (>=128) as a word constituent, so
+                ;; word motion (M-f/M-b/word-at-point) works over CJK runs --
+                ;; the user's text is Japanese.  CJK lead+continuation bytes are
+                ;; all >=128, so a run ends exactly on a char boundary.
+                (>= files--char-code 128)))))))
 
 (fset 'files--count-lines-range
       (lambda ()

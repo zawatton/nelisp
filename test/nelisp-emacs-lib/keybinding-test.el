@@ -491,6 +491,36 @@ would corrupt the buffer mid-edit, e.g. backspacing a kanji).  Buffer
             (should (string-match-p "asc=\\[ab\\]|2" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-multibyte-word-motion ()
+  "forward-word / backward-word move over CJK runs (the user's text is
+Japanese), treating a kanji/kana run as a word and stopping at the ASCII
+space, landing on char boundaries.  Buffer \"漏電 abc\": 漏=0..2 電=3..5
+space=6 abc=7..9 (len 10)."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image))
+          (coding-system-for-read 'utf-8)
+          (coding-system-for-write 'utf-8)
+          (default-process-coding-system '(utf-8-unix . utf-8-unix)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"漏電 abc\")
+  (setq files--point 0) (forward-word)
+  (princ (concat \"fw1=\" (number-to-string files--point) \"\\n\"))  ; 6 (end of 漏電)
+  (forward-word)
+  (princ (concat \"fw2=\" (number-to-string files--point) \"\\n\"))  ; 10 (end of abc)
+  (setq files--point 10) (backward-word)
+  (princ (concat \"bw1=\" (number-to-string files--point) \"\\n\"))  ; 7 (start of abc)
+  (backward-word)
+  (princ (concat \"bw2=\" (number-to-string files--point) \"\\n\")))")))
+            (should (string-match-p "fw1=6" out))
+            (should (string-match-p "fw2=10" out))
+            (should (string-match-p "bw1=7" out))
+            (should (string-match-p "bw2=0" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here
