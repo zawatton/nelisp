@@ -50,7 +50,9 @@
                       "(fset 'org-deadline"
                       "(fset 'org-toggle-checkbox"
                       "(fset 'org-set-tags"
-                      "(fset 'org-toggle-tag"))
+                      "(fset 'org-toggle-tag"
+                      "(fset 'org-refile-to-title"
+                      "(fset 'files--org-relevel-subtree"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -320,6 +322,31 @@ cookie is not a checkbox."
             (should (string-match-p "ton=\\* task :urgent:" out))
             (should (string-match-p "tof=\\* task" out))
             (should (string-match-p "tmid=\\* task :a:b:" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-refile ()
+  "org-refile-to-title moves the current subtree (with children, re-leveled)
+under a target heading; an unknown target leaves the buffer unchanged."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* INBOX\\n* item\\n* PROJECTS\") (setq files--point 8)
+  (org-refile-to-title \"PROJECTS\")
+  (princ (concat \"r1=\" files--buffer-string \"\\nEND\\n\"))
+  (setq files--buffer-string \"* INBOX\\n* item\\n** sub\\n* PROJECTS\") (setq files--point 8)
+  (org-refile-to-title \"PROJECTS\")
+  (princ (concat \"r2=\" files--buffer-string \"\\nEND\\n\"))
+  (setq files--buffer-string \"* INBOX\\n* item\") (setq files--point 8)
+  (setq files--bridge-status \"\") (org-refile-to-title \"NOPE\")
+  (princ (concat \"r4=\" files--buffer-string \"|\" files--bridge-status \"\\n\")))")))
+            (should (string-match-p "r1=\\* INBOX\n\\* PROJECTS\n\\*\\* item\nEND" out))
+            (should (string-match-p
+                     "r2=\\* INBOX\n\\* PROJECTS\n\\*\\* item\n\\*\\*\\* sub\nEND" out))
+            (should (string-match-p "r4=\\* INBOX\n\\* item|unsupported" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)
