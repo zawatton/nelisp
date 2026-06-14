@@ -395,3 +395,49 @@ trigger 比較の両辺は何か」を実機で観測する instrumentation**。
    fix 後=clean を示す（sweep 健全性の動的ゲート）。
 3. *swept-block poison（reuse OFF）* で残る root/子walk gap を炙り出し、見つかった分を child/root に追加。
 4. anvil-pkg suite を instrumented reader で load 完走（COLLECT-CALLS>0 を確認しつつ）→ gate G。
+
+* §11.11 実 crash (gcprobe2) の局所化 — 診断 probe でなく実アロケータ/GC soundness バグ（2026-06-14）
+§11.10 を受け「実 crash の root gap」を追跡。gcprobe2 SIGSEGV を最小再現し、原因の*範囲を確定*した。
+GAP-1/2（CharTable/BoolVector 子walk）は **現 reader で tag-9/10 box が一切構築されない**ため到達不能
+dead gap と判明（make-char-table/make-bool-vector primitive 無し、tag-9/10 alloc 無し、char-table リテラルは
+tag-8 Vector として読まれ既に walk 済、clone .o は eval dispatch 未 wire）。よって子walk fix は実装せず、
+*実際に crash する経路*を追った。
+
+** 最小再現と切り分け（全て実機、target/nelisp）
+- crash する: =(progn (make-string 1000000 120) nil)= と *list 構築 form* を交互 ×60。
+- backtrace: =nl_eval_arg_list_walk= で =mov (%rdi,%rsi,1)= rdi=0x28 = **パース済み arg-list cons の壊れた cdr が ~null を deref**。
+- *否定された原因*（重要）:
+  - **collect ではない**: gate=1（collect no-op）を各 form で立てても crash（V3）。
+  - **reuse ではない**: reuse 閾値を巨大化（reuse OFF）しても crash（V2）。source 698-704 の「reuse が freed block 再配布」帰属は *誤り*。
+  - **LIFO reset でもない**: active =nelisp_eval_call= shim（shim-source）は *再帰カウンタのみ*、per-eval reset は
+    2026-06-01 に unsound として除外済（コメント 2017-2031）。
+  - **arena-stats の telemetry write でもない**: =268436192=/=268436240= 書込みを ablation rebuild しても crash 継続
+    （両者は chunk-0 記述子領域内 base+736/+784 で、head chunk の実 cursor は global bump 268435456 = データ未破壊）。
+- *条件の絞り込み*:
+  - =(list 1 2 3)=（3 cons）交互 → clean。**=(list 1..13)=（13 cons）交互 → crash**。arena-stats が ~13 要素 list を
+    返すのと一致。= 「**中規模 list 構築 + 捨て大 alloc churn**」が条件で arena-stats 固有ではない（= 実コードでも起き得る）。
+  - 捨て *100KB* + arena-stats → clean。捨て *1MB* → crash。*保持* 1MB（=(setq G (cons …))=）→ clean。
+    *裸* 捨て 1MB（progn 無し、結果が escape）→ clean。pure progn-nil-1MB churn（list 無し）→ clean。
+  - = crash は「結果が immediate(nil) になる progn 内で ~1MB を churn」＋「別 form で中規模 list を構築」の *組合せ*。
+
+** 1MB make-string の実体（鍵）
+=make-string= は単発 1MB alloc ではなく、=mut-str-make-empty=（cap 16）→ =m5_push_repeat=（grow doubling）の
+**成長バッファ**で構築（dispatch 2148-2152）。1M 文字 = 16→…→1M の ~16 段成長 = 64KB/128KB/256KB/512KB/1MB の
+*中間大バッファを毎回 churn*（旧バッファは即 garbage）。よって 1 form あたり ~3MB の大 alloc churn が起きる。
+
+** 2 つの regime の示唆（未確定、要追加検証）
+- collect ON（既定、W4/V5）でも、collect OFF（V3）でも crash する → 単一原因でない可能性:
+  (1) collect ON: GC の **root gap**（パース済みフォーム or in-flight =ms= MutStr が非 root に保持された状態で form 境界
+      collection が走り、まだ到達可能な cons を sweep → poison/reuse → 後続 eval が壊れた cons を読む）。
+  (2) collect OFF: make-string leak で bump 急増 → chunk-0(256MB) 接近 → **chunk-growth 経路**の不具合 or unmapped 接触。
+- どちらが run-suite を実際に阻むかは *anvil-pkg suite を reader で直接 load* して確認すべき（synthetic probe の
+  micro-bisect でなく）。§11.10 では実 churn/retained で collect は 26 回 clean 発火しており、real workload が
+  この pattern を踏むかは未確認。
+
+** 更新後の作業順（§11.10 を更新）
+1. *gate-G の直接測定にピボット*: =(progn (make-string ~1MB) nil)= 系の synthetic probe でなく、anvil-pkg suite
+   ロード（or 中規模 list 構築 + 大文字列を含む実コード）を reader で走らせ、SIGSEGV/abort が *実際に出るか* 観測。
+2. 出る場合のみ regime (1)/(2) を分離: collect ON/OFF 各々で最小再現 → root gap なら mark_roots に in-flight
+   pin を追加、chunk-growth なら境界処理を修正。
+3. 出ない場合: この crash は synthetic probe（中規模 list + 1MB churn の人工密度）の限界として記録し、
+   gate-G は通常ワークロードで成立とみなす。
