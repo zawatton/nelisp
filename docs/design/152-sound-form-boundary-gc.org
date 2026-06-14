@@ -441,3 +441,38 @@ tag-8 Vector として読まれ既に walk 済、clone .o は eval dispatch 未 
    pin を追加、chunk-growth なら境界処理を修正。
 3. 出ない場合: この crash は synthetic probe（中規模 list + 1MB churn の人工密度）の限界として記録し、
    gate-G は通常ワークロードで成立とみなす。
+
+* §11.12 gate-G 直接測定 — 実 suite は crash、原因は allocator/chunk-growth（2026-06-14）
+§11.11 の pivot に従い anvil-pkg full suite を canonical reader（=../nelisp/target/nelisp=、本セッションで
+clean rebuild 済）で直接 load（=make smoke-nelisp-suite NELISP=../nelisp/target/nelisp=、内部 =run-suite=）。
+
+** 結果: gate-G は BLOCKED（実ワークロードが crash する）
+- =make= の EXIT=0 は recipe が =$$out= で stdout 捕捉し nelisp の exit を握り潰す *誤導*。実際は stderr に
+  =Segmentation fault=、stdout の =:suite-run= 結果は空 = **nelisp process が SIGSEGV**。
+- gdb backtrace（深さ 84+ frame、実 let/progn/cons ネスト）: =#0 nl_cons_cdr_ptr+182= =mov (%rdi,%rsi,1),%rax=
+  rdi=0x7fff96812830 rsi=8 → **dangling/garbage な cons ポインタ（0x7fff… = mmap grown-chunk 領域）の +8 read が
+  fault**。§11.11 synthetic repro と *同クラス*（壊れた cons → cons-field read で SIGSEGV）。stack overflow ではない
+  （thread stack ~2 MB 使用、深さ ~86 frame）。
+
+** 原因 regime の確定: GC root gap ではなく allocator/chunk-growth
+- collect を **disable**（=(ptr-write-u64 268435616 0 1)= を suite eval 先頭に前置、driver は本 slot を reset しない）
+  しても suite は **依然 SIGSEGV**（EXIT=139）。= GC は無関係（synthetic V3 と一致、regime 2）。
+- dangling ポインタが 0x7fff mmap 領域 = **suite は chunk-0 の 256 MB を超えて chunk-growth している**。
+  =nl_os_free_chunk= は no-op（munmap しない）ので chunk は解放されない → 0x7fff… が unmapped に見えるのは
+  「grown-chunk の mapped 範囲外を指す garbage ポインタ」か「live cons box が後続 alloc に上書きされ cdr が garbage 化」
+  のいずれか = **post-growth の bump/chunk allocation が live cons に重なる**疑い。
+- fix locus は GC でも reuse でもなく **bump/chunk-growth allocator**（=nl_alloc_bytes= / =nl_chunk_try_alloc= /
+  =nl_chunk_alloc_new= / =nl_chunk_cursor_addr=）。concurrency（actor/thread が並行 alloc → growth race）も要確認
+  （=nl_chunk_alloc_new= は非 atomic、CAS は cursor 前進のみ保護）。
+
+** 含意（Doc 152 全体の総括）
+- §11.10: 「GC 無効」は誤り、collect は有効・発火・健全（real churn で 26 回 clean）。
+- §11.11+§11.12: run-suite の真の blocker は **GC でも GAP-1/2（dead）でもなく、256 MB 超の heavy alloc 下の
+  chunk-growth allocator soundness**。Doc 146 の root-coverage/moving-GC 路線とは別問題。
+- gate-G への道 = chunk-growth allocator の overlap/race を特定・修正（次フェーズ）。
+
+** 次フェーズ（§11.11 作業順を更新）
+1. chunk-growth の最小再現: chunk-0(256MB) を意図的に小さく rebuild → 早期 growth で crash を高速再現。
+2. growth 前後の bump/cursor/chunk-base を instrument し、重なる alloc（非単調 obj アドレス）を捕捉。
+3. single-thread か concurrent か切り分け（actor 無効で suite が通るか）。
+4. 修正 → gate-G（suite 完走 / =:suite-run t=）。
