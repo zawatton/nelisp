@@ -23,154 +23,136 @@
 ;;
 ;; `args' is the raw arg list: (TEST BODY...).
 ;; test-ptr = car(args), body-ptr = cdr(args).
-;; Loop: eval test → if truthy, eval body forms, recurse.
-;; Result is always nil (out slot unchanged from initial Nil).
+;;
+;; Doc 152 §11.14 fix (STACK OVERFLOW on long loops).  The previous version
+;; closed the guest loop by tail-calling back into `nl_sf_while_iter' at the
+;; end of each iteration.  nelisp-cc does NOT eliminate tail calls, so every
+;; guest iteration pushed ~11 native frames; a pure `(while (< i N) ...)' loop
+;; SIGSEGV'd at N~=650k by overflowing the driver's 1 GiB mmap native stack
+;; (manifesting as a null deref in nelisp_mirror_walk_bucket / nl_cons_cdr_ptr
+;; -- the run-suite blocker).
+;;
+;; This rewrite drives the guest loop with an AOT host `(while ...)' loop in
+;; the public `nl_sf_while', calling a `nl_sf_while_step' helper that does ONE
+;; iteration (eval test; if truthy eval body) and RETURNS a status instead of
+;; recursing into the next iteration.  So native stack depth is O(body depth),
+;; independent of the iteration count.  This is exactly the proven GC-sweep
+;; pattern `(while (= status 0) (setq status (helper ...)))' (cf. the chunk
+;; sweep loop in scripts/nelisp-standalone-build.el).
+;;
+;; Invariants kept from the working CPS version:
+;;   - every extern-call is at argument position 0 of its call site (rsp
+;;     alignment), so each helper does exactly one extern-call;
+;;   - every defun arity is 4 (even -> rsp 16-aligned at call sites);
+;;   - state (args/test/body/env/out) is threaded through PARAMETERS, never
+;;     relied on as locals surviving across a call (nelisp-cc does not preserve
+;;     arbitrary locals across calls -- the original reason for the CPS shape).
+;;     The only across-call local is `status' in the host loop, which works
+;;     just as `hdr' does in the GC sweep `while'.
+;;
+;; Status codes (nl_sf_while_step / nl_sf_while_body):
+;;   step: 0 = continue (test truthy, body ok), 1 = error, 2 = done (test nil).
+;;   body: 0 = all body forms ok, 1 = a body form errored.
 ;;
 ;; ABI:
-;;   nl_cons_car_ptr: *const Sexp → i64
-;;   nl_cons_cdr_ptr: *const Sexp → i64
-;;   nl_eval_is_truthy: (*const Sexp, *mut c_void) → i64
-;;     1=truthy, 0=nil, -1=eval error
-;;   nelisp_eval_call: (*const Sexp, *mut c_void, *mut Sexp) → i64
-;;
-;; Alignment: every extern-call is argument 0 at its call site.
-;; CPS chain: each extern-call result arrives as first parameter.
-;;
-;; Structure (11 defuns):
-;;   Body eval (progn-like, discards results):
-;;   nl_sf_while_body_done (eval-rc body-cdr test body env out) — arity 6 (even)
-;;   nl_sf_while_body_eval (car body-cdr test body env out)     — arity 6 (even)
-;;   nl_sf_while_body_cdr  (cdr2 body test body-top env out)    — arity 6 (even)
-;;   nl_sf_while_body      (body test body-top env out _pad6)   — arity 6 (even)
-;;   Loop kernel:
-;;   nl_sf_while_loop      (truthy test body env out _pad6)     — arity 6 (even)
-;;   nl_sf_while_iter      (test body env out)                  — arity 4 (even)
-;;   Preamble:
-;;   nl_sf_while_with_body (body test-ptr env out)              — arity 4 (even)
-;;   nl_sf_while_start     (test-ptr args env out)              — arity 4 (even)
-;;   nl_sf_while           (args env out _pad)                  — arity 4 (even)
+;;   nl_cons_car_ptr / nl_cons_cdr_ptr: *const Sexp -> i64
+;;   nl_eval_is_truthy: (*const Sexp, *mut c_void) -> i64   (1=truthy/0=nil/-1=err)
+;;   nelisp_eval_call:  (*const Sexp, *mut c_void, *mut Sexp) -> i64  (0=ok/1=err)
 
 ;;; Code:
 
 (defconst nelisp-cc-sf-while--source
   '(seq
 
-    ;;--- Body eval helpers ---
+    ;;--- Body-form walk (bounded by body LENGTH, not iteration count) ---
+    ;; CPS over the (FORM...) list; recursion depth = number of body forms
+    ;; (small, fixed), so this never grows with the iteration count.
 
-    ;; After eval of one body form: check rc, then advance body list.
-    ;; Arity 6 (even): _pad6 / body-top make arity even.
-    ;; test: TEST form ptr (for next iteration).
-    ;; body-top: top of body list (cdr(args)) for body restart after recurse.
-    (defun nl_sf_while_body_done (eval-rc body-cdr test body-top env out)
+    ;; After eval of one body form: check rc, then advance to body tail.
+    (defun nl_sf_while_body_done (eval-rc body-cdr env out)
       (if (= eval-rc 0)
-          (nl_sf_while_body body-cdr test body-top env out 0)
+          (nl_sf_while_body body-cdr env out 0)
         1))
 
-    ;; car = nl_cons_car_ptr(body) already fetched as first arg.
-    ;; Eval this body form via nelisp_eval_call (extern-call FIRST ✓).
-    ;; Arity 6 (even).
-    (defun nl_sf_while_body_eval (car body-cdr test body-top env out)
+    ;; car = nl_cons_car_ptr(body) (fetched by caller as arg 0).
+    ;; Eval it via nelisp_eval_call (extern-call FIRST), result -> out.
+    (defun nl_sf_while_body_eval (car body-cdr env out)
       (nl_sf_while_body_done
        (extern-call nelisp_eval_call car env out)
-       body-cdr test body-top env out))
+       body-cdr env out))
 
-    ;; body-cdr = nl_cons_cdr_ptr(body) already fetched as first arg.
-    ;; Now get car(body) (extern-call FIRST ✓) to eval.
-    ;; Arity 6 (even).
-    (defun nl_sf_while_body_cdr (body-cdr body test body-top env out)
+    ;; body-cdr = nl_cons_cdr_ptr(body) (fetched by caller as arg 0).
+    ;; Now fetch car(body) (extern-call FIRST) to eval it.
+    (defun nl_sf_while_body_cdr (body-cdr body env out)
       (nl_sf_while_body_eval
        (extern-call nl_cons_car_ptr body)
-       body-cdr test body-top env out))
+       body-cdr env out))
 
-    ;; Body loop entry: walk (BODY-FORM...) cons list, eval each, discard result.
-    ;; When Nil: all forms done → start next loop iteration via nl_sf_while_iter.
-    ;; body-top: the original body list (cdr(args)) for the next iteration.
-    ;; Arity 6 (even): _pad6 makes arity even.
-    (defun nl_sf_while_body (body test body-top env out _pad6)
+    ;; Walk the body-form list, eval each (discard).  Returns 0 (all ok) or
+    ;; 1 (a form errored).  Body Nil -> 0.
+    (defun nl_sf_while_body (body env out _pad)
       (if (= (sexp-tag body) 0)
-          ;; Body exhausted: start next test iteration.
-          (nl_sf_while_iter test body-top env out)
-        ;; body is Cons: get cdr first (FIRST ✓), then eval car.
+          0
         (nl_sf_while_body_cdr
          (extern-call nl_cons_cdr_ptr body)
-         body test body-top env out)))
+         body env out)))
 
-    ;;--- Loop kernel ---
+    ;;--- One iteration (eval test; if truthy eval body); returns status ---
 
-    ;; Dispatch on truthy (result of nl_eval_is_truthy(test, env)).
-    ;; test: ptr to TEST form (for recursion).
-    ;; body: ptr to body-list cons = cdr(args) (for body eval).
-    ;; Arity 6 (even).
-    (defun nl_sf_while_loop (truthy test body env out _pad6)
-      (if (= truthy -1)
-          ;; Test eval errored.
-          1
-        (if (= truthy 0)
-            ;; Test is nil/false: exit loop, return 0 (out stays Nil).
-            0
-          ;; Test is truthy: eval body forms, then recurse.
-          (nl_sf_while_body body test body env out 0))))
-
-    ;; Eval test via nl_eval_is_truthy (extern-call FIRST ✓).
-    ;; test: ptr to TEST form sexp.
-    ;; body: ptr to body cons list = cdr(args).
-    ;; nl_sf_while_loop is arity 6; pass 0 as _pad6.
-    ;; Arity 4 (even).
-    (defun nl_sf_while_iter (test body env out)
-      (nl_sf_while_loop
-       (extern-call nl_eval_is_truthy test env)
-       test body env out 0))
-
-    ;; body = cdr(args) already fetched as first arg.
-    ;; test-ptr = car(args) already available as second arg.
-    ;; Delegate to nl_sf_while_iter.
-    ;; Arity 4 (even).
-    (defun nl_sf_while_with_body (body test-ptr env out)
-      (nl_sf_while_iter test-ptr body env out))
-
-    ;; test-ptr = car(args) already fetched as first arg.
-    ;; Now fetch body = cdr(args) (extern-call FIRST ✓) and delegate.
-    ;; Arity 4 (even).
-    (defun nl_sf_while_start (test-ptr args env out)
-      (nl_sf_while_with_body
+    ;; body-start: body = cdr(args) (extern-call FIRST), then walk it.
+    (defun nl_sf_while_body_start (args env out _pad)
+      (nl_sf_while_body
        (extern-call nl_cons_cdr_ptr args)
-       test-ptr env out))
+       env out 0))
 
-    ;; Public entry: nl_sf_while(args, env, out, _pad) → i64
-    ;; args: *const Sexp = (TEST BODY...).
-    ;; env:  *mut c_void.
-    ;; out:  *mut Sexp   = result (always stays Nil; while returns nil).
-    ;; _pad: unused alignment pad (makes arity 4 = even).
-    ;; Returns 0=Ok, 1=Err.
-    ;; Empty args (Nil) → 0 immediately.
-    ;; Else: get test = car(args) (extern-call FIRST ✓) and delegate.
+    ;; Dispatch on truthy.  1 -> eval body (0 continue / 1 err); 0 -> 2 (done);
+    ;; -1 -> 1 (test eval error).
+    (defun nl_sf_while_step3 (truthy args env out)
+      (if (= truthy 1)
+          (nl_sf_while_body_start args env out 0)
+        (if (= truthy -1) 1 2)))
+
+    ;; test fetched by caller (arg 0).  Eval truthiness (extern-call FIRST).
+    (defun nl_sf_while_step2 (test args env out)
+      (nl_sf_while_step3
+       (extern-call nl_eval_is_truthy test env)
+       args env out))
+
+    ;; One step: test = car(args) (extern-call FIRST), then dispatch.
+    ;; Returns 0 continue / 1 error / 2 done.
+    (defun nl_sf_while_step (args env out _pad)
+      (nl_sf_while_step2
+       (extern-call nl_cons_car_ptr args)
+       args env out))
+
+    ;;--- Public entry: host-iterate the steps (O(1) iteration-count stack) ---
+
+    ;; args: *const Sexp = (TEST BODY...).  env: *mut c_void.
+    ;; out:  *mut Sexp (body forms write here; on normal exit holds the last
+    ;;       body form's value, matching the CPS version).
+    ;; _pad: alignment pad (arity 4 = even).  Returns 0=Ok, 1=Err.
+    ;; Empty args (Nil) -> 0.  `status' is the sole across-call local (like
+    ;; `hdr' in the GC sweep `while').
     (defun nl_sf_while (args env out _pad)
       (if (= (sexp-tag args) 0)
           0
-        (nl_sf_while_start
-         (extern-call nl_cons_car_ptr args)
-         args env out))))
+        (let ((status 0))
+          (seq
+           (while (= status 0)
+             (setq status (nl_sf_while_step args env out 0)))
+           (if (= status 1) 1 0)))))
+    nil)
 
-  "AOT source for `nl_sf_while' (eval/special_forms.rs sf_while → elisp).
+  "AOT source for `nl_sf_while' (eval/special_forms.rs sf_while -> elisp).
 
-Nine defuns (seq form).  CPS chain with one extern-call per step.
-
-Entry chain:
-  nl_sf_while → (car(args) FIRST) → nl_sf_while_start
-  → (cdr(args) FIRST) → nl_sf_while_with_body
-  → nl_sf_while_iter
-  → (nl_eval_is_truthy FIRST) → nl_sf_while_loop
-    truthy=0: return 0
-    truthy=-1: return 1
-    truthy=1: → nl_sf_while_body → nl_sf_while_body_cdr
-      → (car FIRST) → nl_sf_while_body_eval
-      → (nelisp_eval_call FIRST) → nl_sf_while_body_done
-      → nl_sf_while_body (recurse on body tail)
-      → when body Nil: nl_sf_while_iter (next test eval)
-
-Key fix vs v1: nl_sf_while_iter now takes explicit (test body env out) so
-`body = cdr(args)' is correctly threaded through, not confused with cdr(test).
-Every extern-call is at argument position 0 → rsp ≡ 0 mod 16 ✓.")
+Doc 152 §11.14 host-iterate rewrite: the guest loop is driven by an AOT host
+`(while ...)' in `nl_sf_while' calling `nl_sf_while_step' (one iteration ->
+status), so native stack depth no longer grows with the iteration count (the
+prior CPS tail-recursion overflowed the 1 GiB native stack at ~650k iters
+because nelisp-cc has no TCO).  Each helper does one extern-call at arg 0,
+arity 4 (even) keeps rsp 16-aligned, and state is threaded through parameters
+(only `status' lives across a call, exactly as `hdr' does in the GC sweep
+loop).")
 
 (provide 'nelisp-cc-sf-while)
 
