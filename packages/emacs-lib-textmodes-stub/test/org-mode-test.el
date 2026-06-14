@@ -45,7 +45,9 @@
                       "(fset 'org-promote"
                       "(fset 'org-move-subtree-down"
                       "(fset 'org-move-subtree-up"
-                      "(fset 'org-priority"))
+                      "(fset 'org-priority"
+                      "(fset 'org-schedule"
+                      "(fset 'org-deadline"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -229,6 +231,37 @@ trailing-no-newline last-subtree edge)."
             (should (string-match-p "n=\\* task" out))
             (should (string-match-p "td=\\* TODO \\[#A\\] task" out))
             (should (string-match-p "dn=\\* DONE \\[#A\\] finish report" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-schedule-deadline ()
+  "org-schedule / org-deadline add a planning line after the heading; a second
+org-schedule replaces (does not duplicate); both coexist; the body is kept."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* TODO task\\nbody line\") (setq files--point 3)
+  (org-schedule)
+  (princ (concat \"after-sched-line2=\"
+                 (let ((s files--buffer-string) (i 12) (e 0))
+                   (setq e i) (while (if (< e (length s)) (if (= (aref s e) 10) nil t) nil) (setq e (+ e 1)))
+                   (substring s 12 e)) \"\\n\"))
+  (org-schedule)
+  (let ((i 0) (c 0) (s files--buffer-string))
+    (while (< i (- (length s) 9))
+      (if (equal (substring s i (+ i 10)) \"SCHEDULED:\") (setq c (+ c 1)) nil)
+      (setq i (+ i 1)))
+    (princ (concat \"sched-count=\" (number-to-string c) \"\\n\")))
+  (setq files--point 3) (org-deadline)
+  (princ (concat \"has-dl=\" (if (nlre-string-match \"DEADLINE: <\" files--buffer-string) \"y\" \"n\")
+                 \" has-sc=\" (if (nlre-string-match \"SCHEDULED: <\" files--buffer-string) \"y\" \"n\")
+                 \" has-body=\" (if (nlre-string-match \"body line\" files--buffer-string) \"y\" \"n\") \"\\n\")))")))
+            (should (string-match-p "after-sched-line2=SCHEDULED: <" out))
+            (should (string-match-p "sched-count=1" out))
+            (should (string-match-p "has-dl=y has-sc=y has-body=y" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)

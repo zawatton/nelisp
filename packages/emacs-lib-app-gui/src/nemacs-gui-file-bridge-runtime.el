@@ -4808,6 +4808,56 @@
             nil)
           files--point)))
 
+;; --- org planning lines (SCHEDULED: / DEADLINE:) ---------------------------
+(fset 'files--org-date-stamp
+      (lambda ()
+        ;; date + weekday from the timestamp helper, dropping the time:
+        ;; "2026-06-14 Sun 10:28" -> "2026-06-14 Sun".
+        (let ((ts (files--org-current-timestamp)))
+          (if (>= (length ts) 14) (substring ts 0 14) ts))))
+
+(fset 'files--org-line-has-keyword-p
+      (lambda (line keyword)
+        ;; non-nil if LINE (after leading spaces) starts with "KEYWORD:".
+        (let ((i 0) (n (length line)) (kwlen (length keyword)))
+          (while (if (< i n) (= (aref line i) 32) nil) (setq i (+ i 1)))
+          (if (>= (- n i) (+ kwlen 1))
+              (if (equal (substring line i (+ i kwlen)) keyword)
+                  (= (aref line (+ i kwlen)) 58)
+                nil)
+            nil))))
+
+(fset 'files--org-set-planning
+      (lambda (keyword)
+        ;; insert or replace a "KEYWORD: <date>" planning line just after the
+        ;; current heading (KEYWORD = "SCHEDULED" or "DEADLINE").
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let* ((eol (files--org-line-end files--point))
+                     (nlen (length files--buffer-string))
+                     (line (concat keyword ": <" (files--org-date-stamp) ">"))
+                     (next-start (if (< eol nlen) (+ eol 1) eol))
+                     (next-eol (files--org-line-end next-start))
+                     (next-line (substring files--buffer-string
+                                           next-start next-eol)))
+                (if (files--org-line-has-keyword-p next-line keyword)
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 next-start)
+                                  line
+                                  (substring files--buffer-string next-eol)))
+                  (setq files--buffer-string
+                        (concat (substring files--buffer-string 0 eol)
+                                "\n" line
+                                (substring files--buffer-string eol))))
+                (setq files--buffer-modified-p t)
+                (files--clamp-point))
+            (setq files--bridge-status "unsupported")))
+        files--point))
+
+(fset 'org-schedule (lambda (&rest _) (files--org-set-planning "SCHEDULED")))
+(fset 'org-deadline (lambda (&rest _) (files--org-set-planning "DEADLINE")))
+
 ;; --- org priority cookie ([#A]/[#B]/[#C]) -----------------------------------
 ;; Cycle the priority of the current heading: none -> A -> B -> C -> none.  The
 ;; cookie sits after the stars and the optional TODO/DONE keyword.
