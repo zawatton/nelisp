@@ -300,6 +300,72 @@ contents.  DIR-FLAG creates a directory instead (needs `make-directory')."
 (unless (fboundp 'make-temp-file)
   (defalias 'make-temp-file #'emacs-fileio-make-temp-file))
 
+;;;; --- standalone-reader band-aid fills -------------------------------
+;; Functions the anvil-pkg test suite calls that are absent on the
+;; standalone reader (nemacs).  On nemacs a call to an unbound function is
+;; a non-catchable abort (it does not signal `void-function'), so the
+;; suite runner cannot degrade past them; defining them removes that abort.
+;; All are gated on `fboundp', so host Emacs keeps its C/lisp builtins.
+;; They are grouped here for expedience (cross-cutting, not all file I/O).
+
+(declare-function nelisp-ec--access "nelisp-emacs-compat-fileio" (file mode))
+
+(unless (fboundp 'booleanp)
+  (defun booleanp (object)
+    "Return t if OBJECT is one of the two canonical booleans (nil or t)."
+    (and (memq object '(nil t)) t)))
+
+(unless (fboundp 'file-name-base)
+  (defun file-name-base (&optional filename)
+    "Return the base name of FILENAME: no directory, no extension."
+    (file-name-sans-extension (file-name-nondirectory (or filename "")))))
+
+(unless (fboundp 'file-writable-p)
+  (defun file-writable-p (filename)
+    "Return non-nil if FILENAME can be written or created.
+access(2) W_OK on the file, or on its directory when the file does not
+exist yet (approximating Emacs' creatable-path semantics)."
+    (let ((rc (and (fboundp 'nelisp-ec--access) (nelisp-ec--access filename 2))))
+      (cond
+       ((and (integerp rc) (zerop rc)) t)
+       ((and (fboundp 'file-exists-p) (file-exists-p filename)) nil)
+       (t (let* ((dir (or (file-name-directory (directory-file-name filename))
+                          "./"))
+                 (drc (and (fboundp 'nelisp-ec--access)
+                           (nelisp-ec--access dir 2))))
+            (and (integerp drc) (zerop drc))))))))
+
+(unless (fboundp 'insert-file-contents-literally)
+  (defun insert-file-contents-literally (filename &optional visit beg end replace)
+    "Like `insert-file-contents' but without coding/format conversion."
+    (insert-file-contents filename visit beg end replace)))
+
+(unless (fboundp 'lwarn)
+  (defun lwarn (type level message &rest args)
+    "Minimal `lwarn': route to `message'; no *Warnings* buffer."
+    (ignore type level)
+    (when (fboundp 'message) (apply #'message message args))
+    nil))
+
+(unless (fboundp 'format-time-string)
+  (defun format-time-string (format-string &optional time zone)
+    "Minimal stand-in: ignores FORMAT-STRING directives and returns the
+time as an integer-seconds string.  Adequate for non-display uses (e.g.
+cache timestamps); NOT a faithful strftime."
+    (ignore format-string zone)
+    (format "%d" (cond ((numberp time) (truncate time))
+                       ((fboundp 'float-time)
+                        (condition-case nil (truncate (float-time time))
+                          (error 0)))
+                       (t 0)))))
+
+(unless (fboundp 'delete-directory)
+  (defun delete-directory (directory &optional recursive trash)
+    "Minimal stand-in: no-op when the runtime lacks a directory-remove
+primitive.  Returns nil (temp-dir cleanup leaks rather than erroring)."
+    (ignore directory recursive trash)
+    nil))
+
 ;;;; --- visited-file state ---------------------------------------------
 
 (defvar emacs-fileio--buffer-files nil
