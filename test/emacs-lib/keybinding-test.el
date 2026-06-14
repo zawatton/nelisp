@@ -418,6 +418,37 @@ thing-at-point extract the thing at point."
             (should (string-match-p "line=line one word=line" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-count-case ()
+  "count-lines / count-words / line-number-at-pos and the function forms of
+upcase-region / downcase-region for custom commands."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"a\\nb\\nc\")
+  (princ (concat \"cl=\" (number-to-string (count-lines 0 5)) \"\\n\"))
+  (setq files--buffer-string \"foo bar baz qux\")
+  (princ (concat \"cw=\" (number-to-string (count-words 0 15)) \"\\n\"))
+  (setq files--buffer-string \"L0\\nL1\\nL2\") (setq files--point 6)
+  (princ (concat \"ln=\" (number-to-string (line-number-at-pos)) \"\\n\"))
+  (setq files--buffer-string \"abcdef\") (upcase-region 1 4)
+  (princ (concat \"up=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"ABCDEF\") (downcase-region 1 4)
+  (princ (concat \"dn=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"hello\") (setq files--point 0) (setq files--mark 5)
+  (upcase-region)
+  (princ (concat \"ui=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "cl=3" out))
+            (should (string-match-p "cw=4" out))
+            (should (string-match-p "ln=3" out)) ; point 6 = start of L2 (line 3)
+            (should (string-match-p "up=aBCDef" out))
+            (should (string-match-p "dn=AbcdEF" out))
+            (should (string-match-p "ui=HELLO" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here

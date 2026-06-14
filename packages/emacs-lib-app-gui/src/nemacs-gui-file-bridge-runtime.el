@@ -9740,6 +9740,42 @@
                          (line-beginning-position) (line-end-position))
             nil))))
 
+;; --- counting primitives for custom commands -------------------------------
+(fset 'count-lines
+      (lambda (start end)
+        (let ((b start) (e end))
+          (if (> b e) (let ((tmp b)) (setq b e) (setq e tmp)) nil)
+          (let ((i b) (nl 0))
+            (while (< i e)
+              (if (= (aref files--buffer-string i) 10) (setq nl (+ nl 1)) nil)
+              (setq i (+ i 1)))
+            ;; a final partial line (region non-empty, not ending in newline)
+            ;; counts as one more, matching Emacs count-lines.
+            (if (if (< b e) (not (= (aref files--buffer-string (- e 1)) 10)) nil)
+                (+ nl 1)
+              nl)))))
+
+(fset 'count-words
+      (lambda (start end)
+        (let ((b start) (e end))
+          (if (> b e) (let ((tmp b)) (setq b e) (setq e tmp)) nil)
+          (let ((i b) (words 0) (in-word nil))
+            (while (< i e)
+              (setq files--char-code (aref files--buffer-string i))
+              (if (files--word-char-p)
+                  (if in-word nil (progn (setq words (+ words 1)) (setq in-word t)))
+                (setq in-word nil))
+              (setq i (+ i 1)))
+            words))))
+
+(fset 'line-number-at-pos
+      (lambda (&rest args)
+        (let ((pos (if args (car args) files--point)) (i 0) (n 1))
+          (while (< i pos)
+            (if (= (aref files--buffer-string i) 10) (setq n (+ n 1)) nil)
+            (setq i (+ i 1)))
+          n)))
+
 (fset 'forward-sexp
       (lambda ()
         (files--clamp-point)
@@ -11829,78 +11865,108 @@
             files--point))))
 
 (fset 'upcase-region
-      (lambda ()
-        (files--clamp-point)
-        (files--clamp-mark)
-        (let ((b files--point)
-              (e files--mark)
-              (i 0)
-              (part ""))
-          (if (> b e)
-              (let ((tmp b))
-                (setq b e)
-                (setq e tmp))
-            nil)
-          (setq i b)
-          (while (< i e)
-            (setq files--char-code (aref files--buffer-string i))
-            (if (if (>= files--char-code 97) (< files--char-code 123) nil)
-                (setq part
-                      (concat part
-                              (substring "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                                         (- files--char-code 97)
-                                         (+ (- files--char-code 97) 1))))
-              (setq part
-                    (concat part
-                            (substring files--buffer-string i (+ i 1)))))
-            (setq i (+ i 1)))
-          (if (< b e)
-              (progn
-                (setq files--buffer-string
-                      (concat (substring files--buffer-string 0 b)
-                              part
-                              (substring files--buffer-string e)))
-                (setq files--buffer-modified-p t)
-                (files--clamp-point)
-                (files--clamp-mark))
-            files--point))))
+      (lambda (&rest args)
+        (if args
+            ;; function form: (upcase-region START END) for custom commands
+            (let ((b (car args)) (e (car (cdr args))))
+              (if (> b e) (let ((tmp b)) (setq b e) (setq e tmp)) nil)
+              (if (< b e)
+                  (progn
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 b)
+                                  (upcase (substring files--buffer-string b e))
+                                  (substring files--buffer-string e)))
+                    (setq files--buffer-modified-p t))
+                nil)
+              nil)
+          ;; interactive form: upcase the region between point and mark
+          (progn
+            (files--clamp-point)
+            (files--clamp-mark)
+            (let ((b files--point)
+                  (e files--mark)
+                  (i 0)
+                  (part ""))
+              (if (> b e)
+                  (let ((tmp b))
+                    (setq b e)
+                    (setq e tmp))
+                nil)
+              (setq i b)
+              (while (< i e)
+                (setq files--char-code (aref files--buffer-string i))
+                (if (if (>= files--char-code 97) (< files--char-code 123) nil)
+                    (setq part
+                          (concat part
+                                  (substring "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                             (- files--char-code 97)
+                                             (+ (- files--char-code 97) 1))))
+                  (setq part
+                        (concat part
+                                (substring files--buffer-string i (+ i 1)))))
+                (setq i (+ i 1)))
+              (if (< b e)
+                  (progn
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 b)
+                                  part
+                                  (substring files--buffer-string e)))
+                    (setq files--buffer-modified-p t)
+                    (files--clamp-point)
+                    (files--clamp-mark))
+                files--point))))))
 
 (fset 'downcase-region
-      (lambda ()
-        (files--clamp-point)
-        (files--clamp-mark)
-        (let ((b files--point)
-              (e files--mark)
-              (i 0)
-              (part ""))
-          (if (> b e)
-              (let ((tmp b))
-                (setq b e)
-                (setq e tmp))
-            nil)
-          (setq i b)
-          (while (< i e)
-            (setq files--char-code (aref files--buffer-string i))
-            (if (if (>= files--char-code 65) (< files--char-code 91) nil)
-                (setq part
-                      (concat part
-                              (substring "abcdefghijklmnopqrstuvwxyz"
-                                         (- files--char-code 65)
-                                         (+ (- files--char-code 65) 1))))
-              (setq part
-                    (concat part
-                            (substring files--buffer-string i (+ i 1)))))
-            (setq i (+ i 1)))
-          (if (< b e)
-              (progn
-                (setq files--buffer-string
-                      (concat (substring files--buffer-string 0 b)
-                              part
-                              (substring files--buffer-string e)))
-                (setq files--buffer-modified-p t)
-                (files--clamp-point)
-                (files--clamp-mark))
-            files--point))))
+      (lambda (&rest args)
+        (if args
+            ;; function form: (downcase-region START END) for custom commands
+            (let ((b (car args)) (e (car (cdr args))))
+              (if (> b e) (let ((tmp b)) (setq b e) (setq e tmp)) nil)
+              (if (< b e)
+                  (progn
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 b)
+                                  (downcase (substring files--buffer-string b e))
+                                  (substring files--buffer-string e)))
+                    (setq files--buffer-modified-p t))
+                nil)
+              nil)
+          ;; interactive form: downcase the region between point and mark
+          (progn
+            (files--clamp-point)
+            (files--clamp-mark)
+            (let ((b files--point)
+                  (e files--mark)
+                  (i 0)
+                  (part ""))
+              (if (> b e)
+                  (let ((tmp b))
+                    (setq b e)
+                    (setq e tmp))
+                nil)
+              (setq i b)
+              (while (< i e)
+                (setq files--char-code (aref files--buffer-string i))
+                (if (if (>= files--char-code 65) (< files--char-code 91) nil)
+                    (setq part
+                          (concat part
+                                  (substring "abcdefghijklmnopqrstuvwxyz"
+                                             (- files--char-code 65)
+                                             (+ (- files--char-code 65) 1))))
+                  (setq part
+                        (concat part
+                                (substring files--buffer-string i (+ i 1)))))
+                (setq i (+ i 1)))
+              (if (< b e)
+                  (progn
+                    (setq files--buffer-string
+                          (concat (substring files--buffer-string 0 b)
+                                  part
+                                  (substring files--buffer-string e)))
+                    (setq files--buffer-modified-p t)
+                    (files--clamp-point)
+                    (files--clamp-mark))
+                files--point))))))
 
 (fset 'capitalize-region
       (lambda ()
