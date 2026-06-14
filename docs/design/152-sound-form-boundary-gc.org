@@ -173,3 +173,44 @@ P1 の前半 = **GC verify を standalone build に収録**（=scripts/nelisp-st
 =nelisp-gc-verify= / =-verify-hooks= を追加）し、=NELISP_GC_VERIFY_DEBUG=1= で verify がロードされることを
 =make standalone-reader= 後の smoke で確認する。これが P2 の差分検証（poison-from-space で live 取りこぼしを
 捕捉）の足場になる。
+
+* §11 P1 実測知見（2026-06-14）と設計訂正
+
+P1 着手で source を精査・実測した結果、§0–§10 のうち *GC 機構の所在*に重要な訂正がある。
+
+** 11.1 GC は native（elisp gc-inner/gc-verify は reader 非使用）
+- reader の稼働 GC は =nelisp-standalone--arena-source=（elisp defconst → nelisp-cc が native emit）内の
+  =nl_gc_collect= / =nl_gc_mark_*= / =nl_gc_sweep= / =nl_gc_free_block=。driver が top-level form 境界で
+  =nl_gc_collect= を呼ぶ（=scripts/...:3228/3252/5634=）。
+- =nelisp-gc-inner.el= / =nelisp-gc-verify.el=（§1.3/§6 で「build に収録」と書いた elisp 群）は *reader が使わない別実装*。
+  → **§6.1「elisp gc-verify を build に収録」は誤り**。verify は *native 側*（swept block の poison: reuse OFF 時に
+  全 payload poison、=scripts/...:732=）で行う。=NELISP_GC_VERIFY_DEBUG= は無関係（実測で nemacs 上無反応）。
+
+** 11.2 collect が走らない真因 = gate でなく trigger/配線（実測）
+- =nl_gc_collect= の RECLAIMER GATE = 固定アドレス =268435616=（= 静的 base 0x10000000 + 160）を読み、=1= で no-op。
+- arena init は2系統: 静的 =--arena-init-metadata-forms=（base+160 = *1 disabled*）と
+  動的 =--arena-init-metadata-forms-dynamic=（Doc 140 Stage 8、runtime mmap base、base+160 = *0 enabled*）。
+- *実測*: build-time env で静的 init の base+160 を 0 に flip し rebuild → 3.4GB 確保しても =COLL=0=（collect 不発）。
+  = **静的 init は active でない**。active は動的 init（base+160 既に 0=enabled）。*なのに collect が発火しない*。
+- = 真因は documented gate ではなく、(a) =nl_gc_collect= の gate 読みが *固定アドレス 268435616* なのに動的 base は
+  *runtime mmap アドレス*で不一致の疑い、(b) form 境界の collect 呼出しが trigger 閾値（=268435560= = 16MiB）で
+  gate される配線、のいずれか/両方。**enable レバーは documented gate でなく trigger/アドレス整合側**。
+- *実用上の reclaim*: 稼働しているのは =nl_gc_collect= でなく **per-eval LIFO scratch reset**
+  （nested eval 戻り時、結果が inline immediate (tag<=3) かつ mutation-epoch 不変 = no-escape なら bump を entry
+  mark へ reset。=scripts/...:1990+=）。純数値再帰は回収するが、*heap 結果を産む form（cons/string/defun = suite の
+  大半）は escape gate で reset されず never-free* → §1 の無限増。
+
+** 11.3 訂正後の P1（正しいレバー）
+- *誤*: elisp gc-verify を build に収録。
+- *正*: 動的 init 経路で =nl_gc_collect= が form 境界で実発火する配線を有効化する（trigger 閾値 + gate アドレス整合）。
+  その上で reuse OFF（native poison）で suite を走らせ、root/mark gap が live を free → poison fault で §5 を決定化。
+- ただし *この trigger/アドレス配線は native GC 著者の mental model が要*。本調査で固定アドレス vs runtime base、
+  2系統 init、trigger gate の関係を静的読解で繰返し誤読した。確実な enable は rebuild 反復を伴う *専用の native-GC
+  集中作業*で、root/mark gap 修正（§5、本丸）と一体。
+
+** 11.4 結論
+§5（root-coverage 健全性）が本丸である点は不変で、source コメント
+（=「Keep collection disabled until the standalone root/mark gap is fixed」=）が直接裏付ける。だが「まず collect を
+診断有効化する」P1 は、*documented gate を 1→0 するだけでは不足*（active な動的 init では既に 0、なお不発）で、
+*trigger/アドレス配線*の native 修正が要ると実測で判明。P1 は native-GC 内部に踏み込む集中作業として再スコープし、
+§5 の root/mark gap 監査と同一セッションで進めるのが妥当。
