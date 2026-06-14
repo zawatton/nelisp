@@ -55,7 +55,8 @@
                       "(fset 'files--org-relevel-subtree"
                       "(fset 'org-refile-to-file"
                       "(fset 'org-demote-subtree"
-                      "(fset 'org-promote-subtree"))
+                      "(fset 'org-promote-subtree"
+                      "(fset 'org-capture-to-heading"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -440,6 +441,33 @@ included); a level-1 promote is a no-op; C-c > dispatches demote in a .org buffe
             (should (string-match-p "pro=\\* A\n\\*\\* a1\nEND" out))
             (should (string-match-p "l1=\\* A|unsupported" out))
             (should (string-match-p "key=\\*\\* A\n\\*\\*\\* a1\nEND" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-capture-then-refile ()
+  "The GTD intake flow: org-capture-to-heading adds a TODO under a heading
+\(INBOX), then org-refile-to-title moves it to another (PROJECTS)."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* INBOX\\n** old\\n* NEXT\") (setq files--point 0)
+  (org-capture-to-heading \"new task\" \"INBOX\")
+  (princ (concat \"cap=\" files--buffer-string \"\\nEND\\n\"))
+  (setq files--buffer-string \"* NEXT\") (setq files--point 0) (setq files--bridge-status \"\")
+  (org-capture-to-heading \"x\" \"INBOX\")
+  (princ (concat \"miss=\" files--buffer-string \"|\" files--bridge-status \"\\n\"))
+  (setq files--buffer-string \"* INBOX\\n* PROJECTS\") (setq files--point 0)
+  (org-capture-to-heading \"do the thing\" \"INBOX\")
+  (setq files--point 8) (org-refile-to-title \"PROJECTS\")
+  (princ (concat \"flow=\" files--buffer-string \"\\nEND\\n\")))")))
+            (should (string-match-p
+                     "cap=\\* INBOX\n\\*\\* old\n\\*\\* TODO new task\n\\* NEXT\nEND" out))
+            (should (string-match-p "miss=\\* NEXT|unsupported" out))
+            (should (string-match-p
+                     "flow=\\* INBOX\n\\* PROJECTS\n\\*\\* TODO do the thing\nEND" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)

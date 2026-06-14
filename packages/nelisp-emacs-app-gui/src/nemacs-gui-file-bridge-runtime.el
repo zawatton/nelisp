@@ -5132,6 +5132,37 @@
             (setq files--bridge-status "unsupported")))
         files--point))
 
+;; --- org capture under a heading (GTD intake: add to INBOX) -----------------
+;; org-capture appends "* TODO ..." to the file end; this captures a TODO entry
+;; as the last child of a named heading (e.g. INBOX), the intake half of the
+;; capture -> refile flow.
+(fset 'org-capture-to-heading
+      (lambda (text heading &rest _)
+        (files--clamp-point)
+        (let ((tgt (files--org-find-heading-by-title heading)))
+          (if (>= tgt 0)
+              (let* ((tgt-level (files--org-heading-level-at tgt))
+                     (ins (files--org-subtree-end tgt))
+                     (stars "") (i 0)
+                     (flen (length files--buffer-string)))
+                (while (< i (+ tgt-level 1))
+                  (setq stars (concat stars "*")) (setq i (+ i 1)))
+                (let* ((entry (concat stars " TODO " text))
+                       (prefix (if (if (> ins 0)
+                                       (= (aref files--buffer-string (- ins 1)) 10)
+                                     t)
+                                   ""
+                                 (char-to-string 10)))
+                       (suffix (if (< ins flen) (char-to-string 10) "")))
+                  (setq files--buffer-string
+                        (concat (substring files--buffer-string 0 ins)
+                                prefix entry suffix
+                                (substring files--buffer-string ins)))
+                  (setq files--buffer-modified-p t)
+                  (files--clamp-point)))
+            (setq files--bridge-status "unsupported")))
+        files--point))
+
 ;; --- org subtree promote/demote (re-level the whole subtree) ----------------
 ;; Unlike org-promote/org-demote (single heading line), these shift every
 ;; heading in the subtree, keeping children consistent.  Bound to C-c < / C-c >
