@@ -53,7 +53,9 @@
                       "(fset 'org-toggle-tag"
                       "(fset 'org-refile-to-title"
                       "(fset 'files--org-relevel-subtree"
-                      "(fset 'org-refile-to-file"))
+                      "(fset 'org-refile-to-file"
+                      "(fset 'org-demote-subtree"
+                      "(fset 'org-promote-subtree"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -412,6 +414,32 @@ command-execute fboundp fallback); a non-org buffer gets no org bindings."
             (should (string-match-p "t=\\* TODO INBOX" out))
             (should (string-match-p "p=\\* \\[#A\\] task" out))
             (should (string-match-p "txt=n" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-subtree-promote-demote ()
+  "org-demote-subtree / org-promote-subtree re-level the whole subtree (children
+included); a level-1 promote is a no-op; C-c > dispatches demote in a .org buffer."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* A\\n** a1\\nbody\\n* B\") (setq files--point 0)
+  (org-demote-subtree) (princ (concat \"dem=\" files--buffer-string \"\\nEND\\n\"))
+  (setq files--buffer-string \"** A\\n*** a1\") (setq files--point 0)
+  (org-promote-subtree) (princ (concat \"pro=\" files--buffer-string \"\\nEND\\n\"))
+  (setq files--buffer-string \"* A\") (setq files--point 0) (setq files--bridge-status \"\")
+  (org-promote-subtree) (princ (concat \"l1=\" files--buffer-string \"|\" files--bridge-status \"\\n\"))
+  (setq files--current-file-name \"todo.org\") (setq files--input-method \"\")
+  (setq files--buffer-string \"* A\\n** a1\") (setq files--point 0)
+  (setq files--bridge-keys \"C-c >\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"key=\" files--buffer-string \"\\nEND\\n\")))")))
+            (should (string-match-p "dem=\\*\\* A\n\\*\\*\\* a1\nbody\n\\* B\nEND" out))
+            (should (string-match-p "pro=\\* A\n\\*\\* a1\nEND" out))
+            (should (string-match-p "l1=\\* A|unsupported" out))
+            (should (string-match-p "key=\\*\\* A\n\\*\\*\\* a1\nEND" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)
