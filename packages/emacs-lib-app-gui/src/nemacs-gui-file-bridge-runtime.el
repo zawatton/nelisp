@@ -4576,6 +4576,97 @@
               (equal (substring rest 0 5) "DONE ")
             nil))))
 
+;; --- org heading navigation ------------------------------------------------
+;; Headings are "* "-prefixed lines (level = star count, via
+;; files--org-heading-level-at).  No folding yet, so "visible" == all headings.
+(fset 'org-at-heading-p
+      (lambda (&rest _)
+        (> (files--org-heading-level-at (files--org-line-start files--point)) 0)))
+
+(fset 'files--org-scan-heading-forward
+      (lambda (start)
+        ;; bol of the first heading line strictly after the line of START, or -1
+        (let ((nlen (length files--buffer-string))
+              (pos (+ (files--org-line-end start) 1))
+              (result -1) (done nil))
+          (while (if (< pos nlen) (not done) nil)
+            (let ((bol (files--org-line-start pos)))
+              (if (> (files--org-heading-level-at bol) 0)
+                  (progn (setq result bol) (setq done t))
+                (setq pos (+ (files--org-line-end bol) 1)))))
+          result)))
+
+(fset 'files--org-scan-heading-backward
+      (lambda (start)
+        ;; bol of the first heading line strictly before the line of START, or -1
+        (let ((bol (files--org-line-start start)) (result -1) (done nil))
+          (while (if (> bol 0) (not done) nil)
+            (let ((prev (files--org-line-start (- bol 1))))
+              (if (> (files--org-heading-level-at prev) 0)
+                  (progn (setq result prev) (setq done t))
+                (setq bol prev))))
+          result)))
+
+(fset 'org-next-visible-heading
+      (lambda (&rest args)
+        (let ((n (if args (car args) 1)) (i 0))
+          (while (< i n)
+            (let ((next (files--org-scan-heading-forward files--point)))
+              (if (>= next 0)
+                  (setq files--point next)
+                (progn (setq files--point (length files--buffer-string))
+                       (setq i n))))
+            (setq i (+ i 1)))
+          (files--clamp-point)
+          files--point)))
+
+(fset 'org-previous-visible-heading
+      (lambda (&rest args)
+        (let ((n (if args (car args) 1)) (i 0))
+          (while (< i n)
+            (let ((prev (files--org-scan-heading-backward files--point)))
+              (if (>= prev 0)
+                  (setq files--point prev)
+                (progn (setq files--point 0) (setq i n))))
+            (setq i (+ i 1)))
+          (files--clamp-point)
+          files--point)))
+
+(fset 'org-back-to-heading
+      (lambda (&rest _)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (setq files--point bol)
+            (let ((prev (files--org-scan-heading-backward files--point)))
+              (if (>= prev 0) (setq files--point prev) nil))))
+        (files--clamp-point)
+        files--point))
+
+(fset 'org-forward-heading-same-level
+      (lambda (&rest args)
+        (let ((n (if args (car args) 1))
+              (level (files--org-heading-level-at
+                      (files--org-line-start files--point))))
+          (if (> level 0)
+              (let ((i 0))
+                (while (< i n)
+                  (let ((pos files--point) (found nil) (stop nil))
+                    (while (if (not found) (not stop) nil)
+                      (let ((next (files--org-scan-heading-forward pos)))
+                        (if (< next 0)
+                            (setq stop t)
+                          (let ((lvl (files--org-heading-level-at next)))
+                            (if (< lvl level)
+                                (setq stop t)
+                              (if (= lvl level)
+                                  (progn (setq files--point next) (setq found t))
+                                (setq pos next)))))))
+                    (if found nil (setq i n)))
+                  (setq i (+ i 1))))
+            nil)
+          (files--clamp-point)
+          files--point)))
+
 (fset 'org-todo
       (lambda ()
         (files--clamp-point)
