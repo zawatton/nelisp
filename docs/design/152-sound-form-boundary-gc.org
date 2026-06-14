@@ -240,5 +240,21 @@ sound-GC を現 reader で稼働させるには、以下を *native-GC 著者の
    scratch-slot。
 4. **reuse OFF poison で差分検証**（§5.2）→ root/mark gap を決定化 → 反復 → clean で本有効化（gate G）。
 - これは「P1 で verify を入れる」より大きい *GC の dynamic-base 移植 + 健全化* で、Doc 140 Stage-8 の GC 未対応分の
-  完了に相当。次セッションは §11.6-1（アドレス模型 port）から着手するのが正しい順序（root-gap 監査 §5 はその上で
-  poison 差分検証が回るようになって初めて意味を持つ）。
+  完了に相当。
+
+** 11.7 *次セッションの一意 resume entry（2026-06-14 確定）*
+§5 には 2 面ある: *(静的)* mark 関数の子walk 完全性のコード精査（collect 実発火 不要・独立に可能）と、
+*(動的)* poison 差分検証（§5.2、collect 実発火 = §11.6-1 が前提）。よって作業順は:
+
+1. **§5（静的）子walk 監査 ← 次セッションの開始点**。=nelisp-standalone--arena-source= の native mark
+   （=nl_gc_mark_roots= / =-mark_slot= / =-mark_block= / =-mark_cons= / =-mark_vec_slots= / =-mark_pool=）の
+   *type-tag dispatch を全列挙*し、=nelisp-sexp-layout.el= / =nelisp-heap-types.el= の全 box 型 × 子スロットと
+   突き合わせ、*子を walk していない型を gap 表に列挙*（Doc 146 ② = CharTable / BoolVector が筆頭候補）。
+   collect 不発・固定アドレス unmapped でも *コード精査だけで進む*。成果 = §5.1 監査表（gap 候補確定）。
+2. **§11.6-1 アドレス模型 port**（gate/trigger/epoch/collect/mark/sweep を runtime-base 相対へ）+ §11.6-2
+   form 境界 collect 実呼出し → =COLL>0=。
+3. **§5（動的）poison 差分検証**（reuse OFF）で 1 の gap 候補を確定 + 取りこぼし追加 → 反復 → clean。
+4. 本有効化 → gate G（anvil-pkg suite 完走 / =used= bounded / 4438 PASS）。
+
+= *次セッションは「§5 静的子walk 監査（上記 1）」から*。これは §11.6-1 と独立に着手でき、gap 表が 2-3 の
+poison 検証の的を絞る。本 doc を §5.1 監査表で更新しながら進める。
