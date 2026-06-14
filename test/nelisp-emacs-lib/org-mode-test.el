@@ -38,7 +38,11 @@
                       "(fset 'org-back-to-heading"
                       "(fset 'org-forward-heading-same-level"
                       "(fset 'files--org-scan-heading-forward"
-                      "(fset 'files--org-scan-heading-backward"))
+                      "(fset 'files--org-scan-heading-backward"
+                      "(fset 'org-insert-heading"
+                      "(fset 'org-meta-return"
+                      "(fset 'org-demote"
+                      "(fset 'org-promote"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -141,6 +145,33 @@
             (should (string-match-p "back10=0" out))
             (should (string-match-p "ah=yn" out))
             (should (string-match-p "end=37/37" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-structure-editing ()
+  "org-insert-heading / org-demote / org-promote restructure headings."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* INBOX\") (setq files--point 3)
+  (org-insert-heading) (insert \"task A\")
+  (princ (concat \"ins=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* heading\") (setq files--point 5)
+  (org-demote)
+  (princ (concat \"dem=\" files--buffer-string \"|\" (number-to-string (point)) \"\\n\"))
+  (setq files--buffer-string \"** sub\") (setq files--point 5)
+  (org-promote)
+  (princ (concat \"pro=\" files--buffer-string \"|\" (number-to-string (point)) \"\\n\"))
+  (setq files--buffer-string \"* top\") (setq files--point 3)
+  (org-promote)
+  (princ (concat \"top=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "ins=\\* INBOX\n\\* task A" out))
+            (should (string-match-p "dem=\\*\\* heading|6" out))
+            (should (string-match-p "pro=\\* sub|4" out))
+            (should (string-match-p "top=\\* top" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)
