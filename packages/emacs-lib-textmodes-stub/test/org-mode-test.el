@@ -470,6 +470,26 @@ included); a level-1 promote is a no-op; C-c > dispatches demote in a .org buffe
                      "flow=\\* INBOX\n\\* PROJECTS\n\\*\\* TODO do the thing\nEND" out)))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-agenda-scheduled ()
+  "org-agenda lists TODO headings with their SCHEDULED/DEADLINE planning lines
+appended, and excludes DONE headings."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-name \"todo.org\")
+  (setq files--buffer-string \"* INBOX\\n** TODO buy milk\\nSCHEDULED: <2026-06-15 Mon>\\n** TODO call bob\\n** TODO ship\\nDEADLINE: <2026-06-20 Sat>\\n* DONE old\") (setq files--point 0)
+  (org-agenda)
+  (princ files--buffer-string))")))
+            (should (string-match-p "TODO buy milk  SCHEDULED: <2026-06-15 Mon>" out))
+            (should (string-match-p "TODO call bob\n" out))
+            (should (string-match-p "TODO ship  DEADLINE: <2026-06-20 Sat>" out))
+            (should-not (string-match-p "DONE old" out)))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here
