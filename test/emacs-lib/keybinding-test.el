@@ -521,6 +521,31 @@ space=6 abc=7..9 (len 10)."
             (should (string-match-p "bw2=0" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-multibyte-transpose ()
+  "transpose-chars (C-t) swaps whole characters, not bytes -- a byte swap
+corrupts UTF-8 for the user's Japanese text.  \"漏電\" (漏=0..2 電=3..5) with
+point 3 -> \"電漏\"; \"a漏b\" with point after 漏 -> \"ab漏\"; ASCII unchanged."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image))
+          (coding-system-for-read 'utf-8)
+          (coding-system-for-write 'utf-8)
+          (default-process-coding-system '(utf-8-unix . utf-8-unix)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"漏電\") (setq files--point 3) (transpose-chars)
+  (princ (concat \"t1=[\" files--buffer-string \"]|\" (number-to-string files--point) \"\\n\"))
+  (setq files--buffer-string \"a漏b\") (setq files--point 4) (transpose-chars)
+  (princ (concat \"t2=[\" files--buffer-string \"]\\n\"))
+  (setq files--buffer-string \"ab cd\") (setq files--point 1) (transpose-chars)
+  (princ (concat \"asc=[\" files--buffer-string \"]|\" (number-to-string files--point) \"\\n\")))")))
+            (should (string-match-p "t1=\\[電漏\\]|6" out))
+            (should (string-match-p "t2=\\[ab漏\\]" out))
+            (should (string-match-p "asc=\\[ba cd\\]|2" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here

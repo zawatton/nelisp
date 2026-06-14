@@ -12309,32 +12309,33 @@
 (fset 'transpose-chars
       (lambda ()
         (files--clamp-point)
-        (let ((n (length files--buffer-string))
-              (i 0)
-              (a "")
-              (b ""))
+        (let ((n (length files--buffer-string)))
           (if (> n 1)
-              (progn
-                (if (= files--point n)
-                    (setq i (- files--point 2))
-                  (setq i (- files--point 1)))
-                (if (< i 0)
-                    (setq i 0)
-                  nil)
-                (if (< (+ i 1) n)
-                    (progn
-                      (setq a (substring files--buffer-string i (+ i 1)))
-                      (setq b (substring files--buffer-string (+ i 1) (+ i 2)))
-                      (setq files--buffer-string
-                            (concat (substring files--buffer-string 0 i)
-                                    b
-                                    a
-                                    (substring files--buffer-string (+ i 2))))
-                      (setq files--point (+ i 2))
-                      (setq files--buffer-modified-p t)
-                      (files--clamp-point)
-                      (files--clamp-mark))
-                  files--point))
+              ;; Swap the two CHARACTERS (not bytes) around point.  Byte-level
+              ;; swap corrupts CJK (the user's text is Japanese): transposing
+              ;; "漏電" must yield "電漏", not a scrambled UTF-8 byte pair.  P is
+              ;; the boundary between the two chars to interchange.
+              (let ((p files--point))
+                (if (>= p n)
+                    (setq p (- n (files--char-len-before n)))   ; end: before last char
+                  (if (<= p 0)
+                      (setq p (files--char-len-at 0))            ; start: after first char
+                    nil))
+                (let ((lb (files--char-len-before p))
+                      (la (files--char-len-at p)))
+                  (if (if (>= (- p lb) 0) (<= (+ p la) n) nil)
+                      (let ((char1 (substring files--buffer-string (- p lb) p))
+                            (char2 (substring files--buffer-string p (+ p la))))
+                        (setq files--buffer-string
+                              (concat (substring files--buffer-string 0 (- p lb))
+                                      char2
+                                      char1
+                                      (substring files--buffer-string (+ p la))))
+                        (setq files--point (+ p la))
+                        (setq files--buffer-modified-p t)
+                        (files--clamp-point)
+                        (files--clamp-mark))
+                    files--point)))
             files--point))))
 
 (fset 'delete-horizontal-space
