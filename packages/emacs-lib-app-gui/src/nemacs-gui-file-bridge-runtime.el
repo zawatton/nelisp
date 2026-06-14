@@ -231,6 +231,28 @@
 (setq files--highlight-patterns-file (progn (setq files--transport-name "nemacs-highlight-patterns") (files--transport-path)))
 (setq files--face-spans-file (progn (setq files--transport-name "nemacs-face-spans") (files--transport-path)))
 (setq files--font-file (progn (setq files--transport-name "nemacs-font") (files--transport-path)))
+(fset 'files--refresh-transport-derived-paths
+      (lambda ()
+        (setq files--buffer-store-dir (progn (setq files--transport-name "nemacs-buffer-store") (files--transport-path)))
+        (setq files--buffer-file-store-dir (progn (setq files--transport-name "nemacs-buffer-file-store") (files--transport-path)))
+        (setq files--buffer-point-store-dir (progn (setq files--transport-name "nemacs-buffer-point-store") (files--transport-path)))
+        (setq files--buffer-mark-store-dir (progn (setq files--transport-name "nemacs-buffer-mark-store") (files--transport-path)))
+        (setq files--buffer-window-start-store-dir (progn (setq files--transport-name "nemacs-buffer-window-start-store") (files--transport-path)))
+        (setq files--buffer-read-only-store-dir (progn (setq files--transport-name "nemacs-buffer-read-only-store") (files--transport-path)))
+        (setq files--buffer-modified-store-dir (progn (setq files--transport-name "nemacs-buffer-modified-store") (files--transport-path)))
+        (setq files--buffer-narrow-active-store-dir (progn (setq files--transport-name "nemacs-buffer-narrow-active-store") (files--transport-path)))
+        (setq files--buffer-narrow-start-store-dir (progn (setq files--transport-name "nemacs-buffer-narrow-start-store") (files--transport-path)))
+        (setq files--buffer-narrow-end-store-dir (progn (setq files--transport-name "nemacs-buffer-narrow-end-store") (files--transport-path)))
+        (setq files--buffer-narrow-full-store-dir (progn (setq files--transport-name "nemacs-buffer-narrow-full-store") (files--transport-path)))
+        (setq files--register-store-dir (progn (setq files--transport-name "nemacs-register-store") (files--transport-path)))
+        (setq files--bookmark-store-dir (progn (setq files--transport-name "nemacs-bookmark-store") (files--transport-path)))
+        (setq files--bookmark-list-file (progn (setq files--transport-name "nemacs-bookmark-list") (files--transport-path)))
+        (setq files--abbrev-table-file (progn (setq files--transport-name "nemacs-abbrev-table") (files--transport-path)))
+        (setq files--buffer-list-file (progn (setq files--transport-name "nemacs-buffer-list") (files--transport-path)))
+        (setq files--emoji-recent-file (progn (setq files--transport-name "nemacs-emoji-recent") (files--transport-path)))
+        (setq files--highlight-patterns-file (progn (setq files--transport-name "nemacs-highlight-patterns") (files--transport-path)))
+        (setq files--face-spans-file (progn (setq files--transport-name "nemacs-face-spans") (files--transport-path)))
+        (setq files--font-file (progn (setq files--transport-name "nemacs-font") (files--transport-path)))))
 (setq files--face-span-cap 2048)
 ;; M20 view slice: buffers beyond files--view-cap reach the GUI as a
 ;; window-start slice on the nemacs-view channel (nemacs-buf keeps the
@@ -4755,8 +4777,14 @@
             nil))))
 
 ;; M-right / M-left on a heading promote/demote it.
-(fset 'org-metaright (lambda (&rest _) (org-demote)))
-(fset 'org-metaleft (lambda (&rest _) (org-promote)))
+(fset 'org-metaright
+      (lambda (&rest _)
+        (org-demote)
+        (setq files--bridge-status "ok")))
+(fset 'org-metaleft
+      (lambda (&rest _)
+        (org-promote)
+        (setq files--bridge-status "ok")))
 
 ;; --- org subtree reordering (move whole subtrees up/down) -------------------
 (fset 'files--org-subtree-end
@@ -17052,14 +17080,75 @@
         (nl-write-file (progn (setq files--transport-name "nemacs-toolbar") (files--transport-path))
                        files--toolbar-spec)))
 
+(fset 'files--toolbar-menu-path
+      (lambda ()
+        (progn (setq files--transport-name "nemacs-toolbar-menu")
+               (files--transport-path))))
+
+(fset 'files--toolbar-menu-for-label
+      (lambda (label)
+        (if (equal label "New")
+            (concat "Find File\tC-x C-f\n"
+                    "Switch Buffer\tC-x b\n")
+          (if (equal label "Open")
+              (concat "Open File\tC-x C-f\n"
+                      "Open Read Only\tC-x C-r\n"
+                      "Insert File\tC-x i\n")
+            (if (equal label "Save")
+                (concat "Save\tC-x C-s\n"
+                        "Write File\tC-x C-w\n"
+                        "Save Some\tC-x s\n")
+              (if (equal label "Undo")
+                  (concat "Undo\tC-/\n"
+                          "Redo\tC-?\n")
+                (if (equal label "Cut")
+                    (concat "Cut\tC-w\n"
+                            "Kill Line\tC-k\n"
+                            "Delete Region\tC-w\n")
+                  (if (equal label "Copy")
+                      (concat "Copy\tM-w\n"
+                              "Select All\tC-x h\n")
+                    (if (equal label "Paste")
+                        (concat "Paste\tC-y\n"
+                                "Yank Pop\tM-y\n")
+                      (if (equal label "Search")
+                          (concat "Search Forward\tC-s\n"
+                                  "Search Backward\tC-r\n"
+                                  "Query Replace\tM-%\n")
+                        ""))))))))))
+
+(fset 'files--write-toolbar-menu
+      (lambda (menu)
+        (nl-write-file (files--toolbar-menu-path) menu)))
+
+(fset 'ignore
+      (lambda (&rest _)
+        (setq files--bridge-status "ok")
+        nil))
+
+(fset 'files--toolbar-cell-width
+      (lambda ()
+        (let ((raw (rdf (progn (setq files--transport-name "nemacs-cell-width")
+                               (files--transport-path))))
+              (i 0)
+              (n 0))
+          (while (< i (length raw))
+            (let ((ch (aref raw i)))
+              (if (if (>= ch 48) (if (< ch 58) t nil) nil)
+                  (setq n (+ (* n 10) (- ch 48)))
+                nil))
+            (setq i (+ i 1)))
+          (if (if (> n 0) (< n 256) nil) n 9))))
+
 ;; M22: map a tool-bar click x-coordinate to the clicked button's key
 ;; sequence.  Mirrors the GUI strip layout (nemacs--toolbar-draw-form):
-;; buttons start at x=6 and each is (14 + LABEL-chars*9) px wide, in spec
-;; order.  Returns "" when the click lands past the last button.
+;; buttons start at x=6 and each is (14 + LABEL-chars*cell-width) px wide, in
+;; spec order.  Returns "" when the click lands past the last button.
 (fset 'files--toolbar-keys-at-x
       (lambda (clickx)
         (let ((spec files--toolbar-spec)
-              (i 0) (n 0) (tx 6) (found "") (done nil))
+              (i 0) (n 0) (tx 6) (found "") (done nil)
+              (cw (files--toolbar-cell-width)))
           (setq n (length spec))
           (while (if (< i n) (not done) nil)
             (let ((lstart i) (llen 0) (keys ""))
@@ -17077,12 +17166,75 @@
                       (setq keys (substring spec ks i))))
                 nil)
               (if (if (< i n) (= (aref spec i) 10) nil) (setq i (+ i 1)) nil)
-              (let ((bw (+ 14 (* llen 9))))
+              (let ((bw (+ 14 (* llen cw))))
                 (if (if (>= clickx tx) (< clickx (+ tx bw)) nil)
                     (progn (setq found keys) (setq done t))
                   nil)
                 (setq tx (+ tx bw)))))
           found)))
+
+(fset 'files--toolbar-label-at-x
+      (lambda (clickx)
+        (let ((spec files--toolbar-spec)
+              (i 0) (n 0) (tx 6) (found "") (done nil)
+              (cw (files--toolbar-cell-width)))
+          (setq n (length spec))
+          (while (if (< i n) (not done) nil)
+            (let ((lstart i) (llen 0) (label ""))
+              (while (if (< i n)
+                         (if (= (aref spec i) 9) nil (if (= (aref spec i) 10) nil t))
+                       nil)
+                (setq i (+ i 1)))
+              (setq llen (- i lstart))
+              (setq label (substring spec lstart i))
+              (while (if (< i n) (if (= (aref spec i) 10) nil t) nil)
+                (setq i (+ i 1)))
+              (if (if (< i n) (= (aref spec i) 10) nil) (setq i (+ i 1)) nil)
+              (let ((bw (+ 14 (* llen cw))))
+                (if (if (>= clickx tx) (< clickx (+ tx bw)) nil)
+                    (progn (setq found label) (setq done t))
+                  nil)
+                (setq tx (+ tx bw)))))
+          found)))
+
+(fset 'files--toolbar-menu-keys-at-row
+      (lambda (menu row)
+        (let ((i 0) (n 0) (cur 0) (keys "") (done nil))
+          (setq n (length menu))
+          (while (if (< i n) (not done) nil)
+            (let ((tab -1) (start i))
+              (while (if (< i n) (if (= (aref menu i) 10) nil t) nil)
+                (if (= (aref menu i) 9) (setq tab i) nil)
+                (setq i (+ i 1)))
+              (if (= cur row)
+                  (progn
+                    (if (>= tab 0)
+                        (setq keys (substring menu (+ tab 1) i))
+                      (setq keys ""))
+                    (setq done t))
+                nil)
+              (setq cur (+ cur 1))
+              (if (if (< i n) (= (aref menu i) 10) nil)
+                  (setq i (+ i 1))
+                nil)))
+          keys)))
+
+(fset 'files--parse-toolbar-click
+      (lambda (raw)
+        (let ((i 0) (n 0) (x 0) (y 0) (seen-comma nil))
+          (setq n (length raw))
+          (while (< i n)
+            (let ((ch (aref raw i)))
+              (if (= ch 44)
+                  (setq seen-comma t)
+                (if (if (>= ch 48) (if (< ch 58) t nil) nil)
+                    (if seen-comma
+                        (setq y (+ (* y 10) (- ch 48)))
+                      (setq x (+ (* x 10) (- ch 48))))
+                  nil)))
+            (setq i (+ i 1)))
+          (if seen-comma nil (setq y 0))
+          (cons x y))))
 
 (fset 'files--view-base
       (lambda ()
@@ -18755,6 +18907,8 @@
           (if (eq files--bridge-command 'org-cycle) (setq ok t) nil)
           (if (eq files--bridge-command 'org-shifttab) (setq ok t) nil)
           (if (eq files--bridge-command 'org-table-align) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-metaright) (setq ok t) nil)
+          (if (eq files--bridge-command 'org-metaleft) (setq ok t) nil)
           (if (eq files--bridge-command 'vc-root-diff) (setq ok t) nil)
           (if (eq files--bridge-command 'vc-edit-next-command) (setq ok t) nil)
           (if (eq files--bridge-command 'vc-next-action) (setq ok t) nil)
@@ -19203,6 +19357,8 @@
         (if (eq files--bridge-command 'org-cycle) (org-cycle) nil)
         (if (eq files--bridge-command 'org-shifttab) (org-shifttab) nil)
         (if (eq files--bridge-command 'org-table-align) (org-table-align) nil)
+        (if (eq files--bridge-command 'org-metaright) (org-metaright) nil)
+        (if (eq files--bridge-command 'org-metaleft) (org-metaleft) nil)
         (if (eq files--bridge-command 'vc-root-diff) (vc-root-diff) nil)
         (if (eq files--bridge-command 'vc-edit-next-command) (vc-edit-next-command) nil)
         (if (eq files--bridge-command 'vc-next-action) (vc-next-action) nil)
@@ -19445,6 +19601,7 @@
 
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
+        (files--refresh-transport-derived-paths)
         (let ((cmd (rdf (progn (setq files--transport-name "nemacs-cmd") (files--transport-path))))
               (keys (rdf (progn (setq files--transport-name "nemacs-keys") (files--transport-path))))
               (target (rdf (progn (setq files--transport-name "nemacs-file") (files--transport-path))))
@@ -19478,10 +19635,10 @@
           (setq files--bridge-target target)
           (setq files--bridge-arg arg)
 	          (setq files--bridge-keys keys)
-	          ;; M22: a tool-bar click arrives as the button's x-coordinate on
-	          ;; nemacs-toolbar-click; resolve it to that button's key sequence
-	          ;; so the normal key-dispatch path runs the command, then clear
-	          ;; the channel so a following keypress fork does not re-fire it.
+	          ;; M22/M23: a tool-bar click arrives on nemacs-toolbar-click.
+	          ;; Old GUI builds write x only; current builds write x,y.  y<18
+	          ;; opens a drop-down for the clicked top-level item when one is
+	          ;; defined.  y>=18 selects a row from the currently open menu.
 	          (let* ((tbpath (progn (setq files--transport-name "nemacs-toolbar-click")
 	                                (files--transport-path)))
 	                 (tbclick (rdf tbpath)))
@@ -19489,19 +19646,33 @@
 	                nil
 	              (progn
 	                (nl-write-file tbpath "")
-	                ;; a click drives the bridge solely through the resolved
-	                ;; key sequence; clear any stale cmd so it cannot fire, and
-	                ;; an out-of-range click (keys "") becomes a clean no-op
 	                (setq files--bridge-command nil)
 	                (setq files--bridge-effective-command "")
-	                (let ((cx 0) (ci 0))
-	                  (while (< ci (length tbclick))
-	                    (let ((ch (aref tbclick ci)))
-	                      (if (if (>= ch 48) (< ch 58) nil)
-	                          (setq cx (+ (* cx 10) (- ch 48)))
-	                        nil))
-	                    (setq ci (+ ci 1)))
-	                  (setq files--bridge-keys (files--toolbar-keys-at-x cx))))))
+	                (let* ((xy (files--parse-toolbar-click tbclick))
+	                       (cx (car xy))
+	                       (cy (cdr xy)))
+	                  (if (< cy 18)
+	                      (let* ((label (files--toolbar-label-at-x cx))
+	                             (menu (files--toolbar-menu-for-label label)))
+	                        (if (equal menu "")
+	                            (progn
+	                              (files--write-toolbar-menu "")
+	                              (setq files--bridge-keys (files--toolbar-keys-at-x cx)))
+	                          (progn
+	                            (files--write-toolbar-menu menu)
+	                            (setq files--bridge-keys "")
+	                            (setq files--bridge-command 'ignore)
+	                            (setq files--bridge-effective-command "ignore"))))
+	                    (let* ((menu (rdf (files--toolbar-menu-path)))
+	                           (row (/ (- cy 18) 16))
+	                           (keys (files--toolbar-menu-keys-at-row menu row)))
+	                      (files--write-toolbar-menu "")
+	                      (if (equal keys "")
+	                          (progn
+	                            (setq files--bridge-keys "")
+	                            (setq files--bridge-command 'ignore)
+	                            (setq files--bridge-effective-command "ignore"))
+	                        (setq files--bridge-keys keys))))))))
 			          (setq files--bridge-minibuffer-text minibuffer-text)
 				          (setq files--bridge-minibuffer-arg minibuffer-arg)
 				          (setq files--prefix-arg prefix-arg-text)
@@ -19553,19 +19724,14 @@
               nil
             (progn
 	            (setq files--current-file-name target)
-	            ;; M20 Stage 2: large files reach the GUI only as a <=48KB
-	            ;; slice (its text buffer is 64KB), so its nemacs-buf snapshot is
-	            ;; capped.  The launcher seeds the authoritative FULL buffer into
-	            ;; the buffer store (cp INITBUF buffer-store/main); on the GUI's
-	            ;; first SESSION call, prefer it when it carries more than the
-	            ;; snapshot so editing/saving a big file operates on the whole
-	            ;; text (no truncation).  This is gated on session mode: per-call
-	            ;; command lanes (ERT, mx.sh fallback) drive the store directly
-	            ;; and must keep loading the snapshot verbatim.
+	            ;; M20/M23: in session mode the buffer store is authoritative.
+	            ;; The native GUI starts with compiled demo text in tb/nemacs-buf;
+	            ;; using that snapshot can overwrite the launcher-seeded file.
+	            ;; Per-call command lanes still load the snapshot verbatim.
 	            (if files--bridge-session-active
 	                (let ((store-full (rdf (concat files--buffer-store-dir "/"
 	                                               (if (equal buffer-name "") "main" buffer-name)))))
-	                  (if (> (length store-full) (length snapshot))
+	                  (if (> (length store-full) 0)
 	                      (setq files--buffer-string store-full)
 	                    (setq files--buffer-string snapshot)))
 	              (setq files--buffer-string snapshot))
@@ -19727,6 +19893,12 @@
                   (files--write-transport-window-dedicated-state)
                   (files--write-transport-side-windows-state)
                   (files--write-transport-frame-state)
+                  (if (equal cmd "org-metaright") (setq files--bridge-status "ok") nil)
+                  (if (equal cmd "org-metaleft") (setq files--bridge-status "ok") nil)
+                  (if (equal cmd "ignore") (setq files--bridge-status "ok") nil)
+                  (if (equal files--bridge-effective-command "org-metaright") (setq files--bridge-status "ok") nil)
+                  (if (equal files--bridge-effective-command "org-metaleft") (setq files--bridge-status "ok") nil)
+                  (if (equal files--bridge-effective-command "ignore") (setq files--bridge-status "ok") nil)
 			          (if (equal files--bridge-status "read-only")
               (progn
                 (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)
