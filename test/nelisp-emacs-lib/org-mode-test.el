@@ -52,7 +52,8 @@
                       "(fset 'org-set-tags"
                       "(fset 'org-toggle-tag"
                       "(fset 'org-refile-to-title"
-                      "(fset 'files--org-relevel-subtree"))
+                      "(fset 'files--org-relevel-subtree"
+                      "(fset 'org-refile-to-file"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -348,6 +349,30 @@ under a target heading; an unknown target leaves the buffer unchanged."
                      "r2=\\* INBOX\n\\* PROJECTS\n\\*\\* item\n\\*\\*\\* sub\nEND" out))
             (should (string-match-p "r4=\\* INBOX\n\\* item|unsupported" out)))
         (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-refile-cross-file ()
+  "org-refile-to-file moves the current subtree (re-leveled) under a target
+heading in ANOTHER file, writes that file, and removes it from the buffer."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image))
+          (tdir (make-temp-file "org-refile-" t)))
+      (unwind-protect
+          (let ((tgt (expand-file-name "projects.org" tdir)))
+            (with-temp-file tgt (insert "* PROJECTS\nstuff"))
+            (let ((out (org-mode-test--run
+                        reader image
+                        (format "(progn
+  (setq files--buffer-string \"* INBOX\\n* item\\n** sub\\n* other\") (setq files--point 8)
+  (org-refile-to-file %S \"PROJECTS\")
+  (princ (concat \"buf=\" files--buffer-string \"\\nEND\\n\")))" tgt))))
+              (should (string-match-p "buf=\\* INBOX\n\\* other\nEND" out))
+              ;; the target file on disk got the re-leveled subtree appended
+              (let ((disk (with-temp-buffer (insert-file-contents tgt) (buffer-string))))
+                (should (string-match-p
+                         "\\* PROJECTS\nstuff\n\\*\\* item\n\\*\\*\\* sub" disk)))))
+        (delete-file image)
+        (when (file-directory-p tdir) (delete-directory tdir t))))))
 
 (provide 'org-mode-test)
 
