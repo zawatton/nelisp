@@ -5076,6 +5076,62 @@
             (setq files--bridge-status "unsupported")))
         files--point))
 
+(fset 'org-refile-to-file
+      (lambda (file target &rest _)
+        ;; move the current subtree under heading TARGET in another org FILE,
+        ;; re-leveled to fit.  Reuses the in-buffer org helpers by temporarily
+        ;; swapping files--buffer-string to the file's content.
+        (files--clamp-point)
+        (let ((orig files--buffer-string)
+              (bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let* ((src-level (files--org-heading-level-at bol))
+                     (src-end (files--org-subtree-end bol))
+                     (raw (substring files--buffer-string bol src-end))
+                     (body (if (if (> (length raw) 0)
+                                   (= (aref raw (- (length raw) 1)) 10)
+                                 nil)
+                               (substring raw 0 (- (length raw) 1))
+                             raw))
+                     (current-without
+                      (concat (substring files--buffer-string 0 bol)
+                              (substring files--buffer-string src-end)))
+                     (filetext (rdf file)))
+                ;; swap to the target file's content and find the target there
+                (setq files--buffer-string filetext)
+                (let ((tgt (files--org-find-heading-by-title target)))
+                  (if (>= tgt 0)
+                      (let* ((tgt-level (files--org-heading-level-at tgt))
+                             (delta (- (+ tgt-level 1) src-level))
+                             (releveled (files--org-relevel-subtree body delta))
+                             (ins (files--org-subtree-end tgt))
+                             (flen (length filetext))
+                             (prefix (if (if (> ins 0)
+                                             (= (aref filetext (- ins 1)) 10)
+                                           t)
+                                         ""
+                                       (char-to-string 10)))
+                             (suffix (if (< ins flen) (char-to-string 10) "")))
+                        (nl-write-file
+                         file
+                         (concat (substring filetext 0 ins)
+                                 prefix releveled suffix
+                                 (substring filetext ins)))
+                        ;; restore the current buffer with the subtree removed
+                        (setq files--buffer-string current-without)
+                        (setq files--point
+                              (if (> bol (length current-without))
+                                  (length current-without)
+                                bol))
+                        (setq files--buffer-modified-p t)
+                        (files--clamp-point))
+                    ;; target not in the file: restore the buffer unchanged
+                    (progn
+                      (setq files--buffer-string orig)
+                      (setq files--bridge-status "unsupported")))))
+            (setq files--bridge-status "unsupported")))
+        files--point))
+
 ;; --- org priority cookie ([#A]/[#B]/[#C]) -----------------------------------
 ;; Cycle the priority of the current heading: none -> A -> B -> C -> none.  The
 ;; cookie sits after the stars and the optional TODO/DONE keyword.
