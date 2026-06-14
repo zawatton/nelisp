@@ -5132,6 +5132,45 @@
             (setq files--bridge-status "unsupported")))
         files--point))
 
+;; --- org subtree promote/demote (re-level the whole subtree) ----------------
+;; Unlike org-promote/org-demote (single heading line), these shift every
+;; heading in the subtree, keeping children consistent.  Bound to C-c < / C-c >
+;; (the bridge GUI maps bare arrows straight to commands and passes no Meta, so
+;; the usual M-left/M-right need a GUI keysym change; available via global-set-key
+;; meanwhile).
+(fset 'org-demote-subtree
+      (lambda (&rest _)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let* ((src-end (files--org-subtree-end bol))
+                     (sub (substring files--buffer-string bol src-end))
+                     (releveled (files--org-relevel-subtree sub 1)))
+                (setq files--buffer-string
+                      (concat (substring files--buffer-string 0 bol)
+                              releveled
+                              (substring files--buffer-string src-end)))
+                (setq files--buffer-modified-p t)
+                (files--clamp-point))
+            (setq files--bridge-status "unsupported")))
+        files--point))
+
+(fset 'org-promote-subtree
+      (lambda (&rest _)
+        (let ((bol (files--org-line-start files--point)))
+          ;; the root must be deeper than level 1 to promote the whole subtree
+          (if (> (files--org-heading-level-at bol) 1)
+              (let* ((src-end (files--org-subtree-end bol))
+                     (sub (substring files--buffer-string bol src-end))
+                     (releveled (files--org-relevel-subtree sub -1)))
+                (setq files--buffer-string
+                      (concat (substring files--buffer-string 0 bol)
+                              releveled
+                              (substring files--buffer-string src-end)))
+                (setq files--buffer-modified-p t)
+                (files--clamp-point))
+            (setq files--bridge-status "unsupported")))
+        files--point))
+
 ;; --- org priority cookie ([#A]/[#B]/[#C]) -----------------------------------
 ;; Cycle the priority of the current heading: none -> A -> B -> C -> none.  The
 ;; cookie sits after the stars and the optional TODO/DONE keyword.
@@ -17491,6 +17530,8 @@
                           "C-c C-d\torg-deadline\n"
                           "C-c C-c\torg-toggle-checkbox\n"
                           "C-c ,\torg-priority\n"
+                          "C-c <\torg-promote-subtree\n"
+                          "C-c >\torg-demote-subtree\n"
                           "M-RET\torg-meta-return\n")
                 ""))))))
 
