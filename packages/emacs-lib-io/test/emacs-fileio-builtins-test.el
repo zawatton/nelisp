@@ -560,6 +560,27 @@
     (should (eq before-save-buf  (symbol-function 'save-buffer)))
     (should (eq before-buf-file  (symbol-function 'buffer-file-name)))))
 
+;;;; make-temp-file polyfill (standalone reader; host keeps its C builtin)
+
+(ert-deftest emacs-fileio-builtins-test/make-temp-file-creates-unique ()
+  (let ((f1 (emacs-fileio-make-temp-file "ap-ert-" nil ".json"))
+        (f2 (emacs-fileio-make-temp-file "ap-ert-" nil ".json")))
+    (unwind-protect
+        (progn
+          (should (stringp f1))
+          (should (file-exists-p f1))
+          (should (string-suffix-p ".json" f1))
+          (should-not (equal f1 f2)))
+      (when (file-exists-p f1) (delete-file f1))
+      (when (file-exists-p f2) (delete-file f2)))))
+
+(ert-deftest emacs-fileio-builtins-test/make-temp-file-writes-text ()
+  (let ((f (emacs-fileio-make-temp-file "ap-ert-" nil ".txt" "hello-temp")))
+    (unwind-protect
+        (should (equal "hello-temp"
+                       (with-temp-buffer (insert-file-contents f) (buffer-string))))
+      (when (file-exists-p f) (delete-file f)))))
+
 (provide 'emacs-fileio-builtins-test)
 
 ;;; emacs-fileio-builtins-test.el ends here
