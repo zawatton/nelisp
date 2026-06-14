@@ -241,6 +241,65 @@ the substrate has no file-locking subsystem yet."
     (ignore lockname mustbenew)
     (nelisp-ec-write-region start end filename append visit)))
 
+;;;; --- temp files -----------------------------------------------------
+;; `make-temp-file' is absent on the standalone reader (nemacs), and a
+;; call to an unbound function there is a non-catchable abort (it does not
+;; signal `void-function'), so callers like test harnesses cannot even
+;; degrade gracefully.  Provide a working implementation on top of the
+;; primitives that do exist (`write-region' + `file-exists-p').  Gated on
+;; `fboundp' so host Emacs keeps its C builtin.
+
+(declare-function emacs-pid "ext:editfns")
+
+(defvar emacs-fileio--temp-counter 0
+  "Monotonic counter feeding `emacs-fileio-make-temp-name' uniqueness.")
+
+(defun emacs-fileio-make-temp-name (prefix)
+  "Return a unique, currently-nonexistent file name built from PREFIX.
+PREFIX already includes any directory.  Standalone counterpart to
+Emacs' `make-temp-name'; it does NOT create the file."
+  (let ((pid (if (fboundp 'emacs-pid) (emacs-pid) 0))
+        (name nil)
+        (n 0))
+    (while (and (or (null name)
+                    (and (fboundp 'file-exists-p) (file-exists-p name)))
+                (< n 100000))
+      (setq emacs-fileio--temp-counter (1+ emacs-fileio--temp-counter)
+            n (1+ n)
+            name (concat prefix (format "%d-%d" pid emacs-fileio--temp-counter))))
+    name))
+
+(defun emacs-fileio-make-temp-file (prefix &optional dir-flag suffix text)
+  "Standalone `make-temp-file': create a unique temp file, return its name.
+PREFIX is taken relative to `temporary-file-directory'.  SUFFIX, when a
+string, is appended.  TEXT, when a string, is written as the initial
+contents.  DIR-FLAG creates a directory instead (needs `make-directory')."
+  (let* ((dir (file-name-as-directory
+               (if (boundp 'temporary-file-directory)
+                   temporary-file-directory
+                 "/tmp/")))
+         (name (emacs-fileio-make-temp-name (concat dir prefix))))
+    ;; A suffix can re-introduce a collision; bump until the full name is free.
+    (when (stringp suffix)
+      (setq name (concat name suffix))
+      (while (and (fboundp 'file-exists-p) (file-exists-p name))
+        (setq name (concat (emacs-fileio-make-temp-name (concat dir prefix))
+                           suffix))))
+    (cond
+     (dir-flag
+      (if (fboundp 'make-directory)
+          (progn (make-directory name t) name)
+        (signal 'file-error
+                (list "make-temp-file: directory creation unsupported" name))))
+     (t
+      (write-region (if (stringp text) text "") nil name)
+      name))))
+
+(unless (fboundp 'make-temp-name)
+  (defalias 'make-temp-name #'emacs-fileio-make-temp-name))
+(unless (fboundp 'make-temp-file)
+  (defalias 'make-temp-file #'emacs-fileio-make-temp-file))
+
 ;;;; --- visited-file state ---------------------------------------------
 
 (defvar emacs-fileio--buffer-files nil
