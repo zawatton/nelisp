@@ -4892,6 +4892,103 @@
               (setq files--bridge-status "unsupported"))))
         files--point))
 
+;; --- org tags ( :tag1:tag2: at the end of the heading ) ---------------------
+(fset 'files--org-tag-char-p
+      (lambda (c)
+        (if (= c 58) t              ; :
+          (if (= c 95) t            ; _
+            (if (= c 64) t          ; @
+              (if (if (>= c 48) (<= c 57) nil) t
+                (if (if (>= c 65) (<= c 90) nil) t
+                  (if (>= c 97) (<= c 122) nil))))))))
+
+(fset 'files--org-strip-tags
+      (lambda (line)
+        ;; LINE without a trailing " :tag:tag:" group (the space + group), if any
+        (let ((n (length line)))
+          (if (if (> n 0) (= (aref line (- n 1)) 58) nil)
+              (let ((i (- n 1)))
+                (while (if (> i 0) (files--org-tag-char-p (aref line (- i 1))) nil)
+                  (setq i (- i 1)))
+                (if (if (> i 0) (= (aref line (- i 1)) 32) nil)
+                    (if (= (aref line i) 58)
+                        (substring line 0 (- i 1))
+                      line)
+                  line))
+            line))))
+
+(fset 'files--org-rstrip
+      (lambda (s)
+        (let ((e (length s)))
+          (while (if (> e 0) (= (aref s (- e 1)) 32) nil) (setq e (- e 1)))
+          (substring s 0 e))))
+
+(fset 'files--org-normalize-tags
+      (lambda (tags)
+        ;; "a:b" or ":a:b:" -> ":a:b:"; "" -> ""
+        (if (equal tags "")
+            ""
+          (let ((cur "") (i 0) (n (length tags)) (result ":"))
+            (while (< i n)
+              (let ((c (aref tags i)))
+                ;; ':' and whitespace both separate tags (a stray leading space
+                ;; from a parsed " :tag:" group must not become a tag).
+                (if (if (= c 58) t (= c 32))
+                    (if (> (length cur) 0)
+                        (progn (setq result (concat result cur ":")) (setq cur ""))
+                      nil)
+                  (setq cur (concat cur (char-to-string c)))))
+              (setq i (+ i 1)))
+            (if (> (length cur) 0) (setq result (concat result cur ":")) nil)
+            (if (equal result ":") "" result)))))
+
+(fset 'org-set-tags
+      (lambda (tags &rest _)
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let* ((eol (files--org-line-end files--point))
+                     (line (substring files--buffer-string bol eol))
+                     (title (files--org-rstrip (files--org-strip-tags line)))
+                     (norm (files--org-normalize-tags tags))
+                     (newline (if (equal norm "") title (concat title " " norm))))
+                (setq files--buffer-string
+                      (concat (substring files--buffer-string 0 bol)
+                              newline
+                              (substring files--buffer-string eol)))
+                (setq files--buffer-modified-p t)
+                (files--clamp-point))
+            (setq files--bridge-status "unsupported")))
+        files--point))
+
+(fset 'org-current-tags-string
+      (lambda (&rest _)
+        ;; the current heading's tag group (":a:b:"), or ""
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let* ((eol (files--org-line-end files--point))
+                     (line (substring files--buffer-string bol eol))
+                     (stripped (files--org-strip-tags line)))
+                (if (< (length stripped) (length line))
+                    (files--org-normalize-tags
+                     (substring (files--org-rstrip line) (length stripped)))
+                  ""))
+            ""))))
+
+(fset 'org-toggle-tag
+      (lambda (tag &rest _)
+        ;; add TAG if absent, remove it if present
+        (let* ((cur (org-current-tags-string))
+               (needle (concat ":" tag ":"))
+               (has (if (nlre-string-match (regexp-quote needle) cur) t nil)))
+          (if has
+              ;; remove: replace ":tag:" with ":" (collapsing)
+              (let ((removed (nlre-replace-regexp-in-string
+                              (regexp-quote needle) ":" cur)))
+                (org-set-tags (if (equal removed ":") "" removed)))
+            (org-set-tags (concat cur tag ":"))))
+        files--point))
+
 ;; --- org priority cookie ([#A]/[#B]/[#C]) -----------------------------------
 ;; Cycle the priority of the current heading: none -> A -> B -> C -> none.  The
 ;; cookie sits after the stars and the optional TODO/DONE keyword.

@@ -48,7 +48,9 @@
                       "(fset 'org-priority"
                       "(fset 'org-schedule"
                       "(fset 'org-deadline"
-                      "(fset 'org-toggle-checkbox"))
+                      "(fset 'org-toggle-checkbox"
+                      "(fset 'org-set-tags"
+                      "(fset 'org-toggle-tag"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -290,6 +292,34 @@ cookie is not a checkbox."
             (should (string-match-p "low=- \\[ \\] lower" out))
             (should (string-match-p "cookie=\\* \\[#A\\] heading|unsupported" out))
             (should (string-match-p "sub=\\* TODO project\n- \\[X\\] step 1\n- \\[ \\] step 2" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-tags ()
+  "org-set-tags sets/replaces :tag: groups; org-toggle-tag adds/removes one tag
+\(including from the middle of a group) without leaving stray separators."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* task\") (setq files--point 3)
+  (org-set-tags \"work:urgent\") (princ (concat \"set=\" files--buffer-string \"\\n\"))
+  (org-set-tags \"\") (princ (concat \"clr=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* TODO [#A] important\") (setq files--point 3)
+  (org-set-tags \"home\") (princ (concat \"meta=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* task\") (setq files--point 3)
+  (org-toggle-tag \"urgent\") (princ (concat \"ton=\" files--buffer-string \"\\n\"))
+  (org-toggle-tag \"urgent\") (princ (concat \"tof=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* task :a:urgent:b:\") (setq files--point 3)
+  (org-toggle-tag \"urgent\") (princ (concat \"tmid=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "set=\\* task :work:urgent:" out))
+            (should (string-match-p "clr=\\* task" out))
+            (should (string-match-p "meta=\\* TODO \\[#A\\] important :home:" out))
+            (should (string-match-p "ton=\\* task :urgent:" out))
+            (should (string-match-p "tof=\\* task" out))
+            (should (string-match-p "tmid=\\* task :a:b:" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)
