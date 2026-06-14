@@ -4923,6 +4923,12 @@
           (while (if (> e 0) (= (aref s (- e 1)) 32) nil) (setq e (- e 1)))
           (substring s 0 e))))
 
+(fset 'files--org-lstrip
+      (lambda (s)
+        (let ((i 0) (n (length s)))
+          (while (if (< i n) (= (aref s i) 32) nil) (setq i (+ i 1)))
+          (substring s i))))
+
 (fset 'files--org-normalize-tags
       (lambda (tags)
         ;; "a:b" or ":a:b:" -> ":a:b:"; "" -> ""
@@ -5711,14 +5717,33 @@
               (eol 0)
               (level 0))
           (setq n (length src))
-          (setq out (concat "Org Agenda: TODO headings in " src-name "\n"))
+          (setq out (concat "Org Agenda: TODO + scheduled in " src-name "\n"))
           (while (< scan n)
             (setq level (files--org-heading-level-at scan))
             (setq eol (files--org-line-end scan))
             (if (> level 0)
                 (if (files--org-rest-todo-p
                      (substring src (+ scan level 1) eol))
-                    (setq out (concat out (substring src scan eol) "\n"))
+                    ;; append the SCHEDULED:/DEADLINE:/CLOSED: planning lines
+                    ;; that follow the heading, so the agenda shows the dates.
+                    (let ((line (substring src scan eol))
+                          (plan "") (pscan (+ eol 1)) (more t))
+                      (while more
+                        (if (< pscan n)
+                            (let* ((peol (files--org-line-end pscan))
+                                   (pline (substring src pscan peol)))
+                              (if (if (files--org-line-has-keyword-p pline "SCHEDULED")
+                                      t
+                                    (if (files--org-line-has-keyword-p pline "DEADLINE")
+                                        t
+                                      (files--org-line-has-keyword-p pline "CLOSED")))
+                                  (progn
+                                    (setq plan
+                                          (concat plan "  " (files--org-lstrip pline)))
+                                    (setq pscan (+ peol 1)))
+                                (setq more nil)))
+                          (setq more nil)))
+                      (setq out (concat out line plan "\n")))
                   nil)
               nil)
             (setq scan (+ eol 1)))
