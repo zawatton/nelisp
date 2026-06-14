@@ -305,3 +305,40 @@ NlBoolVector box layout（=lisp/nelisp-cc-jit-bool-vector-len.el=）: =box+0= = 
   （mark は root から辿るので、root 取りこぼしは別途 §11.6-2 の root 列挙監査で。escape root が筆頭）。
 - = 静的監査の deliverable（GAP-1/2 の fix-spec）は確定。残りは collect 実発火（§11.6-1）+ poison 動的検証 +
   root 列挙完全性。
+
+* §11.9 root 側 静的監査（§4.1）+ §11.5 訂正（2026-06-14）
+
+** root 列挙は概ね完全（escape root は既に handled）
+=nl_gc_mark_roots=（=scripts/...:1518=、引数 ctx/result/out/pool/src/cursor/bsym）が mark する root:
+- =ctx+0=（mirror / globals）/ =ctx+32=（frame stack）/ =ctx+64=（unbound marker）
+- =result=（current parsed form）/ ***out（in-flight / last result）***/ =pool=（parse-pool RAW buffer, cap slots）
+- =src=（source string）/ =cursor=（reader cursor）/ =bsym= + shared symentry（268436328、block + Symbol slot で
+  name buf も mark。過去 name-buf が growth chunk で未mark → munmap → SIGSEGV を起こした gap の修正がコメントに
+  記録 = root-gap を crash 駆動で塞いだ前例）。
+- = **§4.1.5 で「escape root が旧 epoch reclaim の罠」と強調したのは tracing GC には当たらない**: tracing GC は
+  =out=（form 結果）を *既に root として mark* している。旧 epoch reclaim（region-reset、reachability を辿らない別
+  機構）が escape を取りこぼしたのであって、tracing の root 側は escape を root 化済。**root 列挙に明白な欠落は
+  見えない**（frame-stack/pinned の transitive 到達の完全性は動的確認が要るが、root カテゴリは網羅）。
+
+** §11.5「固定アドレス unmapped」の訂正
+collect call site（=scripts/...:3224=）は =(< bump@268436184 trigger@268435560)= を *native で読んで* collect を
+gate しており、reader は crash せず動く = **native は 0x10000000 領域の固定アドレスを問題なく read している**。
+§11.5 の SIGSEGV は =./target/nelisp --load '(ptr-read-u64 268435616 0)'= = *user-elisp の ptr-read-u64* 由来で、
+これは arena オブジェクト境界の bounds-check 等で固定 gate アドレスを弾いた可能性が高い（native のアクセスとは別経路）。
+= **§11.5/§11.6 の「GC は dynamic-base に未 wire / アドレス模型 port が要る」は早計**。native は固定 gate/trigger を
+読めており、COLL=0 の原因は *gate 値（268435616 が 1 か）/ trigger 条件（bump<trigger）/ COLL カウンタの意味* の
+いずれかに絞られる。
+
+** COLL=0 の正確な原因は runtime instrumentation で（静的読解は誤診を反復）
+静的 base+160 を 0 に build しても COLL=0 だった（§11.2）理由は、(a) 動的 init が別アドレスに gate を書く /
+(b) trigger 条件 / (c) COLL カウンタ位置、のどれかだが *静的読解では確定できず繰返し誤診*。
+= **§11.6-1 の正しい最初の一手は「アドレス模型 port」ではなく、=nl_gc_collect= と call site に
+=nl_write_stdout_bytes= 等の debug print を 1 行差し込んで rebuild し、「collect が呼ばれるか / gate 読みは何か /
+trigger 比較の両辺は何か」を実機で観測する instrumentation**。それで COLL=0 の真因（gate 値か trigger か）を確定
+してから enable する。GAP-1/2（§11.8、child 側、offset 確定）は enable と独立に fix を用意できる。
+
+** 更新後の作業順
+1. *§11.8 GAP-1/2 fix を用意*（CharTable 子walk + BoolVector bits buf、コード確定済・独立）。
+2. *collect instrumentation*（debug print）で COLL=0 の真因観測 → gate/trigger を正す → =COLL>0=。
+3. *reuse OFF poison* + GAP-1/2 fix 適用済 reader で suite load → 残 gap を動的に潰す。
+4. 本有効化 → gate G。
