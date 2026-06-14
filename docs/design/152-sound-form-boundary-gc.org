@@ -635,3 +635,39 @@ gdb で =nl_sf_let_got_bindings= の =args= 格納場所を特定し、=nl_let_s
 - §11.14: count-loop blocker = `while` TCO 無し CPS → §11.15 host-iterate 修正 SHIPPED（検証済）。
 - §11.16: suite blocker = `nl_let_setup` 跨ぎの `args` param clobber（while と同根の nelisp-cc 保存問題）。
   GC/growth/reuse/stack-overflow/scratch-escape は全て排除済。fix は nelisp-cc の call 跨ぎ保存 codegen。
+
+* §11.17 最小化 probe の所見 — corruption は eval/mirror 層に広く、probe 法は信頼性低（2026-06-15）
+§11.16 の機構を最小再現で実証しようと run-suite を per-file/per-test marker probe で replicate したが、
+*probe 自身が別 crash を誘発* し、minimization は信頼できないと判明。記録する。
+
+** probe の所見
+- run-suite を marker 付きで replicate（suite-readiness + 各 file load + 自前 runner）した probe2.el は
+  =SMOKE-LOADED= 直後で SIGSEGV。gdb backtrace は run-suite の =nl_sf_let= 経路と *別*: frame21
+  =nl_eval_source_all= 直下の **top-level =(setq anvil-pkg-nelisp-ert--tests nil)=**（probe が足した form）が
+  =nl_sf_setq → nelisp_mirror_bucket_prepend → nl_val_clone_into → nl_vci_box → nl_sexp_clone_into= で crash。
+  = probe の setq 自体が別 corruption を踏んでいる。
+- =nelisp--write-stdout-bytes= の marker は SIGSEGV 近傍で ~2 行欠落するため crash 点の特定が ±2 form ぶれる。
+- = marker+probe 法は (a) probe-introduced crash (b) marker buffer loss の二重に信頼性が低い。authoritative な
+  対象は run-suite EVAL を gdb 下で直接見た §11.16（=nl_sf_let= の args clobber）に限定すべき。
+
+** 示唆: corruption は eval/mirror 層に広い
+これまでに観測した crash site: =nl_cons_cdr_ptr=（let bindings, §11.12/16）/ =nelisp_mirror_walk_bucket=
+（function lookup, §11.13）/ =nl_sexp_clone_into=（setq mirror insert, §11.17）。いずれも **eval state（args/
+binding cons）または env-mirror（function/value table）が壊れた pointer を読む/clone する**点で共通。= 単一の
+corruption source（arena/mirror を上書きする何か、or call 跨ぎで pointer を保てない codegen）が複数箇所で表面化
+している可能性が高い。§11.16 の「call 跨ぎ param 非保存」codegen 仮説と整合的（mirror clone も内部で多数の
+extern-call を跨いで box pointer を保持する）。
+
+** 次フェーズ（fix の本筋）
+nelisp-cc の **call（特に extern-call）跨ぎの register/spill 保存 codegen** を =lisp/nelisp-aot-compiler.el= で監査:
+- defun の param/local が callee-saved register に置かれた場合、callee（extern 含む）がそれを保存する前提が
+  成り立っているか。spill-slot 方式なら deep call で上書きされないか。
+- while で踏んだ「local が call 跨ぎで消える」と同根なら、ここを直すと while-class + let-args-clobber +
+  mirror-clone を一括で救える可能性。
+小さな再現（top-level の重い setq / let を 1 個）を gdb watchpoint で「box pointer がどの命令で garbage 化するか」
+捕捉するのが確実。
+
+** Doc 152 総括（更新）
+- §11.10-16: GC 健全、while fix SHIPPED、suite blocker = call 跨ぎ pointer 非保存（§11.16）。
+- §11.17: minimization probe は信頼性低（probe 由来 crash + marker loss）。corruption は eval/mirror 層に広く
+  単一 codegen 根因の疑い。fix の本筋は nelisp-cc の across-call 保存 codegen 監査。
