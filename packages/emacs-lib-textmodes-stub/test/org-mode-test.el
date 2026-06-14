@@ -42,7 +42,10 @@
                       "(fset 'org-insert-heading"
                       "(fset 'org-meta-return"
                       "(fset 'org-demote"
-                      "(fset 'org-promote"))
+                      "(fset 'org-promote"
+                      "(fset 'org-move-subtree-down"
+                      "(fset 'org-move-subtree-up"
+                      "(fset 'org-priority"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -200,6 +203,32 @@ trailing-no-newline last-subtree edge)."
             (should (string-match-p "dc=\\* B\n\\*\\* b1\n\\* A\n\\*\\* a1" out))
             (should (string-match-p "dt=\\* B\n\\* A" out))
             (should (string-match-p "up=\\* B\n\\* A|0" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-priority ()
+  "org-priority cycles none -> A -> B -> C -> none, after any TODO/DONE keyword."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"* task\") (setq files--point 3)
+  (org-priority) (princ (concat \"a=\" files--buffer-string \"\\n\"))
+  (org-priority) (princ (concat \"b=\" files--buffer-string \"\\n\"))
+  (org-priority) (princ (concat \"c=\" files--buffer-string \"\\n\"))
+  (org-priority) (princ (concat \"n=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* TODO task\") (setq files--point 3)
+  (org-priority) (princ (concat \"td=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* DONE finish report\") (setq files--point 3)
+  (org-priority) (princ (concat \"dn=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "a=\\* \\[#A\\] task" out))
+            (should (string-match-p "b=\\* \\[#B\\] task" out))
+            (should (string-match-p "c=\\* \\[#C\\] task" out))
+            (should (string-match-p "n=\\* task" out))
+            (should (string-match-p "td=\\* TODO \\[#A\\] task" out))
+            (should (string-match-p "dn=\\* DONE \\[#A\\] finish report" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)

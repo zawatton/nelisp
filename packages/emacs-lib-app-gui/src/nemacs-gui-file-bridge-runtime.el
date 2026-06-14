@@ -4808,6 +4808,74 @@
             nil)
           files--point)))
 
+;; --- org priority cookie ([#A]/[#B]/[#C]) -----------------------------------
+;; Cycle the priority of the current heading: none -> A -> B -> C -> none.  The
+;; cookie sits after the stars and the optional TODO/DONE keyword.
+(fset 'org-priority
+      (lambda (&rest _)
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (let* ((level (files--org-heading-level-at bol))
+                     (eol (files--org-line-end files--point))
+                     (kw-end (+ bol level 1))
+                     (rest (substring files--buffer-string kw-end eol))
+                     (kw "") (body rest))
+                ;; split off the TODO/DONE keyword
+                (if (files--org-rest-todo-p rest)
+                    (if (equal rest "TODO")
+                        (progn (setq kw "TODO") (setq body ""))
+                      (progn (setq kw "TODO") (setq body (substring rest 5))))
+                  (if (files--org-rest-done-p rest)
+                      (if (equal rest "DONE")
+                          (progn (setq kw "DONE") (setq body ""))
+                        (progn (setq kw "DONE") (setq body (substring rest 5))))
+                    nil))
+                ;; split off an existing [#X] cookie
+                (let ((cur "") (title body))
+                  (if (if (>= (length body) 4)
+                          (if (= (aref body 0) 91)
+                              (if (= (aref body 1) 35)
+                                  (= (aref body 3) 93)
+                                nil)
+                            nil)
+                        nil)
+                      (progn
+                        (setq cur (substring body 2 3))
+                        (setq title (substring body 4))
+                        (if (if (> (length title) 0)
+                                (= (aref title 0) 32)
+                              nil)
+                            (setq title (substring title 1))
+                          nil))
+                    nil)
+                  ;; cycle none -> A -> B -> C -> none
+                  (let ((next (if (equal cur "") "A"
+                                (if (equal cur "A") "B"
+                                  (if (equal cur "B") "C" "")))))
+                    (let ((cookie (if (equal next "") "" (concat "[#" next "]")))
+                          (newbody "") (newrest ""))
+                      (setq newbody
+                            (if (equal cookie "")
+                                title
+                              (if (equal title "")
+                                  cookie
+                                (concat cookie " " title))))
+                      (setq newrest
+                            (if (equal kw "")
+                                newbody
+                              (if (equal newbody "")
+                                  kw
+                                (concat kw " " newbody))))
+                      (setq files--buffer-string
+                            (concat (substring files--buffer-string 0 kw-end)
+                                    newrest
+                                    (substring files--buffer-string eol)))
+                      (setq files--buffer-modified-p t)
+                      (files--clamp-point)))))
+            (setq files--bridge-status "unsupported")))
+        files--point))
+
 (fset 'org-todo
       (lambda ()
         (files--clamp-point)
