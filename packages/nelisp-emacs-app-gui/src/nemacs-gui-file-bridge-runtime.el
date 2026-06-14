@@ -17477,8 +17477,21 @@
                         "p\tInfo-prev\n"
                         "u\tInfo-up\n")
               (if (files--org-buffer-p)
+                  ;; org-mode keybindings.  The newer commands aren't in the
+                  ;; commandp allowlist, but command-execute's fboundp fallback
+                  ;; runs them.  Arrow-based bindings (M-left/right) are omitted
+                  ;; because the bridge keymap encodes no arrow keys.
                   (concat "TAB\torg-cycle\n"
-                          "S-TAB\torg-shifttab\n")
+                          "S-TAB\torg-shifttab\n"
+                          "C-c C-n\torg-next-visible-heading\n"
+                          "C-c C-p\torg-previous-visible-heading\n"
+                          "C-c C-f\torg-forward-heading-same-level\n"
+                          "C-c C-t\torg-todo\n"
+                          "C-c C-s\torg-schedule\n"
+                          "C-c C-d\torg-deadline\n"
+                          "C-c C-c\torg-toggle-checkbox\n"
+                          "C-c ,\torg-priority\n"
+                          "M-RET\torg-meta-return\n")
                 ""))))))
 
 (fset 'files--mode-minibuffer-keymap-source

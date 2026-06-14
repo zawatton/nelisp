@@ -374,6 +374,46 @@ heading in ANOTHER file, writes that file, and removes it from the buffer."
         (delete-file image)
         (when (file-directory-p tdir) (delete-directory tdir t))))))
 
+(ert-deftest org-mode-test/source-shape-keybindings ()
+  "org-mode buffers bind the new commands to standard C-c keys."
+  ;; the source holds the literal backslash-t escape, not a tab character.
+  (let ((source (org-mode-test--slurp org-mode-test--bridge-source)))
+    (dolist (needle '("C-c C-n\\torg-next-visible-heading"
+                      "C-c C-t\\torg-todo"
+                      "C-c C-s\\torg-schedule"
+                      "C-c C-c\\torg-toggle-checkbox"
+                      "C-c ,\\torg-priority"
+                      "M-RET\\torg-meta-return"))
+      (should (string-match-p (regexp-quote needle) source)))))
+
+(ert-deftest org-mode-test/standalone-keybinding-dispatch ()
+  "In a .org buffer, the org C-c keys dispatch to the commands (via the
+command-execute fboundp fallback); a non-org buffer gets no org bindings."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--current-file-name \"todo.org\") (setq files--input-method \"\")
+  (setq files--buffer-string \"* INBOX\\nbody\\n* NEXT\") (setq files--point 0)
+  (setq files--bridge-keys \"C-c C-n\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"n=\" (number-to-string files--point) \"\\n\"))
+  (setq files--buffer-string \"* INBOX\") (setq files--point 0)
+  (setq files--bridge-keys \"C-c C-t\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"t=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* task\") (setq files--point 3)
+  (setq files--bridge-keys \"C-c ,\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"p=\" files--buffer-string \"\\n\"))
+  (setq files--current-file-name \"foo.txt\")
+  (princ (concat \"txt=\" (if (files--org-buffer-p) \"y\" \"n\") \"\\n\")))")))
+            (should (string-match-p "n=13" out))
+            (should (string-match-p "t=\\* TODO INBOX" out))
+            (should (string-match-p "p=\\* \\[#A\\] task" out))
+            (should (string-match-p "txt=n" out)))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here
