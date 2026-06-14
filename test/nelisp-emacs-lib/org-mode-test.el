@@ -37,6 +37,7 @@
                       "(fset 'org-previous-visible-heading"
                       "(fset 'org-back-to-heading"
                       "(fset 'org-forward-heading-same-level"
+                      "(fset 'org-backward-heading-same-level"
                       "(fset 'files--org-scan-heading-forward"
                       "(fset 'files--org-scan-heading-backward"
                       "(fset 'org-insert-heading"
@@ -142,6 +143,8 @@
   (princ (concat \"next0=\" (number-to-string (point)) \"\\n\"))
   (setq files--point 0) (org-forward-heading-same-level)
   (princ (concat \"same0=\" (number-to-string (point)) \"\\n\"))
+  (setq files--point 25) (org-backward-heading-same-level)
+  (princ (concat \"bsame25=\" (number-to-string (point)) \"\\n\"))
   (setq files--point 32) (org-previous-visible-heading)
   (princ (concat \"prev32=\" (number-to-string (point)) \"\\n\"))
   (setq files--point 10) (org-back-to-heading)
@@ -155,6 +158,7 @@
                  \"/\" (number-to-string (length files--buffer-string)) \"\\n\")))")))
             (should (string-match-p "next0=13" out))
             (should (string-match-p "same0=25" out))
+            (should (string-match-p "bsame25=0" out)) ; * NEXT -> * INBOX
             (should (string-match-p "prev32=25" out))
             (should (string-match-p "back10=0" out))
             (should (string-match-p "ah=yn" out))
