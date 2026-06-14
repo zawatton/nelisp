@@ -1,0 +1,175 @@
+#+TITLE: Doc 152 — Sound form-boundary tracing GC（稼働 GC の有効化と健全性）
+#+AUTHOR: nelisp / nelisp-emacs
+#+DATE: 2026-06-14
+#+STATUS: DESIGN（実装前）。Doc 146（統合設計）の「② root-coverage 健全性」+「稼働化」を、run-suite 完走を gate にして carve out。
+#+OPTIONS: toc:3 num:t
+
+* §0 要旨
+
+standalone reader (=target/nelisp=、nelisp-cc 製 static ELF、Rust core 無し) は **現状 GC を一切走らせていない**
+（実測 §1）。reuse / form-boundary collect が実際には発火せず、純 bump + chunk-growth で **never-free**。
+結果:
+1. *メモリ無限増*（実測: 2.4GB 確保で =COLL=0=、drop 参照も未回収、=used=2.44GB=）。
+2. *anvil-pkg ERT suite (~13 ファイル + 182 テスト) を nemacs に load すると非決定的に abort*（Doc 142 gate5 系。
+   heavy structured load 下で reader が落ちる。GC が無く arena が無秩序成長することが背景）。
+
+本書は **sound な form-boundary tracing mark-sweep を「実際に稼働」させる**設計。既存資産の上に建てる:
+- Doc 146: =rc は vestigial（=nl_dealloc_bytes= は no-op、実 freer は GC sweep のみ）→ *tracing が唯一の権威*=。
+  pure-tracing は実質既得。残る健全性課題は **② root-coverage gap**（mark が live を取りこぼすと sweep が
+  use-after-free）。
+- =nelisp-gc-inner.el=: tri-color mark phase (=run-mark-phase=) + sweep phase (§7 per-family free-list rebuild) が
+  *実装済*。だが reader の form-boundary には *配線/有効化されていない*（実測 COLL=0）。
+- 旧 *epoch boundary-reclaim* は unsound として OFF（§2）。これは「sound tracing reclaim ができたら置換」と
+  コメントに明記されている（=scripts/nelisp-standalone-build.el:929-936=）。
+
+*評価 gate*: (a) =COLL>0= かつ heavy-alloc 後も =used= が bounded、(b) 既存 4438 PASS 維持、
+(c) **anvil-pkg full suite が nemacs で完走（非決定 abort 消失）**。
+
+* §1 現状（2026-06-14 実測）
+
+** 1.1 GC は走っていない
+=(nelisp--arena-stats)= tuple = =(base size bump used live next free COLL REUSE CHUNK-COUNT reserved used)=。
+- boot 直後: =chunk=33 COLL=0 REUSE=0 used≈95MB=。
+- =(make-string 100)= を ~18万 cons（途中 drop あり）後: =chunk=68 COLL=0 REUSE=0 used=2.44GB reserved=2.75GB=。
+- = *COLL=0 のまま*。drop した参照も回収されず =used= が 2.44GB へ。**form-boundary collect / reuse は事実上 OFF**。
+
+** 1.2 allocator 構成（=nelisp-standalone--arena-source=、nelisp-cc が native emit）
+- chunked bump: =nl_alloc_bytes= → exact-fit free-list reuse（=nl_freelist_take=）→ 満杯なら =nl_chunk_alloc_new=。
+- block header 8B: =BLOCK_TOTAL=（8-align）high bits + mark(0 live/1 marked/2 free) low 3 bits。object = hdr+8。
+- =nl_dealloc_bytes= = *no-op*（rc-drop は何も解放しない）。実解放は GC sweep のみ。
+- reuse-on は zero-fill 済（=nl_alloc_zero_fill=、Doc 146 §2.1 の reuse-correctness root-cause-fix）= dirty-memory
+  問題は解決済。
+
+** 1.3 既存 GC 機構（未配線）
+- =nelisp-gc.el=: root-set 列挙のみ（globals 4 HT / vm-stack / aot-frame / aot-pinned-root）。Phase 3c.1。
+- =nelisp-gc-inner.el=: tri-color mark（grey queue、=children-of-addr=、color）+ sweep（§7 free-list rebuild）+
+  finalizer queue。Doc 30 (Phase 7.3)。
+- =nelisp-gc-verify.el= / =-verify-hooks.el=: heap / mark-state-clean / free-list / card-table / poison-from-space
+  検証。=NELISP_GC_VERIFY_DEBUG= で有効化。**だが現 standalone build には未収録**（nemacs で env を立てても無反応）。
+
+* §2 なぜ旧 reclaim は unsound だったか（置換対象）
+
+=scripts/nelisp-standalone-build.el:929-936=:
+#+begin_quote
+Doc 140 boundary reclaim DISABLED (was 1): the escape-epoch reset is unsound … it recycles per-form regions
+holding values that escaped to globals via function-call returns / refcount-aliasing clones, a use-after-free.
+Re-enable only with a sound tracing-GC reclaim.
+#+end_quote
+
+- 旧方式 = *epoch / region reset*: 「この form の epoch で確保した領域は form 終了で garbage」。
+- *不健全な理由*: 値は form を *escape* する — 関数戻り値が global へ格納される、clone が aliasing する、等。
+  epoch reset はこれらを reachability で追わず領域単位で捨てるため use-after-free。
+- = *健全な基盤は唯一 reachability tracing*: 「root から到達可能なものは生存」。allocation epoch は無関係。
+
+* §3 設計目標と不変条件
+
+| # | 不変条件 | 検証手段 |
+|---+----------+----------|
+| S1 | *Soundness*: reachable な box を絶対に free しない | GC verify poison-from-space + suite/gates |
+| S2 | *Completeness*: form 境界で unreachable garbage を全て回収（free-list へ） | arena-stats =used= bounded |
+| S3 | *Precision*: root 集合と子 walk が型ごとに完全（取りこぼし=S1 違反） | §5 root-coverage 監査 + verify-heap |
+| S4 | *Bounded*: 回収により arena が無秩序成長しない | heavy-alloc 後 =used/reserved= 飽和 |
+| S5 | *No-regression*: 4438 PASS 維持、boot 健全 | gates |
+| G  | *Gate*: anvil-pkg full suite が nemacs で完走（非決定 abort 消失） | smoke-nelisp-suite on nemacs |
+
+非目標（別 Doc）: peak RSS 削減（Doc 146 ③ moving GC）/ tagged-immediate 値表現（Doc 146 ④）。本書は
+*reclaim を健全に稼働させる*ことに集中（容量無限増の停止 + suite 完走）。④/③ は本 GC の上に後続。
+
+* §4 アルゴリズム — form-boundary stop-the-world tri-color mark-sweep
+
+reader driver が *top-level form を 1 つ eval し終えた境界*で、watermark 閾値（前回 GC 以降の bump 量 > T）を
+超えていれば collection を走らせる。
+
+** 4.1 Root set（精密・完全）— §5 が要
+1. *globals*: NeLisp の 4 global hash table（=nelisp-gc--globals-root=）。
+2. *current VM stack(s)*: 実行中 VM state vector（=nelisp-gc--vm-stacks-root=）。
+3. *live AOT frame roots*: 実行中 native frame の frame-local root vector スタック（=nelisp-gc--aot-frames-root=）。
+4. *AOT pinned roots*: module-lifetime pinned root vectors（=nelisp-gc--aot-pinned-roots-root=）。
+5. ***just-evaluated form の結果値（escape root）***: driver が *境界 GC の間、form の戻り値を登録 root スロットに
+   保持*する。旧 epoch reclaim はこれを root 化せず捨てて use-after-free を起こした（§2）。**本設計の核心**:
+   form result は global 格納前でも *driver が一時 root として pin* → reachable → 生存。
+6. *imm-aware*（Doc 146 ④ が入った場合）: root slot が tagged-immediate word を持つなら =nl_val_is_imm= で skip。
+
+** 4.2 Mark（=nelisp-gc-inner-run-mark-phase= を使用）
+- root 値を grey queue へ。grey を pop → black、子を grey へ（tri-color）。
+- *子 walk を型ごとに完全列挙*（§5）: Cons(car/cdr Sexp slot)、Vector(elems)、Record(fields)、HashTable(k/v)、
+  CharTable / BoolVector（Doc 146 ② で明示された取りこぼし候補）、Closure(captured env)、Marker(buffer)、
+  Str/MutStr(子無し)。各 box の storage form = 32B Sexp slot を辿る。
+
+** 4.3 Sweep（=nelisp-gc-inner run-sweep-phase= 系 + emitted =nl_gc_sweep_one=）
+- 全 chunk を走査（chunk-aware: head→next の chunk descriptor 連鎖、各 chunk の [hdr][obj]… 列）。
+- mark1（live）→ mark0 に戻す。mark0（unmarked）→ free-list へ（family-keyed bucket、=nl_gc_free_block=）。
+  mark2（既 free）→ skip。
+- reuse は zero-fill 済（§1.2）= dirty-memory 健全。
+
+** 4.4 Trigger
+- 配線点: reader driver の top-level form 境界（現 epoch reclaim 呼出し位置を置換）。
+- 閾値 T（bump-since-last-GC）で amortize。初期 T=64MB（Doc 146 §3.0.5 で 64MB が non-moving floor と実測、
+  trigger 頻度の妥当値）。
+
+* §5 Root-coverage 完全性（Doc 146 ②）— 最重要・S1/S3 の核心
+
+mark の root/子 walk に *1 つでも取りこぼし*があれば、live box が unmarked → sweep が free → 次の alloc が
+reuse → use-after-free = §1.2 の非決定 abort そのもの。健全化はここが全て。
+
+** 5.1 監査項目
+1. *全 root 種別の列挙完全性*: §4.1 の 1-5。特に **(5) escape root**（form 戻り値）と、
+   **per-binding env scaffolding vector / scratch slot**（Doc 146 が「scratch-slot 監査」と名指し）。
+2. *全 box 型の子 walk*: §4.2。Doc 146 ② が名指しする **CharTable 子 / BoolVector 子**の walk 欠落を最優先で塞ぐ。
+3. *AOT frame の safe-point / frame-layout 整合*: =nelisp-gc-inner-collect-roots= が safe-point から root を正しく
+   復元するか（vid→addr、=roots-from-safe-point=）。
+
+** 5.2 差分検証（diagnostic-first）
+- *GC verify を standalone build に収録*し（§6）、=poison-from-space= を ON にして collection を走らせる:
+  free した領域を poison し、以後の touch を検出。anvil-pkg suite load を走らせ、**最初に poison-touch する
+  アクセス = 取りこぼした live への参照**を捕捉 → その親型の子 walk / root 種別を §5.1 に追加 → 反復。
+- これにより「非決定 abort」を「決定的な verify violation（どの型のどのスロットが未 mark か）」へ変換する。
+
+* §6 検証計画
+
+1. *GC verify を standalone build に入れる*（現状未収録、§1.3）: =nelisp-gc-verify= / =-verify-hooks= を
+   reader のビルドモジュール集合に追加し、=NELISP_GC_VERIFY_DEBUG=1= で =verify-heap= /
+   =verify-mark-state-clean= / =verify-free-list= / =poison-from-space= を collection 各相に挿す。
+2. *単体*: =make standalone-chunk-growth-test=（既 PASS）+ 新 =standalone-gc-soundness-test=
+   （alloc→drop→GC→arena-stats で =COLL>0= かつ =used= 減 を assert、escape 値が GC を跨いで正しい を assert）。
+3. *回帰*: 既存 4438 ERT。
+4. *Gate (G)*: nemacs で anvil-pkg full suite を load+run（=loadrun.el= 系）。
+   - GC OFF（現状）: 非決定 abort / =used= 無限増。
+   - GC ON（本設計）: 完走 + =COLL>0= + =used= bounded を期待。これが本書の成功判定。
+5. *差分*: 同一 suite load で OFF/ON の arena-stats（COLL / used / reserved）を比較。
+
+* §7 段階（各段で 4438 緑 + boot 健全を維持）
+
+- *P1 配線（flag-off 既定）*: gc-inner mark+sweep を form 境界に配線、=collect-enabled= slot で gate。GC verify を
+  standalone build に収録。default OFF（現状維持）。検証: build 緑 + verify モジュール load 確認。
+- *P2 root-coverage 監査（S1/S3 の核心、§5）*: escape root の driver 配線 + CharTable/BoolVector 子 walk +
+  scratch-slot 監査。=poison-from-space= で suite load を回し violation を潰すまで反復。
+- *P3 有効化*: watermark T で collection ON。検証: gc-soundness-test + 4438 + **anvil-pkg suite 完走（gate G）** +
+  =used= bounded。
+- *P4 後続*: 増分/世代別 GC（perf）、Doc 146 ③ moving GC（peak/munmap）、④ tagged-immediate（imm-aware mark は
+  §4.1.6 で既に考慮）。
+
+* §8 リスク
+
+| リスク | 影響 | 緩和 |
+|--------+------+------|
+| root/子 取りこぼし | live free → use-after-free（非決定破壊） | §5.2 poison-from-space で決定化、verify-clean まで P3 を ON にしない |
+| escape root 未配線 | form 戻り値 free（旧 epoch と同じ罠） | §4.1.5 を P2 最初に実装 + 専用 test |
+| chunk-aware sweep の連鎖誤り | 一部 chunk 未走査 → garbage 残 or 二重 free | verify-heap で全 chunk の [hdr][obj] 整合 assert |
+| perf（全 mark / 境界毎） | load 低速化 | watermark T で amortize、P4 で増分化 |
+| Doc 146 ④ 値表現との干渉 | imm word を box と誤認 | §4.1.6 imm-aware（=nl_val_is_imm= skip）、④ 導入時に同時更新 |
+
+* §9 関連
+
+- Doc 09 (phase3c-gc) / Doc 29 (phase7.2-allocator) / Doc 30 (phase7.3-gc-inner): 本 GC 機構の出自。
+- Doc 140 (chunked-arena) / Doc 148 (xplatform-chunk-reclaim-parity): chunk 構造 + epoch reclaim（置換対象）。
+- Doc 145 (transient-arena) / Doc 146 (値表現+GC正当性+moving、本丸): 上位統合。本書 = Doc 146 ②（root-coverage
+  健全性）+ 稼働化を run-suite gate で先行実施するサブセット。④（tagged-immediate）/③（moving）は本 GC の後続。
+- nelisp-emacs Doc 142 gate5: nemacs での anvil-pkg suite を駆動する側（本 GC の最終 gate G の現場）。
+
+* §10 最初の一手
+
+P1 の前半 = **GC verify を standalone build に収録**（=scripts/nelisp-standalone-build.el= のモジュール集合に
+=nelisp-gc-verify= / =-verify-hooks= を追加）し、=NELISP_GC_VERIFY_DEBUG=1= で verify がロードされることを
+=make standalone-reader= 後の smoke で確認する。これが P2 の差分検証（poison-from-space で live 取りこぼしを
+捕捉）の足場になる。
