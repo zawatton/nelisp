@@ -17877,8 +17877,9 @@
               (if (files--org-buffer-p)
                   ;; org-mode keybindings.  The newer commands aren't in the
                   ;; commandp allowlist, but command-execute's fboundp fallback
-                  ;; runs them.  Arrow-based bindings (M-left/right) are omitted
-                  ;; because the bridge keymap encodes no arrow keys.
+                  ;; runs them.  M-<arrow> bindings work now that the GUI emits
+                  ;; "M-<left>" etc. for Meta+arrow (alt+keysym) through the key
+                  ;; transport instead of a bare movement command.
                   (concat "TAB\torg-cycle\n"
                           "S-TAB\torg-shifttab\n"
                           "C-c C-n\torg-next-visible-heading\n"
@@ -17892,7 +17893,11 @@
                           "C-c ,\torg-priority\n"
                           "C-c <\torg-promote-subtree\n"
                           "C-c >\torg-demote-subtree\n"
-                          "M-RET\torg-meta-return\n")
+                          "M-RET\torg-meta-return\n"
+                          "M-<left>\torg-metaleft\n"
+                          "M-<right>\torg-metaright\n"
+                          "M-<up>\torg-move-subtree-up\n"
+                          "M-<down>\torg-move-subtree-down\n")
                 ""))))))
 
 (fset 'files--mode-minibuffer-keymap-source

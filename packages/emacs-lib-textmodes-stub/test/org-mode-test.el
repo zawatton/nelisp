@@ -664,6 +664,37 @@ Regression guard against UTF-8 byte-doubling in raw I/O (the c2-prefix trap)."
                      out)))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-org-meta-arrow-dispatch ()
+  "In a .org buffer M-<right>/M-<left> dispatch to org-metaright/org-metaleft
+(demote/promote the heading), and M-<down>/M-<up> move the subtree; a non-org
+buffer gets no such binding.  This is the bridge half of the GUI arrow-keysym
+work -- the GUI emits \"M-<right>\" etc. for Meta+arrow."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--current-file-name \"todo.org\") (setq files--input-method \"\")
+  (setq files--buffer-string \"* TODO first heading\\n** child\") (setq files--point 0)
+  (setq files--bridge-keys \"M-<right>\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"d=[\" files--buffer-string \"]\\n\"))
+  (setq files--bridge-keys \"M-<left>\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"p=[\" files--buffer-string \"]\\n\"))
+  (setq files--buffer-string \"* A\\n* B\") (setq files--point 0)
+  (setq files--bridge-keys \"M-<down>\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"mv=[\" files--buffer-string \"]\\n\"))
+  (setq files--current-file-name \"foo.txt\")
+  (setq files--buffer-string \"* TODO x\") (setq files--point 0)
+  (setq files--bridge-keys \"M-<right>\") (setq files--bridge-arg \"\") (files--dispatch-key-sequence)
+  (princ (concat \"txt=[\" files--buffer-string \"]\\n\")))")))
+            (should (string-match-p "d=\\[\\*\\* TODO first heading" out))   ; demoted
+            (should (string-match-p "p=\\[\\* TODO first heading" out))      ; promoted back
+            (should (string-match-p "mv=\\[\\* B\n\\* A" out))               ; subtree moved down
+            (should (string-match-p "txt=\\[\\* TODO x\\]" out)))            ; non-org: unchanged
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here
