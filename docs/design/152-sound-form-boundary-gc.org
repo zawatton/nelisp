@@ -342,3 +342,56 @@ trigger 比較の両辺は何か」を実機で観測する instrumentation**。
 2. *collect instrumentation*（debug print）で COLL=0 の真因観測 → gate/trigger を正す → =COLL>0=。
 3. *reuse OFF poison* + GAP-1/2 fix 適用済 reader で suite load → 残 gap を動的に潰す。
 4. 本有効化 → gate G。
+
+* §11.10 instrument collect 実測 — COLL=0 は測定アーティファクト（2026-06-14 確定）
+§11.6-1 の instrumentation を実施し、=COLL=0= の真因を *確定* した。結論: **GC は無効ではない。
+有効（GATE=0）で正常に発火・sweep しており、=COLL=0= は「死んだ telemetry slot を読んでいた」だけの
+測定アーティファクトだった。** §11.2〜§11.6 の「GC が走らない／gate=1 で無効／アドレス模型 port が要る」
+という一連の仮説はすべて誤り。
+
+** 実測手順と数値
+- =nelisp--arena-stats= が露出する field を解読: field2=bump / field4=*live-after-last-gc(268435576)* /
+  field5=trigger(268435560) / field7=*GATE(268435616)*。
+- 起動直後の実測: =GATE=0=（= collect は no-op gate OFF = mark_roots+sweep を実行）、=trigger=352321536=
+  (352 MiB)、=bump=9.8 MiB=、=field4(liveGC)=0=。
+- string churn N=100..400（=(make-string 1000000 120)= を捨てる top-level form）を sweep:
+  *全 N で EXIT=0、bump は 9.8 MiB から増えない*（捨てられた heap 結果は per-eval LIFO reset が完全回収）、
+  ただし =trigger= が 352→419 MiB に上昇。trigger の唯一の writer は collect 後再計算（3232/3256/5638）
+  なので **collect は発火している**。
+- 死んだ slot 268435576 を *collect-call counter* に転用する 1 行を =nl_gc_collect= 入口（gate より前）に挿入し
+  rebuild（=make standalone-reader=、6 秒、106 units）。再実測:
+  - bootstrap-only: =COLLECT-CALLS=1=（reader 自身の定義 load で trigger を 1 回跨ぐ）。
+  - retained growth（=(setq G (cons (make-string 100000 120) G))= ×400, len=400 保持）:
+    =COLLECT-CALLS=26=, *EXIT=0（crash なし）*, trigger 395 MiB。
+- instrument は revert 済（slot 転用は debug 専用、=git diff= 空に戻し clean rebuild 確認）。
+
+** COLL=0 の真因（確定）
+1. *driver も =nl_gc_collect= も slot 268435576（live-after-last-gc / arena-stats field4）を一度も書かない*。
+   driver は collect 後に =268435560=(trigger) しか更新しない。よってこのスロットは *永久に 0*。
+   過去の「COLL=0」観測はこの advisory スロットを読んでいたため、collect の発火回数と無関係に 0 を返していた。
+2. *GATE=268435616 は runtime で 0*。静的 arena-init（901-910）が base+160=1 を書くが、*動的 init（969-974）が
+   base+160=0 を上書き*し、Stage-8 runtime base ではこちらが勝つ。よって collect は no-op されず実行される。
+3. trigger 比較は =268436184=(chunk-bytes-reserved, 単調増加) vs trigger。collect 後 trigger =
+   =max(3*live+1MiB, reserved+16MiB)=。捨て churn では reserved が頭打ち（chunk 再利用）になり trigger に
+   到達しなくなる = *steady-state で collect が止まるのは正常*（メモリ圧が無い）。retained 成長では reserved が
+   climb し続け collect が 26 回発火した。
+
+** 設計含意の訂正（Doc 146 / Doc 152 への反映）
+- **「GC は root/mark gap が直るまで意図的に無効（gate=1）」は誤り**。runtime では GATE=0 で *常時有効・発火中*。
+  「never-free で unbounded 増加」も部分的に誤り — LIFO reset + tracing sweep が実際に回収している
+  （churn で bump 9.8 MiB 一定、retained でも crash せず 26 collections）。
+- *残る本当の課題は「GC が走らない」ではなく root-coverage の **不健全性***: aggressive reuse 下で
+  非 root の中間値を collection 跨ぎで保持すると freed block が再配布され corruption（source 698-704 の
+  caveat）。これは **GAP-1（CharTable 子walk）/ GAP-2（BoolVector bits buf）/ arena-stats 診断 probe の
+  reuse 罠** = §5/§11.8 の対象そのもの。pure churn が全 N で clean な一方、=arena-stats= を form 間に挟むと
+  SIGSEGV する（gcprobe2）のはこの診断 probe の reuse caveat であって、collection 自体の crash ではない。
+- *run-suite の GC abort（gap b）の再解釈*: 「collect が一度も走らない」ではなく、collect が走った際の
+  root/子walk 不足で *まだ到達可能な block を sweep して corruption→SIGSEGV*。よって gate G への道は
+  「collect を enable する」ではなく（既に enable）、**GAP-1/2 + root 完全性を埋めて sweep を健全化する**。
+
+** 更新後の作業順（§11.9 を置換）
+1. *GAP-1/2 fix を実装*（CharTable 子walk + BoolVector bits buf、§11.8、offset 確定済）。これが gap b の核心。
+2. *reuse ON + arena-stats 診断 probe を form 間に挟む再現*（gcprobe2 相当）を回帰ハーネス化し、fix 前=SIGSEGV /
+   fix 後=clean を示す（sweep 健全性の動的ゲート）。
+3. *swept-block poison（reuse OFF）* で残る root/子walk gap を炙り出し、見つかった分を child/root に追加。
+4. anvil-pkg suite を instrumented reader で load 完走（COLLECT-CALLS>0 を確認しつつ）→ gate G。
