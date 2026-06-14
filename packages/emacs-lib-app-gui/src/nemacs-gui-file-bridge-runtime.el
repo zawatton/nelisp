@@ -4667,6 +4667,31 @@
           (files--clamp-point)
           files--point)))
 
+(fset 'org-backward-heading-same-level
+      (lambda (&rest args)
+        (let ((n (if args (car args) 1))
+              (level (files--org-heading-level-at
+                      (files--org-line-start files--point))))
+          (if (> level 0)
+              (let ((i 0))
+                (while (< i n)
+                  (let ((pos files--point) (found nil) (stop nil))
+                    (while (if (not found) (not stop) nil)
+                      (let ((prev (files--org-scan-heading-backward pos)))
+                        (if (< prev 0)
+                            (setq stop t)
+                          (let ((lvl (files--org-heading-level-at prev)))
+                            (if (< lvl level)
+                                (setq stop t)
+                              (if (= lvl level)
+                                  (progn (setq files--point prev) (setq found t))
+                                (setq pos prev)))))))
+                    (if found nil (setq i n)))
+                  (setq i (+ i 1))))
+            nil)
+          (files--clamp-point)
+          files--point)))
+
 ;; --- org structure editing -------------------------------------------------
 (fset 'org-insert-heading
       (lambda (&rest _)
@@ -17626,6 +17651,7 @@
                           "C-c C-n\torg-next-visible-heading\n"
                           "C-c C-p\torg-previous-visible-heading\n"
                           "C-c C-f\torg-forward-heading-same-level\n"
+                          "C-c C-b\torg-backward-heading-same-level\n"
                           "C-c C-t\torg-todo\n"
                           "C-c C-s\torg-schedule\n"
                           "C-c C-d\torg-deadline\n"
