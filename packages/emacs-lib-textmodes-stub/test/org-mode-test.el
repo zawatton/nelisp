@@ -637,6 +637,33 @@ agenda inclusion, and occur on Japanese headings."
               (should-not (string-match-p "絶縁測定" out))))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-cjk-file-roundtrip ()
+  "The bridge file save/load path (files--write-file / files--read-file ->
+nl-write-file / rdf) preserves multibyte (Japanese) content byte-for-byte --
+the data-integrity guarantee for saving the user's CJK todo.org/journals.
+Regression guard against UTF-8 byte-doubling in raw I/O (the c2-prefix trap)."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image))
+          (coding-system-for-read 'utf-8)
+          (coding-system-for-write 'utf-8)
+          (default-process-coding-system '(utf-8-unix . utf-8-unix)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (let ((f (concat files--transport-dir \"/cjk-save.org\"))
+        (s \"* NEXT 漏電調査\\n本文 絶縁抵抗を測定\\n* DONE 報告書提出\\n\"))
+    (files--write-file f s)
+    (let ((back (files--read-file f)))
+      (princ (concat \"eq=\" (if (equal s back) \"y\" \"n\") \"\\n\"))
+      (princ (concat \"out=[\" back \"]END\\n\")))))")))
+            (should (string-match-p "eq=y" out))
+            (should (string-match-p
+                     "out=\\[\\* NEXT 漏電調査\n本文 絶縁抵抗を測定\n\\* DONE 報告書提出\n\\]END"
+                     out)))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here
