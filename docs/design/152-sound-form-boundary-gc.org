@@ -258,3 +258,50 @@ sound-GC を現 reader で稼働させるには、以下を *native-GC 著者の
 
 = *次セッションは「§5 静的子walk 監査（上記 1）」から*。これは §11.6-1 と独立に着手でき、gap 表が 2-3 の
 poison 検証の的を絞る。本 doc を §5.1 監査表で更新しながら進める。
+
+* §11.8 §5.1 静的子walk 監査結果（2026-06-14 実施）
+
+=nl_gc_mark_slot=（=scripts/nelisp-standalone-build.el:1379=）の type-tag dispatch を全列挙し、各 Sexp tag
+（=lisp/nelisp-sexp-layout.el= の 0–12）の子walk 完全性を精査した。
+
+| tag | 型 | 子/buffer | mark_slot の処理 | 判定 |
+|-----+----+-----------+------------------+------|
+| 0–3 | Nil/T/Int/Float | なし(immediate/inline payload) | else→0 | OK |
+| 4 | Symbol(String) | name buf のみ | =nl_gc_mark_buf (ptr-read-u64 sp 16)= | OK（value/function/plist は global HT=root 側。box は name のみ） |
+| 5 | Str | buf | =nl_gc_mark_buf (sp+16)= | OK |
+| 6 | MutStr | buf | box + =nl_gc_mark_buf (box+8)= | OK |
+| 7 | Cons | car/cdr | =nl_gc_mark_cons=（box+2子再帰） | OK |
+| 8 | Vector | data buf + elem slots | box + buf + =mark_vec_slots(data,0,len)= | OK |
+| *9* | *CharTable* | default/parent/entries値 + entries buf | *box block のみ mark* | **GAP-1** |
+| *10* | *BoolVector* | bits buffer(別 heap block) | *box block のみ mark* | **GAP-2** |
+| 11 | Cell | value word | box + value word(imm-aware 再帰) | OK |
+| 12 | Record | type_tag + data buf + field slots | box + (box+0)slot + buf + slots再帰 | OK |
+
+** GAP-1（確定・高確度）: tag 9 CharTable の子未 walk
+=nl_gc_mark_slot= の tag-9 arm は =(nl_gc_mark_block (ptr-read-u64 sp 8))= で *box block を mark するだけ*
+（コメント「tag 9/10 boxed-no-walk (do not occur)」= char-table 不出現の前提）。char-table get/set source
+（=lisp/nelisp-cc-evalport-nonenv-char-table.el=）より box（=sp+8=）の子は:
+- =box+32=: *default 値*（32B Sexp slot）
+- =box+88=: *parent* char-table box ptr
+- =box+64=: entries 配列 ptr、=box+80=: entries_len、stride 40 = =[key:u64@+0][value:32B Sexp slot@+8]=
+  → entries buffer block + 各 entry の value slot
+*fix*: tag-9 arm を Vector/Record 同様に拡張 — box mark + =nl_gc_mark_slot (box+32)=（default）+ parent box を
+mark/再帰 + entries buffer を =nl_gc_mark_buf= + 各 i で =nl_gc_mark_slot (eptr + i*40 + 8)=。
+*顕在化条件*: Emacs-compat（syntax/case/category table 等）が char-table を生成すると、default/parent/entry値が
+char-table 経由でのみ到達可能な場合に sweep される use-after-free。前提「do not occur」が vendor/Emacs-compat load で破れる。
+
+** GAP-2（確定）: tag 10 BoolVector の bits buffer 未 mark
+NlBoolVector box layout（=lisp/nelisp-cc-jit-bool-vector-len.el=）: =box+0= = *value.ptr（Vec<bool> bits buffer、
+別 heap block）*、=box+8= cap、=box+16= length、=box+24= rc。tag-10 arm は box block のみ mark し、=box+0= の
+*bits buffer を mark しない* → bits buffer が sweep/reuse される。Sexp 子は無い（bits は raw）ので fix は
+=nl_gc_mark_buf (ptr-read-u64 box 0)= の 1 edge 追加のみ。
+
+** 結論 + 次手
+- 子walk 漏れは *tag 9 CharTable と tag 10 BoolVector の 2 件*（Doc 146 ② の名指しと一致、offset 付きで確定）。
+  他 tag（0–8, 11, 12）は子/buffer を walk 済。
+- これらは「mark の取りこぼし」= sweep が free する候補。**§11.6-1 で collect 実発火後、reuse OFF poison で
+  「char-table/bool-vector を多用する load が poison-touch するか」を動的確認** → 確認できたら上記 fix を適用。
+- ただし *root 側*（§4.1 の globals/vm-stack/aot-frame/pinned + escape root）の完全性は本静的監査の範囲外
+  （mark は root から辿るので、root 取りこぼしは別途 §11.6-2 の root 列挙監査で。escape root が筆頭）。
+- = 静的監査の deliverable（GAP-1/2 の fix-spec）は確定。残りは collect 実発火（§11.6-1）+ poison 動的検証 +
+  root 列挙完全性。
