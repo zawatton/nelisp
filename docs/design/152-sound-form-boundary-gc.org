@@ -476,3 +476,49 @@ clean rebuild 済）で直接 load（=make smoke-nelisp-suite NELISP=../nelisp/t
 2. growth 前後の bump/cursor/chunk-base を instrument し、重なる alloc（非単調 obj アドレス）を捕捉。
 3. single-thread か concurrent か切り分け（actor 無効で suite が通るか）。
 4. 修正 → gate-G（suite 完走 / =:suite-run t=）。
+
+* §11.13 §11.12 訂正 — crash は chunk-growth でない。固定 ~650k-iteration 限界（root cause 未特定）（2026-06-14）
+§11.12 の「chunk-growth allocator が原因」は **誤り**。最小化を進めた結果、原因は growth でも memory でもない
+ことが判明したので訂正する。
+
+** 最小再現（1 行、heap alloc ゼロ）
+=(let ((i 0)(s 0)) (while (< i N) (setq s (+ s 1)) (setq i (1+ i))))= の **純カウントループ**が
+N≈650k（=600k OK / 700k crash=、決定論的）で SIGSEGV。cons も make-string も arena-stats も growth も不要。
+
+** 切り分けで否定された原因（全て実機）
+- **chunk-growth でない**: =NELISP_LINUX_ARENA_SIZE=1073741824= で chunk-0 を 1 GiB に拡大 rebuild しても
+  1M cons / count-loop は crash。256 MiB 超の growth は不要。
+- **memory leak / 枯渇でない**: while 直後・*同一 form 内*（境界 collect 前）で読んだ in-form bump は
+  N=200k/500k とも =9830312=（9.8 MiB、完全に flat）。ループは heap を一切 leak しない（=+= / =1+= の Int 結果は
+  immediate tag 2、heap box 非生成）。
+- **GC root gap でない**: 単一 top-level form なので collect は境界で発火せずループ中は走らない。かつ collect
+  disable（gate=1）でも crash（§11.12）。
+- **reuse でない**: collect off = sweep 無し = free-list 空 = reuse 経路に入らない。なお crash。
+- **rec_max でない**: =rec_max= を 300000 → 50000 に下げ rebuild しても閾値は ~650k のまま（250k clean）。
+  recursion-counter 束縛なら閾値が ~6 分の 1 に下がるはずだが下がらない = rec_max 非依存。
+
+** crash signature（=nl_cons_cdr_ptr= と =nelisp_mirror_walk_bucket= の両方で出る）
+=#0 nelisp_mirror_walk_bucket+238= =mov 0x18(%rdi),%r10= rdi=0 = **関数テーブル（env mirror）の bucket cell の
+car（=(KEY.ENTRY) pair）が null** → str-eq 引数 null → null deref。bump flat（mirror は boot 領域・下位アドレス、
+ループは上位 bump に何も置かない）なのに mirror が壊れる = **固定回数の eval 後に mirror の bucket セルが null 化**。
+（suite では =nl_cons_cdr_ptr= で dangling cons として出る — 同じ「壊れたポインタを read」クラス。）
+
+** 現状: root cause 未特定（次は watchpoint）
+heap alloc ゼロ・固定 ~650k iteration で mirror セルが null 化する機構は、上記の主要容疑（GC/growth/reuse/
+memory/rec_max）を *全て排除* した上でまだ不明。有力な残り仮説 = **固定サイズの per-eval scratch 領域
+（=nl_eit_with_scratch= 等が使う、bump でない固定リング）の cursor が ~650k 使用後に overflow し、隣接する
+mirror bucket 配列を上書きして car を null 化**。確定には mirror bucket セル（または scratch 領域）への
+**hardware watchpoint** で「誰が null を書くか」を捕捉する必要がある。
+
+** 次フェーズ（§11.12 を置換）
+1. =nl_eit_with_scratch= と materialising accessor（=nl_cons_car_ptr= の immediate-slot scratch）が使う
+   *固定 scratch 領域*の所在・サイズ・cursor 管理を source で特定。
+2. その領域 or 壊れる mirror bucket セルに gdb hardware watchpoint を張り、~650k 回目の eval で null を書く
+   命令を捕捉。
+3. 修正（scratch cursor の wrap/bound、または該当領域の分離）→ count-loop / suite で回帰確認 → gate-G。
+
+** Doc 152 総括（更新）
+- §11.10: GC は有効・健全（real churn 26 回 clean）。「GC 無効」は誤り。
+- §11.11/§11.12: GAP-1/2 は dead、chunk-growth 説は §11.13 で撤回。
+- §11.13: run-suite の真の blocker = **固定 ~650k-iteration の eval で env-mirror が破壊される core-eval バグ**
+  （GC/growth/reuse/memory/rec_max 全て無関係）。root cause 未特定、watchpoint で要追跡。
