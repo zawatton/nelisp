@@ -4667,6 +4667,66 @@
           (files--clamp-point)
           files--point)))
 
+;; --- org structure editing -------------------------------------------------
+(fset 'org-insert-heading
+      (lambda (&rest _)
+        ;; insert a sibling heading on a new line after the current line, at the
+        ;; current heading's level (level 1 if not on a heading); point lands
+        ;; after the "* " ready for the title.
+        (let* ((bol (files--org-line-start files--point))
+               (level (files--org-heading-level-at bol))
+               (lvl (if (> level 0) level 1))
+               (eol (files--org-line-end files--point))
+               (stars "") (i 0))
+          (while (< i lvl) (setq stars (concat stars "*")) (setq i (+ i 1)))
+          (let ((newtext (concat "\n" stars " ")))
+            (setq files--buffer-string
+                  (concat (substring files--buffer-string 0 eol)
+                          newtext
+                          (substring files--buffer-string eol)))
+            (setq files--point (+ eol (length newtext)))
+            (setq files--buffer-modified-p t)
+            (files--clamp-point)))))
+
+(fset 'org-meta-return
+      (lambda (&rest _) (org-insert-heading)))
+
+(fset 'org-demote
+      (lambda (&rest _)
+        ;; add one star to the current heading (deeper level)
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 0)
+              (progn
+                (setq files--buffer-string
+                      (concat (substring files--buffer-string 0 bol)
+                              "*"
+                              (substring files--buffer-string bol)))
+                (setq files--point (+ files--point 1))
+                (setq files--buffer-modified-p t)
+                (files--clamp-point))
+            nil))))
+
+(fset 'org-promote
+      (lambda (&rest _)
+        ;; remove one star from the current heading (shallower); a top-level
+        ;; (level 1) heading cannot be promoted further.
+        (let ((bol (files--org-line-start files--point)))
+          (if (> (files--org-heading-level-at bol) 1)
+              (progn
+                (setq files--buffer-string
+                      (concat (substring files--buffer-string 0 bol)
+                              (substring files--buffer-string (+ bol 1))))
+                (if (> files--point bol)
+                    (setq files--point (- files--point 1))
+                  nil)
+                (setq files--buffer-modified-p t)
+                (files--clamp-point))
+            nil))))
+
+;; M-right / M-left on a heading promote/demote it.
+(fset 'org-metaright (lambda (&rest _) (org-demote)))
+(fset 'org-metaleft (lambda (&rest _) (org-promote)))
+
 (fset 'org-todo
       (lambda ()
         (files--clamp-point)
