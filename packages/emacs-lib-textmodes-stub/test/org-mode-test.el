@@ -521,6 +521,46 @@ the search also comes from files--bridge-arg (the keybinding path)."
             (should (string-match-p "(1 matches)" out)))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-todo-keyword-cycle ()
+  "C-c C-t (org-todo) honors a per-file #+TODO: directive, cycling the custom
+GTD keyword set (INBOX NEXT WAIT | DONE) and maintaining the CLOSED line on the
+done boundary; with no directive it falls back to the TODO/DONE 3-state."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (progn
+            ;; (a) custom keyword set from #+TODO: -- cycle INBOX->NEXT->WAIT->DONE->none->INBOX
+            (let ((out (org-mode-test--run
+                        reader image
+                        "(progn
+  (setq files--buffer-string \"* INBOX foo\\n#+TODO: INBOX NEXT WAIT | DONE\") (setq files--point 0)
+  (org-todo) (princ (concat \"a1=[\" files--buffer-string \"]\\n\"))
+  (org-todo) (princ (concat \"a2=[\" files--buffer-string \"]\\n\"))
+  (org-todo) (princ (concat \"a3=[\" files--buffer-string \"]\\n\"))
+  (org-todo) (princ (concat \"a4=[\" files--buffer-string \"]\\n\"))
+  (org-todo) (princ (concat \"a5=[\" files--buffer-string \"]\\n\")))")))
+              (should (string-match-p "a1=\\[\\* NEXT foo" out))
+              (should (string-match-p "a2=\\[\\* WAIT foo" out))
+              (should (string-match-p "a3=\\[\\* DONE foo\n  CLOSED:" out))
+              (should (string-match-p "a4=\\[\\* foo\n#\\+TODO:" out))
+              (should (string-match-p "a5=\\[\\* INBOX foo" out)))
+            ;; (b) no directive -> the old TODO/DONE 3-state, CLOSED on DONE
+            (let ((out (org-mode-test--run
+                        reader image
+                        "(progn
+  (setq files--buffer-string \"* heading\") (setq files--point 0)
+  (org-todo) (princ (concat \"b1=[\" files--buffer-string \"]\\n\"))
+  (org-todo) (princ (concat \"b2=[\" files--buffer-string \"]\\n\"))
+  (org-todo) (princ (concat \"b3=[\" files--buffer-string \"]\\n\")))")))
+              (should (string-match-p "b1=\\[\\* TODO heading" out))
+              (should (string-match-p "b2=\\[\\* DONE heading\n  CLOSED:" out))
+              ;; DONE->none drops the keyword and the CLOSED line (the trailing
+              ;; newline is the legacy last-line CLOSED-splice behavior).
+              (should (string-match-p "b3=\\[\\* heading\n\\]" out))
+              (should-not (string-match-p "b3=\\[[^]]*CLOSED" out))))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here

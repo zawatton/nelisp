@@ -5301,6 +5301,155 @@
             (setq files--bridge-status "unsupported")))
         files--point))
 
+;; --- org TODO keyword sequence (honor per-file #+TODO: / #+SEQ_TODO:) -------
+;; Real Emacs org cycles C-c C-t through the keywords declared by an
+;; org-todo-keywords setting; per file that is the "#+TODO:" / "#+SEQ_TODO:" /
+;; "#+TYP_TODO:" header.  The bridge has no such header parsing, so a custom
+;; GTD set (INBOX/NEXT/WAIT | DONE) would be mis-handled (TODO blindly
+;; prepended).  These helpers parse the directive and cycle the real set,
+;; defaulting to ("TODO") . ("DONE") -- i.e. identical to the old 3-state
+;; behavior -- when no directive is present.  Self-contained list ops because
+;; the standalone bridge image lacks member/nth/append and calling an undefined
+;; function segfaults uncatchably.
+(fset 'files--org-ascii-up
+      (lambda (c)
+        (if (if (>= c 97) (<= c 122) nil) (- c 32) c)))
+
+(fset 'files--org-str-prefix-ci-p
+      (lambda (s prefix)
+        (let ((np (length prefix)))
+          (if (< (length s) np)
+              nil
+            (let ((i 0) (ok t))
+              (while (if ok (< i np) nil)
+                (if (= (files--org-ascii-up (aref s i))
+                       (files--org-ascii-up (aref prefix i)))
+                    nil
+                  (setq ok nil))
+                (setq i (+ i 1)))
+              ok)))))
+
+(fset 'files--org-todo-directive-p
+      (lambda (line)
+        (if (files--org-str-prefix-ci-p line "#+TODO:")
+            t
+          (if (files--org-str-prefix-ci-p line "#+SEQ_TODO:")
+              t
+            (files--org-str-prefix-ci-p line "#+TYP_TODO:")))))
+
+(fset 'files--org-todo-directive-payload
+      (lambda (line)
+        ;; everything after the first ':'
+        (let ((i 0) (n (length line)) (pos -1))
+          (while (if (< pos 0) (< i n) nil)
+            (if (= (aref line i) 58) (setq pos i) nil)
+            (setq i (+ i 1)))
+          (if (>= pos 0) (substring line (+ pos 1) n) ""))))
+
+(fset 'files--org-split-ws
+      (lambda (s)
+        ;; split on space/tab into non-empty tokens, preserving order
+        (let ((toks nil) (i 0) (n (length s)) (start -1))
+          (while (< i n)
+            (let ((c (aref s i)))
+              (if (if (= c 32) t (= c 9))
+                  (if (>= start 0)
+                      (progn (setq toks (cons (substring s start i) toks))
+                             (setq start -1))
+                    nil)
+                (if (< start 0) (setq start i) nil)))
+            (setq i (+ i 1)))
+          (if (>= start 0) (setq toks (cons (substring s start n) toks)) nil)
+          (nreverse toks))))
+
+(fset 'files--org-strip-kw-key
+      (lambda (tok)
+        ;; "NEXT(n)" -> "NEXT"  (strip fast-access key annotation)
+        (let ((i 0) (n (length tok)) (pos -1))
+          (while (if (< pos 0) (< i n) nil)
+            (if (= (aref tok i) 40) (setq pos i) nil)
+            (setq i (+ i 1)))
+          (if (>= pos 0) (substring tok 0 pos) tok))))
+
+(fset 'files--org-list-member-p
+      (lambda (x lst)
+        (let ((found nil) (rest lst))
+          (while (if (not found) (if rest t nil) nil)
+            (if (equal (car rest) x) (setq found t) nil)
+            (setq rest (cdr rest)))
+          found)))
+
+(fset 'files--org-list-index
+      (lambda (x lst)
+        (let ((i 0) (idx -1) (rest lst))
+          (while (if (< idx 0) (if rest t nil) nil)
+            (if (equal (car rest) x) (setq idx i) nil)
+            (setq i (+ i 1))
+            (setq rest (cdr rest)))
+          idx)))
+
+(fset 'files--org-list-nth
+      (lambda (k lst)
+        (let ((i 0) (rest lst) (val nil))
+          (while (if rest (<= i k) nil)
+            (if (= i k) (setq val (car rest)) nil)
+            (setq rest (cdr rest))
+            (setq i (+ i 1)))
+          val)))
+
+(fset 'files--org-list-append
+      (lambda (a b)
+        (let ((ra nil) (rest a))
+          (while rest (setq ra (cons (car rest) ra)) (setq rest (cdr rest)))
+          (let ((out b))
+            (while ra (setq out (cons (car ra) out)) (setq ra (cdr ra)))
+            out))))
+
+(fset 'files--org-todo-keyword-sequence
+      (lambda ()
+        ;; Returns (ACTIVE-LIST . DONE-LIST) from the first TODO directive in
+        ;; the buffer.  '|' separates active from done; without '|' the last
+        ;; token is the done state.  Defaults to (("TODO") . ("DONE")).
+        (let ((n (length files--buffer-string)) (bol 0) (found nil) (line ""))
+          (while (if (not found) (< bol n) nil)
+            (let ((eol (files--org-line-end bol)))
+              (let ((ln (substring files--buffer-string bol eol)))
+                (if (files--org-todo-directive-p ln)
+                    (progn (setq line ln) (setq found t))
+                  nil))
+              (setq bol (+ eol 1))))
+          (if (not found)
+              (cons (list "TODO") (list "DONE"))
+            (let ((toks (files--org-split-ws
+                         (files--org-todo-directive-payload line)))
+                  (active nil) (done nil) (seen-bar nil))
+              (let ((rest toks))
+                (while rest
+                  (let ((tok (files--org-strip-kw-key (car rest))))
+                    (if (equal tok "|")
+                        (setq seen-bar t)
+                      (if (> (length tok) 0)
+                          (if seen-bar
+                              (setq done (cons tok done))
+                            (setq active (cons tok active)))
+                        nil)))
+                  (setq rest (cdr rest))))
+              (setq active (nreverse active))
+              (setq done (nreverse done))
+              ;; no explicit bar: last active token is really the done state
+              (if (if (not seen-bar) (> (length active) 1) nil)
+                  (let ((m (- (length active) 1)) (i 0) (na nil) (rest active))
+                    (while (< i m)
+                      (setq na (cons (car rest) na))
+                      (setq rest (cdr rest))
+                      (setq i (+ i 1)))
+                    (setq done (list (car rest)))
+                    (setq active (nreverse na)))
+                nil)
+              (if (null active) (setq active (list "TODO")) nil)
+              (if (null done) (setq done (list "DONE")) nil)
+              (cons active done))))))
+
 (fset 'org-todo
       (lambda ()
         (files--clamp-point)
@@ -5316,49 +5465,72 @@
             (progn
               (setq kw-end (+ bol level 1))
               (setq rest (substring files--buffer-string kw-end eol))
-              (let ((transition 0))
-                (if (files--org-rest-todo-p rest)
-                    (progn
-                      (setq transition 1)
-                      (setq rest (concat "DONE"
-                                         (if (equal rest "TODO")
-                                             ""
-                                           (concat " " (substring rest 5))))))
-                  (if (files--org-rest-done-p rest)
-                      (progn
-                        (setq transition 2)
-                        (setq rest (if (equal rest "DONE")
-                                       ""
-                                     (substring rest 5))))
-                    (setq rest (concat "TODO"
-                                       (if (equal rest "")
-                                           ""
-                                         (concat " " rest))))))
-                (setq files--buffer-string
-                      (concat (substring files--buffer-string 0 kw-end)
-                              rest
-                              (substring files--buffer-string eol)))
-                (if (= transition 1)
-                    (let ((ts (files--org-current-timestamp))
-                          (new-eol (+ kw-end (length rest))))
-                      (if (equal ts "")
-                          nil
+              (let ((seq (files--org-todo-keyword-sequence)))
+                (let ((active (car seq))
+                      (done (cdr seq)))
+                  (let ((cycle (files--org-list-append active done))
+                        (cur-kw "")
+                        (body rest))
+                    ;; peel a leading keyword token off REST when it is known
+                    (let ((n (length rest)) (i 0))
+                      (while (if (< i n) (= (aref rest i) 32) nil)
+                        (setq i (+ i 1)))
+                      (let ((ts i))
+                        (while (if (< i n) (if (= (aref rest i) 32) nil t) nil)
+                          (setq i (+ i 1)))
+                        (let ((cand (substring rest ts i)))
+                          (if (files--org-list-member-p cand cycle)
+                              (progn
+                                (setq cur-kw cand)
+                                (let ((bs i))
+                                  (while (if (< bs n) (= (aref rest bs) 32) nil)
+                                    (setq bs (+ bs 1)))
+                                  (setq body (substring rest bs n))))
+                            nil))))
+                    ;; advance: none -> first; kw -> next in cycle; last -> none
+                    (let ((next-kw "")
+                          (old-done (files--org-list-member-p cur-kw done)))
+                      (if (equal cur-kw "")
+                          (setq next-kw (car cycle))
+                        (let ((idx (files--org-list-index cur-kw cycle)))
+                          (if (< (+ idx 1) (length cycle))
+                              (setq next-kw (files--org-list-nth (+ idx 1) cycle))
+                            (setq next-kw ""))))
+                      (let ((new-done (if (equal next-kw "")
+                                          nil
+                                        (files--org-list-member-p next-kw done))))
+                        (setq rest
+                              (if (equal next-kw "")
+                                  body
+                                (if (equal body "")
+                                    next-kw
+                                  (concat next-kw " " body))))
                         (setq files--buffer-string
-                              (concat (substring files--buffer-string 0
-                                                 (if (< new-eol (length files--buffer-string))
-                                                     (+ new-eol 1)
-                                                   new-eol))
-                                      (if (< new-eol (length files--buffer-string))
-                                          ""
-                                        "\n")
-                                      "  CLOSED: [" ts "]\n"
-                                      (substring files--buffer-string
-                                                 (if (< new-eol (length files--buffer-string))
-                                                     (+ new-eol 1)
-                                                   new-eol))))))
-                  (if (= transition 2)
-                      (files--org-remove-closed-after (+ kw-end (length rest)))
-                    nil)))
+                              (concat (substring files--buffer-string 0 kw-end)
+                                      rest
+                                      (substring files--buffer-string eol)))
+                        (if (if new-done (not old-done) nil)
+                            (let ((ts (files--org-current-timestamp))
+                                  (new-eol (+ kw-end (length rest))))
+                              (if (equal ts "")
+                                  nil
+                                (setq files--buffer-string
+                                      (concat (substring files--buffer-string 0
+                                                         (if (< new-eol (length files--buffer-string))
+                                                             (+ new-eol 1)
+                                                           new-eol))
+                                              (if (< new-eol (length files--buffer-string))
+                                                  ""
+                                                "\n")
+                                              "  CLOSED: [" ts "]\n"
+                                              (substring files--buffer-string
+                                                         (if (< new-eol (length files--buffer-string))
+                                                             (+ new-eol 1)
+                                                           new-eol))))))
+                          (if (if old-done (not new-done) nil)
+                              (files--org-remove-closed-after
+                               (+ kw-end (length rest)))
+                            nil)))))))
               (setq files--point bol)
               (setq files--buffer-modified-p t)
               (files--save-current-buffer-state)))
