@@ -2624,6 +2624,68 @@
         ;; the most recent kill (the head); older ring entries are not exposed
         files--kill-ring-head))
 
+;; --- register function API for custom commands -----------------------------
+;; The interactive register commands (point-to-register / copy-to-register /
+;; insert-register) store text registers as "text\n<string>" files named by the
+;; register char code in files--register-store-dir.  set-register / get-register
+;; expose that store programmatically, compatibly.
+(fset 'files--register-path-for
+      (lambda (register)
+        (concat files--register-store-dir "/" (number-to-string register))))
+
+(fset 'set-register
+      (lambda (register value &rest _)
+        (let ((path (files--register-path-for register)))
+          (if (stringp value)
+              (nl-write-file path (concat "text\n" value))
+            (nl-write-file path (concat "number\n" (number-to-string value))))
+          value)))
+
+(fset 'get-register
+      (lambda (register &rest _)
+        (let ((text (rdf (files--register-path-for register))))
+          (if (if (>= (length text) 5) (equal (substring text 0 5) "text\n") nil)
+              (substring text 5)
+            (if (if (>= (length text) 7) (equal (substring text 0 7) "number\n") nil)
+                (string-to-number (substring text 7))
+              nil)))))
+
+;; --- line predicates + motion for custom commands --------------------------
+(fset 'bolp (lambda () (= files--point (line-beginning-position))))
+(fset 'eolp (lambda () (= files--point (line-end-position))))
+(fset 'bobp (lambda () (= files--point 0)))
+(fset 'eobp (lambda () (= files--point (length files--buffer-string))))
+
+;; forward-line: move N lines (default 1) to the line beginning; returns the
+;; count of lines short of N (0 when fully moved).  Negative N moves backward.
+(fset 'forward-line
+      (lambda (&rest args)
+        (let ((n (if args (car args) 1))
+              (nlen (length files--buffer-string)))
+          (if (>= n 0)
+              (let ((moved 0))
+                (if (= n 0)
+                    (setq files--point (line-beginning-position))
+                  (while (if (< moved n) (< files--point nlen) nil)
+                    (while (if (< files--point nlen)
+                               (if (= (aref files--buffer-string files--point) 10) nil t)
+                             nil)
+                      (setq files--point (+ files--point 1)))
+                    (if (< files--point nlen)
+                        (progn (setq files--point (+ files--point 1))
+                               (setq moved (+ moved 1)))
+                      nil)))
+                (files--clamp-point)
+                (- n moved))
+            (let ((moved 0) (target (- 0 n)))
+              (setq files--point (line-beginning-position))
+              (while (if (< moved target) (> files--point 0) nil)
+                (setq files--point (- files--point 1))
+                (setq files--point (line-beginning-position))
+                (setq moved (+ moved 1)))
+              (files--clamp-point)
+              (- (- 0 n) moved))))))
+
 (fset 'set-buffer-modified-p
       (lambda (flag)
         (setq files--buffer-modified-p flag)

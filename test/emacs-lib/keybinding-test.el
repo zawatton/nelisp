@@ -354,6 +354,45 @@ copy-region-as-kill give custom commands full copy-paste."
             (should (string-match-p "move=12AB" out)))
         (delete-file image)))))
 
+(ert-deftest keybinding-test/standalone-registers-motion ()
+  "set-register / get-register, line predicates (bolp/eolp/bobp/eobp), and
+forward-line for custom commands."
+  (keybinding-test--skip-unless-standalone
+    (let* ((reader (keybinding-test--reader))
+           (image (keybinding-test--build-image))
+           (tdir (make-temp-file "keybinding-reg-" t)))
+      (unwind-protect
+          (progn
+            ;; the launcher creates the register store dir; mirror that here
+            (make-directory (expand-file-name "nemacs-register-store" tdir) t)
+            (let ((out (with-temp-buffer
+                         (let ((status
+                                (call-process
+                                 reader nil (current-buffer) nil
+                                 "exec-runtime-image" image
+                                 (format "(progn (setq files--transport-dir %S)
+  (set-register 97 \"saved\") (set-register 98 42)
+  (princ (concat \"rega=\" (get-register 97)
+                 \" regb=\" (number-to-string (get-register 98)) \"\\n\"))
+  (setq files--buffer-string \"ab\\ncd\") (setq files--point 0)
+  (princ (concat \"p0=\" (if (bolp) \"B\" \"-\") (if (bobp) \"b\" \"-\") \"\\n\"))
+  (setq files--point 2)
+  (princ (concat \"p2=\" (if (eolp) \"E\" \"-\") \"\\n\"))
+  (setq files--buffer-string \"L0\\nL1\\nL2\\nL3\") (setq files--point 0)
+  (forward-line 2)
+  (princ (concat \"fl2=\" (number-to-string (point))
+                 \" short=\" (number-to-string (forward-line 9)) \"\\n\")))" tdir))))
+                           (unless (equal 0 status)
+                             (ert-fail (format "status=%S\n%s"
+                                               status (buffer-string))))
+                           (buffer-string)))))
+              (should (string-match-p "rega=saved regb=42" out))
+              (should (string-match-p "p0=Bb" out))
+              (should (string-match-p "p2=E" out))
+              (should (string-match-p "fl2=6 short=" out))))
+        (delete-file image)
+        (when (file-directory-p tdir) (delete-directory tdir t))))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here
