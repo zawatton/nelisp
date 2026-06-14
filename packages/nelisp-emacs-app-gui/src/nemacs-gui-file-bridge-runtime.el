@@ -8938,14 +8938,43 @@
       (lambda ()
         (save-buffers-kill-terminal)))
 
+;; --- UTF-8 character-width helpers ------------------------------------------
+;; files--point is a byte offset, but the user's todo.org/journals are Japanese
+;; (3-byte chars).  Stepping/deleting one BYTE lands point inside a multibyte
+;; char and corrupts the buffer (e.g. backspacing 電 = e9 9b bb must remove all
+;; three bytes, not just bb).  These give the byte length of the char at / just
+;; before a byte position from the UTF-8 lead/continuation byte pattern.
+(fset 'files--char-len-at
+      (lambda (pos)
+        (let ((n (length files--buffer-string)))
+          (if (>= pos n)
+              1
+            (let ((b (aref files--buffer-string pos)))
+              (if (< b 128) 1
+                (if (< b 224) 2
+                  (if (< b 240) 3 4))))))))
+
+(fset 'files--char-len-before
+      (lambda (pos)
+        (if (<= pos 0)
+            0
+          (let ((i (- pos 1)) (stop nil))
+            ;; walk back over continuation bytes (10xxxxxx = 128..191)
+            (while (if stop nil (> i 0))
+              (let ((b (aref files--buffer-string i)))
+                (if (if (>= b 128) (< b 192) nil)
+                    (setq i (- i 1))
+                  (setq stop t))))
+            (- pos i)))))
+
 (fset 'forward-char
       (lambda ()
-        (setq files--point (+ files--point 1))
+        (setq files--point (+ files--point (files--char-len-at files--point)))
         (files--clamp-point)))
 
 (fset 'backward-char
       (lambda ()
-        (setq files--point (- files--point 1))
+        (setq files--point (- files--point (files--char-len-before files--point)))
         (files--clamp-point)))
 
 (fset 'beginning-of-buffer
@@ -13128,10 +13157,10 @@
       (lambda ()
         (files--clamp-point)
         (if (< files--point (length files--buffer-string))
-            (progn
+            (let ((len (files--char-len-at files--point)))
               (setq files--buffer-string
                     (concat (substring files--buffer-string 0 files--point)
-                            (substring files--buffer-string (+ files--point 1))))
+                            (substring files--buffer-string (+ files--point len))))
               (setq files--buffer-modified-p t)
               (files--clamp-point))
           files--point)))
@@ -13140,11 +13169,11 @@
       (lambda ()
         (files--clamp-point)
         (if (> files--point 0)
-            (progn
+            (let ((len (files--char-len-before files--point)))
               (setq files--buffer-string
-                    (concat (substring files--buffer-string 0 (- files--point 1))
+                    (concat (substring files--buffer-string 0 (- files--point len))
                             (substring files--buffer-string files--point)))
-              (setq files--point (- files--point 1))
+              (setq files--point (- files--point len))
               (setq files--buffer-modified-p t)
               (files--clamp-point))
           files--point)))

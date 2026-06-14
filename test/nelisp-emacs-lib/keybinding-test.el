@@ -41,6 +41,8 @@
                       "(fset 'local-set-key"
                       "(fset 'files--user-keymap-path"
                       "(fset 'files--user-keymap-remove"
+                      "(fset 'files--char-len-at"
+                      "(fset 'files--char-len-before"
                       "(rdf (files--user-keymap-path))"))
       (should (string-match-p (regexp-quote needle) source)))
     ;; describe-key / where-is must include the user overlay in their source
@@ -447,6 +449,46 @@ upcase-region / downcase-region for custom commands."
             (should (string-match-p "up=aBCDef" out))
             (should (string-match-p "dn=AbcdEF" out))
             (should (string-match-p "ui=HELLO" out)))
+        (delete-file image)))))
+
+(ert-deftest keybinding-test/standalone-multibyte-char-motion ()
+  "Char motion/deletion respect UTF-8 boundaries -- point is a byte offset but
+the user's text is Japanese (3-byte chars), so forward/backward-char and
+delete/backward-delete-char must step a whole character, never one byte (which
+would corrupt the buffer mid-edit, e.g. backspacing a kanji).  Buffer
+\"ab漏電cd\": a=0 b=1 漏=2..4 電=5..7 c=8 d=9 (len 10)."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image))
+          (coding-system-for-read 'utf-8)
+          (coding-system-for-write 'utf-8)
+          (default-process-coding-system '(utf-8-unix . utf-8-unix)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"ab漏電cd\")
+  (setq files--point 2) (forward-char)
+  (princ (concat \"f1=\" (number-to-string files--point) \"\\n\"))   ; 5 (past 漏)
+  (forward-char)
+  (princ (concat \"f2=\" (number-to-string files--point) \"\\n\"))   ; 8 (past 電)
+  (setq files--point 8) (backward-char)
+  (princ (concat \"b1=\" (number-to-string files--point) \"\\n\"))   ; 5
+  ;; backspace over 電 removes all 3 bytes -> ab漏cd, point 5
+  (setq files--buffer-string \"ab漏電cd\") (setq files--point 8) (backward-delete-char)
+  (princ (concat \"bd=[\" files--buffer-string \"]|\" (number-to-string files--point) \"\\n\"))
+  ;; forward-delete of 漏 -> ab電cd, point 2
+  (setq files--buffer-string \"ab漏電cd\") (setq files--point 2) (delete-char)
+  (princ (concat \"fd=[\" files--buffer-string \"]|\" (number-to-string files--point) \"\\n\"))
+  ;; ASCII regression: still one byte
+  (setq files--buffer-string \"abc\") (setq files--point 3) (backward-delete-char)
+  (princ (concat \"asc=[\" files--buffer-string \"]|\" (number-to-string files--point) \"\\n\")))")))
+            (should (string-match-p "f1=5" out))
+            (should (string-match-p "f2=8" out))
+            (should (string-match-p "b1=5" out))
+            (should (string-match-p "bd=\\[ab漏cd\\]|5" out))
+            (should (string-match-p "fd=\\[ab電cd\\]|2" out))
+            (should (string-match-p "asc=\\[ab\\]|2" out)))
         (delete-file image)))))
 
 (provide 'keybinding-test)
