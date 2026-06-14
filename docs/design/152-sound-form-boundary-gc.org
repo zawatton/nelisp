@@ -522,3 +522,44 @@ mirror bucket 配列を上書きして car を null 化**。確定には mirror 
 - §11.11/§11.12: GAP-1/2 は dead、chunk-growth 説は §11.13 で撤回。
 - §11.13: run-suite の真の blocker = **固定 ~650k-iteration の eval で env-mirror が破壊される core-eval バグ**
   （GC/growth/reuse/memory/rec_max 全て無関係）。root cause 未特定、watchpoint で要追跡。
+
+* §11.14 ROOT CAUSE 確定 — `while` 特殊形式が TCO 無しの CPS 再帰で native stack を溢れさせる（2026-06-14）
+§11.13 で未特定だった ~650k-iteration crash の原因を **watchpoint/backtrace で確定**。GC 投資の全謎が決着。
+
+** 確定した root cause
+crash 時の deep backtrace に明確な再帰サイクル:
+=nl_sf_while_iter → nl_sf_while_loop → nl_sf_while_body → nl_sf_while_body_done →
+ nl_sf_while_body_eval → nl_sf_while_body_cdr → nl_sf_while_body → … → nl_sf_while_iter=
+= **`while` 特殊形式（=lisp/nelisp-cc-sf-while.el=）が CPS（継続渡し）で実装され、各 guest iteration が
+末尾呼び出しの連鎖（~11 defun）で次 iteration に回るが、nelisp-cc が末尾呼び出し除去（TCO）をしないため、
+1 iteration ごとに ~11 native frame（~2 KiB）を積む**。
+- 650k iteration × ~11 frame ≈ 7M frame → driver の 1 GiB mmap native stack（=[0x7fffb7e00000,0x7ffff7e00000)=,
+  line 5131）を溢れさせる。crash 時 =rsp=0x7fffa8728a00= は stack 底（0x7fffb7e00000）より下 = ~1.3 GiB 消費。
+- =bump= flat（9.8 MiB）の理由: residue は arena でなく native stack 上。
+- =rec_max= 非依存の理由: この CPS 連鎖は =nelisp_eval_call= の =rec_cur= 増分を経由しない（while_iter/loop/body は
+  内部 defun で、rec ガードの外）ので rec_max=300000 ガードが発火する前に stack が溢れる。
+- crash signature が =nl_cons_cdr_ptr= / =nelisp_mirror_walk_bucket= で出るのは、stack 溢れ後の最初の deref が
+  そこに当たるため（症状であって原因でない）。
+
+** これが run-suite blocker
+suite 内の長い loop / 再帰を含むテストが同じ機構で 1 GiB stack を溢れさせて SIGSEGV（§11.12 の dangling cons は
+同じ stack 溢れの別 manifestation）。GC・chunk-growth・reuse・memory は全て無関係（§11.13 で排除済）。
+
+** 修正方針（2 択）
+1. **host-while 書き換え（局所・推奨）**: =nl_sf_while_iter/loop/body= の CPS 再帰を、AOT メタ言語が持つ native
+   =(while …)= ループに書き換え、iteration を *反復* で回す（body 各 form を =nelisp_eval_call= で eval、結果 discard）。
+   GC sweep/mark の host =(while (and (> hdr 0) …) (… nl_gc_sweep_one …))= が host-while 内 function-call の前例。
+   注意点 = 既存 CPS が厳守する「extern-call は arg 位置 0（rsp ≡ 0 mod 16）」を host-while 内 =nelisp_eval_call= /
+   =nl_eval_is_truthy= 呼び出しでも満たすこと（nelisp-cc の while+extern-call codegen の alignment 検証が要る）。
+2. **nelisp-cc TCO（広範）**: AOT compiler に自己/相互末尾呼び出し除去を入れる。while 以外の CPS 再帰も一括で
+   救うが compiler 改修で影響範囲が広い。
+
+** 次フェーズ
+- 方針1で =nl_sf_while= を host-iterate に書き換え → count-loop（700k/1M）と anvil-pkg suite で回帰（=:suite-run t=）
+  → gate-G 達成。alignment は nelisp-cc の while-body extern-call emit を要確認。
+
+** Doc 152 総括（最終）
+- §11.10: GC は有効・健全。「GC 無効」は誤り。
+- §11.11/12/13: GAP-1/2 dead、chunk-growth/memory/reuse/rec_max を順に排除。
+- **§11.14: run-suite の真の blocker = `while` 特殊形式の TCO 無し CPS 再帰による native stack 溢れ**。
+  GC とは完全に無関係。修正は host-while 書き換え（局所）で gate-G に到達可能。
