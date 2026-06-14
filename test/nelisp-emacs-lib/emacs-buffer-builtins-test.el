@@ -547,6 +547,16 @@ shadows our defun."
     (should (string-match-p "\"End of buffer\"" cl))
     (should (string-match-p "\"Beginning of buffer\"" cl))))
 
+;;;; Standalone detection (nemacs binds `emacs-version', so the bridge keys
+;;;; off a reader-only primitive instead).
+
+(ert-deftest emacs-buffer-builtins-test/standalone-p-keys-off-reader-primitive ()
+  "Host (no reader primitive) -> nil; mocking the reader signal flips it to t."
+  (require 'cl-lib)
+  (should-not (emacs-buffer-builtins--standalone-p))
+  (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) (lambda (&rest _) nil)))
+    (should (emacs-buffer-builtins--standalone-p))))
+
 (provide 'emacs-buffer-builtins-test)
 
 ;;; emacs-buffer-builtins-test.el ends here

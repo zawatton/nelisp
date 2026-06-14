@@ -48,9 +48,22 @@
 
 (require 'nelisp-emacs-compat)
 
+(defun emacs-buffer-builtins--standalone-p ()
+  "Non-nil on a standalone NeLisp reader (nemacs).
+nemacs binds the variable `emacs-version' for vendor compatibility, so a
+classic boundp-of-`emacs-version' standalone test fails there: the global
+buffer ops and the `with-temp-buffer' / `with-current-buffer' macros are
+left as the broken `emacs-stub' no-ops while the working `nelisp-ec-*'
+implementations sit unused, and a temp-buffer insert reads back as nil.
+Key off the reader-only primitive `nelisp--write-stdout-bytes' (absent
+under host Emacs) so this bridge's standalone install path -- which
+replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
+  (or (not (boundp 'emacs-version))
+      (fboundp 'nelisp--write-stdout-bytes)))
+
 (defun emacs-buffer-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
-  (if (not (boundp 'emacs-version))
+  (if (emacs-buffer-builtins--standalone-p)
       ;; Every call site in this file is part of the explicit bridge
       ;; surface.  Under standalone, replace `emacs-stub' placeholders
       ;; without repeated fboundp checks.
@@ -104,7 +117,7 @@
          (marker-insertion-type      . nelisp-ec-marker-insertion-type)
          (set-marker-insertion-type  . nelisp-ec-set-marker-insertion-type)
          (point-marker               . nelisp-ec-point-marker))))
-  (if (not (boundp 'emacs-version))
+  (if (emacs-buffer-builtins--standalone-p)
       (dolist (--cell-- --aliases--)
         (fset (car --cell--) (cdr --cell--)))
     (dolist (--cell-- --aliases--)
