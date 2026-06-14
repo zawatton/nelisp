@@ -4858,6 +4858,40 @@
 (fset 'org-schedule (lambda (&rest _) (files--org-set-planning "SCHEDULED")))
 (fset 'org-deadline (lambda (&rest _) (files--org-set-planning "DEADLINE")))
 
+;; --- org checkbox toggle ([ ] <-> [X]) -------------------------------------
+;; Flip the first "[ ]" / "[X]" checkbox on the current line.  A "[#A]" priority
+;; cookie is not a checkbox (its middle char is not space/X), so it is skipped.
+(fset 'org-toggle-checkbox
+      (lambda (&rest _)
+        (files--clamp-point)
+        (let ((bol (files--org-line-start files--point))
+              (eol (files--org-line-end files--point)))
+          (let ((line (substring files--buffer-string bol eol))
+                (found -1) (newchar ""))
+            (let ((i 0) (n (length line)))
+              (while (if (< i (- n 2)) (< found 0) nil)
+                (if (= (aref line i) 91)
+                    (if (= (aref line (+ i 2)) 93)
+                        (let ((mid (aref line (+ i 1))))
+                          (if (= mid 32)
+                              (progn (setq found i) (setq newchar "X"))
+                            (if (if (= mid 88) t (= mid 120))
+                                (progn (setq found i) (setq newchar " "))
+                              nil)))
+                      nil)
+                  nil)
+                (setq i (+ i 1))))
+            (if (>= found 0)
+                (let ((abspos (+ bol found 1)))
+                  (setq files--buffer-string
+                        (concat (substring files--buffer-string 0 abspos)
+                                newchar
+                                (substring files--buffer-string (+ abspos 1))))
+                  (setq files--buffer-modified-p t)
+                  (files--clamp-point))
+              (setq files--bridge-status "unsupported"))))
+        files--point))
+
 ;; --- org priority cookie ([#A]/[#B]/[#C]) -----------------------------------
 ;; Cycle the priority of the current heading: none -> A -> B -> C -> none.  The
 ;; cookie sits after the stars and the optional TODO/DONE keyword.

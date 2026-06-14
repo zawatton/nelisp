@@ -47,7 +47,8 @@
                       "(fset 'org-move-subtree-up"
                       "(fset 'org-priority"
                       "(fset 'org-schedule"
-                      "(fset 'org-deadline"))
+                      "(fset 'org-deadline"
+                      "(fset 'org-toggle-checkbox"))
       (should (string-match-p (regexp-quote needle) source)))))
 
 ;;; --- standalone gate (opt-in) --------------------------------------------
@@ -262,6 +263,33 @@ org-schedule replaces (does not duplicate); both coexist; the body is kept."
             (should (string-match-p "after-sched-line2=SCHEDULED: <" out))
             (should (string-match-p "sched-count=1" out))
             (should (string-match-p "has-dl=y has-sc=y has-body=y" out)))
+        (delete-file image)))))
+
+(ert-deftest org-mode-test/standalone-checkbox ()
+  "org-toggle-checkbox flips [ ] <-> [X] on the current line; a [#A] priority
+cookie is not a checkbox."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"- [ ] buy milk\") (setq files--point 5)
+  (org-toggle-checkbox) (princ (concat \"on=\" files--buffer-string \"\\n\"))
+  (org-toggle-checkbox) (princ (concat \"off=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"- [x] lower\") (setq files--point 5)
+  (org-toggle-checkbox) (princ (concat \"low=\" files--buffer-string \"\\n\"))
+  (setq files--buffer-string \"* [#A] heading\") (setq files--point 5)
+  (setq files--bridge-status \"\") (org-toggle-checkbox)
+  (princ (concat \"cookie=\" files--buffer-string \"|\" files--bridge-status \"\\n\"))
+  (setq files--buffer-string \"* TODO project\\n- [ ] step 1\\n- [ ] step 2\") (setq files--point 18)
+  (org-toggle-checkbox) (princ (concat \"sub=\" files--buffer-string \"\\n\")))")))
+            (should (string-match-p "on=- \\[X\\] buy milk" out))
+            (should (string-match-p "off=- \\[ \\] buy milk" out))
+            (should (string-match-p "low=- \\[ \\] lower" out))
+            (should (string-match-p "cookie=\\* \\[#A\\] heading|unsupported" out))
+            (should (string-match-p "sub=\\* TODO project\n- \\[X\\] step 1\n- \\[ \\] step 2" out)))
         (delete-file image)))))
 
 (provide 'org-mode-test)
