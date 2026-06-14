@@ -592,6 +592,51 @@ heading while excluding the done state."
               (should-not (string-match-p "delta" out))))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-cjk-headings ()
+  "org commands preserve multibyte (Japanese) heading text and operate at the
+correct byte boundaries -- the user's todo.org/journals are entirely CJK, and
+strings here are byte-indexed UTF-8.  Exercises todo-cycle, priority cookie,
+agenda inclusion, and occur on Japanese headings."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image))
+          (coding-system-for-read 'utf-8)
+          (coding-system-for-write 'utf-8)
+          (default-process-coding-system '(utf-8-unix . utf-8-unix)))
+      (unwind-protect
+          (progn
+            ;; (a) todo-cycle + priority keep the Japanese title intact
+            (let ((out (org-mode-test--run
+                        reader image
+                        "(progn
+  (setq files--buffer-string \"* NEXT 漏電調査\\n#+TODO: INBOX NEXT WAIT | DONE\") (setq files--point 0)
+  (org-todo) (princ (concat \"t=[\" files--buffer-string \"]\\n\"))
+  (org-priority) (princ (concat \"p=[\" files--buffer-string \"]\\n\")))")))
+              (should (string-match-p "t=\\[\\* WAIT 漏電調査" out))
+              (should (string-match-p "p=\\[\\* WAIT \\[#A\\] 漏電調査" out)))
+            ;; (b) agenda includes the active CJK headings, drops the DONE one
+            (let ((out (org-mode-test--run
+                        reader image
+                        "(progn
+  (setq files--buffer-name \"todo.org\")
+  (setq files--buffer-string \"#+TODO: INBOX NEXT WAIT | DONE\\n* NEXT 漏電調査\\n* WAIT 絶縁測定\\n* DONE 報告書提出\") (setq files--point 0)
+  (org-agenda) (princ files--buffer-string))")))
+              (should (string-match-p "\\* NEXT 漏電調査" out))
+              (should (string-match-p "\\* WAIT 絶縁測定" out))
+              (should-not (string-match-p "報告書提出" out)))
+            ;; (c) occur matches a CJK substring across headings
+            (let ((out (org-mode-test--run
+                        reader image
+                        "(progn
+  (setq files--buffer-name \"todo.org\")
+  (setq files--buffer-string \"* INBOX\\n** NEXT 漏電調査\\n** NEXT 絶縁測定\\n* PROJECTS\\n** WAIT 漏電報告\") (setq files--point 0)
+  (org-occur \"漏電\")
+  (princ files--buffer-string))")))
+              (should (string-match-p "漏電調査" out))
+              (should (string-match-p "漏電報告" out))
+              (should-not (string-match-p "絶縁測定" out))))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here
