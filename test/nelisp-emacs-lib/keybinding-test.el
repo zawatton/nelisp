@@ -393,6 +393,31 @@ forward-line for custom commands."
         (delete-file image)
         (when (file-directory-p tdir) (delete-directory tdir t))))))
 
+(ert-deftest keybinding-test/standalone-word-motion ()
+  "forward-word / backward-word honour the count arg; word-at-point /
+thing-at-point extract the thing at point."
+  (keybinding-test--skip-unless-standalone
+    (let ((reader (keybinding-test--reader))
+          (image (keybinding-test--build-image)))
+      (unwind-protect
+          (let ((out (keybinding-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-string \"foo bar baz\") (setq files--point 0)
+  (forward-word 3) (princ (concat \"fw3=\" (number-to-string (point)) \"\\n\"))
+  (setq files--point 11) (backward-word 2)
+  (princ (concat \"bw2=\" (number-to-string (point)) \"\\n\"))
+  (setq files--point 5)
+  (princ (concat \"wap=\" (or (word-at-point) \"nil\") \"\\n\"))
+  (setq files--buffer-string \"line one\\nline two\") (setq files--point 3)
+  (princ (concat \"line=\" (or (thing-at-point 'line) \"nil\")
+                 \" word=\" (or (thing-at-point 'word) \"nil\") \"\\n\")))")))
+            (should (string-match-p "fw3=11" out))
+            (should (string-match-p "bw2=4" out))
+            (should (string-match-p "wap=bar" out))
+            (should (string-match-p "line=line one word=line" out)))
+        (delete-file image)))))
+
 (provide 'keybinding-test)
 
 ;;; keybinding-test.el ends here

@@ -9658,7 +9658,7 @@
             (setq files--display-prefix-action "")
           nil)))
 
-(fset 'forward-word
+(fset 'files--forward-word-1
       (lambda ()
         (files--clamp-point)
         (let ((n (length files--buffer-string))
@@ -9676,7 +9676,17 @@
               (setq done t)))
           files--point)))
 
-(fset 'backward-word
+;; forward-word: honour the count arg (default 1); negative N moves backward,
+;; so custom commands can (forward-word 3) / (forward-word -2).
+(fset 'forward-word
+      (lambda (&rest args)
+        (let ((count (if args (car args) 1)) (i 0))
+          (if (< count 0)
+              (while (< i (- 0 count)) (files--backward-word-1) (setq i (+ i 1)))
+            (while (< i count) (files--forward-word-1) (setq i (+ i 1))))
+          files--point)))
+
+(fset 'files--backward-word-1
       (lambda ()
         (files--clamp-point)
         (let ((done nil))
@@ -9692,6 +9702,43 @@
                 (setq files--point (- files--point 1))
               (setq done t)))
           files--point)))
+
+;; backward-word: honour the count arg (default 1); negative N moves forward.
+(fset 'backward-word
+      (lambda (&rest args)
+        (let ((count (if args (car args) 1)) (i 0))
+          (if (< count 0)
+              (while (< i (- 0 count)) (files--forward-word-1) (setq i (+ i 1)))
+            (while (< i count) (files--backward-word-1) (setq i (+ i 1))))
+          files--point)))
+
+;; word-at-point / thing-at-point for custom commands.
+(fset 'word-at-point
+      (lambda (&rest _)
+        (let ((start files--point)
+              (end files--point)
+              (n (length files--buffer-string)))
+          (while (if (< end n)
+                     (progn (setq files--char-code (aref files--buffer-string end))
+                            (files--word-char-p))
+                   nil)
+            (setq end (+ end 1)))
+          (while (if (> start 0)
+                     (progn (setq files--char-code
+                                  (aref files--buffer-string (- start 1)))
+                            (files--word-char-p))
+                   nil)
+            (setq start (- start 1)))
+          (if (< start end) (substring files--buffer-string start end) nil))))
+
+(fset 'thing-at-point
+      (lambda (thing &rest _)
+        (if (eq thing 'word)
+            (word-at-point)
+          (if (eq thing 'line)
+              (substring files--buffer-string
+                         (line-beginning-position) (line-end-position))
+            nil))))
 
 (fset 'forward-sexp
       (lambda ()
