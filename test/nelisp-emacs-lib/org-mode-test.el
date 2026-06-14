@@ -561,6 +561,37 @@ done boundary; with no directive it falls back to the TODO/DONE 3-state."
               (should-not (string-match-p "b3=\\[[^]]*CLOSED" out))))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-custom-keyword-priority-agenda ()
+  "With a per-file #+TODO: set, org-priority places the [#X] cookie AFTER the
+custom keyword (not before it), and org-agenda includes every active keyword
+heading while excluding the done state."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (progn
+            ;; (a) priority cookie lands after NEXT, not before
+            (let ((out (org-mode-test--run
+                        reader image
+                        "(progn
+  (setq files--buffer-string \"* NEXT task\\n#+TODO: INBOX NEXT WAIT | DONE\") (setq files--point 0)
+  (org-priority) (princ (concat \"p1=[\" files--buffer-string \"]\\n\"))
+  (org-priority) (princ (concat \"p2=[\" files--buffer-string \"]\\n\")))")))
+              (should (string-match-p "p1=\\[\\* NEXT \\[#A\\] task" out))
+              (should (string-match-p "p2=\\[\\* NEXT \\[#B\\] task" out)))
+            ;; (b) agenda lists every active keyword, drops the done one
+            (let ((out (org-mode-test--run
+                        reader image
+                        "(progn
+  (setq files--buffer-name \"todo.org\")
+  (setq files--buffer-string \"#+TODO: INBOX NEXT WAIT | DONE\\n* NEXT alpha\\n* WAIT beta\\n* INBOX gamma\\n* DONE delta\") (setq files--point 0)
+  (org-agenda) (princ files--buffer-string))")))
+              (should (string-match-p "\\* NEXT alpha" out))
+              (should (string-match-p "\\* WAIT beta" out))
+              (should (string-match-p "\\* INBOX gamma" out))
+              (should-not (string-match-p "delta" out))))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here

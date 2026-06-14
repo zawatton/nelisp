@@ -5246,16 +5246,11 @@
                      (kw-end (+ bol level 1))
                      (rest (substring files--buffer-string kw-end eol))
                      (kw "") (body rest))
-                ;; split off the TODO/DONE keyword
-                (if (files--org-rest-todo-p rest)
-                    (if (equal rest "TODO")
-                        (progn (setq kw "TODO") (setq body ""))
-                      (progn (setq kw "TODO") (setq body (substring rest 5))))
-                  (if (files--org-rest-done-p rest)
-                      (if (equal rest "DONE")
-                          (progn (setq kw "DONE") (setq body ""))
-                        (progn (setq kw "DONE") (setq body (substring rest 5))))
-                    nil))
+                ;; split off a leading TODO keyword (honors per-file #+TODO:,
+                ;; so the [#X] cookie lands after e.g. NEXT/WAIT, not before)
+                (let ((kwsplit (files--org-split-leading-keyword rest)))
+                  (setq kw (car kwsplit))
+                  (setq body (cdr kwsplit)))
                 ;; split off an existing [#X] cookie
                 (let ((cur "") (title body))
                   (if (if (>= (length body) 4)
@@ -5449,6 +5444,36 @@
               (if (null active) (setq active (list "TODO")) nil)
               (if (null done) (setq done (list "DONE")) nil)
               (cons active done))))))
+
+(fset 'files--org-split-leading-keyword
+      (lambda (rest)
+        ;; (KEYWORD . BODY): if REST starts with a keyword declared by the
+        ;; buffer's #+TODO: set (default TODO/DONE), peel it off; else ("" . REST).
+        (let ((seq (files--org-todo-keyword-sequence)))
+          (let ((cycle (files--org-list-append (car seq) (cdr seq)))
+                (n (length rest)) (i 0))
+            (while (if (< i n) (= (aref rest i) 32) nil) (setq i (+ i 1)))
+            (let ((ts i))
+              (while (if (< i n) (if (= (aref rest i) 32) nil t) nil)
+                (setq i (+ i 1)))
+              (let ((cand (substring rest ts i)))
+                (if (files--org-list-member-p cand cycle)
+                    (let ((bs i))
+                      (while (if (< bs n) (= (aref rest bs) 32) nil)
+                        (setq bs (+ bs 1)))
+                      (cons cand (substring rest bs n)))
+                  (cons "" rest))))))))
+
+(fset 'files--org-rest-active-todo-p
+      (lambda (rest)
+        ;; t when REST begins with an active (not-done) keyword from the
+        ;; buffer's #+TODO: set (default "TODO"); generalizes
+        ;; files--org-rest-todo-p to custom GTD keyword sets.
+        (let ((kw (car (files--org-split-leading-keyword rest))))
+          (if (equal kw "")
+              nil
+            (files--org-list-member-p
+             kw (car (files--org-todo-keyword-sequence)))))))
 
 (fset 'org-todo
       (lambda ()
@@ -5919,7 +5944,7 @@
             (setq level (files--org-heading-level-at scan))
             (setq eol (files--org-line-end scan))
             (if (> level 0)
-                (if (files--org-rest-todo-p
+                (if (files--org-rest-active-todo-p
                      (substring src (+ scan level 1) eol))
                     ;; append the SCHEDULED:/DEADLINE:/CLOSED: planning lines
                     ;; that follow the heading, so the agenda shows the dates.
