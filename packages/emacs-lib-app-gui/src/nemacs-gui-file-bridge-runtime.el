@@ -5763,6 +5763,51 @@
           (files--apply-display-prefix-for-same-window-command)
           files--buffer-name)))
 
+;; --- org occur / sparse-tree: find headings matching a regexp ---------------
+;; List the heading lines matching SEARCH (a regexp) in an *Org Occur* buffer --
+;; the "find a task across a big todo.org" operation.  SEARCH comes from the
+;; argument, else from files--bridge-arg (so a future minibuffer-prompted
+;; keybinding can drive it).
+(fset 'org-occur
+      (lambda (&rest args)
+        (let ((search (if args (car args) files--bridge-arg)))
+          (if (equal search "")
+              (setq files--bridge-status "unsupported")
+            (let ((src files--buffer-string)
+                  (src-name files--buffer-name)
+                  (n 0) (scan 0) (out "") (eol 0) (level 0) (count 0))
+              (setq n (length src))
+              (setq out (concat "Org Occur: \"" search "\" in " src-name "\n"))
+              (while (< scan n)
+                (setq level (files--org-heading-level-at scan))
+                (setq eol (files--org-line-end scan))
+                (if (> level 0)
+                    (let ((line (substring src scan eol)))
+                      (if (nlre-string-match search line)
+                          (progn (setq out (concat out line "\n"))
+                                 (setq count (+ count 1)))
+                        nil))
+                  nil)
+                (setq scan (+ eol 1)))
+              (setq out (concat out "(" (number-to-string count) " matches)\n"))
+              (files--save-current-buffer-state)
+              (setq files--buffer-list-name "*Org Occur*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*Org Occur*")
+              (setq files--buffer-string out)
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-read-only-p t)
+              (setq files--buffer-modified-p nil)
+              (files--clear-narrow-state)
+              (files--save-current-buffer-state)
+              (files--apply-display-prefix-for-same-window-command))))
+        files--buffer-name))
+
+(fset 'org-sparse-tree (lambda (&rest args) (apply 'org-occur args)))
+
 ;; M15 user-init lane.
 ;; The launcher generates nemacs-init-wrapped (scripts/nemacs-wrap-init.el)
 ;; from ~/.nemacs.d/early-init.el + init.el: every user form bracketed

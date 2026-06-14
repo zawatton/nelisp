@@ -490,6 +490,33 @@ appended, and excludes DONE headings."
             (should-not (string-match-p "DONE old" out)))
         (delete-file image)))))
 
+(ert-deftest org-mode-test/standalone-occur ()
+  "org-occur lists the heading lines matching a regexp, with a match count;
+the search also comes from files--bridge-arg (the keybinding path)."
+  (org-mode-test--skip-unless-standalone
+    (let ((reader (org-mode-test--reader))
+          (image (org-mode-test--build-image)))
+      (unwind-protect
+          (let ((out (org-mode-test--run
+                      reader image
+                      "(progn
+  (setq files--buffer-name \"todo.org\")
+  (setq files--buffer-string \"* INBOX\\n** TODO buy milk\\n** TODO call bob\\n* PROJECTS\\n** TODO ship milk\") (setq files--point 0)
+  (org-occur \"milk\")
+  (princ (concat \"m=\" files--buffer-string \"\\nEND\\n\"))
+  (setq files--buffer-name \"todo.org\")
+  (setq files--buffer-string \"* A\\n** TODO foo\") (setq files--bridge-arg \"foo\")
+  (org-occur)
+  (princ (concat \"ba=\" files--buffer-string \"\\nEND\\n\")))")))
+            (should (string-match-p "m=Org Occur: \"milk\" in todo.org" out))
+            (should (string-match-p "\\*\\* TODO buy milk" out))
+            (should (string-match-p "\\*\\* TODO ship milk" out))
+            (should (string-match-p "(2 matches)" out))
+            (should-not (string-match-p "call bob" out))
+            (should (string-match-p "ba=Org Occur: \"foo\"" out))
+            (should (string-match-p "(1 matches)" out)))
+        (delete-file image)))))
+
 (provide 'org-mode-test)
 
 ;;; org-mode-test.el ends here
