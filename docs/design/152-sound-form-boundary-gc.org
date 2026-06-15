@@ -1203,3 +1203,44 @@ root-coverage gap**（§11.27 と同じ方向の残課題）。
   shift で現 reader では再現せず（≤3M 正しい、incidental masking）。真の衝突 = **freelist の live-block reuse**
   （root gap、suite でのみ collect 後に発生、§11.27 class の残 in-flight ptr）。gate-G は root coverage 残 class
   完備 or sound per-eval reset が必要で、byte-level 追跡は打ち切り推奨。
+
+* §11.30 count-loop clean-exit は CHUNK GROWTH（chunk-0 crossing）が trigger — §11.29 の「freelist reuse」を count-loop については訂正（2026-06-15）
+
+** 閾値が chunk-0（256MiB）crossing と完全一致
+§11.29 を「count-loop は ≤3M で再現せず」と書いたが **不十分**だった。setarch -R で高 N まで escalate:
+- =(= s N)=（非 format、value 正否）: N=3.5M → **111（正しい）**、N=4M / 4.5M / 5M / 6M → **空（clean-exit、222 ではない）**。
+- = 閾値は 3.5M〜4M。count-loop の per-iteration 割当 ≈ 64 bytes（=(< i N)= / =(+ s 1)= / =(1+ i)= の arg-list cons
+  数本 × 24-32B）。→ **3M≈192MB✓ / 3.5M≈224MB✓ / 4M≈256MB✗** = clean-exit 閾値が **chunk-0 サイズ（256MiB,
+  =nelisp-standalone--linux-arena-size= = #x10000000）crossing と完全一致**。
+- = **count-loop clean-exit の trigger は CHUNK GROWTH**（chunk-0 を使い切り =nl_chunk_alloc_new= で growth chunk へ
+  遷移する所）。単一 form は collect 無し → freelist 空 → reuse 無し なので、§11.29 の「freelist reuse」は
+  count-loop には当たらない（**訂正**）。bump も chunk 内は単調（§11.29）。= 残るのは **chunk-0→growth-chunk 遷移の
+  バグ**（growth chunk の VA / descriptor / cursor 配置 / 遷移時の in-arena・boot 判定）。
+
+** 確認の限界（tiny-chunk-0 build 失敗 + tooling 不安定）
+- *決定的確認の意図*: =NELISP_LINUX_ARENA_SIZE= で chunk-0 を 16/64MiB に縮め growth を早期化（~250k-1M iters）して
+  clean-exit が前倒しになるか見る計画。だが **非 default arena size で standalone-reader build が失敗**
+  （16MB: =normal-top-level()= Error 255 / 64MB: =nelisp-elf--build-rich= 系の link/write error）。= arena size が
+  build-time の ELF reloc / layout 計算に影響（=nl_arena_base= reloc 周辺）。build 側の別 issue で、本確認は blocked。
+- *direct instrument も不可*: loop 後に =(ptr-read-u64 268436184/268435456/268436168 ...)= を =/=/=+= して返す probe は
+  **N=100 baseline ですら無出力**（computed-value 返却が value-printer/tooling の §11.23 系不安定を踏む）。=(if (= s N)
+  111 222)= の literal 返却だけが信頼でき、それで閾値=chunk-0 crossing を確定した。
+
+** 次フェーズ（chunk growth path のデバッグ — concrete で findable）
+heisenbug byte-chase（§11.22-29、4 セッション unproductive）と違い、**chunk growth は離散イベント**で path も小さい:
+- =nl_chunk_alloc_new=（line 772）/ =nl_chunk_init_descriptor=（761、desc@base+768, cursor init 1024, data@base+1024）/
+  =nl_os_alloc_chunk=（mmap）/ =nl_chunk_try_alloc= の遷移、=268436160=（chunk-0 desc head）/ =268436168=（cur-chunk）/
+  =268436184=（reserved 累計）の更新。
+- §11.21 の =nl_gc_is_boot= コメントが既に「OS が growth chunk を chunk-0 base より **低位 VA** に置きうる」と flag。
+  低位 VA の growth chunk が in-arena/boot 判定や（collect 時の）forwarding を誤らせる既知リスク。
+- *確認手段*: (a) build を非 default arena size で通るよう直して tiny-chunk-0 で高速 repro、or (b) gdb で
+  =nl_chunk_alloc_new= に break し growth chunk の base VA を観測（chunk-0 base との大小）+ 遷移直後の最初の数
+  allocation を追う。count-loop 4M は collect 無しなので、(b) は heisenbug でなく決定的に追える見込み。
+
+** Doc 152 総括（更新6）
+- §11.30: count-loop clean-exit の trigger = **CHUNK GROWTH（chunk-0 256MiB crossing）**（閾値完全一致で確定）。
+  §11.29 の「freelist reuse」は count-loop には不適用（単一 form は collect 無し）と訂正。bump は chunk 内単調。
+  = 衝突先 = **chunk-0→growth-chunk 遷移**（growth chunk の VA/descriptor/cursor or 遷移ロジック）。tiny-chunk-0 での
+  決定的確認は非 default-arena build 失敗で blocked、direct instrument は tooling 不安定で不可。次は build 修正 or
+  gdb で =nl_chunk_alloc_new= 観測（collect 無しゆえ heisenbug でなく追える）。suite clean-exit も同 trigger の疑い
+  （suite も load+test で 256MiB 超 → growth）。
