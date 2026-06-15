@@ -1513,11 +1513,36 @@ arm64 Linux has no legacy x86 numbering)."
     ;; Gated by SCAN_FLAG @268436464; STACK_TOP @268436456 = driver-entry rsp
     ;; (captured via (aot-current-sp)).  Moving GC would additionally need the
     ;; conservatively-found blocks PINNED (not done) -> use with compaction OFF.
+    ;; Doc 152 §11.27: a conservatively-found Sexp-slot pointer W on the C-stack
+    ;; may itself BE the object-start (block+8) of its own arena SCRATCH block.
+    ;; The eval machinery holds in-flight Sexp values in `(alloc-bytes 32 8)'
+    ;; scratch slots (func_slot / out_slot / arg-construction / materialising-
+    ;; accessor scratch — the Doc 146 §2 "escape boxes").  The base scan marks
+    ;; W's CHILDREN (nl_gc_mark_slot reads the box @ W+8) but NOT the block that
+    ;; CONTAINS the slot, so that still-live scratch block is swept + freelisted
+    ;; and its reuse corrupts the freelist (crash in nl_freelist_take, §11.26).
+    ;; Mark the owning block too — but only when W-8 is a PLAUSIBLE block header
+    ;; (8-aligned BT in [16, 16 MiB] whose block end is still in-arena) so an
+    ;; INTERIOR / inline slot pointer (e.g. `(+ env 32)') never gets a stray
+    ;; mark bit written into the middle of a live block.  ADDITIVE keep-alive:
+    ;; sound for mark+sweep (only ever retains more).
+    (defun nl_gc_conserv_owner (w)
+      (let ((hdr (- w 8)))
+        (if (= (nl_gc_in_arena hdr) 1)
+            (let ((bt (nl_hdr_bt hdr)))
+              (if (< bt 16) 0
+                (if (< 16777216 bt) 0
+                  (if (= (nl_gc_in_arena (+ hdr (- bt 1))) 1)
+                      (nl_gc_mark_block w)
+                    0))))
+          0)))
     (defun nl_gc_conserv_word (w)
       (if (= (logand w 7) 0)              ; obj ptrs are 8-aligned
           (if (= (nl_gc_in_arena w) 1)    ; within live arena data (no deref of w)
               (if (< (ptr-read-u8 w 0) 13) ; plausible Sexp tag 0..12
-                  (nl_gc_mark_slot w)      ; mark + recurse (idempotent, guarded)
+                  (nl_seq2
+                   (nl_gc_conserv_owner w) ; §11.27: keep the slot's OWN block alive
+                   (nl_gc_mark_slot w))    ; mark + recurse children (idempotent, guarded)
                 0)
             0)
         0))
