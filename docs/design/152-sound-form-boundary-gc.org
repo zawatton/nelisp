@@ -1367,3 +1367,49 @@ count-loop が ~4GiB も割り当てる **leak** が本体。per-eval reclamatio
   clean-exit → trigger は **chunk-full/growth でなく ~4GiB TOTAL 割当**（§11.30-32 は症状を追っていた、訂正）。bump 算術は
   64-bit（32-bit truncation でない）。真 root = **per-eval reclamation 無効の leak（~1KB/iter）が ~4GiB 限界に達する**。
   fix の本筋は §11.25 と同じ **sound reclamation 再有効化**（最難関）。byte-chase / chunk-VA 系は全て打ち切り。
+
+* §11.34 sound reclamation 実装試行（in-loop collect, 2回目）— while-step 境界 collect は依然 unsound、revert（§11.25 を再確認、2026-06-15）
+
+** 実装（§11.25 の教訓を踏まえた改良版）
+- =nl_gc_collect_loop(env args out)=（GC source）: §11.27 の sound form-boundary collect を土台に、while-step
+  境界用の reachability collect。STASH を使わず **CURRENT live roots を直接**マーク: conservative scan
+  （§11.21/§11.27、C-stack の driver roots/while args-out/scratch）+ 明示 env（mirror/frames/unbound）+ args + out
+  + shared symentry、その後 sweep。**GROWTH gate**（cur-chunk != chunk-0 head）+ **trigger throttle**
+  （reserved >= 268435560、collect 後 reserved+16MiB に re-arm）で boot/短 loop を no-op 化。
+- =nl_sf_while=: host loop の各 step 後に =(extern-call nl_gc_collect_loop env args out)= を毎回呼ぶ。
+
+** 段階的に判明した 2 つの問題
+1. *初版（throttle 用に 2nd across-call local =cnt= を追加）*: **§11.14 invariant 違反**（across-call local は
+   =status= のみ可、2nd local は frame を壊す）→ **boot crash**（=(+ 40 2)= が =nelisp_env_set_value ←
+   nelisp_mirror_is_constant ← mirror_lookup ← nl_record_slot_ptr= で SIGSEGV、collect 経路ですらない）。
+   → cnt を排し throttle を collect_loop 内（trigger slot）へ移し、collect_loop を毎 step 無条件 call に変更。
+2. *改良版（cnt 無し、collect_loop が自己 gate）*: **boot OK（=(+ 40 2)=→42）、小 loop OK（100/1000/10000 正常）**
+   だが **長い loop（100k+、chunk-0 を越えて growth する規模）が clean-exit**（空出力）。= collect が **発火する時
+   （growth 後）に unsound**＝live data を sweep。10k（growth 無し→ collect no-op）は正常、100k+（growth → collect
+   発火）は壊れる、と差が出た。= **regression**（baseline は全 loop 正常）。
+
+** = §11.25 を再確認: while-step 境界 collect は incomplete roots で unsound
+§11.27 の conservative scan + 明示 env/args/out/symentry を足しても、while-step 境界（step は return 済）には
+**collect が見落とす live data**が残る（§11.25 の「materialising-accessor scratch / 評価途中の box ptr」=
+C-stack に無く conservative scan が拾えない arena 内 in-flight 状態）。form-boundary collect が mark する
+=nl_gc_mark_pool=（pool slot 走査）等の精密 root 処理も while-boundary 版には無い。→ 発火時に live を sweep → 破壊。
+
+** revert + 現状
+全 revert（=git checkout=）、reader を baseline に再ビルド: boot =(+ 40 2)=→42、100k loop→100000（全 loop 正常）、
+tree clean。readiness GREEN（§11.26）+ freelist crash 解消（§11.27）維持。
+
+** 結論（sound reclamation の現実的評価）
+- in-loop / mid-eval collect は §11.25・§11.34 の **2 回とも同じ wall**（incomplete mid-eval root coverage）で unsound。
+- sound 化には **complete mid-eval root coverage** が hard prerequisite: conservative scan を (a) C-stack だけでなく
+  **arena 内 in-flight scratch（materialising-accessor / 評価途中 box）**まで、(b) form-boundary collect 相当の精密
+  root（mark_pool 等）まで拡張する必要。= eval 機構全体の root 監査（大規模・多セッション）。
+- or **escape-safe per-eval reset**（clone/macro-cache/mirror-share escape を reachability or pin で安全化）も同等に大。
+- = count-loop / suite の clean-exit を直すには上記の大規模作業が必須。実コードは長い単一 form を避ければ実害小
+  （§11.24 form-split で正常）。現実的選択: (1) complete root coverage に多セッション投資、or (2) 現 milestone
+  （readiness GREEN + freelist crash 解消）を一区切りとし reclamation を別 epic に切り出す。
+
+** Doc 152 総括（更新10）
+- §11.34: in-loop reclamation collect を §11.27 土台 + CURRENT roots（stash 無し）+ growth/throttle gate で再実装。
+  cnt-local は §11.14 違反で boot crash（→ 除去）。除去後も **発火時（growth 後）に unsound**＝ long loop を regress
+  （§11.25 再確認）。while-step 境界には conservative scan + 明示 roots が拾えない in-flight arena 状態が残る。revert、
+  baseline 健全。sound reclamation は **complete mid-eval root coverage**（大規模）が hard prerequisite。
