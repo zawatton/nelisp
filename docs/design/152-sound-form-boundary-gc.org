@@ -964,3 +964,44 @@ ASLR で overlap 有無が run 依存（setarch -R で決定論的）。conserva
 = form 分割で transient が form 境界 collect により回収され corruption が *消える* → **root = 単一長 form の
 in-form transient 非回収**が確定。fix = in-form 回収（mid-eval collect + root 完備）or sound per-eval reset。
 暫定回避 = 長い単一 form を避ける（複数 form に分割 / 実コードでは通常そうなっている）。
+
+* §11.25 in-form 回収の実装試行 — mid-eval collect は unsound（crash）、revert（2026-06-15）
+§11.24 の推奨に従い in-form 回収を実装したが、**mid-eval collect が crash する**ことが判明し revert した。
+正直な結果として記録する。
+
+** 実装内容（試行、revert 済）
+- =nl_gc_stash_roots(ctx result out pool src cursor bsym)=: 7 root を block に格納し @268436472 に stash。
+  3 つの eval loop（=nl_eval_source_all= / =bf_load_eval_loop= / =bf_eval_source_string_loop=）の冒頭で呼ぶ。
+- =nl_gc_collect_self=: stash した roots で =nl_gc_collect= を呼ぶ。
+- =nl_gc_maybe_collect_self=: bump（268435456）が閾値（blk+56、初期 12 MiB）を超えたら collect_self + 再 arm。
+  注: gate は当初 268436184（growth-chunk-reserved）だったが、sub-256 MiB の loop は growth せず 0 のままで
+  発火しないと判明 → bump-based に変更。
+- =nl_sf_while= の host while で毎 iteration =(extern-call nl_gc_maybe_collect_self)= を呼ぶ
+  （iteration 境界 = body eval 完了で clean point の想定）。
+
+** 結果: UNSOUND（crash）
+build は通るが、発火すると crash:
+- count-loop（setarch -R, 1M）: =nl_gc_mark_slot ← nl_gc_mark_roots ← nl_gc_collect ← nl_gc_collect_self
+  ← nl_gc_maybe_collect_self ← nl_sf_while= で **SIGSEGV**。= mid-while collect が mark 中に bad data を辿った。
+- =(+ 40 2)= boot smoke すら **SIGSEGV**（stash/boundary 経路 or build 全体の破壊）。
+= **mid-eval collect は §11.21 の conservative scan + stashed roots だけでは root coverage が不完全**で unsound。
+§11.21/Doc 146 §2 の「mid-eval/moving collect は *完全な* root coverage が前提」という caveat が成立。
+mid-while の in-flight state（materialising-accessor scratch / 評価途中の box ptr / register 上の root 等）に
+collect が見落とす live pointer があり、それを sweep して mark_slot が dangling を辿る。
+
+** revert + 現状
+変更を全 revert（=git checkout=）し §11.21 の健全状態に復帰: boot =(+ 40 2)=→42、suite EXIT=0
+（=:suite-run nil :suite-ready nil=）。count-loop s=0 は残る（非 crash の既知 issue、§11.22-24）。
+
+** 次フェーズ（fix の本筋）
+in-form collect を sound にするには、まず **mid-eval root coverage を完備**する必要がある（§11.21 の conservative
+stack scan を register まで拡張 / materialising-accessor scratch を root 化 / 評価途中の全 box ptr を shadow stack
+に積む）。これは Doc 146 §2 の hard prerequisite そのもので、相当の作業。あるいは **sound per-eval reset**
+（Doc 146 で disabled、escape 解析で safe 化）。どちらも大きい。count-loop s=0 は実コードでは長い単一 form を
+避ければ顕在化しない（§11.24 で分割は正常と確認済）ので、優先度は gate-G の残り（async/http primitive）より低い。
+
+** Doc 152 総括（更新）
+- §11.21: suite GC crash 解消（conservative scan、SHIPPED、現状の健全 baseline）。
+- §11.22-24: count-loop s=0 = 単一長 form の transient 非回収（heisenbug、root 確認済）。
+- §11.25: in-form collect 試行 → mid-eval collect は unsound（crash）→ revert。fix は mid-eval root coverage 完備
+  （hard）or sound per-eval reset。count-loop は長 form 回避で実害なし、優先度低。
