@@ -839,3 +839,44 @@ Doc 146 §2 の root-coverage gap を **conservative native-stack scanning** で
 - §11.16→20: suite blocker = root-coverage gap（compaction/sweep 両 manifestation）。
 - **§11.21: root coverage を conservative stack scan で実装、suite GC crash 解消（SHIPPED）**。
   gate-G の残りは (1) 高 N count-loop 正当性バグ（別）+ (2) async/http primitive（別）。
+
+* §11.22 count-loop s=0 診断 — allocation が let-frame の binding cell を破壊（ASLR 依存、2026-06-15）
+§11.21 で flag した「高 N count-loop が s=0」を診断。結論: **eval の transient allocation が、同じ form 内で生きている
+let-frame の binding 値（i/s）を破壊する** layout 依存バグ。root coverage（§11.21）とは独立。
+
+** 症状と決定論的 repro
+- =(let ((i 0)(s 0)) (while (< i N) (setq s (+ s 1)) (setq i (1+ i))) <read i s>)= が **s=0 i=0** を返す。
+- *ASLR ON*（既定）: 非決定論的（N≈100k 超で時々 s=0、再実行で s=N のことも）。
+- *ASLR OFF*（=setarch $(uname -m) -R=）: **決定論的に s=0**（N=10k でも）。= 決定論的 repro 確立。
+- loop 自体は走って*正常終了*する（i は内部的に N まで増えて =(< i N)= が false になり抜ける）。
+
+** 機構（周期 print が暴いた決定的証拠）
+loop body に =(if (= (mod i 50000) 0) (write (concat "@" (format "%d" i) " s=" (format "%d" s))))= を挟むと、
+periodic 点で **=@0 s=0=** を出力する:
+- =(mod i 50000)= は *real i* を読む（50000 の倍数で if が発火＝real i が見えている）。
+- *その直後*の =(format "%d" i)= は **i=0** を読む（同一 iteration 内）。
+= mod と format の *間*にある =concat=/=format= の **allocation が i（と s）の binding を 0 に破壊**している。
+plain loop では =(+ s 1)=/=(1+ i)= の評価が作る transient arg-list cons の allocation が同様に i/s を破壊し、
+末尾の read で 0 になる。
+
+** = allocation が「生きている let-frame binding cell」を上書き/再利用
+単一 top-level form なので mid-form collect は走らない（form 境界のみ）→ free 由来ではない。よって
+*allocator が、まだ生きている let-frame の binding 格納域に重なる/再利用するアドレスを返している*（bump 非単調 or
+per-eval scratch の binding cell 再利用）。ASLR が arena/mmap layout を変えるため、重なるか否かが run 依存
+（setarch -R の固定 layout では必ず重なる）。Doc 146 の「長い単一 form は transient を回収しない（per-eval reset
+無効）」territory と関連。conservative scan（§11.21）は free を防ぐだけで *overwrite* は防げない → 直らない（実測）。
+
+** root coverage（§11.21）との独立性
+- §11.21 の scan ON + compaction OFF でも count-loop s=0 は残る（実測）。
+- canonical（efdc2a29、§11.21 前）でも再現。= 本バグは GC collection とは別経路（allocation 時の binding overwrite）。
+
+** 次フェーズ（fix / 更なる診断）
+=setarch -R= の決定論的 repro 上で、gdb で let-frame の i/s binding cell アドレスを特定（=nl_sf_let=/=nl_let_setup=
+が frame を push し binding を置く所で break）→ その cell に hardware watchpoint → loop 中に *どの allocation が
+0/garbage を書くか*捕捉。修正は allocator が live binding cell に重ならないこと（bump 単調性 / per-eval scratch の
+binding 保護）を保証する。
+
+** Doc 152 総括（更新）
+- §11.21: root coverage 実装（conservative scan）で suite GC crash 解消（SHIPPED）。
+- §11.22: 残 blocker の count-loop s=0 を診断 = allocation が live let-frame binding を破壊（ASLR 依存、setarch -R
+  で決定論的 repro）。root coverage とは独立、非 crash の結果破壊。次は gdb watchpoint で overwrite 元を特定。
