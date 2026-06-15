@@ -760,3 +760,41 @@ eval 機構の non-root in-flight pointer で破れている**。Doc 146 ② の
 - §11.16→18→19: suite blocker = **moving-GC compaction が root-coverage gap を露見**（forwarding map は健全、
   across-call でもない）。in-flight 非 root pointer が move+munmap 跨ぎで dangling。
 - gate-G path: (1) compaction OFF + 第二 crash 修正（暫定） or (2) root coverage 完備（本筋、Doc 146 ②）。
+
+* §11.20 第二の crash 診断 — compaction OFF も同じ root-coverage gap、escape hatch は gate-G に効かない（2026-06-15）
+ユーザ指示で compaction を OFF 固定（boot init flag 268435608=0 → mark+sweep）して rebuild し、§11.18 で予告した
+「第二の crash」を診断。結論: **compaction OFF は gate-G への道ではない**（root cause が同一のため）。
+
+** 第二の crash（mark+sweep, collect ON）
+=nl_kw_is_keyword+122= =movzbq (%rdi),%rax= rdi=0（**NULL deref**）。
+backtrace: =nl_eval_inner ← nelisp_eval_call ← nl_sf_progn_body_step ←=（progn body 評価、深さ ~14）。
+= **progn body の form が NULL**（cons の car が NULL 化）。eval が NULL form を keyword 判定しようとして crash。
+
+** collection 起因 = §11.18 と同じ root-coverage gap（manifestation 違い）
+collect を完全 OFF（268435616=1）すると crash が *別箇所*（=nelisp_apply_function=、leak/exhaustion 系）に
+変わる → =nl_kw_is_keyword(NULL)= crash は **collection 起因**と確定。
+= mark+sweep の collection が form 境界で発火した際、eval 機構が in-flight（非 root）に保持する still-referenced
+な cons を **free + reuse/blank** し、progn body の form を NULL 化している。compaction の move+munmap（§11.18）と
+**同一の root-coverage gap（Doc 146 §2）の別 manifestation**:
+- compaction: 参照中 block を move + 旧 to-space を munmap → dangling forwarded edge。
+- mark+sweep: 参照中 block を free + reuse/blank → NULL/garbage な form。
+
+** = escape hatch（compaction OFF）は無効、かつ net-negative
+- suite は mark+sweep でも crash する（gap を踏む経路が変わるだけ）。
+- compaction は vendor load で健全（comment: -53% peak RSS, 20/20 soak deterministic）。OFF にすると suite を
+  直さず vendor load の RSS を退行させる。→ **flag は 1（compaction ON）に戻した**（コメントで知見を記録）。
+- collect 完全 OFF も不可（reclamation 無し → leak → exhaustion/別 crash）。
+= **どの GC mode でも suite は通らない。gate-G は root coverage 完備（Doc 146 §2）が必須**で、GC-mode の
+  escape-hatch による shortcut は無い。
+
+** gate-G への道（確定）
+**Doc 146 §2 root coverage 完備**のみ: eval 機構が collection 跨ぎで保持する in-flight box ptr
+（parse pool / arg 構築途中 / materialising-accessor scratch / nelisp_eval_call の escape boxes、コメント
+2017-2031）を *全て GC root に登録*する。完備すれば compaction(move+munmap)も mark+sweep(free+reuse)も健全化し、
+suite が通る。重い（eval 機構全体の root 監査 + root 登録機構）。
+
+** Doc 152 総括（更新）
+- §11.10/14: GC は simple churn では健全（root-gap を踏まない）、while fix SHIPPED。
+- §11.16→20: suite blocker = **root-coverage gap（Doc 146 §2）**。compaction(§11.18)も mark+sweep(§11.20)も
+  同 gap の別 manifestation。forwarding map(§11.19)も across-call(§11.16 訂正)も無罪。
+- gate-G = root coverage 完備（唯一の道）。GC-mode 切替の escape hatch は効かない。

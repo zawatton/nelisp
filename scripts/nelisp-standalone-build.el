@@ -6976,6 +6976,14 @@ correctly."
         ;; (-53%), 20/20 soak runs deterministic at 850MB with zero crashes.  Set
         ;; this to 0 as an ESCAPE HATCH to fall back to mark+sweep should any
         ;; workload ever trip a moving-GC root-coverage gap (Doc 146 §2).
+        ;; Doc 152 §11.18-20 (2026-06-15): the anvil-pkg suite trips a
+        ;; root-coverage gap, BUT the escape hatch does NOT help it — with
+        ;; compaction off (mark+sweep) the suite still crashes (a collection
+        ;; frees a still-referenced cons, blanking a progn body form ->
+        ;; nl_kw_is_keyword(NULL)).  So the gap must be fixed at the root
+        ;; (Doc 146 §2 root coverage); flipping this flag only changes the
+        ;; manifestation (move+munmap dangling vs free+reuse blanking) and
+        ;; regresses vendor-load RSS, so it stays at 1 (compaction ON).
         (ptr-write-u64 268435608 0 1)
         ;; ---- Doc 149: tag-4/5 String clone ALIASING is ON (flag 268435648 = 1). ----
         ;; nl_sci_dispatch shares the char buffer on clone instead of deep
