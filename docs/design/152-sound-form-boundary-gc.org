@@ -1119,3 +1119,42 @@ false-positive 破壊ではなく、**より深い残存 gap（他クラスの i
 ** Doc 152 総括（更新3）
 - §11.27: conservative scan に **scratch-slot 所有 block の keep-alive** を追加し、freelist crash（SIGSEGV）を
   解消（回帰なし、verified gap 1 クラス完備）。gate-G 完走には残る非決定的 clean-exit（深い残存 gap）の特定が必要。
+
+* §11.28 残 clean-exit の現行犯特定 — corrupted syscall NR → exit(0)、root は pre-existing int 破壊（§11.22 と同種、2026-06-15）
+
+** 現行犯（proximate cause）= path-syscall の NR が exit(60) に破壊
+gdb（=catch syscall exit exit_group=）で early clean-exit を捕捉: =Catchpoint (call to syscall exit),
+nl_os_syscall_path= で発火、rdi=0。=nl_os_syscall_path (nr cpath)= = =(syscall-direct nr cpath 0 0 0 0 0)=
+（generic path-syscall wrapper、line 6189）。= **=(nl_os_syscall_path 60 0)= = =exit(0)= が呼ばれた** =
+load 中の file I/O 用 path-syscall（open=2 / newfstatat=262 / access=21 等）の **NR 引数（小整数）が 60 に破壊**
+され、意図した syscall でなく exit(0) を実行。=kill-emacs= は不在（fboundp nil）、suite source にも exit 呼出無し
+→ legitimate な exit ではなく **値破壊**と確定。
+
+** root cause = pre-existing GC int 破壊（§11.22/24 と同一クラス、§11.27 とは別）
+- §11.27 の owner-marking を **boot 除外 + 二段 header 検証**で tighten（false-positive で小 tagged int を
+  誤 mark する懸念を潰す版）して rebuild → suite は **同じく clean-exit（×2、crash 再発なし）**。
+  = clean-exit は §11.27 の false-positive 起因ではない（tighter でも不変）。
+- これは §11.22「count-loop s=0」(=(while ...) (setq s (+ s 1))= が N≥~200k で s=0)= と同じ
+  「~16MB GC trigger 近辺の transient 非回収による live int 破壊」。§11.21 で **orthogonal / pre-existing /
+  非 collection 経路 / 16MB 閾値**と明記済。全 suite source の load が 16MB を越え、この破壊が syscall NR を直撃。
+- = scratch-slot gap（§11.27、freelist crash）と int-破壊 gap（§11.22/28、clean-exit）は **別クラス**。
+  §11.27 は前者を閉じたが後者は未着手。
+
+** 非決定性の正体
+exit 地点は run ごとに変動（princ diag で load 完走する run もあれば smoke load 中に exit する run も）。
+= 破壊される int が layout（ASLR / 割当順）依存。setarch -R でも tooling 側の非決定が残る。
+
+** gate-G への道（更新）
+**§11.22/28 の int-破壊 gap を閉じる**こと: 「~16MB trigger 近辺で transient 非回収が live int を破壊」の
+機序を §11.24 の watchpoint 路線で特定（count-loop s=0 が最小再現 = suite より遥かに速い反復で同一 root を踏む）。
+count-loop を直せば suite clean-exit も解ける見込み（同一クラスのため）。§11.27 の scratch-slot fix は維持
+（freelist crash 解消は独立の前進）。
+
+** 診断 tooling 追補
+- 進捗追跡は =nl-write-file=（fork 無し・unbuffered・全 source load 後も動作確認済）が最も信頼できる。
+  ただし heavy 文脈では非決定的に load 途中で exit するため、決定的観測は gdb（=catch syscall exit=）が確実。
+
+** Doc 152 総括（更新4）
+- §11.28: 残 clean-exit の現行犯 = **corrupted syscall NR → exit(0)（=nl_os_syscall_path= 経由）**。root は
+  §11.22/24 の pre-existing int-破壊クラス（§11.27 の false-positive ではない＝tighter 版でも不変と実証）。
+  gate-G 完走には int-破壊 gap の修正が必要で、その最小再現は **count-loop s=0**（suite より速い）。

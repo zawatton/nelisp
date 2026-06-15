@@ -1521,21 +1521,39 @@ arm64 Linux has no legacy x86 numbering)."
     ;; W's CHILDREN (nl_gc_mark_slot reads the box @ W+8) but NOT the block that
     ;; CONTAINS the slot, so that still-live scratch block is swept + freelisted
     ;; and its reuse corrupts the freelist (crash in nl_freelist_take, §11.26).
-    ;; Mark the owning block too — but only when W-8 is a PLAUSIBLE block header
-    ;; (8-aligned BT in [16, 16 MiB] whose block end is still in-arena) so an
-    ;; INTERIOR / inline slot pointer (e.g. `(+ env 32)') never gets a stray
-    ;; mark bit written into the middle of a live block.  ADDITIVE keep-alive:
-    ;; sound for mark+sweep (only ever retains more).
+    ;; Mark the owning block too — but ONLY when W-8 is a real block header, so
+    ;; an INTERIOR / inline slot pointer (e.g. `(+ env 32)', or a stack word
+    ;; that merely LOOKS like a Sexp obj because its low byte is < 13) never
+    ;; gets a stray mark bit written into the middle of a live block — which
+    ;; would corrupt e.g. a small tagged int (a syscall NR), Doc 152 §11.27.
+    ;; Header validation (all cheap, no deref of foreign memory):
+    ;;   (a) W-8 is in-arena and NOT a boot block (boot blocks are never freed,
+    ;;       so they need no mark; writing into one would clobber interior boot
+    ;;       data such as the env mirror/frames);
+    ;;   (b) BT = nl_hdr_bt(W-8) is 8-aligned in [16, 16 MiB] and the block end
+    ;;       is in-arena (it fits);
+    ;;   (c) TWO-LEVEL: the NEXT block at W-8+BT is either past the live arena
+    ;;       data (chunk end) OR itself a plausible header (8-aligned BT2 in
+    ;;       range).  A random interior word whose value happens to mask to a
+    ;;       plausible BT almost never has a second plausible header exactly BT
+    ;;       bytes later, so this rejects the false positives that (b) alone
+    ;;       lets through.
+    ;; ADDITIVE keep-alive: sound for mark+sweep (only ever retains more).
     (defun nl_gc_conserv_owner (w)
       (let ((hdr (- w 8)))
-        (if (= (nl_gc_in_arena hdr) 1)
+        (if (= (nl_gc_in_arena hdr) 0) 0
+          (if (= (nl_gc_is_boot hdr) 1) 0
             (let ((bt (nl_hdr_bt hdr)))
               (if (< bt 16) 0
                 (if (< 16777216 bt) 0
-                  (if (= (nl_gc_in_arena (+ hdr (- bt 1))) 1)
-                      (nl_gc_mark_block w)
-                    0))))
-          0)))
+                  (if (= (nl_gc_in_arena (+ hdr (- bt 1))) 0) 0
+                    (let ((next (+ hdr bt)))
+                      (if (= (nl_gc_in_arena next) 0)
+                          (nl_gc_mark_block w)   ; next past arena data = chunk end
+                        (let ((bt2 (nl_hdr_bt next)))
+                          (if (< bt2 16) 0
+                            (if (< 16777216 bt2) 0
+                              (nl_gc_mark_block w))))))))))))))
     (defun nl_gc_conserv_word (w)
       (if (= (logand w 7) 0)              ; obj ptrs are 8-aligned
           (if (= (nl_gc_in_arena w) 1)    ; within live arena data (no deref of w)
