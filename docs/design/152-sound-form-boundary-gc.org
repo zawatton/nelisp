@@ -880,3 +880,37 @@ binding 保護）を保証する。
 - §11.21: root coverage 実装（conservative scan）で suite GC crash 解消（SHIPPED）。
 - §11.22: 残 blocker の count-loop s=0 を診断 = allocation が live let-frame binding を破壊（ASLR 依存、setarch -R
   で決定論的 repro）。root coverage とは独立、非 crash の結果破壊。次は gdb watchpoint で overwrite 元を特定。
+
+* §11.23 count-loop s=0 再診断（§11.22 訂正）— format が integer arg を 0 と読む（value Sexp 破壊）
+gdb watchpoint 調査の過程で §11.22 の「allocation が let-frame binding cell を破壊」が**誤り**と判明。真相は
+**`(format "%d" X)` が長い loop 後に X 問わず "0" を返す = format が読む integer arg の値 Sexp が破壊されている**。
+
+** 決定的な切り分け（全て setarch -R 決定論 repro）
+- =(let ((i 0)(s 0)) (while (< i 20000) (setq s (+ s 1)) (setq i (1+ i))) <X>)= で:
+  - =(if (= s 20000) "S-CORRECT" …)=（**文字列 alloc 無し**）→ **S-CORRECT** = s の binding は *正しい*（cell 無傷）。
+  - =(format "%d" s)= → "0"。 =(format "%d" 20000)=（**literal**, 同 loop 後）→ **"0"**。 =(format "%d" (+ s 0))= → "0"。
+  - = s 固有でも binding でもない。**format が読む integer arg の値が 0**。
+- format の literal 大値（loop *無し*）は正常: =(format "%d" 20000/50000/1000000)= → 正しい。=number-to-string= も正しい。
+  = format/value-encoding 自体は健全。**長い loop 後に**だけ壊れる。
+- 機構: format %d = =(m5_push_dec ms (ptr-read-u64 (m5_fmt_argptr argp) 8))=。出力 "0"（空でなく）= m5_push_dec が
+  **v=0** を受領 = =(ptr-read-u64 arg 8)= が 0 = **format arg の値 Sexp の +8 が 0 に破壊**されている。
+- = §11.22 の「binding cell」は誤り（=(= s N)= が正しいことが反証）。実体は *format が読む live value Sexp の破壊*。
+
+** 位置づけ（§11.18-22 の theme と一致）
+単一の長い top-level form は mid-form collect も per-eval reset も無く transient garbage を回収しない（Doc 146 の
+disabled per-eval reset）。~16k iter（≈16MB GC trigger 近辺）で蓄積した transient が **live な value Sexp（format の
+integer arg）を上書き**する。threshold が 16MB trigger 近辺なのは依然示唆的（trigger 跨ぎ時の allocator 挙動 or
+chunk/freelist 相互作用の疑い）。ASLR で layout が変わり overlap するか否かが run 依存（setarch -R で決定論的）。
+conservative scan（§11.21）は free を防ぐだけで *overwrite* は防げないため直らない（実測一致）。
+
+** 次フェーズ
+setarch -R 決定論 repro 上で、format の integer arg の値 Sexp（=m5_fmt_argptr= が返す arg の +8）に hardware
+watchpoint を張り、loop 中/format 直前に *どの allocation/命令が +8 を 0 に書くか* 捕捉する。m5_push_dec/udec は
+inline 化されており break 不可なので、=m5_fmt_loop= の %d 分岐 or arg-list 構築点で arg Sexp アドレスを取得して
+watchpoint する。fix = transient garbage が live Sexp に重ならない保証（bump 単調性 / per-eval transient 回収）。
+
+** Doc 152 総括（更新）
+- §11.21: root coverage（conservative scan）で suite GC crash 解消（SHIPPED）。
+- §11.22→§11.23 訂正: count-loop s=0 = binding cell でなく **format が読む integer value Sexp の transient-garbage
+  破壊**（=(= s N)= は正しい）。setarch -R 決定論 repro、~16MB threshold。root coverage とは独立、非 crash。
+  次は format arg の値 Sexp に watchpoint で overwrite 元特定。
