@@ -956,3 +956,11 @@ ASLR で overlap 有無が run 依存（setarch -R で決定論的）。conserva
   probe で manifestation が動く）。binding cell（§11.22）も value-Sexp-at-entry（§11.23）も不正確。
   root は in-form transient 非回収。fix は byte-chasing でなく in-form 回収（mid-eval collect + root 完備）or
   sound per-eval reset。
+
+** 検証結果（root 確定、2026-06-15）
+§11.24 の推奨検証を実施し root を *確定*:
+- *A* 単一 form 1M iters（setarch -R）→ **s=0**（corrupted）。
+- *B* 10 top-level form × 100k に分割し global G に累積（form 境界で collect 介在）→ **G=1000000（正しい）**。
+= form 分割で transient が form 境界 collect により回収され corruption が *消える* → **root = 単一長 form の
+in-form transient 非回収**が確定。fix = in-form 回収（mid-eval collect + root 完備）or sound per-eval reset。
+暫定回避 = 長い単一 form を避ける（複数 form に分割 / 実コードでは通常そうなっている）。
