@@ -671,3 +671,48 @@ nelisp-cc の **call（特に extern-call）跨ぎの register/spill 保存 code
 - §11.10-16: GC 健全、while fix SHIPPED、suite blocker = call 跨ぎ pointer 非保存（§11.16）。
 - §11.17: minimization probe は信頼性低（probe 由来 crash + marker loss）。corruption は eval/mirror 層に広く
   単一 codegen 根因の疑い。fix の本筋は nelisp-cc の across-call 保存 codegen 監査。
+
+* §11.18 ROOT CAUSE 確定 — suite crash は moving-GC compaction の forwarding バグ（§11.16 訂正、2026-06-15）
+hardware watchpoint で corruptor を現行犯逮捕。§11.16 の「across-call で args param が clobber」は *誤り*
+（misleading な stale-return-address backtrace に基づいていた）。真因を訂正する。
+
+** watchpoint で捕捉した真の corruptor
+crash した cons_cdr_ptr は、入力 cons（=let form =args= = 0x7fffa1facfd8、tag 7 で *有効*）の **cdr word
+[cons+8] = 0x7fff96812830（garbage）を読んで box pointer として deref → SIGSEGV**（cons_cdr_ptr +166 で cdr 読み、
++182 で deref）。= cons は有効、その cdr が garbage に上書きされている。
+cdr slot（0x7fffa1facfe0）に条件付き hw watchpoint（==0x7fff96812830）を張ると、書込み元は:
+=nl_compact_rw_edge ← nl_compact_rw_cons ← … ← nl_compact_rw_vec_slots=（深い再帰 vector walk）
+= **GC の moving-compaction（Doc 146 §5、flag 268435608=1 boot init ON）の edge-rewrite**。
+=nl_compact_rw_edge= は =new = nl_compact_fwd(old)= を計算し =(ptr-write-u64 addr 0 new)= で cdr を更新するが、
+**=nl_compact_fwd= が cdr の relocated アドレスとして garbage 0x7fff96812830 を返している** = forwarding map
+（=nl_compact_hash= mask 0xFFFFF + gen ベース、line 1551/1575-1586）のバグ（hash 衝突 / generation staleness /
+誤 relocation のいずれか）。old(valid 0x7fffac…) → new(garbage) の誤対応。
+
+** §11.16 がなぜ誤りだったか
+=nl_sf_let_setup_done +55= の =(nl_cons_cdr_ptr args)= は args=0x7fffa1facfd8（有効 cons）を渡しており、
+breakpoint(rdi==garbage) は発火しない。garbage 0x7fff96812830 は cons_cdr_ptr が *内部で* cdr を読んだ値。
+gdb frame dump で setup_done の args slot は有効値を示したのに rdi が garbage に見えたのは、cons_cdr_ptr 内部で
+rdi が cdr 値に変わるため。= 「args が clobber」ではなく「有効 cons の cdr が compaction で破壊」が正。
+
+** compaction 無効化で第二の crash が露出
+=(ptr-write-u64 268435608 0 0)=（compaction OFF → mark+sweep）を suite eval 先頭に前置すると
+=nl_compact_rw_edge= crash は *消える* が、別の crash =nelisp_apply_function ← nl_apply_builtin= が現れる。
+= suite blocker は最低 2 層: (1) moving-GC compaction の forwarding 破壊（第一）、(2) compaction OFF 時に出る
+apply_function 系の別 crash（sweep/reuse か別バグ、未診断）。
+
+** 排除済み（全セッション）: GC-disabled 想定(§11.10 で否定)/GAP-1/2 dead/chunk-growth(1.5GB でも crash)/
+reuse/stack-overflow(浅い)/across-call param clobber(§11.16、本節で訂正)/scratch-escape。
+
+** 次フェーズ（fix）
+1. **moving-GC forwarding map を監査**: =nl_compact_fwd / nl_compact_insert / nl_compact_lookup / nl_compact_hash=
+   （line 1575-1638）。old→new の誤対応（hash 衝突時の probe、gen 判定、relocation 計算）を特定。
+   §11.10 で「peak RSS には moving GC が要る」とされたので、compaction を正すのが本筋。
+2. or 暫定: compaction を OFF（268435608=0、boot init line 6979 を 0 に）して mark+sweep に固定し、
+   第二の apply_function crash を別途診断 → gate-G。peak RSS は犠牲。
+3. small repro（深い vector/list を持つ form を 1 個、collection を強制発火）+ watchpoint で
+   nl_compact_fwd の誤返り値を捕捉するのが確実。
+
+** Doc 152 総括（更新）
+- §11.10: GC 有効・(simple churn では)健全。§11.14: while fix SHIPPED。
+- §11.16→§11.18 訂正: suite blocker = **moving-GC compaction の forwarding 破壊**（across-call ではない）。
+  watchpoint で nl_compact_rw_edge を現行犯確認。fix の本筋は nl_compact_fwd forwarding map の監査。
