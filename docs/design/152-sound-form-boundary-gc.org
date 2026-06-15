@@ -1158,3 +1158,48 @@ count-loop を直せば suite clean-exit も解ける見込み（同一クラス
 - §11.28: 残 clean-exit の現行犯 = **corrupted syscall NR → exit(0)（=nl_os_syscall_path= 経由）**。root は
   §11.22/24 の pre-existing int-破壊クラス（§11.27 の false-positive ではない＝tighter 版でも不変と実証）。
   gate-G 完走には int-破壊 gap の修正が必要で、その最小再現は **count-loop s=0**（suite より速い）。
+
+* §11.29 bump 単調性の検証 — bump は構造的に単調、衝突源は freelist の live-block reuse（§11.22 仮説 refute、2026-06-15）
+
+** count-loop s=0 は現 reader で再現しない（§11.27 の layout shift で masked）
+setarch -R 決定論 repro で escalate: N=50k〜3M で =(= s N)= → 全て **正しい（111）**、=(format "%d" s)= も
+N=1M/3M で **正しい**。§11.22-24 当時（N=10k でも s=0）から変化 = §11.27 の reader 編集が binary 静的 layout を
+変え、決定論 layout での transient と live data の overlap が（≤3M で）当たらなくなった。**incidental masking、
+root は残存**（suite は依然 clean-exit）。= count-loop はもはや suite バグの最小再現でない。
+
+** bump 単調性: コード解析で構造的に単調と確定（empirical instrument は heisenbug に阻まれる）
+- =nl_chunk_try_alloc=（bump path、line 787）: =old = [cursor]; new = old + want; if new > size → fail（new
+  chunk）; else CAS(cursor, old, new); obj = base + old + 8=。= CAS が disjoint な =[old,new)= を予約 →
+  **chunk 内で構造的に単調**、2 つの allocation が重なることは不可能。
+- 非単調になりうるのは (a) freelist reuse（=nl_freelist_take=、collect が freelist を populate した後のみ）、
+  (b) growth chunk が低位 VA（mmap 依存、§11.21 の nl_gc_is_boot が扱う既知事項）の 2 つだけ。chunk は別 mmap で
+  重ならないので (b) でも live data の overlap は起きない。
+- = **bump 非単調は衝突源でない**（§11.22 の「allocation が live binding を上書き」仮説を refute）。
+- *empirical instrument は全て失敗*: loop 内に ptr-read/write-u64 / number-to-string / concat / nl-write-file の
+  どれを足しても、un-instrumented では通る workload（plain 3M count-loop は正しく完走）が **clean-exit / 出力消失**
+  する（§11.24 の「probe で manifestation が動く slippery heisenbug」と一致）。number-to-string/concat は §11.23 の
+  壊れる format 系そのもので、instrument が測定対象の corruption を踏む。低位 buffer に ptr-write-u64 で記録する
+  number-to-string-free 版でも N=3M で無出力 → byte-level の empirical 追跡は本質的に不可能。
+
+** = 衝突源の確定（コード解析）= freelist の live-block reuse（§11.27 class）
+単一 form の count-loop（collect 無し → freelist 空 → reuse 無し → 純 bump = 単調）は live data を上書きしえない
+→ 再現しないのは当然。真の衝突は **collect が freelist に載せた still-live block を =nl_alloc_bytes= が reuse**
+（root-coverage gap）で、これは **collect が走る workload = suite**（load 中の form 境界 collect）でのみ起きる。
+§11.27 が scratch-slot class を閉じ freelist crash を解消したが、**他の in-flight ptr class（§11.28 の syscall NR を
+持つ値を含む）が残存** → suite clean-exit。= gate-G の blocker は bump でなく **freelist-reuse-of-live-block の
+root-coverage gap**（§11.27 と同じ方向の残課題）。
+
+** gate-G への道（再確認・更新）
+- byte-level の heisenbug 追跡は §11.22-29 で 4 セッション unproductive（probe が manifestation を動かす）。これ以上は非効率。
+- 本筋は **root coverage の残 class 完備**（§11.27 の conservative scan を、scratch-slot 以外の in-flight ptr class
+  ＝ accessor scratch / 評価途中 box / parse pool 等にも拡張）で、collect 後の freelist が live block を渡さないように
+  する。完備すれば suite reuse-corruption が消える。
+- or **sound per-eval reset**（Doc 146 disabled、reachability ベースで escape 安全化）。
+- 暫定: 現状でも readiness gate は GREEN（§11.26）、freelist crash は解消（§11.27）。suite 完走（gate-G）は未達。
+
+** Doc 152 総括（更新5）
+- §11.29: bump は **構造的に単調**（=nl_chunk_try_alloc= の CAS disjoint 予約）で衝突源でない（§11.22 仮説 refute）。
+  empirical bump instrument は heisenbug に阻まれる（probe が測定対象を踏む）。count-loop s=0 は §11.27 の layout
+  shift で現 reader では再現せず（≤3M 正しい、incidental masking）。真の衝突 = **freelist の live-block reuse**
+  （root gap、suite でのみ collect 後に発生、§11.27 class の残 in-flight ptr）。gate-G は root coverage 残 class
+  完備 or sound per-eval reset が必要で、byte-level 追跡は打ち切り推奨。
