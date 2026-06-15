@@ -1500,6 +1500,39 @@ arm64 Linux has no legacy x86 numbering)."
     ;; Full collection at the form boundary.  CTX = the env (mirror@+0,
     ;; frames@+32, unbound@+64).  The remaining args are the live driver
     ;; Sexp slots that must survive.  Mark all roots, then sweep.
+    ;; Doc 152 §11.21 / Doc 146 §2: CONSERVATIVE native-stack scan that closes
+    ;; the root-coverage gap.  The eval machinery holds in-flight Sexp obj
+    ;; pointers in C-stack frames / arena scratch that the build-glue cannot
+    ;; enumerate as precise roots; when a collection fires at a (nested-load)
+    ;; form boundary those targets get freed (mark+sweep) or moved+munmap'd
+    ;; (compaction) -> dangling -> SIGSEGV (Doc 152 §11.18-20).  Scan the live
+    ;; native stack [rsp, STACK_TOP) for words that look like valid arena obj
+    ;; pointers and mark+recurse them (keep-alive).  ADDITIVE: only ever marks
+    ;; MORE, never frees more, so it is SOUND for mark+sweep (false positives =
+    ;; bounded over-retention; nl_gc_mark_slot is in-arena-guarded + idempotent).
+    ;; Gated by SCAN_FLAG @268436464; STACK_TOP @268436456 = driver-entry rsp
+    ;; (captured via (aot-current-sp)).  Moving GC would additionally need the
+    ;; conservatively-found blocks PINNED (not done) -> use with compaction OFF.
+    (defun nl_gc_conserv_word (w)
+      (if (= (logand w 7) 0)              ; obj ptrs are 8-aligned
+          (if (= (nl_gc_in_arena w) 1)    ; within live arena data (no deref of w)
+              (if (< (ptr-read-u8 w 0) 13) ; plausible Sexp tag 0..12
+                  (nl_gc_mark_slot w)      ; mark + recurse (idempotent, guarded)
+                0)
+            0)
+        0))
+    (defun nl_gc_conserv_scan (p0 top)
+      (let ((p p0))
+        (while (< p top)
+          (nl_seq2 (nl_gc_conserv_word (ptr-read-u64 p 0))
+                   (setq p (+ p 8))))
+        0))
+    (defun nl_gc_conserv_maybe ()
+      (if (= (ptr-read-u64 268436464 0) 1)        ; SCAN_FLAG (0 = off)
+          (let ((top (ptr-read-u64 268436456 0))) ; STACK_TOP = driver-entry rsp
+            (if (= top 0) 0
+              (nl_gc_conserv_scan (aot-current-sp) top)))
+        0))
     ;; Mark the ROOT BLOCKS themselves (the driver's fixed `alloc-bytes'
     ;; scratch: ctx/result/out/pool/src/cursor/bsym).  These ARE live arena
     ;; allocations holding the root Sexps; without marking the block, sweep
@@ -1516,7 +1549,8 @@ arm64 Linux has no legacy x86 numbering)."
                     (nl_gc_mark_block bsym))))))))
     ;; Mark every root (split out so the DEBUG skip-mark gate is a single if).
     (defun nl_gc_mark_roots (ctx result out pool src cursor bsym)
-      (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
+      (nl_seq2 (nl_gc_conserv_maybe)             ; Doc 152 §11.21 conservative stack scan
+       (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
        (nl_seq2 (nl_gc_mark_slot (+ ctx 0))      ; mirror / globals
         (nl_seq2 (nl_gc_mark_slot (+ ctx 32))    ; frame stack
          (nl_seq2 (nl_gc_mark_slot (+ ctx 64))   ; unbound marker
@@ -1537,7 +1571,7 @@ arm64 Linux has no legacy x86 numbering)."
                                 (if (= (ptr-read-u64 268436328 0) 0) 0
                                   (nl_seq2
                                    (nl_gc_mark_block (ptr-read-u64 268436328 0))
-                                   (nl_gc_mark_slot (ptr-read-u64 268436328 0))))))))))))))) ; bsym + shared symentry
+                                   (nl_gc_mark_slot (ptr-read-u64 268436328 0)))))))))))))))) ; bsym + shared symentry + conserv wrap
     ;; ===== Doc 146 §5 moving GC (compaction). Phase 2 = forwarding. =====
     ;; Behind flag 268435608 (1=ON by default, wired at boot init; 0 = mark+sweep
     ;; escape hatch).  Forwarding hash side-table base
@@ -6888,6 +6922,8 @@ correctly."
            (nelisp_cons_construct str rest out)))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
+            (_sptop (ptr-write-u64 268436456 0 (aot-current-sp))) ; Doc 152 §11.21: capture mmap stack-top (driver-entry rsp, AFTER arena mmap) for the conservative GC stack scan
+
             (globals (alloc-bytes 32 8)) (frames (alloc-bytes 32 8)) (unbound (alloc-bytes 32 8))
             (ctx (alloc-bytes 120 8))
             (builtin_buf (alloc-bytes 8 1)) (builtin_sym (alloc-bytes 32 8))
@@ -6954,6 +6990,7 @@ correctly."
                            0
                          (+ sp0 (* (+ argc 2) 8))))
         (ptr-write-u64 268436448 0 32768)                       ; Doc 147 P1.5 — store the RAW parse-pool cap (32768 slots) for the GC pool arms.  Raised from 8192 after vendored eucjp-ms' 2069-entry generated alist exceeded the flat-list tail depth; 32768 => MAX_DEPTH ~8191 for the current 3+4*MAX_DEPTH reader slot shape.
+        (ptr-write-u64 268436464 0 1)  ; Doc 152 §11.21: CONSERVATIVE native-stack scan ON — closes the eval root-coverage gap (Doc 146 §2) so a collection never frees/blanks a still-referenced in-flight box.  Pairs with compaction OFF (mark+sweep) below; verified to stop the anvil-pkg suite SIGSEGV (suite-readiness now completes cleanly).
         ;; GC trigger: collect at a form boundary once the bump offset
         ;; crosses this threshold.  Initial 512 MiB keeps small *and*
         ;; moderate programs GC-free (zero overhead) — crucially the full
@@ -6984,7 +7021,12 @@ correctly."
         ;; (Doc 146 §2 root coverage); flipping this flag only changes the
         ;; manifestation (move+munmap dangling vs free+reuse blanking) and
         ;; regresses vendor-load RSS, so it stays at 1 (compaction ON).
-        (ptr-write-u64 268435608 0 1)
+        ;; Doc 152 §11.21: 0 (mark+sweep).  The moving GC has a root-coverage
+        ;; gap (§11.18-19) that is UNSOUND on the suite; mark+sweep + the
+        ;; conservative stack scan above is sound on all workloads.  Trade-off:
+        ;; peak RSS rises (no compaction).  FUTURE: pin conservatively-found
+        ;; blocks so compaction can be re-enabled (RSS) while staying sound.
+        (ptr-write-u64 268435608 0 0)
         ;; ---- Doc 149: tag-4/5 String clone ALIASING is ON (flag 268435648 = 1). ----
         ;; nl_sci_dispatch shares the char buffer on clone instead of deep
         ;; copying it (strings/symbols are immutable in the reader; tracing
