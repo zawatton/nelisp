@@ -1324,3 +1324,46 @@ gdb で fix 後の配置を観測:
   が必ず fallback** → no-op、clean-exit 解消せず、revert。gdb で **growth chunk は毎回 chunk-0 の下位 VA**（kernel 降順
   mmap）と確認（§11.21 の low-VA リスクが実在）。VA hint では上位固定不可。最確経路 = **大 chunk-0 を MAP_NORESERVE で
   予約し growth 自体を無くす**、or **allocation 経路の chunk0-base 相対 VA 仮定を audit**。byte-chase は打ち切り。
+
+* §11.33 大 chunk-0（MAP_NORESERVE）fix 試行 — 解消せず。真因は「chunk growth」でなく ~4GiB TOTAL 割当（leak）と判明、§11.30-32 を訂正（2026-06-15）
+
+** 実装した fix
+=nelisp-standalone--linux-arena-size= を 256MiB→4GiB、linux mmap flags に MAP_NORESERVE（0x4000、flags 34→16418）
+追加。狙い = bump を単一連続 demand-paged chunk-0 内に収め growth path を踏まない。
+
+** 結果: 解消せず。そして DECISIVE な切り分け（8GiB chunk-0）
+- 4GiB chunk-0 で count-loop 4M/5M/6M とも **依然 clean-exit**。gdb: BOOT mmap size=0x100000000（4GiB、fix 適用確認）、
+  chunk-0 desc.size=4GiB（正しく書込）。だが **5M loop 中に growth chunk が出る**。
+- first growth 時の **chunk-0 cursor offset = 0xfffffff0（≈4GiB-16）** = chunk-0（4GiB）が **genuinely full**。
+  = count-loop は **~4GiB を割り当てている**（per-iter ≈ 1KB。§11.29 で per-eval reclamation は DISABLED と確認済 →
+  arg-list cons / mirror-lookup の vector 確保 / boxed int 等が **回収されず leak**）。
+- *8GiB chunk-0 で再テスト*: 4M（≈4GiB offset）は 8GiB chunk-0 の **中＝満杯でない**のに **STILL clean-exit**。
+  = **clean-exit は chunk-full / growth が trigger でない**（§11.30-32 は *症状* を追っていた、**訂正**）。真の trigger
+  は **~4GiB TOTAL 割当**（bump offset が 0x100000000 を越える付近）。
+- OLD 256MiB chunk-0 の「4M 閾値」も整合: per-iter ≈ 1KB なら 4M = 4GiB total。§11.30 の「4M=256MiB=chunk-0 crossing /
+  per-iter 64B」は **前提誤り**（実 per-iter は ~1KB、4M = 4GiB total）。3.5M=3.5GiB 正常 / 4M=4GiB 失敗 = 4GiB-total 境界。
+
+** 32-bit truncation ではない
+=nl_chunk_try_alloc= の offset/obj 算術を逆アセンブル → 全て 64-bit（REX.W、=cmp %r10,%rax=、=lock cmpxchg %rdx=）。
+= 4GiB での単純な 32-bit truncation バグ **ではない**。機序（offset/total が ~4GiB に達した時に何が壊れるか）は未特定だが、
+chunk-full でも growth でも 32-bit truncation でもない。
+
+** = 真の root は LEAK（per-eval reclamation 無効）+ ~4GiB 限界
+count-loop が ~4GiB も割り当てる **leak** が本体。per-eval reclamation が DISABLED（§11.25 で unsound と判明し OFF）の
+ため transient（arg-list / mirror-lookup vector / boxed int）が回収されず ~1KB/iter 蓄積、4M で 4GiB に達して corruption。
+**reclamation が効けば count-loop は bounded で 4GiB に永久に達しない** → clean-exit しない。= chunk growth/VA は無関係、
+本筋は §11.25 と同じ **sound な in-form/per-eval reclamation**（= 深い root-coverage 問題）。size 変更は revert
+（4GiB 境界は size に依らず踏むため無効）、reader は default に再ビルド、tree clean。
+
+** gate-G への道（更新）
+- suite clean-exit も同 root の疑い濃厚（load+182test の heavy 割当が reclamation 無しで限界に達する）。
+- 本筋 = **sound reclamation の再有効化**（§11.25 の mid-eval collect は unsound だった → reachability ベースの
+  root-coverage 完備 or escape 解析での per-eval reset safe 化）。これは Doc 152 全体で繰り返し本筋とされてきた最難関。
+- 暫定 = 現状（readiness GREEN §11.26 + freelist crash 解消 §11.27）維持。実コードは長い単一 form を避ければ実害小
+  （§11.24 split 確認済）。
+
+** Doc 152 総括（更新9）
+- §11.33: 大 chunk-0（4/8GiB MAP_NORESERVE）fix は **解消せず、revert**。DECISIVE: 8GiB chunk-0 で 4M（4GiB、未満杯）が
+  clean-exit → trigger は **chunk-full/growth でなく ~4GiB TOTAL 割当**（§11.30-32 は症状を追っていた、訂正）。bump 算術は
+  64-bit（32-bit truncation でない）。真 root = **per-eval reclamation 無効の leak（~1KB/iter）が ~4GiB 限界に達する**。
+  fix の本筋は §11.25 と同じ **sound reclamation 再有効化**（最難関）。byte-chase / chunk-VA 系は全て打ち切り。
