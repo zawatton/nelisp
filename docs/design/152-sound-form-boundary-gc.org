@@ -716,3 +716,47 @@ reuse/stack-overflow(浅い)/across-call param clobber(§11.16、本節で訂正
 - §11.10: GC 有効・(simple churn では)健全。§11.14: while fix SHIPPED。
 - §11.16→§11.18 訂正: suite blocker = **moving-GC compaction の forwarding 破壊**（across-call ではない）。
   watchpoint で nl_compact_rw_edge を現行犯確認。fix の本筋は nl_compact_fwd forwarding map の監査。
+
+* §11.19 forwarding map 監査結論 — map は健全、真因は moving-GC の root-coverage/consistency（2026-06-15）
+§11.18 の compaction バグを forwarding map 監査で深掘り。**forwarding map 自体は構造的に健全**で、真因は
+moving-GC が pre-existing な root-coverage gap（Doc 146 ②）を露見させる consistency 問題と判明。
+
+** forwarding map の構造（line 1554-1642、監査結果 = 健全）
+- table @ 268436360（2^20 slot × 24B、old@+0/new@+8/gen@+16、24MiB mmap once）。
+- =nl_compact_hash= = (old>>4)&0xFFFFF。=nl_compact_insert/lookup_probe= = generation 付き linear probe
+  （gen@268436376、compaction ごと ++、stale entry は gen 不一致で empty 扱い）。
+- =nl_compact_fwd(old)= = boot は identity / live は to_space_base(268436384)+stored-offset / 0=未 forward。
+- =nl_gc_compact=（line 1929）は **完全な moving GC**: phase2(fwd 計算) → to-space chunk 確保 →
+  phase3(=nl_compact_rw_roots= で edge 書換) → phase4(=nl_compact_move_chunks= で memmove) →
+  phase5/6(old chunk munmap + chunk ptr 更新)。= 「rewrite without move」ではない（§11.18 の一時仮説は否定）。
+
+** 真因（watchpoint + mappings で確定）
+corruption write 時の =rax/rdx = 0x7fff96812830=（書く forwarded addr）、その時の mappings は
+**0x7fff96600000-0x7fffb7e00000（= to-space chunk）が mapped で 0x7fff96812830 を含む** = *write 時点では valid*。
+だが **crash 時（後で setq_done が読む時）には 0x7fff96812830 は unmapped**（deref fault）。
+= compaction N が block を to-space-N(0x7fff966…)へ move + cdr を to-space-N アドレスに rewrite したが、
+後続の compaction N+1 が to-space-N を **munmap**（phase6）した際、その block を指す **pointer が再 rewrite されず
+stale** に残った → dangling → crash。
+= moving-GC は move+munmap するため、**in-flight な非 root pointer**（eval 機構が C local / parse pool /
+arg list 等に保持する、build-glue が列挙できない box ptr — nelisp_eval_call コメント 2017-2031 の
+「escape boxes」）が collection 跨ぎで stale 化する。**mark+sweep は move/munmap しないのでこの gap を mask**
+していた（§11.10 で simple churn が clean だった理由）。compaction(moving)が gap を露見させた。
+
+** = Doc 146 ②(root coverage) + ③(moving GC) の問題
+forwarding map の bug ではなく、**moving GC の前提（全 live pointer が root から到達 = 再 rewrite される）が
+eval 機構の non-root in-flight pointer で破れている**。Doc 146 ② の root-coverage 完備が moving GC の健全性条件。
+
+** gate-G への path
+1. **暫定（推奨）: compaction OFF 固定**（268435608 boot init line 6979 を 0 → mark+sweep）。move/munmap しない
+   ので root-gap を mask、§11.18 の compaction crash は消える。peak RSS は犠牲（reserved 駆動）。
+   → ただし §11.18 の通り **第二の crash（nelisp_apply_function←nl_apply_builtin）が露出**するので、それを
+   別途診断・修正する必要がある（次フェーズ）。
+2. **本筋: root coverage 完備**（Doc 146 ②）。eval 機構の in-flight box ptr を全て GC root に登録
+   （frame/pinned だけでなく parse pool / arg 構築途中 / materialising accessor scratch 等）。完備すれば
+   compaction(moving)が健全化し peak RSS も解決。重い（eval 機構全体の root 監査）。
+
+** Doc 152 総括（更新）
+- §11.10: GC は mark+sweep では健全（root-gap を mask）。§11.14: while fix SHIPPED。
+- §11.16→18→19: suite blocker = **moving-GC compaction が root-coverage gap を露見**（forwarding map は健全、
+  across-call でもない）。in-flight 非 root pointer が move+munmap 跨ぎで dangling。
+- gate-G path: (1) compaction OFF + 第二 crash 修正（暫定） or (2) root coverage 完備（本筋、Doc 146 ②）。
