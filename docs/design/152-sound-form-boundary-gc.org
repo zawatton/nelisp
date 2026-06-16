@@ -1849,3 +1849,35 @@ Rust 無改変）。**通常 mode 挙動不変**（poison default off、counter 
 - *poison の「aggressive collect at safepoint」部分は Stage 4（safepoint）依存のため 3→4 bridge へ繰延*。
   3a は poison-on-free（form-boundary collect 由来の UAF を捕捉）+ counter まで。
 *次 = Stage 3b*: eval_slot（arglist）を root 化し、=(+ 1 1)=→loop の trip が 0 になるかを本 counter で検証。
+
+** Stage 3b 着手で判明: 二重リンク (A) は allocator バグ、leak (B) が真の Stage 3 — §11.38 (A)=(B) を訂正 (2026-06-17)
+3a の poison ツールを dogfood して 3b の前提を検証した結果、**(A) と (B) は別 root** と判明。§11.38 の
+「(A)=(B)=root-coverage」を訂正する。
+- *poison 診断*: =(nelisp--gc-diag 1)= → =(+ 1 1)=→500k loop → =(nelisp--gc-diag 0)= = **rc=0 / crash 無し**
+  (104M block poison 済)。live block が freed→stale ptr で **read** されるなら poison sentinel で即 fault する
+  はずだが、しない。= **read-after-free は無い**。loop の結果も正しい (500000) = live data の喪失も無い。
+- *帰結*: =(+ 1 1)=→loop の二重リンク (A) は **GC root-coverage gap でなく allocator の bucket 破損バグ**
+  (bad-cur = stack address が bucket[32] head に混入。§11.37 trace の「block が 2 bucket に double-link」と
+  同じ allocator-state バグ)。**§11.37 guard が sound に self-heal**。GC とは独立。
+  → eval_slot 等の rooting では (A) の trip は動かない (loop 内で collect は走らないため root stack は不参照)。
+- *再確認: (B) leak こそ Stage 3 の本丸*: 単一 form 内で collect が一度も走らない → 回収ゼロ → leak。
+  解決 = **mid-form collect (safepoint)**。その collect の root-coverage が完全でないと live を sweep (§11.25/
+  §11.34 で 2 度失敗した crux)。**3a poison がこの soundness を検証する道具** (mid-form collect が live を
+  free→read すれば即 crash で missed root を pinpoint)。
+
+*** safepoint 配置と prerequisite (Stage 4 への接続)
+- *配置*: =nl_sf_while= の host-loop backedge = =(while (= status 0) (setq status (nl_sf_while_step ...)))=
+  の step 直後。1 guest iteration 完了・per-iter scratch 死亡・loop 変数は env (mirror/frame) で root 済の点。
+- *prerequisite (= Stage 4 safepoint-context infra)*: mid-form collect は driver の root-set
+  =(nl_gc_collect env result out pool src cursor bsym)= を要する。特に **=result= = 実行中の form AST 自体**
+  (mid-loop では =nl_sf_while= の =args= が指す) を root しないと **loop 自身の AST を sweep → crash**。
+  pool/src/cursor/bsym も reader/eval state。=nl_sf_while= は env/out/args しか持たない。
+  → driver が collect root-set を **固定 slot (safepoint collect context)** に保存し、backedge から
+  =nl_gc_safepoint_collect= が読む機構が必須。これが無いと rooting の検証すらできない。
+- *修正後の順序*: 3a (済) → **Stage 4 safepoint-context infra** (driver root-set を固定 slot 保存) →
+  backedge safepoint 実験 (debug-gated + poison) → poison が捕えた missed root を Stage-2 root stack で park →
+  soundness 達成で leak 解消・RSS bounded を実証。= 当初 scoping の「3b: eval_slot root → trip 0」は (A) が
+  allocator バグと判明したので **「Stage 4 safepoint context → backedge collect → poison 駆動 rooting」に再 aim**。
+- *(A) allocator バグの真因究明は任意の別 track*: guard が contained 済。bad-cur=stack-addr が bucket[32] に
+  入る経路 (boundary sweep の mass-free + in-loop churn の相互作用) を guard-trip counter + bad-cur capture で
+  追える。leak (B) の優先度が上。
