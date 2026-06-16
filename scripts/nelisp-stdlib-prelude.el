@@ -2884,12 +2884,23 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
   (defun make-temp-name (prefix)
     (setq nelisp--temp-name-counter (1+ nelisp--temp-name-counter))
     (format "%s%d-%d" prefix nelisp--temp-name-counter (length prefix))))
+;; File-system ops via the reader's path-syscall builtins (nelisp--syscall-path
+;; = syscall(NR, cpath); -path-int = syscall(NR, cpath, INT)).  x86_64 NRs:
+;; access=21, unlink=87, mkdir=83.  Returns 0 on success / -errno.
+(unless (fboundp 'file-exists-p)
+  (defun file-exists-p (filename) (= 0 (nelisp--syscall-path 21 filename))))
+(unless (fboundp 'file-readable-p)
+  (defun file-readable-p (filename) (= 0 (nelisp--syscall-path-int 21 filename 4))))
+(unless (fboundp 'delete-file)
+  (defun delete-file (filename &optional _trash) (nelisp--syscall-path 87 filename) nil))
 (unless (fboundp 'make-directory)
-  (defun make-directory (dir &optional _parents)
-    (cond ((fboundp 'nelisp-call-process)
-           (nelisp-call-process "/bin/mkdir" nil nil nil "-p" dir))
-          ((fboundp 'call-process)
-           (call-process "/bin/mkdir" nil nil nil "-p" dir)))
+  (defun make-directory (dir &optional parents)
+    (if parents
+        (let ((acc ""))
+          (dolist (component (split-string dir "/" t))
+            (setq acc (concat acc "/" component))
+            (nelisp--syscall-path-int 83 acc 511)))
+      (nelisp--syscall-path-int 83 dir 511))
     dir))
 (unless (fboundp 'make-temp-file)
   (defun make-temp-file (prefix &optional dir-flag suffix text)
@@ -2902,6 +2913,17 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
       (maphash (lambda (k _v) (setq ks (cons k ks))) table)
       (while ks (remhash (car ks) table) (setq ks (cdr ks))))
     table))
+(unless (fboundp 'assoc-delete-all)
+  (defun assoc-delete-all (key alist &optional test)
+    (let ((tt (or test (function equal))))
+      (while (and (consp alist) (consp (car alist)) (funcall tt (car (car alist)) key))
+        (setq alist (cdr alist)))
+      (let ((tail alist))
+        (while (cdr tail)
+          (if (and (consp (car (cdr tail))) (funcall tt (car (car (cdr tail))) key))
+              (setcdr tail (cdr (cdr tail)))
+            (setq tail (cdr tail)))))
+      alist)))
 ;; `declare' must be a no-op MACRO (not a function): NeLisp's defmacro does not
 ;; strip a `(declare (indent N) ...)' form from a macro/defun body, so it is
 ;; evaluated at runtime; as a macro it expands to nil without evaluating the
