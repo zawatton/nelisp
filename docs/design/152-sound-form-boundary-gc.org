@@ -1471,3 +1471,14 @@ target/standalone-units=）してから rebuild すること**。
 - nl_sp_eq_* の =buf=（×11、8-16B、条件付き free）を length-gate（head の name-len を1回読み、長さ一致の
   probe だけ実行）で大半 skip。または nl_apply_special を name-len dispatch に再構成。
 - arg-list eval（eval_slot/rest_slot ×args + cons）/ func_slot / args_slot / boxed-int の削減（hot path、要慎重）。
+
+** §11.36 追記: recycle 方式は no-op（2026-06-16、試行 + revert）
+=nl_eval_arg_list_walk= の dead scratch（eval_slot/rest_slot、construct が値コピーするので construct 後
+dead）を buf と同じ =nl_gc_free_block= で recycle 試行 → **peak RSS に変化ゼロ**（per-arg 192B 不変）。
+原因: =nl_alloc_bytes= の freelist reuse は =want >= @268435656= かつ size-segregated bucket 一致が要で、
+40B（=alloc-bytes 32=）の小ブロックは bump され freed ブロックが =nl_freelist_take= で取られない
+（@268435624=0 で reuse 自体は有効だが小ブロックが対象外）。= **free しても arena bump は減らない**。
+既存の nl_sp_eq_* buf recycle も同様に現状 no-op。**fix1 が効いたのは recycle でなく elimination（確保しない）**
+だったため。→ 安全な更なる削減は (a) arg-list scratch を **構造的に eliminate**（construct を値直接受けに、要 hot-path
+改修）か (b) freelist を小ブロックでも reuse させる（§11.22/27/29 の freelist-reuse corruption territory =
+GC soundness 問題、危険）。recycle 単純追加は無効と確定、再試行不要。
