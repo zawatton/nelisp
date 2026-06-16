@@ -1755,3 +1755,77 @@ combiner-cons.el=、Rust 無改変）。
 symbol value・hash value を root slot 経由に限定し、form-boundary collect が live を取りこぼさないようにする
 （= 列挙不能 transient を消す）。これにより guard 無しでも reuse が sound になり、mid-form collect（Stage 4-5）
 で leak も解ける。multi-session epic。guard + 本 speed 改善は Stage 3 完了まで baseline として残す。
+
+* §11.39 Stage 3（eval ABI handle-first 化）SCOPING — 2026-06-17
+§11.38 で (A)=(B)=「form-boundary GC の incomplete root coverage」と確定。その根治 = Stage 3。
+本節は実装前の scoping（着手範囲・順序・検証・完了定義）。eval-path 全 cc-unit source を transient
+監査した結果を土台にする。
+
+** 監査結果（heap-box transient slot inventory、16 module）
+75 個の heap-box slot のうち **GC-unsafe な GAP は hot path に 5 個のみ**（残りは (a) heap field=
+vector/cons へ即 root 化、(b) alloc/eval を跨がず非 spanning、で SAFE）。= 「列挙不能 transient」は
+事前想定より遥かに局所的。**hot-path Stage 3 の core は ~5 slot の rooting** で足りる。
+
+*5 個の hot GAP slot（root-stack park 対象）*:
+| # | file | function | slot | 内容 / 危険窓 |
+|---+------+----------+------+----------------|
+| 1 | combiner-cons | nl_eval_inner_cons | func_slot | lookup した関数 box。macro-test + arg-eval/apply（alloc）を跨いで live |
+| 2 | combiner-arglist | nl_eval_arg_list_walk | eval_slot | arg eval 結果。後続 recursive walk + cons-construct を跨ぐ（最 hot、per-arg） |
+| 3 | combiner-apply | nl_apply_do_apply | func_slot | resolve 済関数。list-init/append（recurse+alloc）を跨ぐ |
+| 4 | combiner-apply | nl_apply_sym_eq_bytes | tmp_slot | intern symbol。nelisp_eq_symbol（alloc）を跨ぐ ※§11.38 と同型、確保レス化で消去可 |
+| 5 | combiner-apply | nl_apply_sym_eq_bytes | result_slot | eq 結果。同上 |
+
+*別カテゴリ（slot inventory には出ないが ABI で扱う）*:
+- **car/cdr の materialised immediate-box**: nl_cons_car_ptr/cdr_ptr は heap car には interior pointer
+  を返す（live 構造の一部なので SAFE）が、**immediate car（Int/Nil/T）には fresh 32B box を alloc**。
+  consumer（list-walk 等）がこれを alloc/eval 跨ぎで保持すると GAP。→ ABI invariant「immediate は値渡し」
+  で **box 化自体を廃止**して構造的に消す（最大の機械的作業、~302 consumer site）。
+- **cons box（nl_alloc_consbox, bt=32 = §11.38 の want=32）**: arg-list の per-iter 確保。result-slot
+  経由で root 済なので corruption GAP ではないが、**form 内で free されないので leak の主因**。これは
+  Stage 4-5（mid-form collect）の対象（rooting でなく回収の問題）。
+
+** ABI shape（handle-first、§11.37 中核 invariant の具体化）
+- immediate Sexp は値 WORD で渡す（box 化しない）。heap box ptr を alloc/safepoint/eval-call 跨ぎで
+  保持するなら必ず root slot（Stage 2 nl_root_reserve）に置く。
+- 各 eval frame は live transient を nl_root_reserve … nl_root_release で LIFO bracket。collect は
+  nl_gc_mark_rootstack が [base,top) を mark するので確実に生存。
+- out/acc 出力 param と「heap field へ書込み済（nl_vector_set_slot / cons-construct）」の値は既に
+  reachable = root 不要。conservative C-stack scan は **correctness 契約から外し backstop に降格**。
+
+** 段階（各段で form-boundary GC を sound baseline 維持、退行ゼロを gate）
+*3a（検証 infra、挙動不変）*: §11.38 の guard-trip counter を **debug-gated 常設**化 + **poison-collect
+  debug mode**（safepoint 毎に aggressive collect + freed payload を poison 値で埋める + 参照時 assert）。
+  missed root があれば即 crash で炙り出る（= fusion 計画の「A を debug 化」）。baseline gate: 通常 mode で
+  trip=0、poison mode で現 smoke 全 PASS（form-boundary collect は smoke では既 sound）。
+*3b*: eval_slot（arglist、最 hot）を root 化。recurse 前に reserve、construct 後に release。
+*3c*: func_slot（eval_inner_cons）を macro-test + arg-eval 跨ぎで root 化。
+*3d*: do_apply の func_slot を root 化 + nl_apply_sym_eq_bytes の tmp/result を §11.38 同様 **確保レス化**
+  （apply dispatch の name 比較を immediate literal 直接比較に。GAP 2 個を消去 + apply path も -alloc）。
+*3e*: car/cdr consumer を immediate-as-WORD 化（materialised immediate-box カテゴリを構造的に消去）。
+  ~302 site の機械的だが大きい作業 → 独立 sub-epic 化可。3b-3d 完了後でよい。
+*3→4 bridge（soundness の実証 milestone）*: 3b-3d 後、while backedge に safepoint を 1 個試験設置し
+  mid-form collect を有効化。5 hot slot が root 済なら単純 loop で sound に回収 → **loop RSS が bounded**
+  になる（= leak の初の実証的解消）。これが Stage 4 の入口かつ「approach が正しい」証明。
+
+** リスク / 制約
+- cc-unit は runtime 値を let 束縛不可 → reserve した slot index は helper-chain で thread（§11.37 既知）。
+- §11.14: across-call local は status のみ。reserve/release を across-call state にしない設計。
+- **unwind-safety**: error/throw/tail-call で root frame を確実に pop する必要。既存 condition-case /
+  frame-pop / unwind-protect 機構に root-stack の depth restore を tie する（Stage 2 nl_root_release を
+  これら non-local exit 経路にも配線）。← Stage 3 最大の正しさリスク、3a の poison mode で検証必須。
+- reserve/release perf: bump/pop の O(1)。hot path per-call で 2-4 回なので軽微（§11.38 の churn 削減と相殺）。
+
+** Stage 3 完了定義（DoD）
+1. 5 hot GAP slot を Stage-2 API で root 化、unwind-safe release 配線済。
+2. poison-collect debug mode + guard-trip counter = **0 trip / poison-hit 無し**を、`(+ 1 1)`→500k loop /
+   4-form / 多 form / fib / nested loop の repro battery 全てで達成。
+3. 通常 mode で smoke 5 種全 PASS、leak/perf 退行なし。
+4. while-backedge safepoint 試験で単純 loop の RSS が bounded（soundness 実証 milestone）。
+→ 達成後、§11.37 freelist guard は Stage 5（mid-form collect 全面化）完了時に debug-only へ降格可能。
+3e（immediate-as-word 全面化）は Stage 3 core の後の独立 track として継続。
+
+** 工数感
+- 3a（infra）+ 3b-3d（5 slot rooting + apply 確保レス化）= focused 1-2 session で core 着地見込み
+  （hot GAP が 5 個と小さいため）。3→4 bridge の safepoint 実証まで含めて Stage 3 の山場。
+- 3e（car/cdr ABI 全面）は ~302 site で別 track（大きいが機械的）。Stage 5（mid-form collect 全面 +
+  write barrier）と Stage 6-7（generational copying）は従来通り multi-session。
