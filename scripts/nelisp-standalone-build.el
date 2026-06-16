@@ -385,12 +385,18 @@ storage — not an arena reservation."
    ;; next collect (Doc 152 §11.30-33 class; confirmed: bare os_alloc_chunk +
    ;; garbage-loop -> SIGSEGV in nl_freelist_take).  bss is zero-fill (no file /
    ;; RSS cost until touched).  nl_rootstack_region @ +16 = 32768 32-byte slots.
-   (list (cons 'bss (+ 16 1048576)))
+   ;; Doc 152 §11.39 Stage 3a: nl_gc_diag (64B) after the region = permanent GC
+   ;; diagnostic block (+0 trip-count, +8/16/24 first-bad cur/bt/want, +32
+   ;; poison-on-free enable, +40 poison-fill count).  Read/toggle via the
+   ;; `nelisp--gc-diag' builtin.  Zero-init = disabled = zero behaviour change.
+   (list (cons 'bss (+ 80 1048576)))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_region" 16
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_gc_diag" (+ 16 1048576)
                              :section 'bss :bind 'global :type 'object))
    nil))
 
@@ -726,6 +732,20 @@ or the toolchain is newer than the cached object."
                (ptr-write-u64 prev 0 (ptr-read-u64 cur 0)))
              (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur))
           (nl_freelist_scan cur (ptr-read-u64 cur 0) want))))
+    ;; Doc 152 §11.39 Stage 3a: permanent guard-trip counter.  Records into the
+    ;; nl_gc_diag bss block whenever the integrity guard drops a corrupt chain
+    ;; (= a double-link event).  +0 count, +8/16/24 first-bad cur/bt/want.  Only
+    ;; on the rare drop path -> zero common-path cost.  Read via `nelisp--gc-diag'.
+    (defun nl_fl_record_trip (cur bt want)
+      (seq
+        (ptr-write-u64 (data-addr nl_gc_diag) 0
+                       (+ (ptr-read-u64 (data-addr nl_gc_diag) 0) 1))
+        (if (= (ptr-read-u64 (data-addr nl_gc_diag) 0) 1)
+            (seq (ptr-write-u64 (data-addr nl_gc_diag) 8 cur)
+                 (ptr-write-u64 (data-addr nl_gc_diag) 16 bt)
+                 (ptr-write-u64 (data-addr nl_gc_diag) 24 want))
+          0)
+        0))
     ;; Pop an exact-fit block for WANT (BLOCK_TOTAL): O(1) bucket pop for
     ;; 24<=WANT<=480, else scan the fallback list.  Clears the FREE sentinel
     ;; (mark 0) and returns the object pointer, or 0 if none.
@@ -748,15 +768,15 @@ or the toolchain is newer than the cached object."
               ;; a clean bucket.  Dropping a clobbered/double-linked entry is the
               ;; correct repair (the block is live elsewhere; only the stale link dies).
               (if (= (nl_gc_in_arena cur) 0)
-                  (nl_seq2 (ptr-write-u64 head 0 0) 0)
+                  (nl_seq2 (nl_fl_record_trip cur 0 want) (nl_seq2 (ptr-write-u64 head 0 0) 0))
                 (if (= (logand cur 7) 0)
                     (if (= (nl_hdr_mark (- cur 8)) 2)
                         (if (= (nl_hdr_bt (- cur 8)) want)
                             (nl_seq2 (ptr-write-u64 head 0 (ptr-read-u64 cur 0))
                                      (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur))
-                          (nl_seq2 (ptr-write-u64 head 0 0) 0))
-                      (nl_seq2 (ptr-write-u64 head 0 0) 0))
-                  (nl_seq2 (ptr-write-u64 head 0 0) 0))))))))
+                          (nl_seq2 (nl_fl_record_trip cur (nl_hdr_bt (- cur 8)) want) (nl_seq2 (ptr-write-u64 head 0 0) 0)))
+                      (nl_seq2 (nl_fl_record_trip cur (nl_hdr_bt (- cur 8)) want) (nl_seq2 (ptr-write-u64 head 0 0) 0)))
+                  (nl_seq2 (nl_fl_record_trip cur 0 want) (nl_seq2 (ptr-write-u64 head 0 0) 0)))))))))
     ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
     ;;
     ;; ROOT-CAUSE FIX (reuse correctness).  The tracing mark+sweep is sound:
@@ -1452,10 +1472,25 @@ arm64 Linux has no legacy x86 numbering)."
     ;; Free one dead block (header at HDR): set FREE sentinel, link the
     ;; object (hdr+16) onto the free-list head.  Returns 0.  Isolated into
     ;; a helper so the sweep loop body has no nested let + outer setq.
+    ;; Doc 152 §11.39 Stage 3a: poison-on-free (debug, gated by nl_gc_diag+32).
+    ;; Fill the freed payload BEYOND the next-link (hdr+16 .. hdr+bt) with a
+    ;; non-canonical sentinel so any use-after-free read via a stale (unrooted)
+    ;; pointer faults immediately -- pinpoints a missed root during Stage 3b+.
+    ;; Header (hdr+0) and freelist next-link (hdr+8) are preserved.
+    (defun nl_gc_poison_fill (hdr off bt)
+      (if (< off bt)
+          (nl_seq2 (ptr-write-u64 (+ hdr off) 0 16045481047390945280)
+                   (nl_gc_poison_fill hdr (+ off 8) bt))
+        0))
     (defun nl_gc_free_block_link (hdr head)
       (nl_seq2 (nl_hdr_set_mark hdr 2)
        (nl_seq2 (ptr-write-u64 (+ hdr 8) 0 (ptr-read-u64 head 0))
-                (ptr-write-u64 head 0 (+ hdr 8)))))
+        (nl_seq2 (ptr-write-u64 head 0 (+ hdr 8))
+         (if (= (ptr-read-u64 (data-addr nl_gc_diag) 32) 1)
+             (nl_seq2 (ptr-write-u64 (data-addr nl_gc_diag) 40
+                        (+ (ptr-read-u64 (data-addr nl_gc_diag) 40) 1))
+                      (nl_gc_poison_fill hdr 16 (nl_hdr_bt hdr)))
+           0)))))
     (defun nl_gc_free_block (hdr)
       (if (= (nl_gc_is_boot hdr) 1) 0   ; HARD: never free a chunk-0 boot block
        (nl_gc_free_block_link hdr
@@ -2286,6 +2321,7 @@ argument (reachability + in-arena bounds checks).")
                                         (m5_prin1 ms (wf_arg_ptr args 0))
                                         (mut-str-finalize ms out) 0)))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
+    ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
     ((:lit "nelisp--arena-force-grow-smoke") . (bf_arena_force_grow_smoke out))
     ((:lit "nelisp--size-census") . (bf_size_census out))
     ;; --- M7 file I/O (impls in m7b-fileio.o glue unit) ---
@@ -2458,6 +2494,24 @@ unresolved at link time."
         (bf_arena_chunks_used
          (ptr-read-u64 (+ chunk 48) 0)
          (+ acc (bf_arena_chunk_used chunk)))))
+    ;; Doc 152 §11.39 Stage 3a: GC-diag read/toggle builtin.  ARG0: 0=read-only,
+    ;; 1=enable poison-on-free, 2=disable.  Returns the list
+    ;; (trip-count bad-cur bad-bt bad-want poison-count poison-enable).
+    (defun bf_gc_diag (args out)
+      (seq
+        (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
+          (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0) 0))
+        (let* ((nils (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
+               (s3 (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
+          (seq
+            (wf_write_nil nils)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 32) nils s5)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 40) s5 s4)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 0) s1 out)
+            0))))
     (defun bf_arena_stats (out)
       (let* ((bump (ptr-read-u64 268435456 0))
              (used (bf_arena_chunks_used (ptr-read-u64 268436160 0) 0))
@@ -5578,7 +5632,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--arena-stats" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
+    "nelisp--repr" "nelisp--arena-stats" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"

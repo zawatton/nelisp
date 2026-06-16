@@ -1829,3 +1829,23 @@ vector/cons へ即 root 化、(b) alloc/eval を跨がず非 spanning、で SAFE
   （hot GAP が 5 個と小さいため）。3→4 bridge の safepoint 実証まで含めて Stage 3 の山場。
 - 3e（car/cdr ABI 全面）は ~302 site で別 track（大きいが機械的）。Stage 5（mid-form collect 全面 +
   write barrier）と Stage 6-7（generational copying）は従来通り multi-session。
+
+** Stage 3a SHIPPED（検証 infra、2026-06-17）
+Stage 3b+ の root-coverage 修正を検証する常設 infra を導入（=scripts/nelisp-standalone-build.el=、
+Rust 無改変）。**通常 mode 挙動不変**（poison default off、counter は guard drop の rare path のみ）。
+- *nl_gc_diag bss*（arena-base.o に 64B 追記）: +0 trip-count / +8/16/24 first-bad (cur,bt,want) /
+  +32 poison-on-free enable / +40 poison-fill count。zero-init = 無効 = overhead ゼロ。
+- *常設 guard-trip counter*: nl_freelist_take の integrity guard が corrupt chain を drop する度（=
+  double-link event）に nl_fl_record_trip が記録。Stage 3b で「rooting 後に trip=0 か」を直接計測する
+  backbone。
+- *poison-on-free*（nl_gc_diag+32 で gate）: free 時に payload を header/next-link を残して
+  non-canonical sentinel (0xDEAD000000000000) で埋める。stale（未 root）pointer 経由の
+  use-after-free read が即 fault → Stage 3b+ の missed root を pinpoint。
+- *nelisp--gc-diag builtin*: arg 0=read / 1=poison on / 2=poison off。返り値 =
+  (trip-count bad-cur bad-bt bad-want poison-count poison-enable)。
+- *検証*: 通常 mode で fib(22)=17711 / 2-form 500k=500000 / 4-form exit0 / smoke 5種全 PASS（退行ゼロ）。
+  counter: =(+ 1 1)=→500k loop = trip 2（§11.38 一致、bad-want=32）/ loop 単独 = trip 0。
+  poison: ON + clean 50k loop = 9.65M フリーポイズン・trip 0・crash 無し（clean path 不破壊を実証）。
+- *poison の「aggressive collect at safepoint」部分は Stage 4（safepoint）依存のため 3→4 bridge へ繰延*。
+  3a は poison-on-free（form-boundary collect 由来の UAF を捕捉）+ counter まで。
+*次 = Stage 3b*: eval_slot（arglist）を root 化し、=(+ 1 1)=→loop の trip が 0 になるかを本 counter で検証。
