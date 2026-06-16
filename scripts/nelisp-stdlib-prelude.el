@@ -2938,3 +2938,57 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; specs (a function would try to eval `(indent 1)' -> another void-function).
 (unless (fboundp 'declare)
   (defmacro declare (&rest _specs) nil))
+;; nelisp stdlib lowering helpers (referenced by the dotimes/loop macro
+;; expansions in nelisp-stdlib-eval-special; their definitions live in
+;; nelisp-stdlib.el which aborts on load standalone).  They are trivial
+;; numeric ops, so define them directly.
+(unless (fboundp 'nelisp--num-lt2) (defun nelisp--num-lt2 (a b) (< a b)))
+(unless (fboundp 'nelisp--num-gt2) (defun nelisp--num-gt2 (a b) (> a b)))
+(unless (fboundp 'nelisp--num-le2) (defun nelisp--num-le2 (a b) (<= a b)))
+(unless (fboundp 'nelisp--num-ge2) (defun nelisp--num-ge2 (a b) (>= a b)))
+(unless (fboundp 'nelisp--num-eq2) (defun nelisp--num-eq2 (a b) (= a b)))
+(unless (fboundp 'nelisp--add2) (defun nelisp--add2 (a b) (+ a b)))
+(unless (fboundp 'nelisp--sub2) (defun nelisp--sub2 (a b) (- a b)))
+(unless (fboundp 'nelisp--mul2) (defun nelisp--mul2 (a b) (* a b)))
+;; json-serialize: anvil-pkg's compat layer prefers the native `json-serialize'
+;; when fbound (passing :null-object/:false-object).  The NeLisp json backend
+;; (nelisp-json-serialize) is not loaded by the suite AND aborts on a nil hash
+;; value (expires-at:nil -> JSON null).  Provide a self-contained encoder that
+;; maps hash-table->object, list->array, nil->null, t->true, with minimal string
+;; escaping -- enough for anvil-pkg-state's JSON shape.
+(unless (fboundp 'nelisp--json-escape)
+  (defun nelisp--json-escape (s)
+    (let ((out "") (i 0) (n (length s)))
+      (while (< i n)
+        (let ((c (aref s i)))
+          (setq out (concat out (cond ((= c 34) "\\\"") ((= c 92) "\\\\")
+                                      ((= c 10) "\\n") ((= c 9) "\\t") ((= c 13) "\\r")
+                                      (t (char-to-string c))))))
+        (setq i (1+ i)))
+      out)))
+(unless (fboundp 'json-serialize)
+  (defun json-serialize (obj &rest _keys)
+    (cond
+     ((null obj) "null")
+     ((eq obj t) "true")
+     ((eq obj :null) "null")
+     ((eq obj :json-false) "false")
+     ((integerp obj) (number-to-string obj))
+     ((floatp obj) (number-to-string obj))
+     ((stringp obj) (concat "\"" (nelisp--json-escape obj) "\""))
+     ((hash-table-p obj)
+      (let ((parts "") (first t))
+        (maphash (lambda (k v)
+                   (setq parts (concat parts (if first "" ",")
+                                       "\"" (nelisp--json-escape (if (stringp k) k (format "%s" k))) "\":"
+                                       (json-serialize v))
+                         first nil))
+                 obj)
+        (concat "{" parts "}")))
+     ((listp obj)
+      (let ((parts "") (first t))
+        (while obj (setq parts (concat parts (if first "" ",") (json-serialize (car obj)))
+                         first nil obj (cdr obj)))
+        (concat "[" parts "]")))
+     ((symbolp obj) (concat "\"" (nelisp--json-escape (symbol-name obj)) "\""))
+     (t (concat "\"" (nelisp--json-escape (format "%s" obj)) "\"")))))
