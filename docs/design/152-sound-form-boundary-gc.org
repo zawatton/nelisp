@@ -1881,3 +1881,55 @@ Rust 無改変）。**通常 mode 挙動不変**（poison default off、counter 
 - *(A) allocator バグの真因究明は任意の別 track*: guard が contained 済。bad-cur=stack-addr が bucket[32] に
   入る経路 (boundary sweep の mass-free + in-loop churn の相互作用) を guard-trip counter + bad-cur capture で
   追える。leak (B) の優先度が上。
+
+* §11.41 Stage 4 safepoint-context infra 設計確定（multi-model: 独立分析 + codex 収束、2026-06-17）
+mid-form collect の crux を multi-model で乗り越え。anvil-fusion quality panel は今回も degrade
+（claude member exit-1 失敗 / gemini timeout hang / 無 timeout）したため、codex (GPT-5.5) に直接諮問。
+**codex 設計が独立分析と完全収束 + 3 つの重要 refinement**。以下を Stage 4 の設計確定とする。
+
+** 収束した中核（独立分析 = codex 一致）
+- driver が「実行中 top-level form の precise root context」を **BSS に publish** し、deep な safepoint は
+  その 1 箇所を読む（evaluator 全経路への arg threading は cc-unit 制約と相性悪く侵襲大、で却下）。
+- safepoint は **=nl_sf_while_step= の戻り直後（backedge）・status==0 で継続時のみ**。1 guest iteration 完了で
+  per-iter scratch が provably dead の点。
+- **=result= = 実行中 form AST 全体を必ず root**（§11.34 が見落とした真因）。=args= は別 root 不要
+  （result の内部ポインタ + non-moving mark-sweep なので result が live なら args の cons も不動）。=status= は
+  immediate で root 不要。provably dead = arg-list cons / materialising-accessor box / lookup・apply scratch /
+  TEST・BODY 中間値（env/out/published roots/rootstack に格納された物のみ live）。
+
+** codex の refinement（採用）
+1. *context は単一 slot でなく DEPTH-indexed STACK*: re-entrant eval / nested top-level（eval・load builtin）/
+   error path で outer context も live。固定深 stack（NL_GC_CTX_DEPTH + env/result/out/pool/src/cursor/bsym の
+   7 配列）。push は depth++ を最後・pop は depth-- を最初（半端状態を見せない）。単純 while は current frame
+   だけで足りるが、stack が sound-by-construction。
+2. ★*mid-form collect は PRECISE-ONLY*（最重要・独立分析の誤りを訂正）: conservative C-stack scan は mid-form
+   では **backstop でなく liability**。理由 = (a) live register/non-spilled value を拾う保証が無い、(b) **stale word が
+   偶然 missed root を mark して poison validation を無効化**（unsound でも crash せず false confidence）。
+   → TOPLEVEL GC = 従来通り conservative 可 / MIDFORM GC = precise-only（rollout 中 NL_GC_SAFEPOINT_PRECISE_ONLY=1）。
+3. *mode-split collector + reentrancy guard*:
+   =nl_gc_collect_published(mode)= = NL_GC_IN_PROGRESS guard → mark_published_contexts + mark_rootstack +
+   (TOPLEVEL なら mark_c_stack_conservative) + sweep。alloc-debt（NL_GC_ALLOC_DEBT/LIMIT）で trigger gate。
+
+** BSS layout（nl_safepoint_ctx、arena-base.o に追記）
+NL_GC_CTX_DEPTH / NL_GC_CTX_{ENV,RESULT,OUT,POOL,SRC,CURSOR,BSYM}[N] / NL_GC_IN_PROGRESS /
+NL_GC_SAFEPOINT_ENABLE / NL_GC_SAFEPOINT_PRECISE_ONLY / NL_GC_ALLOC_DEBT / NL_GC_ALLOC_LIMIT。zero-init=無効。
+
+** rollout（poison 駆動・各段 sound baseline 維持、PRECISE_ONLY=1）
+- *4a*: ctx-stack bss + driver の push/pop（既存 form-boundary collect を =nl_gc_collect_published(TOPLEVEL)= 経由に
+  refactor、挙動不変）+ helper 群、全 debug-gated OFF。= baseline sound 維持の infra。
+- *4b*: =nl_sf_while= backedge に safepoint（gated ON for test）。poison + precise-only で
+  =(while (< i N) (setq i (1+ i)))= 実行 → 期待: 正しい結果 + RSS bounded + poison crash 無し。crash なら
+  poison が missed root を pinpoint → Stage-2 root stack で park → 反復。= **leak 初解消の実証 milestone**。
+- *4c*: multi-form body / nested call へ拡張（同 validation）。
+- *4d*: trigger 調整 → default 有効化検討。
+
+** unwind-safety
+ctx push/pop は depth による LIFO。driver の error/throw path で pop（depth--）。4b 以降 Stage-2 reserve を
+足す場合は per-iteration で balanced reserve/release + 非局所脱出経路にも release 配線。depth-counter 設計で
+半端 frame は不可視。
+
+** 位置づけ
+独立分析（result=AST root + backedge 配置）に codex の (context stack / precise-only / mode-split) を統合した
+設計が Stage 4 の of-record。次 = 4a 実装（挙動不変 infra）。3a poison がこの設計の soundness を各段で検証する。
+（諮問: orchestrator codex task 59fc8f38、独立分析と収束。fusion quality panel は claude/gemini member 不調で
+synthesis 不成立、codex 直諮問で代替。）
