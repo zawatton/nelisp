@@ -375,8 +375,22 @@ any C global), so the ONLY remaining fixed address is driver-owned global
 storage — not an arena reservation."
   (nelisp-link-unit-make
    (nelisp-standalone--target-object-name "arena-base.o")
-   (list (cons 'bss 8))
+   ;; Doc 152 §11.37 Stage 2: + nl_rootstack_top as
+   ;; driver-owned bss globals.  The arena reserved-prefix "free gap" [0xf8,0x2b8)
+   ;; turned out NOT writable (only [0,0xf0] is committed); bss globals are the
+   ;; correct home for root-stack pointers (like nl_arena_base).
+   ;; +16 control + a 1 MiB root-stack REGION as a static bss array.  Using a
+   ;; fixed bss array (NOT os_alloc_chunk/mmap) is required: a runtime mmap
+   ;; perturbs the arena chunk-growth VA layout and corrupts the freelist on the
+   ;; next collect (Doc 152 §11.30-33 class; confirmed: bare os_alloc_chunk +
+   ;; garbage-loop -> SIGSEGV in nl_freelist_take).  bss is zero-fill (no file /
+   ;; RSS cost until touched).  nl_rootstack_region @ +16 = 32768 32-byte slots.
+   (list (cons 'bss (+ 16 1048576)))
    (list (nelisp-link-symbol "nl_arena_base" 0
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_rootstack_top" 8
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_rootstack_region" 16
                              :section 'bss :bind 'global :type 'object))
    nil))
 
@@ -724,8 +738,25 @@ or the toolchain is newer than the cached object."
                  (cur (ptr-read-u64 head 0)))
             (if (= cur 0)
                 0
-              (nl_seq2 (ptr-write-u64 head 0 (ptr-read-u64 cur 0))
-                       (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur)))))))
+              ;; Doc 152 §11.37 complete free-list integrity guard.  ROOT (traced):
+              ;; nl_alloc_symbol writes a Symbol Sexp onto a block still linked in
+              ;; bucket[24] (a block double-linked across buckets via inconsistent
+              ;; bt), clobbering its next-link (tag byte 4).  Only return cur if it
+              ;; is a genuine free block of the right size: in-arena, 8-aligned,
+              ;; mark==2 (still FREE), bt==want.  Any failure => the chain is
+              ;; corrupt; drop it (clear bucket head) and bump.  Later frees rebuild
+              ;; a clean bucket.  Dropping a clobbered/double-linked entry is the
+              ;; correct repair (the block is live elsewhere; only the stale link dies).
+              (if (= (nl_gc_in_arena cur) 0)
+                  (nl_seq2 (ptr-write-u64 head 0 0) 0)
+                (if (= (logand cur 7) 0)
+                    (if (= (nl_hdr_mark (- cur 8)) 2)
+                        (if (= (nl_hdr_bt (- cur 8)) want)
+                            (nl_seq2 (ptr-write-u64 head 0 (ptr-read-u64 cur 0))
+                                     (nl_seq2 (nl_hdr_set_mark (- cur 8) 0) cur))
+                          (nl_seq2 (ptr-write-u64 head 0 0) 0))
+                      (nl_seq2 (ptr-write-u64 head 0 0) 0))
+                  (nl_seq2 (ptr-write-u64 head 0 0) 0))))))))
     ;; Zero NBYTES (step 8) of the reused block's payload at OBJ.
     ;;
     ;; ROOT-CAUSE FIX (reuse correctness).  The tracing mark+sweep is sound:
@@ -1594,7 +1625,7 @@ arm64 Linux has no legacy x86 numbering)."
     (defun nl_gc_mark_roots (ctx result out pool src cursor bsym)
       (nl_seq2 (nl_gc_conserv_maybe)             ; Doc 152 §11.21 conservative stack scan
        (nl_seq2 (nl_gc_mark_root_blocks ctx result out pool src cursor bsym)
-       (nl_seq2 (nl_gc_mark_slot (+ ctx 0))      ; mirror / globals
+       (nl_seq2 (nl_seq2 (nl_gc_mark_slot (+ ctx 0)) (nl_gc_mark_rootstack)) ; mirror / globals + Doc 152 §11.37 Stage 2 dynamic root stack scan
         (nl_seq2 (nl_gc_mark_slot (+ ctx 32))    ; frame stack
          (nl_seq2 (nl_gc_mark_slot (+ ctx 64))   ; unbound marker
           (nl_seq2 (nl_gc_mark_slot result)      ; current parsed form
@@ -5266,6 +5297,8 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ("cdr-ptr.o"          nelisp-cc-jit-cons-cdr-ptr              nelisp-cc-jit-cons-cdr-ptr--source)
     ("eq-symbol.o"        nelisp-cc-eq-symbol                     nelisp-cc-eq-symbol--source)
     ("cons-ctor.o"        nelisp-cc-cons-construct                nelisp-cc-cons-construct--source)
+    ;; Doc 152 §11.37 Stage 2 — dynamic root stack (additive/dormant until Stage 3).
+    ("rootstack.o"        nelisp-cc-rootstack                     nelisp-cc-rootstack--source)
     ("consbox.o"          nelisp-cc-nlconsbox-alloc               nelisp-cc-nlconsbox-alloc--source)
     ("consbox-clone.o"    nelisp-cc-nlconsbox-clone               nelisp-cc-nlconsbox-clone--source)
     ("consbox-setcar.o"   nelisp-cc-nlconsbox-set-car             nelisp-cc-nlconsbox-set-car--source)
