@@ -1413,3 +1413,61 @@ tree clean。readiness GREEN（§11.26）+ freelist crash 解消（§11.27）維
   cnt-local は §11.14 違反で boot crash（→ 除去）。除去後も **発火時（growth 後）に unsound**＝ long loop を regress
   （§11.25 再確認）。while-step 境界には conservative scan + 明示 roots が拾えない in-flight arena 状態が残る。revert、
   baseline 健全。sound reclamation は **complete mid-eval root coverage**（大規模）が hard prerequisite。
+
+* §11.35 host-freeze インシデント + 安全網（bin/nemacs メモリ上限）— leak は現バイナリで再確認、deep fix は §11.34 のまま未解決（2026-06-16）
+** インシデント
+=bin/nemacs --driver=nelisp= の REPL（=nelisp --repl --no-prompt --no-print=、=nemacs-main--event-loop= の単一
+=while= form を実行）が ~23 分で RSS 48.4GiB（62GiB の 77%）+ swap 6.3GiB まで leak、host 空きメモリ 522MiB で
+マシン全体がフリーズ。=kill -9= で即解放（used 56→5.8GiB）。= §11.33/§11.34 の「per-eval reclamation 無効 leak」が
+実コード（event-loop の長寿命単一 form）で顕在化した実例。
+** 現バイナリでの leak 再測定（HEAD 60973fb6、default 256MiB chunk-0、ulimit -v cap で安全に）
+- baseline =--eval 42= = peak RSS 60MiB。
+- 単一 form =(while (< i N) (setq s (+ s i) i (1+ i)))=（自明な整数ループ、意味的にはほぼ無確保）:
+  N=50k → 428MiB（≈ **7.5KiB/iter** leak）、N=500k/2M → 1GiB cap を即超過。= form 境界 collect が
+  単一 form 内では一度も発火しない（§11.24/§11.33 を再確認）。per-iter の確保元 = arg-list cons /
+  mirror-lookup vector / boxed int（§11.33）。
+** 安全網（実装済、Rust 無改変・shell のみ）
+- =bin/nemacs= に =NEMACS_NELISP_MEMORY=（default 8388608 KiB = 8GiB、=unlimited= で無効化）を追加、
+  既存 =ulimit -s= 隣で =ulimit -v= を nelisp driver 起動2経路（doctor + main launch）に適用。
+- 検証: 8GiB cap 下で正常 eval（42 / (+ 40 2) / 50k loop）は rc=0 正常、runaway（5M iter）は 7GiB で
+  **rc=88（mmap 失敗 → clean exit）** = 48GiB フリーズ点の遥か手前で死ぬ。1GiB 等の低 cap は起動初期 mmap が
+  通らず segfault（rc=139）になるため、default は起動を壊さない 8GiB を採用。
+- = leak の **根治ではない**（mitigation）。長寿命単一 form の leak 自体は §11.34 の sound reclamation
+  （complete mid-eval root coverage）が解けるまで残る。だが host 全体フリーズは構造的に防止。
+** deep fix の状態（変化なし）
+- 根治 = §11.34 の通り while-step/mid-eval 境界での sound collect。2 回失敗（§11.25/§11.34）、hard prerequisite =
+  complete mid-eval root coverage（arena in-flight scratch + nl_gc_mark_pool 相当の精密 root）。multi-session epic。
+- 代替候補（未着手）: per-primitive-call の transient（arg-list/mirror-lookup vector/boxed int）を
+  escape しない場合に scratch 再利用 or fixnum immediate 化して **per-iter 確保自体を削減**すれば、
+  sound GC なしでも実用上 bounded にできる可能性（7.5KiB/iter は自明ループには過大、削減余地が大きい）。
+
+* §11.36 確保削減 (1): special-form dispatch を非確保 byte 比較化 — per-call -66% / loop baseline -49%、正しさ保持（2026-06-16）
+** 発見（attribution）
+=(while (< i N) (setq s (+ s i) i (1+ i)))= の per-iter 確保を slope 法（N=100k/200k の peak RSS 差 / 100k、
+ulimit -v cap で安全に）で attribution: **bare var-ref は 0B、関数呼び出し1回 = +1696B**。主因は special-form
+dispatch でなく per-call と判明（特定後に dispatch も寄与と確認）。
+** root: nl_apply_special が呼び出しごとに 11 個の special-form 名を確保比較
+=nl_eval_inner_cons= は head が symbol の cons を eval するたび =nl_apply_special= を呼び、progn/if/let/let*/
+setq/while/lambda/function/quote/condition-case/unwind-protect の 11 個を順次 =nl_sp_eq_*= で比較。各
+=nl_sp_eq_*= → =nl_cons_sym_eq (sym buf len)= が **=alloc-bytes 32= ×2 (tmp_slot/result_slot) + =nl_alloc_symbol=
+で比較用シンボルを intern 確保**。= 通常関数呼び出し（+/car 等、全 11 probe を通過）で ~11 × 確保。
+** fix（=lisp/nelisp-cc-evalport-combiner-cons.el=、Rust 無改変）
+=nl_cons_sym_eq= を **非確保の名前 byte 比較**に書換: symbol Sexp の name は [16]=bytes-ptr / [24]=len
+（=nl_alloc_symbol_write= レイアウト）なので、=(if (= (sexp-tag sym) 4) (if (= (ptr-read-u64 sym 24) len)
+(nl_sym_name_eq_bytes buf (ptr-read-u64 sym 16) 0 len) 0) 0)=。tail-recursive byte comparator
+=nl_sym_name_eq_bytes= を同 manifest に追加（cross-unit 依存回避）。intern/slot 確保を完全に排除。
+** 効果（実測、cache clean 後再ビルド）
+- per-call: **1696 → 576 B/iter（-66%）**、自明ループ baseline: **5376 → 2736 B/iter（-49%）**。
+- 正しさ: special form 全種 + macro(when/unless) + lambda + catch/throw + 関数呼び出し 15 hand-test 全正解、
+  =make standalone-reader-test / -load-smoke / -fmt-smoke / -prelude-test / -repl-smoke= 全 PASS。
+- = GC soundness と無関係の安全クラス（解放でなく「確保しない」）。§11.25/34 の unsound 壁を踏まない。
+** ⚠ build gotcha（重要・要記録）
+=target/standalone-units/<target>/NAME.o.unit= の per-unit cache は **source .el 編集を freshness 検出しない**
+ことがある（=nelisp-standalone--cached-unit= の source-file dep が patched unit で効かない疑い）。最初の
+rebuild は stale unit をリンクし変更が反映されず（=strings target/nelisp= に新 symbol 不在で判明、RSS が
+KB 単位で完全同一）。**combiner-cons 等 patched unit を編集したら該当 .unit を rm（or =rm -rf
+target/standalone-units=）してから rebuild すること**。
+** 次の削減候補（未着手、リスク漸増）
+- nl_sp_eq_* の =buf=（×11、8-16B、条件付き free）を length-gate（head の name-len を1回読み、長さ一致の
+  probe だけ実行）で大半 skip。または nl_apply_special を name-len dispatch に再構成。
+- arg-list eval（eval_slot/rest_slot ×args + cons）/ func_slot / args_slot / boxed-int の削減（hot path、要慎重）。
