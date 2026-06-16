@@ -2848,3 +2848,27 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
   (defun read (&optional stream)
     (if (stringp stream) (car (read-from-string stream))
       (signal 'error (list "read: only string streams supported")))))
+
+;; Doc 152 gate-G: give the standard built-in error symbols their
+;; `error-conditions' so a `(condition-case ... (error H))' handler matches
+;; them.  The standalone reader's condition-case matcher checks membership of
+;; the handler condition in the signalled symbol's `error-conditions'; without
+;; this, a `void-function' (undefined-function call), `wrong-type-argument',
+;; etc. is trapped only by an exact-symbol clause, never the catch-all `error'
+;; clause that ERT and most code rely on -- so one such signal aborts an
+;; otherwise-trappable run (it blocked the anvil-pkg ERT suite at test #0).
+;; Mirrors Emacs subr.el's define-error chain (symbol first, `error' last).
+(put 'error 'error-conditions '(error))
+(put 'quit 'error-conditions '(quit))
+(put 'void-function 'error-conditions '(void-function error))
+(put 'void-variable 'error-conditions '(void-variable error))
+(put 'wrong-type-argument 'error-conditions '(wrong-type-argument error))
+(put 'args-out-of-range 'error-conditions '(args-out-of-range error))
+(put 'wrong-number-of-arguments 'error-conditions '(wrong-number-of-arguments error))
+(put 'invalid-function 'error-conditions '(invalid-function error))
+(put 'arith-error 'error-conditions '(arith-error error))
+(put 'end-of-file 'error-conditions '(end-of-file error))
+(put 'file-error 'error-conditions '(file-error error))
+(put 'file-missing 'error-conditions '(file-missing file-error error))
+(put 'setting-constant 'error-conditions '(setting-constant error))
+(put 'user-error 'error-conditions '(user-error error))

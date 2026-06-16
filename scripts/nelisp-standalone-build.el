@@ -4789,8 +4789,23 @@ and thread head_ptr at its call site in nl_eval_inner_cons.  COMPOSE AFTER
 The old macro-expansion in-place cache assumed `head_ptr' was the original
 form's cons box.  After Doc 147, `head_ptr' is a materialised 32B car view from
 `nl_cons_car_ptr', so caching corrupts memory.  Keep the catch/throw and
-void-function fixes, and leave macro expansion uncached."
-  (nelisp-standalone--patch-combiner-cons src))
+void-function fixes, and leave macro expansion uncached.
+
+Doc 152 gate-G: the void-function-miss rewrite (`--patch-void-function-miss')
+was dropped when the macro-cache patch was disabled (it had been composed only
+inside `--patch-macro-cache').  Re-apply it directly on `nl_eval_inner_cons' so
+the function-lookup miss arm calls `nl_cons_stash_void_function' (which now sets
+the M6 signal stash + flag) instead of returning a bare rc=1 -- otherwise a
+call to an undefined function is an UNCATCHABLE process exit (condition-case
+never sees it), which blocked the anvil-pkg ERT suite at its first test."
+  (let ((patched (nelisp-standalone--patch-combiner-cons src)))
+    (cons (car patched)
+          (mapcar (lambda (form)
+                    (if (and (consp form) (eq (car form) 'defun)
+                             (eq (cadr form) 'nl_eval_inner_cons))
+                        (nelisp-standalone--patch-void-function-miss form)
+                      form))
+                  (cdr patched)))))
 
 ;; CORRECTED arg-list walk.  Byte-identical to nelisp-cc-evalport-combiner-arglist
 ;; --source EXCEPT the success tail wraps the constructor in (seq ... 0): the
