@@ -1952,3 +1952,16 @@ Stage 4 の publish 側データ構造 + ops を dormant additive で導入（=s
 - *次 = 4b*: driver（bf_load_eval_loop / bf_eval_source_string_loop）に push（eval 前）/ pop（boundary collect
   後）を配線 + =nl_gc_collect_published(mode)=（mark_published_contexts + rootstack + TOPLEVEL のみ conservative
   + sweep、IN_PROGRESS guard）+ nl_sf_while backedge safepoint。各段 poison + ctx-depth で soundness 検証。
+
+** Stage 4b step 1 SHIPPED（publish 側配線、2026-06-17）
+driver が実行中 top-level form の precise root-set を nl_safepoint_ctx に publish する配線を投入（挙動不変）。
+- =nl_driver_eval_published (result env out pool src cursor bsym)= = push（eval 前）→ nelisp_eval_call → pop
+  （eval 後）。boundary collect は直 nl_gc_collect のまま（ctx 不参照）なので pop が collect 前でも sound。
+- 配線箇所: 実 --load driver =nl_eval_source_all=（reader-eval-source-source）の eval call + bf_load_eval_loop /
+  bf_eval_source_string_loop の eval call（後 2 者は当該経路では inert だが正配線）。
+  ※当初 bf_* のみ配線して depth=0 のままだったので、実 --load 経路が nl_eval_source_all と判明し追加配線。
+- *検証*: build 107 units / =(nelisp--gc-diag 0)= の ctx-depth=**1**（eval 中に driver frame が live）/ form 跨ぎで
+  balance / fib(22)=17711 / 500k=500000 / smoke 5種全 PASS（挙動不変）。
+- *次 = 4b step 2*: nl_gc_collect_published(mode)（mark_frames[0,depth) precise + rootstack + symentry +
+  MIDFORM は conserv 無し + sweep + IN_PROGRESS guard）+ nl_sf_while backedge safepoint（enable + alloc-debt gate）。
+  poison ON + precise-only で単純 loop 検証 → 正しい結果 + RSS bounded = leak 初解消 milestone。

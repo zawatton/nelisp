@@ -3404,6 +3404,15 @@ unresolved at link time."
     ;; read FILE into a Sexp::Str, parse each top-level form with the same pure
     ;; reader, and evaluate it in the caller's ENV.  This intentionally mirrors
     ;; the driver's multi-form loop instead of relying on host-side embedding.
+    ;; Doc 152 §11.41 Stage 4b: publish the executing top-level form's precise
+    ;; root-set to nl_safepoint_ctx for the duration of its eval, so a mid-form
+    ;; safepoint (in nl_sf_while) can invoke a sound collect.  push BEFORE eval /
+    ;; pop AFTER (the boundary collect stays the direct nl_gc_collect and reads
+    ;; the driver locals, not the ctx, so popping here is fine).  Returns rc.
+    (defun nl_driver_eval_published (result env out pool src cursor bsym)
+      (seq (nl_gc_ctx_push env result out pool src cursor bsym)
+           (let* ((rc (nelisp_eval_call result env out)))
+             (seq (nl_gc_ctx_pop) rc))))
     (defun bf_load_eval_loop (src cursor result pool env out bsym more)
       (while (= more 1)
         (seq
@@ -3412,7 +3421,7 @@ unresolved at link time."
            (if (= prc 1)
                (seq
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                (let* ((rc (nelisp_eval_call result env out)))
+                (let* ((rc (nl_driver_eval_published result env out pool src cursor bsym)))
                   ;; GC trigger must compare TOTAL allocated bytes across all
                   ;; chunks (268436184 = chunk-bytes-reserved running counter),
                   ;; not the chunk-0 bump offset (268435456) — after Doc 140's
@@ -3438,7 +3447,7 @@ unresolved at link time."
            (if (= prc 1)
                (seq
                 (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                (let* ((rc (nelisp_eval_call result env out)))
+                (let* ((rc (nl_driver_eval_published result env out pool src cursor bsym)))
                   (if (= rc 0)
                       ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
                       ;; not the chunk-0 bump offset (268435456).  See the note
@@ -5839,7 +5848,7 @@ suffix, which is why only `--repl' crashed)."
                   (prc (nelisp_reader_parse_one src cursor result pool 0)))
              (if (= prc 1)
                  (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
-                      (nelisp_eval_call result ctx out)
+                      (nl_driver_eval_published result ctx out pool src cursor builtin_sym)
                       (nl_boundary_maybe_reclaim mark_chunk mark_cursor epoch0 out)
                       ;; GC trigger on TOTAL chunk-bytes-reserved (268436184),
                       ;; not the chunk-0 bump offset.  See `bf_load_eval_loop'.
