@@ -2889,6 +2889,14 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; access=21, unlink=87, mkdir=83.  Returns 0 on success / -errno.
 (unless (fboundp 'file-exists-p)
   (defun file-exists-p (filename) (= 0 (nelisp--syscall-path 21 filename))))
+;; nelisp-ec-write-region (Layer-2 fileio) is the write backend anvil-pkg's
+;; compat layer prefers on NeLisp; it is in nelisp-emacs-compat-fileio (not
+;; loaded by the suite).  Map it onto the reader's `write-region' builtin --
+;; the compat call shape is (CONTENT nil PATH nil silent), and write-region
+;; accepts a STRING as its START arg.
+(unless (fboundp 'nelisp-ec-write-region)
+  (defun nelisp-ec-write-region (string _end filename &rest _ignore)
+    (write-region string nil filename)))
 (unless (fboundp 'file-readable-p)
   (defun file-readable-p (filename) (= 0 (nelisp--syscall-path-int 21 filename 4))))
 (unless (fboundp 'delete-file)
