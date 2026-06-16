@@ -2872,3 +2872,39 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 (put 'file-missing 'error-conditions '(file-missing file-error error))
 (put 'setting-constant 'error-conditions '(setting-constant error))
 (put 'user-error 'error-conditions '(user-error error))
+
+;; Doc 152 gate-G: polyfill standard Emacs builtins missing from standalone
+;; NeLisp so the anvil-pkg ERT suite's helpers (with-mock, registry-clear, ...)
+;; run for real instead of signalling void-function.  All guarded so a real
+;; builtin (host Emacs / future NeLisp primitive) always wins.
+(unless (fboundp 'getenv)
+  (defun getenv (_variable) nil))
+(defvar nelisp--temp-name-counter 0)
+(unless (fboundp 'make-temp-name)
+  (defun make-temp-name (prefix)
+    (setq nelisp--temp-name-counter (1+ nelisp--temp-name-counter))
+    (format "%s%d-%d" prefix nelisp--temp-name-counter (length prefix))))
+(unless (fboundp 'make-directory)
+  (defun make-directory (dir &optional _parents)
+    (cond ((fboundp 'nelisp-call-process)
+           (nelisp-call-process "/bin/mkdir" nil nil nil "-p" dir))
+          ((fboundp 'call-process)
+           (call-process "/bin/mkdir" nil nil nil "-p" dir)))
+    dir))
+(unless (fboundp 'make-temp-file)
+  (defun make-temp-file (prefix &optional dir-flag suffix text)
+    (let ((path (concat "/tmp/" (make-temp-name prefix) (or suffix ""))))
+      (if dir-flag (make-directory path t) (write-region (or text "") nil path))
+      path)))
+(unless (fboundp 'clrhash)
+  (defun clrhash (table)
+    (let (ks)
+      (maphash (lambda (k _v) (setq ks (cons k ks))) table)
+      (while ks (remhash (car ks) table) (setq ks (cdr ks))))
+    table))
+;; `declare' must be a no-op MACRO (not a function): NeLisp's defmacro does not
+;; strip a `(declare (indent N) ...)' form from a macro/defun body, so it is
+;; evaluated at runtime; as a macro it expands to nil without evaluating the
+;; specs (a function would try to eval `(indent 1)' -> another void-function).
+(unless (fboundp 'declare)
+  (defmacro declare (&rest _specs) nil))
