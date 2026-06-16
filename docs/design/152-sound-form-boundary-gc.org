@@ -1933,3 +1933,22 @@ ctx push/pop は depth による LIFO。driver の error/throw path で pop（de
 設計が Stage 4 の of-record。次 = 4a 実装（挙動不変 infra）。3a poison がこの設計の soundness を各段で検証する。
 （諮問: orchestrator codex task 59fc8f38、独立分析と収束。fusion quality panel は claude/gemini member 不調で
 synthesis 不成立、codex 直諮問で代替。）
+
+** Stage 4a SHIPPED（safepoint-context stack 基盤、dormant、2026-06-17）
+Stage 4 の publish 側データ構造 + ops を dormant additive で導入（=scripts/nelisp-standalone-build.el=、Rust
+無改変）。Stage 2 と同パターン（無 caller・挙動不変・誤りは build 時に出る）。driver 配線 + collect_published
++ safepoint は 4b で poison 検証下に行う。
+- *nl_safepoint_ctx bss*（arena-base.o に 3648B 追記）: 64B control header（depth@+0 / enable@+8 /
+  precise_only@+16 / in_progress@+24 / alloc_debt@+32 / alloc_limit@+40）+ 64 frames×56B @+64
+  （env/result/out/pool/src/cursor/bsym）。zero-init = 空 stack。
+- *nl_gc_ctx_store / nl_gc_ctx_push / nl_gc_ctx_pop*: depth-indexed LIFO。push は depth<64 guard 付きで
+  frame[depth] へ store → depth++、pop は depth>0 で depth--。cc-unit 制約（runtime 値 let 不可）回避のため
+  frame base は inline 算出 + store は helper 引数渡し。
+- *nelisp--gc-diag 拡張*: 返り list を 7 要素化（末尾に ctx-depth 追加）。arg 3 = push 1 dummy frame /
+  arg 4 = pop（push/pop self-test hook、4b でも debug 用）。
+- *検証*: build 107 units / fib(22)=17711 / 2-form 500k=500000 / 4-form exit0 / smoke 5種全 PASS（挙動不変）。
+  push/pop balance: depth 0→1→2→1→0 を =nelisp--gc-diag 3/4= で実測確認。dormant（driver 未配線）なので通常
+  実行では depth=0 のまま。
+- *次 = 4b*: driver（bf_load_eval_loop / bf_eval_source_string_loop）に push（eval 前）/ pop（boundary collect
+  後）を配線 + =nl_gc_collect_published(mode)=（mark_published_contexts + rootstack + TOPLEVEL のみ conservative
+  + sweep、IN_PROGRESS guard）+ nl_sf_while backedge safepoint。各段 poison + ctx-depth で soundness 検証。

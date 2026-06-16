@@ -389,7 +389,12 @@ storage — not an arena reservation."
    ;; diagnostic block (+0 trip-count, +8/16/24 first-bad cur/bt/want, +32
    ;; poison-on-free enable, +40 poison-fill count).  Read/toggle via the
    ;; `nelisp--gc-diag' builtin.  Zero-init = disabled = zero behaviour change.
-   (list (cons 'bss (+ 80 1048576)))
+   ;; Doc 152 §11.41 Stage 4a: nl_safepoint_ctx (3648B) after nl_gc_diag =
+   ;; depth-indexed safepoint-context stack.  64B control header (depth@+0,
+   ;; enable@+8, precise_only@+16, in_progress@+24, alloc_debt@+32,
+   ;; alloc_limit@+40) + 64 frames x 56B @ +64 (env/result/out/pool/src/cursor/
+   ;; bsym).  Dormant in 4a (no caller); driver publish + collect land in 4b.
+   (list (cons 'bss (+ 3728 1048576)))
    (list (nelisp-link-symbol "nl_arena_base" 0
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_rootstack_top" 8
@@ -397,6 +402,8 @@ storage — not an arena reservation."
          (nelisp-link-symbol "nl_rootstack_region" 16
                              :section 'bss :bind 'global :type 'object)
          (nelisp-link-symbol "nl_gc_diag" (+ 16 1048576)
+                             :section 'bss :bind 'global :type 'object)
+         (nelisp-link-symbol "nl_safepoint_ctx" (+ 80 1048576)
                              :section 'bss :bind 'global :type 'object))
    nil))
 
@@ -2104,6 +2111,31 @@ arm64 Linux has no legacy x86 numbering)."
                (nl_compact_clear_fl 0)
                (nl_compact_unpin_src)
                (nl_compact_unpin_roots))))))))
+    ;; Doc 152 §11.41 Stage 4a: safepoint-context stack ops (DORMANT — no caller
+    ;; yet; the driver publish + mid-form collect_published land in 4b under
+    ;; poison validation, so these change no runtime behaviour).  The driver will
+    ;; push the executing top-level form's precise root-set before eval and pop
+    ;; after the boundary collect; a mid-form safepoint reads frame[depth-1].
+    (defun nl_gc_ctx_store (base env result out pool src cursor bsym)
+      (seq (ptr-write-u64 base 0 env) (ptr-write-u64 base 8 result)
+           (ptr-write-u64 base 16 out) (ptr-write-u64 base 24 pool)
+           (ptr-write-u64 base 32 src) (ptr-write-u64 base 40 cursor)
+           (ptr-write-u64 base 48 bsym) 0))
+    (defun nl_gc_ctx_push (env result out pool src cursor bsym)
+      (if (< (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) 64)
+          (nl_seq2
+           (nl_gc_ctx_store
+            (+ (data-addr nl_safepoint_ctx)
+               (+ 64 (* (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) 56)))
+            env result out pool src cursor bsym)
+           (ptr-write-u64 (data-addr nl_safepoint_ctx) 0
+                          (+ (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) 1)))
+        0))
+    (defun nl_gc_ctx_pop ()
+      (if (> (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) 0)
+          (ptr-write-u64 (data-addr nl_safepoint_ctx) 0
+                         (- (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) 1))
+        0))
     (defun nl_gc_collect (ctx result out pool src cursor bsym)
       (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
       (seq
@@ -2500,12 +2532,15 @@ unresolved at link time."
     (defun bf_gc_diag (args out)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
-          (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0) 0))
-        (let* ((nils (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
+          (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0)
+            (if (= (wf_argval args 0) 3) (nl_gc_ctx_push 0 0 0 0 0 0 0)
+              (if (= (wf_argval args 0) 4) (nl_gc_ctx_pop) 0))))
+        (let* ((nils (alloc-bytes 32 8)) (s6 (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
                (s3 (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
           (seq
             (wf_write_nil nils)
-            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 32) nils s5)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) nils s6)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 32) s6 s5)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 40) s5 s4)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
