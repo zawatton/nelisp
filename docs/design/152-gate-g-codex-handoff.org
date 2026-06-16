@@ -1,0 +1,177 @@
+#+TITLE: Doc 152 gate-G — codex 引き継ぎ指示書 (anvil-pkg ERT suite を standalone NeLisp で全 green)
+#+DATE: 2026-06-16
+#+AUTHOR: Claude (Opus 4.8) → codex への handoff
+
+* 0. この文書の目的
+Claude が gate-G (anvil-pkg ERT suite を standalone NeLisp で完走/全 green) を
+0 → 3/6 (最初の green test 群) まで進めた。残りは「複数 session 規模の NeLisp
+standalone runtime 完成」相当で、native SIGSEGV (regex engine) を含む。codex が
+ここから継続できるよう、目標・現状・発見した機構・discovery 手法・残ブロッカー・
+制約を全て記す。**まず §6 (作業の進め方) と §7 (制約) を読んでから着手すること。**
+
+* 1. ゴール定義
+- gate-G = `cd dev/anvil-pkg && make smoke-nelisp-suite NELISP=../nelisp/target/nelisp`
+  が全 182 test を PASS (run-suite が `:failed 0` の plist を返す)。
+- 完成定義は user により「全 test green (B)」。ただし scope が runtime-completion と
+  判明したため、user と「runs to completion (plist 返却)」等への redefine 余地あり
+  (§8)。codex は全 green を目指すが、巨大 blocker (regex) で詰まったら user に相談。
+- standalone NeLisp = nelisp-cc で AOT compile した static ELF。**Rust runtime 無し**。
+  純 elisp 化が repo の目的なので **Rust LOC を増やさない** (dev/nelisp/CLAUDE.md 厳守)。
+
+* 2. 現状 (feat/standalone-reader-process-substrate, 6 commit shipped)
+全て Claude の gate-G commit (base = b9108e55 §11.34)。
+1. 127b31ed  void-function を condition-case 捕捉可能化 (reader core)
+2. dc084099  nl_cons_stash_void_function の dead box/env-bind 削除 (load 膨張除去)
+3. b5dc1326  prelude に error-conditions + 初期 polyfill
+4. e11205a5  file-system polyfill (path-syscall builtin 経由) + assoc-delete-all
+5. 424010a2  nelisp-ec-write-region polyfill (→ write-region)
+6. 90729523  nelisp stdlib helper + json-serialize encoder (**0 → 3/6, 初の green**)
+
+成果: 最初の 6 test (install/search/list) のうち **#0 install-happy / #3 search-empty /
+#5 list-empty が PASS**。残 #1/#2/#4 は real ert assertion で fail (abort でない)。
+
+** 2.1 ツリーの注意 (重要)
+作業ツリーに **無関係な未コミット TTY raw-input WIP** がある (別プロセス由来):
+  lisp/nelisp-cc-bi-tty-raw.el, lisp/nelisp-cc-tty-read-byte.el,
+  scripts/nelisp-standalone-build.el の nl_tty_* / ptr-read|write-u8|u32 追加分。
+**これは gate-G と無関係。clobber/revert しないこと。** gate-G commit (6本) はこれを
+含まず HEAD は clean。codex は HEAD から継続。なお Claude のリビルドはこの TTY WIP を
+含む working-tree build.el を使った (gate-G には無影響)。
+
+* 3. 最重要: gate-G の真因 (premise correction)
+当初「suite の clean-exit = GC reclamation の問題」と誤認されていたが **誤り**:
+- 真因 = **standalone NeLisp では「未定義関数の呼出」が catchable error でなく
+  process 終了 (rc=0, uncatchable)** だった。ert-shim の per-test condition-case が
+  効かず、最初の未定義関数 (with-mock の make-temp-file) で suite 全体が abort。
+- §11.25/34/35 の mid-eval-collect / sound reclamation は gate-G に対して **orthogonal**
+  (count-loop の ~4GiB clean-exit は別 issue。深追い不要)。
+- commit 127b31ed でこれを修正済 (§4 参照)。
+
+* 4. 修正済の機構 (どう直したか)
+** 4.1 void-function を catchable に (127b31ed)
+- `nl_cons_stash_void_function` (lisp/nelisp-cc-evalport-combiner-cons.el) が M6
+  signal stash を書くよう変更: TAG@268435480 = void-function sym, VAL@268435512 =
+  (name . nil), flag@268435472 = 1, epoch@268435544 を atomic-fetch-add。bf_signal/
+  bf_error と同 pattern。
+- `--patch-void-function-miss` を `--patch-combiner-cons-full`
+  (scripts/nelisp-standalone-build.el ~4786) に合成 (macro-cache 無効化時に脱落して
+  いた)。nl_eval_inner_cons の rc_lu miss-arm の literal `1` を
+  `(nl_cons_stash_void_function env head_ptr)` に書換。
+- matcher `nl_cc_clause_matches` (lisp/nelisp-cc-evalport-env-leaves-logic.el) に
+  **error-wildcard** 追加 + 述語 nl_cc_sym_is_error / nl_cc_sym_is_quit。
+  `(error ...)` handler が「signal TAG が quit でない全 signal」に match する。
+  **重要: この matcher は error-conditions plist を参照しない exact-symbol 方式**。
+  `(put 'X 'error-conditions ...)` を設定しても `(error ...)` は X を捕捉しない
+  (実測)。だから wildcard で実装した。
+** 4.2 errstub の condition-case trapping
+- `nelisp_eval_call_with_err` (scripts/nelisp-standalone-build.el ~7288): rc=1 かつ
+  M6 flag==1 なら stash から err_out=(TAG . VAL) を構築 (catchable)。flag==0 は
+  「non-signal abort」で propagate (uncatchable) = **残存ブロッカーの源**。
+- **やってはいけない**: flag==0 分岐で generic error を catch-all 合成する試みは
+  test #6 で 400s ハングを生んだ (revert 済)。catch-all synth は too aggressive。
+
+* 5. baked 済の polyfill (scripts/nelisp-stdlib-prelude.el 末尾)
+prelude は全 --eval/load の前に必ず走る (Doc 143)。全て `(unless (fboundp ...))` gate。
+- 標準組込 error symbol の error-conditions (Emacs subr.el 相当。matcher は未参照だが hygiene)
+- `declare` を no-op MACRO 化 (NeLisp defmacro が declare を strip しないため runtime で
+  void-function になる。function でなく macro 必須)
+- file-system: file-exists-p=access(21), file-readable-p=access(21,R_OK), delete-file=
+  unlink(87), make-directory=mkdir(83) recursive。**path-syscall builtin 経由**:
+  `nelisp--syscall-path NR PATH` (= syscall(NR, cpath)), `nelisp--syscall-path-int
+  NR PATH INT`。これらは reader builtin で fbound (syscall-direct backed)。
+  call-process / nelisp-call-process は --load-native-prereqs 後も **未 fbound** なので
+  使えない (file-op は syscall 直)。
+- getenv (→ nil), make-temp-name (counter), make-temp-file (→ /tmp + write-region or mkdir)
+- clrhash (maphash でキー収集 → remhash)
+- assoc-delete-all (純 elisp)
+- nelisp-ec-write-region (→ write-region。anvil-pkg compat の write-file が好む Layer-2
+  fileio backend。nelisp-emacs-compat-fileio は suite 未 load)
+- nelisp stdlib lowering helper: nelisp--num-{lt,gt,le,ge,eq}2, nelisp--{add,sub,mul}2
+  (dotimes/loop マクロ展開が使う。定義元 nelisp-stdlib.el は load で abort する)
+- json-serialize encoder (hash→object, list→array, nil→null, t→true, 最小 escape)。
+  anvil-pkg compat-json-serialize が native json-serialize を優先するので fbound 化。
+  NeLisp json backend (nelisp-json-serialize) は suite 未 load かつ nil hash 値で abort。
+
+* 6. 作業の進め方 (peel 手法と tooling)
+** 6.1 ビルド
+- `cd dev/nelisp && rm -f target/nelisp && make standalone-reader` (~6s, 106 units)。
+- **rm -f 必須**: GUI bridge (nemacs-gui-file-bridge) が target/nelisp を実行中で掴むため
+  write-region が ETXTBSY になる。unlink すれば新 inode に書ける (GUI bridge は触らない)。
+- 決定的実行: `setarch $(uname -m) -R <cmd>` (ASLR off)。これ無しだと clean-exit 点が変動。
+** 6.2 結果の取り出し
+- prin1/princ は block-buffered で early-exit 時に失われる。**結果は write-region で
+  ファイルに書く** (file I/O は buffering を回避)。literal int 返却 (`(if ... 111 222)`)
+  も output-reliable。
+** 6.3 peel 手法 (欠落関数を 1 層ずつ剥がす)
+- test を `(condition-case e (progn (eval (cons 'progn BODY)) "PASS") (error (format "%S" e)))`
+  で囲んで実行 → caught error が `(void-function NAME)` なら NAME が次の欠落関数。
+- polyfill は elisp なので **discovery 中は rebuild 不要**: `/tmp/inject.el` に追記して
+  suite load 後に `(load "/tmp/inject.el")`。収束したら prelude に bake + rebuild 1 回。
+- /tmp/inject.el (現存): 全 discovery polyfill 蓄積済。/tmp/peel.sh: inject + 範囲指定 runner。
+** 6.4 suite を走らせる骨格 (--eval)
+  (progn
+    (setq anvil-pkg-nelisp-smoke-{stdlib-eval-special,cl-macros,ert-shim,actor,process,
+          network,http}-source "<.wt-mod-expt の各パス>")  ; Makefile smoke-nelisp-suite 参照
+    (load "scripts/anvil-pkg-nelisp-smoke.el")
+    (anvil-pkg-nelisp-smoke-suite-readiness)               ; native-prereqs を load
+    (anvil-pkg-nelisp-smoke--load-suite-files anvil-pkg-nelisp-smoke-suite-source-files)
+    (anvil-pkg-nelisp-smoke--load-suite-files anvil-pkg-nelisp-smoke-suite-test-files)
+    (load "<.wt-mod-expt>/packages/nelisp-json/src/nelisp-json.el")  ; json backend (suite 未 load)
+    ... tests を reverse して idx 順に condition-case で実行、write-region で結果ファイル ...)
+- 注意: suite は ONE --eval form なので実行中に form-boundary collect は発火しない。
+  TERMINATE する test がいると process が死ぬので、survey は resumable (START から再開) 方式。
+- `--load-native-prereqs` は stdlib-eval-special/cl-macros/ert-shim/actor のみ load。
+  **nelisp-json/emacs-compat/stdlib/regex/text-buffer は load しない**。tests はこれらを要する。
+
+* 7. 制約 / gotchas
+- **応答は日本語** (user 向け)。
+- commit: 全 Claude/AI 介在 commit に Co-Authored-By trailer。backtick を含む message は
+  `git commit -F file` (shell が壊れる)。
+- Rust LOC を増やさない (純 elisp 化が目的)。
+- worklog: `emacsclient -e '(anvil-worklog-add "TITLE" BODY)'` (本文は temp file → with-temp-buffer
+  insert-file-contents で渡すと quote 事故を避けられる)。MCP 不在時の fallback。
+- ert-shim の should-error :type 修正 (§8 #1) は **revert 済** (correct だが regex SIGSEGV を
+  露呈し run 全体を殺すため)。regex fix 後に再適用すること。
+- catch-all errstub synth は禁止 (ハングする)。
+- 触っていない TTY WIP (§2.1) を clobber しない。
+
+* 8. 残ブロッカー (次にやること、優先順)
+** #1 install-error → regex engine の native SIGSEGV (最重要・最難)
+- ert-shim の should-error の :type 抽出 bug: `(cadr (memq :type args))` が `(quote sym)` を
+  返すのを `,type` で正しく評価する (`',type` → `,type` を 4 箇所、anvil-pkg-nelisp-ert-shim.el
+  line 118-124)。これは **correct な fix**。
+- だが修正すると type-check を抜けて次の assertion `(string-match-p "cannot resolve"
+  (cadr err))` に到達 → **string-match-p が SIGSEGV (RC=139, native crash, catchable でない)**。
+- 調査タスク: (a) nelisp-regex backend (NELISP_REGEX_SRC =
+  .wt-mod-expt/packages/nelisp-regex/src/nelisp-regex.el) を load すれば string-match-p が
+  動くか / それとも reader の regex が SIGSEGV か。(b) SIGSEGV なら reader-level の regex
+  バグ。string-match-p は多数 test が使うので、これが解けると広範に効く。
+** #2 search-happy / #4 list-happy → json-parse 値抽出
+- json-parse 自体は OK (compat-json-parse は :object-type 'alist 指定で正しい alist を返す。
+  nelisp-json-parse-string の default は `(0 ...)` 形式だが 'alist 指定で `(("k" . v))`)。
+- 値不一致 (#2 version "13.0.0", #4 length 1) は pkg-search/pkg-list の parse logic を
+  確認 (alist key access、nested 構造の扱い)。
+** TERMINATE cluster (flag==0 abort)
+- #6-8 = install-emacs-package-* : pkg-define の emacs-package build-system 処理内の flag==0 abort。
+- #37,42,43,46,47,48 = dsl-test-render-*-golden : render の flag==0 abort。
+- これらは uncatchable terminate。per-builtin で M6 stash+flag を立てるか、原因 primitive を
+  polyfill。survey (旧, append-bug 修正済) では 49 test 中 9 が TERMINATE、~30/182 推定。
+** backend stack の load
+- 上記の多くは nelisp-json/emacs-compat/stdlib/regex backend が suite で load されないのが
+  遠因。high-leverage 策: (a) これら backend を suite harness (--load-native-prereqs) で
+  load する、または (b) nelisp-stdlib.el の load-time abort を localize/fix して wholesale 解決。
+  ただし backend 自体が standalone で load-abort/SIGSEGV するので調査要。
+
+* 9. 状態の永続化 (worklog)
+全 iteration を anvil-worklog に記録済 (2026-06-16, machine linux-debian)。検索:
+`(anvil-worklog-search "gate-G")`。主要 entry: void-function 真因、box strip、file-op
+polyfill、初 green (0→3/6)、regex SIGSEGV inflection。memory:
+project_nelisp-gate-g-void-function-blocker, feedback_nelisp-standalone-void-function-uncatchable,
+feedback_nelisp-condition-case-matcher-exact-symbol。
+
+* 10. 一言サマリ (codex への TL;DR)
+void-function は catchable 化済で suite は本体を実行できる。shared with-mock chain は完成
+(6 commit、3/6 green)。次は #1 の regex SIGSEGV (string-match-p、native crash) を解くのが鍵
+(多数 test に効く)。peel 手法 = test を condition-case で囲んで (void-function NAME) を見て
+polyfill、rebuild は inject.el で回避、結果は write-region でファイルへ、setarch -R で決定的に。
+catch-all synth 禁止、Rust 増やさない、TTY WIP を触らない。
