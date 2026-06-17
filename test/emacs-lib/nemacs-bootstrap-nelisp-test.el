@@ -232,6 +232,7 @@ list below catches it."
                     "emacs-font-lock" "emacs-font-lock-builtins"
                     "emacs-edit-builtins" "emacs-line-builtins"
                     "emacs-search-builtins" "emacs-fileio-builtins"
+                    "emacs-special-buffers"
                     "emacs-process" "emacs-process-builtins"
                     "emacs-command-loop" "emacs-command-loop-builtins"
                     "emacs-standalone"))
@@ -398,6 +399,456 @@ shape needs interactive boot + interactive teardown."
                 "  (when (fboundp (function nemacs-main--shutdown-tui))"
                 "    (nemacs-main--shutdown-tui)))"))))
      (should (string-match-p "EVENT-LOOP-RETURNED" out)))))
+
+;;;; F. dev surfaces (imenu / xref)
+
+(ert-deftest nemacs-bootstrap-nelisp-test/imenu-xref-callable ()
+  "imenu symbol index and xref jump-to-definition work on the reader.
+Proves the `imenu' / `xref' facades install on the standalone runtime,
+the Elisp definition scan finds defs (excluding `define-key'), and the
+jump + jump-back stack run end-to-end."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(with-temp-buffer"
+                "  (insert \"(defun aaa () 1)\\n(defvar bbb 2)\\n"
+                "(defun ccc () 3)\\n(define-key m k c)\\n\")"
+                "  (let ((idx (emacs-imenu-create-index)))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"IMENU-COUNT=\" (number-to-string (length idx)) \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"IMENU-NAMES=\" (mapconcat (function car) idx \",\") \"\\n\")))"
+                "  (goto-char (point-max))"
+                "  (let ((hit (emacs-xref-find-definitions \"ccc\")))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"XREF-FOUND=\" (if hit \"t\" \"nil\") \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"XREF-PAREN=\""
+                "             (if (and hit (= (char-after (point)) 40)) \"t\" \"nil\")"
+                "             \"\\n\")))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"XREF-POP=\" (if (emacs-xref-pop-marker-stack) \"t\" \"nil\") \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-IMENU=\" (if (fboundp (quote imenu)) \"t\" \"nil\") \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-XREF=\""
+                "           (if (fboundp (quote xref-find-definitions)) \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     ;; facades installed on the standalone runtime
+     (should (string-match-p "FB-IMENU=t" out))
+     (should (string-match-p "FB-XREF=t" out))
+     ;; symbol index finds the three defs and skips `define-key'
+     (should (string-match-p "IMENU-COUNT=3" out))
+     (should (string-match-p "IMENU-NAMES=aaa,bbb,ccc" out))
+     ;; jump-to-definition lands on the opening paren, jump-back returns
+     (should (string-match-p "XREF-FOUND=t" out))
+     (should (string-match-p "XREF-PAREN=t" out))
+     (should (string-match-p "XREF-POP=t" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/compile-callable ()
+  "compile/grep diagnostic capture and next-error work on the reader.
+Proves the `compile' facade installs, `call-process' (via /bin/sh)
+captures output, the `FILE:LINE[:COL]:' parser runs, and next-error
+advances over the parsed diagnostics."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                "  (emacs-compile-run"
+                "   \"echo 'a.c:12: oops'; echo 'b.c:5: warn'\")"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CC-COUNT=\""
+                "           (number-to-string (length (emacs-compile-errors)))"
+                "           \"\\n\"))"
+                "  (let ((e (emacs-compile-next-error)))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"CC-FILE=\" (plist-get e :file) \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"CC-LINE=\" (number-to-string (plist-get e :line)) \"\\n\")))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-COMPILE=\" (if (fboundp (quote compile)) \"t\" \"nil\") \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-NEXT-ERROR=\""
+                "           (if (fboundp (quote next-error)) \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     ;; facade installed on the standalone runtime
+     (should (string-match-p "FB-COMPILE=t" out))
+     (should (string-match-p "FB-NEXT-ERROR=t" out))
+     ;; two diagnostics captured + parsed; next-error visits the first
+     (should (string-match-p "CC-COUNT=2" out))
+     (should (string-match-p "CC-FILE=a.c" out))
+     (should (string-match-p "CC-LINE=12" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/vc-callable ()
+  "Git-only read-only VC status works on the reader.
+Proves the `vc' facade installs the read-only family, the git program
+resolves to an absolute path (the reader has no PATH lookup), and
+`emacs-vc-status' parses porcelain output of a real work-tree."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (skip-unless (executable-find "git"))
+   (let ((repo (make-temp-file "nemacs-vc-smoke-" t)))
+     (unwind-protect
+         (progn
+           ;; build a work-tree with one modified tracked file + one untracked
+           (let ((default-directory (file-name-as-directory repo)))
+             (call-process "git" nil nil nil "init" "-q")
+             (call-process "git" nil nil nil "config" "user.email" "t@example.com")
+             (call-process "git" nil nil nil "config" "user.name" "t")
+             (with-temp-file (expand-file-name "tracked.txt" repo) (insert "v1\n"))
+             (call-process "git" nil nil nil "add" "tracked.txt")
+             (call-process "git" nil nil nil "commit" "-q" "-m" "init")
+             (with-temp-file (expand-file-name "tracked.txt" repo) (insert "v2\n"))
+             (with-temp-file (expand-file-name "fresh.txt" repo) (insert "new\n")))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval"
+                       (concat
+                        "(let ((entries (emacs-vc-status \""
+                        (file-name-as-directory repo)
+                        "\")))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"VC-COUNT=\" (number-to-string (length entries)) \"\\n\"))"
+                        "  (dolist (e entries)"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"VC-ENTRY=\" (car e) \"|\" (cdr e) \"\\n\")))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"FB-VC-DIFF=\""
+                        "           (if (fboundp (quote vc-diff)) \"t\" \"nil\")"
+                        "           \"\\n\")))"))))
+             ;; facade installed the read-only family on the standalone runtime
+             (should (string-match-p "FB-VC-DIFF=t" out))
+             ;; status saw the modified tracked file and the untracked file.
+             ;; `regexp-quote' the markers: the git state codes (" M", "??")
+             ;; and the "|" separator contain regexp metacharacters.
+             (should (string-match-p "VC-COUNT=2" out))
+             (should (string-match-p (regexp-quote "VC-ENTRY= M|tracked.txt") out))
+             (should (string-match-p (regexp-quote "VC-ENTRY=??|fresh.txt") out))))
+       (delete-directory repo t)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/comint-callable ()
+  "comint machinery (output mark, input ring, send-input) works on the reader.
+Proves the `comint' facade installs and the buffer/ring machinery runs.
+A live subprocess round-trip is NOT exercised here: the reader's
+`make-process' cannot yet hold an interactive subprocess open (an L1
+substrate gap), so this gate covers the process-independent machinery
+that the daily-driver REPL/shell buffers build on."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(with-temp-buffer"
+                "  (emacs-comint-mode)"
+                "  (emacs-comint--set-mark (point-max))"
+                "  (emacs-comint-output-filter nil \"out1\\n\")"
+                "  (emacs-comint-output-filter nil \"out2\\n\")"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CO-OUTPUT-OK=\""
+                "           (if (and (string-match-p \"out1\" (buffer-string))"
+                "                    (string-suffix-p \"out2\\n\" (buffer-string)))"
+                "               \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (emacs-comint-add-to-input-history \"cmd-a\")"
+                "  (emacs-comint-add-to-input-history \"cmd-b\")"
+                "  (emacs-comint-add-to-input-history \"   \")"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CO-RING=\""
+                "           (mapconcat (function identity) (emacs-comint-input-ring) \",\")"
+                "           \"\\n\"))"
+                "  (goto-char (point-max))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CO-NAV=\" (emacs-comint-previous-input 1) \"\\n\"))"
+                "  (emacs-comint--set-mark (point-max))"
+                "  (goto-char (point-max))"
+                "  (insert \"typed-input\")"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CO-SEND=\" (emacs-comint-send-input) \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-COMINT-SEND=\""
+                "           (if (fboundp (quote comint-send-input)) \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-MAKE-COMINT=\""
+                "           (if (fboundp (quote make-comint-in-buffer)) \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     ;; facade installed on the standalone runtime
+     (should (string-match-p "FB-COMINT-SEND=t" out))
+     (should (string-match-p "FB-MAKE-COMINT=t" out))
+     ;; output accumulates at the mark; blank input is skipped in the ring
+     (should (string-match-p "CO-OUTPUT-OK=t" out))
+     (should (string-match-p "CO-RING=cmd-b,cmd-a" out))
+     ;; previous-input recalls the newest entry; send-input lifts the pending input
+     (should (string-match-p "CO-NAV=cmd-b" out))
+     (should (string-match-p "CO-SEND=typed-input" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/replace-occur-callable ()
+  "occur / replace / line-filter machinery works on the reader.
+Proves the `replace' facade installs and the `string-match'-based scan
+collects occur matches, navigates to a source position, counts matches,
+and rewrites the buffer via flush-lines / replace-regexp."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(with-temp-buffer"
+                "  (insert \"alpha 1\\nbeta 2\\nalpha 3\\n\")"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"RP-OCCUR=\" (number-to-string (emacs-occur \"alpha\")) \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"RP-GOTO=\" (number-to-string (or (emacs-occur-goto 2) -1)) \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"RP-HOWMANY=\" (number-to-string (emacs-replace-how-many \"alpha\")) \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"RP-FLUSH=\" (number-to-string (emacs-replace-flush-lines \"beta\")) \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"RP-FLUSH-OK=\""
+                "           (if (string= (buffer-string) \"alpha 1\\nalpha 3\\n\") \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"RP-REPLACE=\" (number-to-string (emacs-replace-regexp \"alpha\" \"AAA\")) \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"RP-REPLACE-OK=\""
+                "           (if (string= (buffer-string) \"AAA 1\\nAAA 3\\n\") \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-OCCUR=\" (if (fboundp (quote occur)) \"t\" \"nil\") \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-REPLACE-REGEXP=\""
+                "           (if (fboundp (quote replace-regexp)) \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-HOW-MANY=\""
+                "           (if (fboundp (quote how-many)) \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     ;; facade installed on the standalone runtime
+     (should (string-match-p "FB-OCCUR=t" out))
+     (should (string-match-p "FB-REPLACE-REGEXP=t" out))
+     (should (string-match-p "FB-HOW-MANY=t" out))
+     ;; occur found two lines and goto reached line 3's start (pos 16)
+     (should (string-match-p "RP-OCCUR=2" out))
+     (should (string-match-p "RP-GOTO=16" out))
+     (should (string-match-p "RP-HOWMANY=2" out))
+     ;; flush-lines dropped "beta", replace-regexp rewrote both "alpha"
+     (should (string-match-p "RP-FLUSH=1" out))
+     (should (string-match-p "RP-FLUSH-OK=t" out))
+     (should (string-match-p "RP-REPLACE=2" out))
+     (should (string-match-p "RP-REPLACE-OK=t" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/query-replace-callable ()
+  "Interactive-engine query-replace works on the reader.
+Drives `emacs-query-replace' with an injected decision sequence (no live
+keystrokes) to exercise the act / skip / act-all paths, and confirms the
+`query-replace' command name installs."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                "  (defvar qr-d nil)"
+                "  (defun qr-pop ()"
+                "    (let ((d (car qr-d))) (setq qr-d (cdr qr-d)) (if d d (quote skip))))"
+                ;; scenario 1: act / skip / act
+                "  (setq qr-d (list (quote act) (quote skip) (quote act)))"
+                "  (with-temp-buffer"
+                "    (insert \"x A x B x C\")"
+                "    (goto-char (point-min))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"QR1-COUNT=\""
+                "             (number-to-string"
+                "              (emacs-query-replace \"x\" \"Z\""
+                "                                   (function (lambda (m b e) (qr-pop)))))"
+                "             \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"QR1-OK=\""
+                "             (if (string= (buffer-string) \"Z A x B Z C\") \"t\" \"nil\")"
+                "             \"\\n\")))"
+                ;; scenario 2: skip then act-all
+                "  (setq qr-d (list (quote skip) (quote act-all)))"
+                "  (with-temp-buffer"
+                "    (insert \"a a a a\")"
+                "    (goto-char (point-min))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"QR2-COUNT=\""
+                "             (number-to-string"
+                "              (emacs-query-replace \"a\" \"Z\""
+                "                                   (function (lambda (m b e) (qr-pop)))))"
+                "             \"\\n\"))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"QR2-OK=\""
+                "             (if (string= (buffer-string) \"a Z Z Z\") \"t\" \"nil\")"
+                "             \"\\n\")))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-QUERY-REPLACE=\""
+                "           (if (fboundp (quote query-replace)) \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-QR-REGEXP=\""
+                "           (if (fboundp (quote query-replace-regexp)) \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     ;; command names installed on the standalone runtime
+     (should (string-match-p "FB-QUERY-REPLACE=t" out))
+     (should (string-match-p "FB-QR-REGEXP=t" out))
+     ;; act / skip / act replaced the 1st and 3rd match only
+     (should (string-match-p "QR1-COUNT=2" out))
+     (should (string-match-p "QR1-OK=t" out))
+     ;; skip then act-all replaced the remaining three
+     (should (string-match-p "QR2-COUNT=3" out))
+     (should (string-match-p "QR2-OK=t" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/isearch-callable ()
+  "Incremental search works on the reader, including the full driver.
+The search engine runs over the `nelisp-ec' buffer search, and the
+interactive `isearch-forward' is driven end-to-end by injecting the key
+events (the query string, C-s to repeat, RET to commit) into the
+minibuffer input queue -- the same path the host ERT exercises."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                ;; raw engine over a nelisp-ec buffer
+                "  (with-temp-buffer"
+                "    (insert \"hello target here\")"
+                "    (goto-char (point-min))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"IS-ENGINE=\""
+                "             (number-to-string (or (emacs-isearch--search-forward \"target\") -1))"
+                "             \"\\n\")))"
+                ;; full isearch-forward: query \"foo\" then RET -> first match end (4)
+                "  (emacs-isearch-reset)"
+                "  (let ((buf (nelisp-ec-generate-new-buffer \" *is1*\")))"
+                "    (nelisp-ec-with-current-buffer buf"
+                "      (nelisp-ec-insert \"foo bar foo baz\")"
+                "      (nelisp-ec-goto-char (nelisp-ec-point-min)))"
+                "    (nelisp-ec-set-buffer buf)"
+                "    (setq emacs-minibuffer--input-queue (list \"foo\" (quote return)))"
+                "    (isearch-forward)"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"IS-FWD=\""
+                "             (number-to-string (nelisp-ec-with-current-buffer buf (nelisp-ec-point)))"
+                "             \"\\n\")))"
+                ;; query \"foo\" then C-s (19) to repeat, then RET -> 2nd match end (12)
+                "  (emacs-isearch-reset)"
+                "  (let ((buf (nelisp-ec-generate-new-buffer \" *is2*\")))"
+                "    (nelisp-ec-with-current-buffer buf"
+                "      (nelisp-ec-insert \"foo bar foo baz foo\")"
+                "      (nelisp-ec-goto-char (nelisp-ec-point-min)))"
+                "    (nelisp-ec-set-buffer buf)"
+                "    (setq emacs-minibuffer--input-queue (list \"foo\" 19 (quote return)))"
+                "    (isearch-forward)"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"IS-CYCLE=\""
+                "             (number-to-string (nelisp-ec-with-current-buffer buf (nelisp-ec-point)))"
+                "             \"\\n\")))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-ISEARCH-FORWARD=\""
+                "           (if (fboundp (quote isearch-forward)) \"t\" \"nil\")"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-ISEARCH-BACKWARD=\""
+                "           (if (fboundp (quote isearch-backward)) \"t\" \"nil\")"
+                "           \"\\n\")))"))))
+     ;; command names installed on the standalone runtime
+     (should (string-match-p "FB-ISEARCH-FORWARD=t" out))
+     (should (string-match-p "FB-ISEARCH-BACKWARD=t" out))
+     ;; engine + full driver land on the expected match positions
+     (should (string-match-p "IS-ENGINE=13" out))
+     (should (string-match-p "IS-FWD=4" out))
+     (should (string-match-p "IS-CYCLE=12" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/ielm-callable ()
+  "The in-process ielm REPL evaluates and prints results on the reader.
+Creates the `*ielm*' buffer, evaluates two forms through
+`ielm-input-handler', and confirms the printed results and input ring."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                "  (when (get-buffer ielm-buffer-name)"
+                "    (kill-buffer (get-buffer ielm-buffer-name)))"
+                "  (let ((buf (ielm)))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"IELM-LIVE=\" (if (buffer-live-p buf) \"t\" \"nil\") \"\\n\"))"
+                "    (with-current-buffer buf"
+                "      (goto-char (point-max)) (insert \"(+ 1 2)\\n\") (ielm-input-handler)"
+                "      (nelisp--write-stdout-bytes"
+                "       (concat \"IELM-EVAL=\""
+                "               (if (string-suffix-p (concat \"(+ 1 2)\\n3\\n\" ielm-prompt)"
+                "                                    (buffer-string)) \"t\" \"nil\")"
+                "               \"\\n\"))"
+                "      (goto-char (point-max)) (insert \"(* 6 7)\\n\") (ielm-input-handler)"
+                "      (nelisp--write-stdout-bytes"
+                "       (concat \"IELM-EVAL2=\""
+                "               (if (string-suffix-p (concat \"(* 6 7)\\n42\\n\" ielm-prompt)"
+                "                                    (buffer-string)) \"t\" \"nil\")"
+                "               \"\\n\"))"
+                "      (nelisp--write-stdout-bytes"
+                "       (concat \"IELM-HIST-N=\""
+                "               (number-to-string (length (emacs-ielm--history)))"
+                "               \"\\n\"))))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-IELM=\" (if (fboundp (quote ielm)) \"t\" \"nil\") \"\\n\")))"))))
+     (should (string-match-p "FB-IELM=t" out))
+     (should (string-match-p "IELM-LIVE=t" out))
+     (should (string-match-p "IELM-EVAL=t" out))
+     (should (string-match-p "IELM-EVAL2=t" out))
+     (should (string-match-p "IELM-HIST-N=2" out)))))
+
+(ert-deftest nemacs-bootstrap-nelisp-test/project-callable ()
+  "Git project root detection and file listing work on the reader.
+A temp git work-tree is built host-side; the reader detects its root from
+a nested directory and lists the tracked-area files (VC admin files and
+the absent `file-relative-name' are handled by the reader fallbacks)."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (skip-unless (executable-find "git"))
+   (let ((repo (make-temp-file "nemacs-project-smoke-" t)))
+     (unwind-protect
+         (progn
+           (let ((default-directory (file-name-as-directory repo)))
+             (call-process "git" nil nil nil "init" "-q")
+             (with-temp-file (expand-file-name "a.el" repo) (insert "(defvar a 1)\n"))
+             (make-directory (expand-file-name "lib" repo) t)
+             (with-temp-file (expand-file-name "lib/b.el" repo) (insert "(defvar b 2)\n")))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval"
+                       (concat
+                        "(progn"
+                        "  (let ((p (project-current nil \""
+                        (file-name-as-directory repo) "lib\")))"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"PROJ-FOUND=\" (if p \"t\" \"nil\") \"\\n\"))"
+                        "    (when p"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"PROJ-ROOT=\" (project-root p) \"\\n\"))))"
+                        "  (let ((files (project--relative-candidates \""
+                        (file-name-as-directory repo) "\" nil)))"
+                        "    (nelisp--write-stdout-bytes"
+                        "     (concat \"PROJ-FILES=\" (mapconcat (function identity) files \",\") \"\\n\")))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"FB-PROJECT-FIND-FILE=\""
+                        "           (if (fboundp (quote project-find-file)) \"t\" \"nil\")"
+                        "           \"\\n\")))"))))
+             (should (string-match-p "FB-PROJECT-FIND-FILE=t" out))
+             ;; root detected from the nested lib/ directory
+             (should (string-match-p "PROJ-FOUND=t" out))
+             (should (string-match-p (concat "PROJ-ROOT=" (regexp-quote
+                                                           (file-name-as-directory repo)))
+                                     out))
+             ;; tracked-area files listed, VC admin (.git) excluded
+             (should (string-match-p (regexp-quote "a.el") out))
+             (should (string-match-p (regexp-quote "lib/b.el") out))
+             (should-not (string-match-p (regexp-quote "/.git/") out))))
+       (delete-directory repo t)))))
 
 (provide 'nemacs-bootstrap-nelisp-test)
 

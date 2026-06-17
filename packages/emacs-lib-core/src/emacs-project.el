@@ -80,18 +80,45 @@ Each line stores one absolute project root."
     (project--ensure-list-loaded)
     (unless (member normalized project--list)
       (setq project--list (append project--list (list normalized)))
-      (make-directory (file-name-directory project-list-file) t)
-      (with-temp-buffer
-        (insert normalized "\n")
-        (write-region (point-min) (point-max) project-list-file t 'silent)))))
+      ;; Persistence is best-effort: a write failure (e.g. the standalone
+      ;; reader's restricted file I/O) must not abort project detection, which
+      ;; only needs the in-memory list updated above.
+      (condition-case nil
+          (progn
+            (make-directory (file-name-directory project-list-file) t)
+            (with-temp-buffer
+              (insert normalized "\n")
+              (write-region (point-min) (point-max) project-list-file t 'silent)))
+        (error nil)))))
+
+(defun project--files-recursive (dir)
+  "Return all files under DIR recursively.
+Falls back to a `directory-files' walk when `directory-files-recursively'
+is unavailable (the standalone reader lacks it)."
+  (if (fboundp 'directory-files-recursively)
+      (directory-files-recursively dir ".*" nil)
+    (let ((out nil) (stack (list (directory-file-name dir))))
+      (while stack
+        (let ((d (pop stack)))
+          (dolist (name (directory-files d t nil t))
+            (let ((bn (file-name-nondirectory name)))
+              (unless (member bn '("." ".."))
+                (if (file-directory-p name)
+                    (push name stack)
+                  (push name out)))))))
+      (nreverse out))))
 
 (defun project--project-files (root include-all)
   "Return project files beneath ROOT.
 When INCLUDE-ALL is nil, exclude files inside VC admin directories."
   (let* ((dir (project--normalize-dir root))
-         (all-files (directory-files-recursively dir ".*" nil))
+         (all-files (project--files-recursive dir))
+         ;; `regexp-quote' per marker + `\\|' alternation rather than
+         ;; `regexp-opt': the latter's optimized output does not match on the
+         ;; standalone reader's regexp engine.
          (vc-dir-pattern
-          (concat "/" (regexp-opt project--vc-markers t) "/")))
+          (mapconcat (lambda (m) (concat "/" (regexp-quote m) "/"))
+                     project--vc-markers "\\|")))
     (cl-remove-if
      (lambda (path)
        (or (file-directory-p path)
@@ -101,9 +128,15 @@ When INCLUDE-ALL is nil, exclude files inside VC admin directories."
 
 (defun project--relative-candidates (root include-all)
   "Return completion candidates for ROOT.
-The result is a list of relative file names."
-  (mapcar (lambda (path) (file-relative-name path root))
-          (project--project-files root include-all)))
+The result is a list of relative file names.  The project files all live
+under ROOT, so strip the ROOT prefix directly -- `file-relative-name'
+returns nil on the standalone reader."
+  (let ((root (project--normalize-dir root)))
+    (mapcar (lambda (path)
+              (if (string-prefix-p root path)
+                  (substring path (length root))
+                (or (file-relative-name path root) path)))
+            (project--project-files root include-all))))
 
 (defun project--read-project-root ()
   "Prompt for a project root from the persisted history."
