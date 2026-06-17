@@ -899,6 +899,59 @@ to confirm the working-directory tracking + output capture."
              (should (string-match-p "SH-RING-N=3" out))))
        (delete-directory dir t)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/eshell-callable ()
+  "eshell's hybrid dispatch works on the reader.
+Drives a Lisp form (evaluated in-process), the `echo' built-in, and an
+external `ls' (via call-process) after `cd' into a host-made temp dir."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (skip-unless (file-executable-p "/bin/sh"))
+   (let ((dir (make-temp-file "nemacs-eshell-smoke-" t)))
+     (unwind-protect
+         (progn
+           (with-temp-file (expand-file-name "marker-esh.txt" dir) (insert "m\n"))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval"
+                       (concat
+                        "(progn"
+                        "  (when (get-buffer eshell-buffer-name)"
+                        "    (kill-buffer eshell-buffer-name))"
+                        "  (let ((buf (eshell)))"
+                        "    (with-current-buffer buf"
+                        "      (goto-char (point-max)) (insert \"(+ 2 3)\") (eshell-send-input)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"ESH-LISP=\""
+                        "               (if (string-match-p \"\\n5\\n\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (goto-char (point-max)) (insert \"echo eshell-builtin\")"
+                        "      (eshell-send-input)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"ESH-ECHO=\""
+                        "               (if (string-match-p \"eshell-builtin\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (goto-char (point-max)) (insert \"cd " dir "\") (eshell-send-input)"
+                        "      (goto-char (point-max)) (insert \"ls\") (eshell-send-input)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"ESH-EXT-LS=\""
+                        "               (if (string-match-p \"marker-esh\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"ESH-RING-N=\""
+                        "               (number-to-string (length (emacs-comint-input-ring)))"
+                        "               \"\\n\"))))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"FB-ESHELL=\" (if (fboundp (quote eshell)) \"t\" \"nil\") \"\\n\")))"))))
+             (should (string-match-p "FB-ESHELL=t" out))
+             ;; Lisp form evaluated in-process
+             (should (string-match-p "ESH-LISP=t" out))
+             ;; echo built-in (pure Elisp)
+             (should (string-match-p "ESH-ECHO=t" out))
+             ;; external ls (call-process) after cd shows the host marker
+             (should (string-match-p "ESH-EXT-LS=t" out))
+             ;; four commands recorded in the comint input ring
+             (should (string-match-p "ESH-RING-N=4" out))))
+       (delete-directory dir t)))))
+
 (provide 'nemacs-bootstrap-nelisp-test)
 
 ;;; nemacs-bootstrap-nelisp-test.el ends here
