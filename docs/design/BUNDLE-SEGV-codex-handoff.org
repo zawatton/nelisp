@@ -1,0 +1,198 @@
+#+TITLE: [CODEX HANDOFF] bundle segfault 真因 = runtime car/cdr list-op view が quoted template 走査で破壊
+#+DATE: 2026-06-17
+#+AUTHOR: claude → interactive codex (live workspace, gdb 可)
+#+STATUS: ROOT CAUSE PINNED, fix は runtime list-op view 寿命 (codex domain)
+
+* ★ TL;DR — *トリガーは「複数行 backquote」* (最重要、最新 pin)
+- 症状: =cat ../nelisp-emacs/build/nemacs-bootstrap.el | target/nelisp --repl --no-prompt --no-print=
+  が *決定的に rc=139 (SIGSEGV)*。nelisp-emacs daily-driver image bake を塞ぐ唯一の blocker。
+- *決定的 discriminator*: 全く同じ backquote フォームでも、*ソースが複数行なら rc=139、単一行なら rc=0*。
+  - 複数行 backquote (内側 =(defun ,name ,args ,@body)= が改行で分かれる) → crash。
+  - 同じものを 1 行に書く → crash しない。
+  - 手動構築 (=(list 'progn (append ...) ...)= 、backquote 不使用) は複数行でも rc=0。
+  ⇒ *reader が複数行フォームを parse する時の cons 生成* + backquote 走査 の組合せが真因。
+- 機構 (推定): reader (nelisp-cc-reader-parser/-lexer) が *複数行に跨るフォーム* の cons cell を、
+  入力 buffer を指す materialized view (Doc 147) として生成する。backquote 展開 (nelisp--bq-expand)
+  がその view-cons を car/cdr 走査する際、view が後続で上書きされ、未展開の =(comma X)= が結果に残る →
+  fset の symbol 引数になり mirror_set_function が cons を str 誤認 → str-bytes-ptr=NULL → nl_alloc_str crash。
+  単一行フォームは別経路で fully materialized されるので安全。
+- *fix 対象*: reader が複数行フォームに対し生成する cons を owned-copy で materialize する (単一行と同じに)。
+  または macroexpand/backquote に渡す前に form を deep-materialize する。
+  nelisp--bq-expand-list (elisp form) の書換では回避不能 (claude が recursive 版で実証済、下記)。
+- *gdb 必須*。orchestrator codex (sandbox, ptrace 不可) では pin 不能。interactive codex (live) 向け。
+
+* ★ 最小再現 mp (docs/design/bundle-segv-repro-B.el, *複数行必須*, rc=139 決定的 3/3)
+#+begin_src elisp
+(defmacro mp (name args &rest body)
+  `(progn
+     (defun ,name ,args ,@body)
+     7))
+(mp foo (x) x)
+#+end_src
+- =cat docs/design/bundle-segv-repro-B.el | target/nelisp --repl --no-prompt --no-print ; echo $?= → 139。
+- *同じものを 1 行*にすると rc=0 (=cat= で渡すソースの改行が trigger)。let/intern/',name は不要。
+- ※ =;;= コメント行は --repl feed を壊すので repro file は comment-free。
+
+* ★★ 最大の手がかり: --repl のみ crash、--eval/--load は動く (バグは --repl driver)
+- *全く同じ複数行フォーム*を:
+  - =cat repro | target/nelisp --repl --no-prompt --no-print= → *rc=139*
+  - =target/nelisp --eval "$(cat repro)"= → *rc=0*
+- ⇒ バグは runtime / parser (nelisp_reader_parse_one) / GC ではない (--repl と --eval で共有)。
+  *--repl 固有の read/eval driver* の複数行 backquote 処理にある。
+- --repl driver (scripts/nelisp-standalone-build.el):
+  - nl_repl_loop (7304): while で nl_repl_read_line (7286) で stdin を *改行 (ch=10) まで 1 行* 読込
+    (nl_repl_read_line_loop 7263, nl_os_read_stdin を 1 byte ずつ)。
+  - nl_repl_make_source (7291): その 1 行を nl_repl_eval_prefix = "(let ((v (progn\n" /
+    nl_repl_eval_no_print_suffix = "))) v)\n" で wrap → nl_eval_source_all (6073) で parse+eval。
+  - nl_eval_source_all は cursor を毎回 reset (6075: cursor+0=2, cursor+8=0)、src は行ごとに rebuild。
+- *codex への最短調査*: --repl 経路 (行単位 wrap + nl_eval_source_all per line) と --eval/--load 経路
+  (whole-source を 1 回 parse+eval) の差分。複数行 backquote が --repl の行分割/wrap/cursor-reset で
+  comma symbol を取りこぼす箇所を特定。fix 候補: (a) batch --repl (--no-prompt) を --load と同じ
+  whole-source slurp+eval に, (b) --repl が括弧 balance まで行 accumulate してから eval, (c) 行 wrap が
+  backquote 跨ぎを壊さない形に。最小再現 mp が rc=0 + 既存 (--eval/単一行/単純複数行) を壊さない事。
+- ※ claude が anvil-fusion (claude+codex panel) に投げたが judge synthesis が null で回答取得不能だった。
+
+* ★ 改行位置の精密 pin + GC/reclaim は無罪 (claude 実測)
+- *trigger は =(progn= 直後の改行のみ*: =`(progn\n(defun ,name ,args ,@body) 7)= (= progn の第1要素 defun が
+  次行で始まる) → rc=139。改行を =(progn= 直後以外 (defun 内, 7 の前, BQ の前) に置くと rc=0。
+- *GC collect は無罪*: reclaimer gate (arena base+160 = 1 → nl_gc_collect NO-OP, build:964) を立てて
+  collect を無効化しても rc=139。→ §11.41 mid-form collect が *直接の* 原因ではない。
+- *between-forms scratch reclaim も無罪*: defmacro と call を 1 つの progn に wrap (form 間 reclaim なし)
+  しても rc=139。→ 単一 form 評価中の corruption。
+- ⇒ 真因は GC でも form-boundary reclaim でもない。*cons の memory-aliasing / view 読込 corruption*。
+
+* ★ 精緻化した機構 (どう (comma name) が残るか)
+- mp の body template = =(progn (defun (comma name) (comma args) (comma-at body)) 7)= (reader 生成の literal)。
+- bq-expand-list が要素 =(comma name)= を処理する時、=(eq (car elem) 'comma)= で comma 判定し =(cadr elem)= で
+  name を取り出すべき。だが standalone で =(car elem)= / =(cadr elem)= を読むと、*newline-layout の cons は
+  view で corrupted な値を返し*、comma 判定/抽出が失敗 → =(comma name)= が展開結果にそのまま残る → fset arg0 に
+  なり mirror が cons を str 誤認 → crash。
+- = Doc 147 materialized-view の *読込時* corruption (car/cdr/cadr が stale view を返す)。改行 1 byte が
+  =(defun ...)= とその内側 =(comma name)= cons の layout を変え、view 化する/しないを切替える。
+
+* ★ gdb で confirm 済 (claude, conditional break)
+break: =nl_apply_do_fset if (arg0 の tag)==7= (= arg0 が cons = buggy mp fset のみ stop) で捕捉:
+- arg0 (fset 対象) = *tag=7 Cons*。cons cell payload = [car_ptr][cdr_ptr][rc=9][0x28]。
+- arg0.car = *tag=4 Symbol*、name len=5 = "comma"。⇒ arg0 = genuine =(comma name)= cons。
+- アドレス (0x7fffaad...) は *arena 領域内* (info proc mappings の 0x7fffa3e..-0x7fffb7e..)。入力 buffer
+  への view ではない = fset 時点では cons は valid な arena オブジェクト。
+⇒ *fset 時点で壊れているのでなく、bq-expand が =(comma name)= の comma を展開せず literal で残した*。
+   = bq-expand-list の =(eq (car elem) 'comma)= 判定が走査中に false になった (comma を抽出せず素通し)。
+   arg0.car は valid な "comma" symbol なので、走査中の *その瞬間の read* が stale/別 identity を返した、
+   または =(eq (car elem) 'comma)= の 'comma (bq-expand-list 側の canonical) と reader 産の comma symbol が
+   非 eq、のいずれか。multi-line layout がこれを切替える。
+
+* ★ 次の gdb 焦点 (この read を捕まえる)
+- nelisp--bq-expand-list が =(comma name)= 要素を処理する瞬間の =(car elem)= read を観測する。
+  bq-expand-list の compiled code (prelude bake) 内で =(eq (car elem) 'comma)= に対応する箇所に break、
+  =(car elem)= の値と canonical 'comma symbol のアドレスを比較。multi-line(=139)/single-line(=0) で差分。
+- 仮説 A (view/stale): reader が multi-line sub-form の cons を view 化し、走査中の car read が stale を返す。
+- 仮説 B (symbol identity): reader 産の comma symbol が canonical 'comma と非 eq (intern 漏れ)、multi-line で発症。
+  → bq-expand-list を =(eq (car elem) 'comma)= から *名前比較* (str-eq "comma") にすれば B なら直る (要検証)。
+
+* gdb leads (interactive codex, live)
+- mp を gdb 実行、nl_apply_do_fset に break、args_list の arg0 が =(comma name)= cons になる事を確認。
+- その =(comma name)= cons (および親 =(defun ...)= cons) の *アドレス* を取り、reader が template を生成した
+  時点 (nelisp_reader_parse_one) のアドレスと比較。view (入力 buffer/別 chunk を指す) か owned か。
+- nl_cons_car_ptr / nl_cons_cdr_ptr に break し、bq-expand-list 走査中に =(comma name)= cons の car/cdr が
+  正しい値を返すか (view が stale を返さないか) を観測。改行有 (=139) と無 (=0) で差分を取る。
+- fix 候補: reader が *改行を跨ぐ/特定 layout の* sub-form cons を view でなく owned-copy で materialize する。
+
+* 最小再現 B (6 行, rc=139, mp と同等。どちらも *複数行必須*)
+#+begin_src elisp
+(defmacro m (name args &rest body)
+  (let ((fsym (intern (format "%s--x" name))))
+    `(progn (defun ,fsym ,args ,@body) ',name)))
+(m foo (x) x)
+#+end_src
+=cat /tmp/B.el | target/nelisp --repl --no-prompt --no-print ; echo $?=  → 139。
+bundle 側の発症点: build/nemacs-bootstrap.el の pcase-defmacro (=`(defun ,fsym ,args ,@body)=)。
+
+* 決定的 discriminator (mm-vs-m)
+- m  : body が `(progn (defun ,fsym ,args ,@body) ',name)  [backquote → bq-expand が template を *走査*] → rc=139
+- mm : body を (list 'progn (append (list 'defun)(list fsym)(list args) body)(list 'quote name)) [直接構築, *走査なし*] → rc=0
+⇒ template を car/cdr 走査する経路だけが crash。直接構築は安全。
+
+* gdb backtrace (B repro, REPL)
+#+begin_example
+SIGSEGV nl_alloc_str_copy_loop  (rsi = str-bytes-ptr(sym_ptr) = NULL, len 非ゼロ)
+ ← nl_alloc_str ← nelisp_mirror_bucket_prepend ← nelisp_mirror_set_function_or_insert(_dispatch)
+ ← nl_apply_do_fset ← nl_apply_builtin ← nl_apply_function ← (expansion eval: progn→fset)
+ ← #24 nl_cons_macro_apply_eval   ← macro m の適用 (= 誤 expansion を生成)
+#+end_example
+crash 時 fset arg0 (sym_ptr) は *tag=7 Cons = (comma fsym)* (codex 5th が gdb 確認)。symbol でない。
+
+* 既に消去された仮説 (戻らないこと)
+1. bind-boundary materialized-view (nl_bf_bind_optional/rest/sym clone): 3 経路全 clone でも rc=139。
+   現バイナリは build-patch reader-bind-rest-fixed で既に bind-rest clone 入り。→ 無効。
+2. compiler mis-lowering of (not (= raw-bool 0)): codex が逆アセンブルで nelisp_aot_builtin_call1 が
+   crash 経路に無い + do-fset-fixed 適用済を確認。→ 無効。
+3. GC/string-lifetime: nl_alloc_str は GC 呼ばず、値が mirror insert 前に既に誤り。→ 無効。
+4. nelisp--bq-expand の *logic*: host emacs で B の form に対し正しい出力。prelude:883/1774 と lisp:810 の
+   コピーは logic 同一。→ logic は正しい (codex 5th の bq-expand rewrite は誤り + dotted-comma regress)。
+5. nelisp--bq-expand-list の *mutation* (while+push+setq cur (cdr cur)): claude が非破壊 recursive に
+   書換 (host で全パターン等価検証) + prelude 2 重定義両方 patch + rebuild → *なお rc=139*。→ form でなく
+   runtime の car/cdr 走査が原因と確定 (revert 済)。
+
+* fix の方向 (runtime list-op view, codex domain)
+- nl_cons_car_ptr / nl_cons_cdr_ptr (Doc 147) が返す materialized 32B view の寿命: backquote が
+  quoted template を走査 (再帰 car/cdr) する間に、ある cons の view が後続の走査/確保で上書きされ、
+  その要素 (comma X) が owned 化されないまま結果 list に残る、という像。
+- gdb で確認すべき: nl_cons_macro_apply_eval (#24) が生成する expansion を walk し、(comma fsym) を含む
+  cons がどの car/cdr 呼び出しで view→破壊されるか。あるいは nl_cons_cdr_ptr に break して B 走査中の
+  view 上書きを観測。
+- 候補 fix: 走査経路 (nelisp--bq-expand が呼ぶ car/cdr、または quoted リテラルを reader が生成する箇所) で
+  cons を owned-copy で返す / view を走査完了まで pin する。runtime 側で。
+- 検証: 上記 B が rc=0 + bundle smoke rc=0。
+
+* 観測上の罠 (後続調査者向け)
+- standalone stdout 壊れ (prin1 無出力、princ control-flow が全分岐出力)。値 introspection 不可。
+- file mode (target/nelisp file.el) は exit=last-value だが *prelude 未load* (append/nconc 未定義、
+  macro 経路不可)。bundle/B は REPL mode (--repl) で full stdlib。→ *REPL rc (139/0) と gdb のみ信頼可*。
+
+* 詳細診断 (系譜)
+docs/worklog/2026-06-16-2130-* (初期 bt) / 2210-* (mirror refute) / 2026-06-17-0035-* (bind) /
+0655-* (bind exact) / 0730-* (bind rule out→compiler) / 0750-* (compiler rule out) /
+1000-* (bq-expand refute + bisection) / 1030-* (codex 6th unreliable + exit-channel) /
+1100-* (PINNED: backquote 走査、mm-vs-m, gdb #24, recursive fix 失敗 = runtime list-op)。
+
+* ★★★ 最重要 (1230): whole-source 経路 (file-load) は SIGSEGV 回避、--repl のみ crash
+- =target/nelisp ../nelisp-emacs/build/nemacs-bootstrap.el= (file-load = whole-source parse+eval) → *rc=11、SIGSEGV なし*。
+- =cat 同 | target/nelisp --repl= → rc=139 (SIGSEGV)。
+- ⇒ *whole-source 経路は crash を回避*。バグは確実に --repl 固有の行単位 read/eval。
+- 推定: bundle は mostly 1-form-per-line (生成 condensed) で --repl 行単位が動くが、*multi-line の
+  pcase-defmacro (bootstrap.el:4766-4769) が例外*で、行分割が backquote の comma を壊し crash。
+- *3 つの fix 候補 (いずれかで goal unblock)*:
+  1. [nelisp runtime] --repl の multi-line form 処理を whole-source と同じに (括弧 balance まで accumulate
+     してから eval、または batch --repl を file-load 経路に routing)。← 根治、codex domain。
+  2. [nelisp-emacs launcher] bin/nemacs が bundle を --repl でなく file-load/whole-source で食わせる
+     (file-load は rc=11=非クラッシュ。rc=11 が実害か要確認。bundle の目的は関数定義なので load で足りる可能性)。
+  3. [nelisp-emacs generator] build-nelisp-bootstrap が各 top-level form を *単一行* で emit
+     (multi-line form を無くす)。← workaround、nelisp-emacs domain。host emacs での bundle 再 read は
+     nelisp 固有構文で失敗したので、生成側 (prin1 single-line) で対応。
+- 検証: 最小再現 mp (rc=139) が rc=0、bundle が rc=0 (or load 成功)。
+
+* ★★★ 追記 (2026-06-17 14:30, claude post-Stage-4b 確定): 2 層に分離 + scope 確定
+
+** 元の「bundle segfault」は 2 つの別バグの合成だった
+1. *単一行 .repl 経路の crash (= nemacs 本線)* → *Stage 4b で修正済*。
+   - 真因は GC free-list reuse / mid-form 回収 (多行 read 中に cons が回収され garbage 化)。
+   - 修正 commit: =97c18e82= (fix free-list reuse SIGSEGV §11.37), =cb3ca59d/d90c11ce/76004184= (Stage 4a/4b)。
+   - これらは *既に origin/main (b25f46d0) に push 済* (2026-06-17)。
+   - nelisp-emacs 側 =verify-nemacs-tui.sh= は修正済バイナリで *PASS=10 FAIL=0 segv=0*。
+   - nemacs は =build-nelisp-bootstrap= が各 form を *単一行* emit する .repl を食わせる (fix #3 は実質実装済) ので、本線は green。
+2. *多行 form を line-by-line --repl に流す crash (= 本 doc, mp 再現)* → *未修正のまま*。
+
+** 決定的 scope: バグは committed 側にある (WIP ではない)
+- mp 多行再現 (=docs/design/bundle-segv-repro-B.el=) を 2 バイナリで実測 (2026-06-17):
+  - clean origin/main b25f46d build (sha 55790f37, *uncommitted WIP 抜き*) → *rc=139*。
+  - 作業 tree WIP 入り build (sha feaef95) → *rc=139*。
+- ⇒ *両方 crash*。本 crash は uncommitted WIP 差分 (M scripts/nelisp-standalone-build.el +162, M scripts/nelisp-stdlib-prelude.el +316 等) には *無い*。committed code (origin/main) のバグ。WIP diff の bisect は時間の無駄。
+
+** 優先度と依頼内容 (interactive codex, full access + gdb)
+- nemacs daily-driver は green なので本件は *blocker ではなく reader robustness fix*。
+- ただし汎用 Lisp runtime として「多行 form を --repl に行単位で流すと SIGSEGV」は正面から直す価値あり。
+- 推奨は *fix #1 (runtime)*: =nl_repl_loop= / =nl_repl_read_line= が括弧 balance まで accumulate してから
+  =nl_eval_source_all= に渡す (= whole-source 経路と同じ read 単位にする)。本 doc 上部の gdb backtrace
+  (#24 =nl_cons_macro_apply_eval=、(comma name) cons が fset 到達) が出発点。
+- 検証 gate: mp 多行再現が rc=0 + =make standalone-reader= 緑 + =verify-nemacs-tui.sh= 緑維持。
