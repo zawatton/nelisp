@@ -43,31 +43,40 @@
     map)
   "Keymap for `inferior-emacs-lisp-mode'.")
 
-(defvar emacs-ielm--state (make-hash-table :test 'eq :weakness nil)
-  "Per-buffer ielm state.
+(defvar emacs-ielm--state (make-hash-table :test 'equal :weakness nil)
+  "Per-buffer ielm state, keyed by buffer NAME.
 Each value is a plist with keys:
 - `:input-start'    point where editable user input begins
 - `:history'        newest-first list of submitted input strings
-- `:history-index'  nil or zero-based index into `:history' for M-p/M-n")
+- `:history-index'  nil or zero-based index into `:history' for M-p/M-n
+
+A buffer-name string key is used rather than the buffer object: on the
+standalone reader buffer objects are not usable as `eq' hash keys.  ielm
+uses a single canonical buffer, so the name is stable.")
 
 (defun emacs-ielm--buffer ()
   "Return the canonical ielm buffer, creating it if needed."
   (get-buffer-create ielm-buffer-name))
 
+(defun emacs-ielm--key (buffer)
+  "Return the state-hash key for BUFFER (default current)."
+  (buffer-name (or buffer (current-buffer))))
+
 (defun emacs-ielm--state (buffer)
   "Return BUFFER's ielm state, creating a default record when needed."
-  (or (gethash buffer emacs-ielm--state)
-      (puthash buffer
-               (list :input-start 1
-                     :history nil
-                     :history-index nil)
-               emacs-ielm--state)))
+  (let ((k (emacs-ielm--key buffer)))
+    (or (gethash k emacs-ielm--state)
+        (puthash k
+                 (list :input-start 1
+                       :history nil
+                       :history-index nil)
+                 emacs-ielm--state))))
 
 (defun emacs-ielm--set-state (buffer key value)
   "Store VALUE under KEY in BUFFER's ielm state and return VALUE."
   (let ((state (copy-sequence (emacs-ielm--state buffer))))
     (setq state (plist-put state key value))
-    (puthash buffer state emacs-ielm--state)
+    (puthash (emacs-ielm--key buffer) state emacs-ielm--state)
     value))
 
 (defun emacs-ielm--set-input-start (buffer pos)
@@ -95,13 +104,15 @@ Each value is a plist with keys:
   (emacs-ielm--set-state buffer :history-index index))
 
 (defun emacs-ielm--trim-right (string)
-  "Drop trailing newline and space characters from STRING."
-  (replace-regexp-in-string "[[:space:]\n\r]+\\'" "" string))
+  "Drop trailing newline and space characters from STRING.
+Uses an explicit whitespace class, not `[[:space:]]': the POSIX class
+does not match on the standalone reader's regexp engine."
+  (replace-regexp-in-string "[ \t\n\r\f\v]+\\'" "" string))
 
 (defun emacs-ielm--whitespace-only-p (string)
   "Return non-nil when STRING is empty or all whitespace."
   (or (equal string "")
-      (string-match-p "\\`[[:space:]\n\r\t]*\\'" string)))
+      (string-match-p "\\`[ \t\n\r\f\v]*\\'" string)))
 
 (defun emacs-ielm--goto-input-end ()
   "Move point to the end of the current editable input."
@@ -177,13 +188,13 @@ Each value is a plist with keys:
   (insert (error-message-string err) "\n"))
 
 (defun emacs-ielm--open-buffer (buffer)
-  "Display BUFFER and return it."
-  (cond
-   ((fboundp 'switch-to-buffer)
-    (switch-to-buffer buffer))
-   (t
-    (set-buffer buffer)
-    buffer)))
+  "Display BUFFER and return it.
+Always returns BUFFER: `switch-to-buffer' yields nil in the standalone
+reader's batch context, so do not rely on its return value."
+  (if (fboundp 'switch-to-buffer)
+      (switch-to-buffer buffer)
+    (set-buffer buffer))
+  buffer)
 
 ;;;###autoload
 (defun inferior-emacs-lisp-mode ()

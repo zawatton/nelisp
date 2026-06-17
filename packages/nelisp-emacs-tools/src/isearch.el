@@ -2,7 +2,16 @@
 
 ;;; Code:
 
-(defvar isearch--standalone-p (not (boundp 'emacs-version)))
+(defun isearch--standalone-runtime-p ()
+  "Return non-nil on the standalone NeLisp reader.
+`emacs-version' is bound under nemacs too, so also probe for reader
+primitives (mirrors `files--standalone-runtime-p')."
+  (or (not (boundp 'emacs-version))
+      (fboundp 'nl-write-file)
+      (fboundp 'nl-syscall-write-file)
+      (fboundp 'nelisp--eval-source-string)))
+
+(defvar isearch--standalone-p (isearch--standalone-runtime-p))
 
 (defun isearch--host-load-standard ()
   "Load host Emacs's standard isearch library."

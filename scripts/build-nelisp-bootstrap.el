@@ -43,7 +43,29 @@ final `.el' suffix with `.repl'.")
 (defvar nelisp-bootstrap-late-extra-files
   '("emacs-syntax-table.el"
     "emacs-font-lock.el"
-    "emacs-font-lock-builtins.el")
+    "emacs-font-lock-builtins.el"
+    ;; dev daily-driver surfaces: symbol index + jump-to-definition +
+    ;; compile/grep + next-error.  Greenfield implementations first, then
+    ;; the facade loaders that install the standard command names on the
+    ;; standalone reader.
+    "emacs-imenu.el"
+    "emacs-xref.el"
+    "imenu.el"
+    "xref.el"
+    "emacs-compile.el"
+    "compile.el"
+    "emacs-vc.el"
+    "vc.el"
+    "emacs-comint.el"
+    "comint.el"
+    "emacs-replace.el"
+    "replace.el"
+    "emacs-isearch.el"
+    "isearch.el"
+    "emacs-ielm.el"
+    "ielm.el"
+    "emacs-project.el"
+    "project.el")
   "Local src files inserted after buffer/face substrates are available.")
 
 (defvar nelisp-bootstrap-repl-direct-character-limit 0

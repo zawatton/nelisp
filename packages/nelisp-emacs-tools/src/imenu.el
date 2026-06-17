@@ -1,8 +1,10 @@
-;;; project.el --- Lightweight project shim for NeLisp  -*- lexical-binding: t; -*-
+;;; imenu.el --- imenu facade loader for NeLisp  -*- lexical-binding: t; -*-
 
 ;;; Code:
 
-(defun project--standalone-runtime-p ()
+(declare-function emacs-imenu-install "emacs-imenu")
+
+(defun imenu--standalone-runtime-p ()
   "Return non-nil on the standalone NeLisp reader.
 `emacs-version' is bound under nemacs too, so also probe for reader
 primitives (mirrors `files--standalone-runtime-p')."
@@ -11,10 +13,10 @@ primitives (mirrors `files--standalone-runtime-p')."
       (fboundp 'nl-syscall-write-file)
       (fboundp 'nelisp--eval-source-string)))
 
-(defvar project--standalone-p (project--standalone-runtime-p))
+(defvar imenu--standalone-p (imenu--standalone-runtime-p))
 
-(defun project--host-load-standard ()
-  "Load host Emacs's standard project library."
+(defun imenu--host-load-standard ()
+  "Load host Emacs's standard imenu library (shim dir removed from `load-path')."
   (let ((shim-dir (file-truename
                    (file-name-as-directory
                     (file-name-directory (or load-file-name
@@ -25,12 +27,16 @@ primitives (mirrors `files--standalone-runtime-p')."
                      shim-dir)
         (push dir filtered)))
     (let ((load-path (nreverse filtered)))
-      (load "project" nil t))))
+      (load "imenu" nil t))))
 
-(if project--standalone-p
-    (require 'emacs-project)
-  (project--host-load-standard))
+(if imenu--standalone-p
+    (progn
+      ;; Bind the standard `imenu' command name to the `emacs-imenu'
+      ;; read-only symbol-index implementation.
+      (require 'emacs-imenu)
+      (emacs-imenu-install))
+  (imenu--host-load-standard))
 
-(provide 'project)
+(provide 'imenu)
 
-;;; project.el ends here
+;;; imenu.el ends here
