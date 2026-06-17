@@ -1965,3 +1965,31 @@ driver が実行中 top-level form の precise root-set を nl_safepoint_ctx に
 - *次 = 4b step 2*: nl_gc_collect_published(mode)（mark_frames[0,depth) precise + rootstack + symentry +
   MIDFORM は conserv 無し + sweep + IN_PROGRESS guard）+ nl_sf_while backedge safepoint（enable + alloc-debt gate）。
   poison ON + precise-only で単純 loop 検証 → 正しい結果 + RSS bounded = leak 初解消 milestone。
+
+** Stage 4b step 2 SHIPPED（sound mid-form collect、leak 初解消、2026-06-17）
+consumer 側を配線し、§11.25/§11.34 で 2 度失敗した crux を突破。commit 76004184（=scripts/
+nelisp-standalone-build.el の gc-source + lisp/nelisp-cc-sf-while.el、Rust 無改変）。
+- *nl_gc_mark_published_frame / _frame_at / _contexts(_from)*: published frame [0,depth) を precise mark
+  （root blocks + mirror@env+0/frames@+32/unbound@+64/result/out/pool(mark_pool)/src/cursor/bsym）。
+  index は ARGS で thread する bounded tail-recursion。★教訓: constant-init let-local counter
+  （=(let ((i 0)) ... (setq i (+ i 1)))）は gc-source で constant-fold され、setq が DYNAMIC env store
+  （nl_alloc_symbol + nelisp_env_set_value on garbage env → null deref）に miscompile する。runtime 値は
+  helper ARGS で渡す（nl_gc_mark_pool_slots と同型）。gemini 諮問の「cc-unit は runtime 値を let 不可」が
+  gc-source の counter にも当てはまった実例。
+- *nl_gc_collect_published(mode)*: IN_PROGRESS(ctx+24) guard → published contexts + rootstack + symentry +
+  (mode 0=TOPLEVEL は conserv / 1=MIDFORM は precise-only) + sweep。常に mark+sweep（compact しない）。
+- *nl_gc_safepoint*: enable(ctx+8) default OFF（= cheap branch + return、非 arm 実行は byte 不変）。alloc-debt =
+  total-chunk-bytes-reserved(268436184、boundary GC と同じ monotonic counter) が next-trigger(ctx+40) 超で
+  fire → +16MiB re-arm + fired-count(ctx+32)++。
+- *bf_gc_diag*: arg 5=arm（enable + next-trigger + fired reset）/ 6=disarm。返り list を 8 要素化
+  （末尾に fired-count）。
+- *nl_sf_while_safepoint*（lisp/nelisp-cc-sf-while.el）: arity-4・単一 extern-call。host-loop backedge
+  （step 後・status==0 継続時）で hit。args/env/out は parameter、across-call local は status のみ（§11.14 不変）。
+- *検証*（target/nelisp-stage4b、107 units）: dormant 挙動不変（fib(22)=17711 / 500k=500000 / 7 named smoke +
+  fmt/call-process/async PASS / --embedded=42）。arm + poison ON で (while (< i 500000) (setq i (1+ i)))=500000、
+  **trip-count=0 / poison-count=104,030,982 回収 / fired=3 = SOUND（poison crash 無し）**。peak RSS: dormant
+  500k=1331MB vs arm 500k=414MB、arm 2M=763MB / 4M=1147MB。leak rate ~2662 → ~200 B/iter（~13x）、sub-linear
+  かつ収束 = 48GB host-freeze の runaway leak 解消。
+- *残（4c/4d）*: 残 RSS high-water（sweep は chunk を munmap しない + freelist exact-fit reuse の取りこぼし）→
+  compaction / trigger 調整。4c = nested call / multi-form body へ safepoint 拡張（同 validation）。
+- *次 = 4c*: multi-form body / nested call boundary へ safepoint を拡張、poison + ctx-depth>1 で同 soundness 検証。
