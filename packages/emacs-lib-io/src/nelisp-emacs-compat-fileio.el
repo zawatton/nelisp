@@ -508,7 +508,12 @@ COUNT non-nil → return at most COUNT entries (post-filter, post-sort)."
                      (push next acc)))
                (nl-syscall-closedir dh))
              (nreverse acc)))
-          ((fboundp 'nelisp--syscall-readdir)
+          ;; `nelisp--syscall-readdir' is fbound on the reader but hard-aborts
+          ;; unless the low-level `nl-syscall-opendir' it relies on is present;
+          ;; gate on that primitive so a reader without it falls through to the
+          ;; portable `directory-files' path below.
+          ((and (fboundp 'nelisp--syscall-readdir)
+                (fboundp 'nl-syscall-opendir))
            (cdr (nelisp--syscall-readdir dir)))
           (t
            ;; Simulator: host directory-files but without sort here so
