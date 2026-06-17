@@ -1,0 +1,81 @@
+#+TITLE: nelisp--syscall-stat hangs on the standalone reader (codex/L1 handoff)
+#+DATE: 2026-06-18
+#+AUTHOR: claude (L2 nelisp-emacs) → codex (L1 nelisp)
+
+* ★ TL;DR
+=(nelisp--syscall-stat PATH)= *hangs* (never returns) on the standalone
+reader (=target/nelisp=, bundled nemacs).  It is the builtin that backs
+every stat-based file predicate, so it blocks =file-attributes= /
+=file-exists-p= / =file-directory-p= on the reader — and therefore =dired=
+and the rest of the nelisp-emacs file machinery.
+
+This is an L1/runtime bug (the builtin itself hangs); it cannot be safely
+worked around from L2 (see "L2 workaround attempt" below — a broad gate
+broke boot).
+
+* ★ Minimal repro (deterministic, rc=124)
+#+begin_src sh
+F=$(mktemp); printf 'data\n' > "$F"
+# from nelisp-emacs:
+timeout 10 bin/nemacs --driver=nelisp --batch --no-banner \
+  --eval "(progn (nelisp--write-stdout-bytes \"CALL\n\") \
+                 (nelisp--syscall-stat \"$F\") \
+                 (nelisp--write-stdout-bytes \"RETURNED\n\"))"
+# -> rc=124 (timeout): "CALL" is flushed, "RETURNED" never prints.
+#+end_src
+
+=(nelisp--syscall-stat PATH)= is called with ONE arg (a path string) and
+should return ='absent= / ='file= / ='directory= (per
+lisp/nelisp-stdlib-misc.el:202-228).  On the reader it never returns.
+
+* ★ Location (L1)
+- =lisp/nelisp-cc-bi-syscall-stat.el= — the builtin definition; the header
+  notes it maps to =build-tool/src/eval/builtins.rs::= (the native emit).
+- Callers (all on the reader path): =lisp/nelisp-stdlib-misc.el= (file-exists
+  / file-directory predicates), and nelisp-emacs
+  =src/nelisp-emacs-compat-fileio.el= (=nelisp-ec--stat-kind= /
+  =nelisp-ec-file-attributes=).
+
+* ★ Context: which syscalls are present on the bundled reader
+Probed live on =target/nelisp= (bundled nemacs):
+- =nl-syscall-opendir / -stat / -stat-ex / -read / -lstat / -access= → all
+  *not fbound* (the low-level syscall family is absent here).
+- =nl-syscall-read-file= → fbound.
+- =nelisp--syscall-stat / -readdir / -path-int / -read-file= → all *fbound*.
+
+So the higher-level =nelisp--syscall-*= wrappers are fbound, but the ones
+whose work isn't actually wired misbehave:
+- =nelisp--syscall-readdir= → *hard-aborts* (uncatchable) — needs
+  =nl-syscall-opendir=, which is absent.
+- =nelisp--syscall-stat= → *hangs* (this bug).
+- =nelisp--syscall-path-int= / =nelisp--syscall-read-file= → these DO work
+  (they are the intended reader backends; e.g. path-int is access(2) by
+  raw syscall number, called as =(nelisp--syscall-path-int NUM file mode)=).
+
+* ★ The ask (L1)
+Make =(nelisp--syscall-stat PATH)= on the standalone reader either:
+1. return the correct ='absent='/='file='/='directory= result, or
+2. signal a *catchable* error (so L2 can fall back),
+instead of hanging.  Same applies to =nelisp--syscall-readdir= (it
+hard-aborts; ideally it returns or signals so L2 need not special-case it).
+
+* ★ L2 workaround attempt (already done / reverted — for context)
+- readdir: nelisp-emacs =nelisp-ec-directory-files= now gates the
+  =nelisp--syscall-readdir= clause on =(fboundp 'nl-syscall-opendir)= and
+  falls through to the portable =directory-files= path.  *Kept* (boot-safe,
+  works on the reader).
+- stat / others: a broad gate of every =nelisp--syscall-*= clause was tried
+  and *reverted* — it hung boot, because =path-int= / =read-file= are
+  boot-critical and DO work; gating them off broke startup.  Only =stat=
+  (hang) and =readdir= (abort) are genuinely broken.  Fixing =stat= belongs
+  in L1.
+
+* ★ Verification gate
+After the L1 fix, on nelisp-emacs:
+#+begin_src sh
+timeout 20 bin/nemacs --driver=nelisp --batch --no-banner \
+  --eval '(nelisp--write-stdout-bytes (format "%S\n" (nelisp--syscall-stat "/tmp")))'
+# expect: directory   (not a hang)
+#+end_src
+Then nelisp-emacs can re-bundle =emacs-dired-min.el= + =dired.el= and the
+=dired= directory listing renders (file-attributes works).
