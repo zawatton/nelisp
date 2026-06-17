@@ -125,6 +125,18 @@
        (extern-call nl_cons_car_ptr args)
        args env out))
 
+    ;;--- Mid-form GC safepoint (Doc 152 §11.41 Stage 4b step 2) ---
+
+    ;; Invoke the GC unit's gated mid-form collect at the while backedge (after a
+    ;; COMPLETE iteration, status==0) -- the one point where per-iteration scratch
+    ;; (arg-list cons / materialising-accessor box / test+body intermediates) is
+    ;; provably dead, with only env / out / published-roots / rootstack holding
+    ;; live values.  `nl_gc_safepoint' is gated (enable + alloc-debt, default OFF)
+    ;; and reads its root-set from nl_safepoint_ctx, so this takes no arguments.
+    ;; arity 4 (even -> rsp 16-aligned at the call site), exactly one extern-call.
+    (defun nl_sf_while_safepoint (_a _b _c _d)
+      (extern-call nl_gc_safepoint))
+
     ;;--- Public entry: host-iterate the steps (O(1) iteration-count stack) ---
 
     ;; args: *const Sexp = (TEST BODY...).  env: *mut c_void.
@@ -139,7 +151,15 @@
         (let ((status 0))
           (seq
            (while (= status 0)
-             (setq status (nl_sf_while_step args env out 0)))
+             ;; Doc 152 §11.41 Stage 4b step 2: after a completed iteration
+             ;; (status==0 = continue), hit the gated mid-form safepoint.  args /
+             ;; env / out are PARAMETERS (preserved across the call); `status' is
+             ;; the sole across-call local -- no new local is introduced (§11.14).
+             (seq
+              (setq status (nl_sf_while_step args env out 0))
+              (if (= status 0)
+                  (nl_sf_while_safepoint 0 0 0 0)
+                0)))
            (if (= status 1) 1 0)))))
     nil)
 

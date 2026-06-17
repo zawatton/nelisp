@@ -2136,6 +2136,93 @@ arm64 Linux has no legacy x86 numbering)."
           (ptr-write-u64 (data-addr nl_safepoint_ctx) 0
                          (- (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) 1))
         0))
+    ;; ===== Doc 152 §11.41 Stage 4b step 2: sound mid-form collect =====
+    ;; The driver publishes the executing top-level form's precise root-set into
+    ;; nl_safepoint_ctx (Stage 4b step 1); a mid-form safepoint reads those frames
+    ;; and runs a PRECISE-ONLY mark+sweep.  Unlike the boundary `nl_gc_collect',
+    ;; the MIDFORM mode NEVER scans the C-stack conservatively: a stale stack word
+    ;; that happens to mark a missed root would silently mask the very unsoundness
+    ;; the poison validation is built to expose (§11.41 refinement 2).  It also
+    ;; always SWEEPS (never compacts) -- mid-form objects must not move.
+    ;;
+    ;; Mark ONE published frame precisely: the same root arms as `nl_gc_mark_roots'
+    ;; MINUS the conservative scan, the rootstack and the shared symentry (those
+    ;; are global -- marked once per collection, not per frame).  `env' is the eval
+    ;; ctx (mirror@+0 / frames@+32 / unbound@+64 inside the env block); `result' is
+    ;; the executing form AST -- the root §11.34 missed.
+    (defun nl_gc_mark_published_frame (env result out pool src cursor bsym)
+      (nl_seq2 (nl_gc_mark_root_blocks env result out pool src cursor bsym)
+       (nl_seq2 (nl_gc_mark_slot (+ env 0))     ; mirror / globals
+        (nl_seq2 (nl_gc_mark_slot (+ env 32))   ; frame stack
+         (nl_seq2 (nl_gc_mark_slot (+ env 64))  ; unbound marker
+          (nl_seq2 (nl_gc_mark_slot result)     ; executing form AST (§11.34 root)
+           (nl_seq2 (nl_gc_mark_slot out)       ; in-flight / last result
+            (nl_seq2 (nl_gc_mark_pool pool (nl_gc_pool_cap))
+             (nl_seq2 (nl_gc_mark_slot src)
+              (nl_seq2 (nl_gc_mark_slot cursor)
+                       (nl_gc_mark_slot bsym)))))))))))
+    ;; Read the 7-slot frame at BASE (env@+0/result@+8/out@+16/pool@+24/src@+32/
+    ;; cursor@+40/bsym@+48) and mark it.  Reads are passed straight as args (no
+    ;; across-call locals; mirrors `nl_gc_ctx_store').
+    (defun nl_gc_mark_published_frame_at (base)
+      (nl_gc_mark_published_frame
+       (ptr-read-u64 base 0) (ptr-read-u64 base 8) (ptr-read-u64 base 16)
+       (ptr-read-u64 base 24) (ptr-read-u64 base 32) (ptr-read-u64 base 40)
+       (ptr-read-u64 base 48)))
+    ;; Mark every published frame [0,depth).  Nested eval / load / error paths
+    ;; push outer contexts, so all live frames must be marked (§11.41 refinement 1).
+    ;; Walk frames [i,depth) by tail-recursion -- index/depth thread through
+    ;; ARGS, not a mutated let-local.  A constant-init let-local (e.g. (i 0)) is
+    ;; constant-folded here, so a `setq' on it miscompiles to a DYNAMIC env store
+    ;; (nl_alloc_symbol + nelisp_env_set_value on a garbage env -> null deref).
+    ;; depth<=64 so the recursion is bounded (mirrors nl_gc_sweep_chunks).
+    (defun nl_gc_mark_published_contexts_from (i depth)
+      (if (< i depth)
+          (nl_seq2
+           (nl_gc_mark_published_frame_at
+            (+ (data-addr nl_safepoint_ctx) (+ 64 (* i 56))))
+           (nl_gc_mark_published_contexts_from (+ i 1) depth))
+        0))
+    (defun nl_gc_mark_published_contexts ()
+      (nl_gc_mark_published_contexts_from
+       0 (ptr-read-u64 (data-addr nl_safepoint_ctx) 0)))
+    ;; Shared symentry symbol (268436328): mark the BLOCK + walk it as a Symbol
+    ;; SLOT so its name buffer is kept alive (mirrors the `nl_gc_mark_roots' arm).
+    (defun nl_gc_mark_symentry ()
+      (if (= (ptr-read-u64 268436328 0) 0) 0
+        (nl_seq2 (nl_gc_mark_block (ptr-read-u64 268436328 0))
+                 (nl_gc_mark_slot (ptr-read-u64 268436328 0)))))
+    ;; Mode-split mid-form collector.  mode 0 = TOPLEVEL (conservative scan
+    ;; allowed), mode 1 = MIDFORM (precise-only).  NL_GC_IN_PROGRESS (ctx+24) is a
+    ;; reentrancy guard.  Always mark+sweep (never compact): mid-form objects must
+    ;; stay put, and precise-only marking has no conservatively-found blocks to pin.
+    (defun nl_gc_collect_published (mode)
+      (if (= (ptr-read-u64 (data-addr nl_safepoint_ctx) 24) 1) 0
+        (nl_seq2 (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 1)
+         (nl_seq2 (nl_gc_mark_published_contexts)
+          (nl_seq2 (nl_gc_mark_rootstack)
+           (nl_seq2 (nl_gc_mark_symentry)
+            (nl_seq2 (if (= mode 0) (nl_gc_conserv_maybe) 0)
+             (nl_seq2 (nl_gc_sweep)
+                      (ptr-write-u64 (data-addr nl_safepoint_ctx) 24 0)))))))))
+    ;; Gated mid-form safepoint (called from nl_sf_while's backedge).  enable
+    ;; (ctx+8) defaults OFF -> a single cheap branch + return, so non-test runs are
+    ;; unchanged.  alloc-debt gate: fire when total chunk-bytes-reserved (268436184
+    ;; -- the SAME monotonic counter the boundary GC trips on; the chunk-0 bump
+    ;; @268435456 caps at the first chunk and is useless here) crosses the
+    ;; next-trigger watermark (ctx+40), then re-arm +16 MiB and bump the
+    ;; fired-count (ctx+32, diagnostic).  MIDFORM precise-only (mode 1).
+    (defun nl_gc_safepoint ()
+      (if (= (ptr-read-u64 (data-addr nl_safepoint_ctx) 8) 1)
+          (if (< (ptr-read-u64 268436184 0)
+                 (ptr-read-u64 (data-addr nl_safepoint_ctx) 40))
+              0
+            (nl_seq2 (nl_gc_collect_published 1)
+             (nl_seq2 (ptr-write-u64 (data-addr nl_safepoint_ctx) 40
+                                     (+ (ptr-read-u64 268436184 0) 16777216))
+                      (ptr-write-u64 (data-addr nl_safepoint_ctx) 32
+                                     (+ (ptr-read-u64 (data-addr nl_safepoint_ctx) 32) 1)))))
+        0))
     (defun nl_gc_collect (ctx result out pool src cursor bsym)
       (if (= (ptr-read-u64 268435616 0) 1) 0    ; DEBUG: collect = pure no-op
       (seq
@@ -2534,12 +2621,25 @@ unresolved at link time."
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
           (if (= (wf_argval args 0) 2) (ptr-write-u64 (data-addr nl_gc_diag) 32 0)
             (if (= (wf_argval args 0) 3) (nl_gc_ctx_push 0 0 0 0 0 0 0)
-              (if (= (wf_argval args 0) 4) (nl_gc_ctx_pop) 0))))
-        (let* ((nils (alloc-bytes 32 8)) (s6 (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
+              (if (= (wf_argval args 0) 4) (nl_gc_ctx_pop)
+                ;; Doc 152 §11.41 Stage 4b step 2: arm / disarm the mid-form
+                ;; safepoint.  5 = arm (enable=1, next-trigger = total + 16 MiB,
+                ;; reset fired-count); 6 = disarm (enable=0).  Default OFF.
+                (if (= (wf_argval args 0) 5)
+                    (seq (ptr-write-u64 (data-addr nl_safepoint_ctx) 8 1)
+                         (ptr-write-u64 (data-addr nl_safepoint_ctx) 40
+                                        (+ (ptr-read-u64 268436184 0) 16777216))
+                         (ptr-write-u64 (data-addr nl_safepoint_ctx) 32 0))
+                  (if (= (wf_argval args 0) 6)
+                      (ptr-write-u64 (data-addr nl_safepoint_ctx) 8 0)
+                    0))))))
+        (let* ((nils (alloc-bytes 32 8)) (s7 (alloc-bytes 32 8)) (s6 (alloc-bytes 32 8)) (s5 (alloc-bytes 32 8)) (s4 (alloc-bytes 32 8))
                (s3 (alloc-bytes 32 8)) (s2 (alloc-bytes 32 8)) (s1 (alloc-bytes 32 8)))
           (seq
             (wf_write_nil nils)
-            (wf_cons_int (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) nils s6)
+            ;; 8th element (tail): mid-form safepoint fired-count (ctx+32).
+            (wf_cons_int (ptr-read-u64 (data-addr nl_safepoint_ctx) 32) nils s7)
+            (wf_cons_int (ptr-read-u64 (data-addr nl_safepoint_ctx) 0) s7 s6)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 32) s6 s5)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 40) s5 s4)
             (wf_cons_int (ptr-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
