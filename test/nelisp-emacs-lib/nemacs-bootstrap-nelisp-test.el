@@ -850,6 +850,55 @@ the absent `file-relative-name' are handled by the reader fallbacks)."
              (should-not (string-match-p (regexp-quote "/.git/") out))))
        (delete-directory repo t)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/shell-callable ()
+  "The comint-based shell runs commands on the reader.
+Each input line runs via `call-process' (a persistent subprocess is an L1
+gap), so this drives `echo', a `cd' into a host-made temp dir, and `ls'
+to confirm the working-directory tracking + output capture."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (skip-unless (file-executable-p "/bin/sh"))
+   (let ((dir (make-temp-file "nemacs-shell-smoke-" t)))
+     (unwind-protect
+         (progn
+           (with-temp-file (expand-file-name "marker-xyz.txt" dir) (insert "m\n"))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval"
+                       (concat
+                        "(progn"
+                        "  (when (get-buffer emacs-shell-buffer-name)"
+                        "    (kill-buffer emacs-shell-buffer-name))"
+                        "  (let ((buf (emacs-shell)))"
+                        "    (with-current-buffer buf"
+                        "      (goto-char (point-max)) (insert \"echo shell-on-comint\")"
+                        "      (emacs-shell-send-input)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"SH-ECHO=\""
+                        "               (if (string-match-p \"shell-on-comint\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (goto-char (point-max)) (insert \"cd " dir "\")"
+                        "      (emacs-shell-send-input)"
+                        "      (goto-char (point-max)) (insert \"ls\")"
+                        "      (emacs-shell-send-input)"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"SH-CD-LS=\""
+                        "               (if (string-match-p \"marker-xyz\" (buffer-string)) \"t\" \"nil\")"
+                        "               \"\\n\"))"
+                        "      (nelisp--write-stdout-bytes"
+                        "       (concat \"SH-RING-N=\""
+                        "               (number-to-string (length (emacs-comint-input-ring)))"
+                        "               \"\\n\"))))"
+                        "  (nelisp--write-stdout-bytes"
+                        "   (concat \"FB-SHELL=\" (if (fboundp (quote shell)) \"t\" \"nil\") \"\\n\")))"))))
+             (should (string-match-p "FB-SHELL=t" out))
+             ;; echo ran and its output landed in the buffer
+             (should (string-match-p "SH-ECHO=t" out))
+             ;; cd into the temp dir then ls shows the host-made marker file
+             (should (string-match-p "SH-CD-LS=t" out))
+             ;; three commands recorded in the comint input ring
+             (should (string-match-p "SH-RING-N=3" out))))
+       (delete-directory dir t)))))
+
 (provide 'nemacs-bootstrap-nelisp-test)
 
 ;;; nemacs-bootstrap-nelisp-test.el ends here
