@@ -998,6 +998,47 @@ the not-found error path, and the `man' / `woman' command names."
      ;; missing page signals an error
      (should (string-match-p "MAN-NOTFOUND=errored" out)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/calc-callable ()
+  "The RPN calculator evaluates and renders on the reader.
+Exercises `emacs-calc-eval' (pure RPN), the buffer stack operators, and
+the `calc' / `calc-eval' command names."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CALC-EVAL1=\" (number-to-string (emacs-calc-eval \"2 3 +\")) \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CALC-EVAL2=\" (number-to-string (emacs-calc-eval \"2 3 + 4 *\")) \"\\n\"))"
+                "  (emacs-calc-reset)"
+                "  (emacs-calc-push 6) (emacs-calc-push 7) (emacs-calc-times)"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"CALC-TOP=\" (number-to-string (emacs-calc-top)) \"\\n\"))"
+                "  (let ((buf (emacs-calc)))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"CALC-BUF=\" (if (and buf (buffer-live-p buf)) \"t\" \"nil\") \"\\n\"))"
+                "    (when (and buf (buffer-live-p buf))"
+                "      (with-current-buffer buf"
+                "        (nelisp--write-stdout-bytes"
+                "         (concat \"CALC-RENDER=\""
+                "                 (if (string-match-p \"1:  42\" (buffer-string)) \"t\" \"nil\")"
+                "                 \"\\n\")))))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-CALC=\" (if (fboundp (quote calc)) \"t\" \"nil\") \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-CALC-EVAL=\" (if (fboundp (quote calc-eval)) \"t\" \"nil\") \"\\n\")))"))))
+     (should (string-match-p "FB-CALC=t" out))
+     (should (string-match-p "FB-CALC-EVAL=t" out))
+     ;; pure RPN evaluation
+     (should (string-match-p "CALC-EVAL1=5" out))
+     (should (string-match-p "CALC-EVAL2=20" out))
+     ;; buffer stack: 6 7 * -> 42, rendered as the top (`1:')
+     (should (string-match-p "CALC-TOP=42" out))
+     (should (string-match-p "CALC-BUF=t" out))
+     (should (string-match-p "CALC-RENDER=t" out)))))
+
 (provide 'nemacs-bootstrap-nelisp-test)
 
 ;;; nemacs-bootstrap-nelisp-test.el ends here
