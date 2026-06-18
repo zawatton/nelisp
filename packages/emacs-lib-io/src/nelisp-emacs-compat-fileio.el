@@ -102,14 +102,8 @@
 
 (declare-function nl-syscall-opendir   "nelisp-runtime")
 (declare-function nl-syscall-readdir   "nelisp-runtime")
-(declare-function nl-syscall-closedir  "nelisp-runtime")
-(declare-function nl-syscall-mkdir     "nelisp-runtime")
-(declare-function nl-syscall-unlink    "nelisp-runtime")
-(declare-function nl-syscall-rename    "nelisp-runtime")
 (declare-function nl-syscall-access    "nelisp-runtime")
-(declare-function nl-syscall-stat-ex   "nelisp-runtime")
 (declare-function nl-syscall-read-file "nelisp-runtime")
-(declare-function nl-syscall-write-file "nelisp-runtime")
 (declare-function nelisp-sys-access    "nelisp-sys")
 (declare-function nelisp--syscall-stat "nelisp-runtime")
 (declare-function nelisp--syscall-readdir "nelisp-runtime")
@@ -158,13 +152,6 @@ Returns the integer backend result, or nil when no backend is wired."
   "Return a coarse standalone stat kind for FILE, or nil when unavailable."
   (and (fboundp 'nelisp--syscall-stat)
        (nelisp--syscall-stat file)))
-
-(defun nelisp-ec--safe-stat-ex (file)
-  "Return `nl-syscall-stat-ex' result for FILE, or nil on stat failure."
-  (condition-case nil
-      (and (nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-           (nl-syscall-stat-ex file))
-    (error nil)))
 
 (defun nelisp-ec--safe-stat-kind (file)
   "Return coarse standalone stat kind for FILE, or nil on stat failure."
@@ -414,9 +401,6 @@ invoked beyond reading `default-directory' for the seed CWD."
    ((fboundp 'nelisp--syscall-path-int)
     (let ((rc (nelisp-ec--access file 0))) ;; F_OK = 0
       (and (integerp rc) (zerop rc))))
-   ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-    (let ((rc (nelisp-ec--safe-stat-ex file)))
-      (and rc (>= (or (plist-get rc :rc) 0) 0))))
    ((fboundp 'nelisp--syscall-stat)
     (and (memq (nelisp-ec--safe-stat-kind file) '(file directory symlink)) t))
    (t (file-exists-p file))))
@@ -440,9 +424,6 @@ invoked beyond reading `default-directory' for the seed CWD."
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-    (let ((rc (nelisp-ec--safe-stat-ex file)))
-      (and rc (eq (plist-get rc :type) 'directory))))
    ((fboundp 'nelisp--syscall-stat)
     (eq (nelisp-ec--safe-stat-kind file) 'directory))
    (t (file-directory-p file))))
@@ -456,26 +437,6 @@ forwarded to the underlying call.  Returns nil if FILE does not exist
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
   (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-stat-ex)
-    (let ((s (nelisp-ec--safe-stat-ex file)))
-      (and s (>= (or (plist-get s :rc) 0) 0)
-           ;; Format: (TYPE LINKS UID GID ATIME MTIME CTIME SIZE
-           ;;          MODES UNUSED INODE DEVICE).  Match Emacs shape.
-           (list (cond ((eq (plist-get s :type) 'directory) t)
-                       ((eq (plist-get s :type) 'symlink)
-                        (plist-get s :link-target))
-                       (t nil))
-                 (plist-get s :nlink)
-                 (plist-get s :uid)
-                 (plist-get s :gid)
-                 (plist-get s :atime)
-                 (plist-get s :mtime)
-                 (plist-get s :ctime)
-                 (plist-get s :size)
-                 (plist-get s :mode-string)
-                 nil
-                 (plist-get s :inode)
-                 (plist-get s :dev)))))
    ((fboundp 'nelisp--syscall-stat)
     (let ((kind (nelisp-ec--safe-stat-kind file)))
       (and (memq kind '(file directory symlink))
@@ -499,15 +460,6 @@ COUNT non-nil → return at most COUNT entries (post-filter, post-sort)."
     (signal 'wrong-type-argument (list 'stringp dir)))
   (let ((entries
          (cond
-          ((nelisp-ec--syscall-available-p 'nl-syscall-opendir)
-           (let ((dh (nl-syscall-opendir dir))
-                 (acc nil))
-             (unwind-protect
-                 (let (next)
-                   (while (setq next (nl-syscall-readdir dh))
-                     (push next acc)))
-               (nl-syscall-closedir dh))
-             (nreverse acc)))
           ;; `nelisp--syscall-readdir' is fbound on the reader but hard-aborts
           ;; unless the low-level `nl-syscall-opendir' it relies on is present;
           ;; gate on that primitive so a reader without it falls through to the
@@ -539,35 +491,20 @@ COUNT non-nil → return at most COUNT entries (post-filter, post-sort)."
 Returns DIR.  Signals `nelisp-ec-file-error' on failure."
   (unless (stringp dir)
     (signal 'wrong-type-argument (list 'stringp dir)))
-  (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-mkdir)
-    (let ((rc (nl-syscall-mkdir dir #o755 (if parents 1 0))))
-      (when (< rc 0)
-        (signal 'nelisp-ec-file-error
-                (list "mkdir" dir rc)))
-      dir))
-   (t
-    (condition-case err
-        (progn (make-directory dir parents) dir)
-      (error (signal 'nelisp-ec-file-error
-                     (list "mkdir" dir (error-message-string err))))))))
+  (condition-case err
+      (progn (make-directory dir parents) dir)
+    (error (signal 'nelisp-ec-file-error
+                   (list "mkdir" dir (error-message-string err))))))
 
 ;;;###autoload
 (defun nelisp-ec-delete-file (file)
   "Delete FILE via unlink(2).  Returns t on success."
   (unless (stringp file)
     (signal 'wrong-type-argument (list 'stringp file)))
-  (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-unlink)
-    (let ((rc (nl-syscall-unlink file)))
-      (when (< rc 0)
-        (signal 'nelisp-ec-file-error (list "unlink" file rc)))
-      t))
-   (t
-    (condition-case err
-        (progn (delete-file file) t)
-      (error (signal 'nelisp-ec-file-error
-                     (list "unlink" file (error-message-string err))))))))
+  (condition-case err
+      (progn (delete-file file) t)
+    (error (signal 'nelisp-ec-file-error
+                   (list "unlink" file (error-message-string err))))))
 
 ;;;###autoload
 (defun nelisp-ec-rename-file (oldname newname &optional ok-if-already-exists)
@@ -579,19 +516,11 @@ When OK-IF-ALREADY-EXISTS is nil and NEWNAME exists, signals
   (when (and (not ok-if-already-exists)
              (nelisp-ec-file-exists-p newname))
     (signal 'nelisp-ec-file-already-exists (list newname)))
-  (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-rename)
-    (let ((rc (nl-syscall-rename oldname newname)))
-      (when (< rc 0)
-        (signal 'nelisp-ec-file-error
-                (list "rename" oldname newname rc)))
-      t))
-   (t
-    (condition-case err
-        (progn (rename-file oldname newname (if ok-if-already-exists t nil)) t)
-      (error (signal 'nelisp-ec-file-error
-                     (list "rename" oldname newname
-                           (error-message-string err))))))))
+  (condition-case err
+      (progn (rename-file oldname newname (if ok-if-already-exists t nil)) t)
+    (error (signal 'nelisp-ec-file-error
+                   (list "rename" oldname newname
+                         (error-message-string err))))))
 
 ;;; ──────────────────────────────────────────────────────────────────────
 ;;; §4. PATH walk
@@ -682,8 +611,6 @@ Returns a unibyte string of raw bytes.  Phase 7.5 will swap this to
   "Write UNIBYTE bytes to FILE.  When APPEND non-nil, append.
 Phase 7.5 will swap this to `nl-syscall-write-file' once T76 lands."
   (cond
-   ((nelisp-ec--syscall-available-p 'nl-syscall-write-file)
-    (nl-syscall-write-file file unibyte (if append 1 0)))
    ((and (fboundp 'nl-write-file) (not append))
     (nl-write-file file unibyte)
     (length unibyte))
