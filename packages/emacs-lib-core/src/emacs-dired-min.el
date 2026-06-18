@@ -18,6 +18,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'emacs-dired-min-gui)
 (require 'emacs-buffer-builtins)
 (require 'emacs-error)
 (require 'emacs-keymap)
@@ -27,22 +28,33 @@
 (require 'nelisp-emacs-compat)
 (require 'nelisp-emacs-compat-fileio)
 
-(defvar dired-mode-map
-  (let ((map (emacs-keymap-make-sparse-keymap)))
-    (emacs-keymap-define-key map (kbd "RET") #'dired-find-file)
-    (emacs-keymap-define-key map (kbd "n") #'dired-next-line)
-    (emacs-keymap-define-key map (kbd "p") #'dired-previous-line)
-    (emacs-keymap-define-key map (kbd "q") #'emacs-dired-min-quit-window)
-    (emacs-keymap-define-key map (kbd "g") #'emacs-dired-min-revert-buffer)
-    (emacs-keymap-define-key map (kbd "^") #'dired-up-directory)
-    (emacs-keymap-define-key map (kbd "m") #'dired-mark)
-    (emacs-keymap-define-key map (kbd "u") #'dired-unmark)
-    (emacs-keymap-define-key map (kbd "d") #'dired-flag-file-deletion)
-    (emacs-keymap-define-key map (kbd "x") #'dired-do-flagged-delete)
-    (emacs-keymap-define-key map (kbd "R") #'dired-do-rename)
-    (emacs-keymap-define-key map (kbd "C") #'dired-do-copy)
-    map)
+(defvar dired-mode-map nil
   "Keymap for `dired-mode'.")
+
+(defun emacs-dired-min--ensure-mode-map ()
+  "Build and return `dired-mode-map', constructing it on first use.
+The standalone NeLisp reader aborts an eager top-level keymap
+initializer at bundle-load time (a keymap primitive such as `kbd' is
+not yet in its final binding while the bundle is still loading),
+leaving the variable unbound.  Building the map lazily on the first
+`dired-mode' entry sidesteps that load-order fragility — by then every
+keymap primitive is fully installed."
+  (unless dired-mode-map
+    (let ((map (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key map (kbd "RET") #'dired-find-file)
+      (emacs-keymap-define-key map (kbd "n") #'dired-next-line)
+      (emacs-keymap-define-key map (kbd "p") #'dired-previous-line)
+      (emacs-keymap-define-key map (kbd "q") #'emacs-dired-min-quit-window)
+      (emacs-keymap-define-key map (kbd "g") #'emacs-dired-min-revert-buffer)
+      (emacs-keymap-define-key map (kbd "^") #'dired-up-directory)
+      (emacs-keymap-define-key map (kbd "m") #'dired-mark)
+      (emacs-keymap-define-key map (kbd "u") #'dired-unmark)
+      (emacs-keymap-define-key map (kbd "d") #'dired-flag-file-deletion)
+      (emacs-keymap-define-key map (kbd "x") #'dired-do-flagged-delete)
+      (emacs-keymap-define-key map (kbd "R") #'dired-do-rename)
+      (emacs-keymap-define-key map (kbd "C") #'dired-do-copy)
+      (setq dired-mode-map map)))
+  dired-mode-map)
 
 (defvar emacs-dired-min--state (make-hash-table :test 'eq :weakness nil)
   "Hash table mapping dired buffers to listing metadata.
@@ -222,7 +234,7 @@ PREVIOUS-BUFFER is remembered for quit behaviour."
   (emacs-mode-set-major-mode 'dired-mode "Dired")
   (setq major-mode 'dired-mode)
   (setq mode-name "Dired")
-  (emacs-keymap-use-local-map dired-mode-map)
+  (emacs-keymap-use-local-map (emacs-dired-min--ensure-mode-map))
   nil)
 
 ;;;###autoload

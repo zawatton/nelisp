@@ -74,7 +74,13 @@ final `.el' suffix with `.repl'.")
     "man.el"
     "woman.el"
     "emacs-calc.el"
-    "calc.el")
+    "calc.el"
+    ;; directory browser: greenfield `emacs-dired-min' (defines the `dired'
+    ;; command on top of nelisp-ec-directory-files / -file-attributes) then
+    ;; the `dired' feature facade.  Wired once the standalone reader's
+    ;; readdir/stat syscalls return real entries (Doc 142 gate-5).
+    "emacs-dired-min.el"
+    "dired.el")
   "Local src files inserted after buffer/face substrates are available.")
 
 (defvar nelisp-bootstrap-repl-direct-character-limit 0
