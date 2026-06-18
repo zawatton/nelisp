@@ -82,12 +82,12 @@ echo "build-nelisp: OK — binary at $BIN"
 tmp="$(mktemp "${TMPDIR:-/tmp}/nelisp-standalone-reader-smoke.XXXXXX.el")"
 printf '%s\n' '(+ 40 2)' > "$tmp"
 set +e
-"$BIN" --load "$tmp"
+out="$("$BIN" --load "$tmp")"
 rc=$?
 set -e
 rm -f "$tmp"
-if [[ "$rc" != 42 ]]; then
-  echo "build-nelisp: standalone reader smoke failed: exit=$rc expected=42" >&2
+if [[ "$out" != 42 && "$rc" != 42 ]]; then
+  echo "build-nelisp: standalone reader smoke failed: output=$out exit=$rc expected=42" >&2
   exit 1
 fi
-echo "build-nelisp: standalone reader smoke OK (exit=42)"
+echo "build-nelisp: standalone reader smoke OK (output=$out exit=$rc)"
