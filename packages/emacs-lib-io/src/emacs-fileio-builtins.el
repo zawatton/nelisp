@@ -65,10 +65,22 @@ Path parsing, predicates, and directory/syscall primitives are left to
 the runtime when they already exist because `load' / `require' depend
 on those semantics during bootstrap.")
 
+(defun emacs-fileio-builtins--standalone-p ()
+  "Return non-nil when running on the standalone NeLisp reader.
+A bound `emacs-version' is unreliable here: the reader binds it to the
+`nelisp--unbound-marker' sentinel, so `boundp' returns t even with no
+host Emacs.  Mirror `files--standalone-runtime-p' (NeLisp-only syscall
+primitives) so `--standalone-overrides' force-install fires on the
+reader instead of leaving stub function cells in place."
+  (or (not (boundp 'emacs-version))
+      (fboundp 'nl-write-file)
+      (fboundp 'nl-syscall-write-file)
+      (fboundp 'nelisp--eval-source-string)))
+
 (defun emacs-fileio-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
   (or (not (emacs-fileio-builtins--function-cell-live-p symbol))
-      (and (not (boundp 'emacs-version))
+      (and (emacs-fileio-builtins--standalone-p)
            (memq symbol emacs-fileio-builtins--standalone-overrides))))
 
 (defun emacs-fileio-builtins--function-cell-live-p (symbol)
