@@ -212,6 +212,10 @@
   "NeLisp has no buffer-local distinction; alias to `setq'."
   (cons 'setq pairs))
 
+(defmacro setq-local (&rest pairs)
+  "NeLisp has no buffer-local distinction; alias to `setq'."
+  (cons 'setq pairs))
+
 (defmacro defvar (name &rest args)
   "Define NAME as a global variable, setting VALUE if unbound.
 With NO value form (`(defvar NAME)' forward declaration) NAME is only
@@ -288,6 +292,21 @@ from `(defvar X nil)'."
       (setq seq (cdr seq)))
     (nreverse acc)))
 
+(defun delete-dups (list)
+  "Destructively remove duplicate elements from LIST using `equal'."
+  (let ((seen nil)
+        (tail list)
+        (prev nil))
+    (while tail
+      (if (member (car tail) seen)
+          (if prev
+              (setcdr prev (cdr tail))
+            (setq list (cdr tail)))
+        (setq seen (cons (car tail) seen))
+        (setq prev tail))
+      (setq tail (cdr tail)))
+    list))
+
 ;; Doc 143 (WIRE from lisp/nelisp-stdlib-plist-str.el): high-frequency string
 ;; primitives that were void in the reader runtime.  Low-dependency forms only.
 (defun string-equal (a b)
@@ -327,16 +346,13 @@ from `(defvar X nil)'."
 
 ;; Doc 143 string ops (self-contained: funcall/aref/char-to-string/concat).
 (defun mapconcat (fn seq &optional sep)
-  (let ((parts nil) (tail seq) (s (or sep "")))
-    (while tail (setq parts (cons (funcall fn (car tail)) parts)) (setq tail (cdr tail)))
-    (setq parts (nreverse parts))
-    (let ((out "") (first t))
-      (while parts
-        (unless first (setq out (concat out s)))
-        (setq out (concat out (car parts)))
-        (setq first nil)
-        (setq parts (cdr parts)))
-      out)))
+  (let ((out "") (first t) (tail seq) (s (or sep "")))
+    (while tail
+      (unless first (setq out (concat out s)))
+      (setq out (concat out (funcall fn (car tail))))
+      (setq first nil)
+      (setq tail (cdr tail)))
+    out))
 
 (defun downcase (obj)
   (cond ((stringp obj)
@@ -522,6 +538,20 @@ from `(defvar X nil)'."
   (defun cl-remove-if (pred seq) (seq-remove pred seq)))
 (unless (fboundp 'cl-remove-if-not)
   (defun cl-remove-if-not (pred seq) (seq-filter pred seq)))
+(unless (fboundp 'cl-find-if)
+  (defun cl-find-if (pred seq)
+    (let ((cur (nelisp-seq--to-list seq))
+          (found nil)
+          (value nil))
+      (while (and cur (not found))
+        (when (funcall pred (car cur))
+          (setq found t)
+          (setq value (car cur)))
+        (setq cur (cdr cur)))
+      value)))
+(unless (fboundp 'cl-find-if-not)
+  (defun cl-find-if-not (pred seq)
+    (cl-find-if (lambda (x) (not (funcall pred x))) seq)))
 (unless (fboundp 'seq-take)
   (defun seq-take (seq n) (take n (nelisp-seq--to-list seq))))
 (unless (fboundp 'seq-drop)
@@ -657,7 +687,14 @@ from `(defvar X nil)'."
       (setq acc (cons (car list) acc)) (setq list (cdr list)))
     acc))
 
-(defun nreverse (list) (reverse list))
+(defun nreverse (list)
+  (let ((prev nil) (cur list) next)
+    (while cur
+      (setq next (cdr cur))
+      (setcdr cur prev)
+      (setq prev cur)
+      (setq cur next))
+    prev))
 
 (unless (fboundp 'last)
   (defun last (list &optional n)
@@ -765,9 +802,25 @@ from `(defvar X nil)'."
 
 (defun member (elt list)
   (let ((found nil))
-    (while (and list (not found))
-      (if (equal elt (car list)) (setq found list)
-	(setq list (cdr list))))
+    (cond
+     ((stringp elt)
+      (while (and list (not found))
+        (let ((x (car list)))
+          (if (and (stringp x) (string= elt x)) (setq found list)
+            (setq list (cdr list))))))
+     ((symbolp elt)
+      (while (and list (not found))
+        (if (eq elt (car list)) (setq found list)
+          (setq list (cdr list)))))
+     ((numberp elt)
+      (while (and list (not found))
+        (let ((x (car list)))
+          (if (and (numberp x) (= elt x)) (setq found list)
+            (setq list (cdr list))))))
+     (t
+      (while (and list (not found))
+        (if (equal elt (car list)) (setq found list)
+          (setq list (cdr list))))))
     found))
 
 (defun assq (key alist)
@@ -778,13 +831,39 @@ from `(defvar X nil)'."
 	  (setq alist (cdr alist)))))
     found))
 
-(defun assoc (key alist)
+(defun assoc (key alist &optional testfn)
   (let ((found nil))
-    (while (and alist (not found))
-      (let ((pair (car alist)))
-	(if (and (consp pair) (equal (car pair) key))
-	    (setq found pair)
-	  (setq alist (cdr alist)))))
+    (cond
+     (testfn
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (if (and (consp pair) (funcall testfn (car pair) key))
+              (setq found pair)
+            (setq alist (cdr alist))))))
+     ((stringp key)
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (if (and (consp pair) (stringp (car pair)) (string= (car pair) key))
+              (setq found pair)
+            (setq alist (cdr alist))))))
+     ((symbolp key)
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (if (and (consp pair) (eq (car pair) key))
+              (setq found pair)
+            (setq alist (cdr alist))))))
+     ((numberp key)
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (if (and (consp pair) (numberp (car pair)) (= (car pair) key))
+              (setq found pair)
+            (setq alist (cdr alist))))))
+     (t
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (if (and (consp pair) (equal (car pair) key))
+              (setq found pair)
+            (setq alist (cdr alist)))))))
     found))
 
 (defun mapcar (fn list)
@@ -792,32 +871,50 @@ from `(defvar X nil)'."
     (while list
       (setq acc (cons (funcall fn (car list)) acc))
       (setq list (cdr list)))
-    (let ((out nil))
-      (while acc (setq out (cons (car acc) out)) (setq acc (cdr acc)))
-      out)))
+    (nreverse acc)))
 
 (defun mapc (fn list)
   (let ((orig list))
     (while list (funcall fn (car list)) (setq list (cdr list))) orig))
 
-(defun plist-member (plist key)
+(defun plist-member (plist key &optional predicate)
   (let ((cur plist) (found nil))
-    (while (and cur (not found))
-      (if (eq (car cur) key) (setq found cur)
-	(setq cur (cdr (cdr cur)))))
+    (if predicate
+        (while (and cur (not found))
+          (if (funcall predicate (car cur) key) (setq found cur)
+            (setq cur (cdr (cdr cur)))))
+      (while (and cur (not found))
+        (if (eq (car cur) key) (setq found cur)
+          (setq cur (cdr (cdr cur))))))
     found))
 
-(defun plist-get (plist key)
-  (let ((tail (plist-member plist key)))
-    (if tail (car (cdr tail)) nil)))
+(defun plist-get (plist key &optional predicate)
+  (let ((cur plist) (found nil) (value nil))
+    (if predicate
+        (while (and cur (not found))
+          (if (funcall predicate (car cur) key)
+              (progn (setq found t) (setq value (car (cdr cur))))
+            (setq cur (cdr (cdr cur)))))
+      (while (and cur (not found))
+        (if (eq (car cur) key)
+            (progn (setq found t) (setq value (car (cdr cur))))
+          (setq cur (cdr (cdr cur))))))
+    value))
 
-(defun plist-put (plist key value)
-  (let ((tail (plist-member plist key)))
+(defun plist-put (plist key value &optional predicate)
+  (let ((cur plist) (tail nil))
+    (if predicate
+        (while (and cur (not tail))
+          (if (funcall predicate (car cur) key) (setq tail cur)
+            (setq cur (cdr (cdr cur)))))
+      (while (and cur (not tail))
+        (if (eq (car cur) key) (setq tail cur)
+          (setq cur (cdr (cdr cur))))))
     (if tail (progn (setcar (cdr tail) value) plist)
       (if (null plist) (cons key (cons value nil))
-	(let ((cur plist))
-	  (while (cdr (cdr cur)) (setq cur (cdr (cdr cur))))
-	  (setcdr (cdr cur) (cons key (cons value nil))) plist)))))
+	(let ((end plist))
+	  (while (cdr (cdr end)) (setq end (cdr (cdr end))))
+	  (setcdr (cdr end) (cons key (cons value nil))) plist)))))
 
 (defun string-empty-p (s) (= (length s) 0))
 
@@ -879,6 +976,99 @@ following `(declare ...)' forms are treated as declarations."
         (setq declarations (cons (car cur) declarations))
         (setq cur (cdr cur)))
       (cons (nreverse declarations) cur))))
+
+(defun nelisp--parse-cl-formals (formals)
+  "Parse the subset of `cl-defun' FORMALS used by standalone runtime code."
+  (let ((mode 'pos)
+        (positional nil)
+        (optionals nil)
+        (rest-sym nil)
+        (keys nil)
+        (cursor formals))
+    (while cursor
+      (let ((f (car cursor)))
+        (cond
+         ((eq f '&optional)
+          (setq mode 'opt))
+         ((eq f '&rest)
+          (setq mode 'rest))
+         ((eq f '&key)
+          (setq mode 'key))
+         ((eq f '&aux)
+          (setq mode 'aux))
+         ((eq mode 'pos)
+          (setq positional (cons f positional)))
+         ((eq mode 'opt)
+          (setq optionals (cons f optionals)))
+         ((eq mode 'rest)
+          (unless rest-sym
+            (setq rest-sym f)))
+         ((eq mode 'key)
+          (let (param default keyword)
+            (if (consp f)
+                (progn
+                  (setq param (car f))
+                  (setq default (car (cdr f))))
+              (setq param f)
+              (setq default nil))
+            (setq keyword (intern (concat ":" (symbol-name param))))
+            (setq keys (cons (list keyword param default) keys))))))
+      (setq cursor (cdr cursor)))
+    (list (nreverse positional)
+          (nreverse optionals)
+          rest-sym
+          (nreverse keys))))
+
+(defmacro cl-defun (name formals &rest body)
+  "Standalone `cl-defun' subset with positional, optional, rest and key args."
+  (let* ((parsed (nelisp--parse-cl-formals formals))
+         (positional (car parsed))
+         (optionals (car (cdr parsed)))
+         (rest-sym (car (cdr (cdr parsed))))
+         (keys (car (cdr (cdr (cdr parsed))))))
+    (if (null keys)
+        (cons 'defun (cons name (cons formals body)))
+      (let* ((rest-name (or rest-sym '--cl-keys))
+             (new-formals
+              (append positional
+                      (if optionals (cons '&optional optionals) nil)
+                      (cons '&rest (cons rest-name nil))))
+             (bindings
+              (mapcar
+               (lambda (key-spec)
+                 (let ((keyword (car key-spec))
+                       (param (car (cdr key-spec)))
+                       (default (car (cdr (cdr key-spec)))))
+                   (list param
+                         (list 'or
+                               (list 'car
+                                     (list 'cdr
+                                           (list 'memq
+                                                 (list 'quote keyword)
+                                                 rest-name)))
+                               default))))
+               keys))
+             (let-form (cons 'let* (cons bindings body))))
+        (cons 'defun
+              (cons name
+                    (cons new-formals
+                          (cons let-form nil))))))))
+
+(unless (fboundp 'nelisp-cc-runtime-aot-module-init-plan)
+  (defun nelisp-cc-runtime-aot-module-init-plan
+      (init-helpers &optional custom-metadata root-descriptors closure-descriptors)
+    "Standalone compile-time subset of `nelisp-cc-runtime-aot-module-init-plan'."
+    (let ((helpers (mapcar (lambda (d) (plist-get d :helper)) init-helpers))
+          (custom (or custom-metadata nil))
+          (roots (or root-descriptors nil))
+          (closures (or closure-descriptors nil)))
+      (list :init-helpers init-helpers
+            :helper-order helpers
+            :custom-metadata custom
+            :custom-by-helper
+            (mapcar (lambda (d) (cons (plist-get d :helper) d)) custom)
+            :root-descriptors roots
+            :closure-descriptors closures))))
 
 (defun nelisp--bq-expand (form)
   "Return the expansion of FORM under `backquote'."
@@ -2455,6 +2645,8 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
     str))
 (unless (fboundp 'bufferp)
   (defun bufferp (_obj) nil))
+(unless (fboundp 'set-buffer-multibyte)
+  (defun set-buffer-multibyte (_flag) nil))
 (unless (fboundp 'multibyte-string-p)
   (defun multibyte-string-p (obj) (stringp obj)))
 (unless (fboundp 'unibyte-string-p)
@@ -2485,7 +2677,224 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
         (signal 'error
                 (list (format "write-region stub: wrf returned %S (expected %S) path=%s"
                               rc (length bytes) filename)))))
+	    nil))
+(defvar nelisp--with-temp-file-contents nil)
+(unless (fboundp 'insert)
+  (defun insert (&rest strings)
+    (dolist (s strings)
+      (setq nelisp--with-temp-file-contents
+            (concat (or nelisp--with-temp-file-contents "") s)))
     nil))
+(unless (fboundp 'with-temp-file)
+  (defmacro with-temp-file (file &rest body)
+    `(let ((nelisp--with-temp-file-contents ""))
+       ,@body
+       (write-region nelisp--with-temp-file-contents nil ,file))))
+(unless (fboundp 'ignore-errors)
+  (defmacro ignore-errors (&rest body)
+    `(condition-case nil (progn ,@body) (error nil))))
+(defvar nelisp--current-buffer nil)
+(defvar nelisp--pending-processes nil)
+(defvar nelisp--process-props nil)
+(defvar coding-system-for-write nil)
+(defvar coding-system-for-read nil)
+(defvar system-type 'gnu/linux)
+(defvar system-configuration "x86_64-pc-linux-gnu")
+(unless (fboundp 'generate-new-buffer)
+  (defun generate-new-buffer (name)
+    (vector 'buffer name "" t)))
+(unless (fboundp 'buffer-live-p)
+  (defun buffer-live-p (buffer)
+    (and (vectorp buffer)
+         (eq (aref buffer 0) 'buffer)
+         (aref buffer 3))))
+(unless (fboundp 'kill-buffer)
+  (defun kill-buffer (buffer)
+    (when (and (vectorp buffer) (eq (aref buffer 0) 'buffer))
+      (aset buffer 3 nil))
+    nil))
+(unless (fboundp 'with-current-buffer)
+  (defmacro with-current-buffer (buffer &rest body)
+    `(let ((nelisp--current-buffer ,buffer))
+       ,@body)))
+(unless (fboundp 'with-temp-buffer)
+  (defmacro with-temp-buffer (&rest body)
+    `(let ((nelisp--current-buffer (generate-new-buffer " *temp*")))
+       ,@body)))
+(when (fboundp 'rdf)
+  ;; Keep the public compatibility name on `rdf' so callers get the same
+  ;; value-returning read path used by the short builtin.
+  (fset 'nelisp--syscall-read-file (symbol-function 'rdf)))
+(unless (fboundp 'buffer-string)
+  (defun buffer-string ()
+    (if (and (vectorp nelisp--current-buffer)
+             (eq (aref nelisp--current-buffer 0) 'buffer))
+        (aref nelisp--current-buffer 2)
+      "")))
+(unless (fboundp 'insert-file-contents)
+  (defun insert-file-contents (filename &rest _args)
+    (let ((contents (or (nelisp--syscall-read-file filename) "")))
+      (when (and (vectorp nelisp--current-buffer)
+                 (eq (aref nelisp--current-buffer 0) 'buffer))
+        (aset nelisp--current-buffer 2
+              (concat (aref nelisp--current-buffer 2) contents)))
+      (list filename (length contents)))))
+(unless (fboundp 'insert-file-contents-literally)
+  (defun insert-file-contents-literally (filename &rest args)
+    (apply #'insert-file-contents filename args)))
+(unless (fboundp 'processp)
+  (defun processp (process)
+    (or (and (vectorp process) (eq (aref process 0) 'process))
+        (and (fboundp 'nelisp-process-object-p)
+             (nelisp-process-object-p process)))))
+(unless (fboundp 'process-get)
+  (defun process-get (process key)
+    (cond
+     ((and (vectorp process) (eq (aref process 0) 'process))
+      (cdr (assq key (aref process 4))))
+     ((and (fboundp 'nelisp-process-object-p)
+           (nelisp-process-object-p process))
+      (cdr (assq key (cdr (assq process nelisp--process-props)))))
+     (t nil))))
+(unless (fboundp 'process-put)
+  (defun process-put (process key value)
+    (cond
+     ((and (vectorp process) (eq (aref process 0) 'process))
+      (let ((cell (assq key (aref process 4))))
+        (if cell
+            (setcdr cell value)
+          (aset process 4 (cons (cons key value) (aref process 4))))))
+     ((and (fboundp 'nelisp-process-object-p)
+           (nelisp-process-object-p process))
+      (let ((entry (assq process nelisp--process-props)))
+        (unless entry
+          (setq entry (cons process nil))
+          (setq nelisp--process-props
+                (cons entry nelisp--process-props)))
+        (let ((cell (assq key (cdr entry))))
+          (if cell
+              (setcdr cell value)
+            (setcdr entry (cons (cons key value) (cdr entry))))))))
+    value))
+(unless (fboundp 'nelisp--process-status-symbol)
+  (defun nelisp--process-status-symbol (status)
+    (cond
+     ((eq status 'run) 'run)
+     ((eq status 'exit) 'exit)
+     ((and (integerp status) (= status 0)) 'run)
+     ((and (integerp status) (= status 1)) 'exit)
+     (t 'exit))))
+(unless (fboundp 'process-status)
+  (defun process-status (process)
+    (cond
+     ((and (fboundp 'nelisp-process-object-p)
+           (nelisp-process-object-p process))
+      (nelisp--process-status-symbol (nelisp-process-status process)))
+     ((and (vectorp process) (eq (aref process 0) 'process))
+      (aref process 2))
+     (t (signal 'wrong-type-argument (list 'processp process))))))
+(unless (fboundp 'process-exit-status)
+  (defun process-exit-status (process)
+    (cond
+     ((and (fboundp 'nelisp-process-object-p)
+           (nelisp-process-object-p process))
+      (nelisp-process-exit-status process))
+     ((and (vectorp process) (eq (aref process 0) 'process))
+      (aref process 3))
+     (t (signal 'wrong-type-argument (list 'processp process))))))
+(unless (fboundp 'process-live-p)
+  (defun process-live-p (process)
+    (eq (process-status process) 'run)))
+(unless (fboundp 'delete-process)
+  (defun delete-process (process)
+    (when (and (fboundp 'nelisp-process-object-p)
+               (nelisp-process-object-p process)
+               (fboundp 'nelisp-process-delete))
+      (nelisp-process-delete process))
+    nil))
+(unless (fboundp 'kill-process)
+  (defun kill-process (process &optional _current-group)
+    (delete-process process)))
+(unless (fboundp 'executable-find)
+  (defun executable-find (command &optional _remote)
+    (unless (and (stringp command) (> (length command) 0))
+      (signal 'wrong-type-argument (list 'stringp command)))
+    (if (string-match-p "/" command)
+        (and (file-exists-p command) command)
+      (let* ((separator (if (boundp 'path-separator) path-separator ":"))
+             (dirs (split-string
+                    (or (getenv "PATH") "/usr/local/bin:/usr/bin:/bin")
+                    separator))
+             found)
+        (while (and dirs (not found))
+          (let ((path (expand-file-name command
+                                        (if (equal (car dirs) "")
+                                            "."
+                                          (car dirs)))))
+            (when (file-exists-p path)
+              (setq found path)))
+          (setq dirs (cdr dirs)))
+        found))))
+(unless (fboundp 'make-process)
+  (defun make-process (&rest plist)
+    (let* ((name (or (plist-get plist :name) "process"))
+           (command (plist-get plist :command))
+           (stderr-buffer (plist-get plist :stderr))
+           (sentinel (plist-get plist :sentinel))
+           (resolved (and command
+                          (cons (or (executable-find (car command))
+                                    (car command))
+                                (cdr command)))))
+      (unless command
+        (signal 'wrong-type-argument (list 'listp command)))
+      (if (fboundp 'nelisp-process-start)
+          (let ((proc (apply #'nelisp-process-start resolved)))
+            (process-put proc :name name)
+            (process-put proc :sentinel sentinel)
+            (process-put proc :stderr stderr-buffer)
+            (setq nelisp--pending-processes
+                  (cons proc nelisp--pending-processes))
+            proc)
+        (let ((proc (vector 'process name 'run -1 nil sentinel "")))
+          (setq nelisp--pending-processes
+                (cons proc nelisp--pending-processes))
+          proc)))))
+(unless (fboundp 'nelisp-make-process)
+  (defun nelisp-make-process (&rest plist)
+    (apply #'make-process plist)))
+(unless (fboundp 'call-process)
+  (defun call-process (program &optional infile destination display &rest args)
+    (let ((resolved (or (executable-find program) program)))
+      (if (eq destination t)
+          (let ((out-file (make-temp-file "nelisp-call-process-out-")))
+            (unwind-protect
+                (let ((rc (apply #'nelisp-process-call-process
+                                 resolved infile out-file display args)))
+                  (when nelisp--current-buffer
+                    (insert-file-contents out-file))
+                  rc)
+              (ignore-errors (delete-file out-file))))
+        (apply #'nelisp-process-call-process
+               resolved infile destination display args)))))
+(unless (fboundp 'start-process)
+  (defun start-process (name buffer program &rest args)
+    (make-process :name name :buffer buffer :command (cons program args))))
+(unless (fboundp 'accept-process-output)
+  (defun accept-process-output (&rest _args)
+    (let ((pending nelisp--pending-processes))
+      (setq nelisp--pending-processes nil)
+      (dolist (proc pending)
+        (when (and (fboundp 'nelisp-process-object-p)
+                   (nelisp-process-object-p proc)
+                   (fboundp 'nelisp-process-wait))
+          (nelisp-process-wait proc))
+        (when (and (vectorp proc) (eq (aref proc 0) 'process))
+          (aset proc 2 'exit)
+          (aset proc 3 0))
+        (let ((sentinel (process-get proc :sentinel)))
+          (when sentinel
+            (funcall sentinel proc "finished\n")))))
+    t))
 (unless (fboundp 'set-file-modes)
   (defun set-file-modes (_filename _mode) nil))
 
@@ -2629,19 +3038,30 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
       (setq node (cdr node)))
     nil))
 
+(defun nelisp--prn-chunks-add (state chunk)
+  (let ((cell (cons chunk nil)))
+    (if (car state)
+        (setcdr (cdr state) cell)
+      (setcar state cell))
+    (setcdr state cell)
+    state))
+
+(defun nelisp--prn-chunks-string (state)
+  (apply 'concat (car state)))
+
 (defun nelisp--prn-string-escaped (s)
-  (let ((out nil) (i 0) (n (length s)))
+  (let ((chunks (cons nil nil)) (i 0) (n (length s)))
     (while (< i n)
       (let ((c (aref s i)))
         (cond
-         ((= c 34) (setq out (cons "\\\"" out)))
-         ((= c 92) (setq out (cons "\\\\" out)))
-         ((= c 10) (setq out (cons "\\n" out)))
-         ((= c 13) (setq out (cons "\\r" out)))
-         ((= c 9)  (setq out (cons "\\t" out)))
-         (t        (setq out (cons (char-to-string c) out)))))
+         ((= c 34) (nelisp--prn-chunks-add chunks "\\\""))
+         ((= c 92) (nelisp--prn-chunks-add chunks "\\\\"))
+         ((= c 10) (nelisp--prn-chunks-add chunks "\\n"))
+         ((= c 13) (nelisp--prn-chunks-add chunks "\\r"))
+         ((= c 9)  (nelisp--prn-chunks-add chunks "\\t"))
+         (t        (nelisp--prn-chunks-add chunks (char-to-string c)))))
       (setq i (1+ i)))
-    (apply #'concat (nreverse out))))
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-float (x)
   (let ((s (number-to-string x)))
@@ -2676,38 +3096,43 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
         (concat prefix (nelisp--prn-to-string arg escape))))))
 
 (defun nelisp--prn-list-body (lst escape)
-  (let ((parts nil) (cur lst) (first t))
+  (let ((chunks (cons nil nil)) (cur lst) (first t))
     (while (consp cur)
-      (unless first (setq parts (cons " " parts)))
-      (setq parts (cons (nelisp--prn-to-string (car cur) escape) parts))
+      (unless first (nelisp--prn-chunks-add chunks " "))
+      (nelisp--prn-chunks-add chunks
+                              (nelisp--prn-to-string (car cur) escape))
       (setq first nil)
       (setq cur (cdr cur)))
     (unless (null cur)
-      (setq parts (cons " . " parts))
-      (setq parts (cons (nelisp--prn-to-string cur escape) parts)))
-    (apply #'concat (nreverse parts))))
+      (nelisp--prn-chunks-add chunks " . ")
+      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape)))
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-vector (vec escape)
-  (let ((n (length vec)) (parts (list "[")))
+  (let ((n (length vec)) (chunks (cons nil nil)))
+    (nelisp--prn-chunks-add chunks "[")
     (let ((i 0))
       (while (< i n)
-        (when (> i 0) (setq parts (cons " " parts)))
-        (setq parts (cons (nelisp--prn-to-string (aref vec i) escape) parts))
+        (when (> i 0) (nelisp--prn-chunks-add chunks " "))
+        (nelisp--prn-chunks-add chunks
+                                (nelisp--prn-to-string (aref vec i) escape))
         (setq i (1+ i))))
-    (setq parts (cons "]" parts))
-    (apply #'concat (nreverse parts))))
+    (nelisp--prn-chunks-add chunks "]")
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-record (rec escape)
   (let ((tag (nelisp--record-type rec)) (n (nelisp--record-length rec))
-        (parts (list "#s(")))
-    (setq parts (cons (nelisp--prn-to-string tag escape) parts))
+        (chunks (cons nil nil)))
+    (nelisp--prn-chunks-add chunks "#s(")
+    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape))
     (let ((i 0))
       (while (< i (1- n))
-        (setq parts (cons " " parts))
-        (setq parts (cons (nelisp--prn-to-string (nelisp--record-ref rec i) escape) parts))
+        (nelisp--prn-chunks-add chunks " ")
+        (nelisp--prn-chunks-add
+         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape))
         (setq i (1+ i))))
-    (setq parts (cons ")" parts))
-    (apply #'concat (nreverse parts))))
+    (nelisp--prn-chunks-add chunks ")")
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-to-string (obj escape)
   (cond
@@ -2877,8 +3302,28 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; NeLisp so the anvil-pkg ERT suite's helpers (with-mock, registry-clear, ...)
 ;; run for real instead of signalling void-function.  All guarded so a real
 ;; builtin (host Emacs / future NeLisp primitive) always wins.
+(defvar load-path nil)
+(defvar features nil)
+(defvar nelisp--environment nil)
 (unless (fboundp 'getenv)
-  (defun getenv (_variable) nil))
+  (defun getenv (variable)
+    (cdr (assoc variable nelisp--environment))))
+(unless (fboundp 'setenv)
+  (defun setenv (variable value &optional _substitute)
+    (let ((cell (assoc variable nelisp--environment)))
+      (if value
+          (if cell
+              (setcdr cell value)
+            (setq nelisp--environment
+                  (cons (cons variable value) nelisp--environment)))
+        (let ((out nil)
+              (tail nelisp--environment))
+          (while tail
+            (unless (equal (car (car tail)) variable)
+              (setq out (cons (car tail) out)))
+            (setq tail (cdr tail)))
+          (setq nelisp--environment (nreverse out)))))
+    value))
 (defvar nelisp--temp-name-counter 0)
 (unless (fboundp 'make-temp-name)
   (defun make-temp-name (prefix)
@@ -2887,8 +3332,163 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
 ;; File-system ops via the reader's path-syscall builtins (nelisp--syscall-path
 ;; = syscall(NR, cpath); -path-int = syscall(NR, cpath, INT)).  x86_64 NRs:
 ;; access=21, unlink=87, mkdir=83.  Returns 0 on success / -errno.
+;;
+;; nelisp--syscall-stat: pure-elisp reimplementation on top of
+;; nelisp--syscall-path-int (access(2), NR=21).  The Rust bi_syscall_stat shim
+;; uses extern-call stat (libc symbol), which hangs on the standalone reader
+;; (no libc link; the combiner stashes a WTA and aborts the caller).  This
+;; fallback uses the access(2) trichotomy instead:
+;;   - access(path, F_OK) != 0              -> 'absent
+;;   - access(concat(path, "/"), F_OK) == 0 -> 'directory  (trailing slash is
+;;                                              accepted by a dir but returns
+;;                                              ENOTDIR for a regular file)
+;;   - else                                 -> 'file
+;; Installed unconditionally when nelisp--syscall-path-int is fboundp (=
+;; standalone reader binary); uses fset to shadow the broken deferred builtin
+;; registration that makes fboundp return t but causes the combiner to abort.
+;; On host Emacs, nelisp--syscall-path-int is not fboundp, so no shadowing.
+(when (fboundp 'nelisp--syscall-path-int)
+  (fset 'nelisp--syscall-stat
+        (lambda (path)
+          (if (not (= 0 (nelisp--syscall-path-int 21 path 0)))
+              'absent
+            (if (= 0 (nelisp--syscall-path-int 21 (concat path "/") 0))
+                'directory
+              'file)))))
+;; nelisp--syscall-readdir: pure-elisp reimplementation on top of the
+;; working `nelisp--syscall-readdir-names' builtin.  The Rust-side
+;; `nelisp--syscall-readdir' is a CLASS-2 deferred builtin on the standalone
+;; reader (the combiner stashes a WTA signal and aborts the caller), making
+;; `directory-files' (which calls it) hang indefinitely.
+;;
+;; `nelisp--syscall-readdir-names' IS a proper dispatch-armed builtin that
+;; already returns a newline-joined string of all entry names (including
+;; "." and "..").  We split that string, prepend the canonical absolute
+;; directory path as the first element, and return `(ABS-DIR NAME ...)',
+;; exactly matching the contract expected by `directory-files' in
+;; nelisp-stdlib-misc.el.
+;;
+;; Guarded by `(fboundp 'nelisp--syscall-readdir-names)': true only on the
+;; standalone reader binary, so host Emacs is unaffected.  Uses `fset'
+;; (not `unless fboundp') because the deferred CLASS-2 registration makes
+;; `fboundp' return t before the prelude runs.
+;;
+;; `directory-files' from nelisp-stdlib-misc.el is also fset here so that
+;; the prelude's version (built on the working `nelisp--syscall-readdir-names'
+;; directly, without the sort/count/full-path complexity of the misc.el one)
+;; takes effect.  The misc.el version would also work once readdir is fixed,
+;; but the fset here is a belt-and-suspenders override that avoids any
+;; dependency on the misc.el load order.
+;; nelisp--readdir-scan-raw: helper that walks a newline-terminated name
+;; string from nelisp--syscall-readdir-names and builds a list of strings,
+;; one per entry.  The loop uses `if' (not the `or' macro) to avoid the
+;; let-frame overflow that `or' causes inside tight while loops on the
+;; standalone reader when the string exceeds ~32KB.
+;;
+;; Callers pass a SKIP-DOTDOT argument: when non-nil, "." and ".." are
+;; excluded (needed by directory-files).
+(defun nelisp--readdir-scan-raw (raw skip-dotdot)
+  (let ((len (length raw))
+        (idx 0)
+        (start 0)
+        (result nil))
+    (while (< idx len)
+      (if (= (aref raw idx) 10)
+          (let ((name (substring raw start idx)))
+            (if skip-dotdot
+                (if (= (length name) 1)
+                    (if (= (aref name 0) 46)
+                        nil
+                      (setq result (cons name result)))
+                  (if (= (length name) 2)
+                      (if (= (aref name 0) 46)
+                          (if (= (aref name 1) 46)
+                              nil
+                            (setq result (cons name result)))
+                        (setq result (cons name result)))
+                    (setq result (cons name result))))
+              (setq result (cons name result)))
+            (setq start (1+ idx))))
+      (setq idx (1+ idx)))
+    (nreverse result)))
+(when (fboundp 'nelisp--syscall-readdir-names)
+  ;; fset nelisp--syscall-readdir: pure-elisp replacement for the CLASS-2
+  ;; deferred builtin.  Returns (ABS-DIR NAME ...) or nil, matching the Rust
+  ;; bi_syscall_readdir contract expected by directory-files in misc.el.
+  (fset 'nelisp--syscall-readdir
+        (lambda (dir)
+          (let ((raw (nelisp--syscall-readdir-names dir)))
+            (if raw
+                (cons (expand-file-name dir)
+                      (nelisp--readdir-scan-raw raw nil))
+              nil))))
+  ;; fset directory-files: override the misc.el version (which calls
+  ;; nelisp--syscall-readdir, itself deferred) with one that calls
+  ;; nelisp--syscall-readdir-names directly and scans via the
+  ;; nelisp--readdir-scan-raw helper (no or-macro loops).
+  (fset 'directory-files
+        (lambda (directory &optional full match _nosort)
+          (let ((raw (nelisp--syscall-readdir-names directory)))
+            (if raw
+                (let ((names (nelisp--readdir-scan-raw raw t))
+                      (out nil))
+                  (while names
+                    (let ((name (car names)))
+                      (if match
+                          (if (string-match-p match name)
+                              (setq out (cons (if full
+                                                  (expand-file-name name directory)
+                                                name)
+                                              out)))
+                        (setq out (cons (if full
+                                            (expand-file-name name directory)
+                                          name)
+                                        out))))
+                    (setq names (cdr names)))
+                  (nreverse out))
+              nil)))))
 (unless (fboundp 'file-exists-p)
-  (defun file-exists-p (filename) (= 0 (nelisp--syscall-path 21 filename))))
+  (defun file-exists-p (filename)
+    (let ((s (nelisp--syscall-stat filename)))
+      (or (eq s 'file) (eq s 'directory)))))
+(unless (fboundp 'file-directory-p)
+  (defun file-directory-p (filename)
+    (eq (nelisp--syscall-stat filename) 'directory)))
+(unless (fboundp 'file-regular-p)
+  (defun file-regular-p (filename)
+    (eq (nelisp--syscall-stat filename) 'file)))
+(unless (fboundp 'file-attributes)
+  (defun file-attributes (filename &optional _id-format)
+    (if (not (file-exists-p filename))
+        nil
+      (let ((size (nelisp--syscall-stat-field filename 48))
+            (mtime (nelisp--syscall-stat-field filename 88)))
+        (list nil 1 0 0 0 mtime 0 size "" nil nil nil)))))
+(unless (fboundp 'file-attribute-size)
+  (defun file-attribute-size (attrs) (nth 7 attrs)))
+(unless (fboundp 'file-attribute-modification-time)
+  (defun file-attribute-modification-time (attrs) (nth 5 attrs)))
+(defun nelisp--split-on-char (string char omit-empty)
+  (let ((start 0)
+        (idx 0)
+        (len (length string))
+        (parts nil))
+    (while (<= idx len)
+      (if (or (= idx len) (= (aref string idx) char))
+          (let ((part (substring string start idx)))
+            (unless (and omit-empty (= (length part) 0))
+              (setq parts (cons part parts)))
+            (setq start (1+ idx))))
+      (setq idx (1+ idx)))
+    (nreverse parts)))
+(unless (fboundp 'split-string)
+  (defun split-string (string &optional separators omit-nulls _trim)
+    (nelisp--split-on-char
+     string
+     (if (and separators (> (length separators) 0))
+         (aref separators 0)
+       32)
+     omit-nulls)))
 ;; nelisp-ec-write-region (Layer-2 fileio) is the write backend anvil-pkg's
 ;; compat layer prefers on NeLisp; it is in nelisp-emacs-compat-fileio (not
 ;; loaded by the suite).  Map it onto the reader's `write-region' builtin --
@@ -2898,14 +3498,60 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
   (defun nelisp-ec-write-region (string _end filename &rest _ignore)
     (write-region string nil filename)))
 (unless (fboundp 'file-readable-p)
-  (defun file-readable-p (filename) (= 0 (nelisp--syscall-path-int 21 filename 4))))
+  ;; Returns t only for regular files with R_OK (nil for directories, by design).
+  ;; Uses nelisp--syscall-stat when available (checks file type first); falls back
+  ;; to access(R_OK) only on non-reader environments where syscall-stat is absent.
+  (if (fboundp 'nelisp--syscall-stat)
+      (defun file-readable-p (filename) (eq (nelisp--syscall-stat filename) 'file))
+    (defun file-readable-p (filename) (= 0 (nelisp--syscall-path-int 21 filename 4)))))
+(unless (fboundp 'file-writable-p)
+  (defun file-writable-p (filename) (= 0 (nelisp--syscall-path-int 21 filename 2))))
 (unless (fboundp 'delete-file)
   (defun delete-file (filename &optional _trash) (nelisp--syscall-path 87 filename) nil))
+(defun nelisp--delete-directory-recursive (path)
+  (let ((names (nelisp--split-on-char
+                (or (nelisp--syscall-readdir-names path) "") 10 t)))
+    (dolist (name names)
+      (unless (or (equal name ".") (equal name ".."))
+        (nelisp--delete-directory-recursive
+         (expand-file-name name path))))
+    (let ((rc (nelisp--syscall-path 84 path)))
+      (unless (= rc 0)
+        (nelisp--syscall-path 87 path)))))
+(unless (fboundp 'delete-directory)
+  (defun delete-directory (directory &optional recursive _trash)
+    (if recursive
+        (nelisp--delete-directory-recursive directory)
+      (nelisp--syscall-path 84 directory))
+    nil))
+(unless (fboundp 'directory-files)
+  (progn
+    (defun nelisp--directory-files-match-p (name match)
+      (if (not match)
+          t
+        (let ((prefix (if (and (>= (length match) 2)
+                               (equal (substring match 0 2) "\\`"))
+                          (substring match 2)
+                        match)))
+          (and (>= (length name) (length prefix))
+               (equal (substring name 0 (length prefix)) prefix)))))
+    (defun directory-files (directory &optional full match _nosort)
+      (let ((names (nelisp--split-on-char
+                    (or (nelisp--syscall-readdir-names directory) "") 10 t))
+            (out nil))
+        (dolist (name names)
+          (unless (or (equal name ".") (equal name ".."))
+            (when (nelisp--directory-files-match-p name match)
+              (setq out (cons (if full
+                                  (expand-file-name name directory)
+                                name)
+                              out)))))
+        (nreverse out)))))
 (unless (fboundp 'make-directory)
   (defun make-directory (dir &optional parents)
     (if parents
         (let ((acc ""))
-          (dolist (component (split-string dir "/" t))
+          (dolist (component (nelisp--split-on-char dir 47 t))
             (setq acc (concat acc "/" component))
             (nelisp--syscall-path-int 83 acc 511)))
       (nelisp--syscall-path-int 83 dir 511))
@@ -2932,12 +3578,175 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
               (setcdr tail (cdr (cdr tail)))
             (setq tail (cdr tail)))))
       alist)))
+(unless (fboundp 'add-to-list)
+  (defun add-to-list (list-var element &optional append compare-fn)
+    (let* ((lst (symbol-value list-var))
+           (test (or compare-fn (function equal)))
+           (cur lst)
+           (found nil))
+      (while (and cur (not found))
+        (when (funcall test element (car cur))
+          (setq found t))
+        (setq cur (cdr cur)))
+      (unless found
+        (setq lst (if append
+                      (append lst (list element))
+                    (cons element lst)))
+        (set list-var lst))
+      lst)))
 ;; `declare' must be a no-op MACRO (not a function): NeLisp's defmacro does not
 ;; strip a `(declare (indent N) ...)' form from a macro/defun body, so it is
 ;; evaluated at runtime; as a macro it expands to nil without evaluating the
 ;; specs (a function would try to eval `(indent 1)' -> another void-function).
 (unless (fboundp 'declare)
   (defmacro declare (&rest _specs) nil))
+(unless (fboundp 'lwarn)
+  (defun lwarn (&rest _args) nil))
+(unless (fboundp 'identity)
+  (defun identity (x) x))
+(unless (fboundp 'booleanp)
+  (defun booleanp (x)
+    (or (eq x t) (eq x nil))))
+(unless (fboundp 'error-message-string)
+  (defun error-message-string (error-descriptor)
+    (cond
+     ((and (consp error-descriptor)
+           (stringp (cadr error-descriptor)))
+      (cadr error-descriptor))
+     ((stringp error-descriptor) error-descriptor)
+     (t (format "%S" error-descriptor)))))
+(unless (fboundp 'format-time-string)
+  (defun format-time-string (&rest _args)
+    "1970-01-01"))
+(unless (fboundp 'replace-regexp-in-string)
+  (defun replace-regexp-in-string (regexp replacement string
+                                          &optional _fixedcase _literal
+                                          _subexp _start)
+    (if (equal regexp "[^A-Za-z0-9_]")
+        (let ((i 0)
+              (len (length string))
+              (out ""))
+          (while (< i len)
+            (let ((ch (aref string i)))
+              (setq out
+                    (concat out
+                            (if (or (and (>= ch ?A) (<= ch ?Z))
+                                    (and (>= ch ?a) (<= ch ?z))
+                                    (and (>= ch ?0) (<= ch ?9))
+                                    (= ch ?_))
+                                (char-to-string ch)
+                              replacement))))
+            (setq i (1+ i)))
+          out)
+      string)))
+(unless (fboundp 'nelisp--base64-value)
+  (defun nelisp--base64-value (char)
+    (cond
+     ((and (>= char ?A) (<= char ?Z)) (- char ?A))
+     ((and (>= char ?a) (<= char ?z)) (+ 26 (- char ?a)))
+     ((and (>= char ?0) (<= char ?9)) (+ 52 (- char ?0)))
+     ((= char ?+) 62)
+     ((= char ?/) 63)
+     (t -1))))
+(unless (fboundp 'nelisp--base64-flush-chunk)
+  (defun nelisp--base64-flush-chunk (bytes chunks)
+    (if bytes
+        (cons (apply 'concat (nreverse bytes)) chunks)
+      chunks)))
+(unless (fboundp 'base64-encode-string)
+  (defun base64-encode-string (string &optional _no-line-break)
+    (let ((alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+          (i 0)
+          (len (length string))
+          (chunks nil)
+          (parts nil)
+          (part-count 0))
+      (while (< i len)
+        (let* ((a (aref string i))
+               (have-b (< (1+ i) len))
+               (have-c (< (+ i 2) len))
+               (b (if have-b (aref string (1+ i)) 0))
+               (c (if have-c (aref string (+ i 2)) 0))
+               (triple (logior (ash a 16) (ash b 8) c))
+               (c1 (aref alphabet (logand (ash triple -18) 63)))
+               (c2 (aref alphabet (logand (ash triple -12) 63)))
+               (c3 (if have-b (aref alphabet (logand (ash triple -6) 63)) ?=))
+               (c4 (if have-c (aref alphabet (logand triple 63)) ?=)))
+          (setq parts
+                (cons (concat (char-to-string c1)
+                              (char-to-string c2)
+                              (char-to-string c3)
+                              (char-to-string c4))
+                      parts))
+          (setq part-count (1+ part-count))
+          (when (>= part-count 128)
+            (setq chunks (cons (apply 'concat (nreverse parts)) chunks))
+            (setq parts nil)
+            (setq part-count 0)))
+        (setq i (+ i 3)))
+      (when parts
+        (setq chunks (cons (apply 'concat (nreverse parts)) chunks)))
+      (apply 'concat (nreverse chunks)))))
+(unless (fboundp 'base64-decode-string)
+  (defun base64-decode-string (string)
+    (let ((i 0)
+          (len (length string))
+          (vals-count 0)
+          (a 0)
+          (b 0)
+          (c 0)
+          (d 0)
+          (bytes nil)
+          (byte-count 0)
+          (chunks nil))
+      (while (< i len)
+        (let ((ch (aref string i)))
+          (cond
+           ((= ch ?=)
+            (cond
+             ((= vals-count 0) (setq a -2))
+             ((= vals-count 1) (setq b -2))
+             ((= vals-count 2) (setq c -2))
+             (t (setq d -2)))
+            (setq vals-count (1+ vals-count)))
+           ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32))
+            nil)
+           (t
+            (let ((v (nelisp--base64-value ch)))
+              (when (>= v 0)
+                (cond
+                 ((= vals-count 0) (setq a v))
+                 ((= vals-count 1) (setq b v))
+                 ((= vals-count 2) (setq c v))
+                 (t (setq d v)))
+                (setq vals-count (1+ vals-count))))))
+          (when (= vals-count 4)
+            (let ((triple (logior (ash a 18)
+                                  (ash b 12)
+                                  (if (= c -2) 0 (ash c 6))
+                                  (if (= d -2) 0 d))))
+              (setq bytes
+                    (cons (char-to-string (logand (ash triple -16) 255))
+                          bytes))
+              (setq byte-count (1+ byte-count))
+              (unless (= c -2)
+                (setq bytes
+                      (cons (char-to-string (logand (ash triple -8) 255))
+                            bytes))
+                (setq byte-count (1+ byte-count)))
+              (unless (= d -2)
+                (setq bytes
+                      (cons (char-to-string (logand triple 255))
+                            bytes))
+                (setq byte-count (1+ byte-count)))
+              (when (>= byte-count 128)
+                (setq chunks (nelisp--base64-flush-chunk bytes chunks))
+                (setq bytes nil)
+                (setq byte-count 0))
+              (setq vals-count 0))))
+        (setq i (1+ i)))
+      (setq chunks (nelisp--base64-flush-chunk bytes chunks))
+      (apply 'concat (nreverse chunks)))))
 ;; nelisp stdlib lowering helpers (referenced by the dotimes/loop macro
 ;; expansions in nelisp-stdlib-eval-special; their definitions live in
 ;; nelisp-stdlib.el which aborts on load standalone).  They are trivial
