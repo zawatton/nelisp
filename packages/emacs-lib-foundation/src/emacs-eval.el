@@ -118,8 +118,15 @@ substitution."
 ;; marker that `defun' has already consumed.  Polyfill as a no-op fn so
 ;; `(interactive ...)' inside a defun body evaluates to nil harmlessly.
 (unless (fboundp 'interactive)
-  (defun interactive (&rest _args)
-    "Polyfill: no-op for NeLisp standalone (no interactive call surface)."
+  (defmacro interactive (&rest _args)
+    "Polyfill: no-op macro for NeLisp standalone (no interactive call surface).
+Must be a macro, not a `defun': a function evaluates its arguments, so
+`(interactive (list (read-directory-name ...)))' in a command body would
+fire `read-directory-name' and abort in batch (no minibuffer) even when
+the command was called programmatically with explicit args.  Expanding to
+nil mirrors real Emacs, where `interactive' is a no-op outside
+`call-interactively'.  `commandp' / `interactive-form' inspect the literal
+body form (pre-expansion), so command-ness is preserved."
     nil))
 
 (unless (fboundp 'interactive-form)
