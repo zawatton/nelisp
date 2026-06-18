@@ -952,6 +952,52 @@ external `ls' (via call-process) after `cd' into a host-made temp dir."
              (should (string-match-p "ESH-RING-N=4" out))))
        (delete-directory dir t)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/man-callable ()
+  "The man viewer fetches and displays a page on the reader.
+Runs `man true' through call-process + col -b and confirms the page text,
+the not-found error path, and the `man' / `woman' command names."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (skip-unless (executable-find "man"))
+   (skip-unless (executable-find "col"))
+   (let ((out (nemacs-bootstrap-nelisp-test--run
+               "--batch" "--no-banner"
+               "--eval"
+               (concat
+                "(progn"
+                "  (let ((buf (ignore-errors (man \"true\"))))"
+                "    (nelisp--write-stdout-bytes"
+                "     (concat \"MAN-OK=\""
+                "             (if (and buf (buffer-live-p buf)) \"t\" \"nil\") \"\\n\"))"
+                "    (when (and buf (buffer-live-p buf))"
+                "      (with-current-buffer buf"
+                "        (nelisp--write-stdout-bytes"
+                "         (concat \"MAN-NAME=\""
+                "                 (if (string-match-p \"NAME\" (buffer-string)) \"t\" \"nil\")"
+                "                 \"\\n\"))"
+                "        (nelisp--write-stdout-bytes"
+                "         (concat \"MAN-TRUE=\""
+                "                 (if (string-match-p \"true\" (buffer-string)) \"t\" \"nil\")"
+                "                 \"\\n\")))))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"MAN-NOTFOUND=\""
+                "           (condition-case nil"
+                "               (progn (man \"no-such-manpage-xyzzy-99\") \"no-error\")"
+                "             (error \"errored\"))"
+                "           \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-MAN=\" (if (fboundp (quote man)) \"t\" \"nil\") \"\\n\"))"
+                "  (nelisp--write-stdout-bytes"
+                "   (concat \"FB-WOMAN=\" (if (fboundp (quote woman)) \"t\" \"nil\") \"\\n\")))"))))
+     ;; command names installed
+     (should (string-match-p "FB-MAN=t" out))
+     (should (string-match-p "FB-WOMAN=t" out))
+     ;; page fetched and rendered
+     (should (string-match-p "MAN-OK=t" out))
+     (should (string-match-p "MAN-NAME=t" out))
+     (should (string-match-p "MAN-TRUE=t" out))
+     ;; missing page signals an error
+     (should (string-match-p "MAN-NOTFOUND=errored" out)))))
+
 (provide 'nemacs-bootstrap-nelisp-test)
 
 ;;; nemacs-bootstrap-nelisp-test.el ends here

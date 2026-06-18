@@ -69,7 +69,10 @@ final `.el' suffix with `.repl'.")
     "emacs-shell.el"
     "shell.el"
     "emacs-eshell.el"
-    "eshell.el")
+    "eshell.el"
+    "emacs-man.el"
+    "man.el"
+    "woman.el")
   "Local src files inserted after buffer/face substrates are available.")
 
 (defvar nelisp-bootstrap-repl-direct-character-limit 0
