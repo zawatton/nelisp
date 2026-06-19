@@ -2,7 +2,9 @@
 
 ;;; Code:
 
-(defvar minibuffer--standalone-p (not (boundp 'emacs-version)))
+(defvar minibuffer--standalone-p
+  (or (not (boundp 'emacs-version))
+      (not (stringp emacs-version))))
 
 (defun minibuffer--host-load-standard ()
   "Load host Emacs's standard minibuffer library."

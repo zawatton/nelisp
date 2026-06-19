@@ -12,7 +12,9 @@
 
 ;;; Code:
 
-(defvar lisp-mode--standalone-p (not (boundp 'emacs-version)))
+(defvar lisp-mode--standalone-p
+  (or (not (boundp 'emacs-version))
+      (not (stringp emacs-version))))
 
 (defun lisp-mode--host-load-standard ()
   "Load host Emacs's standard lisp-mode library."

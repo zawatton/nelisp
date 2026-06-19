@@ -1271,23 +1271,23 @@
              nil t))
     (goto-char (point-min))
     (should (search-forward
-             "tmp=$$(mktemp \"$${TMPDIR:-/tmp}/nemacs-vendor-core.XXXXXX.el\")"
+             "test -r \"$(NEMACS_BOOTSTRAP_REPL)\""
              nil t))
     (goto-char (point-min))
     (should (search-forward
-             "cat \"$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))\""
+             "NEMACS_BOOTSTRAP_REPL=\"$(abspath $(NEMACS_BOOTSTRAP_REPL))\""
              nil t))
     (goto-char (point-min))
     (should (search-forward
-             "cat \"$(abspath scripts/vendor-core-smoke.el)\""
+             "VENDOR_CORE_STRICT_ELISP=\"$(VENDOR_CORE_STRICT_ELISP)\""
              nil t))
     (goto-char (point-min))
     (should (search-forward
-             "VENDOR-CORE-STANDALONE=ok exit=42"
+             "./scripts/verify-vendor-core-repl.sh"
              nil t))
     (goto-char (point-min))
     (should (search-forward
-             "\"$(NELISP_BIN)\" --load \"$$tmp\""
+             "VENDOR_CORE_LIMIT=\"$(VENDOR_CORE_LIMIT)\""
              nil t))
     (goto-char (point-min))
     (should-not (search-forward
