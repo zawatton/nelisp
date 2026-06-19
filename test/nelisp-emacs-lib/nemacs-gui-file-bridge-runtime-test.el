@@ -48,6 +48,55 @@
    "src/emacs-help-gui.el"
    nemacs-gui-file-bridge-runtime-test--repo-root))
 
+(defvar nemacs-gui-file-bridge-runtime-test--profile-enabled
+  (getenv "NEMACS_GUI_BRIDGE_PROFILE")
+  "Non-nil means emit timing lines for standalone GUI bridge tests.")
+
+(defvar nemacs-gui-file-bridge-runtime-test--profile-run-count 0
+  "Counter for profiled `exec-runtime-image' subprocess calls.")
+
+(defun nemacs-gui-file-bridge-runtime-test--profile-log (format-string &rest args)
+  "Emit a profile line using FORMAT-STRING and ARGS when profiling is enabled."
+  (when nemacs-gui-file-bridge-runtime-test--profile-enabled
+    (princ
+     (concat "[gui-bridge-profile] "
+             (apply #'format format-string args)
+             "\n"))))
+
+(defun nemacs-gui-file-bridge-runtime-test--profile-form-summary (form)
+  "Return a compact one-line summary of standalone FORM."
+  (let ((summary (replace-regexp-in-string "[\n\t ]+" " " form)))
+    (if (> (length summary) 96)
+        (concat (substring summary 0 96) "...")
+      summary)))
+
+(defun nemacs-gui-file-bridge-runtime-test--profile-transport-value (path)
+  "Return transport PATH contents for profiling, or an empty string."
+  (if (file-exists-p path)
+      (condition-case nil
+          (nemacs-gui-file-bridge-runtime-test--slurp path)
+        (error ""))
+    ""))
+
+(defun nemacs-gui-file-bridge-runtime-test--profile-transport-summary ()
+  "Return compact command transport state for profile output."
+  (mapconcat
+   #'identity
+   (list
+    (format "cmd=%S"
+            (nemacs-gui-file-bridge-runtime-test--profile-transport-value
+             "/tmp/nemacs-cmd"))
+    (format "keys=%S"
+            (nemacs-gui-file-bridge-runtime-test--profile-transport-value
+             "/tmp/nemacs-keys"))
+    (format "arg=%S"
+            (nemacs-gui-file-bridge-runtime-test--profile-transport-value
+             "/tmp/nemacs-arg"))
+    (format "mb-text=%S"
+            (nemacs-gui-file-bridge-runtime-test--profile-transport-value
+             "/tmp/nemacs-minibuffer-text")))
+   " "))
+
 (defun nemacs-gui-file-bridge-runtime-test--slurp (file)
   "Return FILE contents as a string."
   (with-temp-buffer
@@ -88,7 +137,8 @@
 
 (defun nemacs-gui-file-bridge-runtime-test--write-image ()
   "Write a temporary source-v1 runtime image for the GUI bridge."
-  (let ((image (make-temp-file "nemacs-gui-file-bridge-" nil ".nlri")))
+  (let ((image (make-temp-file "nemacs-gui-file-bridge-" nil ".nlri"))
+        (start (float-time)))
     (with-temp-file image
       (insert ";;; nelisp-runtime-image source-v1\n(progn\n")
       (when (file-readable-p nemacs-gui-file-bridge-runtime-test--prelude)
@@ -105,6 +155,11 @@
       (insert-file-contents nemacs-gui-file-bridge-runtime-test--source)
       (goto-char (point-max))
       (insert "\n)\n"))
+    (nemacs-gui-file-bridge-runtime-test--profile-log
+     "image-write seconds=%.3f bytes=%s path=%s"
+     (- (float-time) start)
+     (file-attribute-size (file-attributes image))
+     image)
     image))
 
 (defconst nemacs-gui-file-bridge-runtime-test--transport-lock
@@ -358,10 +413,280 @@
 		             (copy-directory backup dir t t t))))
 		       (delete-directory backup-dir t))))
 
+(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner nil
+  "Plist describing the active persistent standalone runner, or nil.")
+
+(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-seq 0
+  "Monotonic request id for the persistent standalone runner.")
+
+(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-publish-delay 0.005
+  "Seconds to let host-side transport writes settle before publishing a request.")
+
+(defun nemacs-gui-file-bridge-runtime-test--wait-for
+    (predicate timeout &optional interval)
+  "Poll PREDICATE for up to TIMEOUT seconds; return its last value.
+When INTERVAL is nil, poll every 0.1s."
+  (let ((deadline (+ (float-time) timeout))
+        (sleep-interval (or interval 0.1))
+        (value nil))
+    (while (and (not (setq value (funcall predicate)))
+                (< (float-time) deadline))
+      (sleep-for sleep-interval))
+    value))
+
+(defun nemacs-gui-file-bridge-runtime-test--runner-file (runner key)
+  "Return RUNNER file path stored under KEY."
+  (plist-get (plist-get runner :files) key))
+
+(defun nemacs-gui-file-bridge-runtime-test--persistent-runner-form (files)
+  "Return standalone source for a persistent FORM evaluator using FILES."
+  (format
+   (concat
+    "(progn\n"
+    "  (setq nemacs-test-runner-last \"\")\n"
+    "  (setq nemacs-test-runner-stop nil)\n"
+    "  (fset 'nemacs-test-runner-idle-sleep\n"
+    "        (lambda ()\n"
+    "          (if (fboundp 'syscall-direct)\n"
+    "              (let ((ts (alloc-bytes 16 8)))\n"
+    "                (ptr-write-u64 ts 0 0)\n"
+    "                (ptr-write-u64 ts 8 1000000)\n"
+    "                (syscall-direct 35 ts 0 0 0 0 0))\n"
+    "            nil)))\n"
+    "  (fset 'nemacs-test-runner-reset-runtime-state\n"
+    "        (lambda ()\n"
+    "          (setq files--bridge-session-active nil)\n"
+    "          (setq files--bridge-session-initialized nil)\n"
+    "          (setq files--bridge-session-stop nil)\n"
+    "          (setq files--bridge-session-idle-count 0)\n"
+    "          (setq files--bridge-session-request-count 0)\n"
+    "          (setq files--bridge-status \"ok\")\n"
+    "          (setq files--bridge-writeback-lane \"normal\")\n"
+    "          (setq files--bridge-command nil)\n"
+    "          (setq files--bridge-effective-command \"\")\n"
+    "          (setq files--bridge-target \"\")\n"
+    "          (setq files--bridge-arg \"\")\n"
+    "          (setq files--bridge-keys \"\")\n"
+    "          (setq files--bridge-minibuffer-text \"\")\n"
+    "          (setq files--bridge-minibuffer-arg \"\")\n"
+    "          (setq files--prefix-arg \"\")\n"
+    "          (setq files--query-replace-active nil)\n"
+    "          (setq files--query-replace-regexp-p nil)\n"
+    "          (setq files--query-replace-from \"\")\n"
+    "          (setq files--query-replace-to \"\")\n"
+    "          (setq files--minibuffer-active nil)\n"
+    "          (setq files--minibuffer-prompt \"\")\n"
+    "          (setq files--minibuffer-text \"\")\n"
+    "          (setq files--minibuffer-cursor 0)\n"
+    "          (setq files--minibuffer-purpose \"\")\n"
+    "          (setq files--minibuffer-history \"\")\n"
+    "          (setq files--minibuffer-candidates \"\")\n"
+    "          nil))\n"
+    "  (nl-write-file %S \"1\")\n"
+    "  (while (not nemacs-test-runner-stop)\n"
+    "    (setq nemacs-test-runner-shutdown (rdf %S))\n"
+    "    (if (equal nemacs-test-runner-shutdown \"1\")\n"
+    "        (setq nemacs-test-runner-stop t)\n"
+    "      nil)\n"
+    "    (setq nemacs-test-runner-request (rdf %S))\n"
+    "    (if (if (not (equal nemacs-test-runner-request \"\"))\n"
+    "            (not (equal nemacs-test-runner-request nemacs-test-runner-last))\n"
+    "          nil)\n"
+    "        (progn\n"
+    "          (setq nemacs-test-runner-last nemacs-test-runner-request)\n"
+    "          (setq nemacs-test-runner-form (rdf %S))\n"
+    "          (setq nemacs-test-runner-status \"0\")\n"
+    "          (setq nemacs-test-runner-error \"\")\n"
+    "          (nemacs-test-runner-reset-runtime-state)\n"
+    "          (condition-case err\n"
+    "              (nelisp--eval-source-string nemacs-test-runner-form)\n"
+    "            (error\n"
+    "             (setq nemacs-test-runner-status \"1\")\n"
+    "             (setq nemacs-test-runner-error (format \"%%S\" err))))\n"
+    "          (nl-write-file %S nemacs-test-runner-status)\n"
+    "          (nl-write-file %S \"\")\n"
+    "          (nl-write-file %S nemacs-test-runner-error)\n"
+    "          (nl-write-file %S nemacs-test-runner-request))\n"
+    "      (nemacs-test-runner-idle-sleep)))\n"
+    "  (nl-write-file %S \"0\"))")
+   (plist-get files :ready)
+   (plist-get files :shutdown)
+   (plist-get files :request)
+   (plist-get files :form)
+   (plist-get files :status)
+   (plist-get files :stdout)
+   (plist-get files :stderr)
+   (plist-get files :response)
+   (plist-get files :ready)))
+
+(defun nemacs-gui-file-bridge-runtime-test--persistent-runner-start (reader image)
+  "Start a persistent standalone runner for READER and IMAGE."
+  (let* ((dir (make-temp-file "nemacs-gui-file-bridge-runner-" t))
+         (files (list :ready (expand-file-name "ready" dir)
+                      :shutdown (expand-file-name "shutdown" dir)
+                      :request (expand-file-name "request" dir)
+                      :response (expand-file-name "response" dir)
+                      :form (expand-file-name "form.el" dir)
+                      :status (expand-file-name "status" dir)
+                      :stdout (expand-file-name "stdout" dir)
+                      :stderr (expand-file-name "stderr" dir)))
+         (buffer (generate-new-buffer " *nemacs-gui-file-bridge-runner*"))
+         (form (nemacs-gui-file-bridge-runtime-test--persistent-runner-form
+                files))
+         proc runner)
+    (dolist (key '(:ready :shutdown :request :response :form :status
+                   :stdout :stderr))
+      (write-region "" nil (plist-get files key) nil 'silent))
+    (setq proc
+          (start-process "nemacs-gui-file-bridge-runner" buffer reader
+                         "exec-runtime-image" image form))
+    (setq runner (list :proc proc :buffer buffer :dir dir :files files))
+    (unless (nemacs-gui-file-bridge-runtime-test--wait-for
+             (lambda ()
+               (and (process-live-p proc)
+                    (equal "1"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            (plist-get files :ready)))))
+             60 0.005)
+      (let ((log (and (buffer-live-p buffer)
+                      (with-current-buffer buffer (buffer-string)))))
+        (when (process-live-p proc)
+          (delete-process proc))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        (when (file-directory-p dir)
+          (delete-directory dir t))
+        (ert-fail (format "persistent runner did not become ready:\n%s"
+                          log))))
+    runner))
+
+(defun nemacs-gui-file-bridge-runtime-test--persistent-runner-stop (runner)
+  "Stop RUNNER and remove its temporary files."
+  (let ((proc (plist-get runner :proc))
+        (buffer (plist-get runner :buffer))
+        (dir (plist-get runner :dir)))
+    (when (and runner (process-live-p proc))
+      (write-region "1" nil
+                    (nemacs-gui-file-bridge-runtime-test--runner-file
+                     runner :shutdown)
+                    nil 'silent)
+      (nemacs-gui-file-bridge-runtime-test--wait-for
+       (lambda () (not (process-live-p proc)))
+       5 0.005)
+      (when (process-live-p proc)
+        (delete-process proc)))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))
+    (when (and dir (file-directory-p dir))
+      (delete-directory dir t))))
+
+(defmacro nemacs-gui-file-bridge-runtime-test--with-persistent-runner
+    (reader image &rest body)
+  "Run BODY with `--run-image' requests served by one standalone process."
+  (declare (indent 2) (debug t))
+  `(let ((nemacs-gui-file-bridge-runtime-test--persistent-runner
+          (nemacs-gui-file-bridge-runtime-test--persistent-runner-start
+           ,reader ,image)))
+     (unwind-protect
+         (progn ,@body)
+       (nemacs-gui-file-bridge-runtime-test--persistent-runner-stop
+        nemacs-gui-file-bridge-runtime-test--persistent-runner))))
+
+(defun nemacs-gui-file-bridge-runtime-test--persistent-runner-run (form)
+  "Evaluate FORM through the active persistent standalone runner."
+  (catch 'result
+    (let* ((runner nemacs-gui-file-bridge-runtime-test--persistent-runner)
+           (proc (plist-get runner :proc))
+           (run-id (cl-incf nemacs-gui-file-bridge-runtime-test--profile-run-count))
+           (seq (number-to-string
+                 (cl-incf nemacs-gui-file-bridge-runtime-test--persistent-runner-seq)))
+           (start (float-time))
+           (transport-summary
+            (and nemacs-gui-file-bridge-runtime-test--profile-enabled
+                 (nemacs-gui-file-bridge-runtime-test--profile-transport-summary)))
+           status stdout stderr)
+      (unless (and runner (process-live-p proc))
+        (ert-fail "persistent runner is not live"))
+      (write-region "" nil
+                    (nemacs-gui-file-bridge-runtime-test--runner-file
+                     runner :response)
+                    nil 'silent)
+      (write-region "" nil
+                    (nemacs-gui-file-bridge-runtime-test--runner-file
+                     runner :status)
+                    nil 'silent)
+      (write-region "" nil
+                    (nemacs-gui-file-bridge-runtime-test--runner-file
+                     runner :stdout)
+                    nil 'silent)
+      (write-region "" nil
+                    (nemacs-gui-file-bridge-runtime-test--runner-file
+                     runner :stderr)
+                    nil 'silent)
+      (write-region form nil
+                    (nemacs-gui-file-bridge-runtime-test--runner-file
+                     runner :form)
+                    nil 'silent)
+      (sleep-for
+       nemacs-gui-file-bridge-runtime-test--persistent-runner-publish-delay)
+      (write-region seq nil
+                    (nemacs-gui-file-bridge-runtime-test--runner-file
+                     runner :request)
+                    nil 'silent)
+      (unless (nemacs-gui-file-bridge-runtime-test--wait-for
+               (lambda ()
+                 (equal seq
+                        (nemacs-gui-file-bridge-runtime-test--slurp
+                         (nemacs-gui-file-bridge-runtime-test--runner-file
+                          runner :response))))
+               120 0.005)
+        (setq stderr
+              (if (buffer-live-p (plist-get runner :buffer))
+                  (with-current-buffer (plist-get runner :buffer)
+                    (buffer-string))
+                ""))
+        (setq status 124)
+        (nemacs-gui-file-bridge-runtime-test--profile-log
+         "persistent-runner id=%d seconds=%.3f status=%S timeout=t form=%S transport=%s"
+         run-id (- (float-time) start) status
+         (nemacs-gui-file-bridge-runtime-test--profile-form-summary form)
+         transport-summary)
+        (throw 'result (list :status status :stdout "" :stderr stderr)))
+      (setq status
+            (string-to-number
+             (nemacs-gui-file-bridge-runtime-test--slurp
+              (nemacs-gui-file-bridge-runtime-test--runner-file
+               runner :status))))
+      (setq stdout
+            (nemacs-gui-file-bridge-runtime-test--slurp
+             (nemacs-gui-file-bridge-runtime-test--runner-file
+              runner :stdout)))
+      (setq stderr
+            (nemacs-gui-file-bridge-runtime-test--slurp
+             (nemacs-gui-file-bridge-runtime-test--runner-file
+              runner :stderr)))
+      (nemacs-gui-file-bridge-runtime-test--profile-log
+       "persistent-runner id=%d seconds=%.3f status=%S stdout-bytes=%d stderr-bytes=%d form=%S transport=%s"
+       run-id
+       (- (float-time) start)
+       status
+       (length (or stdout ""))
+       (length (or stderr ""))
+       (nemacs-gui-file-bridge-runtime-test--profile-form-summary form)
+       transport-summary)
+      (list :status status :stdout stdout :stderr stderr))))
+
 (defun nemacs-gui-file-bridge-runtime-test--run-image (reader image form)
   "Run READER against IMAGE with FORM and return captured stdout/stderr/status."
-  (let ((stdout-file (make-temp-file "nemacs-gui-file-bridge-stdout-"))
+  (if nemacs-gui-file-bridge-runtime-test--persistent-runner
+      (nemacs-gui-file-bridge-runtime-test--persistent-runner-run form)
+    (let ((stdout-file (make-temp-file "nemacs-gui-file-bridge-stdout-"))
         (stderr-file (make-temp-file "nemacs-gui-file-bridge-stderr-"))
+        (start (float-time))
+        (run-id (cl-incf nemacs-gui-file-bridge-runtime-test--profile-run-count))
+        (transport-summary
+         (and nemacs-gui-file-bridge-runtime-test--profile-enabled
+              (nemacs-gui-file-bridge-runtime-test--profile-transport-summary)))
         status stdout stderr)
     (unwind-protect
         (progn
@@ -374,11 +699,20 @@
           (setq stderr
                 (and (file-exists-p stderr-file)
                      (nemacs-gui-file-bridge-runtime-test--slurp stderr-file)))
+          (nemacs-gui-file-bridge-runtime-test--profile-log
+           "exec-runtime-image id=%d seconds=%.3f status=%S stdout-bytes=%d stderr-bytes=%d form=%S transport=%s"
+           run-id
+           (- (float-time) start)
+           status
+           (length (or stdout ""))
+           (length (or stderr ""))
+           (nemacs-gui-file-bridge-runtime-test--profile-form-summary form)
+           transport-summary)
           (list :status status :stdout stdout :stderr stderr))
       (when (file-exists-p stdout-file)
         (delete-file stdout-file))
       (when (file-exists-p stderr-file)
-        (delete-file stderr-file)))))
+        (delete-file stderr-file))))))
 
 (defun nemacs-gui-file-bridge-runtime-test--run-ok (reader image form)
   "Run FORM and fail the current test unless it exits successfully."
@@ -3353,10 +3687,10 @@
 	            (write-region "C-x C-s" nil "/tmp/nemacs-arg" nil 'silent)
 	            (nemacs-gui-file-bridge-runtime-test--run-ok
 	             reader image "(nemacs-gui-file-bridge-run)")
-	            (should (string-match-p
-	                     "C-x C-s runs the command save-buffer"
-	                     (nemacs-gui-file-bridge-runtime-test--slurp
-	                      "/tmp/nemacs-buf")))
+		            (should (string-match-p
+		                     "C-x C-s runs the command save-buffer"
+		                     (nemacs-gui-file-bridge-runtime-test--slurp
+		                      "/tmp/nemacs-buf")))
 	            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
 	            (write-region "C-h c" nil "/tmp/nemacs-keys" nil 'silent)
 	            (write-region "C-x C-f" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
@@ -3387,9 +3721,9 @@
 		              (should (string-match-p
 		                       "C-h c[	]describe-key-briefly"
 		                       bindings-help)))
-		            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
-		            (write-region "C-h ?" nil "/tmp/nemacs-keys" nil 'silent)
-		            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+			            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+			            (write-region "C-h ?" nil "/tmp/nemacs-keys" nil 'silent)
+			            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
 		            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
 		            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
 		            (nemacs-gui-file-bridge-runtime-test--run-ok
@@ -3671,10 +4005,10 @@
 				            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
 				            (nemacs-gui-file-bridge-runtime-test--run-ok
 				             reader image "(nemacs-gui-file-bridge-run)")
-				            (should (string-match-p
-				                     "Mode Help"
-				                     (nemacs-gui-file-bridge-runtime-test--slurp
-				                      "/tmp/nemacs-buf")))
+					            (should (string-match-p
+					                     "Mode Help"
+					                     (nemacs-gui-file-bridge-runtime-test--slurp
+					                      "/tmp/nemacs-buf")))
 				            (write-region "where-is" nil "/tmp/nemacs-cmd" nil 'silent)
 		            (write-region "save-buffer" nil "/tmp/nemacs-arg" nil 'silent)
 		            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
@@ -3695,9 +4029,9 @@
 		                     "find-file is on .*C-x C-f"
 		                     (nemacs-gui-file-bridge-runtime-test--slurp
 		                      "/tmp/nemacs-buf")))
-		            (write-region "describe-command" nil "/tmp/nemacs-cmd" nil 'silent)
-		            (write-region "save-buffer" nil "/tmp/nemacs-arg" nil 'silent)
-		            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+				            (write-region "describe-command" nil "/tmp/nemacs-cmd" nil 'silent)
+				            (write-region "save-buffer" nil "/tmp/nemacs-arg" nil 'silent)
+				            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
 		            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
 		            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
 		            (nemacs-gui-file-bridge-runtime-test--run-ok
@@ -4983,15 +5317,6 @@ and the bridge reports applied/skipped instead of dying silently."
         (when (file-exists-p image)
           (delete-file image))))))
 
-(defun nemacs-gui-file-bridge-runtime-test--wait-for (predicate timeout)
-  "Poll PREDICATE every 0.1s for up to TIMEOUT seconds; return its last value."
-  (let ((deadline (+ (float-time) timeout))
-        (value nil))
-    (while (and (not (setq value (funcall predicate)))
-                (< (float-time) deadline))
-      (sleep-for 0.1))
-    value))
-
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-session-bridge-roundtrip ()
   "The persistent session loop serves requests with in-process buffer state."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
@@ -5451,6 +5776,8 @@ and the bridge reports applied/skipped instead of dying silently."
 	           (make-temp-file "nemacs-gui-file-bridge-ro-other-")))
 	      (unwind-protect
 	          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--with-persistent-runner
+                reader image
             (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
             (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
             (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
@@ -10069,7 +10396,7 @@ and the bridge reports applied/skipped instead of dying silently."
                                    (nemacs-gui-file-bridge-runtime-test--slurp
                                     exit-file))))
                 (when (file-exists-p exit-file)
-                  (delete-file exit-file)))))
+                  (delete-file exit-file))))))
         (when (file-exists-p image)
           (delete-file image))
         (when (file-exists-p save-file)

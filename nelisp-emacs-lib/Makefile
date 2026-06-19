@@ -525,7 +525,7 @@ TEST_FAST_FILES = \
 	test/emacs-vc-test.el \
 	test/emacs-tier3-facades-test.el
 
-.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
@@ -539,6 +539,7 @@ help:
 	@echo "  make test-nemacs-gui-bridge  run standalone GUI file bridge ERT"
 	@echo "  make test-nemacs-gui-bridge-gate  run GUI bridge gate without slow tail"
 	@echo "  make test-nemacs-gui-bridge-slow  run only the GUI bridge slow tail"
+	@echo "  make test-nemacs-gui-bridge-slow-profile  run slow tail with per-runtime timing"
 	@echo "  make test-nemacs-gui-bridge-select NEMACS_GUI_BRIDGE_TEST_SELECTOR=TEST  run selected GUI bridge ERT"
 	@echo "  make test-nemacs-server-client  run standalone server/emacsclient round-trip ERT"
 	@echo "  make nemacs-gui-keymap-coverage  write GUI keymap coverage TSV and summary artifacts"
@@ -645,6 +646,13 @@ test-nemacs-gui-bridge-gate:
 test-nemacs-gui-bridge-slow:
 	test -x "$(NELISP_BIN)"
 	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
+		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		-l test/nemacs-gui-file-bridge-runtime-test.el \
+		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_SLOW_SELECTOR)))'
+
+test-nemacs-gui-bridge-slow-profile:
+	test -x "$(NELISP_BIN)"
+	NEMACS_GUI_BRIDGE_PROFILE=1 NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
 		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_SLOW_SELECTOR)))'
