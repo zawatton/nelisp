@@ -105,6 +105,21 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、command-writeback-chain を小さい family/chunk 単位で
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の prefix writeback chunk を
+  =files--bridge-prefix-writeback-current-context= へ切り出した。
+  - 対象は =same-window-prefix= / =other-window-prefix= /
+    =other-tab-prefix= / =other-frame-prefix=。
+  - command-writeback-chain の direct transport write は 588 から 586、
+    =files--write*= helper は 642 から 641、=equal cmd= tests は 378 から 374。
+    これは prefix block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-prefix-writeback-current-context= が 1 件追加され、
+    =setq= は 916 から 914、=if= は 446 から 442 へ減少。
+  - =standalone-save-and-transform= は 108.566 秒で pass。
+  - =standalone-bridge-prefix-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、prefix/window 系 command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -311,9 +326,10 @@ make nemacs-gui-bridge-run-shape
 4. coarse な motion read-set guard は 108.262 秒で不採用済み。
    =broad-state-read= / =buffer-init= / =window-point-init= の no-op helper 化も
    5 秒以上の短縮には届かず、state reset 境界作りとして採用済み。
-5. direct-cmd の common read/writeback setup と family writeback chunk は helper 化済み。
-   次は command-writeback-chain 内の prefix/window 系、または file/project 系の小さい
-   chunk を切り、巨大な =equal cmd= chain を測れる形にする。
+5. direct-cmd の common read/writeback setup、family writeback chunk、prefix writeback
+   chunk は helper 化済み。
+   次は command-writeback-chain 内の file/project 系の小さい chunk を切り、
+   巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
 
