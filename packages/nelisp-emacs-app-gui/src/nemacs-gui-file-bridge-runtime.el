@@ -21759,6 +21759,38 @@
                 nil)
             nil))))
 
+(fset 'files--bridge-read-broad-state
+      (lambda ()
+        (files--read-goal-column-state)
+        (files--read-global-mark-state)
+        (files--read-truncate-lines-state)
+        (files--read-rectangle-mark-mode-state)
+        (files--read-text-scale-state)
+        (files--read-frame-suspended-state)
+        (files--read-highlight-state)
+        (files--read-selective-display-state)
+        (files--read-coding-input-state)
+        (files--read-dired-marks-state)
+        (files--read-magit-root-state)
+        (files--read-info-state)
+        ;; init first, persisted customize values after — a saved
+        ;; customization outranks the same setq in init.el (the
+        ;; custom-file-loads-last convention of host Emacs)
+        (files--load-user-init)
+        (files--read-custom-state)
+        (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-hscroll") (files--transport-path)))
+        (files--read-number-file)
+        (setq files--window-hscroll files--number-file-value)
+        (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-split-delta") (files--transport-path)))
+        (files--read-signed-number-file)
+        (setq files--window-split-delta files--number-file-value)
+        (files--read-transport-window-dedicated-state)
+        (files--read-transport-side-windows-state)
+        (files--read-transport-tab-state)
+        (files--read-transport-tab-undo-state)
+        (files--read-transport-frame-state)
+        (files--read-transport-frame-undo-state)))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -21808,41 +21840,13 @@
 	              (progn
 	                (nl-write-file tbpath "")
 		                (files--handle-toolbar-click tbclick))))
-			          (setq files--bridge-minibuffer-text minibuffer-text)
-				          (setq files--bridge-minibuffer-arg minibuffer-arg)
-				          (setq files--prefix-arg prefix-arg-text)
-	              (files--read-goal-column-state)
-              (files--read-global-mark-state)
-              (files--read-truncate-lines-state)
-              (files--read-rectangle-mark-mode-state)
-              (files--read-text-scale-state)
-              (files--read-frame-suspended-state)
-              (files--read-highlight-state)
-              (files--read-selective-display-state)
-              (files--read-coding-input-state)
-              (files--read-dired-marks-state)
-              (files--read-magit-root-state)
-              (files--read-info-state)
-              ;; init first, persisted customize values after — a saved
-              ;; customization outranks the same setq in init.el (the
-              ;; custom-file-loads-last convention of host Emacs)
-              (files--load-user-init)
-              (files--read-custom-state)
-              (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-hscroll") (files--transport-path)))
-              (files--read-number-file)
-              (setq files--window-hscroll files--number-file-value)
-              (setq files--number-file-name (progn (setq files--transport-name "nemacs-window-split-delta") (files--transport-path)))
-              (files--read-signed-number-file)
-              (setq files--window-split-delta files--number-file-value)
-              (files--read-transport-window-dedicated-state)
-              (files--read-transport-side-windows-state)
-              (files--read-transport-tab-state)
-              (files--read-transport-tab-undo-state)
-              (files--read-transport-frame-state)
-              (files--read-transport-frame-undo-state)
-          (if (fboundp 'emacs-command-loop-gui-ingest-request-context)
-              (let ((request-context
-                     (emacs-command-loop-gui-ingest-request-context
+				          (setq files--bridge-minibuffer-text minibuffer-text)
+					          (setq files--bridge-minibuffer-arg minibuffer-arg)
+					          (setq files--prefix-arg prefix-arg-text)
+              (files--bridge-read-broad-state)
+	          (if (fboundp 'emacs-command-loop-gui-ingest-request-context)
+	              (let ((request-context
+	                     (emacs-command-loop-gui-ingest-request-context
                       :command-name cmd
                       :keys files--bridge-keys
                       :arg files--bridge-arg

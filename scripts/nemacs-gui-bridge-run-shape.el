@@ -376,6 +376,8 @@ binding variable names as calls."
      ((or (nemacs-gui-bridge-run-shape--contains-call-prefix-p
            form "files--read")
           (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--bridge-read-broad-state)
+          (nemacs-gui-bridge-run-shape--contains-call-p
            form 'files--load-user-init)
           (and (consp form)
                (eq (car form) 'setq)
