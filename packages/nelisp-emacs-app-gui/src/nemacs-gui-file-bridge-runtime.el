@@ -21899,6 +21899,22 @@
           nil)
         cmd))
 
+(fset 'files--bridge-family-writeback-current-context
+      (lambda (cmd)
+        (if (files--fileio-writeback-current-context cmd)
+            (setq cmd "")
+          nil)
+        (if (files--dired-writeback-current-context cmd)
+            (setq cmd "")
+          nil)
+        (if (files--info-writeback-current-context cmd)
+            (setq cmd "")
+          nil)
+        (if (files--help-writeback-current-context cmd)
+            (setq cmd "")
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -22056,20 +22072,9 @@
 	                  (files--write-prefix-arg-state)
 	                  (setq files--bridge-status "written"))
 		            (progn
-                  (if (files--fileio-writeback-current-context cmd)
-                      (setq cmd "")
-                    nil)
-                  (if (files--dired-writeback-current-context cmd)
-                      (setq cmd "")
-                    nil)
-                  (if (files--info-writeback-current-context cmd)
-                      (setq cmd "")
-                    nil)
-                  (if (files--help-writeback-current-context cmd)
-                      (setq cmd "")
-                    nil)
-	                  (if (if (equal cmd "same-window-prefix")
-	                          t
+                  (setq cmd (files--bridge-family-writeback-current-context cmd))
+		                  (if (if (equal cmd "same-window-prefix")
+		                          t
 	                        (if (equal cmd "other-window-prefix")
 	                            t
 	                          (if (equal cmd "other-tab-prefix")

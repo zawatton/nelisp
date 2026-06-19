@@ -14685,6 +14685,64 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-family-writeback-helper ()
+  "Bridge family writeback helper should clear handled commands only."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-family-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (fset 'files--fileio-writeback-current-context
+                             (lambda (command)
+                               (if (equal command \"switch-to-buffer\")
+                                   t
+                                 nil)))
+                       (fset 'files--dired-writeback-current-context
+                             (lambda (command)
+                               (if (equal command \"dired-do-copy\")
+                                   t
+                                 nil)))
+                       (fset 'files--info-writeback-current-context
+                             (lambda (command)
+                               (if (equal command \"Info-next\")
+                                   t
+                                 nil)))
+                       (fset 'files--help-writeback-current-context
+                             (lambda (command)
+                               (if (equal command \"about-emacs\")
+                                   t
+                                 nil)))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-family-writeback-helper\"
+                        (concat
+                         (files--bridge-family-writeback-current-context
+                          \"switch-to-buffer\")
+                         \"\\t\"
+                         (files--bridge-family-writeback-current-context
+                          \"dired-do-copy\")
+                         \"\\t\"
+                         (files--bridge-family-writeback-current-context
+                          \"Info-next\")
+                         \"\\t\"
+                         (files--bridge-family-writeback-current-context
+                          \"about-emacs\")
+                         \"\\t\"
+                         (files--bridge-family-writeback-current-context
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "\t\t\t\tforward-char"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
