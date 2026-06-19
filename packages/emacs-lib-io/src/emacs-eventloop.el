@@ -49,6 +49,14 @@
 (defconst emacs-eventloop--pollfd-size 8
   "Linux x86_64 / arm64 sizeof(struct pollfd) = 8 (i32 + i16 + i16).")
 
+(defconst emacs-eventloop--standalone-p
+  (fboundp 'nl-ffi-call)
+  "Non-nil when NeLisp standalone FFI is available.
+
+Standalone starts from `emacs-stub-bulk.el', so C-level event-loop
+names may already be fboundp as no-op stubs.  Runtime polyfills must
+replace those stubs when this flag is non-nil.")
+
 
 ;;;; --- pollfd[] marshalling -------------------------------------------
 
@@ -122,7 +130,8 @@ Returns a list of (FD . REVENTS) cons cells whose REVENTS is non-zero."
 
 ;;;; --- public API: accept-process-output ------------------------------
 
-(unless (fboundp 'accept-process-output)
+(when (or emacs-eventloop--standalone-p
+          (not (fboundp 'accept-process-output)))
   (defun accept-process-output (&optional process seconds millisec
                                           _just-this-one)
     "Polyfill: poll all live processes for I/O, fire filters / sentinels.
@@ -170,7 +179,8 @@ children become observable."
 
 ;;;; --- public API: sit-for / sleep-for --------------------------------
 
-(unless (fboundp 'sit-for)
+(when (or emacs-eventloop--standalone-p
+          (not (fboundp 'sit-for)))
   (defun sit-for (seconds &optional _nodisp)
     "Polyfill: yield for SECONDS, dispatching any I/O that arrives meanwhile.
 Returns nil if input would have arrived during the wait, t otherwise.
@@ -178,7 +188,8 @@ Phase 7 only honours the timeout (= no input semantics)."
     (let ((ms (truncate (* seconds 1000))))
       (accept-process-output nil 0 ms))))
 
-(unless (fboundp 'sleep-for)
+(when (or emacs-eventloop--standalone-p
+          (not (fboundp 'sleep-for)))
   (defun sleep-for (seconds &optional millisec)
     "Polyfill: sleep for SECONDS + MILLISEC, ignoring I/O during the wait.
 Implemented as a `usleep' through libc — does NOT dispatch process
