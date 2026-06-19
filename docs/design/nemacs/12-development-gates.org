@@ -64,6 +64,9 @@ This keeps the completion gate useful as normal development feedback while
 preserving the heavy end-to-end cases as explicit coverage.  Run =make
 test-nemacs-gui-bridge-slow= before release-style audits, or =make
 test-nemacs-gui-bridge= when a full standalone replay is required.
+When one of the slow-tail cases regresses in time, run =make
+test-nemacs-gui-bridge-slow-profile= to print per-runtime-image timing
+and current transport command labels.
 
 The gate is not a claim that every Emacs command exists.  It proves that
 the current daily-driver surface is reproducibly testable, that bridge /
