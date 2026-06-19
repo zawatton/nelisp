@@ -29,6 +29,13 @@ case を分割・集約する。
   - compound-form: 10 request / 7.612 秒 / 7.1%。
   - family 上位は other 17.941 秒、editing 16.453 秒、motion/mark 14.461 秒。
   - 単一 command/family ではなく、direct-cmd 共通 path が支配的。
+- 2026-06-20 の再 profile は 107.731 秒。保存 log の parse 可能行は 335 request、
+  profile 合計 106.719 秒。
+  - direct-cmd: 257 request / 81.729 秒 / 76.6%。
+  - key-or-empty: 68 request / 16.906 秒 / 15.8%。
+  - compound-form: 10 request / 8.084 秒 / 7.6%。
+  - family 上位は editing 21.714 秒、motion/mark 14.973 秒、other 13.653 秒。
+  - helper 化後も direct-cmd が支配的。
 - runtime writeback fast path も試したが、=pop-global-mark= 系の state writeback を落として
   =/tmp/nemacs-global-mark= missing になり、140 秒台へ悪化したため不採用。
 - writeback dispatch table 化も試したが、broad table は 124.498 秒へ悪化し、
@@ -39,7 +46,7 @@ case を分割・集約する。
   - =nemacs-gui-file-bridge-run= は runtime 内の fset が source of truth。
   - command-run boundary 前: linear body 41 forms、direct transport read 20、
     =files--read*= helper call 0。
-  - command-run boundary 後: linear body 3 forms、direct transport write 588、
+  - command-run boundary 後: linear body 2 forms、direct transport write 588、
     =files--write*= helper call 642、=equal cmd= tests 378。
   - 以降の helper 化では、この count を no-op refactor の guard にする。
 - =make nemacs-gui-bridge-run-shape= は pre-boundary phase table も出力する。
@@ -51,6 +58,9 @@ case を分割・集約する。
   - window-point-init: 1 form / helper call 1。
   - command-run-prep: 4 forms。
   - 次の no-op refactor では、この phase count を guard にする。
+- =make nemacs-gui-bridge-run-shape= は post-boundary phase table も出力する。
+  - writeback-setup: 1 form。
+  - command-writeback-chain: 1 form / direct write 588 / =files--write*= helper 642。
 - 2026-06-20 に =broad-state-read= phase を
   =files--bridge-read-broad-state= へ切り出した。
   - command-run boundary、direct transport read、post-boundary write count は維持。
@@ -67,6 +77,15 @@ case を分割・集約する。
   - =standalone-save-and-transform= は 107.891 秒で pass。
   - =standalone-session-bridge-roundtrip= と =make test-fast= も green。
   - これは短縮採用ではなく、runtime state reset 境界を作るための no-op helper 化。
+- 2026-06-20 に post-boundary の =writeback-setup= / =lane-writeback= phase を
+  =files--bridge-prepare-writeback= へ切り出した。
+  - post-boundary linear body は 3 forms から 2 forms へ減少。
+  - command-writeback-chain の direct transport write 588 / =files--write*= helper 642 /
+    =equal cmd= tests 378 は維持。
+  - =standalone-save-and-transform= は 107.735 秒で pass。
+  - =standalone-session-bridge-roundtrip=、=standalone-command-loop-lane-writeback=、
+    =make test-fast= は green。
+  - これは短縮採用ではなく、次の command-writeback-chain 分割の guard。
 - 2026-06-20 に pre-boundary の明示 transport read 20 個を
   0-arity helper =files--transport-read-current= へ置換した。
   - shape summary の boundary count は維持。
@@ -279,8 +298,9 @@ make nemacs-gui-bridge-run-shape
 4. coarse な motion read-set guard は 108.262 秒で不採用済み。
    =broad-state-read= / =buffer-init= / =window-point-init= の no-op helper 化も
    5 秒以上の短縮には届かず、state reset 境界作りとして採用済み。
-5. 次は direct-cmd の common read/writeback setup を本体構造として短くし、
-   individual command の後付け wrapper には戻らない。
+5. direct-cmd の common read/writeback setup は helper 化済み。
+   次は command-writeback-chain を family/chunk 単位へ分け、巨大な =equal cmd=
+   chain を測れる形にする。individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
 
 小さい request batch、table fallback、後付け wrapper ではなく、command ごとの
