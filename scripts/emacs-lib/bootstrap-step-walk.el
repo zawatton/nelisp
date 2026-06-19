@@ -24,6 +24,7 @@
     emacs-search-builtins
     emacs-line-builtins
     emacs-fileio-builtins
+    emacs-special-buffers
     emacs-undo-builtins
     emacs-edit-builtins
     emacs-minibuffer-builtins

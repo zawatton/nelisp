@@ -1,0 +1,189 @@
+#+title: Development Gates
+
+This project optimizes for fast green feedback first.  Every editor
+behavior change should move through the smallest gate that proves the
+workflow, then through the slower production-image gates only when that
+surface is affected.
+
+* Default order
+
+1. Run =make test-fast= before broadening the change.
+   This is the trunk gate for the daily-driver runtime substrate.  It
+   intentionally excludes heavyweight standalone/vendor/server/TUI
+   coverage and should stay well under two minutes.
+
+2. Add or update focused host ERTs near the changed substrate.
+   Prefer behavior tests that model an actual editor workflow:
+   open/read, edit, save, switch buffer, minibuffer command dispatch,
+   search/replace, dired/help/shell-command, or quit.
+
+3. If the change touches the production image path, run
+   =make build-nelisp-bootstrap= and confirm the required runtime adapter
+   is present in =build/nemacs-bootstrap.el=.
+
+4. If the change touches TUI or raw-key/session behavior, run
+   =make verify-nemacs-daily-driver=.
+   The script must finish with =FAIL=0= and =TODO=0=.  A production
+   daily-driver path that falls back to host Emacs or a silent no-op is a
+   gate failure, not advisory output.
+
+5. If the change touches bridge fallbacks, run
+   =make gui-bridge-runtime-inventory= and inspect
+   =build/gui-bridge-runtime-inventory.tsv=.
+   New behavior should move toward runtime modules and away from
+   bridge-local fallback branches.
+
+6. If a GUI bridge gate run fails, rerun only the failed case before
+   retrying the gate:
+
+   #+begin_src sh
+   make test-nemacs-gui-bridge-select \
+     NEMACS_GUI_BRIDGE_TEST_SELECTOR=nemacs-gui-file-bridge-runtime-test/standalone-display-prefix
+   #+end_src
+
+   The selected target uses the same =NEMACS_RUN_GUI_BRIDGE= and
+   =NEMACS_GUI_BRIDGE_NELISP= environment as the GUI bridge targets, but
+   avoids rerunning unrelated cases while diagnosing a specific failure.
+
+* Completion gate
+
+=make gate-nemacs-complete= is the reproducible completion check for the
+daily-use runtime.  It intentionally combines the fast development gate,
+static inventories, the TUI daily-driver, and the standalone GUI bridge
+gate without the known slow tail:
+
+- =make test-fast=
+- =make nemacs-gui-keymap-coverage=
+- =make gui-bridge-runtime-inventory=
+- =make nemacs-stub-fallback-skip-inventory=
+- =make nemacs-dirty-review-units=
+- =make verify-nemacs-daily-driver=
+- =make test-nemacs-gui-bridge-gate=
+
+This keeps the completion gate useful as normal development feedback while
+preserving the heavy end-to-end cases as explicit coverage.  Run =make
+test-nemacs-gui-bridge-slow= before release-style audits, or =make
+test-nemacs-gui-bridge= when a full standalone replay is required.
+
+The gate is not a claim that every Emacs command exists.  It proves that
+the current daily-driver surface is reproducibly testable, that bridge /
+TUI / runtime boundaries have current inventories, and that remaining
+stub/fallback/skip sites are visible as reviewable work units.
+
+* What belongs in =test-fast=
+
+=test-fast= should cover principal pure-Elisp runtime behavior that a
+developer breaks during normal feature work:
+
+- buffer/edit/file primitives
+- find-file/save/write-file/list-directory
+- keymaps/minibuffer/command-loop dispatch
+- dired/help/shell-command/process shims
+- redisplay core units that are cheap and deterministic
+- calc/shell/ielm/VC facades when they are small host ERTs
+
+Do not put standalone reader replay, vendor migration, server/client,
+full TUI pty, runtime-image bake, or long benchmark coverage in
+=test-fast=.  Keep those as explicit opt-in gates.
+
+* Promotion rule
+
+A fallback is temporary only when it is visible.  When a fallback becomes
+necessary for production, add one of:
+
+- a focused ERT that proves the runtime path wins when the real module is
+  loaded;
+- an inventory row produced by =make gui-bridge-runtime-inventory=;
+- a row in =build/nemacs-stub-fallback-skip-inventory.tsv= with an owner
+  and disposition;
+- a failing daily-driver probe when the path is interactive and not yet
+  fully driveable.
+
+Once the runtime module is loaded in =nemacs-main= and the bootstrap
+bundle includes it, bridge-local fallbacks are candidates for deletion.
+
+* Direct TUI shortcut boundary
+
+The direct =-nw= event loop may keep small adapters for terminal I/O,
+prompting, and rendering.  Command semantics should live in the same
+runtime modules used by the GUI bridge.
+
+Current ownership split:
+
+| Workflow | Direct TUI boundary | Shared runtime owner | Next deletion unit |
+|----------+---------------------+----------------------+--------------------|
+| =describe-key= | read one raw key, render Help buffer | =emacs-help-gui-describe-key-core= | remove hard-coded Help text from =nemacs-main= |
+| =Info-directory= / =Info-next= | prompt for optional Info file, render Info buffer | =emacs-info-gui-*= | move any remaining Info placeholders into =emacs-info.el= |
+| =dired= | read directory, render buffer text | =emacs-dired-min-gui-*= | add mode-key operations to TUI instead of bespoke listing shortcuts |
+| =shell-command= | read command line, connect output buffer | =emacs-shell-command= / process runtime | replace =printf= shortcut with real process capture |
+| =query-replace= | drive daily-driver confirmation bytes | query-replace runtime in bridge | route TUI path through command-loop/minibuffer runtime |
+
+When a workflow needs more behavior, extend the shared runtime first and
+only add TUI glue for terminal input/output.  A new shortcut in
+=nemacs-main.el= is acceptable only when it is explicitly listed here
+with a deletion unit.
+
+* Dirty tree review units
+
+The current tree contains broad pending work.  Review in these slices so
+daily-driver progress does not mix with unrelated vendor or packaging
+changes:
+
+=make nemacs-dirty-review-units= writes
+=build/nemacs-dirty-review-units.tsv= from the current =git status= and
+fails if any dirty path is not assigned to a review unit.
+
+1. Production launcher and TUI driver:
+   =bin/nemacs=, =src/nemacs-main.el=, =src/emacs-fns.el=,
+   =scripts/verify-nemacs-tui.sh=.
+
+2. Shared GUI/runtime adapters:
+   =src/emacs-fileio-gui.el=, =src/emacs-dired-min-gui.el=,
+   =src/emacs-help-gui.el=, =src/emacs-info.el=,
+   =src/nemacs-gui-file-bridge-runtime.el=.
+
+3. Gate tooling and documentation:
+   =Makefile=, =scripts/nemacs-gui-bridge-runtime-inventory.el=,
+   =scripts/verify-production-runtime-path.el=, this document.
+
+4. Test fixtures:
+   =test/nemacs-gui-file-bridge-runtime-test.el= and focused host ERTs
+   touched by the changed runtime module.
+
+5. Keep packaging, vendor replay, generated =target/=, and editor backup
+   files out of the above commits unless the change explicitly requires
+   them.
+
+* Stub / fallback / skip inventory
+
+=make nemacs-stub-fallback-skip-inventory= scans repository-owned source,
+tests, scripts, and design docs, excluding generated output, vendor code,
+and historical worklogs.  It writes:
+
+- =build/nemacs-stub-fallback-skip-inventory.tsv=
+- =build/nemacs-stub-fallback-skip-summary.org=
+
+Every row has a family, scope, likely owner, and disposition.  Use the
+TSV for line-level review and the summary for commit slicing.  The first
+deletion candidates are:
+
+- =bridge-local-fallback= rows in =src/nemacs-gui-file-bridge-runtime.el=
+  when a shared runtime module now owns the behavior;
+- =implementation-debt= rows in =src/= and =scripts/= that are not
+  protected by a daily-driver or focused ERT;
+- =conditional-test-skip= rows that can be made hermetic with local
+  fixtures.
+
+* Resolved package-transpile skip
+
+=nemacs-gui-file-bridge-runtime-test/standalone-pkg-transpile-in-image=
+used to skip by default because it required pre-existing wrapped
+user-init artifacts:
+
+- =/tmp/nemacs-init-wrapped=
+- =/tmp/nemacs-init-wrapped-pkgs-lowered=
+
+The test now creates a deterministic local package fixture, runs the
+real =scripts/nemacs-wrap-init.el= generator, and verifies that the
+lowered package functions are callable inside the standalone editor
+image.  A new skip for this test is a completion-gate regression.
