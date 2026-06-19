@@ -117,15 +117,20 @@ Modified buffers require explicit `yes-or-no-p' confirmation."
                  (nelisp-ec-generate-new-buffer emacs-buffer-ui--list-buffer-name))))
     (nelisp-ec-with-current-buffer out
       (nelisp-ec-erase-buffer)
-      (nelisp-ec-insert (format "%-24s %-8s %-18s %s\n"
-                                "name" "size" "mode" "file"))
+      (nelisp-ec-insert "name\tsize\tmode\tfile\n")
       (dolist (buf (emacs-buffer-buffer-list))
         (nelisp-ec-insert
-         (format "%-24s %-8d %-18s %s\n"
-                 (nelisp-ec-buffer-name buf)
-                 (nelisp-ec-buffer-size buf)
+         (concat (nelisp-ec-buffer-name buf)
+                 "\t"
+                 (number-to-string (nelisp-ec-buffer-size buf))
+                 "\t"
                  (emacs-buffer-ui--buffer-mode-name buf)
-                 (or (emacs-buffer-ui--buffer-file-name buf) ""))))
+                 "\t"
+                 (or (emacs-buffer-ui--buffer-file-name buf) "")
+                 "\n")))
+      (when (and (fboundp 'nelisp-ec-goto-char)
+                 (fboundp 'nelisp-ec-point-min))
+        (nelisp-ec-goto-char (nelisp-ec-point-min)))
       (emacs-buffer-set-buffer-modified-p nil out))
     (emacs-window-set-window-buffer (emacs-window-selected-window) out)
     (nelisp-ec-set-buffer out)

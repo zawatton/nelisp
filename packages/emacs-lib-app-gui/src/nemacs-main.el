@@ -1454,6 +1454,20 @@ If the buffer has no associated file, prompt for one via
     (condition-case err
         (let ((buffer (emacs-buffer-ui-list-buffers)))
           (nemacs-main--sync-selected-window-buffer buffer)
+          (when (and (fboundp 'emacs-window-selected-window)
+                     (fboundp 'emacs-window-set-window-start)
+                     (fboundp 'nelisp-ec-with-current-buffer)
+                     (fboundp 'nelisp-ec-point-min))
+            (emacs-window-set-window-start
+             (emacs-window-selected-window)
+             (nelisp-ec-with-current-buffer buffer
+               (nelisp-ec-point-min))))
+          (when (and (fboundp 'nemacs-main--emit-screen-text)
+                     (fboundp 'nelisp-ec-with-current-buffer)
+                     (fboundp 'nelisp-ec-buffer-string))
+            (nemacs-main--emit-screen-text
+             (nelisp-ec-with-current-buffer buffer
+               (nelisp-ec-buffer-string))))
           (setq nemacs-main--repaint-hint nil)
           buffer)
       (error

@@ -111,10 +111,16 @@
 
 (defun nemacs-stub-fallback-skip-inventory--owner (relative line)
   "Return likely owner module for RELATIVE and LINE."
-  (cond
+  (let ((haystack (concat relative " " line)))
+    (cond
+   ((string-match-p
+     "tui\\|terminal\\|display\\|redisplay\\|face\\|mouse\\|toolbar\\|window\\|frame\\|tab"
+     haystack)
+    "window-frame")
    ((string-match-p "dired" (concat relative " " line)) "dired")
    ((string-match-p "\\bhelp\\|describe" (concat relative " " line)) "help")
    ((string-match-p "\\binfo\\b\\|Info" (concat relative " " line)) "info")
+   ((string-match-p "vc\\|git\\|project" haystack) "project-vc")
    ((string-match-p "shell\\|process\\|compile\\|grep" (concat relative " " line))
     "process-shell")
    ((string-match-p "minibuffer\\|read-string\\|completing-read"
@@ -126,11 +132,19 @@
    ((string-match-p "file\\|buffer\\|save\\|write\\|directory"
                     (concat relative " " line))
     "file-buffer")
-   ((string-match-p "window\\|frame\\|tab" (concat relative " " line))
-    "window-frame")
    ((string-match-p "package\\|pkg\\|custom" (concat relative " " line))
     "package-custom")
-   (t "general")))
+   ((string-match-p "string\\|regexp\\|char\\|coding\\|unicode\\|case"
+                    haystack)
+    "text-string")
+   ((string-match-p "number\\|numeric\\|arith\\|bitwise\\|float\\|integer"
+                    haystack)
+    "numeric")
+   ((string-match-p "time\\|timer" haystack) "time")
+   ((string-match-p "pcase\\|cl-\\|gv\\|setf\\|defstruct\\|defmacro\\|macro"
+                    haystack)
+    "elisp-core")
+   (t "general"))))
 
 (defun nemacs-stub-fallback-skip-inventory--disposition
     (family relative line)
@@ -145,6 +159,8 @@
       "daily-driver-observability")
      ((and (equal family "fallback") (string-match-p "host_fallback" line))
       "host-fallback-sentinel")
+     ((string-match-p "nemacs-stub-fallback-skip-inventory\\.el" relative)
+      "tooling-compatibility")
      ((and (equal family "fallback")
            (string-match-p "runtime-process-preload" relative))
       "runtime-image-preload")
@@ -152,6 +168,17 @@
       "bridge-local-fallback")
      ((and (equal family "fallback") (equal scope "runtime"))
       "runtime-compatibility")
+     ((and (equal family "stub")
+           (string-match-p (rx string-start "src/emacs-tui-stub.el" string-end)
+                           relative))
+      "documented-boundary")
+     ((and (equal family "stub")
+           (string-match-p (rx string-start "src/emacs-frame.el" string-end)
+                           relative)
+           (string-match-p
+            "Doc 34\\|Doc 43\\|stub-mode\\|stub mode\\|stub invariant\\|backend.*stub\\|:backend stub\\|use-stub-backend"
+            line))
+      "documented-boundary")
      ((and (equal family "stub") (equal scope "test"))
       "test-fixture")
      ((and (equal family "stub")

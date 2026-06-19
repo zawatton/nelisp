@@ -1307,14 +1307,22 @@ last defined."
         (nemacs-main--repaint-hint 'current-line))
     (unwind-protect
         (let* ((alpha (nelisp-ec-generate-new-buffer "alpha"))
-               (w (emacs-window-selected-window)))
+               (w (emacs-window-selected-window))
+               (emitted nil))
           (nelisp-ec-set-buffer alpha)
           (emacs-window-set-window-buffer w alpha)
-          (let ((out (nemacs-main-list-buffers-interactive)))
-            (should (equal "*Buffer List*" (nelisp-ec-buffer-name out)))
-            (should (eq (nelisp-ec-current-buffer) out))
-            (should (eq (emacs-window-window-buffer w) out))
-            (should-not nemacs-main--repaint-hint)))
+          (cl-letf (((symbol-function 'nemacs-main--emit-screen-text)
+                     (lambda (text) (setq emitted text))))
+            (let ((out (nemacs-main-list-buffers-interactive)))
+              (should (equal "*Buffer List*" (nelisp-ec-buffer-name out)))
+              (should (eq (nelisp-ec-current-buffer) out))
+              (should (eq (emacs-window-window-buffer w) out))
+              (should (= (emacs-window-window-start w)
+                         (nelisp-ec-with-current-buffer out
+                           (nelisp-ec-point-min))))
+              (should (string-match-p "^name[[:space:]]+size[[:space:]]+mode[[:space:]]+file$"
+                                      emitted))
+              (should-not nemacs-main--repaint-hint))))
       (when (fboundp 'emacs-window-reset)
         (emacs-window-reset)))))
 

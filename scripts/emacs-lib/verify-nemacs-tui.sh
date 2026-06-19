@@ -1268,6 +1268,7 @@ pty_fileio_probe
 pty_multibuffer_probe
 pty_replace_probe
 pty_command_probe switch-buffer '\x18b*scratch*\r' '*scratch*'
+pty_command_probe list-buffers '\x18\x02' '*Buffer List*'
 pty_command_probe m-x-shell-command '\x1bxshell-command\rprintf NEMACS_MX_SHELL_OK\r' 'NEMACS_MX_SHELL_OK'
 pty_command_probe help-describe-key '\x08k\x06' 'forward-char'
 pty_command_probe dired "\\x1bxdired\\r${REPO_ROOT}/\\r" 'Makefile'
