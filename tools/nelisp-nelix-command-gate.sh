@@ -30,7 +30,12 @@ fi
 mkdir -p "$TMP_DIR/bin" "$TMP_DIR/home" "$TMP_DIR/profile"
 
 MANIFEST="$TMP_DIR/manifest.el"
+LARGE_MANIFEST="$TMP_DIR/large-manifest.el"
 FAKE_NIX="$TMP_DIR/bin/nix"
+SMALL_PROFILE_JSON="$TMP_DIR/small-profile.json"
+SMALL_PROFILE_NAMES="$TMP_DIR/small-profile.names"
+LARGE_PROFILE_JSON="$TMP_DIR/large-profile.json"
+LARGE_PROFILE_NAMES="$TMP_DIR/large-profile.names"
 
 cat >"$MANIFEST" <<'EOF'
 (require 'nelix-manifest)
@@ -41,16 +46,70 @@ cat >"$MANIFEST" <<'EOF'
  :pins '("ripgrep"))
 EOF
 
+cat >"$SMALL_PROFILE_JSON" <<'EOF'
+{"elements":{"magit":{"attrPath":"legacyPackages.x86_64-linux.emacsPackages.magit","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/magit"]},"ripgrep-1":{"attrPath":"legacyPackages.x86_64-linux.ripgrep","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/ripgrep"]},"bat":{"attrPath":"legacyPackages.x86_64-linux.bat","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/bat"]}}}
+EOF
+cat >"$SMALL_PROFILE_NAMES" <<'EOF'
+Name: magit
+Name: ripgrep-1
+Name: bat
+EOF
+
+{
+  printf '(require '\''nelix-manifest)\n'
+  printf '(nelix-manifest\n'
+  printf ' :name "large"\n'
+  printf ' :linux '\''('
+  for i in $(seq 0 199); do
+    printf '"pkg%03d"' "$i"
+    if [ "$i" -lt 199 ]; then
+      printf ' '
+    fi
+  done
+  printf ')\n'
+  printf ' :pins '\''("pkg005" "pkg150"))\n'
+} >"$LARGE_MANIFEST"
+
+{
+  printf '{"elements":{'
+  first=1
+  for i in $(seq 0 179); do
+    if [ "$first" -eq 0 ]; then
+      printf ','
+    fi
+    first=0
+    name="$(printf 'pkg%03d' "$i")"
+    printf '"%s":{"attrPath":"legacyPackages.x86_64-linux.%s","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/%s"]}' \
+      "$name" "$name" "$name"
+  done
+  for i in $(seq 0 19); do
+    printf ','
+    name="$(printf 'extra%03d' "$i")"
+    printf '"%s":{"attrPath":"legacyPackages.x86_64-linux.%s","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/%s"]}' \
+      "$name" "$name" "$name"
+  done
+  printf '}}\n'
+} >"$LARGE_PROFILE_JSON"
+
+{
+  for i in $(seq 0 179); do
+    printf 'Name: pkg%03d\n' "$i"
+  done
+  for i in $(seq 0 19); do
+    printf 'Name: extra%03d\n' "$i"
+  done
+} >"$LARGE_PROFILE_NAMES"
+
 cat >"$FAKE_NIX" <<'EOF'
 #!/bin/sh
 case " $* " in
   *" profile list "*)
     case " $* " in
       *" --json "*)
-        printf '%s\n' '{"elements":{"magit":{"attrPath":"legacyPackages.x86_64-linux.emacsPackages.magit","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/magit"]},"ripgrep-1":{"attrPath":"legacyPackages.x86_64-linux.ripgrep","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/ripgrep"]},"bat":{"attrPath":"legacyPackages.x86_64-linux.bat","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/bat"]}}}'
+        cat "${NELIX_FAKE_PROFILE_JSON:?}"
         ;;
       *)
-        printf 'Name: magit\nName: ripgrep-1\nName: bat\n'
+        cat "${NELIX_FAKE_PROFILE_NAMES:?}"
         ;;
     esac
     exit 0
@@ -154,6 +213,8 @@ base_env=(
   "HOME=$TMP_DIR/home"
   "NELIX_LISPDIR=$NELIX_REPO"
   "NELIX_PROFILE_DIR=$TMP_DIR/profile"
+  "NELIX_FAKE_PROFILE_JSON=$SMALL_PROFILE_JSON"
+  "NELIX_FAKE_PROFILE_NAMES=$SMALL_PROFILE_NAMES"
 )
 
 nelisp_env=(
@@ -173,6 +234,21 @@ nelisp_aot_env=(
   "${nelisp_env[@]}"
   "NELIX_NELISP_AOT=1"
   "NELIX_NIX_PROGRAM=$FAKE_NIX"
+)
+
+nelisp_large_stats_env=(
+  env
+  "PATH=$TMP_DIR/bin:$PATH"
+  "HOME=$TMP_DIR/home"
+  "NELIX_LISPDIR=$NELIX_REPO"
+  "NELIX_PROFILE_DIR=$TMP_DIR/profile"
+  "NELIX_FAKE_PROFILE_JSON=$LARGE_PROFILE_JSON"
+  "NELIX_FAKE_PROFILE_NAMES=$LARGE_PROFILE_NAMES"
+  "NELIX_RUNTIME=nelisp"
+  "NELIX_NELISP_AOT=0"
+  "NELIX_NELISP_STATS=1"
+  "NELISP=$NELISP"
+  "NELISP_ROOT=$REPO_ROOT"
 )
 
 run_timed emacs_list \
@@ -270,6 +346,38 @@ expect_stderr_grep nelisp_stats_upgrade_plan '^nelix stats stage=after-format '
 emit_stats nelisp_stats_upgrade_plan
 assert_stat_delta_le nelisp_stats_upgrade_plan after-cli-load before-dispatch 1024
 assert_stat_delta_le nelisp_stats_upgrade_plan before-dispatch after-print 67108864
+
+run_timed nelisp_large_stats_audit \
+  "${nelisp_large_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json audit "$LARGE_MANIFEST"
+expect_grep nelisp_large_stats_audit '"present":.*"pkg000"'
+expect_grep nelisp_large_stats_audit '"present":.*"pkg179"'
+expect_grep nelisp_large_stats_audit '"missing":.*"pkg180"'
+expect_grep nelisp_large_stats_audit '"missing":.*"pkg199"'
+expect_grep nelisp_large_stats_audit '"extra":.*"extra000"'
+expect_grep nelisp_large_stats_audit '"extra":.*"extra019"'
+expect_grep nelisp_large_stats_audit '"fallback":":nelisp-fast"'
+expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=after-preload '
+expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=before-dispatch '
+expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=after-format '
+emit_stats nelisp_large_stats_audit
+assert_stat_delta_le nelisp_large_stats_audit after-cli-load before-dispatch 1024
+assert_stat_delta_le nelisp_large_stats_audit before-dispatch after-print 1610612736
+
+run_timed nelisp_large_stats_upgrade_plan \
+  "${nelisp_large_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$LARGE_MANIFEST"
+expect_grep nelisp_large_stats_upgrade_plan '"upgrade":.*"pkg000"'
+expect_grep nelisp_large_stats_upgrade_plan '"upgrade":.*"pkg179"'
+expect_grep nelisp_large_stats_upgrade_plan '"pinned":.*"pkg005"'
+expect_grep nelisp_large_stats_upgrade_plan '"pinned":.*"pkg150"'
+expect_grep nelisp_large_stats_upgrade_plan '"missing":.*"pkg180"'
+expect_grep nelisp_large_stats_upgrade_plan '"missing":.*"pkg199"'
+expect_grep nelisp_large_stats_upgrade_plan '"fallback":":nelisp-fast"'
+expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=after-preload '
+expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=before-dispatch '
+expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=after-format '
+emit_stats nelisp_large_stats_upgrade_plan
+assert_stat_delta_le nelisp_large_stats_upgrade_plan after-cli-load before-dispatch 1024
+assert_stat_delta_le nelisp_large_stats_upgrade_plan before-dispatch after-print 1610612736
 
 if [ ! -f "$MANIFEST.nelix-aot-targets" ]; then
   echo "nelix_gate_fail reason=missing-aot-cache path=$MANIFEST.nelix-aot-targets" >&2
