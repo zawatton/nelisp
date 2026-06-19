@@ -21791,6 +21791,93 @@
         (files--read-transport-frame-state)
         (files--read-transport-frame-undo-state)))
 
+(fset 'files--bridge-initialize-buffer-state
+      (lambda (target snapshot kill-text kill-ring-text kill-ring-index-text
+                      rectangle-kill-text buffer-name read-only-text)
+        (if (if files--bridge-session-active files--bridge-session-initialized nil)
+            nil
+          (progn
+            (let ((kill-ring-index-scan 0))
+              (setq files--current-file-name target)
+              ;; M20/M23: in session mode the buffer store is authoritative.
+              ;; The native GUI starts with compiled demo text in tb/nemacs-buf;
+              ;; using that snapshot can overwrite the launcher-seeded file.
+              ;; Per-call command lanes still load the snapshot verbatim.
+              (if files--bridge-session-active
+                  (let ((store-full (rdf (concat files--buffer-store-dir "/"
+                                                 (if (equal buffer-name "") "main" buffer-name)))))
+                    (if (> (length store-full) 0)
+                        (setq files--buffer-string store-full)
+                      (setq files--buffer-string snapshot)))
+                (setq files--buffer-string snapshot))
+              (setq files--kill-ring-head kill-text)
+              (setq files--kill-ring kill-ring-text)
+              (setq files--rectangle-kill rectangle-kill-text)
+              (if (if (equal files--kill-ring "") (> (length files--kill-ring-head) 0) nil)
+                  (progn
+                    (setq files--kill-ring-push-text files--kill-ring-head)
+                    (setq files--kill-ring-push-backward nil)
+                    (files--kill-ring-push))
+                nil)
+              (setq files--kill-ring-index 0)
+              (while (< kill-ring-index-scan (length kill-ring-index-text))
+                (let ((ch (aref kill-ring-index-text kill-ring-index-scan)))
+                  (if (if (>= ch 48) (< ch 58) nil)
+                      (setq files--kill-ring-index
+                            (+ (* files--kill-ring-index 10) (- ch 48)))
+                    nil))
+                (setq kill-ring-index-scan (+ kill-ring-index-scan 1)))
+              (setq files--buffer-read-only-p (equal read-only-text "1"))
+              (setq files--buffer-name buffer-name)
+              (if (equal files--buffer-name "")
+                  (setq files--buffer-name "main")
+                nil)
+              (files--read-current-narrow-state)
+              (files--read-minibuffer-state))))))
+
+(fset 'files--bridge-initialize-window-point-state
+      (lambda (window-layout window-selected window-start-text
+                      transport-point-text transport-mark-text)
+        (if (if files--bridge-session-active files--bridge-session-initialized nil)
+            nil
+          (progn
+            (let ((transport-window-start 0)
+                  (transport-window-start-index 0)
+                  (transport-point 0)
+                  (transport-point-index 0)
+                  (transport-mark 0)
+                  (transport-mark-index 0))
+              (setq files--window-layout window-layout)
+              (if (equal files--window-layout "")
+                  (setq files--window-layout "single")
+                nil)
+              (setq files--window-selected window-selected)
+              (if (equal files--window-selected "1")
+                  nil
+                (setq files--window-selected "0"))
+              (while (< transport-window-start-index (length window-start-text))
+                (let ((ch (aref window-start-text transport-window-start-index)))
+                  (if (if (>= ch 48) (< ch 58) nil)
+                      (setq transport-window-start
+                            (+ (* transport-window-start 10) (- ch 48)))
+                    nil))
+                (setq transport-window-start-index (+ transport-window-start-index 1)))
+              (setq files--window-start transport-window-start)
+              (while (< transport-point-index (length transport-point-text))
+                (let ((ch (aref transport-point-text transport-point-index)))
+                  (if (if (>= ch 48) (< ch 58) nil)
+                      (setq transport-point (+ (* transport-point 10) (- ch 48)))
+                    nil))
+                (setq transport-point-index (+ transport-point-index 1)))
+              (setq files--point transport-point)
+              (while (< transport-mark-index (length transport-mark-text))
+                (let ((ch (aref transport-mark-text transport-mark-index)))
+                  (if (if (>= ch 48) (< ch 58) nil)
+                      (setq transport-mark (+ (* transport-mark 10) (- ch 48)))
+                    nil))
+                (setq transport-mark-index (+ transport-mark-index 1)))
+              (setq files--mark transport-mark))))))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -21810,17 +21897,10 @@
 		              (buffer-name (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-read-current)))
 		              (read-only-text (progn (setq files--transport-name "nemacs-read-only") (files--transport-read-current)))
 		              (window-layout (progn (setq files--transport-name "nemacs-window-layout") (files--transport-read-current)))
-              (window-selected (progn (setq files--transport-name "nemacs-window-selected") (files--transport-read-current)))
-              (window-start-text (progn (setq files--transport-name "nemacs-window-start") (files--transport-read-current)))
-              (transport-point-text (progn (setq files--transport-name "nemacs-point") (files--transport-read-current)))
-              (transport-mark-text (progn (setq files--transport-name "nemacs-mark") (files--transport-read-current)))
-              (transport-point 0)
-              (transport-point-index 0)
-              (transport-mark 0)
-              (transport-mark-index 0)
-              (kill-ring-index-scan 0)
-              (transport-window-start 0)
-              (transport-window-start-index 0))
+	              (window-selected (progn (setq files--transport-name "nemacs-window-selected") (files--transport-read-current)))
+	              (window-start-text (progn (setq files--transport-name "nemacs-window-start") (files--transport-read-current)))
+	              (transport-point-text (progn (setq files--transport-name "nemacs-point") (files--transport-read-current)))
+	              (transport-mark-text (progn (setq files--transport-name "nemacs-mark") (files--transport-read-current))))
           (if (equal cmd "")
               (setq files--bridge-command nil)
             (setq files--bridge-command (intern cmd)))
@@ -21892,87 +21972,21 @@
                         (not (equal files--bridge-minibuffer-text "")))
                     nil)
                   (setq files--bridge-arg files--bridge-minibuffer-text)
-                nil)
-              (setq files--bridge-status "ok")))
-          (setq files--bridge-snapshot snapshot)
-          (if (if files--bridge-session-active files--bridge-session-initialized nil)
-              nil
-            (progn
-	            (setq files--current-file-name target)
-	            ;; M20/M23: in session mode the buffer store is authoritative.
-	            ;; The native GUI starts with compiled demo text in tb/nemacs-buf;
-	            ;; using that snapshot can overwrite the launcher-seeded file.
-	            ;; Per-call command lanes still load the snapshot verbatim.
-	            (if files--bridge-session-active
-	                (let ((store-full (rdf (concat files--buffer-store-dir "/"
-	                                               (if (equal buffer-name "") "main" buffer-name)))))
-	                  (if (> (length store-full) 0)
-	                      (setq files--buffer-string store-full)
-	                    (setq files--buffer-string snapshot)))
-	              (setq files--buffer-string snapshot))
-		          (setq files--kill-ring-head kill-text)
-		          (setq files--kill-ring kill-ring-text)
-                  (setq files--rectangle-kill rectangle-kill-text)
-		          (if (if (equal files--kill-ring "") (> (length files--kill-ring-head) 0) nil)
-		              (progn
-		                (setq files--kill-ring-push-text files--kill-ring-head)
-		                (setq files--kill-ring-push-backward nil)
-		                (files--kill-ring-push))
+	                nil)
+	              (setq files--bridge-status "ok")))
+	          (setq files--bridge-snapshot snapshot)
+	          (files--bridge-initialize-buffer-state
+	           target snapshot kill-text kill-ring-text kill-ring-index-text
+	           rectangle-kill-text buffer-name read-only-text)
+		          (if (equal files--buffer-name "")
+		              (setq files--buffer-name "main")
 		            nil)
-		          (setq files--kill-ring-index 0)
-		          (while (< kill-ring-index-scan (length kill-ring-index-text))
-		            (let ((ch (aref kill-ring-index-text kill-ring-index-scan)))
-		              (if (if (>= ch 48) (< ch 58) nil)
-		                  (setq files--kill-ring-index
-		                        (+ (* files--kill-ring-index 10) (- ch 48)))
-		                nil))
-		            (setq kill-ring-index-scan (+ kill-ring-index-scan 1)))
-			          (setq files--buffer-read-only-p (equal read-only-text "1"))
-			          (setq files--buffer-name buffer-name)
-                  (if (equal files--buffer-name "")
-                      (setq files--buffer-name "main")
-                    nil)
-                  (files--read-current-narrow-state)
-                  (files--read-minibuffer-state)))
-	          (if (equal files--buffer-name "")
-	              (setq files--buffer-name "main")
+	          (files--bridge-initialize-window-point-state
+	           window-layout window-selected window-start-text
+	           transport-point-text transport-mark-text)
+	          (if files--bridge-session-active
+	              (setq files--bridge-session-initialized t)
 	            nil)
-          (if (if files--bridge-session-active files--bridge-session-initialized nil)
-              nil
-            (progn
-	            (setq files--window-layout window-layout)
-              (if (equal files--window-layout "")
-                  (setq files--window-layout "single")
-                nil)
-              (setq files--window-selected window-selected)
-              (if (equal files--window-selected "1")
-                  nil
-                (setq files--window-selected "0"))
-              (while (< transport-window-start-index (length window-start-text))
-                (let ((ch (aref window-start-text transport-window-start-index)))
-                  (if (if (>= ch 48) (< ch 58) nil)
-                      (setq transport-window-start
-                            (+ (* transport-window-start 10) (- ch 48)))
-                    nil))
-                (setq transport-window-start-index (+ transport-window-start-index 1)))
-              (setq files--window-start transport-window-start)
-              (while (< transport-point-index (length transport-point-text))
-                (let ((ch (aref transport-point-text transport-point-index)))
-                  (if (if (>= ch 48) (< ch 58) nil)
-                      (setq transport-point (+ (* transport-point 10) (- ch 48)))
-                    nil))
-                (setq transport-point-index (+ transport-point-index 1)))
-              (setq files--point transport-point)
-              (while (< transport-mark-index (length transport-mark-text))
-                (let ((ch (aref transport-mark-text transport-mark-index)))
-                  (if (if (>= ch 48) (< ch 58) nil)
-                      (setq transport-mark (+ (* transport-mark 10) (- ch 48)))
-                    nil))
-                (setq transport-mark-index (+ transport-mark-index 1)))
-              (setq files--mark transport-mark)))
-          (if files--bridge-session-active
-              (setq files--bridge-session-initialized t)
-            nil)
           (files--clamp-point)
           (files--clamp-mark)
           (files--command-loop-save-undo-if-needed-current-context)

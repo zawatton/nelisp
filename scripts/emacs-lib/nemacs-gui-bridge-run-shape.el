@@ -364,6 +364,8 @@ binding variable names as calls."
                        transport-mark transport-mark-index
                        kill-ring-index-scan
                        transport-window-start transport-window-start-index))
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--bridge-initialize-buffer-state)
           (nemacs-gui-bridge-run-shape--contains-call-p form 'files--read-current-narrow-state)
           (nemacs-gui-bridge-run-shape--contains-call-p form 'files--read-minibuffer-state)
           (nemacs-gui-bridge-run-shape--contains-call-p form 'files--kill-ring-push)
@@ -385,6 +387,8 @@ binding variable names as calls."
                                     files--window-split-delta))))
       "broad-state-read")
      ((or (nemacs-gui-bridge-run-shape--contains-call-p form 'aref)
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--bridge-initialize-window-point-state)
           (nemacs-gui-bridge-run-shape--contains-call-p form 'files--clamp-point)
           (nemacs-gui-bridge-run-shape--contains-call-p form 'files--clamp-mark))
       "window-point-init")
