@@ -1008,15 +1008,26 @@ when no real redisplay window is available."
     "Stub: loaddefs prefix registration is unused in standalone."
     (ignore file prefixes) nil))
 
+(unless (fboundp 'custom-add-load)
+  (defun custom-add-load (symbol load)
+    "Add LOAD to SYMBOL's `custom-loads' metadata."
+    (let ((loads (get symbol 'custom-loads)))
+      (unless (member load loads)
+        (put symbol 'custom-loads (cons load loads))))))
+
 (unless (fboundp 'custom--add-custom-loads)
   (defun custom--add-custom-loads (symbol loads)
-    "Stub: no-op custom-load registration."
-    (ignore symbol loads) nil))
+    "Set SYMBOL's `custom-loads' metadata, preserving existing loads."
+    (dolist (load (get symbol 'custom-loads))
+      (unless (member load loads)
+        (setq loads (cons load loads))))
+    (put symbol 'custom-loads loads)))
 
 (unless (fboundp 'custom-autoload)
   (defun custom-autoload (symbol load &optional noset)
-    "Stub: no-op custom autoload."
-    (ignore symbol load noset) nil))
+    "Mark SYMBOL as a custom autoload and record LOAD."
+    (put symbol 'custom-autoload (if noset 'noset t))
+    (custom-add-load symbol load)))
 
 (unless (fboundp 'setq-local)
   (defmacro setq-local (&rest pairs)
