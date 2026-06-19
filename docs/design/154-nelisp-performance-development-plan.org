@@ -1144,6 +1144,16 @@ tools/nelisp-nelix-native-hot-gate.sh
   standalone_subset_upgrade_id_native rc=0
   nelix_native_hot_gate rc=0
 
+The same native hot gate is exposed as a public make target:
+
+#+begin_src sh
+make nelisp-nelix-native-hot-gate
+#+end_src
+
+This keeps the Nelix native subset proof on the same user-facing gate surface
+as =nelisp-performance-gate=, =nelisp-nelix-command-gate=, and
+=nelisp-native-artifact-gate=.
+
 tools/nelisp-runtime-image-cache-gate.sh --no-build
   source_replay_v1 rc=0 out=42
   cache_cold_v1 rc=0 out=42

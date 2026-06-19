@@ -7,7 +7,7 @@
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
         standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
-        nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate \
+        nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate nelisp-nelix-native-hot-gate \
         nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate
 
 EMACS ?= emacs
@@ -162,6 +162,9 @@ nelisp-nelix-command-gate:
 
 nelisp-native-artifact-gate:
 	./tools/nelisp-native-artifact-gate.sh
+
+nelisp-nelix-native-hot-gate:
+	./tools/nelisp-nelix-native-hot-gate.sh
 
 nelisp-runtime-image-cache-gate:
 	./tools/nelisp-runtime-image-cache-gate.sh
