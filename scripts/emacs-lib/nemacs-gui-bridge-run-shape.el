@@ -186,6 +186,13 @@ binding variable names as calls."
      counts)
     total))
 
+(defun nemacs-gui-bridge-run-shape--symbol-total (counts symbols)
+  "Return total call count in COUNTS for SYMBOLS."
+  (let ((total 0))
+    (dolist (symbol symbols)
+      (setq total (+ total (gethash (symbol-name symbol) counts 0))))
+    total))
+
 (defun nemacs-gui-bridge-run-shape--top-prefix (counts prefix)
   "Return sorted entries in COUNTS whose key starts with PREFIX."
   (let (entries)
@@ -200,24 +207,37 @@ binding variable names as calls."
                 (and (= (cdr a) (cdr b))
                      (string< (car a) (car b))))))))
 
-(defun nemacs-gui-bridge-run-shape--transport-names (forms call-symbol)
-  "Return transport names under CALL-SYMBOL calls in FORMS."
+(defun nemacs-gui-bridge-run-shape--transport-name-in-node (node)
+  "Return transport name set in NODE, or nil."
+  (let ((name nil))
+    (nemacs-gui-bridge-run-shape--walk
+     node
+     (lambda (inner)
+       (when (and (not name)
+                  (consp inner)
+                  (eq (car inner) 'setq)
+                  (eq (cadr inner) 'files--transport-name)
+                  (stringp (cl-caddr inner)))
+         (setq name (cl-caddr inner)))))
+    name))
+
+(defun nemacs-gui-bridge-run-shape--transport-names (forms call-symbols)
+  "Return transport names around CALL-SYMBOLS calls in FORMS."
   (let (names)
     (dolist (form forms)
       (nemacs-gui-bridge-run-shape--walk
        form
        (lambda (node)
-         (when (and (consp node) (eq (car node) call-symbol))
-           (let (local-names)
-             (nemacs-gui-bridge-run-shape--walk
-              node
-              (lambda (inner)
-                (when (and (consp inner)
-                           (eq (car inner) 'setq)
-                           (eq (cadr inner) 'files--transport-name)
-                           (stringp (cl-caddr inner)))
-                  (push (cl-caddr inner) local-names))))
-             (setq names (append local-names names)))))))
+         (when (and (consp node)
+                    (cl-some
+                     (lambda (call-symbol)
+                       (nemacs-gui-bridge-run-shape--contains-call-p
+                        node call-symbol))
+                     call-symbols))
+           (let ((name (nemacs-gui-bridge-run-shape--transport-name-in-node
+                        node)))
+             (when name
+               (push name names)))))))
     (sort (delete-dups (nreverse names)) #'string<)))
 
 (defun nemacs-gui-bridge-run-shape--cmd-tests (forms)
@@ -270,10 +290,14 @@ binding variable names as calls."
          (before-counts (nemacs-gui-bridge-run-shape--call-counts before))
          (after-counts (nemacs-gui-bridge-run-shape--call-counts after))
          (all-counts (nemacs-gui-bridge-run-shape--call-counts linear-body))
+         (direct-read-symbols '(rdf files--transport-read-current))
          (cmd-tests (nemacs-gui-bridge-run-shape--cmd-tests after))
-         (read-names (nemacs-gui-bridge-run-shape--transport-names before 'rdf))
+         (read-names
+          (nemacs-gui-bridge-run-shape--transport-names
+           before direct-read-symbols))
          (write-names
-          (nemacs-gui-bridge-run-shape--transport-names after 'nl-write-file)))
+          (nemacs-gui-bridge-run-shape--transport-names
+           after '(nl-write-file))))
     (make-directory (file-name-directory output) t)
     (with-temp-file output
       (insert "#+TITLE: Nemacs GUI Bridge Run Shape\n\n")
@@ -288,7 +312,8 @@ binding variable names as calls."
       (insert (format "- linear body forms after boundary: %d\n"
                       (length after)))
       (insert (format "- direct transport reads before boundary: %d\n"
-                      (gethash "rdf" before-counts 0)))
+                      (nemacs-gui-bridge-run-shape--symbol-total
+                       before-counts direct-read-symbols)))
       (insert (format "- direct transport writes after boundary: %d\n"
                       (gethash "nl-write-file" after-counts 0)))
       (insert (format "- =files--read*= calls before boundary: %d\n"

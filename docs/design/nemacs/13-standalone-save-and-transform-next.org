@@ -42,6 +42,12 @@ case を分割・集約する。
   - command-run boundary 後: linear body 3 forms、direct transport write 588、
     =files--write*= helper call 642、=equal cmd= tests 378。
   - 初回 helper 化では、この count を no-op refactor の guard にする。
+- 2026-06-20 に pre-boundary の明示 transport read 20 個を
+  0-arity helper =files--transport-read-current= へ置換した。
+  - shape summary の boundary count は維持。
+  - =standalone-save-and-transform= は 107.817 秒で pass。
+  - =standalone-session-bridge-roundtrip= と =make test-fast= も green。
+  - これは短縮採用ではなく、次の command group read-set 分割の足場。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -224,9 +230,10 @@ make nemacs-gui-bridge-run-shape
 2. direct-cmd 257 request / 79.817 秒を主対象にし、key dispatch や compound form を
    初回対象から外す。
 3. =make nemacs-gui-bridge-run-shape= で本体構造を再生成する。
-4. runtime 生成元は見つからないため、=src/nemacs-gui-file-bridge-runtime.el= 本体内で
-   full read/writeback body を機械的に helper 化する。
-5. helper 化後、shape summary の boundary count が no-op refactor として維持されることを確認する。
+4. no-op helper 化済みの =files--transport-read-current= を境界にして、
+   motion command の read-set を本体構造内で分割する。
+5. miss path で余分な transport read を増やさず、shape summary で direct read/write count と
+   boundary を確認する。
 6. direct-cmd の common read/writeback setup を本体構造として短くし、
    individual command の後付け wrapper には戻らない。
 7. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
