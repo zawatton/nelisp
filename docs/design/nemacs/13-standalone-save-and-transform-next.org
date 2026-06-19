@@ -37,20 +37,26 @@ case を分割・集約する。
   117.294 秒へ悪化したため不採用。
 - =make nemacs-gui-bridge-run-shape= で本体構造の static summary を生成できる。
   - =nemacs-gui-file-bridge-run= は runtime 内の fset が source of truth。
-  - command-run boundary 前: linear body 73 forms、direct transport read 21、
-    =files--read*= helper call 23。
+  - command-run boundary 前: linear body 48 forms、direct transport read 21、
+    =files--read*= helper call 2。
   - command-run boundary 後: linear body 3 forms、direct transport write 588、
     =files--write*= helper call 642、=equal cmd= tests 378。
   - 初回 helper 化では、この count を no-op refactor の guard にする。
 - =make nemacs-gui-bridge-run-shape= は pre-boundary phase table も出力する。
   - setup: 2 forms。
   - transport-input-bindings: 19 forms / direct read 19。
-  - broad-state-read: 24 forms / =files--read*= helper 21。
-  - request-ingest: 3 forms / direct write 2。
+  - broad-state-read: 1 helper call。
+  - request-ingest: 1 form / direct write 2。
   - buffer-init: 2 forms / direct read 1 / =files--read*= helper 2。
   - window-point-init: 1 form。
   - command-run-prep: 4 forms。
   - 次の no-op refactor では、この phase count を guard にする。
+- 2026-06-20 に =broad-state-read= phase を
+  =files--bridge-read-broad-state= へ切り出した。
+  - command-run boundary、direct transport read、post-boundary write count は維持。
+  - 本体 linear body は 73 forms から 48 forms へ減少。
+  - =standalone-save-and-transform= は 107.543 秒で pass。
+  - これは短縮採用ではなく、runtime state reset 境界を作るための no-op helper 化。
 - 2026-06-20 に pre-boundary の明示 transport read 20 個を
   0-arity helper =files--transport-read-current= へ置換した。
   - shape summary の boundary count は維持。
@@ -260,10 +266,9 @@ make nemacs-gui-bridge-run-shape
 2. direct-cmd 257 request / 79.817 秒を主対象にし、key dispatch や compound form を
    初回対象から外す。
 3. =make nemacs-gui-bridge-run-shape= で本体構造を再生成する。
-4. coarse な motion read-set guard は 108.262 秒で不採用済み。次は
-   phase table を guard にして、=nemacs-gui-file-bridge-run= の pre-boundary を
-   =transport-input-bindings= / =broad-state-read= / =buffer-init= /
-   =window-point-init= などの no-op helper へ切り出す。
+4. coarse な motion read-set guard は 108.262 秒で不採用済み。
+   =broad-state-read= は no-op helper 化済みなので、次は
+   =buffer-init= / =window-point-init= を小さい helper へ切り出す。
 5. helper 切り出し後、phase count と boundary count が維持されることを確認してから、
    phase 境界ごとに =standalone-save-and-transform= を fresh process で測り、
    5 秒以上の短縮がない場合は戻して不採用理由を残す。
