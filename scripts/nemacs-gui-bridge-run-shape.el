@@ -327,6 +327,13 @@ binding variable names as calls."
     "other")
   "Preferred phase order for bridge-run pre-boundary summaries.")
 
+(defconst nemacs-gui-bridge-run-shape--post-phase-order
+  '("writeback-setup"
+    "lane-writeback"
+    "command-writeback-chain"
+    "other")
+  "Preferred phase order for bridge-run post-boundary summaries.")
+
 (defun nemacs-gui-bridge-run-shape--entry-phase (entry)
   "Return phase name for linear ENTRY."
   (let ((source (plist-get entry :source))
@@ -407,17 +414,52 @@ binding variable names as calls."
      (t
       "other"))))
 
+(defun nemacs-gui-bridge-run-shape--post-entry-phase (entry)
+  "Return post-boundary phase name for linear ENTRY."
+  (let ((form (plist-get entry :form)))
+    (cond
+     ((or (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'emacs-command-loop-gui-write-post-command-state)
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--bridge-prepare-writeback))
+      "writeback-setup")
+     ((nemacs-gui-bridge-run-shape--contains-call-p
+       form 'files--command-loop-writeback-current-lane)
+      "lane-writeback")
+     ((or (nemacs-gui-bridge-run-shape--contains-call-p form 'equal)
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--fileio-writeback-current-context)
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--dired-writeback-current-context)
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--info-writeback-current-context)
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--help-writeback-current-context))
+      "command-writeback-chain")
+     (t
+      "other"))))
+
 (defun nemacs-gui-bridge-run-shape--phase-index (phase)
   "Return sorting index for PHASE."
   (or (cl-position phase nemacs-gui-bridge-run-shape--phase-order
                    :test #'equal)
       (length nemacs-gui-bridge-run-shape--phase-order)))
 
-(defun nemacs-gui-bridge-run-shape--phase-summaries (entries direct-read-symbols)
-  "Return phase summaries for ENTRIES using DIRECT-READ-SYMBOLS."
+(defun nemacs-gui-bridge-run-shape--post-phase-index (phase)
+  "Return sorting index for post-boundary PHASE."
+  (or (cl-position phase nemacs-gui-bridge-run-shape--post-phase-order
+                   :test #'equal)
+      (length nemacs-gui-bridge-run-shape--post-phase-order)))
+
+(defun nemacs-gui-bridge-run-shape--phase-summaries
+    (entries direct-read-symbols &optional phase-fn sort-index-fn)
+  "Return phase summaries for ENTRIES using DIRECT-READ-SYMBOLS.
+PHASE-FN classifies an entry.  SORT-INDEX-FN returns a phase sort key."
   (let ((phase-forms (make-hash-table :test 'equal)))
     (dolist (entry entries)
-      (let ((phase (nemacs-gui-bridge-run-shape--entry-phase entry)))
+      (let ((phase (funcall (or phase-fn
+                                #'nemacs-gui-bridge-run-shape--entry-phase)
+                            entry)))
         (puthash phase
                  (cons (plist-get entry :form)
                        (gethash phase phase-forms nil))
@@ -443,9 +485,11 @@ binding variable names as calls."
        phase-forms)
       (sort summaries
             (lambda (a b)
-              (< (nemacs-gui-bridge-run-shape--phase-index
+              (< (funcall (or sort-index-fn
+                              #'nemacs-gui-bridge-run-shape--phase-index)
                   (plist-get a :phase))
-                 (nemacs-gui-bridge-run-shape--phase-index
+                 (funcall (or sort-index-fn
+                              #'nemacs-gui-bridge-run-shape--phase-index)
                   (plist-get b :phase))))))))
 
 (defun nemacs-gui-bridge-run-shape--insert-phase-table (title summaries)
@@ -510,6 +554,11 @@ binding variable names as calls."
          (phase-summaries
           (nemacs-gui-bridge-run-shape--phase-summaries
            before-entries direct-read-symbols))
+         (post-phase-summaries
+          (nemacs-gui-bridge-run-shape--phase-summaries
+           after-entries direct-read-symbols
+           #'nemacs-gui-bridge-run-shape--post-entry-phase
+           #'nemacs-gui-bridge-run-shape--post-phase-index))
          (cmd-tests (nemacs-gui-bridge-run-shape--cmd-tests after))
          (read-names
           (nemacs-gui-bridge-run-shape--transport-names
@@ -545,6 +594,8 @@ binding variable names as calls."
                       (length cmd-tests)))
       (nemacs-gui-bridge-run-shape--insert-phase-table
        "Pre-Boundary Phases" phase-summaries)
+      (nemacs-gui-bridge-run-shape--insert-phase-table
+       "Post-Boundary Phases" post-phase-summaries)
       (nemacs-gui-bridge-run-shape--insert-table
        "Top Calls Before Boundary"
        (cl-subseq

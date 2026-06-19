@@ -21878,6 +21878,27 @@
                 (setq transport-mark-index (+ transport-mark-index 1)))
               (setq files--mark transport-mark))))))
 
+(fset 'files--bridge-prepare-writeback
+      (lambda (cmd)
+        (let ((post-command-state
+               (emacs-command-loop-gui-write-post-command-state
+                files--bridge-command
+                files--bridge-effective-command
+                files--bridge-status)))
+          (setq cmd
+                (or (plist-get post-command-state :command-name)
+                    ""))
+          (setq files--bridge-writeback-lane
+                (symbol-name
+                 (or (plist-get post-command-state :lane)
+                     'normal))))
+        (if (files--command-loop-writeback-current-lane)
+            (progn
+              (setq cmd "")
+              (setq files--bridge-writeback-lane "normal"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -21991,23 +22012,7 @@
           (files--clamp-mark)
           (files--command-loop-save-undo-if-needed-current-context)
           (files--command-loop-run-request-current-context)
-                  (let ((post-command-state
-                         (emacs-command-loop-gui-write-post-command-state
-                          files--bridge-command
-                          files--bridge-effective-command
-                          files--bridge-status)))
-                    (setq cmd
-                          (or (plist-get post-command-state :command-name)
-                              ""))
-                    (setq files--bridge-writeback-lane
-                          (symbol-name
-                           (or (plist-get post-command-state :lane)
-                               'normal))))
-                  (if (files--command-loop-writeback-current-lane)
-                      (progn
-                        (setq cmd "")
-                        (setq files--bridge-writeback-lane "normal"))
-                    nil)
+          (setq cmd (files--bridge-prepare-writeback cmd))
 			          (if (equal files--bridge-writeback-lane "read-only")
               (progn
                 (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)
