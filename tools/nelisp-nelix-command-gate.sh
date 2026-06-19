@@ -11,6 +11,8 @@ cd "$REPO_ROOT"
 
 NELIX_REPO="${NELIX_REPO:-$REPO_ROOT/../anvil-pkg}"
 NELISP="${NELISP:-$REPO_ROOT/target/nelisp}"
+NELIX_LARGE_AOT_AUDIT_MAX_MS="${NELIX_LARGE_AOT_AUDIT_MAX_MS:-5000}"
+NELIX_LARGE_AOT_UPGRADE_PLAN_MAX_MS="${NELIX_LARGE_AOT_UPGRADE_PLAN_MAX_MS:-5000}"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -139,12 +141,34 @@ run_timed() {
   set -e
   end="$(date +%s%3N)"
   bytes="$(wc -c <"$out_file" | tr -d ' ')"
+  printf 'rc=%s\nms=%s\nbytes=%s\n' "$rc" "$((end - start))" "$bytes" \
+    >"$TMP_DIR/$label.meta"
   printf 'nelix_gate_result label=%s rc=%s ms=%s bytes=%s\n' \
     "$label" "$rc" "$((end - start))" "$bytes"
   if [ "$rc" -ne 0 ]; then
     sed 's/^/nelix_gate_stderr /' "$err_file" >&2
     sed 's/^/nelix_gate_stdout /' "$out_file" >&2
     exit "$rc"
+  fi
+}
+
+elapsed_ms() {
+  local label="$1"
+  sed -n 's/^ms=//p' "$TMP_DIR/$label.meta"
+}
+
+assert_elapsed_le() {
+  local label="$1"
+  local max_ms="$2"
+  local ms
+  ms="$(elapsed_ms "$label")"
+  printf 'nelix_gate_elapsed_budget label=%s ms=%s max=%s\n' \
+    "$label" "$ms" "$max_ms"
+  if [ "$ms" -gt "$max_ms" ]; then
+    echo "nelix_gate_fail label=$label reason=elapsed-too-large ms=$ms max=$max_ms" >&2
+    sed 's/^/nelix_gate_stdout /' "$TMP_DIR/$label.out" >&2
+    sed 's/^/nelix_gate_stderr /' "$TMP_DIR/$label.err" >&2
+    exit 1
   fi
 }
 
@@ -359,6 +383,7 @@ expect_grep nelisp_large_aot_audit '"extra":.*"extra000"'
 expect_grep nelisp_large_aot_audit '"extra":.*"extra031"'
 expect_grep nelisp_large_aot_audit '"fallback":":nelisp-aot-cache"'
 expect_grep nelisp_large_aot_audit '"skipped":'
+assert_elapsed_le nelisp_large_aot_audit "$NELIX_LARGE_AOT_AUDIT_MAX_MS"
 
 run_timed nelisp_large_aot_upgrade_plan \
   "${nelisp_large_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$LARGE_MANIFEST"
@@ -370,6 +395,7 @@ expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg480"'
 expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg511"'
 expect_grep nelisp_large_aot_upgrade_plan '"fallback":":nelisp-aot-cache"'
 expect_grep nelisp_large_aot_upgrade_plan '"skipped":'
+assert_elapsed_le nelisp_large_aot_upgrade_plan "$NELIX_LARGE_AOT_UPGRADE_PLAN_MAX_MS"
 
 run_timed nelisp_direct_list \
   "${nelisp_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp list
