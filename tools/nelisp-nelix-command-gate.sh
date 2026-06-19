@@ -13,6 +13,8 @@ NELIX_REPO="${NELIX_REPO:-$REPO_ROOT/../anvil-pkg}"
 NELISP="${NELISP:-$REPO_ROOT/target/nelisp}"
 NELIX_LARGE_AOT_AUDIT_MAX_MS="${NELIX_LARGE_AOT_AUDIT_MAX_MS:-5000}"
 NELIX_LARGE_AOT_UPGRADE_PLAN_MAX_MS="${NELIX_LARGE_AOT_UPGRADE_PLAN_MAX_MS:-5000}"
+NELIX_LARGE_DIRECT_AUDIT_FORMAT_MAX_BYTES="${NELIX_LARGE_DIRECT_AUDIT_FORMAT_MAX_BYTES:-5100273664}"
+NELIX_LARGE_DIRECT_UPGRADE_PLAN_FORMAT_MAX_BYTES="${NELIX_LARGE_DIRECT_UPGRADE_PLAN_FORMAT_MAX_BYTES:-5100273664}"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -241,6 +243,12 @@ assert_stat_delta_le() {
     sed 's/^/nelix_gate_stderr /' "$TMP_DIR/$label.err" >&2
     exit 1
   fi
+}
+
+assert_large_manifest_allocator_delta_le() {
+  local label="$1"
+  local max_delta="$2"
+  assert_stat_delta_le "$label" before-dispatch after-print "$max_delta"
 }
 
 base_env=(
@@ -488,7 +496,8 @@ expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=before-dispatch 
 expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=after-format '
 emit_stats nelisp_large_stats_audit
 assert_stat_delta_le nelisp_large_stats_audit after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_large_stats_audit before-dispatch after-print 5368709120
+assert_large_manifest_allocator_delta_le \
+  nelisp_large_stats_audit "$NELIX_LARGE_DIRECT_AUDIT_FORMAT_MAX_BYTES"
 
 run_timed nelisp_large_stats_upgrade_plan \
   "${nelisp_large_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$LARGE_MANIFEST"
@@ -504,7 +513,8 @@ expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=before-di
 expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=after-format '
 emit_stats nelisp_large_stats_upgrade_plan
 assert_stat_delta_le nelisp_large_stats_upgrade_plan after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_large_stats_upgrade_plan before-dispatch after-print 5368709120
+assert_large_manifest_allocator_delta_le \
+  nelisp_large_stats_upgrade_plan "$NELIX_LARGE_DIRECT_UPGRADE_PLAN_FORMAT_MAX_BYTES"
 
 if [ ! -f "$MANIFEST.nelix-aot-targets" ]; then
   echo "nelix_gate_fail reason=missing-aot-cache path=$MANIFEST.nelix-aot-targets" >&2

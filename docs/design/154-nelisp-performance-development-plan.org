@@ -85,6 +85,19 @@ The limits are intentionally configurable for slower builders, but keeping
 them in the gate protects the production =:nelisp-aot-cache= lane from falling
 back into direct NeLisp manifest traversal costs.
 
+The direct 512-target route is also an allocator-delta regression gate.  It is
+still diagnostic rather than the production path, but its JSON result
+construction must stay below the current large-manifest ceiling:
+
+#+begin_src sh
+NELIX_LARGE_DIRECT_AUDIT_FORMAT_MAX_BYTES=5100273664
+NELIX_LARGE_DIRECT_UPGRADE_PLAN_FORMAT_MAX_BYTES=5100273664
+tools/nelisp-nelix-command-gate.sh
+#+end_src
+
+These defaults are 4.75 GiB.  They deliberately sit below the earlier 5 GiB
+tripwire while leaving room above the current ~4.3-4.5 GiB measurements.
+
 Current 512-target gate evidence:
 
 #+begin_example
@@ -1108,7 +1121,7 @@ tools/nelisp-nelix-command-gate.sh
   nelisp_direct_apply_dry_run rc=0
   nelix_gate_stat_delta ... after-cli-load to after-print delta=0 max=1024
   nelix_gate_stat_delta ... small before-dispatch to after-print max=201326592
-  nelix_gate_stat_delta ... large before-dispatch to after-print max=5368709120
+  nelix_gate_stat_delta ... large before-dispatch to after-print max=5100273664
   nelix_command_gate rc=0
 
 The 2026-06-20 gate also makes the current split visible: the AOT cache lane
@@ -1116,9 +1129,9 @@ handles =plan --dry-run= and =apply --dry-run= in about 11-12ms on the small
 fixture, and the 512-target audit/upgrade fixtures in about 0.1s and 0.015s.
 The direct NeLisp dry-run path still spends about 9-10s in the generic
 plan/apply path, and direct 512-target JSON still takes about 51-55s with
-~4.3-4.5GB of allocator delta from dispatch to print.  The 5GB large-fixture
-bound is therefore a regression tripwire for the diagnostic direct path, not a
-claim that direct manifest processing is finished.
+~4.3-4.5GB of allocator delta from dispatch to print.  The 4.75GiB
+large-fixture bound is therefore a regression tripwire for the diagnostic
+direct path, not a claim that direct manifest processing is finished.
 
 The remaining direct-path hotspot is inside dispatch, before CLI formatting:
 profile name listing alone stays around 3s and under 512KiB delta, while
