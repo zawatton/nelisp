@@ -10,6 +10,12 @@ usable Emacs replacement and is unlikely to become one for several
 years.  Most user-visible Emacs features are absent, the API is
 unstable, and breaking changes are expected on most commits.
 
+This repo is *Layer 2* (Emacs 意味論 = buffer/point/command-loop/keymap/
+minibuffer/window/face 決定) of a 3-layer Emacs replacement:
+*L1 =nelisp=* (runtime/reader/AOT) → *L2 this repo* → *L3 =nelisp-gui=*
+(X11 描画/入力).  責務境界・層間契約・完成条件・critical path のマスターは
+=../nelisp-gui/docs/design/00-three-layer-architecture.org= を参照.
+
 Concretely, as of 2026-05-27:
 
 - Phase 1 (= core editor substrate: =buffer.c=, =window.c=, =frame.c=,
