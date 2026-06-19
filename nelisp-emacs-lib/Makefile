@@ -17,6 +17,7 @@ NEMACS_VENDOR_CORE_RUNTIME_BAKE_TIMEOUT ?= 900s
 NEMACS_RUNTIME_REPLAY_TIMEOUT ?= 900s
 NEMACS_INTERACTIVE_RUNTIME_REPLAY_TIMEOUT ?= 1200s
 NEMACS_VENDOR_CORE_RUNTIME_REPLAY_TIMEOUT ?= 1200s
+NEMACS_SERVER_CLIENT_TIMEOUT ?= 180s
 NELISP_STACK_LIMIT ?= unlimited
 BUILD_DIR ?= build
 NEMACS_BOOTSTRAP_BUNDLE ?= $(BUILD_DIR)/nemacs-bootstrap.el
@@ -28,6 +29,15 @@ NEMACS_VENDOR_CORE_RUNTIME_IMAGE ?= $(BUILD_DIR)/nemacs-vendor-core-runtime.nlri
 NEMACS_RUNTIME_PRELOAD ?= scripts/nemacs-runtime-image-preload.el
 NEMACS_RUNTIME_PROCESS_PRELOAD ?= scripts/nemacs-runtime-process-preload.el
 NEMACS_RUNTIME_FRAME_TAB_PRELOAD ?= scripts/nemacs-runtime-frame-tab-preload.el
+NEMACS_GUI_KEYMAP_COVERAGE_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage.tsv
+NEMACS_GUI_KEYMAP_COVERAGE_SUMMARY ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-summary.org
+NEMACS_GUI_KEYMAP_COVERAGE_MISSING_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-missing.tsv
+NEMACS_GUI_KEYMAP_COVERAGE_COMMAND_MISSING_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-command-missing.tsv
+NEMACS_GUI_KEYMAP_COVERAGE_DIFFERENT_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-different.tsv
+NEMACS_GUI_BRIDGE_RUNTIME_INVENTORY ?= $(BUILD_DIR)/gui-bridge-runtime-inventory.tsv
+NEMACS_STUB_FALLBACK_SKIP_INVENTORY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-inventory.tsv
+NEMACS_STUB_FALLBACK_SKIP_SUMMARY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-summary.org
+NEMACS_DIRTY_REVIEW_UNITS ?= $(BUILD_DIR)/nemacs-dirty-review-units.tsv
 VENDOR_CLASS_A_LIMIT ?= 18
 VENDOR_CLASS_A_STRICT ?= 0
 VENDOR_CLASS_A_STRICT_ELISP := $(if $(filter 1 t true yes,$(VENDOR_CLASS_A_STRICT)),t,nil)
@@ -485,21 +495,57 @@ TEST_FILES = $(wildcard test/*.el)
 TEST_INTEGRATION_FILES = \
 	test/nelisp-emacs-artifact-gate5-test.el \
 	test/nelisp-emacs-artifact-gate6-test.el \
+	test/emacs-server-client-test.el \
 	test/nemacs-vendor-cache-test.el \
 	test/nemacs-vendor-cache-set-test.el
 TEST_UNIT_FILES = $(filter-out $(TEST_INTEGRATION_FILES),$(TEST_FILES))
+TEST_FAST_FILES = \
+	test/emacs-standalone-test.el \
+	test/emacs-buffer-builtins-test.el \
+	test/emacs-buffer-test.el \
+	test/emacs-edit-builtins-test.el \
+	test/emacs-fileio-builtins-test.el \
+	test/files-test.el \
+	test/emacs-fileio-test.el \
+	test/emacs-keymap-builtins-test.el \
+	test/emacs-keymap-test.el \
+	test/emacs-minibuffer-builtins-test.el \
+	test/emacs-minibuffer-test.el \
+	test/emacs-command-loop-builtins-test.el \
+	test/emacs-dired-min-test.el \
+	test/emacs-help-test.el \
+	test/emacs-info-test.el \
+	test/emacs-shell-command-test.el \
+	test/emacs-process-builtins-test.el \
+	test/emacs-redisplay-builtins-test.el \
+	test/emacs-redisplay-test.el \
+	test/emacs-calc-test.el \
+	test/emacs-shell-test.el \
+	test/emacs-ielm-test.el \
+	test/emacs-vc-test.el \
+	test/emacs-tier3-facades-test.el
 
-.PHONY: compile test soak gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge nemacs-gui-keymap-coverage doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-repl-replay-fast verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
 	@echo "  make compile         byte-compile src/*.el"
 	@echo "  make test            run ERT under host emacs"
+	@echo "  make test-fast       run fast host ERT gate for core daily-driver runtime"
+	@echo "  make gate-nemacs-complete  run completion gate for daily runtime readiness"
 	@echo "  make gate5           prove vendor source replay == .nelc artifact load"
 	@echo "  make vendor-nelc-cache-set prove vendor cache set cold/warm/invalidation"
 	@echo "  make test-redisplay-core-smoke  run isolated lightweight redisplay core smoke"
 	@echo "  make test-nemacs-gui-bridge  run standalone GUI file bridge ERT"
-	@echo "  make nemacs-gui-keymap-coverage  compare host Emacs global-map with GUI bridge runtime"
+	@echo "  make test-nemacs-gui-bridge-gate  run GUI bridge gate without slow tail"
+	@echo "  make test-nemacs-gui-bridge-slow  run only the GUI bridge slow tail"
+	@echo "  make test-nemacs-gui-bridge-select NEMACS_GUI_BRIDGE_TEST_SELECTOR=TEST  run selected GUI bridge ERT"
+	@echo "  make test-nemacs-server-client  run standalone server/emacsclient round-trip ERT"
+	@echo "  make nemacs-gui-keymap-coverage  write GUI keymap coverage TSV and summary artifacts"
+	@echo "  make gui-bridge-runtime-inventory  write GUI bridge runtime symbol inventory"
+	@echo "  make nemacs-stub-fallback-skip-inventory  write stub/fallback/skip inventory"
+	@echo "  make nemacs-dirty-review-units  classify dirty worktree paths into review units"
+	@echo "  make verify-production-runtime-path  fail if production bootstrap misses GUI runtime adapters"
 	@echo "  make doctor          run host/NeLisp driver readiness checks"
 	@echo "  make build-nelisp-bootstrap  generate build/nemacs-bootstrap.el and .repl"
 	@echo "  make bake-image      legacy .nli state image via emacs-dump"
@@ -518,6 +564,7 @@ help:
 	@echo "  make diagnose-vendor-form-walk-fast  form-walk using existing bootstrap bundle"
 	@echo "  make diagnose-vendor-load-replay-fast  load VENDOR_FAST_FILES using existing bootstrap bundle"
 	@echo "  make diagnose-vendor-repl-replay-fast  REPL-load VENDOR_FAST_FILES using existing bootstrap REPL"
+	@echo "  make verify-nemacs-daily-driver  run TUI daily-driver workflow smoke"
 	@echo "  make verify-nelisp-standalone  run pure standalone-reader gates"
 	@echo "  make verify-vendor   run Doc 03 vendor inventory + vendor smoke gates"
 	@echo "  make bench           run redisplay benchmark"
@@ -557,9 +604,19 @@ compile:
 		-f batch-byte-compile $(SRC_FILES)
 
 test:
-	$(EMACS) -L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
+	$(EMACS) --eval '(setq load-prefer-newer t)' \
+		-L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
 		$(foreach t,$(TEST_UNIT_FILES),-l $(t)) \
 		-f ert-run-tests-batch-and-exit
+
+test-fast:
+	$(EMACS) --eval '(setq load-prefer-newer t)' \
+		-L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
+		$(foreach t,$(TEST_FAST_FILES),-l $(t)) \
+		-f ert-run-tests-batch-and-exit
+
+gate-nemacs-complete: test-fast nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units verify-nemacs-daily-driver test-nemacs-gui-bridge-gate
+	@echo "gate-nemacs-complete: ok"
 
 test-nemacs-gui-bridge:
 	test -x "$(NELISP_BIN)"
@@ -568,13 +625,90 @@ test-nemacs-gui-bridge:
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		-f ert-run-tests-batch-and-exit
 
+NEMACS_GUI_BRIDGE_TEST_SELECTOR ?= t
+NEMACS_GUI_BRIDGE_SLOW_TESTS := \
+	nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform \
+	nemacs-gui-file-bridge-runtime-test/standalone-goto-line \
+	nemacs-gui-file-bridge-runtime-test/standalone-large-org-file \
+	nemacs-gui-file-bridge-runtime-test/standalone-minibuffer-owned-help \
+	nemacs-gui-file-bridge-runtime-test/standalone-tab-transport
+NEMACS_GUI_BRIDGE_GATE_SELECTOR ?= (not (or $(NEMACS_GUI_BRIDGE_SLOW_TESTS)))
+NEMACS_GUI_BRIDGE_SLOW_SELECTOR ?= (or $(NEMACS_GUI_BRIDGE_SLOW_TESTS))
+
+test-nemacs-gui-bridge-gate:
+	test -x "$(NELISP_BIN)"
+	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
+		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		-l test/nemacs-gui-file-bridge-runtime-test.el \
+		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_GATE_SELECTOR)))'
+
+test-nemacs-gui-bridge-slow:
+	test -x "$(NELISP_BIN)"
+	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
+		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		-l test/nemacs-gui-file-bridge-runtime-test.el \
+		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_SLOW_SELECTOR)))'
+
+test-nemacs-gui-bridge-select:
+	test -x "$(NELISP_BIN)"
+	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
+		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		-l test/nemacs-gui-file-bridge-runtime-test.el \
+		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_TEST_SELECTOR)))'
+
+test-nemacs-server-client:
+	test -x "$(NELISP_BIN)"
+	timeout $(NEMACS_SERVER_CLIENT_TIMEOUT) env NELISP="$(abspath $(NELISP_BIN))" \
+		$(EMACS) --eval '(setq load-prefer-newer t)' \
+		-L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		-l test/emacs-server-client-test.el \
+		-f ert-run-tests-batch-and-exit
+
+verify-production-runtime-path: build-nelisp-bootstrap
+	$(EMACS) -Q -L scripts \
+		--eval '(setq verify-production-runtime-path-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
+		--eval '(setq verify-production-runtime-path-main "$(abspath src/nemacs-main.el)")' \
+		-l scripts/verify-production-runtime-path.el \
+		-f verify-production-runtime-path-batch
+
+verify-nemacs-daily-driver: verify-production-runtime-path
+	scripts/verify-nemacs-tui.sh
+
 SOAK_ITER ?= 20
 soak:
 	@$(EMACS) -L src $(NELISP_LOAD_PATH) --eval "(require 'standalone-soak)" --eval '(let ((r (standalone-soak-run $(SOAK_ITER))) (p (standalone-soak-process)) (s (standalone-soak-project-scan "src"))) (princ (standalone-soak-report-string r)) (terpri) (princ (format "process: ran=%s ok=%s\n" (plist-get p :ran) (plist-get p :ok))) (princ (format "project-scan src: files=%s dirs=%s\n" (plist-get s :files) (plist-get s :dirs))) (kill-emacs (if (and (= 0 (plist-get r :errors)) (or (not (plist-get p :ran)) (plist-get p :ok))) 0 1)))'
 
 nemacs-gui-keymap-coverage:
+	mkdir -p "$(BUILD_DIR)"
 	@$(EMACS) -Q -L scripts \
-		-l scripts/nemacs-gui-keymap-coverage.el
+		-l scripts/nemacs-gui-keymap-coverage.el \
+		> "$(NEMACS_GUI_KEYMAP_COVERAGE_TSV)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-gui-keymap-coverage-summary-input "$(abspath $(NEMACS_GUI_KEYMAP_COVERAGE_TSV))")' \
+		--eval '(setq nemacs-gui-keymap-coverage-summary-output "$(abspath $(NEMACS_GUI_KEYMAP_COVERAGE_SUMMARY))")' \
+		--eval '(setq nemacs-gui-keymap-coverage-missing-output "$(abspath $(NEMACS_GUI_KEYMAP_COVERAGE_MISSING_TSV))")' \
+		--eval '(setq nemacs-gui-keymap-coverage-command-missing-output "$(abspath $(NEMACS_GUI_KEYMAP_COVERAGE_COMMAND_MISSING_TSV))")' \
+		--eval '(setq nemacs-gui-keymap-coverage-different-output "$(abspath $(NEMACS_GUI_KEYMAP_COVERAGE_DIFFERENT_TSV))")' \
+		-l scripts/nemacs-gui-keymap-coverage-summary.el \
+		-f nemacs-gui-keymap-coverage-summary-batch
+
+gui-bridge-runtime-inventory:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-gui-bridge-runtime-inventory-output "$(abspath $(NEMACS_GUI_BRIDGE_RUNTIME_INVENTORY))")' \
+		-l scripts/nemacs-gui-bridge-runtime-inventory.el \
+		-f nemacs-gui-bridge-runtime-inventory-batch
+
+nemacs-stub-fallback-skip-inventory:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-stub-fallback-skip-inventory-output "$(abspath $(NEMACS_STUB_FALLBACK_SKIP_INVENTORY))")' \
+		--eval '(setq nemacs-stub-fallback-skip-inventory-summary-output "$(abspath $(NEMACS_STUB_FALLBACK_SKIP_SUMMARY))")' \
+		-l scripts/nemacs-stub-fallback-skip-inventory.el \
+		-f nemacs-stub-fallback-skip-inventory-batch
+
+nemacs-dirty-review-units:
+	scripts/nemacs-dirty-review-units.sh "$(NEMACS_DIRTY_REVIEW_UNITS)"
 
 gate5:
 	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
