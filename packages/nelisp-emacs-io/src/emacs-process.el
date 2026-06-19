@@ -83,7 +83,14 @@ surface; the legacy `nelisp-*' names remain as compatibility fallbacks.")
   (let (alist)
     (dolist (sym '(call-process call-process-region make-process start-process
                    start-process-shell-command process-file))
-      (when (and (fboundp sym) (subrp (indirect-function sym)))
+      (when (and (fboundp sym)
+                 ;; `subrp'/`indirect-function' are host-Emacs builtins absent
+                 ;; under standalone NeLisp image replay; this host-only subr
+                 ;; capture must degrade to an empty alist rather than abort the
+                 ;; bridge-image `progn' load (every form after it -- including
+                 ;; the GUI bridge session runtime -- would otherwise be lost).
+                 (fboundp 'subrp) (fboundp 'indirect-function)
+                 (subrp (indirect-function sym)))
         (push (cons sym (symbol-function sym)) alist)))
     alist)
   "True native (subr) process primitives captured at first load.
