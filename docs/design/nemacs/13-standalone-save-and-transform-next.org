@@ -1,0 +1,143 @@
+#+TITLE: standalone-save-and-transform 次段開発指示書
+#+DATE: 2026-06-20
+
+* 目的
+
+=standalone-save-and-transform= の実行時間を大幅に短縮する。現在の主因は
+GUI file bridge の host/runner 往復数が多いことであり、単純な wait 調整や
+小さい request batch では十分な効果が出ない。
+
+次段では、runtime state reset 境界を明確にしたうえで、意味単位ごとに
+case を分割・集約する。
+
+* 現状
+
+- persistent runner は導入済み。
+- host 側 poll interval は 1ms まで短縮済み。
+- publish settle は 1ms だと flaky になるため 5ms を維持する。
+- =standalone-save-and-transform= は安全設定で約 108 秒。
+- 13 request 程度の小 batch 化は試したが、5ms publish settle では短縮効果がなく不採用。
+- =standalone-session-bridge-roundtrip= と =make test-fast= は green。
+
+* 守ること
+
+- publish settle を 1ms に戻して短縮したことにしない。
+  - =/tmp/nemacs-file= missing が発生し、fresh process/profile 前提で flaky になる。
+- host 側で session/progn を単純に一括化しない。
+  - buffer、tab、visited file、modified flag、temp file state が持ち越されて誤判定しやすい。
+- 小さい request を数個まとめるだけの batch 化を優先しない。
+  - transport complexity が増える割に、支配的な wait を削れない。
+- 失敗時にどの subcase が壊れたか分からない巨大 batch にしない。
+
+* 開発方針
+
+1. =standalone-save-and-transform= 内の subcase を一覧化する。
+2. 各 subcase を state 依存で分類する。
+   - 独立実行可能: reset 後に同じ初期条件から動くもの。
+   - buffer/file 依存: visited file、modified flag、save/write の順序に意味があるもの。
+   - transport 依存: request/response timing や publish order に敏感なもの。
+3. =nemacs-test-runner-reset-runtime-state= の reset 範囲を確認し、不足があれば明示的 helper を追加する。
+4. 独立実行可能な group から runner 内連続実行へ移す。
+5. host には summary/result file だけを返し、host 側 assertion は summary を読むだけにする。
+6. 1 group 追加ごとに計測し、短縮効果がない group は戻す。
+
+* 推奨 group
+
+最初は state 依存が薄い group だけを対象にする。
+
+** motion group
+
+- =forward-char=
+- =backward-char=
+- =next-line=
+- =previous-line=
+- =beginning-of-line=
+- =end-of-line=
+
+** local editing group
+
+- =self-insert-command=
+- =newline=
+- =delete-char=
+- =delete-backward-char=
+- =delete-trailing-whitespace=
+
+** transform group
+
+- buffer 内容を固定入力から作り直せる変換系
+
+save/write/visited-file lifecycle に触る case は後回しにする。
+
+* result file 形式
+
+runner 側で temp file に sexp list を書く。host 側はその list を読み、subcase ごとに
+=ok=、=value=、=error= を検証する。
+
+例:
+
+#+begin_src elisp
+((motion-forward-char . (:ok t :point 2 :buffer "abc"))
+ (motion-next-line . (:ok t :point 6 :buffer "a\nbc"))
+ (editing-delete-char . (:ok t :buffer "ac"))
+ (editing-newline . (:ok nil :error "expected point mismatch")))
+#+end_src
+
+最低限、各 subcase には次を含める。
+
+- stable name
+- ok flag
+- expected/actual の比較に必要な値
+- error message
+
+* 実装単位
+
+最初の PR/commit は motion group だけにする。
+
+目標:
+
+- host/runner 往復を motion group 分だけ削る。
+- 失敗時に motion group のどの subcase が壊れたか分かる。
+- 既存の standalone fresh process 検証と同じ初期条件を再現する。
+
+motion group で 5 秒以上短縮できない場合は、その group 化は採用しない。
+
+* 検証コマンド
+
+最低限:
+
+#+begin_src sh
+emacs -Q --batch -L src -L test -l test/nemacs-gui-file-bridge-runtime-test.el \
+  --eval "(ert-run-tests-batch-and-exit 'standalone-save-and-transform)"
+
+emacs -Q --batch -L src -L test -l test/nemacs-gui-file-bridge-runtime-test.el \
+  --eval "(ert-run-tests-batch-and-exit 'standalone-session-bridge-roundtrip)"
+
+make test-fast
+#+end_src
+
+性能判断用:
+
+#+begin_src sh
+time emacs -Q --batch -L src -L test -l test/nemacs-gui-file-bridge-runtime-test.el \
+  --eval "(ert-run-tests-batch-and-exit 'standalone-save-and-transform)"
+#+end_src
+
+* 採用基準
+
+- =standalone-save-and-transform= が安定して短縮する。
+- publish settle 5ms のまま通る。
+- fresh process 前提の検証で通る。
+- =standalone-session-bridge-roundtrip= が通る。
+- =make test-fast= が通る。
+- 失敗時の subcase 名と actual value が読める。
+
+* 次の作業開始点
+
+1. =test/nemacs-gui-file-bridge-runtime-test.el= の
+   =standalone-save-and-transform= を読む。
+2. motion 系 subcase を抜き出す。
+3. runner 側に motion group helper を追加する。
+4. result file reader を host 側に追加する。
+5. motion group だけ置き換えて計測する。
+
+小さい request batch ではなく、reset 境界を保った意味単位 batch を作ること。
