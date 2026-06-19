@@ -33,7 +33,7 @@
 ;;     heap primitives (§125.A); the allocation is freed before every
 ;;     return path, so there is NO leak.
 ;;   * `extern-call read' issues `call libc::read@PLT' (= SysV AMD64:
-;;     rdi=0 [fd], rsi=buf [*mut u8], rdx=1 [count]).
+;;     rdi=TTY_FD [fd], rsi=buf [*mut u8], rdx=1 [count]).
 ;;   * `ptr-read-u8 buf 0' reads the received byte (0..255) from the
 ;;     heap slot after a successful read.
 ;;   * Return: byte value (0..255) on success; -1 on EOF/error.
@@ -51,7 +51,7 @@
 ;;
 ;; AOT ops consumed:
 ;;   §125.A  `alloc-bytes' / `dealloc-bytes' — 1-byte heap buf.
-;;   §100.A  `extern-call'                   — libc `read(0, buf, 1)'.
+;;   §100.A  `extern-call'                   — libc `read(TTY_FD, buf, 1)'.
 ;;   §101.C  `ptr-read-u8'                   — byte extraction.
 ;;   `='  `if'  literal `1'  literal `-1'    — dispatch / return.
 ;;
@@ -75,6 +75,13 @@
     (defun nl_tty_rb_prog1 (val _eff) val)
 
     ;; ------------------------------------------------------------------
+    ;; nl_tty_rb_current_fd: read the TTY_FD slot maintained by
+    ;; nelisp_tty_raw_enter.  This keeps standalone REPL input on the
+    ;; controlling terminal even when fd 0 is the boot file.
+    (defun nl_tty_rb_current_fd ()
+      (ptr-read-u64 (extern-call nl_tty_fd_ptr) 0))
+
+    ;; ------------------------------------------------------------------
     ;; nl_tty_rb_dispatch: branch on read(2) return count.
     ;; buf: *mut u8 — the 1-byte heap buffer allocated by nl_tty_read_byte.
     ;; n:   i64    — return value of read(0, buf, 1).
@@ -93,7 +100,7 @@
 
     ;; ------------------------------------------------------------------
     ;; nl_tty_read_byte: public C-ABI entry — no parameters.
-    ;; Allocates a 1-byte heap buffer, calls read(0, buf, 1), dispatches
+    ;; Allocates a 1-byte heap buffer, calls read(TTY_FD, buf, 1), dispatches
     ;; on the return count, frees the buffer, and returns the byte or -1.
     ;;
     ;; Matches the Rust body deleted by fa8932eb:
@@ -102,18 +109,21 @@
     ;;   if n == 1 { b[0] as i64 } else { -1 }
     (defun nl_tty_read_byte ()
       (let ((buf (alloc-bytes 1 1)))
-        (nl_tty_rb_dispatch buf (extern-call read 0 buf 1)))))
+        (nl_tty_rb_dispatch
+         buf
+         (extern-call read (nl_tty_rb_current_fd) buf 1)))))
   "AOT source for the `nl_tty_read_byte' Doc 133 cutover.
 
 Three-entry `(seq DEFUN ...)' manifest:
 - `nl_tty_rb_prog1 (val _eff) -> val' — prog1 sequencer; returns
   the first arg (the byte value or -1) after evaluating the second
   arg (the dealloc-bytes call) as a side-effect.
+- `nl_tty_rb_current_fd () -> i64' — reads the saved TTY_FD slot.
 - `nl_tty_rb_dispatch (buf n) -> i64' — branches on the read(2)
   return count; frees the 1-byte buffer on both paths.
 - `nl_tty_read_byte () -> i64' — public no-arg C-ABI entry;
   allocates a 1-byte heap buffer with alloc-bytes, calls
-  `extern-call read 0 buf 1', dispatches via nl_tty_rb_dispatch.
+  `extern-call read TTY_FD buf 1', dispatches via nl_tty_rb_dispatch.
 
 Buffer strategy: heap (alloc-bytes 1 1 / dealloc-bytes 1 1).
 AOT has no stack-alloca primitive; a Rust static-pointer getter
@@ -122,7 +132,7 @@ is freed before every return path — NO persistent leak.
 
 AOT ops consumed:
   `alloc-bytes 1 1'   — allocate 1 byte, align 1.
-  `extern-call read'  — call libc read(0, buf, 1).
+  `extern-call read'  — call libc read(TTY_FD, buf, 1).
   `ptr-read-u8 buf 0' — extract the received byte.
   `dealloc-bytes'     — free the 1-byte buffer.
   `='  `if'  `-1'  `let' — dispatch and control flow.

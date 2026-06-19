@@ -137,6 +137,7 @@ never both.")
 (declare-function nelisp--eval-defmacro "nelisp-macro" (args env))
 (declare-function nelisp-macroexpand "nelisp-macro" (form))
 (declare-function nelisp-bc-run "nelisp-bytecode" (bcl &optional args))
+(declare-function nelisp-native-function-call "nelisp-artifact" (fn args))
 
 (defconst nelisp--unbound (make-symbol "nelisp-unbound")
   "Sentinel returned from hash-table lookups when a key is missing.")
@@ -145,6 +146,9 @@ never both.")
 
 (defsubst nelisp--closure-p (x)
   (and (consp x) (eq (car x) 'nelisp-closure)))
+
+(defsubst nelisp--native-function-p (x)
+  (and (consp x) (eq (car x) 'nelisp-native-function)))
 
 (defun nelisp--make-closure (env params body)
   "Build a callable from ENV / PARAMS / BODY.
@@ -593,6 +597,10 @@ not registered in our table, which keeps host helper symbols like
 A `nelisp-bcl' (bytecode closure built by `nelisp-bytecode.el')
 dispatches straight into the VM."
   (cond
+   ((nelisp--native-function-p fn)
+    (if (fboundp 'nelisp-native-function-call)
+        (nelisp-native-function-call fn args)
+      (nelisp--apply (nth 3 fn) args)))
    ;; Inline the bcl check rather than introducing a defsubst — the
    ;; self-host probe evaluates this very file at NeLisp level, and a
    ;; named helper would add one host stack frame per NeLisp-on-NeLisp
@@ -720,7 +728,7 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; via NeLisp-aware wrappers below for our own table — but the
     ;; host `symbol-function' is a useful escape hatch for bootstrap)
     symbolp keywordp intern make-symbol symbol-name gensym
-    symbol-function
+    symbol-function fset
     ;; Property lists (used by condition-case to read error-conditions)
     get put plist-get plist-put
     ;; Hash tables — raw data, safe to delegate wholesale
@@ -825,11 +833,16 @@ resolved through `nelisp--functions', or a host Elisp primitive."
 
 (defun nelisp--builtin-mapconcat (fn seq separator)
   "NeLisp-aware `mapconcat'."
-  (let ((parts nil))
+  (let ((out "")
+        (first t)
+        (sep (or separator "")))
     (while seq
-      (push (nelisp--apply fn (list (car seq))) parts)
+      (unless first
+        (setq out (concat out sep)))
+      (setq out (concat out (nelisp--apply fn (list (car seq)))))
+      (setq first nil)
       (setq seq (cdr seq)))
-    (mapconcat #'identity (nreverse parts) separator)))
+    out))
 
 (defun nelisp--builtin-maphash (fn table)
   "NeLisp-aware `maphash': FN receives (KEY VALUE) for each entry.

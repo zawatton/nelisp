@@ -18,6 +18,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'nelisp-eval)
 
@@ -66,6 +67,48 @@
                           (list (cons "j" 1) (cons "k" 2))))
                  '("k" . 2))))
 
+(ert-deftest nelisp-stdlib-member-assoc-fast-path-avoids-equal ()
+  "String/symbol/number `member' and `assoc' avoid generic `equal'."
+  (let ((old-member (symbol-function 'member))
+        (old-assoc (symbol-function 'assoc))
+        (old-equal (symbol-function 'equal))
+        (equal-calls 0)
+        scalar-results
+        fallback-result
+        scalar-call-count
+        fallback-call-count)
+    (unwind-protect
+        (progn
+          (load (expand-file-name "lisp/nelisp-stdlib-search.el"
+                                  default-directory)
+                nil t)
+          (cl-letf (((symbol-function 'equal)
+                     (lambda (a b)
+                       (setq equal-calls (1+ equal-calls))
+                       (funcall old-equal a b))))
+            (setq scalar-results
+                  (list
+                   (member "b" '("a" "b" "c"))
+                   (member 'b '(a b c))
+                   (member 2 '(1 2 3))
+                   (assoc "k" '(("j" . 1) ("k" . 2)))
+                   (assoc 'b '((a . 1) (b . 2)))
+                   (assoc 2 '((1 . a) (2 . b)))))
+            (setq scalar-call-count equal-calls)
+            (setq fallback-result
+                  (assoc '(k) '(((j) . 1) ((k) . 2))))
+            (setq fallback-call-count equal-calls))
+          (should (funcall old-equal
+                           scalar-results
+                           '(("b" "c") (b c) (2 3)
+                             ("k" . 2) (b . 2) (2 . b))))
+          (should (= scalar-call-count 0))
+          (should (funcall old-equal fallback-result '((k) . 2)))
+          (should (> fallback-call-count scalar-call-count)))
+      (fset 'member old-member)
+      (fset 'assoc old-assoc)
+      (fset 'equal old-equal))))
+
 ;;; Arithmetic --------------------------------------------------------
 
 (ert-deftest nelisp-stdlib-arith-extras ()
@@ -92,6 +135,37 @@
   "In Phase 1 we only have integers, so eql ~ eq on atoms."
   (should (eq (nelisp-eval '(eql 42 42)) t))
   (should (eq (nelisp-eval '(eql 42 43)) nil)))
+
+(ert-deftest nelisp-stdlib-equal-fast-path-avoids-hash-on-scalars ()
+  "Standalone `equal' must not allocate a visited table for scalar cases."
+  (let ((old-equal (symbol-function 'equal))
+        (old-make-hash-table (symbol-function 'make-hash-table))
+        (hash-table-calls 0)
+        scalar-results
+        list-result
+        scalar-call-count
+        list-call-count)
+    (unwind-protect
+        (cl-letf (((symbol-function 'nelisp--ref-eq)
+                   (lambda (a b) (eq a b))))
+          (load "nelisp-stdlib-equal" nil t)
+          (cl-letf (((symbol-function 'make-hash-table)
+                     (lambda (&rest args)
+                       (setq hash-table-calls (1+ hash-table-calls))
+                       (apply old-make-hash-table args))))
+            (setq scalar-results
+                  (list (equal "abc" (copy-sequence "abc"))
+                        (equal 1.0 1.0)
+                        (not (equal "abc" "abd"))
+                        (not (equal 'a 'b))))
+            (setq scalar-call-count hash-table-calls)
+            (setq list-result (equal '(1 2) '(1 2)))
+            (setq list-call-count hash-table-calls))
+          (should (funcall old-equal scalar-results '(t t t t)))
+          (should (= scalar-call-count 0))
+          (should list-result)
+          (should (= list-call-count 1)))
+      (fset 'equal old-equal))))
 
 ;;; String primitives -------------------------------------------------
 
@@ -195,6 +269,21 @@ NeLisp function table, not host `symbol-function'."
   (should (equal (nelisp-eval '(mapcar (quote my-square) (list 1 2 3)))
                  '(1 4 9))))
 
+(ert-deftest nelisp-stdlib-nreverse-destructive ()
+  "`nreverse' should mutate the list spine like Emacs, avoiding a copy."
+  (nelisp--reset)
+  (nelisp-eval '(defvar *nr-a* (cons 1 nil)))
+  (nelisp-eval '(defvar *nr-b* (cons 2 nil)))
+  (nelisp-eval '(defvar *nr-c* (cons 3 nil)))
+  (nelisp-eval '(setcdr *nr-a* *nr-b*))
+  (nelisp-eval '(setcdr *nr-b* *nr-c*))
+  (nelisp-eval '(defvar *nr-r* (nreverse *nr-a*)))
+  (should (equal (nelisp-eval '*nr-r*) '(3 2 1)))
+  (should (eq (nelisp-eval '(eq *nr-r* *nr-c*)) t))
+  (should (eq (nelisp-eval '(eq (cdr *nr-r*) *nr-b*)) t))
+  (should (eq (nelisp-eval '(eq (cdr *nr-b*) *nr-a*)) t))
+  (should (null (nelisp-eval '(cdr *nr-a*)))))
+
 (ert-deftest nelisp-stdlib-mapc-returns-seq ()
   (nelisp--reset)
   (nelisp-eval '(defvar *acc* 0))
@@ -213,6 +302,50 @@ NeLisp function table, not host `symbol-function'."
                               (list 1 2 3)
                               ","))
                  "1,2,3")))
+
+(ert-deftest nelisp-stdlib-mapconcat-avoids-reverse-list-buffer ()
+  "`mapconcat' should not build a reversed parts list just to join strings."
+  (let ((old-nreverse (symbol-function 'nreverse))
+        (nreverse-calls 0)
+        result)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'nreverse)
+                     (lambda (&rest args)
+                       (setq nreverse-calls (1+ nreverse-calls))
+                       (apply old-nreverse args))))
+            (setq result
+                  (nelisp--builtin-mapconcat
+                   'number-to-string '(1 2 3) ",")))
+          (should (equal result "1,2,3"))
+          (should (= nreverse-calls 0)))
+      (fset 'nreverse old-nreverse))))
+
+(ert-deftest nelisp-stdlib-mapconcat-file-impl-avoids-reverse-list-buffer ()
+  "The stdlib file implementation should stream like the evaluator builtin."
+  (let ((old-mapconcat (symbol-function 'mapconcat))
+        (old-nreverse (symbol-function 'nreverse))
+        (nreverse-calls 0)
+        result)
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "lisp/nelisp-stdlib-plist-str.el"
+                               default-directory))
+            (goto-char (point-min))
+            (search-forward "(defun mapconcat")
+            (goto-char (match-beginning 0))
+            (eval (read (current-buffer)) t))
+          (cl-letf (((symbol-function 'nreverse)
+                     (lambda (&rest args)
+                       (setq nreverse-calls (1+ nreverse-calls))
+                       (apply old-nreverse args))))
+            (setq result (mapconcat #'identity '("a" "b" "c") ":")))
+          (should (equal result "a:b:c"))
+          (should (= nreverse-calls 0)))
+      (fset 'mapconcat old-mapconcat)
+      (fset 'nreverse old-nreverse))))
 
 (ert-deftest nelisp-stdlib-maphash-with-nelisp-closure ()
   "maphash must route FN through `nelisp--apply' so NeLisp closures
@@ -258,9 +391,171 @@ and NeLisp-only defuns see (KEY VALUE) — not the raw host callee."
   (should (equal '(:a 9)
                  (nelisp-eval '(plist-put (list :a 1) :a 9)))))
 
+(ert-deftest nelisp-stdlib-plist-get-put-direct-path ()
+  "`plist-get' and `plist-put' avoid the `plist-member' helper on hot paths."
+  (let ((old-plist-get (symbol-function 'plist-get))
+        (old-plist-put (symbol-function 'plist-put))
+        (old-plist-member (symbol-function 'plist-member))
+        (member-calls 0)
+        got
+        updated
+        appended)
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "lisp/nelisp-stdlib-plist-str.el"
+                               default-directory))
+            (goto-char (point-min))
+            (dotimes (_ 3)
+              (eval (read (current-buffer)) t)))
+          (cl-letf (((symbol-function 'plist-member)
+                     (lambda (&rest args)
+                       (setq member-calls (1+ member-calls))
+                       (apply old-plist-member args))))
+            (setq got (plist-get '(:a 1 :b 2) :b))
+            (setq updated (plist-put (list :a 1 :b 2) :b 9))
+            (setq appended (plist-put (list :a 1) :b 2)))
+          (should (= got 2))
+          (should (equal updated '(:a 1 :b 9)))
+          (should (equal appended '(:a 1 :b 2)))
+          (should (= member-calls 0)))
+      (fset 'plist-get old-plist-get)
+      (fset 'plist-put old-plist-put)
+      (fset 'plist-member old-plist-member))))
+
 (ert-deftest nelisp-stdlib-vector-ops ()
   (should (equal [1 2 3] (nelisp-eval '(vector 1 2 3))))
   (should (equal [0 0 0] (nelisp-eval '(make-vector 3 0)))))
+
+(ert-deftest nelisp-stdlib-printer-avoids-reverse-list-buffer ()
+  "`prin1-to-string' printer helpers should not allocate reversed parts lists."
+  (let* ((symbols '(nelisp--prn-string-escaped
+                    nelisp--prn-chunks-add
+                    nelisp--prn-chunks-string
+                    nelisp--prn-float
+                    nelisp--prn-reader-macro-abbrev
+                    nelisp--prn-list-body
+                    nelisp--prn-vector
+                    nelisp--prn-record
+                    nelisp--prn-to-string
+                    prin1-to-string
+                    prin1
+                    terpri))
+         (saved (mapcar (lambda (sym)
+                          (cons sym
+                                (and (fboundp sym)
+                                     (symbol-function sym))))
+                        symbols))
+         (old-nreverse (symbol-function 'nreverse))
+         (nreverse-calls 0)
+         got)
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "lisp/nelisp-stdlib-prn.el"
+                               default-directory))
+            (goto-char (point-min))
+            (let ((done nil))
+              (while (not done)
+                (condition-case nil
+                    (let ((form (read (current-buffer))))
+                      (when (and (consp form)
+                                 (eq (car form) 'defun)
+                                 (memq (cadr form)
+                                       '(nelisp--prn-string-escaped
+                                         nelisp--prn-chunks-add
+                                         nelisp--prn-chunks-string
+                                         nelisp--prn-float
+                                         nelisp--prn-reader-macro-abbrev
+                                         nelisp--prn-list-body
+                                         nelisp--prn-vector
+                                         nelisp--prn-record
+                                         nelisp--prn-to-string)))
+                        (eval form t)))
+                  (end-of-file
+                   (setq done t))))))
+          (cl-letf (((symbol-function 'nreverse)
+                     (lambda (&rest args)
+                       (setq nreverse-calls (1+ nreverse-calls))
+                       (apply old-nreverse args))))
+            (setq got
+                  (list
+                   (nelisp--prn-string-escaped "a\"b\\c\n")
+                   (nelisp--prn-list-body '(1 "x" . y) t)
+                   (nelisp--prn-vector [1 "x"] t)
+                   (nelisp--prn-to-string '(quote abc) t))))
+          (should (equal got
+                         '("a\\\"b\\\\c\\n"
+                           "1 \"x\" . y"
+                           "[1 \"x\"]"
+                           "'abc")))
+          (should (= nreverse-calls 0)))
+      (dolist (entry saved)
+        (if (cdr entry)
+            (fset (car entry) (cdr entry))
+          (when (fboundp (car entry))
+            (fmakunbound (car entry)))))
+      (fset 'nreverse old-nreverse))))
+
+(ert-deftest nelisp-stdlib-printer-bounds-concat-calls ()
+  "`prin1-to-string' should not grow aggregate output by repeated concat."
+  (let* ((symbols '(nelisp--prn-string-escaped
+                    nelisp--prn-chunks-add
+                    nelisp--prn-chunks-string
+                    nelisp--prn-float
+                    nelisp--prn-reader-macro-abbrev
+                    nelisp--prn-list-body
+                    nelisp--prn-vector
+                    nelisp--prn-record
+                    nelisp--prn-to-string
+                    prin1-to-string))
+         (saved (mapcar (lambda (sym)
+                          (cons sym
+                                (and (fboundp sym)
+                                     (symbol-function sym))))
+                        symbols))
+         source
+         long-list
+         got)
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "lisp/nelisp-stdlib-prn.el"
+                               default-directory))
+            (setq source (buffer-string))
+            (goto-char (point-min))
+            (let ((done nil))
+              (while (not done)
+                (condition-case nil
+                    (let ((form (read (current-buffer))))
+                      (when (and (consp form)
+                                 (eq (car form) 'defun)
+                                 (memq (cadr form) symbols))
+                        (eval form t)))
+                  (end-of-file
+                   (setq done t))))))
+          (dotimes (i 40)
+            (setq long-list (cons i long-list)))
+          (setq long-list (reverse long-list))
+          (setq got
+                (list
+                 (prin1-to-string long-list)
+                 (prin1-to-string [1 2 3 4 5 6 7 8])
+                 (prin1-to-string "abcdefghijklmnopqrstuvwxyz")))
+          (should (equal (car got)
+                         "(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39)"))
+          (should (equal (cadr got) "[1 2 3 4 5 6 7 8]"))
+          (should (equal (caddr got) "\"abcdefghijklmnopqrstuvwxyz\""))
+          (should-not (string-match-p "(setq out (concat out" source))
+          (should (string-match-p "nelisp--prn-chunks-add" source)))
+      (dolist (entry saved)
+        (if (cdr entry)
+            (fset (car entry) (cdr entry))
+          (when (fboundp (car entry))
+            (fmakunbound (car entry))))))))
 
 (ert-deftest nelisp-stdlib-bit-arithmetic ()
   (should (= 4 (nelisp-eval '(ash 1 2))))

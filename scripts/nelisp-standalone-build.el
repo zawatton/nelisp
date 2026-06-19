@@ -233,6 +233,27 @@ link-unit names, and build logs."
   (expand-file-name "target/nelisp" nelisp-standalone--repo-root)
   "Output standalone ELF path for the user-facing reader CLI.")
 
+(defconst nelisp-standalone--artifact-runtime-source-path
+  (expand-file-name "target/nelisp-artifact-runtime.el"
+                    nelisp-standalone--repo-root)
+  "Source bundle cached for standalone artifact commands.")
+
+(defconst nelisp-standalone--artifact-runtime-cache-path
+  (concat nelisp-standalone--artifact-runtime-source-path ".nelc")
+  "Compiled runtime cache for standalone artifact commands.")
+
+(defconst nelisp-standalone--artifact-runtime-cache-enable-path
+  (concat nelisp-standalone--artifact-runtime-cache-path ".enable")
+  "Marker enabling the standalone artifact runtime cache.
+`nelisp-standalone-build-artifact-runtime-cache' writes this marker together
+with the cache artifact.  Removing it is the supported fallback switch for
+diagnosing the full source command path.")
+
+(defconst nelisp-standalone--source-command-cache-stats-path
+  (expand-file-name "target/nelisp-source-command-cache.stats"
+                    nelisp-standalone--repo-root)
+  "Opt-in marker for source-command cache arena stats on stderr.")
+
 (defconst nelisp-standalone--windows-reader-out
   (expand-file-name "target/nelisp.exe" nelisp-standalone--repo-root)
   "Output standalone PE32+ path for the user-facing reader CLI.")
@@ -2440,6 +2461,8 @@ argument (reachability + in-arena bounds checks).")
                                         (m5_prin1 ms (wf_arg_ptr args 0))
                                         (mut-str-finalize ms out) 0)))
     ((:lit "nelisp--arena-stats") . (bf_arena_stats out))
+    ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
+                                     (bf_arena_stats out)))
     ((:lit "nelisp--gc-diag") . (bf_gc_diag args out))
     ((:lit "nelisp--arena-force-grow-smoke") . (bf_arena_force_grow_smoke out))
     ((:lit "nelisp--size-census") . (bf_size_census out))
@@ -3448,10 +3471,11 @@ unresolved at link time."
            (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
            (ptr-write-u64 dst 24 (ptr-read-u64 src 24)) 0))
     (defun bf_signal (args out)
-      (let* ((sym (wf_arg_ptr args 0)))
+      (let* ((sym (wf_arg_ptr args 0))
+             (data (wf_arg_ptr args 1)))
         (seq
          (nl_alloc_symbol (ptr-read-u64 sym 16) (ptr-read-u64 sym 24) 268435480)
-         (bf_sig_copy32 268435512 (nl_cons_cdr_ptr args))
+         (bf_sig_copy32 268435512 data)
          (ptr-write-u64 268435472 0 1)
          (atomic-fetch-add 268435544 1)
          1)))
@@ -3637,6 +3661,50 @@ unresolved at link time."
          (if (= (bf_eval_source_string_loop src cursor result pool env out bsym 1) 2)
              (seq (ptr-write-u64 268436448 0 prevcap) 1)
            (seq (wf_dirty) (ptr-write-u64 268436448 0 prevcap) 0)))))
+    (defun bf_read_all_from_string_native (args out)
+      ;; Return all top-level forms from SRC as a proper list using the same
+      ;; native reader parser that drives standalone load/eval.  This gives
+      ;; interpreted artifact builders a bulk reader without the per-form
+      ;; `read-from-string' / `nelisp--rd-one' compatibility path.
+      (let* ((src (wf_arg_ptr args 0))
+             (cursor (alloc-bytes 32 8))
+             (result (alloc-bytes 32 8))
+             (head (alloc-bytes 32 8))
+             (tail (alloc-bytes 32 8))
+             (node (alloc-bytes 32 8))
+             (nil-slot (alloc-bytes 32 8))
+             (cap (let ((n (* 4 (str-len src))))
+                    (if (< n 256) 256 (if (> n 4194304) 4194304 n))))
+             (pool (alloc-bytes (* cap 32) 8))
+             (prevcap (ptr-read-u64 268436448 0))
+             (more 1)
+             (have 0))
+        (seq
+         (ptr-write-u64 268436448 0 cap)
+         (ptr-write-u64 cursor 0 2) (ptr-write-u64 cursor 8 0)
+         (ptr-write-u64 head 0 0) (ptr-write-u64 head 8 0)
+         (ptr-write-u64 tail 0 0) (ptr-write-u64 tail 8 0)
+         (ptr-write-u64 nil-slot 0 0) (ptr-write-u64 nil-slot 8 0)
+         (while (= more 1)
+           (seq
+            (ptr-write-u64 result 0 0) (ptr-write-u64 result 8 0)
+            (let* ((prc (nelisp_reader_parse_one src cursor result pool 0)))
+              (if (= prc 1)
+                  (seq
+                   (cons-make-with-clone result nil-slot node)
+                   (if (= have 0)
+                       (seq
+                        (wf_copy32 head node)
+                        (wf_copy32 tail node)
+                        (setq have 1))
+                     (seq
+                      (cons-set-cdr tail node)
+                      (wf_copy32 tail node)))
+                   0)
+                (setq more 0)))))
+         (wf_copy32 out head)
+         (ptr-write-u64 268436448 0 prevcap)
+         0)))
     ;; length that also handles vectors (tag 8) -> vector-len; else m5_length.
     (defun bf_length (p)
       (if (= (ptr-read-u64 p 0) 8) (vector-len p) (m5_length p)))
@@ -3854,7 +3922,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; paths and use a post-load proof form to verify the file actually ran.
     ((:lit "load")        . (bf_load args env out))
     ((:lit "nelisp--eval-source-string") . (bf_eval_source_string args env out))
-    ((:lit "nelisp--syscall-read-file") . (nl_bi_read_file args out))
+    ((:lit "nelisp--syscall-read-file") . (seq (nl_bi_read_file args out) 0))
     ((:lit "nl-write-file") . (nl_bi_write_file_t args out))
     ((:lit "nelisp--syscall-path") . (nl_bi_syscall_path args out))
     ((:lit "nelisp--syscall-path2") . (nl_bi_syscall_path2 args out))
@@ -3868,6 +3936,7 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ((:lit "nelisp--syscall-statx-buf") . (nl_bi_syscall_statx_buf args out))
     ((:lit "nelisp--write-stdout-bytes") . (nl_bi_write_stdout_bytes args out))
     ((:lit "nelisp--write-stderr-line") . (nl_bi_write_stderr_line args out))
+    ((:lit "nelisp--read-all-from-string-native") . (bf_read_all_from_string_native args out))
     ((:lit "read-stdin-bytes") . (nl_bi_read_stdin_bytes args out))
     ;; nl-current-unix-time: epoch seconds via the linux-x86_64 time(2)
     ;; syscall (__NR_time=201, NULL arg).  Lets interpreted code (e.g.
@@ -3909,9 +3978,15 @@ Wave-2 (C) appends bf_ash (shl/sar compose) + bf_str_lt (byte-lexicographic).")
     ;; same AOT grammar ops the compiler emits, so no new Rust.
     ((:lit "syscall-direct") . (wf_write_int out (syscall-direct (wf_argval args 0) (wf_argval args 1) (wf_argval args 2) (wf_argval args 3) (wf_argval args 4) (wf_argval args 5) (wf_argval args 6))))
     ((:lit "atomic-fetch-add") . (wf_write_int out (atomic-fetch-add (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-read-u8") . (wf_write_int out (ptr-read-u8 (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-write-u8") . (seq (ptr-write-u8 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
+    ((:lit "ptr-read-u32") . (wf_write_int out (ptr-read-u32 (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "ptr-write-u32") . (seq (ptr-write-u32 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
     ((:lit "ptr-read-u64") . (wf_write_int out (ptr-read-u64 (wf_argval args 0) (wf_argval args 1))))
     ((:lit "ptr-write-u64") . (seq (ptr-write-u64 (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)) (wf_write_int out 0)))
     ((:lit "alloc-bytes") . (wf_write_int out (alloc-bytes (wf_argval args 0) (wf_argval args 1))))
+    ((:lit "garbage-collect") . (seq (nl_gc_collect_published 0)
+                                     (bf_arena_stats out)))
     ((:lit "nelisp-process-call-process") . (nl_bi_process_call_process args out))
     ((:lit "nelisp-process-start") . (nl_bi_process_start_process args out))
     ((:lit "nelisp-process-start-process") . (nl_bi_process_start_process args out))
@@ -3945,7 +4020,9 @@ ash/logand/logior/logxor/lognot + string<.")
     "signal" "error" "equal" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes"
+    "syscall-direct" "atomic-fetch-add" "garbage-collect"
+    "ptr-read-u8" "ptr-write-u8" "ptr-read-u32" "ptr-write-u32"
+    "ptr-read-u64" "ptr-write-u64" "alloc-bytes"
     "nelisp-process-call-process" "nelisp-process-start"
     "nelisp-process-start-process" "nelisp-process-object-p"
     "nelisp-process-async-ready-p" "nelisp-process-pid"
@@ -4245,6 +4322,122 @@ plus the nil-safe car/cdr and tag-aware eq fixes).")
         (if (< n 1)
             (nl_seq2 (wf_write_nil out) 0)
           (nl_seq2 (nl_alloc_str buf n out) 0))))
+    ;; TTY raw/input support for standalone interactive -nw.
+    ;; Fixed slots live after the existing reader/GC globals in the first
+    ;; low-memory page.  Slot values are pointers/integers, not Sexp cells.
+    (defun nl_tty_slot_saved_flag () 268436472)
+    (defun nl_tty_slot_fd () 268436480)
+    (defun nl_tty_slot_saved_termios () 268436488)
+    (defun nl_tty_slot_scratch_termios () 268436496)
+    (defun nl_tty_slot_pollfd () 268436504)
+    (defun nl_tty_slot_byte () 268436512)
+    (defun nl_tty_slot_dev_tty_path () 268436520)
+    (defun nl_tty_ensure_buf (slot size align)
+      (let* ((ptr (ptr-read-u64 slot 0)))
+        (if (= ptr 0)
+            (let* ((fresh (alloc-bytes size align)))
+              (nl_seq2 (ptr-write-u64 slot 0 fresh) fresh))
+          ptr)))
+    (defun nl_tty_saved_flag () (ptr-read-u64 (nl_tty_slot_saved_flag) 0))
+    (defun nl_tty_set_saved_flag (v) (ptr-write-u64 (nl_tty_slot_saved_flag) 0 v))
+    (defun nl_tty_fd () (ptr-read-u64 (nl_tty_slot_fd) 0))
+    (defun nl_tty_set_fd (fd) (ptr-write-u64 (nl_tty_slot_fd) 0 fd))
+    (defun nl_tty_saved_termios ()
+      (nl_tty_ensure_buf (nl_tty_slot_saved_termios) 60 4))
+    (defun nl_tty_scratch_termios ()
+      (nl_tty_ensure_buf (nl_tty_slot_scratch_termios) 60 4))
+    (defun nl_tty_pollfd ()
+      (nl_tty_ensure_buf (nl_tty_slot_pollfd) 8 4))
+    (defun nl_tty_byte_buf ()
+      (nl_tty_ensure_buf (nl_tty_slot_byte) 1 1))
+    (defun nl_tty_dev_tty_path ()
+      (let* ((buf (nl_tty_ensure_buf (nl_tty_slot_dev_tty_path) 9 1)))
+        (seq
+         (ptr-write-u64 buf 0 8751747723086357551)
+         (ptr-write-u8 buf 8 0)
+         buf)))
+    (defun nl_tty_copy_termios (src dst)
+      (seq
+       (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+       (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+       (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+       (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
+       (ptr-write-u64 dst 32 (ptr-read-u64 src 32))
+       (ptr-write-u64 dst 40 (ptr-read-u64 src 40))
+       (ptr-write-u64 dst 48 (ptr-read-u64 src 48))
+       (ptr-write-u32 dst 56 (ptr-read-u32 src 56))
+       0))
+    (defun nl_tty_make_raw_termios (buf)
+      (seq
+       ;; cfmakeraw subset for Linux termios:
+       ;; iflag &= ~(IGNBRK|BRKINT|PARMRK|ISTRIP|INLCR|IGNCR|ICRNL|IXON)
+       ;; oflag &= ~OPOST
+       ;; lflag &= ~(ECHO|ECHONL|ICANON|ISIG|IEXTEN)
+       ;; cflag = (cflag & ~(CSIZE|PARENB)) | CS8
+       (ptr-write-u32 buf 0 (logand (ptr-read-u32 buf 0) 4294965780))
+       (ptr-write-u32 buf 4 (logand (ptr-read-u32 buf 4) 4294967294))
+       (ptr-write-u32 buf 8 (logior (logand (ptr-read-u32 buf 8) 4294966991) 48))
+       (ptr-write-u32 buf 12 (logand (ptr-read-u32 buf 12) 4294934452))
+       (ptr-write-u8 buf 22 0)
+       (ptr-write-u8 buf 23 1)
+       0))
+    (defun nl_tty_ioctl_tcgets (fd buf)
+      (syscall-direct 16 fd 21505 buf 0 0 0))
+    (defun nl_tty_ioctl_tcsets (fd buf)
+      (syscall-direct 16 fd 21506 buf 0 0 0))
+    (defun nl_tty_close_if_private (fd)
+      (if (> fd 2) (nl_os_close_handle fd) 0))
+    (defun nl_bi_terminal_raw_mode_enter (out)
+      (if (= (nl_tty_saved_flag) 1)
+          (wf_write_t out)
+        (let* ((fd (nl_os_open_read (nl_tty_dev_tty_path)))
+               (scratch (nl_tty_scratch_termios))
+               (saved (nl_tty_saved_termios)))
+          (if (< fd 0)
+              (wf_write_nil out)
+            (if (< (nl_tty_ioctl_tcgets fd scratch) 0)
+                (seq (nl_tty_close_if_private fd) (wf_write_nil out))
+              (seq
+               (nl_tty_copy_termios scratch saved)
+               (nl_tty_make_raw_termios scratch)
+               (if (< (nl_tty_ioctl_tcsets fd scratch) 0)
+                   (seq
+                    (nl_tty_set_saved_flag 0)
+                    (nl_tty_close_if_private fd)
+                    (wf_write_nil out))
+                 (seq
+                  (nl_tty_set_fd fd)
+                  (nl_tty_set_saved_flag 1)
+                  (wf_write_t out)))))))))
+    (defun nl_bi_terminal_raw_mode_leave (out)
+      (if (= (nl_tty_saved_flag) 1)
+          (let* ((fd (nl_tty_fd))
+                 (saved (nl_tty_saved_termios)))
+            (seq
+             (nl_tty_ioctl_tcsets fd saved)
+             (nl_tty_set_saved_flag 0)
+             (nl_tty_close_if_private fd)
+             (wf_write_t out)))
+        (wf_write_nil out)))
+    (defun nl_tty_read_byte_to_out (fd out)
+      (let* ((buf (nl_tty_byte_buf))
+             (n (nl_os_read_file_handle fd buf 1)))
+        (if (= n 1)
+            (wf_write_int out (ptr-read-u8 buf 0))
+          (wf_write_nil out))))
+    (defun nl_bi_read_stdin_byte_available (args out)
+      (let* ((timeout (wf_argval args 0))
+             (fd (nl_tty_fd))
+             (pfd (nl_tty_pollfd)))
+        (seq
+         (ptr-write-u32 pfd 0 fd)
+         (ptr-write-u32 pfd 4 1)
+         (let* ((rc (syscall-direct (nl_os_syscall_nr_poll) pfd 1 timeout 0 0 0)))
+           (if (< rc 1)
+               (wf_write_nil out)
+             (if (= (logand (ptr-read-u8 pfd 6) 17) 0)
+                 (wf_write_nil out)
+               (nl_tty_read_byte_to_out fd out)))))))
     (defun nl_bi_process_drop (lst n)
       (if (= n 0)
           lst
@@ -5776,7 +5969,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     ;; M5 strings + format
     "length" "concat" "substring" "make-string" "string="
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--arena-stats" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
+    "nelisp--repr" "nelisp--arena-stats" "garbage-collect"
+    "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census"
     ;; M7 file I/O
     "wrf" "rdf" "slen" "load" "str-count-nl" "str-line-start" "str-kv-line"
     "str-filter-prefix-lines" "nl-nanosleep"
@@ -5787,6 +5981,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--syscall-readdir-names"
     "nelisp--syscall-utimes" "nelisp--syscall-statx-buf"
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
+    "nelisp--read-all-from-string-native"
     "nl-current-unix-time" "nl-unix-time-usec" "float-time"
     "exit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
@@ -5798,7 +5993,9 @@ value (matches the binary's M8 read+eval-loop driver)."
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
-    "syscall-direct" "atomic-fetch-add" "ptr-read-u64" "ptr-write-u64" "alloc-bytes"
+    "syscall-direct" "atomic-fetch-add"
+    "ptr-read-u8" "ptr-write-u8" "ptr-read-u32" "ptr-write-u32"
+    "ptr-read-u64" "ptr-write-u64" "alloc-bytes"
     "nelisp-process-call-process" "nelisp-process-start"
     "nelisp-process-start-process" "nelisp-process-object-p"
     "nelisp-process-async-ready-p" "nelisp-process-pid"
@@ -5843,8 +6040,14 @@ and the `string-match' family aliases over it."
      (expand-file-name "lisp/nelisp-stdlib-regexp.el"
                        nelisp-standalone--repo-root))
     (goto-char (point-max))
-    (insert "\n(defun string-match (re s &optional start) (nlre-string-match re s start))\n"
-            "(defun string-match-p (re s &optional start) (nlre-string-match re s start))\n"
+    (insert "\n(defun string-match (re s &optional start)\n"
+            "  (if (and (stringp re) (stringp s))\n"
+            "      (nlre-string-match re s start)\n"
+            "    (signal 'wrong-type-argument (list 'stringp (if (stringp re) s re)))))\n"
+            "(defun string-match-p (re s &optional start)\n"
+            "  (if (and (stringp re) (stringp s))\n"
+            "      (nlre-string-match re s start)\n"
+            "    (signal 'wrong-type-argument (list 'stringp (if (stringp re) s re)))))\n"
             "(defun match-beginning (n) (nlre-match-beginning n))\n"
             "(defun match-end (n) (nlre-match-end n))\n"
             "(defun match-string (n &optional str)\n"
@@ -5969,11 +6172,7 @@ suffix, which is why only `--repl' crashed)."
 (defun nelisp-standalone--runtime-image-command-src ()
   "Return embedded source implementing standalone-reader runtime-image commands."
   (concat
-   (with-temp-buffer
-     (insert-file-contents
-      (expand-file-name "scripts/nelisp-stdlib-prelude.el"
-                        nelisp-standalone--repo-root))
-     (buffer-string))
+   (nelisp-standalone--artifact-command-src)
    "\n"
    (with-temp-buffer
      (insert-file-contents
@@ -5986,16 +6185,1220 @@ suffix, which is why only `--repl' crashed)."
    "  (nelisp-runtime-image-dump-cli nelisp-standalone-argv))\n"
    " ((string= (car nelisp-standalone-argv) \"extend-runtime-image\")\n"
    "  (nelisp-runtime-image-extend-cli nelisp-standalone-argv))\n"
-   " ((or (string= (car nelisp-standalone-argv) \"eval-runtime-image\")\n"
-   "      (string= (car nelisp-standalone-argv) \"exec-runtime-image\"))\n"
-   "  (setq nelisp-runtime-image--standalone-next-form\n"
-   "        (car (cdr (cdr nelisp-standalone-argv))))\n"
-   "  (nelisp-runtime-image--eval-source\n"
-   "   (rdf (car (cdr nelisp-standalone-argv))))\n"
-   "  (nelisp-runtime-image--eval-source\n"
-   "   nelisp-runtime-image--standalone-next-form)\n"
-   "  0)\n"
+   " ((string= (car nelisp-standalone-argv) \"eval-runtime-image\")\n"
+   "  (nelisp-runtime-image-eval-cli nelisp-standalone-argv t))\n"
+   " ((string= (car nelisp-standalone-argv) \"exec-runtime-image\")\n"
+   "  (nelisp-runtime-image-eval-cli nelisp-standalone-argv nil))\n"
    " (t 2))\n"))
+
+(defun nelisp-standalone--artifact-command-dispatch-src ()
+  "Return standalone-reader artifact command dispatch source."
+  (concat
+   "(cond\n"
+   " ((string= (car nelisp-standalone-argv) \"compile-elisp-artifact\")\n"
+   "  (compile-elisp-artifact nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"compile-elisp-artifacts\")\n"
+   "  (compile-elisp-artifacts nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"compile-runtime-image\")\n"
+   "  (compile-runtime-image nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"audit-elisp-artifacts\")\n"
+   "  (audit-elisp-artifacts nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"exec-elisp-artifact\")\n"
+   "  (exec-elisp-artifact nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"eval-elisp-artifact\")\n"
+   "  (eval-elisp-artifact nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"load-elisp-source\")\n"
+   "  (load-elisp-source nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"eval-elisp-source\")\n"
+   "  (eval-elisp-source nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"native-exec-elisp-artifact\")\n"
+   "  (native-exec-elisp-artifact nelisp-standalone-argv))\n"
+   " ((string= (car nelisp-standalone-argv) \"inspect-elisp-artifact\")\n"
+   "  (inspect-elisp-artifact nelisp-standalone-argv))\n"
+   " (t 2))\n"))
+
+(defun nelisp-standalone--artifact-command-cache-dispatch-src (&optional cache-path)
+  "Return artifact command dispatch source for replayed runtime caches.
+Cached runtime functions live in `nelisp--functions' as BCL/interpreter
+closures, so dispatch must call through `nelisp--apply' instead of relying on
+host `fboundp' cells."
+  (concat
+   "(defun nelisp-standalone-artifact-cache-call (sym)\n"
+   "  (let ((fn (gethash sym nelisp--functions nelisp--unbound)))\n"
+   "    (if (eq fn nelisp--unbound)\n"
+   "        (error \"artifact runtime cache missing function: %S\" sym)\n"
+   "      (nelisp--apply fn (list nelisp-standalone-argv)))))\n"
+	   (when cache-path
+	     (let ((compiler-plist (progn
+	                             (require 'nelisp-artifact)
+	                             (nelisp-artifact--compiler-plist)))
+		   (artifact-magic (progn
+				     (require 'nelisp-artifact)
+				     nelisp-artifact--magic))
+		   (artifact-format (progn
+				      (require 'nelisp-artifact)
+				      nelisp-artifact--format)))
+		       (format (concat
+		              "(nelisp-standalone-artifact-cache-load %S)\n"
+		              "(fset 'nelisp-artifact--compiler-plist\n"
+		              "      (lambda () '%S))\n"
+		              "(puthash 'nelisp-artifact--compiler-plist\n"
+		              "         (symbol-function 'nelisp-artifact--compiler-plist)\n"
+		              "         nelisp--functions)\n"
+		              "(fset 'nelisp-artifact--file-size\n"
+		              "      (lambda (path)\n"
+		              "        (let ((attrs (file-attributes path)))\n"
+		              "          (if (fboundp 'file-attribute-size)\n"
+		              "              (file-attribute-size attrs)\n"
+		              "            (nth 7 attrs)))))\n"
+		              "(puthash 'nelisp-artifact--file-size\n"
+		              "         (symbol-function 'nelisp-artifact--file-size)\n"
+		              "         nelisp--functions)\n"
+		              "(fset 'nelisp-artifact--file-mtime\n"
+		              "      (lambda (path)\n"
+		              "        (let ((attrs (file-attributes path)))\n"
+		              "          (if (fboundp 'file-attribute-modification-time)\n"
+		              "              (file-attribute-modification-time attrs)\n"
+		              "            (nth 5 attrs)))))\n"
+		              "(puthash 'nelisp-artifact--file-mtime\n"
+		              "         (symbol-function 'nelisp-artifact--file-mtime)\n"
+		              "         nelisp--functions)\n"
+		              "(fset 'nelisp-artifact--file-ctime\n"
+		              "      (lambda (path)\n"
+		              "        (let ((attrs (file-attributes path)))\n"
+		              "          (if (fboundp 'file-attribute-status-change-time)\n"
+		              "              (file-attribute-status-change-time attrs)\n"
+		              "            (nth 6 attrs)))))\n"
+		              "(puthash 'nelisp-artifact--file-ctime\n"
+		              "         (symbol-function 'nelisp-artifact--file-ctime)\n"
+		              "         nelisp--functions)\n"
+		              "(fset 'nelisp-artifact--sibling-manifest-path\n"
+		              "      (lambda (artifact-path) (concat artifact-path \".manifest.el\")))\n"
+		              "(puthash 'nelisp-artifact--sibling-manifest-path\n"
+		              "         (symbol-function 'nelisp-artifact--sibling-manifest-path)\n"
+		              "         nelisp--functions)\n"
+		              "(puthash 'nelisp-artifact--read-file-as-string\n"
+		              "         (symbol-function 'nelisp-standalone-artifact-cache--read-file)\n"
+		              "         nelisp--functions)\n"
+		              "(fset 'nelisp-artifact--read-file-as-string\n"
+	              "      (symbol-function 'nelisp-standalone-artifact-cache--read-file))\n"
+	              "(setq nelisp-artifact-fast-private-read nil)\n"
+	              "(puthash 'nelisp-artifact-fast-private-read nil nelisp--globals)\n"
+	              "(setq nelisp-artifact-native-dispatch-enabled nil)\n"
+	              "(puthash 'nelisp-artifact-native-dispatch-enabled nil nelisp--globals)\n"
+              "(defun nelisp-standalone-artifact-cache--read-all-from-string (source)\n"
+              "  (let ((pos 0) (len (length source)) (forms nil) res)\n"
+              "    (while (progn\n"
+              "             (setq pos (nelisp-read--skip-ws source pos))\n"
+              "             (< pos len))\n"
+              "      (setq res (read-from-string source pos))\n"
+              "      (push (car res) forms)\n"
+              "      (setq pos (cdr res)))\n"
+              "    (nreverse forms)))\n"
+			              "(fset 'nelisp-artifact--read-all-from-string\n"
+			              "      (symbol-function 'nelisp-standalone-artifact-cache--read-all-from-string))\n"
+				              "(puthash 'nelisp-artifact--read-all-from-string\n"
+				              "         (symbol-function 'nelisp-standalone-artifact-cache--read-all-from-string)\n"
+				              "         nelisp--functions)\n"
+					      "(fset 'nelisp-artifact--parse-payload\n"
+					      "      (lambda (content artifact-path)\n"
+					      "        (let* ((magic %S)\n"
+					      "               (prefix-len (length magic)))\n"
+					      "          (unless (and (>= (length content) prefix-len)\n"
+					      "                       (equal (substring content 0 prefix-len) magic))\n"
+					      "            (signal 'nelisp-artifact-invalid\n"
+					      "                    (list \"invalid .nelc magic header\" artifact-path)))\n"
+					      "          (let ((payload (car (read-from-string\n"
+					      "                               (substring content prefix-len)))))\n"
+					      "            (unless (eq (plist-get payload :format) '%S)\n"
+					      "              (signal 'nelisp-artifact-invalid\n"
+					      "                      (list \"unsupported .nelc format\"\n"
+					      "                            (plist-get payload :format) artifact-path)))\n"
+					      "            payload))))\n"
+					      "(puthash 'nelisp-artifact--parse-payload\n"
+					      "         (symbol-function 'nelisp-artifact--parse-payload)\n"
+					      "         nelisp--functions)\n"
+					      "(fset 'nelisp-artifact--read-manifest-full\n"
+					      "      (lambda (artifact-path)\n"
+					      "        (car (read-from-string\n"
+					      "              (nelisp-standalone-artifact-cache--read-file\n"
+					      "               (concat artifact-path \".manifest.el\"))))))\n"
+					      "(puthash 'nelisp-artifact--read-manifest-full\n"
+					      "         (symbol-function 'nelisp-artifact--read-manifest-full)\n"
+					      "         nelisp--functions)\n"
+					      "(fset 'nelisp-artifact--read-manifest-for-load\n"
+					      "      (symbol-function 'nelisp-artifact--read-manifest-full))\n"
+					      "(puthash 'nelisp-artifact--read-manifest-for-load\n"
+					      "         (symbol-function 'nelisp-artifact--read-manifest-for-load)\n"
+					      "         nelisp--functions)\n"
+					      "(fset 'nelisp-artifact--validate-input-record\n"
+					      "      (lambda (_rec _label _artifact-path) nil))\n"
+					      "(puthash 'nelisp-artifact--validate-input-record\n"
+					      "         (symbol-function 'nelisp-artifact--validate-input-record)\n"
+					      "         nelisp--functions)\n"
+					      "(fset 'nelisp-artifact--validate\n"
+					      "      (lambda (artifact-path _artifact-content)\n"
+					      "        (nelisp-artifact--read-manifest-for-load artifact-path)))\n"
+					      "(puthash 'nelisp-artifact--validate\n"
+					      "         (symbol-function 'nelisp-artifact--validate)\n"
+					      "         nelisp--functions)\n"
+					      "(fset 'nelisp-artifact-load-file\n"
+					      "      (lambda (artifact-path)\n"
+					      "        (let* ((content (nelisp-artifact--read-file-as-string artifact-path))\n"
+					      "               (manifest (nelisp-artifact--validate artifact-path content)))\n"
+					      "          (if (fboundp 'nelisp-artifact--load-private-fast)\n"
+					      "              (nelisp-artifact--load-private-fast artifact-path content manifest)\n"
+					      "            (let* ((payload (nelisp-artifact--parse-payload content artifact-path))\n"
+					      "                   (module (plist-get payload :module-init))\n"
+					      "                   (features (plist-get payload :features))\n"
+					      "                   (last nil))\n"
+					      "              (while module\n"
+					      "                (setq last (nelisp-artifact--replay-module-item (car module)))\n"
+					      "                (setq module (cdr module)))\n"
+					      "              (while features\n"
+					      "                (let ((feature (car features)))\n"
+					      "                  (when (fboundp 'nelisp-provide)\n"
+					      "                    (nelisp-provide feature))\n"
+					      "                  (unless (featurep feature)\n"
+					      "                    (provide feature)))\n"
+					      "                (setq features (cdr features)))\n"
+					      "              last)))))\n"
+					      "(puthash 'nelisp-artifact-load-file\n"
+					      "         (symbol-function 'nelisp-artifact-load-file)\n"
+					      "         nelisp--functions)\n"
+					      "(let ((fn\n"
+					      "       (lambda (args)\n"
+					      "        (let ((rest (cdr args))\n"
+					      "              (source nil)\n"
+					      "              (value nil)\n"
+					      "              artifact)\n"
+					      "          (while (and rest (null source))\n"
+					      "            (let ((flag (car rest)))\n"
+					      "              (if (equal flag \"--auto-compile\")\n"
+					      "                  (setq rest (cdr rest))\n"
+					      "                (if (or (equal flag \"--kind\")\n"
+					      "                        (equal flag \"--target\")\n"
+					      "                        (equal flag \"--load-path\")\n"
+					      "                        (equal flag \"--preload\")\n"
+					      "                        (equal flag \"--native-policy\"))\n"
+					      "                    (setq rest (cdr (cdr rest)))\n"
+					      "                  (setq source flag)\n"
+					      "                  (setq rest nil)))))\n"
+					      "          (unless source\n"
+					      "            (error \"source command requires FILE.el\"))\n"
+					      "          (setq artifact\n"
+					      "                (if (file-exists-p (concat source \".neln\"))\n"
+					      "                    (concat source \".neln\")\n"
+					      "                  (if (file-exists-p (concat source \".nelc\"))\n"
+					      "                      (concat source \".nelc\")\n"
+					      "                    nil)))\n"
+					      "          (setq value\n"
+					      "                (if artifact\n"
+					      "                    (nelisp-artifact-load-file artifact)\n"
+					      "                  (nelisp-load-file source)))\n"
+					      "          (nelisp--write-stdout-bytes (prin1-to-string value))\n"
+					      "          (nelisp--write-stdout-bytes \"\\n\")\n"
+					      "          0))))\n"
+					      "  (fset 'nelisp-standalone-cache-load-elisp-source-fast fn)\n"
+					      "  (fset 'load-elisp-source fn)\n"
+					      "  (puthash 'load-elisp-source fn nelisp--functions))\n"
+					      "(let ((fn\n"
+					      "       (lambda (args)\n"
+					      "        (let ((rest (cdr args))\n"
+					      "              (source nil)\n"
+					      "              (forms nil)\n"
+					      "              (last nil)\n"
+					      "              artifact)\n"
+					      "          (while (and rest (null source))\n"
+					      "            (let ((flag (car rest)))\n"
+					      "              (if (equal flag \"--auto-compile\")\n"
+					      "                  (setq rest (cdr rest))\n"
+					      "                (if (or (equal flag \"--kind\")\n"
+					      "                        (equal flag \"--target\")\n"
+					      "                        (equal flag \"--load-path\")\n"
+					      "                        (equal flag \"--preload\")\n"
+					      "                        (equal flag \"--native-policy\"))\n"
+					      "                    (setq rest (cdr (cdr rest)))\n"
+					      "                  (setq source flag)\n"
+					      "                  (setq forms (cdr rest))\n"
+					      "                  (setq rest nil)))))\n"
+					      "          (unless source\n"
+					      "            (error \"source command requires FILE.el\"))\n"
+					      "          (unless forms\n"
+					      "            (error \"eval-elisp-source requires at least one FORM\"))\n"
+					      "          (setq artifact\n"
+					      "                (if (file-exists-p (concat source \".neln\"))\n"
+					      "                    (concat source \".neln\")\n"
+					      "                  (if (file-exists-p (concat source \".nelc\"))\n"
+					      "                      (concat source \".nelc\")\n"
+					      "                    nil)))\n"
+					      "          (if artifact\n"
+					      "              (nelisp-artifact-load-file artifact)\n"
+					      "            (nelisp-load-file source))\n"
+					      "          (while forms\n"
+					      "            (setq last (nelisp-eval (car (read-from-string (car forms)))))\n"
+					      "            (setq forms (cdr forms)))\n"
+					      "          (nelisp--write-stdout-bytes (prin1-to-string last))\n"
+					      "          (nelisp--write-stdout-bytes \"\\n\")\n"
+					      "          0))))\n"
+					      "  (fset 'nelisp-standalone-cache-eval-elisp-source-fast fn)\n"
+					      "  (fset 'eval-elisp-source fn)\n"
+					      "  (puthash 'eval-elisp-source fn nelisp--functions))\n")
+			             cache-path compiler-plist artifact-magic
+				     artifact-format)))
+	   "(if (string= (car nelisp-standalone-argv) \"compile-elisp-artifact\")\n"
+   "    (nelisp-standalone-artifact-cache-call 'compile-elisp-artifact)\n"
+   "  (if (string= (car nelisp-standalone-argv) \"compile-elisp-artifacts\")\n"
+   "      (nelisp-standalone-artifact-cache-call 'compile-elisp-artifacts)\n"
+   "    (if (string= (car nelisp-standalone-argv) \"compile-runtime-image\")\n"
+   "        (nelisp-standalone-artifact-cache-call 'compile-runtime-image)\n"
+   "      (if (string= (car nelisp-standalone-argv) \"audit-elisp-artifacts\")\n"
+   "          (nelisp-standalone-artifact-cache-call 'audit-elisp-artifacts)\n"
+   "        (if (string= (car nelisp-standalone-argv) \"exec-elisp-artifact\")\n"
+   "            (nelisp-standalone-artifact-cache-call 'exec-elisp-artifact)\n"
+   "          (if (string= (car nelisp-standalone-argv) \"eval-elisp-artifact\")\n"
+   "              (nelisp-standalone-artifact-cache-call 'eval-elisp-artifact)\n"
+   "            (if (string= (car nelisp-standalone-argv) \"load-elisp-source\")\n"
+   "                (nelisp-standalone-cache-load-elisp-source-fast nelisp-standalone-argv)\n"
+   "              (if (string= (car nelisp-standalone-argv) \"eval-elisp-source\")\n"
+   "                  (nelisp-standalone-cache-eval-elisp-source-fast nelisp-standalone-argv)\n"
+   "                (if (string= (car nelisp-standalone-argv) \"native-exec-elisp-artifact\")\n"
+   "                    (nelisp-standalone-artifact-cache-call 'native-exec-elisp-artifact)\n"
+   "                  (if (string= (car nelisp-standalone-argv) \"inspect-elisp-artifact\")\n"
+   "                      (nelisp-standalone-artifact-cache-call 'inspect-elisp-artifact)\n"
+   "                    2))))))))))\n"
+   "nil\n"))
+
+(defun nelisp-standalone--artifact-runtime-file-src (relative-path inline)
+  "Return runtime source for RELATIVE-PATH.
+When INLINE is non-nil, embed the file contents directly so a compiled command
+runtime cache does not replay source file loads on every command invocation."
+  (let ((path (expand-file-name relative-path nelisp-standalone--repo-root)))
+    (if inline
+        (with-temp-buffer
+          (insert-file-contents path)
+          (goto-char (point-max))
+          (unless (bolp) (insert "\n"))
+          (buffer-string))
+      (format "(load %S)\n" path))))
+
+(defun nelisp-standalone--artifact-command-runtime-src (&optional inline)
+  "Return source that defines standalone-reader artifact command runtime."
+  (concat
+   (nelisp-standalone--artifact-runtime-file-src
+    "scripts/nelisp-stdlib-prelude.el" inline)
+   (nelisp-standalone--artifact-runtime-file-src
+    "src/nelisp-read.el" inline)
+   (nelisp-standalone--artifact-runtime-file-src
+    "src/nelisp-eval.el" inline)
+   (nelisp-standalone--artifact-runtime-file-src
+    "src/nelisp-macro.el" inline)
+   (nelisp-standalone--artifact-runtime-file-src
+    "src/nelisp-load.el" inline)
+   (nelisp-standalone--artifact-runtime-file-src
+    "src/nelisp-bytecode.el" inline)
+   "(defvar features nil)\n"
+   "(fset 'provide\n"
+   "      (lambda (feature)\n"
+   "        (unless (memq feature features)\n"
+   "          (setq features (cons feature features)))\n"
+   "        feature))\n"
+   "(fset 'featurep\n"
+   "      (lambda (feature) (if (memq feature features) t nil)))\n"
+   "(provide 'cl-lib)\n"
+   "(provide 'nelisp-read)\n"
+   "(provide 'nelisp-eval)\n"
+   "(provide 'nelisp-macro)\n"
+   "(provide 'nelisp-core-fileio)\n"
+   "(provide 'nelisp-load)\n"
+   "(provide 'nelisp-bytecode)\n"
+   "(unless (fboundp 'nelisp-call-process)\n"
+   "  (defun nelisp-call-process (program &optional infile destination display &rest args)\n"
+   "    (apply 'nelisp-process-call-process program infile destination display args)))\n"
+   "(unless (fboundp 'safe-length)\n"
+   "  (defun safe-length (list) (if (listp list) (length list) 0)))\n"
+   "(unless (fboundp 'proper-list-p)\n"
+   "  (defun proper-list-p (object)\n"
+   "    (let ((tail object) (ok nil) (done nil))\n"
+   "      (while (not done)\n"
+   "        (cond ((null tail) (setq ok t) (setq done t))\n"
+   "              ((consp tail) (setq tail (cdr tail)))\n"
+   "              (t (setq ok nil) (setq done t))))\n"
+   "      ok)))\n"
+   "(defun nelisp-standalone-artifact--contains (needle haystack)\n"
+   "  (let ((i 0) (n (length needle)) (h (length haystack)) (found nil))\n"
+   "    (while (and (not found) (<= (+ i n) h))\n"
+   "      (when (equal (substring haystack i (+ i n)) needle)\n"
+   "        (setq found t))\n"
+   "      (setq i (1+ i)))\n"
+   "    found))\n"
+   "(defun nelisp-standalone-artifact--all-hex-p (s)\n"
+   "  (let ((i 0) (n (length s)) (ok (> (length s) 0)) c)\n"
+   "    (while (and ok (< i n))\n"
+   "      (setq c (aref s i))\n"
+   "      (unless (or (and (>= c ?0) (<= c ?9))\n"
+   "                  (and (>= c ?a) (<= c ?f))\n"
+   "                  (and (>= c ?A) (<= c ?F)))\n"
+   "        (setq ok nil))\n"
+   "      (setq i (1+ i)))\n"
+   "    ok))\n"
+   "(defun nelisp-standalone-artifact--number-token-p (s)\n"
+   "  (let ((i 0) (n (length s)) (digits 0) (ok (> (length s) 0)) c)\n"
+   "    (while (and ok (< i n))\n"
+   "      (setq c (aref s i))\n"
+   "      (cond ((and (>= c ?0) (<= c ?9)) (setq digits (1+ digits)))\n"
+   "            ((or (= c ?+) (= c ?-) (= c ?.) (= c ?e) (= c ?E)) nil)\n"
+   "            (t (setq ok nil)))\n"
+   "      (setq i (1+ i)))\n"
+   "    (and ok (> digits 0))))\n"
+   "(unless (fboundp 'string-match-p)\n"
+   "  (defun string-match-p (regexp string &optional _start)\n"
+   "    (cond\n"
+   "     ((equal regexp \"[.eE]\")\n"
+   "      (or (nelisp-standalone-artifact--contains \".\" string)\n"
+   "          (nelisp-standalone-artifact--contains \"e\" string)\n"
+   "          (nelisp-standalone-artifact--contains \"E\" string)))\n"
+   "     ((equal regexp \"x86_64\\\\|amd64\")\n"
+   "      (or (nelisp-standalone-artifact--contains \"x86_64\" string)\n"
+   "          (nelisp-standalone-artifact--contains \"amd64\" string)))\n"
+   "     ((equal regexp \"aarch64\\\\|arm64\")\n"
+   "      (or (nelisp-standalone-artifact--contains \"aarch64\" string)\n"
+   "          (nelisp-standalone-artifact--contains \"arm64\" string)))\n"
+   "     ((equal regexp \"\\\\`[0-9a-fA-F]+\\\\'\")\n"
+   "      (nelisp-standalone-artifact--all-hex-p string))\n"
+   "     ((nelisp-standalone-artifact--contains \"[0-9]\" regexp)\n"
+   "      (nelisp-standalone-artifact--number-token-p string))\n"
+   "     (t (nelisp-standalone-artifact--contains regexp string)))))\n"
+   "(unless (fboundp 'rename-file)\n"
+   "  (defun rename-file (oldname newname &optional ok-if-already-exists)\n"
+   "    (when (and (not ok-if-already-exists) (file-exists-p newname))\n"
+   "      (error \"rename-file: target exists: %s\" newname))\n"
+   "    (let ((rc (nelisp--syscall-path2 82 oldname newname)))\n"
+   "      (unless (= rc 0)\n"
+   "        (error \"rename-file: rc=%S old=%s new=%s\" rc oldname newname)))\n"
+   "    nil))\n"
+   "(unless (fboundp 'file-attributes)\n"
+   "  (defun file-attributes (filename &optional _id-format)\n"
+   "    (if (not (file-exists-p filename))\n"
+   "        nil\n"
+   "      (let ((size (nelisp--syscall-stat-field filename 48))\n"
+   "            (mtime (nelisp--syscall-stat-field filename 88)))\n"
+   "        (list nil 1 0 0 0 mtime 0 size \"\" nil nil nil)))))\n"
+   "(unless (fboundp 'file-attribute-size)\n"
+   "  (defun file-attribute-size (attrs) (nth 7 attrs)))\n"
+   "(unless (fboundp 'file-attribute-modification-time)\n"
+   "  (defun file-attribute-modification-time (attrs) (nth 5 attrs)))\n"
+   "(unless (fboundp 'file-truename)\n"
+   "  (defun file-truename (filename) (expand-file-name filename)))\n"
+   "(unless (fboundp 'emacs-pid)\n"
+   "  (defun emacs-pid () 0))\n"
+   "(defvar nelisp-artifact--standalone-random-state 0)\n"
+   "(unless (fboundp 'random)\n"
+   "  (defun random (&optional limit)\n"
+   "    (setq nelisp-artifact--standalone-random-state\n"
+   "          (mod (+ (* nelisp-artifact--standalone-random-state 1103515245) 12345) 2147483648))\n"
+   "    (if (and limit (> limit 0))\n"
+   "        (mod nelisp-artifact--standalone-random-state limit)\n"
+   "      nelisp-artifact--standalone-random-state)))\n"
+   "(defun nelisp-standalone-artifact--read-file-as-string (path)\n"
+   "  (or (nelisp--syscall-read-file path) \"\"))\n"
+   "(unless (fboundp 'nelisp-core-expand-file-name)\n"
+   "  (defun nelisp-core-expand-file-name (name &optional default-directory)\n"
+   "    (expand-file-name name default-directory)))\n"
+   "(unless (fboundp 'nelisp-core-file-readable-p)\n"
+   "  (defun nelisp-core-file-readable-p (path) (file-readable-p path)))\n"
+   "(unless (fboundp 'nelisp-core-read-file-as-string)\n"
+   "  (defun nelisp-core-read-file-as-string (path)\n"
+   "    (nelisp-standalone-artifact--read-file-as-string path)))\n"
+   "(unless (fboundp 'secure-hash)\n"
+   "  (defun secure-hash (algorithm object &optional _start _end _binary)\n"
+   "    (unless (or (eq algorithm 'sha256) (equal algorithm \"sha256\"))\n"
+   "      (error \"secure-hash: standalone fallback supports sha256 only: %S\" algorithm))\n"
+   "    (unless (stringp object)\n"
+   "      (signal 'wrong-type-argument (list 'stringp object)))\n"
+   "    (let* ((program (cond ((file-exists-p \"/usr/bin/sha256sum\") \"/usr/bin/sha256sum\")\n"
+   "                          ((file-exists-p \"/bin/sha256sum\") \"/bin/sha256sum\")\n"
+   "                          (t \"sha256sum\")))\n"
+   "           (in (make-temp-file \"nelisp-secure-hash-in-\"))\n"
+   "           (out (make-temp-file \"nelisp-secure-hash-out-\"))\n"
+   "           (rc nil)\n"
+   "           (line nil))\n"
+   "      (unwind-protect\n"
+   "          (progn\n"
+   "            (write-region object nil in)\n"
+   "            (setq rc (nelisp-call-process program nil out nil in))\n"
+   "            (unless (= rc 0)\n"
+   "              (error \"secure-hash: sha256sum exited %S\" rc))\n"
+   "            (setq line (nelisp-standalone-artifact--read-file-as-string out))\n"
+   "            (unless (and (stringp line) (>= (length line) 64))\n"
+   "              (error \"secure-hash: malformed sha256sum output\"))\n"
+   "            (substring line 0 64))\n"
+   "        (ignore-errors (delete-file in))\n"
+   "        (ignore-errors (delete-file out))))))\n"
+   (nelisp-standalone--artifact-runtime-file-src
+    "lisp/nelisp-artifact.el" inline)
+	   (format "(setq nelisp-artifact-standalone-repo-root %S)\n"
+	           nelisp-standalone--repo-root)
+	   "(fset 'nelisp-artifact--read-file-as-string\n"
+	   "      (symbol-function 'nelisp-standalone-artifact--read-file-as-string))\n"
+   "(defun nelisp-standalone-artifact--read-all-from-string (source)\n"
+   "  (let ((pos 0) (len (length source)) (forms nil) res)\n"
+   "    (while (progn\n"
+   "             (setq pos (nelisp-read--skip-ws source pos))\n"
+   "             (< pos len))\n"
+   "      (setq res (read-from-string source pos))\n"
+   "      (push (car res) forms)\n"
+   "      (setq pos (cdr res)))\n"
+   "    (nreverse forms)))\n"
+   "(fset 'nelisp-artifact--read-all-from-string\n"
+   "      (symbol-function 'nelisp-standalone-artifact--read-all-from-string))\n"
+   ""))
+
+(defun nelisp-standalone--artifact-command-src ()
+  "Return embedded source implementing standalone-reader artifact commands."
+  (concat
+   (nelisp-standalone--artifact-command-runtime-src)
+   (nelisp-standalone--artifact-command-dispatch-src)))
+
+(defun nelisp-standalone--artifact-command-cache-src ()
+  "Return embedded source that replays the artifact command runtime cache.
+The cache contains `nelisp-standalone--artifact-command-runtime-src' compiled
+to a private `.nelc' module.  This bootstrap deliberately loads only the
+minimum evaluator/bytecode substrate needed to replay that module, then runs the
+same artifact command dispatch used by the full source path."
+  (concat
+   (format "(load %S)\n"
+           (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                             nelisp-standalone--repo-root))
+   (format "(load %S)\n"
+           (expand-file-name "src/nelisp-read.el"
+                             nelisp-standalone--repo-root))
+   (format "(load %S)\n"
+           (expand-file-name "src/nelisp-eval.el"
+                             nelisp-standalone--repo-root))
+   (format "(load %S)\n"
+           (expand-file-name "src/nelisp-macro.el"
+                             nelisp-standalone--repo-root))
+   (format "(load %S)\n"
+           (expand-file-name "src/nelisp-load.el"
+                             nelisp-standalone--repo-root))
+   (format "(load %S)\n"
+           (expand-file-name "src/nelisp-bytecode.el"
+                             nelisp-standalone--repo-root))
+   "(defvar features nil)\n"
+   "(fset 'provide\n"
+   "      (lambda (feature)\n"
+   "        (unless (memq feature features)\n"
+   "          (setq features (cons feature features)))\n"
+   "        feature))\n"
+   "(fset 'featurep\n"
+   "      (lambda (feature) (if (memq feature features) t nil)))\n"
+   "(provide 'cl-lib)\n"
+   "(provide 'nelisp-read)\n"
+   "(provide 'nelisp-eval)\n"
+   "(provide 'nelisp-macro)\n"
+   "(provide 'nelisp-core-fileio)\n"
+   "(provide 'nelisp-load)\n"
+   "(provide 'nelisp-bytecode)\n"
+	   "(defun nelisp-standalone-artifact-cache--read-file (path)\n"
+	   "  (or (nelisp--syscall-read-file path) \"\"))\n"
+   "(defun nelisp-standalone-artifact-cache--find (needle haystack &optional start)\n"
+   "  (let* ((i (or start 0)) (n (length needle)) (h (length haystack))\n"
+   "         (limit (- h n)) (found nil))\n"
+   "    (while (and (not found) (<= i limit))\n"
+   "      (let ((j 0) (ok t))\n"
+   "        (while (and ok (< j n))\n"
+   "          (unless (= (aref needle j) (aref haystack (+ i j)))\n"
+   "            (setq ok nil))\n"
+   "          (setq j (1+ j)))\n"
+   "        (if ok (setq found i) (setq i (1+ i)))))\n"
+   "    found))\n"
+	   "(defun nelisp-standalone-artifact-cache--skip-ws (source pos)\n"
+	   "  (let ((len (length source)) ch)\n"
+	   "    (while (< pos len)\n"
+	   "      (setq ch (aref source pos))\n"
+	   "      (if (if (= ch 32) t\n"
+	   "            (if (= ch 9) t\n"
+	   "              (if (= ch 10) t\n"
+	   "                (if (= ch 13) t\n"
+	   "                  (if (= ch 12) t nil)))))\n"
+	   "          (setq pos (1+ pos))\n"
+	   "        (setq len 0)))\n"
+	   "    pos))\n"
+   "(defun nelisp-standalone-artifact-cache--key-pos (source key label &optional missing-ok start)\n"
+   "  (let* ((needle (concat (symbol-name key) \" \"))\n"
+   "         (pos (nelisp-standalone-artifact-cache--find needle source start)))\n"
+   "    (if (null pos)\n"
+   "        (if missing-ok :missing (error \"missing key %S in %s\" key label))\n"
+   "      (nelisp-standalone-artifact-cache--skip-ws source (+ pos (length needle))))))\n"
+   "(defun nelisp-standalone-artifact-cache--key (source key label &optional missing-ok start)\n"
+   "  (let ((value-pos (nelisp-standalone-artifact-cache--key-pos\n"
+   "                    source key label missing-ok start)))\n"
+   "    (if (eq value-pos :missing)\n"
+   "        :missing\n"
+   "      (let* ((value-pos (nelisp-standalone-artifact-cache--skip-ws source value-pos))\n"
+   "             (res (nelisp-read--sexp source value-pos)))\n"
+   "        (unless res (error \"invalid value for %S in %s\" key label))\n"
+   "        (car res)))))\n"
+   "(defun nelisp-standalone-artifact-cache--content (artifact)\n"
+   "  (let* ((content (nelisp-standalone-artifact-cache--read-file artifact))\n"
+   "         (magic \";;; nelisp-private-nelc-v2\\n\")\n"
+   "         (prefix-len (length magic)))\n"
+   "    (unless (and (>= (length content) prefix-len)\n"
+   "                 (equal (substring content 0 prefix-len) magic))\n"
+   "      (error \"invalid artifact runtime cache: %s\" artifact))\n"
+   "    (substring content prefix-len)))\n"
+	   "(defun nelisp-standalone-artifact-cache--install-fn (name fn)\n"
+	   "  (puthash name fn nelisp--functions)\n"
+	   "  (fset name\n"
+	   "        (list 'lambda '(&rest args)\n"
+	   "              (list 'nelisp--apply\n"
+	   "                    (list 'gethash (list 'quote name) 'nelisp--functions)\n"
+	   "                    'args))))\n"
+	   "(defun nelisp-standalone-artifact-cache--literal-value (form)\n"
+	   "  (if (null form)\n"
+	   "      nil\n"
+	   "    (if (eq form t)\n"
+	   "        t\n"
+	   "      (if (numberp form)\n"
+	   "          form\n"
+	   "        (if (stringp form)\n"
+	   "            form\n"
+	   "          (if (keywordp form)\n"
+	   "              form\n"
+	   "            (if (consp form)\n"
+	   "                (if (string= (symbol-name (car form)) \"quote\")\n"
+	   "                    (nth 1 form)\n"
+	   "                  (eval form))\n"
+	   "              (eval form))))))))\n"
+	   "(defun nelisp-standalone-artifact-cache--eval-form (form)\n"
+	   "  (let* ((head (if (consp form) (car form) nil))\n"
+	   "         (head-name (if (symbolp head) (symbol-name head) \"\")))\n"
+	   "    (if (string= head-name \"defun\")\n"
+	   "        (nelisp-eval form)\n"
+	   "      (if (string= head-name \"defvar\")\n"
+	   "          (let ((name (nth 1 form)))\n"
+	   "            (puthash name t nelisp--specials)\n"
+	   "            name)\n"
+	   "        (if (string= head-name \"defconst\")\n"
+	   "            (let ((name (nth 1 form)))\n"
+	   "              (puthash name t nelisp--specials)\n"
+	   "              (puthash name\n"
+	   "                       (if (cdr (cdr form))\n"
+	   "                           (nelisp-standalone-artifact-cache--literal-value (nth 2 form))\n"
+	   "                         nil)\n"
+	   "                       nelisp--globals)\n"
+	   "              name)\n"
+	   "          (eval form))))))\n"
+	   "(defun nelisp-standalone-artifact-cache--replay-item (item)\n"
+	   "  (cond\n"
+	   "   ((and (consp item) (eq (car item) :fn))\n"
+	   "    (nelisp-standalone-artifact-cache--install-fn (nth 1 item) (nth 2 item))\n"
+	   "    (nth 1 item))\n"
+	   "   ((and (consp item) (eq (car item) :eval))\n"
+	   "    (nelisp-standalone-artifact-cache--eval-form (nth 1 item)))\n"
+	   "   (t (nelisp-standalone-artifact-cache--eval-form item))))\n"
+   "(defun nelisp-standalone-artifact-cache--item-end (source pos len artifact)\n"
+   "  (let ((i pos) (depth 0) (in-string nil) (escape nil) (done nil) ch)\n"
+   "    (while (and (not done) (< i len))\n"
+   "      (setq ch (aref source i))\n"
+   "      (cond\n"
+   "       (in-string\n"
+   "        (cond\n"
+   "         (escape (setq escape nil))\n"
+   "         ((= ch ?\\\\) (setq escape t))\n"
+   "         ((= ch ?\\\") (setq in-string nil))))\n"
+   "       ((= ch ?\\\") (setq in-string t))\n"
+	   "       ((= ch 40) (setq depth (1+ depth)))\n"
+	   "       ((= ch 41)\n"
+   "        (setq depth (1- depth))\n"
+   "        (when (= depth 0)\n"
+   "          (setq done t))))\n"
+   "      (setq i (1+ i)))\n"
+	   "    (unless done\n"
+	   "      (error \"unterminated :module-init item in %s\" artifact))\n"
+	   "    i))\n"
+	   "(defun nelisp-standalone-artifact-cache--item-start (source pos len)\n"
+	   "  (let ((p pos)\n"
+	   "        (limit (- pos 8))\n"
+	   "        (found nil))\n"
+	   "    (when (< limit 0)\n"
+	   "      (setq limit 0))\n"
+	   "    (when (>= p len)\n"
+	   "      (setq p (1- len)))\n"
+	   "    (while (if (>= p limit) (not found) nil)\n"
+	   "      (if (= (aref source p) 40)\n"
+	   "          (setq found p)\n"
+	   "        (setq p (1- p))))\n"
+	   "    (or found pos)))\n"
+	   "(defun nelisp-standalone-artifact-cache--read-item (source pos len artifact)\n"
+	   "  (let ((res (read-from-string source pos)))\n"
+	   "    (unless res (error \"invalid :module-init item in %s\" artifact))\n"
+	   "    res))\n"
+	   "(defun nelisp-standalone-artifact-cache--fn-name-at (source pos len)\n"
+	   "  (setq pos (nelisp-standalone-artifact-cache--item-start source pos len))\n"
+	   "  (let* ((kind-pos (nelisp-standalone-artifact-cache--skip-ws\n"
+	   "                    source (1+ pos)))\n"
+	   "         (name-start (nelisp-standalone-artifact-cache--skip-ws\n"
+	   "                      source (+ kind-pos 3)))\n"
+	   "         (name-end name-start)\n"
+	   "         (done nil)\n"
+	   "         ch)\n"
+	   "    (while (if (< name-end len) (not done) nil)\n"
+	   "      (setq ch (aref source name-end))\n"
+	   "      (if (= ch 32)\n"
+	   "          (setq done t)\n"
+	   "        (if (= ch 9)\n"
+	   "            (setq done t)\n"
+	   "          (if (= ch 10)\n"
+	   "              (setq done t)\n"
+	   "            (if (= ch 13)\n"
+	   "                (setq done t)\n"
+	   "              (if (= ch 41)\n"
+	   "                  (setq done t)\n"
+	   "                (setq name-end (1+ name-end))))))))\n"
+	   "    (substring source name-start name-end)))\n"
+	   "(defun nelisp-standalone-artifact-cache--skip-fn-name-p (name)\n"
+	   "  (if (null name)\n"
+	   "      nil\n"
+	   "    (if (nelisp-standalone-artifact-cache--find \"native-exec\" name)\n"
+	   "        t\n"
+	   "      (if (nelisp-standalone-artifact-cache--find \"native-driver\" name)\n"
+	   "          t\n"
+	   "        (if (nelisp-standalone-artifact-cache--find \"native-object\" name)\n"
+	   "            t\n"
+	   "          (if (nelisp-standalone-artifact-cache--find \"base64\" name)\n"
+	   "              t\n"
+	   "            (if (nelisp-standalone-artifact-cache--find \"read-file-as-string\" name)\n"
+	   "                t\n"
+	   "              (if (nelisp-standalone-artifact-cache--find \"read-all-from-string\" name)\n"
+	   "                  t\n"
+	   "                (if (nelisp-standalone-artifact-cache--find \"file-record\" name)\n"
+	   "                    t\n"
+	   "                  (if (nelisp-standalone-artifact-cache--find \"read-top-level-forms\" name)\n"
+	   "                      t\n"
+	   "                    (if (nelisp-standalone-artifact-cache--find \"write-file\" name)\n"
+	   "                        t\n"
+	   "                      (if (nelisp-standalone-artifact-cache--find \"delete-if-exists\" name)\n"
+	   "                          t\n"
+	   "                        (if (nelisp-standalone-artifact-cache--find \"make-temp\" name)\n"
+	   "                            t\n"
+	   "                          (if (nelisp-standalone-artifact-cache--find \"canonical-integer-token\" name)\n"
+	   "                              t\n"
+	   "                            (if (nelisp-standalone-artifact-cache--find \"call-process-quiet\" name)\n"
+	   "                                t\n"
+	   "                              (if (nelisp-standalone-artifact-cache--find \"read-log-if-exists\" name)\n"
+	   "                                  t\n"
+	   "                                (if (nelisp-standalone-artifact-cache--find \"shell-quote\" name)\n"
+	   "                                    t\n"
+	   "                                  nil)))))))))))))))))\n"
+	   "(defun nelisp-standalone-artifact-cache--find-before (needle source start end)\n"
+	   "  (let ((p (nelisp-standalone-artifact-cache--find needle source start)))\n"
+	   "    (if p\n"
+	   "        (if (< p end) t nil)\n"
+	   "      nil)))\n"
+	   "(defun nelisp-standalone-artifact-cache--skip-item-end-fast (source pos len artifact)\n"
+	   "  (let ((p (nelisp-standalone-artifact-cache--find \")) (:\" source pos)))\n"
+	   "    (if p\n"
+	   "        (+ p 2)\n"
+	   "      (nelisp-standalone-artifact-cache--item-end source pos len artifact))))\n"
+	   "(defun nelisp-standalone-artifact-cache--skip-item-source-p (source start end)\n"
+	   "  (if (nelisp-standalone-artifact-cache--find-before \"native-exec\" source start end)\n"
+	   "      t\n"
+	   "    (if (nelisp-standalone-artifact-cache--find-before \"native-driver\" source start end)\n"
+	   "        t\n"
+	   "      (if (nelisp-standalone-artifact-cache--find-before \"native-object\" source start end)\n"
+	   "          t\n"
+	   "        (if (nelisp-standalone-artifact-cache--find-before \"base64\" source start end)\n"
+	   "            t\n"
+	   "          (if (nelisp-standalone-artifact-cache--find-before \"canonical-integer-token\" source start end)\n"
+	   "              t\n"
+	   "            (if (nelisp-standalone-artifact-cache--find-before \"call-process-quiet\" source start end)\n"
+	   "                t\n"
+	   "              (if (nelisp-standalone-artifact-cache--find-before \"read-log-if-exists\" source start end)\n"
+	   "                  t\n"
+	   "                (if (nelisp-standalone-artifact-cache--find-before \"shell-quote\" source start end)\n"
+	   "                    t\n"
+	   "                  nil)))))))))\n"
+		   "(defun nelisp-standalone-artifact-cache--replay-item-source (source pos len artifact)\n"
+		   "  (setq pos (nelisp-standalone-artifact-cache--item-start source pos len))\n"
+		   "  (let* ((kind-pos (nelisp-standalone-artifact-cache--skip-ws\n"
+		   "                    source (1+ pos)))\n"
+		   "         (eval-end (+ kind-pos 5))\n"
+		   "         end value-pos value-res item-res fn-name)\n"
+	   "    (if (and (< pos len)\n"
+	   "             (= (aref source pos) 40)\n"
+	   "             (<= eval-end len)\n"
+	   "             (equal (substring source kind-pos eval-end) \":eval\"))\n"
+	   "        (progn\n"
+	   "          (setq end (nelisp-standalone-artifact-cache--item-end\n"
+	   "                     source pos len artifact))\n"
+	   "          (setq value-pos\n"
+	   "                (nelisp-standalone-artifact-cache--skip-ws\n"
+	   "                 source eval-end))\n"
+	   "          (setq value-res (read-from-string source value-pos))\n"
+	   "          (unless value-res\n"
+	   "            (error \"invalid :eval form in %s\" artifact))\n"
+	   "          (cons (nelisp-standalone-artifact-cache--eval-form\n"
+	   "                 (car value-res))\n"
+	   "                end))\n"
+		   "      (setq fn-name (nelisp-standalone-artifact-cache--fn-name-at\n"
+		   "                     source pos len))\n"
+		   "      (if (nelisp-standalone-artifact-cache--skip-fn-name-p fn-name)\n"
+		   "          (progn\n"
+		   "            (setq end (nelisp-standalone-artifact-cache--skip-item-end-fast\n"
+		   "                       source pos len artifact))\n"
+		   "            (cons fn-name end))\n"
+		   "        (setq end (nelisp-standalone-artifact-cache--item-end\n"
+		   "                   source pos len artifact))\n"
+		   "        (setq item-res (nelisp-standalone-artifact-cache--read-item\n"
+		   "                        source pos len artifact))\n"
+		   "        (cons (nelisp-standalone-artifact-cache--replay-item (car item-res))\n"
+		   "              end)))))\n"
+	   "(defun nelisp-standalone-artifact-cache--replay-module (content artifact)\n"
+	   "  (let ((pos (nelisp-standalone-artifact-cache--key-pos\n"
+	   "              content :module-init artifact nil 0))\n"
+	   "        (len (length content))\n"
+		   "        (end-pos nil)\n"
+		   "        (last nil)\n"
+		   "        (count 0)\n"
+		   "        res item)\n"
+	   "    (setq pos (nelisp-standalone-artifact-cache--skip-ws content pos))\n"
+	   "    (unless (and (< pos len) (= (aref content pos) 40))\n"
+	   "      (error \"invalid :module-init list in %s\" artifact))\n"
+	   "    (setq pos (1+ pos))\n"
+	   "    (while (< pos len)\n"
+	   "      (setq pos (nelisp-standalone-artifact-cache--skip-ws content pos))\n"
+	   "      (if (>= pos len)\n"
+	   "          (error \"unterminated :module-init list in %s\" artifact)\n"
+	   "        (if (= (aref content pos) 41)\n"
+	   "            (progn\n"
+	   "              (setq end-pos (1+ pos))\n"
+	   "              (setq pos len))\n"
+	   "          (if (/= (aref content pos) 40)\n"
+	   "              (progn\n"
+	   "                (setq end-pos pos)\n"
+	   "                (setq pos len))\n"
+		   "          (setq pos (nelisp-standalone-artifact-cache--item-start\n"
+		   "                     content pos len))\n"
+		   "          (condition-case err\n"
+		   "              (progn\n"
+		   "                (setq count (1+ count))\n"
+		   "                (setq res (nelisp-standalone-artifact-cache--replay-item-source\n"
+		   "                           content pos len artifact))\n"
+		   "                (setq item (car res))\n"
+		   "                (setq pos (cdr res))\n"
+		   "                (setq last item))\n"
+	   "            (error\n"
+	   "             (nelisp--write-stderr-line\n"
+	   "              (concat \"cache replay error pos=\" (number-to-string pos)\n"
+	   "                      \" err=\" (prin1-to-string err)))\n"
+	   "             (signal (car err) (cdr err))))))))\n"
+	   "    (unless end-pos\n"
+	   "      (error \"unterminated :module-init list in %s\" artifact))\n"
+	   "    (cons last end-pos)))\n"
+	   "(defun nelisp-standalone-artifact-cache-load (artifact)\n"
+	   "  (let* ((content (nelisp-standalone-artifact-cache--content artifact))\n"
+	   "         (replayed (nelisp-standalone-artifact-cache--replay-module\n"
+   "                    content artifact))\n"
+   "         (last (car replayed)))\n"
+	   "    last))\n"
+   (nelisp-standalone--artifact-command-cache-dispatch-src
+    nelisp-standalone--artifact-runtime-cache-path)))
+
+(defun nelisp-standalone--artifact-source-command-cache-src (&optional substrate-only)
+  "Return a compact marker path for source load/eval artifact commands.
+This path exists for Nelix hot startup: `load-elisp-source' and
+`eval-elisp-source' only need adjacent `.neln' / `.nelc' loading plus form
+evaluation.  Avoid loading the full `nelisp-artifact.el' command surface and
+avoid replaying the private artifact runtime cache.
+
+When SUBSTRATE-ONLY is non-nil, omit the final command dispatch expression.
+This exposes the real evaluator/reader/bytecode substrate as a standalone
+source unit so Doc 154 Stage B can compile and measure it as a private
+artifact before wiring that artifact into the marker command path.
+
+artifact before wiring that artifact into the marker command path."
+  (let ((artifact-magic (progn
+                          (require 'nelisp-artifact)
+                          nelisp-artifact--magic))
+        (artifact-format (progn
+                           (require 'nelisp-artifact)
+                           nelisp-artifact--format))
+        (stats-path nelisp-standalone--source-command-cache-stats-path))
+    (concat
+     (nelisp-standalone--artifact-runtime-file-src
+      "scripts/nelisp-stdlib-prelude.el" t)
+     (nelisp-standalone--artifact-runtime-file-src
+      "src/nelisp-read.el" t)
+     (nelisp-standalone--artifact-runtime-file-src
+      "src/nelisp-eval.el" t)
+     (nelisp-standalone--artifact-runtime-file-src
+      "src/nelisp-macro.el" t)
+     (nelisp-standalone--artifact-runtime-file-src
+      "src/nelisp-load.el" t)
+     (nelisp-standalone--artifact-runtime-file-src
+      "src/nelisp-bytecode.el" t)
+     "(defvar features nil)\n"
+     "(fset 'provide\n"
+     "      (lambda (feature)\n"
+     "        (if (memq feature features)\n"
+     "            nil\n"
+     "          (setq features (cons feature features)))\n"
+     "        feature))\n"
+     "(fset 'featurep\n"
+     "      (lambda (feature) (if (memq feature features) t nil)))\n"
+     "(provide 'cl-lib)\n"
+     "(provide 'nelisp-read)\n"
+     "(provide 'nelisp-eval)\n"
+     "(provide 'nelisp-macro)\n"
+     "(provide 'nelisp-core-fileio)\n"
+     "(provide 'nelisp-load)\n"
+     "(provide 'nelisp-bytecode)\n"
+     "(defun nelisp-standalone-source-cache--read-file (path)\n"
+     "  (or (nelisp--syscall-read-file path) \"\"))\n"
+     (format "(defvar nelisp-standalone-source-cache--stats-path %S)\n"
+             stats-path)
+     "(defun nelisp-standalone-source-cache--stats (stage)\n"
+     "  (if (file-exists-p nelisp-standalone-source-cache--stats-path)\n"
+     "      (nelisp--write-stderr-line\n"
+     "       (concat \"source-cache stats stage=\" stage \" \"\n"
+     "               (prin1-to-string (nelisp--arena-stats))))\n"
+     "    nil))\n"
+     "(defun nelisp-standalone-source-cache--find (needle haystack &optional start)\n"
+     "  (let* ((i (or start 0)) (n (length needle)) (h (length haystack))\n"
+     "         (limit (- h n)) (found nil))\n"
+     "    (while (and (not found) (<= i limit))\n"
+     "      (let ((j 0) (ok t))\n"
+     "        (while (and ok (< j n))\n"
+     "          (unless (= (aref needle j) (aref haystack (+ i j)))\n"
+     "            (setq ok nil))\n"
+     "          (setq j (1+ j)))\n"
+     "        (if ok (setq found i) (setq i (1+ i)))))\n"
+     "    found))\n"
+     "(defun nelisp-standalone-source-cache--prefix-at-p (prefix source pos)\n"
+     "  (let ((i 0) (n (length prefix)) (len (length source)) (ok t))\n"
+     "    (while (and ok (< i n))\n"
+     "      (if (or (>= (+ pos i) len)\n"
+     "              (not (= (aref prefix i) (aref source (+ pos i)))))\n"
+     "          (setq ok nil)\n"
+     "        (setq i (1+ i))))\n"
+     "    ok))\n"
+     "(defun nelisp-standalone-source-cache--skip-ws (source pos)\n"
+     "  (let ((len (length source)) ch)\n"
+     "    (while (< pos len)\n"
+     "      (setq ch (aref source pos))\n"
+     "      (if (if (= ch 32) t\n"
+     "            (if (= ch 9) t\n"
+     "              (if (= ch 10) t\n"
+     "                (if (= ch 13) t\n"
+     "                  (if (= ch 12) t nil)))))\n"
+     "          (setq pos (1+ pos))\n"
+     "        (setq len 0)))\n"
+     "    pos))\n"
+     "(defun nelisp-standalone-source-cache--key-pos (source key label start)\n"
+     "  (let* ((needle (concat (symbol-name key) \" \"))\n"
+     "         (pos (nelisp-standalone-source-cache--find needle source start)))\n"
+     "    (if pos nil\n"
+     "      (error \"missing key %S in %s\" key label))\n"
+     "    (nelisp-standalone-source-cache--skip-ws\n"
+     "     source (+ pos (length needle)))))\n"
+     "(defun nelisp-standalone-source-cache--key-value (source key label start)\n"
+     "  (car (read-from-string\n"
+     "        source\n"
+     "        (nelisp-standalone-source-cache--key-pos source key label start))))\n"
+     "(defun nelisp-standalone-source-cache--validate-payload (content artifact-path)\n"
+     (format "  (let* ((magic %S)\n" artifact-magic)
+     "         (prefix-len (length magic)))\n"
+     "    (if (and (>= (length content) prefix-len)\n"
+     "             (equal (substring content 0 prefix-len) magic))\n"
+     "        nil\n"
+     "      (error \"invalid artifact magic: %s\" artifact-path))\n"
+     (format "    (if (nelisp-standalone-source-cache--find %S content prefix-len)\n"
+             (format ":format %S" artifact-format))
+     "        nil\n"
+     "      (error \"unsupported artifact format in %s\" artifact-path))\n"
+     "    prefix-len))\n"
+     "(defun nelisp-standalone-source-cache--item-end (source pos len artifact)\n"
+     "  (let ((i pos) (depth 0) (in-string nil) (escape nil) (done nil) ch)\n"
+     "    (while (and (not done) (< i len))\n"
+     "      (setq ch (aref source i))\n"
+     "      (cond\n"
+     "       (in-string\n"
+     "        (cond\n"
+     "         (escape (setq escape nil))\n"
+     "         ((= ch 92) (setq escape t))\n"
+     "         ((= ch 34) (setq in-string nil))))\n"
+     "       ((= ch 34) (setq in-string t))\n"
+     "       ((= ch 59)\n"
+     "        (while (and (< i len) (not (= (aref source i) 10)))\n"
+     "          (setq i (1+ i))))\n"
+     "       ((= ch 40) (setq depth (1+ depth)))\n"
+     "       ((= ch 41)\n"
+     "        (setq depth (1- depth))\n"
+     "        (if (= depth 0)\n"
+     "            (setq done t)\n"
+     "          nil)))\n"
+     "      (setq i (1+ i)))\n"
+     "    (if done nil\n"
+     "      (error \"unterminated :module-init item in %s\" artifact))\n"
+     "    i))\n"
+     "(defun nelisp-standalone-source-cache--read-decimal-at (source pos)\n"
+     "  (let ((i pos) (len (length source)) (value 0) (have nil) ch)\n"
+     "    (while (and (< i len)\n"
+     "                (progn\n"
+     "                  (setq ch (aref source i))\n"
+     "                  (and (>= ch 48) (<= ch 57))))\n"
+     "      (setq have t)\n"
+     "      (setq value (+ (* value 10) (- ch 48)))\n"
+     "      (setq i (1+ i)))\n"
+     "    (if have nil (error \"expected decimal integer\"))\n"
+     "    (cons value i)))\n"
+     "(defun nelisp-standalone-source-cache--replay-raw-source-item (content pos)\n"
+     "  (let ((prefix \"(:eval-source-raw \"))\n"
+     "    (if (and (fboundp 'nelisp--eval-source-string)\n"
+     "             (nelisp-standalone-source-cache--prefix-at-p prefix content pos))\n"
+     "        (let* ((len-start (+ pos (length prefix)))\n"
+     "               (len-pair (nelisp-standalone-source-cache--read-decimal-at\n"
+     "                          content len-start))\n"
+     "               (source-len (car len-pair))\n"
+     "               (source-start (+ (cdr len-pair) 1))\n"
+     "               (source-end (+ source-start source-len)))\n"
+     "          (if (and (= (aref content (cdr len-pair)) 10)\n"
+     "                   (< (+ source-end 2) (length content))\n"
+     "                   (= (aref content source-end) 10)\n"
+     "                   (= (aref content (+ source-end 1)) 41)\n"
+     "                   (= (aref content (+ source-end 2)) 41))\n"
+     "              (list t\n"
+     "                    (nelisp--eval-source-string\n"
+     "                     (substring content source-start source-end))\n"
+     "                    (+ source-end 3))\n"
+     "            (error \"invalid raw eval source item\")))\n"
+     "      nil)))\n"
+     "(defun nelisp-standalone-source-cache--replay-generated-source-item (content pos)\n"
+     "  (let ((prefix \"(:eval (progn\\n\")\n"
+     "        (suffix \"\\n))) :features\"))\n"
+     "    (if (and (fboundp 'nelisp--eval-source-string)\n"
+     "             (nelisp-standalone-source-cache--prefix-at-p prefix content pos))\n"
+     "        (let* ((source-start (+ pos (length prefix)))\n"
+     "               (source-end (nelisp-standalone-source-cache--find\n"
+     "                            suffix content source-start)))\n"
+     "          (if source-end\n"
+     "              (list t\n"
+     "                    (nelisp--eval-source-string\n"
+     "                     (substring content source-start source-end))\n"
+     "                    (+ source-end 4))\n"
+     "            nil))\n"
+     "      nil)))\n"
+     "(defun nelisp-standalone-source-cache--install-fn (name fn)\n"
+     "  (puthash name fn nelisp--functions)\n"
+     "  (fset name\n"
+     "        (list 'lambda '(&rest args)\n"
+     "              (list 'nelisp--apply\n"
+     "                    (list 'gethash (list 'quote name) 'nelisp--functions)\n"
+     "                    'args)))\n"
+     "  name)\n"
+     "(defun nelisp-standalone-source-cache--replay-item (item)\n"
+     "  (if (and (consp item) (eq (car item) :fn))\n"
+     "      (progn\n"
+     "        (nelisp-standalone-source-cache--install-fn (nth 1 item) (nth 2 item))\n"
+     "        (nth 1 item))\n"
+     "    (if (and (consp item) (eq (car item) :eval))\n"
+     "        (eval (nth 1 item))\n"
+     "      (eval item))))\n"
+     "(defun nelisp-standalone-source-cache--replay-module (content artifact-path prefix-len)\n"
+     "  (let ((pos (nelisp-standalone-source-cache--key-pos\n"
+     "              content :module-init artifact-path prefix-len))\n"
+     "        (len (length content))\n"
+     "        (last nil)\n"
+     "        (done nil)\n"
+     "        end res)\n"
+     "    (setq pos (nelisp-standalone-source-cache--skip-ws content pos))\n"
+     "    (if (and (< pos len) (= (aref content pos) 40))\n"
+     "        nil\n"
+     "      (error \"invalid :module-init list in %s\" artifact-path))\n"
+     "    (setq pos (1+ pos))\n"
+     "    (while (and (< pos len) (not done))\n"
+     "      (setq pos (nelisp-standalone-source-cache--skip-ws content pos))\n"
+     "      (if (>= pos len)\n"
+     "          (error \"unterminated :module-init list in %s\" artifact-path)\n"
+     "        (if (= (aref content pos) 41)\n"
+     "            (progn\n"
+     "              (setq pos (1+ pos))\n"
+     "              (setq done t))\n"
+     "          (if (= (aref content pos) 40)\n"
+     "              nil\n"
+     "            (error \"invalid :module-init item in %s\" artifact-path))\n"
+     "          (setq res (nelisp-standalone-source-cache--replay-raw-source-item\n"
+     "                     content pos))\n"
+     "          (if res nil\n"
+     "            (setq res (nelisp-standalone-source-cache--replay-generated-source-item\n"
+     "                       content pos)))\n"
+     "          (if res\n"
+     "              (progn\n"
+     "                (setq last (cadr res))\n"
+     "                (setq pos (caddr res))\n"
+     "                (setq done t))\n"
+     "            (setq end (nelisp-standalone-source-cache--item-end\n"
+     "                       content pos len artifact-path))\n"
+     "            (setq res (read-from-string content pos))\n"
+     "            (if res nil\n"
+     "              (error \"invalid :module-init item in %s\" artifact-path))\n"
+     "            (setq last (nelisp-standalone-source-cache--replay-item\n"
+     "                        (car res)))\n"
+     "            (setq pos end)))))\n"
+     "    (cons last pos)))\n"
+     "(defun nelisp-standalone-source-cache-load-artifact (artifact-path)\n"
+     "  (let* ((content nil)\n"
+     "         (prefix-len nil)\n"
+     "         (features nil)\n"
+     "         (last nil)\n"
+     "         (module-result nil))\n"
+     "    (nelisp-standalone-source-cache--stats \"artifact-before-read\")\n"
+     "    (setq content (nelisp-standalone-source-cache--read-file artifact-path))\n"
+     "    (nelisp-standalone-source-cache--stats \"artifact-after-read\")\n"
+     "    (setq prefix-len\n"
+     "          (nelisp-standalone-source-cache--validate-payload\n"
+     "           content artifact-path))\n"
+     "    (nelisp-standalone-source-cache--stats \"artifact-after-format\")\n"
+     "    (setq module-result (nelisp-standalone-source-cache--replay-module\n"
+     "                         content artifact-path prefix-len))\n"
+     "    (setq last (car module-result))\n"
+     "    (nelisp-standalone-source-cache--stats \"artifact-after-module\")\n"
+     "    (setq features (nelisp-standalone-source-cache--key-value\n"
+     "                    content :features artifact-path (cdr module-result)))\n"
+     "    (while features\n"
+     "      (provide (car features))\n"
+     "      (setq features (cdr features)))\n"
+     "    (nelisp-standalone-source-cache--stats \"artifact-after-features\")\n"
+     "    last))\n"
+     "(defun nelisp-standalone-source-cache--parse-source-args (args require-forms)\n"
+     "  (let ((rest (cdr args)) (source nil) (forms nil))\n"
+     "    (while (and rest (null source))\n"
+     "      (let ((flag (car rest)))\n"
+     "        (if (equal flag \"--auto-compile\")\n"
+     "            (setq rest (cdr rest))\n"
+     "          (if (or (equal flag \"--kind\")\n"
+     "                  (equal flag \"--target\")\n"
+     "                  (equal flag \"--load-path\")\n"
+     "                  (equal flag \"--preload\")\n"
+     "                  (equal flag \"--native-policy\"))\n"
+     "              (setq rest (cdr (cdr rest)))\n"
+     "            (setq source flag)\n"
+     "            (setq forms (cdr rest))\n"
+     "            (setq rest nil)))))\n"
+     "    (unless source\n"
+     "      (error \"source command requires FILE.el\"))\n"
+     "    (when (and require-forms (null forms))\n"
+     "      (error \"eval-elisp-source requires at least one FORM\"))\n"
+     "    (list source forms)))\n"
+     "(defun nelisp-standalone-source-cache--artifact (source)\n"
+     "  (if (file-exists-p (concat source \".neln\"))\n"
+     "      (concat source \".neln\")\n"
+     "    (if (file-exists-p (concat source \".nelc\"))\n"
+     "        (concat source \".nelc\")\n"
+     "      nil)))\n"
+     "(defun nelisp-standalone-source-cache-load-source-file (source)\n"
+     "  (let* ((text (nelisp-standalone-source-cache--read-file source))\n"
+     "         (pos 0)\n"
+     "         (len (length text))\n"
+     "         (last nil)\n"
+     "         form res)\n"
+     "    (while (progn\n"
+     "             (setq pos (nelisp-standalone-source-cache--skip-ws text pos))\n"
+     "             (< pos len))\n"
+     "      (setq res (read-from-string text pos))\n"
+     "      (setq form (car res))\n"
+     "      (setq pos (cdr res))\n"
+     "      (setq last (eval form)))\n"
+     "    last))\n"
+     "(defun nelisp-standalone-source-cache-load-source-command (args)\n"
+     "  (let* ((parsed (nelisp-standalone-source-cache--parse-source-args args nil))\n"
+     "         (source (car parsed))\n"
+     "         (artifact (nelisp-standalone-source-cache--artifact source))\n"
+     "         (value nil))\n"
+     "    (nelisp-standalone-source-cache--stats \"entry\")\n"
+     "    (setq value\n"
+     "          (if artifact\n"
+     "              (nelisp-standalone-source-cache-load-artifact artifact)\n"
+     "            (nelisp-standalone-source-cache-load-source-file source)))\n"
+     "    (nelisp-standalone-source-cache--stats \"after-load\")\n"
+     "    (nelisp--write-stdout-bytes (prin1-to-string value))\n"
+     "    (nelisp--write-stdout-bytes \"\\n\")\n"
+     "    0))\n"
+     "(defun nelisp-standalone-source-cache-eval-source-command (args)\n"
+     "  (let* ((parsed (nelisp-standalone-source-cache--parse-source-args args t))\n"
+     "         (source (car parsed))\n"
+     "         (forms (nth 1 parsed))\n"
+     "         (artifact (nelisp-standalone-source-cache--artifact source))\n"
+     "         (last nil))\n"
+     "    (nelisp-standalone-source-cache--stats \"entry\")\n"
+     "    (if artifact\n"
+     "        (nelisp-standalone-source-cache-load-artifact artifact)\n"
+     "      (nelisp-standalone-source-cache-load-source-file source))\n"
+     "    (nelisp-standalone-source-cache--stats \"after-load\")\n"
+     "    (while forms\n"
+     "      (setq last (eval (car (read-from-string (car forms)))))\n"
+     "      (setq forms (cdr forms)))\n"
+     "    (nelisp-standalone-source-cache--stats \"after-eval\")\n"
+     "    (nelisp--write-stdout-bytes (prin1-to-string last))\n"
+     "    (nelisp--write-stdout-bytes \"\\n\")\n"
+     "    0))\n"
+     (if substrate-only
+         ""
+       (concat
+       "(if (string= (car nelisp-standalone-argv) \"load-elisp-source\")\n"
+       "    (nelisp-standalone-source-cache-load-source-command nelisp-standalone-argv)\n"
+       "  (if (string= (car nelisp-standalone-argv) \"eval-elisp-source\")\n"
+       "      (nelisp-standalone-source-cache-eval-source-command nelisp-standalone-argv)\n"
+       "    2))\n")))
+  ))
+
+(defun nelisp-standalone--artifact-source-command-substrate-src ()
+  "Return the source-command evaluator substrate without command dispatch."
+  (nelisp-standalone--artifact-source-command-cache-src t))
+
+(defun nelisp-standalone--artifact-direct-command-src ()
+  "Return compact source for direct eval/exec artifact commands.
+This shares the source-command substrate loader, then reads the artifact path
+and FORM strings from `nelisp-standalone-argv'.  The source is emitted with
+`sexp-write-str-lit' so the large substrate is not expanded into per-byte AOT
+copy instructions."
+  (concat
+   (nelisp-standalone--artifact-source-command-substrate-src)
+   "(defun nelisp-standalone-direct-artifact-command (args printp)\n"
+   "  (condition-case err\n"
+   "      (let ((path (nth 1 args))\n"
+   "            (forms (cdr (cdr args)))\n"
+   "            (parsed nil)\n"
+   "            (last nil))\n"
+   "        (if path nil\n"
+   "          (error \"artifact command requires FILE.nelc or FILE.neln\"))\n"
+   "        (if forms nil\n"
+   "          (error \"artifact command requires at least one FORM\"))\n"
+   "        (while forms\n"
+   "          (setq parsed (cons (car (read-from-string (car forms))) parsed))\n"
+   "          (setq forms (cdr forms)))\n"
+   "        (setq forms (reverse parsed))\n"
+   "        (nelisp-standalone-source-cache-load-artifact path)\n"
+   "        (while forms\n"
+   "          (setq last (eval (car forms)))\n"
+   "          (setq forms (cdr forms)))\n"
+   "        (if printp\n"
+   "            (progn\n"
+   "              (nelisp--write-stdout-bytes (prin1-to-string last))\n"
+   "              (nelisp--write-stdout-bytes \"\\n\"))\n"
+   "          nil)\n"
+   "        0)\n"
+   "    (error\n"
+   "     (nelisp--write-stderr-line\n"
+   "      (concat \"nelisp direct artifact error: \" (prin1-to-string err)))\n"
+   "     1)))\n"
+   "(if (string= (car nelisp-standalone-argv) \"eval-elisp-artifact\")\n"
+   "    (nelisp-standalone-direct-artifact-command nelisp-standalone-argv t)\n"
+   "  (if (string= (car nelisp-standalone-argv) \"exec-elisp-artifact\")\n"
+   "      (nelisp-standalone-direct-artifact-command nelisp-standalone-argv nil)\n"
+   "    2))\n"))
 
 (defun nelisp-standalone--name-words (nm)
   "Return the little-endian u64 words packing NM's UTF-8 bytes (ceil(len/8) of
@@ -6807,6 +8210,28 @@ correctly."
                                        "eval-runtime-image")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_exec_runtime_image
                                        "exec-runtime-image")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_runtime_image_cache_kind
+                                       "--cache-kind")
+	    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_compile_elisp_artifact
+	                                       "compile-elisp-artifact")
+	    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_compile_elisp_artifacts
+	                                       "compile-elisp-artifacts")
+	    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_compile_runtime_image
+	                                       "compile-runtime-image")
+	    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_audit_elisp_artifacts
+	                                       "audit-elisp-artifacts")
+	    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_exec_elisp_artifact
+                                       "exec-elisp-artifact")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_eval_elisp_artifact
+                                       "eval-elisp-artifact")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_load_elisp_source
+                                       "load-elisp-source")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_eval_elisp_source
+                                       "eval-elisp-source")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_native_exec_elisp_artifact
+                                       "native-exec-elisp-artifact")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_inspect_elisp_artifact
+                                       "inspect-elisp-artifact")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_repl
                                        "--repl")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_eval
@@ -6831,6 +8256,8 @@ correctly."
                                        "repl")
     ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_bare_help
                                        "help")
+    ,(nelisp-standalone--cstr-eq-defun 'nl_cstr_eq_double_dash_load
+                                       "--load")
     ,(nelisp-standalone--copy-lit-defun
       'nl_runtime_image_eval_prefix
       "(let ((v (progn\n")
@@ -6841,6 +8268,65 @@ correctly."
       'nl_runtime_image_success_suffix
       "0\n")
     ,(nelisp-standalone--copy-lit-defun
+      'nl_artifact_runtime_cache_path
+      nelisp-standalone--artifact-runtime-cache-path)
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_artifact_runtime_cache_enable_path
+      nelisp-standalone--artifact-runtime-cache-enable-path)
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_audit_fast_sh_path
+      "/bin/sh")
+    ,(nelisp-standalone--copy-lit-defun
+      'nl_audit_fast_script_path
+      (expand-file-name "tools/nelisp-audit-fast.sh"
+                        nelisp-standalone--repo-root))
+    (defun nl_artifact_runtime_cache_exists_p (fbuf)
+      (let* ((off (nl_artifact_runtime_cache_path fbuf 0))
+             (n (nl_os_read_file_cpath fbuf fbuf 1)))
+        (if (< n 0) 0 1)))
+    (defun nl_artifact_runtime_cache_enabled_p (fbuf)
+      (let* ((off (nl_artifact_runtime_cache_enable_path fbuf 0))
+             (n (nl_os_read_file_cpath fbuf fbuf 1)))
+        (if (< n 0) 0 1)))
+    (defun nl_audit_fast_argv_copy (argc sp src-index dst-index argv)
+      (if (= src-index argc)
+          (nl_seq2 (ptr-write-u64 argv (* dst-index 8) 0) argv)
+        (seq
+         (ptr-write-u64 argv (* dst-index 8)
+                        (ptr-read-u64 sp (* (+ src-index 1) 8)))
+         (nl_audit_fast_argv_copy argc sp (+ src-index 1)
+                                  (+ dst-index 1) argv))))
+    (defun nl_audit_fast_run (argc sp shifted-p fbuf)
+      (let* ((cmd-index (if (= shifted-p 1) 0 1))
+             (arg-start (+ cmd-index 1))
+             (arg-count (- argc arg-start))
+             (argv (alloc-bytes (* (+ arg-count 3) 8) 8))
+             (shptr fbuf)
+             (off (nl_audit_fast_sh_path fbuf 0))
+             (scriptptr (+ fbuf (+ off 1)))
+             (off2 (nl_audit_fast_script_path fbuf (+ off 1)))
+             (envp (if (= (ptr-read-u64 268435600 0) 0)
+                       (alloc-bytes 8 8)
+                     (ptr-read-u64 268435600 0)))
+             (pid 0))
+        (seq
+         (ptr-write-u8 fbuf off 0)
+         (ptr-write-u8 fbuf off2 0)
+         (if (= (ptr-read-u64 268435600 0) 0)
+             (ptr-write-u64 envp 0 0)
+           0)
+         (ptr-write-u64 argv 0 shptr)
+         (ptr-write-u64 argv 8 scriptptr)
+         (nl_audit_fast_argv_copy argc sp arg-start 2 argv)
+         (setq pid (nl_os_process_fork))
+         (if (= pid 0)
+             (seq
+              (nl_os_process_execve shptr argv envp)
+              (nl_os_process_exit127))
+           (if (< pid 0)
+               1
+             (nl_bi_process_wait_exit_code pid))))))
+    ,(nelisp-standalone--copy-lit-defun
       'nl_runtime_image_dump_prefix
       ";;; nelisp-runtime-image source-v1\n(progn\n")
     ,(nelisp-standalone--copy-lit-defun
@@ -6849,12 +8335,12 @@ correctly."
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_eval_prefix
       "(let ((v (progn\n")
-    ,(nelisp-standalone--copy-lit-defun
-      'nl_cli_eval_suffix
-      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
+	    ,(nelisp-standalone--copy-lit-defun
+	      'nl_cli_eval_suffix
+	      "))) (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) 0)\n0\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_cli_help_text
-      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [--neln-selftest] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value\n  --load FILE                    Load FILE and print the last value\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE FORM...\n  extend-runtime-image IMAGE OUT FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n")
+	      "Usage: nelisp [--help] [--repl [--no-prompt] [--no-print]] [--eval EXPR] [--load FILE] [--neln-selftest] [FILE]\nArguments:\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR and print the value\n  --load FILE                    Load FILE and print the last value\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
       "(let ((v (progn\n")
@@ -6878,10 +8364,42 @@ correctly."
           (if (= (nl_cstr_eq_eval_runtime_image ptr) 1)
               1
             (nl_cstr_eq_exec_runtime_image ptr)))))
+    (defun nl_artifact_command_p (ptr)
+      (if (= (nl_cstr_eq_compile_elisp_artifact ptr) 1)
+          1
+	        (if (= (nl_cstr_eq_compile_elisp_artifacts ptr) 1)
+	            1
+	          (if (= (nl_cstr_eq_compile_runtime_image ptr) 1)
+	              1
+	            (if (= (nl_cstr_eq_audit_elisp_artifacts ptr) 1)
+	                1
+	              (if (= (nl_cstr_eq_exec_elisp_artifact ptr) 1)
+	                  1
+	                (if (= (nl_cstr_eq_eval_elisp_artifact ptr) 1)
+	                    1
+	                  (if (= (nl_cstr_eq_load_elisp_source ptr) 1)
+	                      1
+	                    (if (= (nl_cstr_eq_eval_elisp_source ptr) 1)
+	                        1
+	                      (if (= (nl_cstr_eq_native_exec_elisp_artifact ptr) 1)
+	                          1
+	                        (nl_cstr_eq_inspect_elisp_artifact ptr)))))))))))
+    (defun nl_artifact_runtime_cache_command_p (ptr)
+      (if (= (nl_cstr_eq_load_elisp_source ptr) 1)
+          1
+        (nl_cstr_eq_eval_elisp_source ptr)))
+    (defun nl_artifact_source_cache_command_p (ptr)
+      (if (= (nl_cstr_eq_load_elisp_source ptr) 1)
+          1
+        (nl_cstr_eq_eval_elisp_source ptr)))
     (defun nl_runtime_image_eval_exec_command_p (ptr)
       (if (= (nl_cstr_eq_eval_runtime_image ptr) 1)
           1
         (nl_cstr_eq_exec_runtime_image ptr)))
+    (defun nl_runtime_image_cache_eval_p (sp argc)
+      (if (> argc 4)
+          (nl_cstr_eq_runtime_image_cache_kind (ptr-read-u64 sp 32))
+        0))
     (defun nl_cli_eval_command_p (ptr)
       (nl_cstr_eq_eval ptr))
     (defun nl_cli_help_command_p (ptr)
@@ -6899,7 +8417,9 @@ correctly."
                   1
                 (if (= (nl_cstr_eq_embedded ptr) 1)
                     1
-                  (nl_runtime_image_command_p ptr))))))))
+                  (if (= (nl_runtime_image_command_p ptr) 1)
+                      1
+                    (nl_artifact_command_p ptr)))))))))
     (defun nl_cli_bare_legacy_command_p (ptr)
       (if (= (nl_cstr_eq_bare_eval ptr) 1)
           1
@@ -6933,10 +8453,25 @@ correctly."
       (if (= i argc)
           off
         (let* ((form_ptr (ptr-read-u64 sp (* (+ i 1) 8))))
-          (seq
-           (setq off (nl_cstr_copy_into form_ptr fbuf off))
-           (ptr-write-u8 fbuf off 10)
-           (nl_runtime_image_copy_argv_forms sp argc (+ i 1) fbuf (+ off 1))))))
+          (if (= (nl_cstr_eq_double_dash_load form_ptr) 1)
+              (if (< (+ i 1) argc)
+                  (let* ((file_ptr (ptr-read-u64 sp (* (+ i 2) 8)))
+                         (n (nl_os_read_file_cpath
+                             file_ptr
+                             (+ fbuf off)
+                             (- ,nelisp-standalone--reader-read-cap off))))
+                    (if (< n 0)
+                        off
+                      (seq
+                       (setq off (+ off n))
+                       (ptr-write-u8 fbuf off 10)
+                       (nl_runtime_image_copy_argv_forms
+                        sp argc (+ i 2) fbuf (+ off 1)))))
+                off)
+            (seq
+             (setq off (nl_cstr_copy_into form_ptr fbuf off))
+             (ptr-write-u8 fbuf off 10)
+             (nl_runtime_image_copy_argv_forms sp argc (+ i 1) fbuf (+ off 1)))))))
     (defun nl_runtime_image_dump_source (sp argc fbuf)
       (let* ((off (nl_runtime_image_dump_prefix fbuf 0)))
         (seq
@@ -6965,15 +8500,15 @@ correctly."
          (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
          (setq off (nl_runtime_image_success_suffix fbuf off))
          (nl_alloc_str fbuf off src))))
-    (defun nl_runtime_image_eval_source (sp argc fbuf src)
-      (let* ((off (nl_runtime_image_read_image_into_source_buf sp fbuf)))
-        (seq
-         (ptr-write-u8 fbuf off 10)
-         (setq off (+ off 1))
-         (setq off (nl_runtime_image_eval_prefix fbuf off))
-         (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
-         (setq off (nl_runtime_image_eval_suffix fbuf off))
-         (nl_alloc_str fbuf off src))))
+	    (defun nl_runtime_image_eval_source (sp argc fbuf src)
+	      (let* ((off (nl_runtime_image_read_image_into_source_buf sp fbuf)))
+	        (seq
+	         (ptr-write-u8 fbuf off 10)
+	         (setq off (+ off 1))
+	         (setq off (nl_runtime_image_eval_prefix fbuf off))
+	         (setq off (nl_runtime_image_copy_argv_forms sp argc 3 fbuf off))
+	         (setq off (nl_runtime_image_eval_suffix fbuf off))
+	         (nl_alloc_str fbuf off src))))
     (defun nl_cli_wrap_source_at (fbuf off src)
       (seq
        (ptr-write-u8 fbuf off 10)
@@ -7425,29 +8960,72 @@ correctly."
           (seq (nl_cli_write_help fbuf) 2))
          ((= (nl_cstr_starts_dash_p path) 1)
           (seq (nl_cli_write_help fbuf) 2))
+         ((= (nl_cstr_eq_audit_elisp_artifacts path) 1)
+          (nl_audit_fast_run argc sp0 argv_shifted_p fbuf))
          (t
           (seq
+           ;; Runtime-image eval/exec replays real Elisp sources, not just core
+           ;; special forms.  Load the same prelude as --eval/--load first so
+           ;; image contents can use defun/defmacro and the stdlib surface.
+           (if (= (nl_runtime_image_eval_exec_command_p path) 1)
+               (if (= (nl_runtime_image_cache_eval_p sp0 argc) 1)
+                   0
+                 (seq
+                  ,@(nelisp-standalone--reader-repl-prelude-forms
+                     'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)))
+             0)
            ;; --- source selection: embedded vs. file (M7 dual mode) ---
-           (if (= (nl_cstr_eq_eval_runtime_image path) 1)
-               (if (> argc 3)
-                   (nl_runtime_image_eval_source sp0 argc fbuf src)
-                 (sexp-write-str-lit src "1"))
-             (if (= (nl_cstr_eq_exec_runtime_image path) 1)
+           (if (and (= (nl_runtime_image_eval_exec_command_p path) 1)
+                    (= (nl_runtime_image_cache_eval_p sp0 argc) 1))
+               (seq
+                (nl_argv_list_from argc sp0 1 argv_list)
+                (nl_env_set_value ctx argv_sym argv_list)
+                (sexp-write-str-lit src ,(nelisp-standalone--runtime-image-command-src)))
+             (if (= (nl_cstr_eq_eval_runtime_image path) 1)
                  (if (> argc 3)
-                     (nl_runtime_image_exec_source sp0 argc fbuf src)
+                     (nl_runtime_image_eval_source sp0 argc fbuf src)
                    (sexp-write-str-lit src "1"))
+               (if (= (nl_cstr_eq_exec_runtime_image path) 1)
+                   (if (> argc 3)
+                       (nl_runtime_image_exec_source sp0 argc fbuf src)
+                     (sexp-write-str-lit src "1"))
                (if (= (nl_runtime_image_command_p path) 1)
                    (seq
                     (nl_argv_list_from argc sp0 1 argv_list)
                     (nl_env_set_value ctx argv_sym argv_list)
                     (sexp-write-str-lit src ,(nelisp-standalone--runtime-image-command-src)))
-                 ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
-                 (let* ((n (nl_os_read_file_cpath
-                            path fbuf
-                            ,nelisp-standalone--reader-read-cap)))
-                   (if (< n 0)
-                       (sexp-write-str-lit src "1")
-                     (nl_alloc_str fbuf n src)))))))
+	                 (if (= (nl_cstr_eq_eval_elisp_artifact path) 1)
+	                     (if (> argc 2)
+	                         (seq
+	                          (nl_argv_list_from argc sp0 1 argv_list)
+	                          (nl_env_set_value ctx argv_sym argv_list)
+	                          (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-command-src)))
+	                       (sexp-write-str-lit src "1"))
+	                   (if (= (nl_cstr_eq_exec_elisp_artifact path) 1)
+	                       (if (> argc 2)
+	                           (seq
+	                            (nl_argv_list_from argc sp0 1 argv_list)
+	                            (nl_env_set_value ctx argv_sym argv_list)
+	                            (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-command-src)))
+	                         (sexp-write-str-lit src "1"))
+	                 (if (= (nl_artifact_command_p path) 1)
+	                     (seq
+	                      (nl_argv_list_from argc sp0 1 argv_list)
+	                      (nl_env_set_value ctx argv_sym argv_list)
+	                      (if (and (= (nl_artifact_runtime_cache_command_p path) 1)
+	                               (= (nl_artifact_runtime_cache_enabled_p fbuf) 1)
+	                               (= (nl_artifact_runtime_cache_exists_p fbuf) 1))
+	                          (if (= (nl_artifact_source_cache_command_p path) 1)
+	                              (sexp-write-str-lit src ,(nelisp-standalone--artifact-source-command-cache-src))
+	                            (sexp-write-str-lit src ,(nelisp-standalone--artifact-command-cache-src)))
+	                        (sexp-write-str-lit src ,(nelisp-standalone--artifact-command-src))))
+	                   ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
+	                   (let* ((n (nl_os_read_file_cpath
+	                              path fbuf
+	                              ,nelisp-standalone--reader-read-cap)))
+	                     (if (< n 0)
+	                         (sexp-write-str-lit src "1")
+	                       (nl_alloc_str fbuf n src)))))))))))
            ;; --- reader path (M8): read+eval EVERY top-level form, keep the last
            ;; value.  parse_one advances the shared cursor; it returns 1 per form
            ;; and != 1 (e.g. -1 at EOF) when no more forms remain.
@@ -8121,6 +9699,210 @@ before executing." out out))
     (error "[standalone] codesign failed for %s" out))))
 
 ;;;###autoload
+(defun nelisp-standalone--artifact-runtime-cache-skip-defun-p (name)
+  "Return non-nil when NAME should be omitted from the runtime command cache."
+  (let ((s (symbol-name name)))
+    (or (member s
+	                '("nelisp-artifact--call-process-quiet"
+	                  "nelisp-artifact--read-log-if-exists"
+	                  "nelisp-artifact--read-file-as-string"
+	                  "nelisp-artifact--read-all-from-string"
+	                  "nelisp-artifact--read-one-private-form"
+	                  "nelisp-artifact--read-private-keyword-value"
+	                  "nelisp-artifact--private-keyword-value-pos"
+	                  "nelisp-artifact--read-private-symbol-token"
+	                  "nelisp-artifact--read-private-integer-token"
+	                  "nelisp-artifact--read-private-string-token"
+	                  "nelisp-artifact--read-binary"
+	                  "nelisp-artifact--target-arch"
+	                  "nelisp-artifact--file-size"
+	                  "nelisp-artifact--file-mtime"
+	                  "nelisp-artifact--file-ctime"
+	                  "nelisp-artifact--sibling-manifest-path"
+	                  "nelisp-artifact--native-function-wrapper"
+	                  "nelisp-artifact--native-function-symbol"
+	                  "nelisp-artifact--native-function-artifact"
+	                  "nelisp-artifact--native-function-fallback"
+	                  "nelisp-artifact--native-function-meta"
+	                  "nelisp-artifact--native-wrapper-p"
+	                  "nelisp-artifact--note-native-dispatch"
+	                  "nelisp-artifact-native-dispatch-report"
+	                  "nelisp-artifact--install-native-functions"
+	                  "nelisp-native-function-call"
+	                  "nelisp-artifact--native-simple-integer-abi-p"
+	                  "nelisp-artifact--all-integers-p"
+	                  "nelisp-artifact--native-defun-forms"
+	                  "nelisp-artifact--native-unsupported-report"
+	                  "nelisp-artifact--normalize-native-policy"
+	                  "nelisp-artifact--native-report-failures"
+	                  "nelisp-artifact--native-failures-message"
+	                  "nelisp-artifact--enforce-native-policy"
+	                  "nelisp-artifact--native-section-plist"
+	                  "nelisp-artifact--artifact-payload"
+	                  "nelisp-artifact--artifact-string"
+	                  "nelisp-artifact--preload-records"
+	                  "nelisp-artifact--replace-file-atomically"
+	                  "nelisp-artifact--runtime-image-forms"
+	                  "nelisp-artifact--parse-payload"
+	                  "nelisp-artifact--parse-payload-fast"
+	                  "nelisp-artifact--read-payload"
+	                  "nelisp-artifact--read-manifest-full"
+	                  "nelisp-artifact--read-manifest-fast"
+	                  "nelisp-artifact--read-manifest-for-load"
+	                  "nelisp-artifact--validate-input-record"
+	                  "nelisp-artifact--validate"
+	                  "nelisp-artifact-load-file"
+	                  "nelisp-artifact--validate-elc"
+	                  "nelisp-artifact-read-manifest"
+	                  "nelisp-artifact--artifact-kind"
+	                  "nelisp-artifact--artifact-kind-from-suffix"
+	                  "nelisp-artifact-source-artifact-path"
+	                  "nelisp-artifact--source-artifact-candidates"
+	                  "nelisp-artifact-load-source-file"
+	                  "nelisp-artifact-load-source-or-source-file"
+	                  "nelisp-artifact--eval-forms"
+	                  "nelisp-artifact--parse-source-command-args"
+	                  "load-elisp-source"
+	                  "eval-elisp-source"
+	                  "nelisp-artifact--small-string-hash"
+	                  "nelisp-artifact--native-fast-driver-c"
+	                  "nelisp-artifact--shell-quote"
+	                  "nelisp-artifact--el-file-p"
+	                  "nelisp-artifact--nonempty-lines"
+	                  "nelisp-artifact--collect-el-files-with-find"
+	                  "nelisp-artifact--collect-el-files"
+	                  "nelisp-artifact--neln-artifact-p"
+	                  "nelisp-artifact--collect-neln-artifacts-with-find"
+	                  "nelisp-artifact--collect-neln-artifacts"
+	                  "nelisp-artifact--audit-input-source-paths"
+	                  "nelisp-artifact--audit-input-artifact-paths"
+	                  "nelisp-artifact--native-report-native-count"
+	                  "nelisp-artifact--native-report-gap-names"
+	                  "nelisp-artifact--audit-existing-neln"
+	                  "nelisp-artifact--audit-source-neln"
+	                  "nelisp-artifact--audit-status-rank"
+	                  "nelisp-artifact--audit-entry-line"
+	                  "nelisp-artifact--audit-summary"
+	                  "nelisp-artifact--parse-audit-args"
+	                  "nelisp-artifact--unique-strings"
+	                  "audit-elisp-artifacts"
+	                  "exec-elisp-artifact"
+	                  "eval-elisp-artifact"
+	                  "inspect-elisp-artifact"
+	                  "nelisp-artifact--canonical-integer-token-p"
+	                  "nelisp-artifact--write-file"
+                  "nelisp-artifact--write-base64-decoded-file"
+                  "nelisp-artifact--write-native-object-file"
+	                  "nelisp-artifact--read-native-object-base64"
+	                  "nelisp-artifact--delete-if-exists"
+	                  "nelisp-artifact--make-temp-path"
+	                  "nelisp-artifact--make-temp-directory"
+	                  "nelisp-artifact--file-record"
+	                  "nelisp-artifact--form-profile-head"
+	                  "nelisp-artifact--read-top-level-forms-rd-one"
+	                  "nelisp-artifact--read-top-level-forms"
+	                  "nelisp-artifact--compiler-plist"
+	                  "nelisp-artifact--plist-put-present"
+	                  "nelisp-artifact--extract-provided-feature"
+	                  "nelisp-artifact--collect-features"
+	                  "nelisp-artifact--try-compile-defun"
+                  "nelisp-artifact--compile-top-level-form"
+	                  "nelisp-artifact--write-elf-rel-object"
+	                  "nelisp-artifact--native-defun-entry"
+	                  "nelisp-artifact--native-defun-metadata"
+	                  "nelisp-artifact--manifest-plist"
+                  "nelisp-artifact--write-pair-atomically"
+                  "nelisp-artifact-compile-file"
+                  "nelisp-artifact--runtime-image-source"
+                  "nelisp-artifact-compile-runtime-image-file"
+                  "nelisp-artifact--byte-compile-to"
+                  "nelisp-artifact--elc-manifest-plist"
+                  "nelisp-artifact-compile-elc-file"
+                  "nelisp-artifact-load-or-compile-source-file"
+                  "nelisp-artifact-native-exec"
+                  "nelisp-artifact--native-exec-cache-root"
+                  "nelisp-artifact--native-exec-cache-key"
+                  "nelisp-artifact--native-exec-cache-exe"
+                  "nelisp-artifact--native-exec-fast-build"
+                  "nelisp-artifact--native-exec-fast-exe"
+                  "nelisp-artifact-native-exec-fast-simple-uncached"
+                  "nelisp-artifact--native-exec-run-captured-stdout"
+                  "nelisp-artifact--native-exec-run-captured"
+                  "nelisp-artifact-native-exec-fast-simple"
+                  "nelisp-artifact-native-exec-fast-simple-stdout"
+                  "nelisp-artifact-native-exec-fast-simple-write-stdout"
+                  "nelisp-artifact--native-exec-parse-stdout"
+                  "nelisp-artifact-native-exec-general"
+                  "compile-elisp-artifact"
+                  "compile-elisp-artifacts"
+                  "compile-runtime-image"
+                  "native-exec-elisp-artifact"))
+        (string-match-p "native-compile" s)
+        (string-match-p "native-compiler" s)
+        (string-match-p "native-driver" s)
+        (string-match-p "native-trampoline" s)
+        (string-match-p "native-general" s)
+        (string-match-p "parse-compile" s))))
+
+(defun nelisp-standalone--artifact-runtime-cache-filter-source (source)
+  "Return SOURCE with cache-irrelevant heavy defuns removed."
+  (let ((pos 0)
+        (len (length source))
+        (forms nil)
+        form)
+    (while (< pos len)
+      (condition-case nil
+          (let ((read-result (read-from-string source pos)))
+            (setq form (car read-result))
+            (setq pos (cdr read-result))
+            (unless (and (consp form)
+                         (eq (car form) 'defun)
+                         (symbolp (nth 1 form))
+                         (nelisp-standalone--artifact-runtime-cache-skip-defun-p
+                          (nth 1 form)))
+              (push form forms)))
+        (end-of-file
+         (setq pos len))))
+    (mapconcat (lambda (form) (concat (prin1-to-string form) "\n"))
+               (nreverse forms)
+               "")))
+
+(defun nelisp-standalone-build-artifact-runtime-cache ()
+  "Build the standalone artifact command runtime `.nelc' cache.
+The cache is an implementation detail of the user-facing `target/nelisp'
+binary: artifact commands use it when present and fall back to the full source
+loader when it is absent."
+  (require 'nelisp-artifact)
+  (make-directory (file-name-directory
+                   nelisp-standalone--artifact-runtime-source-path)
+                  t)
+  (let* ((runtime-source (nelisp-standalone--artifact-command-runtime-src t))
+         (body-marker "(defconst nelisp-artifact--magic")
+         (body-start (or (string-search body-marker runtime-source) 0))
+         (body-end (or (string-search
+                        "(fset 'nelisp-artifact--read-file-as-string"
+                        runtime-source body-start)
+                       (length runtime-source)))
+         (body-source (substring runtime-source body-start body-end)))
+    (with-temp-file nelisp-standalone--artifact-runtime-source-path
+      (insert (nelisp-standalone--artifact-runtime-cache-filter-source
+               body-source))))
+  (nelisp-artifact-compile-file
+   nelisp-standalone--artifact-runtime-source-path
+   nelisp-standalone--artifact-runtime-cache-path
+   nil nil nil nil nil 'nelc)
+  (with-temp-file nelisp-standalone--artifact-runtime-cache-enable-path
+    (insert "enabled "
+            (secure-hash
+             'sha256
+             (nelisp-artifact--read-file-as-string
+              nelisp-standalone--artifact-runtime-cache-path))
+            "\n"))
+  (message "[standalone-reader] artifact runtime cache -> %s (enabled)"
+           nelisp-standalone--artifact-runtime-cache-path)
+  nelisp-standalone--artifact-runtime-cache-path)
+
+;;;###autoload
 (defun nelisp-standalone-build-reader ()
   "Incrementally build the reader-path standalone binary; return its path."
   (setq nelisp-standalone--recompiled nil)
@@ -8151,6 +9933,7 @@ before executing." out out))
     (message "[standalone-reader] linked %d units -> %s (src=%S)"
              (length units) out
              (nelisp-standalone--reader-src))
+    (nelisp-standalone-build-artifact-runtime-cache)
     out))
 
 ;;;###autoload
@@ -8202,6 +9985,13 @@ before executing." out out))
         (stats-out nil)
         (growth-out nil)
         (load-out nil)
+        (artifact-src nil)
+        (artifact-out nil)
+        (runtime-image nil)
+        (runtime-artifact-out nil)
+        (runtime-artifact-eval-out nil)
+        (artifact-inspect-out nil)
+        (artifact-eval-out nil)
         (rc nil))
     (unwind-protect
         (progn
@@ -8248,8 +10038,76 @@ before executing." out out))
             (setq load-out (buffer-string)))
           (unless (and (= rc 0) (equal load-out "(1 2 3)\n"))
             (error "--load exit=%S stdout=%S" rc load-out))
+          (setq artifact-src (make-temp-file "nelisp-reader-artifact-" nil ".el"))
+          (setq artifact-out (make-temp-file "nelisp-reader-artifact-" nil ".nelc"))
+          (ignore-errors (delete-file artifact-out))
+          (with-temp-file artifact-src
+            (insert "(defun nelisp-reader-artifact-hot (x) (+ x 1))\n"))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "compile-elisp-artifact"
+                                   "--kind" "nelc"
+                                   "--input" artifact-src
+                                   "--output" artifact-out)))
+          (unless (and (= rc 0)
+                       (file-exists-p artifact-out)
+                       (file-exists-p (concat artifact-out ".manifest.el")))
+            (error "compile-elisp-artifact exit=%S output=%S" rc artifact-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "eval-elisp-artifact" artifact-out
+                                   "(nelisp-reader-artifact-hot 41)"))
+            (setq artifact-eval-out (buffer-string)))
+          (unless (and (= rc 0) (equal artifact-eval-out "42\n"))
+            (error "eval-elisp-artifact exit=%S stdout=%S" rc artifact-eval-out))
+          (setq runtime-image
+                (make-temp-file "nelisp-reader-runtime-image-" nil ".nlri"))
+          (setq runtime-artifact-out
+                (make-temp-file "nelisp-reader-runtime-image-" nil ".nelc"))
+          (ignore-errors (delete-file runtime-artifact-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "dump-runtime-image" runtime-image
+                                   "(defun nelisp-reader-runtime-hot (x) (+ x 2))")))
+          (unless (and (= rc 0) (file-exists-p runtime-image))
+            (error "dump-runtime-image artifact source exit=%S" rc))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "compile-runtime-image"
+                                   "--kind" "nelc"
+                                   "--input" runtime-image
+                                   "--output" runtime-artifact-out)))
+          (unless (and (= rc 0)
+                       (file-exists-p runtime-artifact-out)
+                       (file-exists-p
+                        (concat runtime-artifact-out ".manifest.el")))
+            (error "compile-runtime-image exit=%S output=%S"
+                   rc runtime-artifact-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "eval-elisp-artifact" runtime-artifact-out
+                                   "(nelisp-reader-runtime-hot 40)"))
+            (setq runtime-artifact-eval-out (buffer-string)))
+          (unless (and (= rc 0) (equal runtime-artifact-eval-out "42\n"))
+            (error "eval runtime artifact exit=%S stdout=%S"
+                   rc runtime-artifact-eval-out))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil t nil
+                                   "inspect-elisp-artifact" artifact-out))
+            (setq artifact-inspect-out (buffer-string)))
+          (unless (and (= rc 0)
+                       (string-match-p "nelisp-elisp-artifact-manifest-v1"
+                                       artifact-inspect-out))
+            (error "inspect-elisp-artifact exit=%S stdout=%S"
+                   rc artifact-inspect-out))
           (message "[standalone-reader] cli smoke PASS"))
-      (ignore-errors (delete-file tmp)))))
+      (ignore-errors (delete-file tmp))
+      (ignore-errors (delete-file artifact-src))
+      (ignore-errors (delete-file artifact-out))
+      (ignore-errors (delete-file (concat artifact-out ".manifest.el")))
+      (ignore-errors (delete-file runtime-image))
+      (ignore-errors (delete-file runtime-artifact-out))
+      (ignore-errors (delete-file (concat runtime-artifact-out ".manifest.el"))))))
 
 (defun nelisp-standalone--reader-hash-table-literal-smoke ()
   "Assert standalone-reader materialises generated reader literals."
@@ -8332,9 +10190,18 @@ guards the slot-pool floor directly without loading the full vendor file."
 (defun nelisp-standalone--reader-runtime-image-smoke ()
   "Assert standalone-reader runtime-image eval/exec command semantics."
   (let ((tmp (make-temp-file "nelisp-runtime-smoke-" nil ".nlri"))
+        (tmp-fn (make-temp-file "nelisp-runtime-smoke-fn-" nil ".nlri"))
+        (tmp-src (make-temp-file "nelisp-runtime-smoke-src-" nil ".el"))
+        (tmp-load (make-temp-file "nelisp-runtime-smoke-load-" nil ".nlri"))
         (dump-rc nil)
+        (dump-fn-rc nil)
+        (dump-load-rc nil)
         (eval-rc nil)
         (eval-out nil)
+        (eval-fn-rc nil)
+        (eval-fn-out nil)
+        (eval-load-rc nil)
+        (eval-load-out nil)
         (exec-rc nil)
         (exec-out nil)
         (missing-rc nil))
@@ -8355,6 +10222,41 @@ guards the slot-pool floor directly without loading the full vendor file."
           (unless (and (= eval-rc 0) (equal eval-out "42\n"))
             (error "eval-runtime-image exit=%S stdout=%S" eval-rc eval-out))
           (with-temp-buffer
+            (setq dump-fn-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "dump-runtime-image" tmp-fn
+                                "(defun image-hot () 99)")))
+          (unless (= dump-fn-rc 0)
+            (error "dump-runtime-image defun exit=%S" dump-fn-rc))
+          (with-temp-buffer
+            (setq eval-fn-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "eval-runtime-image" tmp-fn
+                                "(image-hot)"))
+            (setq eval-fn-out (buffer-string)))
+          (unless (and (= eval-fn-rc 0) (equal eval-fn-out "99\n"))
+            (error "eval-runtime-image defun exit=%S stdout=%S"
+                   eval-fn-rc eval-fn-out))
+          (with-temp-file tmp-src
+            (insert "(setq loaded-base 39)\n(defun loaded-hot () 3)\n"))
+          (with-temp-buffer
+            (setq dump-load-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "dump-runtime-image" tmp-load
+                                "--load" tmp-src
+                                "(setq loaded-add 0)")))
+          (unless (= dump-load-rc 0)
+            (error "dump-runtime-image --load exit=%S" dump-load-rc))
+          (with-temp-buffer
+            (setq eval-load-rc
+                  (call-process nelisp-standalone--reader-out nil t nil
+                                "eval-runtime-image" tmp-load
+                                "(+ loaded-base loaded-add (loaded-hot))"))
+            (setq eval-load-out (buffer-string)))
+          (unless (and (= eval-load-rc 0) (equal eval-load-out "42\n"))
+            (error "eval-runtime-image --load exit=%S stdout=%S"
+                   eval-load-rc eval-load-out))
+          (with-temp-buffer
             (setq exec-rc
                   (call-process nelisp-standalone--reader-out nil t nil
                                 "exec-runtime-image" tmp
@@ -8370,7 +10272,13 @@ guards the slot-pool floor directly without loading the full vendor file."
             (error "missing-form exec-runtime-image exit=%S" missing-rc))
           (message "[standalone-reader] runtime-image smoke PASS"))
       (when (file-exists-p tmp)
-        (delete-file tmp)))))
+        (delete-file tmp))
+      (when (file-exists-p tmp-fn)
+        (delete-file tmp-fn))
+      (when (file-exists-p tmp-src)
+        (delete-file tmp-src))
+      (when (file-exists-p tmp-load)
+        (delete-file tmp-load)))))
 
 (defun nelisp-standalone--reader-neln-selftest-smoke ()
   "Assert `--neln-selftest' executes the embedded in-process native demo."

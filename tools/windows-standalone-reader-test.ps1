@@ -296,6 +296,48 @@ if ($null -eq $EvalRuntimeCode) {
 Assert-Output -Label "eval-runtime-image" -Output $EvalRuntimeOutput `
     -Code $EvalRuntimeCode -Expected "42"
 
+$RuntimeFnImage = Join-Path $SmokeDir "runtime-smoke-fn.nlri"
+
+$DumpRuntimeFnOutput = & $Exe dump-runtime-image $RuntimeFnImage "(defun image-hot () 99)"
+$DumpRuntimeFnCode = $LASTEXITCODE
+if ($null -eq $DumpRuntimeFnCode) {
+    $DumpRuntimeFnCode = 0
+}
+Assert-Output -Label "dump-runtime-image defun" -Output $DumpRuntimeFnOutput `
+    -Code $DumpRuntimeFnCode -Expected ""
+
+$EvalRuntimeFnOutput = & $Exe eval-runtime-image $RuntimeFnImage "(image-hot)"
+$EvalRuntimeFnCode = $LASTEXITCODE
+if ($null -eq $EvalRuntimeFnCode) {
+    $EvalRuntimeFnCode = 0
+}
+Assert-Output -Label "eval-runtime-image defun" -Output $EvalRuntimeFnOutput `
+    -Code $EvalRuntimeFnCode -Expected "99"
+
+$RuntimeLoadSource = Join-Path $SmokeDir "runtime-load-src.el"
+$RuntimeLoadImage = Join-Path $SmokeDir "runtime-load-smoke.nlri"
+Set-Content -Path $RuntimeLoadSource `
+    -Value @("(setq loaded-base 39)", "(defun loaded-hot () 3)") `
+    -Encoding UTF8
+
+$DumpRuntimeLoadOutput = & $Exe dump-runtime-image $RuntimeLoadImage `
+    --load $RuntimeLoadSource "(setq loaded-add 0)"
+$DumpRuntimeLoadCode = $LASTEXITCODE
+if ($null -eq $DumpRuntimeLoadCode) {
+    $DumpRuntimeLoadCode = 0
+}
+Assert-Output -Label "dump-runtime-image --load" -Output $DumpRuntimeLoadOutput `
+    -Code $DumpRuntimeLoadCode -Expected ""
+
+$EvalRuntimeLoadOutput = & $Exe eval-runtime-image $RuntimeLoadImage `
+    "(+ loaded-base loaded-add (loaded-hot))"
+$EvalRuntimeLoadCode = $LASTEXITCODE
+if ($null -eq $EvalRuntimeLoadCode) {
+    $EvalRuntimeLoadCode = 0
+}
+Assert-Output -Label "eval-runtime-image --load" -Output $EvalRuntimeLoadOutput `
+    -Code $EvalRuntimeLoadCode -Expected "42"
+
 $ExecRuntimeOutput = & $Exe exec-runtime-image $RuntimeImage "(setq add 2)" "(+ base add)"
 $ExecRuntimeCode = $LASTEXITCODE
 if ($null -eq $ExecRuntimeCode) {

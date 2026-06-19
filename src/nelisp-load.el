@@ -70,6 +70,64 @@ Doc 12 §2.2 C.  Defaults to nil so NeLisp package loading is
 deterministic — host library changes cannot silently shadow a
 NeLisp-authored feature.")
 
+(defvar nelisp-load-prefer-artifacts t
+  "If non-nil, `nelisp-load-file' tries fresh adjacent artifacts first.
+The probe order is NeLisp-native `.neln' first, then portable `.nelc'.
+GNU Emacs `.elc' artifacts are intentionally not used here because
+`nelisp-load-file' loads into the NeLisp runtime, not the host Emacs
+function namespace.")
+
+(defvar nelisp-load-auto-compile-artifacts nil
+  "If non-nil, `nelisp-load-file' refreshes adjacent artifacts on demand.
+When no fresh adjacent artifact exists, the loader asks
+`nelisp-artifact' to compile SOURCE.el to `nelisp-load-auto-compile-kind'
+and then loads the produced artifact.  Source replay remains the fallback
+if compilation is unavailable or fails.")
+
+(defvar nelisp-load-auto-compile-kind 'neln
+  "Artifact kind used by `nelisp-load-auto-compile-artifacts'.")
+
+(defvar nelisp-load-auto-compile-target nil
+  "Optional native target string for on-demand artifact compilation.")
+
+(defvar nelisp-load-auto-compile-native-policy 'opportunistic
+  "Native policy for on-demand artifact compilation.
+See `nelisp-artifact-default-native-policy'.")
+
+(defvar nelisp-load-auto-compile-load-paths nil
+  "Extra load-path directories recorded in on-demand artifact manifests.")
+
+(defvar nelisp-load-auto-compile-preloads nil
+  "Preload files recorded in on-demand artifact manifests.")
+
+(defvar nelisp-load--artifact-probe-active nil
+  "Non-nil while `nelisp-load-file' is probing artifact fallbacks.")
+
+(declare-function nelisp-artifact-load-source-file "nelisp-artifact"
+                  (source-path &optional kinds))
+(declare-function nelisp-artifact-load-or-compile-source-file "nelisp-artifact"
+                  (source-path &optional kinds kind target load-paths preloads
+                               native-policy))
+
+(defun nelisp-load--try-artifact (path)
+  "Try to load a valid compiled artifact for source PATH.
+Return a plist with `:artifact' and `:value' on a hit, or nil on a miss."
+  (when (and nelisp-load-prefer-artifacts
+             (not nelisp-load--artifact-probe-active))
+    (let ((nelisp-load--artifact-probe-active t))
+      (when (and (require 'nelisp-artifact nil t)
+                 (fboundp 'nelisp-artifact-load-source-file))
+        (if (and nelisp-load-auto-compile-artifacts
+                 (fboundp 'nelisp-artifact-load-or-compile-source-file))
+	            (nelisp-artifact-load-or-compile-source-file
+	             path '(neln nelc)
+	             nelisp-load-auto-compile-kind
+	             nelisp-load-auto-compile-target
+	             nelisp-load-auto-compile-load-paths
+	             nelisp-load-auto-compile-preloads
+	             nelisp-load-auto-compile-native-policy)
+          (nelisp-artifact-load-source-file path '(neln nelc)))))))
+
 (defun nelisp-locate-file (feature)
   "Resolve FEATURE to an absolute file path or nil.
 FEATURE is a symbol or string.  The search walks `nelisp-load-path'
@@ -198,9 +256,12 @@ Doc 141 Stage 2: disk read goes through `nelisp-core-fileio', so
 the loader no longer depends on Emacs compatibility buffers or
 editor-style file APIs.  UTF-8 decoding is handled by
 `nelisp-coding' inside `nelisp-core-read-file-as-string'."
-  (unless (nelisp-core-file-readable-p path)
-    (signal 'file-error (list "Cannot read NeLisp file" path)))
-  (nelisp-load-string (nelisp-core-read-file-as-string path) path))
+  (let ((artifact (nelisp-load--try-artifact path)))
+    (if artifact
+        (plist-get artifact :value)
+      (unless (nelisp-core-file-readable-p path)
+        (signal 'file-error (list "Cannot read NeLisp file" path)))
+      (nelisp-load-string (nelisp-core-read-file-as-string path) path))))
 
 ;;; Feature registry (Doc 12 §3.3) -----------------------------------
 

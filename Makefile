@@ -6,7 +6,9 @@
         standalone-tarball standalone-tarball-verify \
         verify-elisp-fixtures \
         standalone-eval standalone-eval-clean standalone-eval-test standalone-eval-j \
-        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test
+        standalone-reader standalone-reader-test standalone-reader-load-smoke standalone-reader-fmt-smoke standalone-reader-process-smoke standalone-reader-realrt-smoke standalone-reader-repl-smoke standalone-reader-prelude-test standalone-selfhost-test standalone-selfhost-mt-test standalone-parallel-compile-test standalone-chunk-growth-test \
+        nelisp-performance-gate nelisp-nelix-command-gate nelisp-native-artifact-gate \
+        nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate
 
 EMACS ?= emacs
 
@@ -151,6 +153,21 @@ standalone-reader-test:
 	$(EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-reader-test
+
+nelisp-performance-gate:
+	./tools/nelisp-performance-gate.sh
+
+nelisp-nelix-command-gate:
+	./tools/nelisp-nelix-command-gate.sh
+
+nelisp-native-artifact-gate:
+	./tools/nelisp-native-artifact-gate.sh
+
+nelisp-runtime-image-cache-gate:
+	./tools/nelisp-runtime-image-cache-gate.sh
+
+nelisp-source-command-substrate-gate:
+	./tools/nelisp-source-command-substrate-gate.sh
 
 # Fast focused loop for CLI load work.  Builds/relinks target/nelisp using the
 # incremental unit cache, then checks only `--load' output instead of running

@@ -1,5 +1,4 @@
-;;; nelisp-stdlib-equal.el --- cycle-safe `equal' built on
-;;; `nelisp--ref-eq' + visited hash-table  -*- lexical-binding: t; -*-
+;;; nelisp-stdlib-equal.el --- cycle-safe `equal'  -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
@@ -32,6 +31,11 @@
 ;; hash-table family.
 
 ;;; Code:
+
+(declare-function nelisp--ref-eq "nelisp-jit-strategy" (a b))
+(declare-function nelisp--record-length "nelisp-jit-strategy" (record))
+(declare-function nelisp--record-ref "nelisp-jit-strategy" (record index))
+(declare-function nelisp--record-type "nelisp-jit-strategy" (record))
 
 (defun nelisp--equal-string (a b)
   "Value-compare two strings without recursing through `string='.
@@ -129,6 +133,10 @@ symbol / nil / t) bypass VISITED — `nelisp--ref-eq' handles them."
    ;; Numbers / symbols / nil / t etc — fall through to value compare.
    (t (eq a b))))
 
+(defun nelisp--equal-heapish-p (x)
+  "Return non-nil when X may need cycle-safe visited tracking."
+  (or (consp x) (vectorp x) (recordp x)))
+
 (defun equal (a b)
   "Return t if A and B are structurally equal, walking shared
 sub-structure exactly once.  Cycle-safe: a self-referential cons
@@ -139,8 +147,18 @@ Doc 50 stage 5b — re-implementation in elisp on top of
 `nelisp--ref-eq' (= identity short-circuit / visited tag) and
 `make-hash-table' (= visited registry).  Shadows the prior Rust
 `bi_equal' dispatch arm via function-cell override at load."
-  (let ((visited (make-hash-table :test 'eq)))
-    (nelisp--equal-rec a b visited)))
+  (cond
+   ((nelisp--ref-eq a b) t)
+   ((and (stringp a) (stringp b))
+    (nelisp--equal-string a b))
+   ((or (stringp a) (stringp b)) nil)
+   ((and (numberp a) (numberp b)) (= a b))
+   ((or (not (nelisp--equal-heapish-p a))
+        (not (nelisp--equal-heapish-p b)))
+    nil)
+   (t
+    (let ((visited (make-hash-table :test 'eq)))
+      (nelisp--equal-rec a b visited)))))
 
 (provide 'nelisp-stdlib-equal)
 

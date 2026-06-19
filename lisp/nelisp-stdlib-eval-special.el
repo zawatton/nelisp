@@ -209,6 +209,10 @@ Reserved for future nemacs layer parity."
   "NeLisp has no buffer-local; equivalent to `setq'."
   (cons 'setq pairs))
 
+(defmacro setq-local (&rest pairs)
+  "NeLisp has no buffer-local; equivalent to `setq'."
+  (cons 'setq pairs))
+
 (defmacro defvar (name &rest args)
   "Define NAME as a global variable, set initial VALUE if unbound.
 With NO value form (`(defvar NAME)' forward declaration) NAME is only

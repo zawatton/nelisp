@@ -26,26 +26,39 @@
 
 ;; ---- core dispatcher ----
 
+(defun nelisp--prn-chunks-add (state chunk)
+  "Append CHUNK to STATE without reversing the accumulated chunk list."
+  (let ((cell (cons chunk nil)))
+    (if (car state)
+        (setcdr (cdr state) cell)
+      (setcar state cell))
+    (setcdr state cell)
+    state))
+
+(defun nelisp--prn-chunks-string (state)
+  "Return the concatenation of chunks held in STATE."
+  (apply #'concat (car state)))
+
 (defun nelisp--prn-string-escaped (s)
   "Return S with `\"' / `\\' / `\\n' / `\\r' / `\\t' escaped per Emacs prin1.
 Other characters pass through verbatim, matching the Rust printer.
 Char comparisons use raw integer codepoints (34 / 92 / 10 / 13 / 9)
 to sidestep any difference in how `?\\X' literals get parsed by the
 bundled reader vs the host."
-  (let ((out nil)
+  (let ((chunks (cons nil nil))
         (i 0)
         (n (length s)))
     (while (< i n)
       (let ((c (aref s i)))
         (cond
-         ((= c 34) (setq out (cons "\\\"" out)))     ; ?\"
-         ((= c 92) (setq out (cons "\\\\" out)))     ; ?\\
-         ((= c 10) (setq out (cons "\\n" out)))      ; ?\n
-         ((= c 13) (setq out (cons "\\r" out)))      ; ?\r
-         ((= c 9)  (setq out (cons "\\t" out)))      ; ?\t
-         (t        (setq out (cons (char-to-string c) out)))))
+         ((= c 34) (nelisp--prn-chunks-add chunks "\\\"")) ; ?\"
+         ((= c 92) (nelisp--prn-chunks-add chunks "\\\\")) ; ?\\
+         ((= c 10) (nelisp--prn-chunks-add chunks "\\n"))  ; ?\n
+         ((= c 13) (nelisp--prn-chunks-add chunks "\\r"))  ; ?\r
+         ((= c 9)  (nelisp--prn-chunks-add chunks "\\t"))  ; ?\t
+         (t        (nelisp--prn-chunks-add chunks (char-to-string c)))))
       (setq i (1+ i)))
-    (apply #'concat (nreverse out))))
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-float (x)
   "Return a compact, round-trip-safe string for float X.
@@ -100,44 +113,51 @@ re-interning of `backquote' / `comma' / `comma-at' under abbrev forms."
   "Print the body of LST (= cons cell) without enclosing parens.
 Handles proper / dotted lists.  Element separator is a single space;
 a non-nil non-cons tail prints as ` . TAIL'."
-  (let ((parts nil)
+  (let ((chunks (cons nil nil))
         (cur lst)
         (first t))
     (while (consp cur)
-      (unless first (setq parts (cons " " parts)))
-      (setq parts (cons (nelisp--prn-to-string (car cur) escape) parts))
+      (unless first
+        (nelisp--prn-chunks-add chunks " "))
+      (nelisp--prn-chunks-add chunks
+                              (nelisp--prn-to-string (car cur) escape))
       (setq first nil)
       (setq cur (cdr cur)))
     (unless (null cur)
-      (setq parts (cons " . " parts))
-      (setq parts (cons (nelisp--prn-to-string cur escape) parts)))
-    (apply #'concat (nreverse parts))))
+      (nelisp--prn-chunks-add chunks " . ")
+      (nelisp--prn-chunks-add chunks (nelisp--prn-to-string cur escape)))
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-vector (vec escape)
   "Print VEC as `[E0 E1 ...]'."
   (let ((n (length vec))
-        (parts (list "[")))
+        (chunks (cons nil nil)))
+    (nelisp--prn-chunks-add chunks "[")
     (let ((i 0))
       (while (< i n)
-        (when (> i 0) (setq parts (cons " " parts)))
-        (setq parts (cons (nelisp--prn-to-string (aref vec i) escape) parts))
+        (when (> i 0)
+          (nelisp--prn-chunks-add chunks " "))
+        (nelisp--prn-chunks-add chunks
+                                (nelisp--prn-to-string (aref vec i) escape))
         (setq i (1+ i))))
-    (setq parts (cons "]" parts))
-    (apply #'concat (nreverse parts))))
+    (nelisp--prn-chunks-add chunks "]")
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-record (rec escape)
   "Print RECORD as `#s(TYPE-TAG SLOT0 SLOT1 ...)'."
   (let ((tag  (nelisp--record-type rec))
         (n    (nelisp--record-length rec))
-        (parts (list "#s(")))
-    (setq parts (cons (nelisp--prn-to-string tag escape) parts))
+        (chunks (cons nil nil)))
+    (nelisp--prn-chunks-add chunks "#s(")
+    (nelisp--prn-chunks-add chunks (nelisp--prn-to-string tag escape))
     (let ((i 0))
       (while (< i n)
-        (setq parts (cons " " parts))
-        (setq parts (cons (nelisp--prn-to-string (nelisp--record-ref rec i) escape) parts))
+        (nelisp--prn-chunks-add chunks " ")
+        (nelisp--prn-chunks-add
+         chunks (nelisp--prn-to-string (nelisp--record-ref rec i) escape))
         (setq i (1+ i))))
-    (setq parts (cons ")" parts))
-    (apply #'concat (nreverse parts))))
+    (nelisp--prn-chunks-add chunks ")")
+    (nelisp--prn-chunks-string chunks)))
 
 (defun nelisp--prn-to-string (obj escape)
   "Convert OBJ to its printed representation.

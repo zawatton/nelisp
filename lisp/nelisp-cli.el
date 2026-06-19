@@ -56,8 +56,14 @@
 ;;; Code:
 
 (declare-function compile-elisp-artifact "nelisp-artifact" (args))
+(declare-function compile-elisp-artifacts "nelisp-artifact" (args))
+(declare-function compile-runtime-image "nelisp-artifact" (args))
+(declare-function audit-elisp-artifacts "nelisp-artifact" (args))
 (declare-function exec-elisp-artifact "nelisp-artifact" (args))
 (declare-function eval-elisp-artifact "nelisp-artifact" (args))
+(declare-function load-elisp-source "nelisp-artifact" (args))
+(declare-function eval-elisp-source "nelisp-artifact" (args))
+(declare-function native-exec-elisp-artifact "nelisp-artifact" (args))
 (declare-function inspect-elisp-artifact "nelisp-artifact" (args))
 (declare-function nelisp--read-all-from-string-impl "nelisp-reader" (input))
 (declare-function nelisp--syscall-read-file "nelisp-stdlib-os" (path))
@@ -88,9 +94,15 @@ constant before the elisp `nelisp-cli-main' dispatch runs.")
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
        nelisp compile-elisp-artifact ...  # write a private .nelc + manifest
-       nelisp exec-elisp-artifact FILE.nelc FORM...
-       nelisp eval-elisp-artifact FILE.nelc FORM...
-       nelisp inspect-elisp-artifact FILE.nelc
+       nelisp compile-elisp-artifacts ... # compile FILE.el/DIR trees to adjacent artifacts
+       nelisp compile-runtime-image ...   # compile runtime image to .nelc/.neln
+       nelisp audit-elisp-artifacts ...   # report native coverage for adjacent .neln artifacts
+       nelisp exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
+       nelisp eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
+       nelisp load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el
+       nelisp eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...
+       nelisp native-exec-elisp-artifact FILE.neln SYMBOL ARG...
+       nelisp inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc
        nelisp -                         # read from stdin and print the last result
        nelisp --batch [-Q] [-L DIR...] [--setenv VAR=VAL...] [--eval EXPR...] [-l FILE...] [-f FUNC]
                                         # Doc 49 build-host batch mode"
@@ -705,13 +717,31 @@ See file header for the CLI surface + exit-code contract."
      ;; compile-elisp-artifact ...
      ((and (>= n 1) (equal (nth 0 args) "compile-elisp-artifact"))
       (nelisp--cli-run-artifact-command #'compile-elisp-artifact args))
-     ;; exec-elisp-artifact FILE.nelc FORM...
+     ;; compile-elisp-artifacts ...
+     ((and (>= n 1) (equal (nth 0 args) "compile-elisp-artifacts"))
+      (nelisp--cli-run-artifact-command #'compile-elisp-artifacts args))
+     ;; compile-runtime-image ...
+     ((and (>= n 1) (equal (nth 0 args) "compile-runtime-image"))
+      (nelisp--cli-run-artifact-command #'compile-runtime-image args))
+     ;; audit-elisp-artifacts ...
+     ((and (>= n 1) (equal (nth 0 args) "audit-elisp-artifacts"))
+      (nelisp--cli-run-artifact-command #'audit-elisp-artifacts args))
+     ;; exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
      ((and (>= n 2) (equal (nth 0 args) "exec-elisp-artifact"))
       (nelisp--cli-run-artifact-command #'exec-elisp-artifact args))
-     ;; eval-elisp-artifact FILE.nelc FORM...
+     ;; eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...
      ((and (>= n 2) (equal (nth 0 args) "eval-elisp-artifact"))
       (nelisp--cli-run-artifact-command #'eval-elisp-artifact args))
-     ;; inspect-elisp-artifact FILE.nelc
+     ;; load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el
+     ((and (>= n 2) (equal (nth 0 args) "load-elisp-source"))
+      (nelisp--cli-run-artifact-command #'load-elisp-source args))
+     ;; eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...
+     ((and (>= n 3) (equal (nth 0 args) "eval-elisp-source"))
+      (nelisp--cli-run-artifact-command #'eval-elisp-source args))
+     ;; native-exec-elisp-artifact FILE.neln SYMBOL ARG...
+     ((and (>= n 2) (equal (nth 0 args) "native-exec-elisp-artifact"))
+      (nelisp--cli-run-artifact-command #'native-exec-elisp-artifact args))
+     ;; inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc
      ((and (>= n 2) (equal (nth 0 args) "inspect-elisp-artifact"))
       (nelisp--cli-run-artifact-command #'inspect-elisp-artifact args))
      ;; -  (stdin)

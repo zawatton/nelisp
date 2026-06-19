@@ -90,6 +90,95 @@ x86_64 Linux."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/native-exec-general-string-args ()
+  "Host native exec can pass string slots to string-reading native defuns."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-native-string-" t))
+         (source-path (expand-file-name "m.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          "(defun nat-ng-string-len (s)
+  (str-len s))
+(defun nat-ng-string-first-byte (s)
+  (str-byte-at s 0))
+(provide 'nat-ng-string)\n"))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (load source-path nil t)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (should (= (nelisp-artifact-native-exec-general
+                      artifact-path "nat-ng-string-len" '("abc"))
+                     3))
+          (should (= (nelisp-artifact-native-exec-general
+                      artifact-path "nat-ng-string-first-byte" '("abc"))
+                     ?a)))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/native-exec-general-string-result ()
+  "Host native exec can decode string results from native defuns."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-native-string-result-" t))
+         (source-path (expand-file-name "m.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          "(defun nat-ng-string-echo (s)
+  s)
+(defun nat-ng-string-select (s flag)
+  (if (> flag 0) s \"no\"))
+(provide 'nat-ng-string-result)\n"))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (load source-path nil t)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (should (equal (nelisp-artifact-native-exec-general
+                          artifact-path "nat-ng-string-echo" '("abc"))
+                         "abc"))
+          (should (equal (nelisp-artifact-native-exec-general
+                          artifact-path "nat-ng-string-select" '("abc" 1))
+                         "abc"))
+          (should (equal (nelisp-artifact-native-exec-general
+                          artifact-path "nat-ng-string-select" '("abc" 0))
+                         "no")))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
+(ert-deftest nelisp-artifact/native-exec-general-mut-str-builder ()
+  "Host native exec can run the mutable-string builder extern lane."
+  (skip-unless (and (nelisp-artifact-native-exec-test--linux-x86_64-p)
+                    (executable-find "cc")
+                    (executable-find "objcopy")))
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-native-mut-str-" t))
+         (source-path (expand-file-name "m.el" temp-dir))
+         (artifact-path (concat source-path ".neln"))
+         (source
+          "(defun nat-ng-mut-str-build (slot)
+  (and (mut-str-make-empty slot 4)
+       (mut-str-push-byte slot 111)
+       (mut-str-push-byte slot 107)
+       (mut-str-push-byte slot 10)
+       (mut-str-finalize slot slot)))
+(provide 'nat-ng-mut-str)\n"))
+    (unwind-protect
+        (progn
+          (write-region source nil source-path nil 'silent)
+          (load source-path nil t)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'neln)
+          (should (equal (nelisp-artifact-native-exec-general
+                          artifact-path "nat-ng-mut-str-build" '(""))
+                         "ok\n")))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (provide 'nelisp-artifact-native-exec-test)
 
 ;;; nelisp-artifact-native-exec-test.el ends here

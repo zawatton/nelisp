@@ -500,24 +500,80 @@ Return (VALUE . NEXT-POS)."
   (mapconcat #'identity strings ","))
 
 (defun nelisp-json--encode-array (items)
-  "Return JSON array string for ITEMS."
-  (concat "[" (nelisp-json--join-with-comma
-               (mapcar #'nelisp-json-encode items))
-          "]"))
+  "Return JSON array string for list ITEMS."
+  (let ((out "[")
+        (first t)
+        (cur items))
+    (while cur
+      (unless first
+        (setq out (concat out ",")))
+      (setq out (concat out (nelisp-json-encode (car cur))))
+      (setq first nil)
+      (setq cur (cdr cur)))
+    (concat out "]")))
+
+(defun nelisp-json--encode-vector (items)
+  "Return JSON array string for vector ITEMS without list conversion."
+  (let ((out "[")
+        (i 0)
+        (n (length items)))
+    (while (< i n)
+      (when (> i 0)
+        (setq out (concat out ",")))
+      (setq out (concat out (nelisp-json-encode (aref items i))))
+      (setq i (1+ i)))
+    (concat out "]")))
+
+(defun nelisp-json--encode-object-entry (key value)
+  "Return one JSON object member for KEY and VALUE."
+  (concat (nelisp-json-encode-string
+           (nelisp-json--normalize-object-key key))
+          ":"
+          (nelisp-json-encode value)))
 
 (defun nelisp-json--encode-object-pairs (pairs)
   "Return JSON object string for PAIRS."
-  (concat
-   "{"
-   (nelisp-json--join-with-comma
-    (mapcar
-     (lambda (pair)
-       (concat (nelisp-json-encode-string
-                (nelisp-json--normalize-object-key (car pair)))
-               ":"
-               (nelisp-json-encode (cdr pair))))
-     pairs))
-   "}"))
+  (let ((out "{")
+        (first t)
+        (cur pairs))
+    (while cur
+      (unless first
+        (setq out (concat out ",")))
+      (setq out (concat out
+                        (nelisp-json--encode-object-entry
+                         (car (car cur)) (cdr (car cur)))))
+      (setq first nil)
+      (setq cur (cdr cur)))
+    (concat out "}")))
+
+(defun nelisp-json--encode-plist-object (plist)
+  "Return JSON object string for PLIST without allocating pair cells."
+  (let ((out "{")
+        (first t)
+        (cur plist))
+    (while cur
+      (unless first
+        (setq out (concat out ",")))
+      (setq out (concat out
+                        (nelisp-json--encode-object-entry
+                         (car cur) (cadr cur))))
+      (setq first nil)
+      (setq cur (cddr cur)))
+    (concat out "}")))
+
+(defun nelisp-json--encode-hash-object (table)
+  "Return JSON object string for hash TABLE without materializing entries."
+  (let ((out "{")
+        (first t))
+    (maphash
+     (lambda (key value)
+       (unless first
+         (setq out (concat out ",")))
+       (setq out (concat out
+                         (nelisp-json--encode-object-entry key value)))
+       (setq first nil))
+     table)
+    (concat out "}")))
 
 (defun nelisp-json--value->object-pairs (value)
   "Return VALUE as a list of (KEY . VALUE) pairs if it is an object.
@@ -611,12 +667,10 @@ an explicit empty hash table to encode an empty object."
    ((nelisp-json--json-false-p value) "false")
    ((numberp value) (nelisp-json--encode-number value))
    ((stringp value) (nelisp-json-encode-string value))
-   ((vectorp value) (nelisp-json--encode-array (append value nil)))
-   ((or (hash-table-p value)
-        (nelisp-json--alist-p value)
-        (nelisp-json--plist-p value))
-    (nelisp-json--encode-object-pairs
-     (nelisp-json--value->object-pairs value)))
+   ((vectorp value) (nelisp-json--encode-vector value))
+   ((hash-table-p value) (nelisp-json--encode-hash-object value))
+   ((nelisp-json--alist-p value) (nelisp-json--encode-object-pairs value))
+   ((nelisp-json--plist-p value) (nelisp-json--encode-plist-object value))
    ((and (listp value)
          value
          (cl-every #'consp value))

@@ -735,7 +735,7 @@ shared `nl_arena_base' slot."
         (should (tree-member-p '(ptr-write-u64 (+ base 792) 0 (+ base #x400)) arena))))))
 
 (ert-deftest nelisp-standalone-target-stage8-arena-base-slot-unit ()
-  "Doc 140 Stage 8: every chunked native target exports `nl_arena_base'.
+  "Doc 140 Stage 8: chunked native targets export driver-owned bss globals.
 Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
   (dolist (case '((linux-x86_64 "arena-base.o")
                   (windows-x86_64 "arena-base.obj")
@@ -744,12 +744,27 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
       (let* ((nelisp-standalone--target target)
              (u (nelisp-standalone--arena-base-slot-unit))
              (syms (plist-get u :symbols))
-             (sym (car syms)))
+             (by-name (mapcar (lambda (sym)
+                                (cons (plist-get sym :name) sym))
+                              syms)))
         (should (equal name (plist-get u :name)))
-        (should (= 1 (length syms)))
-        (should (equal "nl_arena_base" (plist-get sym :name)))
-        (should (eq 'bss (plist-get sym :section)))
-        (should (equal 8 (cdr (assq 'bss (plist-get u :sections)))))))))
+        (should (equal '("nl_arena_base"
+                         "nl_rootstack_top"
+                         "nl_rootstack_region"
+                         "nl_gc_diag"
+                         "nl_safepoint_ctx")
+                       (mapcar (lambda (sym) (plist-get sym :name)) syms)))
+        (dolist (expected '(("nl_arena_base" . 0)
+                            ("nl_rootstack_top" . 8)
+                            ("nl_rootstack_region" . 16)
+                            ("nl_gc_diag" . 1048592)
+                            ("nl_safepoint_ctx" . 1048656)))
+          (let ((sym (cdr (assoc (car expected) by-name))))
+            (should sym)
+            (should (equal (cdr expected) (plist-get sym :value)))
+            (should (eq 'bss (plist-get sym :section)))))
+        (should (equal (+ 3728 1048576)
+                       (cdr (assq 'bss (plist-get u :sections)))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
   "Doc 140 Stage 8: standalone link units append the `nl_arena_base' slot unit."

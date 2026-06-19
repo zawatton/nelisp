@@ -11,6 +11,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
 (require 'nelisp-json)
 
@@ -103,6 +104,31 @@
     (should (string-match-p "\"jsonrpc\":\"2.0\"" encoded))
     (should (string-match-p "\"method\":\"tools/call\"" encoded))
     (should (string-match-p "\"path\":\"/tmp/a.txt\"" encoded))))
+
+(ert-deftest nelisp-json-encode-compact-avoids-mapcar-join-buffer ()
+  "Compact encode should stream arrays/objects instead of mapcar+join."
+  (let ((old-mapcar (symbol-function 'mapcar))
+        (mapcar-calls 0)
+        result)
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'mapcar)
+                     (lambda (&rest args)
+                       (setq mapcar-calls (1+ mapcar-calls))
+                       (apply old-mapcar args))))
+            (setq result
+                  (list
+                   (nelisp-json-encode [1 2 3])
+                   (nelisp-json-encode '(1 2 3))
+                   (nelisp-json-encode '(:a 1 :b 2))
+                   (nelisp-json-encode '(("a" . 1) ("b" . 2))))))
+          (should (equal result
+                         '("[1,2,3]"
+                           "[1,2,3]"
+                           "{\"a\":1,\"b\":2}"
+                           "{\"a\":1,\"b\":2}")))
+          (should (= mapcar-calls 0)))
+      (fset 'mapcar old-mapcar))))
 
 (ert-deftest nelisp-json-encode-rejects-invalid-key ()
   (should-error (nelisp-json-encode '((1 . "bad")))

@@ -1,28 +1,59 @@
 ;;; nelisp-stdlib-plist-str.el --- Sweep 9 G4 plist + simple string  -*- lexical-binding: t; -*-
 
-(defun plist-member (plist key)
-  (let ((cur plist) (found nil))
-    (while (and cur (not found))
-      (if (eq (car cur) key)
-          (setq found cur)
-        (setq cur (cdr (cdr cur)))))
+(defun plist-member (plist key &optional predicate)
+  (let ((cur plist)
+        (found nil))
+    (if predicate
+        (while (and cur (not found))
+          (if (funcall predicate (car cur) key)
+              (setq found cur)
+            (setq cur (cdr (cdr cur)))))
+      (while (and cur (not found))
+        (if (eq (car cur) key)
+            (setq found cur)
+          (setq cur (cdr (cdr cur))))))
     found))
 
-(defun plist-get (plist key)
-  (let ((tail (plist-member plist key)))
-    (if tail (car (cdr tail)) nil)))
+(defun plist-get (plist key &optional predicate)
+  (let ((cur plist)
+        (found nil)
+        (value nil))
+    (if predicate
+        (while (and cur (not found))
+          (if (funcall predicate (car cur) key)
+              (progn
+                (setq found t)
+                (setq value (car (cdr cur))))
+            (setq cur (cdr (cdr cur)))))
+      (while (and cur (not found))
+        (if (eq (car cur) key)
+            (progn
+              (setq found t)
+              (setq value (car (cdr cur))))
+          (setq cur (cdr (cdr cur))))))
+    value))
 
-(defun plist-put (plist key value)
-  (let ((tail (plist-member plist key)))
+(defun plist-put (plist key value &optional predicate)
+  (let ((cur plist)
+        (tail nil))
+    (if predicate
+        (while (and cur (not tail))
+          (if (funcall predicate (car cur) key)
+              (setq tail cur)
+            (setq cur (cdr (cdr cur)))))
+      (while (and cur (not tail))
+        (if (eq (car cur) key)
+            (setq tail cur)
+          (setq cur (cdr (cdr cur))))))
     (if tail
         (progn (setcar (cdr tail) value) plist)
-      ;; absent — append "key value" by walking to the end
+      ;; absent: append "key value" by walking to the end
       (if (null plist)
           (cons key (cons value nil))
-        (let ((cur plist))
-          (while (cdr (cdr cur))
-            (setq cur (cdr (cdr cur))))
-          (setcdr (cdr cur) (cons key (cons value nil)))
+        (let ((end plist))
+          (while (cdr (cdr end))
+            (setq end (cdr (cdr end))))
+          (setcdr (cdr end) (cons key (cons value nil)))
           plist)))))
 
 (defun string-empty-p (s)
@@ -1025,23 +1056,17 @@ may be modified.  Callers depending on input identity should
 joined by SEP (default empty string).  SEQ is iterated as a list
 (matching the Rust builtin's MVP contract — vector / string SEQ
 forms are out of scope)."
-  (let ((parts nil)
+  (let ((out "")
+        (first t)
+        (joiner (or sep ""))
         (tail seq))
     (while tail
-      (setq parts (cons (funcall fn (car tail)) parts))
+      (unless first
+        (setq out (concat out joiner)))
+      (setq out (concat out (funcall fn (car tail))))
+      (setq first nil)
       (setq tail (cdr tail)))
-    (let ((rev (nreverse parts))
-          (joiner (or sep "")))
-      (cond
-       ((null rev) "")
-       ((null (cdr rev)) (car rev))
-       (t
-        (let ((acc (car rev))
-              (cur (cdr rev)))
-          (while cur
-            (setq acc (concat acc joiner (car cur)))
-            (setq cur (cdr cur)))
-          acc))))))
+    out))
 
 ;;;; --- Doc 87 §86.1.f Tier 2 wrappers: nl-downcase / nl-upcase ----
 ;;;; --- nl-split-by-non-alnum --------------------------------------

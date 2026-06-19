@@ -103,63 +103,93 @@
       (ptr-read-u64 ptr 0))
 
     ;; ------------------------------------------------------------------
+    ;; Build a NUL-terminated "/dev/tty" C string.
+    ;; u64 little-endian bytes: 2f 64 65 76 2f 74 74 79.
+    (defun nelisp_tty_dev_tty_path ()
+      (let ((buf (alloc-bytes 9 1)))
+        (nelisp_tty_prog2
+         buf
+         (nelisp_tty_prog2
+          (ptr-write-u64 buf 0 8751747723086357551)
+          (ptr-write-u8 buf 8 0)))))
+
+    ;; ------------------------------------------------------------------
     ;; nelisp_tty_raw_enter: raw-mode entry.
     ;; statbuf: *mut u8 — Rust-allocated 60-byte zeroed termios scratch.
     ;; Protocol:
-    ;;   1. tcgetattr(0, statbuf)          rc=-1 → return -1
-    ;;   2. memcpy statbuf → SAVED_TERMIOS (via nl_tty_memcpy_to_saved)
-    ;;   3. Store TTY_FD ← 0, TERMIOS_SAVED ← 1
-    ;;   4. nl_tty_raw_install_hooks()     (Once-gated, no-op if done)
-    ;;   5. cfmakeraw(statbuf)
-    ;;   6. ptr-write-u8 statbuf[22] ← 0  (VTIME = 0)
-    ;;   7. ptr-write-u8 statbuf[23] ← 1  (VMIN = 1)
-    ;;   8. tcsetattr(0, 0, statbuf)       rc=-1 → clear flag, return -2
+    ;;   1. open("/dev/tty", O_RDWR)       failure → fall back to fd 0
+    ;;   2. tcgetattr(fd, statbuf)         rc=-1 → return -1
+    ;;   3. memcpy statbuf → SAVED_TERMIOS (via nl_tty_memcpy_to_saved)
+    ;;   4. Store TTY_FD ← fd, TERMIOS_SAVED ← 1
+    ;;   5. nl_tty_raw_install_hooks()     (Once-gated, no-op if done)
+    ;;   6. cfmakeraw(statbuf)
+    ;;   7. ptr-write-u8 statbuf[22] ← 0  (VTIME = 0)
+    ;;   8. ptr-write-u8 statbuf[23] ← 1  (VMIN = 1)
+    ;;   9. tcsetattr(fd, 0, statbuf)      rc=-1 → clear flag, return -2
     ;;      rc=0  → return 0
     ;;
     ;; After cfmakeraw the c_cc fields may have been set; we override
     ;; them explicitly (matches the Rust: term.c_cc[VMIN]=1; term.c_cc[VTIME]=0).
     (defun nelisp_tty_raw_enter (statbuf)
-      (if (< (extern-call tcgetattr 0 statbuf) 0)
+      (let ((path (nelisp_tty_dev_tty_path)))
+        (nelisp_tty_prog2
+         (nelisp_tty_raw_enter_with_open statbuf path)
+         (dealloc-bytes path 9 1))))
+
+    ;; Open the controlling terminal.  The fd 0 fallback preserves the
+    ;; historical behaviour for embeddings where /dev/tty is unavailable.
+    (defun nelisp_tty_raw_enter_with_open (statbuf path)
+      (nelisp_tty_raw_enter_with_fd
+       statbuf
+       (extern-call open path 2 0)))
+
+    (defun nelisp_tty_raw_enter_with_fd (statbuf fd)
+      (if (< fd 0)
+          (nelisp_tty_raw_enter_on_fd statbuf 0)
+        (nelisp_tty_raw_enter_on_fd statbuf fd)))
+
+    (defun nelisp_tty_raw_enter_on_fd (statbuf fd)
+      (if (< (extern-call tcgetattr fd statbuf) 0)
           -1
         (nelisp_tty_prog2
-         (nelisp_tty_raw_enter_after_get statbuf)
+         (nelisp_tty_raw_enter_after_get statbuf fd)
          (extern-call nl_tty_raw_install_hooks))))
 
-    ;; 1-arg inner: save + cfmakeraw + store flags + tcsetattr.
+    ;; 2-arg inner: save + cfmakeraw + store flags + tcsetattr.
     ;; Called only after tcgetattr succeeded.
-    (defun nelisp_tty_raw_enter_after_get (statbuf)
+    (defun nelisp_tty_raw_enter_after_get (statbuf fd)
       (nelisp_tty_prog2
-       (nelisp_tty_raw_enter_cfmakeraw statbuf)
-       (nelisp_tty_raw_save_and_arm statbuf)))
+       (nelisp_tty_raw_enter_cfmakeraw statbuf fd)
+       (nelisp_tty_raw_save_and_arm statbuf fd)))
 
     ;; Save termios copy + arm the TERMIOS_SAVED flag + TTY_FD.
     ;; Returns 0 always (side-effect only).
-    (defun nelisp_tty_raw_save_and_arm (statbuf)
+    (defun nelisp_tty_raw_save_and_arm (statbuf fd)
       (nelisp_tty_prog2
        (nelisp_tty_prog2
         (extern-call nl_tty_memcpy_to_saved statbuf)
-        (ptr-write-u64 (extern-call nl_tty_fd_ptr) 0 0))
+        (ptr-write-u64 (extern-call nl_tty_fd_ptr) 0 fd))
        (ptr-write-u64 (extern-call nl_tty_saved_flag_ptr) 0 1)))
 
     ;; cfmakeraw + VMIN=1 VTIME=0 + tcsetattr.
     ;; Returns 0 on success, -2 on tcsetattr failure.
-    (defun nelisp_tty_raw_enter_cfmakeraw (statbuf)
+    (defun nelisp_tty_raw_enter_cfmakeraw (statbuf fd)
       (nelisp_tty_prog2
        (extern-call cfmakeraw statbuf)
-       (nelisp_tty_raw_enter_setattr statbuf)))
+       (nelisp_tty_raw_enter_setattr statbuf fd)))
 
     ;; Set VMIN/VTIME bytes then call tcsetattr.
     ;; Returns 0 on success, -2 on failure.
-    (defun nelisp_tty_raw_enter_setattr (statbuf)
+    (defun nelisp_tty_raw_enter_setattr (statbuf fd)
       (nelisp_tty_prog2
        (nelisp_tty_prog2
         (ptr-write-u8 statbuf 22 0)
         (ptr-write-u8 statbuf 23 1))
-       (nelisp_tty_raw_setattr_or_clear statbuf)))
+       (nelisp_tty_raw_setattr_or_clear statbuf fd)))
 
-    ;; tcsetattr(0, TCSANOW=0, statbuf): on failure clear TERMIOS_SAVED and return -2.
-    (defun nelisp_tty_raw_setattr_or_clear (statbuf)
-      (if (< (extern-call tcsetattr 0 0 statbuf) 0)
+    ;; tcsetattr(fd, TCSANOW=0, statbuf): on failure clear TERMIOS_SAVED and return -2.
+    (defun nelisp_tty_raw_setattr_or_clear (statbuf fd)
+      (if (< (extern-call tcsetattr fd 0 statbuf) 0)
           (nelisp_tty_prog2
            -2
            (ptr-write-u64 (extern-call nl_tty_saved_flag_ptr) 0 0))
@@ -176,12 +206,21 @@
 
     ;; Actual tcsetattr with the saved buffer.
     (defun nelisp_tty_raw_leave_do (saved-buf)
+      (nelisp_tty_raw_leave_do_fd
+       saved-buf
+       (nelisp_tty_ptr_read_i64 (extern-call nl_tty_fd_ptr))))
+
+    (defun nelisp_tty_raw_leave_do_fd (saved-buf fd)
       (nelisp_tty_prog2
        0
-       (extern-call tcsetattr
-                    (nelisp_tty_ptr_read_i64 (extern-call nl_tty_fd_ptr))
-                    0
-                    saved-buf)))
+       (nelisp_tty_prog2
+        (extern-call tcsetattr fd 0 saved-buf)
+        (nelisp_tty_close_private_fd fd))))
+
+    (defun nelisp_tty_close_private_fd (fd)
+      (if (> fd 2)
+          (extern-call close fd)
+        0))
 
     ;; ------------------------------------------------------------------
     ;; nelisp_tty_stdin_byte_avail: poll(pfd,1,timeout) + optional read.
@@ -190,23 +229,25 @@
     ;; Returns: >= 0 byte value; -1 = no data; -2 = poll error.
     ;;
     ;; pollfd layout: fd(i32,4B) events(i16,2B) revents(i16,2B)
-    ;; We write fd=0, events=POLLIN(1) before poll.
+    ;; We write fd=TTY_FD, events=POLLIN(1) before poll.
     ;; After poll: check revents & (POLLIN|POLLHUP) = revents & 0x11
     (defun nelisp_tty_stdin_byte_avail (pfd-buf timeout)
-      (nelisp_tty_prog2
-       (nelisp_tty_stdin_poll pfd-buf timeout)
+      (nelisp_tty_stdin_poll_after_init
+       pfd-buf
+       timeout
        (nelisp_tty_pfd_init pfd-buf)))
 
-    ;; Initialize pollfd: fd=0, events=1 (POLLIN).
-    ;; ptr-write-u8 for the i16 fields (little-endian, hi byte = 0).
+    ;; Initialize pollfd: fd=TTY_FD, events=1 (POLLIN), revents=0.
+    ;; struct pollfd is 8 bytes; events at offset 4 gives 1 << 32.
     (defun nelisp_tty_pfd_init (pfd-buf)
-      (nelisp_tty_prog2
-       (nelisp_tty_prog2
-        (ptr-write-u8 pfd-buf 0 0)
-        (ptr-write-u8 pfd-buf 1 0))
-       (nelisp_tty_prog2
-        (ptr-write-u8 pfd-buf 2 0)
-        (ptr-write-u8 pfd-buf 3 0))))
+      (ptr-write-u64
+       pfd-buf
+       0
+       (+ (nelisp_tty_ptr_read_i64 (extern-call nl_tty_fd_ptr))
+          4294967296)))
+
+    (defun nelisp_tty_stdin_poll_after_init (pfd-buf timeout _ignored)
+      (nelisp_tty_stdin_poll pfd-buf timeout))
 
     ;; poll + check + conditional read.
     (defun nelisp_tty_stdin_poll (pfd-buf timeout)
@@ -240,13 +281,18 @@
         -1))
 
     ;; ------------------------------------------------------------------
-    ;; nelisp_tty_winsize_current: ioctl(0, TIOCGWINSZ, ws_buf).
+    ;; nelisp_tty_winsize_current: ioctl(TTY_FD, TIOCGWINSZ, ws_buf).
     ;; ws-buf: *mut u8 — 8-byte scratch (struct winsize).
     ;; Returns packed i64: (col << 16) | row, or -1 on error.
     ;; winsize layout: ws_row(u16,0) ws_col(u16,2)
     ;; TIOCGWINSZ = 0x5413
     (defun nelisp_tty_winsize_current (ws-buf)
-      (nelisp_tty_winsize_dispatch ws-buf (extern-call ioctl 0 21523 ws-buf)))
+      (nelisp_tty_winsize_dispatch
+       ws-buf
+       (extern-call ioctl
+                    (nelisp_tty_ptr_read_i64 (extern-call nl_tty_fd_ptr))
+                    21523
+                    ws-buf)))
 
     (defun nelisp_tty_winsize_dispatch (ws-buf rc)
       (if (< rc 0)

@@ -81,6 +81,46 @@
 (require 'nelisp-actor)
 (require 'nelisp-sys)
 
+;; Standalone reader builds may provide a minimal `require' that marks
+;; features without resolving package-relative load paths.  Keep the
+;; process package self-sufficient for its own PATH lookup surface so
+;; `nelisp-call-process' can run absolute and PATH-resolved programs even
+;; when `nelisp-sys.el' was not actually loaded.
+(unless (boundp 'path-separator)
+  (defconst path-separator ":"))
+
+(unless (fboundp 'nelisp-sys-getenv)
+  (defun nelisp-sys-getenv (name)
+    "Return environment variable NAME, with a conservative standalone PATH."
+    (cond
+     ((and (fboundp 'getenv) (getenv name)))
+     ((equal name "PATH") "/usr/local/bin:/usr/bin:/bin")
+     (t nil))))
+
+(unless (fboundp 'nelisp-sys-access)
+  (defun nelisp-sys-access (path _mode)
+    "Return 0 when PATH exists in a minimal standalone runtime."
+    (if (and (fboundp 'file-exists-p) (file-exists-p path)) 0 -1)))
+
+(unless (fboundp 'nelisp-sys-executable-find)
+  (defun nelisp-sys-executable-find (command)
+    "Return an executable path for COMMAND in minimal standalone runtimes."
+    (unless (and (stringp command) (> (length command) 0))
+      (signal 'wrong-type-argument (list 'stringp command)))
+    (if (string-match-p "/" command)
+        (and (zerop (nelisp-sys-access command 1)) command)
+      (let ((dirs (split-string (or (nelisp-sys-getenv "PATH") "")
+                                path-separator))
+            found)
+        (while (and dirs (not found))
+          (let* ((dir (car dirs))
+                 (path (expand-file-name command
+                                         (if (equal dir "") "." dir))))
+            (when (zerop (nelisp-sys-access path 1))
+              (setq found path)))
+          (setq dirs (cdr dirs)))
+        found))))
+
 ;; --- optional eventloop integration helper ------------------------
 ;;
 ;; `nelisp-process' does *not* hard-require `nelisp-eventloop.el':
@@ -127,6 +167,10 @@
 (declare-function nl-syscall-write          "ext:nelisp-runtime" (fd buf))
 (declare-function nl-syscall-read           "ext:nelisp-runtime" (fd nbytes))
 (declare-function nelisp--apply            "nelisp-eval" (fn args))
+(declare-function nelisp-process-call-process "ext:nelisp-runtime"
+                  (program infile destination display &rest args))
+(declare-function nelisp-process-start "ext:nelisp-runtime"
+                  (program &rest args))
 
 (defun nelisp-process--rust-ffi-available-p ()
   "Return non-nil iff the Phase 7.5 Rust FFI bridge is bound.
@@ -345,10 +389,12 @@ module is loaded, so `nelisp-accept-process-output' can dispatch
 through the standard NeLisp tick path.  When the Phase 7.5 FFI
 bridge lands, the same registration will route through
 `nl_syscall_select' transparently."
-  (ignore args file-handler tty pty-name remote http-buffer match)
+  (when file-handler nil)
   (unless command
     (signal 'wrong-type-argument (list 'listp command)))
-  (let* ((name (or name "nelisp-proc"))
+  (if (fboundp 'nelisp-process-start)
+      (apply #'nelisp-process-start command)
+    (let* ((name (or name "nelisp-proc"))
          (ctype (or connection-type 'pipe))
          (host-args
           (append
@@ -396,7 +442,7 @@ bridge lands, the same registration will route through
     ;; process-output' dispatch.  Failure here is non-fatal — the
     ;; wrap remains usable via the host-bridge fallback.
     (ignore-errors (nelisp-process--register-eventloop wrap))
-    wrap))
+    wrap)))
 
 (defun nelisp-process-send-string (wrap s)
   "Send S to WRAP's stdin."
@@ -558,24 +604,27 @@ Returns the exit status or nil on timeout."
   "Return non-nil iff OBJECT is a `nelisp-process' wrap."
   (nelisp-process-p object))
 
-(defun nelisp-process-object-p (object)
-  "Return non-nil iff OBJECT is a real NeLisp process object.
+(unless (fboundp 'nelisp-process-object-p)
+  (defun nelisp-process-object-p (object)
+    "Return non-nil iff OBJECT is a real NeLisp process object.
 
 This is the process-package spelling used by portable callers that do not want
 to depend on the historical struct predicate name.  It is intentionally an
 alias for `nelisp-processp': hosted runs use the struct-backed async process
 object, while standalone reader builds expose the same predicate through their
 native process vector object."
-  (nelisp-processp object))
+    (nelisp-processp object)))
 
-(defun nelisp-process-async-ready-p ()
-  "Return non-nil when `nelisp-make-process' is a genuine async substrate.
+(unless (fboundp 'nelisp-process-async-ready-p)
+  (defun nelisp-process-async-ready-p ()
+    "Return non-nil when `nelisp-make-process' is a genuine async substrate.
 
 The hosted package path is backed by Emacs `make-process' plus NeLisp filter /
 sentinel trampolines and process objects, so async is ready here.  Standalone
 reader builds should only expose an equivalent true value once their pipe,
 nonblocking read, wait, and process-object builtins are installed."
-  t)
+    (or (fboundp 'make-process)
+        (fboundp 'nelisp-process-start))))
 
 ;; NOTE on Emacs-compat naming: cl-defstruct above auto-defines
 ;; `nelisp-process-name', `nelisp-process-id', `nelisp-process-buffer'
@@ -855,6 +904,29 @@ should contain child stderr bytes only."
       (logand (ash status -8) #xff)
     status))
 
+(defun nelisp-process--resolve-program (program)
+  "Resolve PROGRAM to an executable path when possible."
+  (cond
+   ((string-match-p "/" program) program)
+   ((fboundp 'nelisp-sys-executable-find)
+    (or (nelisp-sys-executable-find program) program))
+   (t program)))
+
+(defun nelisp-process--native-call-process-available-p ()
+  "Return non-nil when the standalone reader call-process builtin exists."
+  (fboundp 'nelisp-process-call-process))
+
+(defun nelisp-process--native-call-process-eligible-p
+    (_infile dest-real dest-err)
+  "Return non-nil when native reader builtin can handle the redirection shape."
+  (and (nelisp-process--native-call-process-available-p)
+       ;; The reader builtin currently redirects stdout/stderr together to a
+       ;; single destination path.  That is sufficient for nil/file stdout
+       ;; cases and for successful curl-backed HTTP fetches; split stderr can
+       ;; be added later in the lower builtin without changing this call site.
+       (or (null dest-real) (stringp dest-real))
+       (or (null dest-err) (stringp dest-err) (eq dest-err t))))
+
 (defun nelisp-process--call-process-syscall
     (program infile dest-real dest-err args)
   "Run PROGRAM with ARGS via Doc 44 fork/exec/wait/dup2 substrate."
@@ -920,7 +992,6 @@ status integer.  On timeout, the cascade in `nelisp-delete-process'
 applies and the integer error code (`nil'-equivalent in Emacs is
 encoded as -1 here so callers can tell live timeouts from clean
 exits)."
-  (ignore display)
   (unless (stringp program)
     (signal 'wrong-type-argument (list 'stringp program)))
   (let* ((dest-real (cond ((and (consp destination)
@@ -944,45 +1015,51 @@ exits)."
                            (err-scratch)
                            ((eq dest-err t) out-buf)
                            (t nil)))
-         (resolved-program (or (nelisp-sys-executable-find program)
-                               (error "nelisp-call-process: executable not found: %s"
-                                      program)))
+         (resolved-program (nelisp-process--resolve-program program))
          (cmd (cons resolved-program args)))
     (unwind-protect
-        (if (nelisp-process--syscall-call-process-eligible-p
+        (if (nelisp-process--native-call-process-eligible-p
              infile dest-real dest-err)
+            (let* ((native-dest (or out-file dest-real))
+                   (exit (apply #'nelisp-process-call-process
+                                resolved-program infile native-dest display args)))
+              (when (and err-file (not (equal err-file native-dest)))
+                (write-region "" nil err-file))
+              exit)
+          (if (nelisp-process--syscall-call-process-eligible-p
+               infile dest-real dest-err)
             (nelisp-process--call-process-syscall
              resolved-program infile dest-real dest-err args)
-          (let ((wrap (nelisp-make-process
-                       :name program
-                       :buffer out-buf
-                       :command cmd
-                       :stderr err-target)))
-            (progn
-              ;; `call-process' connects nil INFILE to null-device.  Close the
-              ;; make-process stdin pipe either way so readers such as cat see EOF.
-              (when infile
-                (unless (file-readable-p infile)
-                  (error "nelisp-call-process: unreadable infile %s" infile))
-                (let ((contents (with-temp-buffer
-                                  (insert-file-contents-literally infile)
-                                  (buffer-string))))
-                  (nelisp-process-send-string wrap contents)))
-              (nelisp-process--send-eof-for-call-process wrap)
-              (let ((exit (nelisp-process-wait-for-exit
-                           wrap nelisp-call-process-default-timeout)))
-                (cond
-                 ((null exit)
-                  ;; Timeout — kill cascade and report -1.
-                  (nelisp-delete-process wrap)
-                  -1)
-                 (t
-                  (nelisp-process--write-file-destination out-file out-buf)
-                  (when err-scratch
-                    (nelisp-process--drain-buffer-process err-scratch)
-                    (nelisp-process--strip-host-status-line err-scratch))
-                  (nelisp-process--write-file-destination err-file err-target)
-                  exit))))))
+            (let ((wrap (nelisp-make-process
+                         :name program
+                         :buffer out-buf
+                         :command cmd
+                         :stderr err-target)))
+              (progn
+                ;; `call-process' connects nil INFILE to null-device.  Close the
+                ;; make-process stdin pipe either way so readers such as cat see EOF.
+                (when infile
+                  (unless (file-readable-p infile)
+                    (error "nelisp-call-process: unreadable infile %s" infile))
+                  (let ((contents (with-temp-buffer
+                                    (insert-file-contents-literally infile)
+                                    (buffer-string))))
+                    (nelisp-process-send-string wrap contents)))
+                (nelisp-process--send-eof-for-call-process wrap)
+                (let ((exit (nelisp-process-wait-for-exit
+                             wrap nelisp-call-process-default-timeout)))
+                  (cond
+                   ((null exit)
+                    ;; Timeout — kill cascade and report -1.
+                    (nelisp-delete-process wrap)
+                    -1)
+                   (t
+                    (nelisp-process--write-file-destination out-file out-buf)
+                    (when err-scratch
+                      (nelisp-process--drain-buffer-process err-scratch)
+                      (nelisp-process--strip-host-status-line err-scratch))
+                    (nelisp-process--write-file-destination err-file err-target)
+                    exit)))))))
       (nelisp-process--kill-scratch-buffer out-scratch)
       (nelisp-process--kill-scratch-buffer err-scratch))))
 
@@ -992,16 +1069,14 @@ exits)."
 Drop-in equivalent of Emacs `call-process-region'.  When DELETE is
 non-nil the region is removed from the current buffer after the
 child has consumed it.  Returns the exit status integer."
-  (ignore display)
+  (when display nil)
   (let* ((stdin (buffer-substring-no-properties start end))
          (out-buf (cond ((bufferp destination) destination)
                         ((stringp destination)
                          (get-buffer-create destination))
                         ((eq destination t) (current-buffer))
                         (t nil)))
-         (resolved-program (or (nelisp-sys-executable-find program)
-                               (error "nelisp-call-process-region: executable not found: %s"
-                                      program)))
+         (resolved-program (nelisp-process--resolve-program program))
          (cmd (cons resolved-program args))
          (wrap (nelisp-make-process
                 :name program

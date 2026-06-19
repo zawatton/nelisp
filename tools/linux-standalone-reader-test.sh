@@ -154,6 +154,18 @@ run_expect_output "dump-runtime-image" "" \
   "$EXE" dump-runtime-image "$RUNTIME_IMAGE" "(setq base 40)"
 run_expect_output "eval-runtime-image" "42" \
   "$EXE" eval-runtime-image "$RUNTIME_IMAGE" "(setq add 2)" "(+ base add)"
+RUNTIME_FN_IMAGE="$SMOKE_DIR/runtime-smoke-fn.nlri"
+run_expect_output "dump-runtime-image defun" "" \
+  "$EXE" dump-runtime-image "$RUNTIME_FN_IMAGE" "(defun image-hot () 99)"
+run_expect_output "eval-runtime-image defun" "99" \
+  "$EXE" eval-runtime-image "$RUNTIME_FN_IMAGE" "(image-hot)"
+RUNTIME_LOAD_SRC="$SMOKE_DIR/runtime-load-src.el"
+RUNTIME_LOAD_IMAGE="$SMOKE_DIR/runtime-load-smoke.nlri"
+printf '%s\n' '(setq loaded-base 39)' '(defun loaded-hot () 3)' >"$RUNTIME_LOAD_SRC"
+run_expect_output "dump-runtime-image --load" "" \
+  "$EXE" dump-runtime-image "$RUNTIME_LOAD_IMAGE" --load "$RUNTIME_LOAD_SRC" "(setq loaded-add 0)"
+run_expect_output "eval-runtime-image --load" "42" \
+  "$EXE" eval-runtime-image "$RUNTIME_LOAD_IMAGE" "(+ loaded-base loaded-add (loaded-hot))"
 run_expect_output "exec-runtime-image" "" \
   "$EXE" exec-runtime-image "$RUNTIME_IMAGE" "(setq add 2)" "(+ base add)"
 run_expect_code "exec-runtime-image missing form" 1 \

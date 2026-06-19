@@ -5,11 +5,7 @@
     (while list
       (setq acc (cons (funcall fn (car list)) acc))
       (setq list (cdr list)))
-    (let ((out nil))
-      (while acc
-        (setq out (cons (car acc) out))
-        (setq acc (cdr acc)))
-      out)))
+    (nreverse acc)))
 
 (defun mapc (fn list)
   (let ((orig list))

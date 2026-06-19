@@ -24,7 +24,15 @@
     acc))
 
 (defun nreverse (list)
-  (reverse list))
+  (let ((prev nil)
+        (cur list)
+        next)
+    (while cur
+      (setq next (cdr cur))
+      (setcdr cur prev)
+      (setq prev cur)
+      (setq cur next))
+    prev))
 
 ;; Wave A28 (2026-05-24) — `last' / `butlast' polyfill for standalone
 ;; NeLisp.  Host Emacs provides both as native primitives (= subr in
