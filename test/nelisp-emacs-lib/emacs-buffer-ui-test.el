@@ -93,7 +93,11 @@
                       (nelisp-ec-buffer-string))))
           (should (string-match-p "^name[[:space:]]+size[[:space:]]+mode[[:space:]]+file$" text))
           (should (string-match-p "^alpha[[:space:]]+5[[:space:]]+text-mode[[:space:]]*$" text))
-          (should (string-match-p "^beta[[:space:]]+0[[:space:]]+emacs-lisp-mode[[:space:]]+/tmp/beta.txt$" text)))))))
+          (should (string-match-p "^beta[[:space:]]+0[[:space:]]+emacs-lisp-mode[[:space:]]+/tmp/beta.txt$" text)))
+        (should (= (nelisp-ec-with-current-buffer buf
+                     (nelisp-ec-point))
+                   (nelisp-ec-with-current-buffer buf
+                     (nelisp-ec-point-min))))))))
 
 (ert-deftest list-buffers-renders-files-standalone-visited-file ()
   (emacs-buffer-ui-test--with-fresh-world

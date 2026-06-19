@@ -266,6 +266,23 @@ Bridge contract with =nelisp-gui=:
 - GUI renders the returned state.  It should not repair or reinterpret the
   command result.
 
+Review checklist for the L2/L3 bridge:
+- State ownership: if a field affects command semantics, L2 is the writer of
+  record after a request.  This includes buffer text/name/file, point, mark,
+  modified/read-only flags, kill-ring/undo mirrors, window layout/selection,
+  tab/frame transport, minibuffer state, status, and error text.
+- Serialization: transport files are snapshots, not independent truth.  L3 may
+  serialize the user input and last displayed snapshot, but after L2 returns it
+  must replace local state from the returned snapshot instead of merging or
+  patching semantic fields.
+- Input contract: new GUI/editor behavior should enter through
+  =/tmp/nemacs-keys= and the persistent session path.  Direct =/tmp/nemacs-cmd=,
+  =/tmp/nemacs-arg=, and direct minibuffer text inputs are migration paths for
+  existing coverage only, not the default route for new workflows.
+- Failure routing: if returned state is semantically wrong, fix L2 runtime or
+  bridge serialization here.  If returned state is correct but pixels, focus,
+  X11 events, or raw key bytes are wrong, fix =nelisp-gui=.
+
 Placement rules:
 - Add command semantics and command-level tests here.
 - Add X11 decode, key/minibuffer transport, drawing, and GUI smoke tests in
