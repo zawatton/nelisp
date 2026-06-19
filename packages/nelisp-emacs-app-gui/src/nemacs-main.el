@@ -34,6 +34,17 @@
 (require 'cl-lib)
 (require 'nemacs-loadup)
 
+;; Bridge thin-adapter (HANDOFF #4): pull the self-contained GUI
+;; file/dired runtime adapters into every nemacs image so the GUI bridge's
+;; `(fboundp 'emacs-fileio-gui-*)' / `emacs-dired-min-gui-*' guards always
+;; take the runtime path in production (matching the test image), making
+;; the bridge's hand-rolled fallbacks dead and removable.  Both files are
+;; leaf modules (no further requires).
+(require 'emacs-fileio-gui)
+(require 'emacs-dired-min-gui)
+(require 'emacs-help-gui)
+(require 'emacs-info)
+
 ;;;; --- options surface ---------------------------------------------
 
 (defvar nemacs-main-options nil
@@ -42,15 +53,24 @@ this file.  Recognised keys:
 
   :batch       t when running in batch mode (= no TUI, no event loop)
   :images      a list of legacy `.nli' image paths to restore after bootstrap
+  :load-path   a list of directory paths to prepend to `load-path'
   :load        a list of file paths to `load' after bootstrap
   :eval-forms  a list of sexps or source strings to evaluate after `:load'
+  :funcall     a list of command/function symbols to call after `:eval-forms'
   :no-banner   t to suppress the ready banner
   :driver      symbol describing the driver (= host or nelisp);
                purely informational, used by `nemacs-status-banner'.")
 
 (defun nemacs-main-option (key &optional default)
   "Return the value of KEY in `nemacs-main-options', or DEFAULT."
-  (or (plist-get nemacs-main-options key) default))
+  ;; Standalone NeLisp's REPL evaluator can capture top-level defvars as
+  ;; lexical nil inside closures.  Resolve through the symbol value so entry
+  ;; functions see the plist installed by `bin/nemacs' immediately before
+  ;; calling `nemacs-main' / `nemacs-batch-main'.
+  (or (plist-get (and (boundp 'nemacs-main-options)
+                      (symbol-value 'nemacs-main-options))
+                 key)
+      default))
 
 ;;;; --- TUI realisation ----------------------------------------------
 
@@ -104,7 +124,8 @@ pumps `emacs-tui-event-input-fn' (= our
 
 (defun nemacs-main--standalone-batch-tui-fallback-p ()
   "Return non-nil when batch tests should use lightweight TUI state."
-  (fboundp 'nelisp--write-stdout-bytes))
+  (and (nemacs-main-option :batch)
+       (fboundp 'nelisp--write-stdout-bytes)))
 
 (defun nemacs-main--prepare-standalone-batch-tui-state ()
   "Prepare lightweight in-memory TUI state for standalone batch gates.
@@ -533,6 +554,14 @@ keys."
       (nemacs-main--define-key
        m (vector (logior nemacs-main--meta-modifier-mask ?x))
        'nemacs-main-execute-extended-command)
+      (nemacs-main--define-key
+       m (vector (logior nemacs-main--meta-modifier-mask ?!))
+       'nemacs-main-shell-command-interactive)
+      (let ((help-map (make-sparse-keymap)))
+        (nemacs-main--define-key help-map (vector 107)
+                                 'nemacs-main-describe-key-interactive)
+        (nemacs-main--define-key m (vector 8) help-map)
+        (nemacs-main--define-key m (vector 'backspace) help-map))
       (setq nemacs-main--global-keymap m)
       (nemacs-main--rebuild-single-key-cache m)))
   nemacs-main--global-keymap)
@@ -738,7 +767,8 @@ Shape: [insert-text TEXT POINT-BEFORE POINT-AFTER].")
 
 Returns one of:
   - integer        plain ASCII char or symbol-as-int from :name
-  - integer + bit  C-X chord (= `(logior CHAR (ash 1 26))')
+  - integer        C-a..C-z control byte (= 1..26)
+  - integer + bit  M-X chord (= `(logior CHAR (ash 1 27))')
   - symbol         function key (= `up', `backspace', `f1', …)
   - the plist itself  fallback for shapes we don't recognise
 
@@ -757,10 +787,17 @@ accepted."
                      (plist-get ev :modifiers))))
       (cond
        ((and char (or (memq 'control mods) (memq 'meta mods)))
-        ;; Modifier bits per upstream Emacs ASCII event encoding.
+        ;; `kbd' represents ASCII control letters as control bytes
+        ;; (C-a..C-z => 1..26), not as a modifier-bit integer.  Meta is
+        ;; layered on top of that byte when both modifiers are present.
         (let ((key char))
-          (when (memq 'control mods)
-            (setq key (logior key nemacs-main--control-modifier-mask)))
+          (when (and (memq 'control mods)
+                     (or (and (>= key ?a) (<= key ?z))
+                         (and (>= key ?A) (<= key ?Z))))
+            (let ((lower (if (and (>= key ?A) (<= key ?Z))
+                             (+ key (- ?a ?A))
+                           key)))
+              (setq key (1+ (- lower ?a)))))
           (when (memq 'meta mods)
             (setq key (logior key nemacs-main--meta-modifier-mask)))
           key))
@@ -806,6 +843,35 @@ the local pure-Elisp keymap substrate is available."
        (<= key 126)
        (fboundp 'self-insert-command)))
 
+(defun nemacs-main--direct-tui-command-p (binding)
+  "Return non-nil when BINDING should run directly in the boot TUI.
+The standalone `command-execute' shim is still catching up with Emacs'
+interactive calling convention.  These commands are implemented in this
+module specifically for the `-nw' event loop, so direct `funcall' keeps
+the boot path deterministic."
+  (memq binding
+        '(nemacs-main-find-file-interactive
+          nemacs-main-save-buffer-interactive
+          nemacs-main-list-buffers-interactive
+          nemacs-main-switch-to-buffer-interactive
+          nemacs-main-kill-buffer-interactive
+          nemacs-main-dired-interactive
+          nemacs-main-info-interactive
+          nemacs-main-shell-command-interactive
+          nemacs-main-query-replace-interactive
+          nemacs-main-describe-key-interactive
+          nemacs-main-describe-function-interactive
+          nemacs-main-describe-variable-interactive)))
+
+(defun nemacs-main--overwrite-mode-active-p ()
+  "Return non-nil when `overwrite-mode' is really enabled.
+The standalone runtime can expose an internal `nelisp--unbound-marker'
+value for defvars that are present but not initialized.  Treat that as
+nil for ordinary editor mode checks."
+  (and (boundp 'overwrite-mode)
+       overwrite-mode
+       (not (eq overwrite-mode 'nelisp--unbound-marker))))
+
 (defun nemacs-main--execute-printable-self-insert (key)
   "Execute printable self-insert KEY without `command-execute'.
 The normal `command-execute' path is semantically general but expensive
@@ -818,8 +884,11 @@ back to `self-insert-command'."
     (emacs-command-loop-set-this-command 'self-insert-command))
   (unwind-protect
       (cond
-       ((and (or (not (boundp 'overwrite-mode))
-                 (not overwrite-mode))
+       ((and (not (nemacs-main--overwrite-mode-active-p))
+             ;; The standalone primitive currently returns without updating
+             ;; `nelisp-ec-buffer-string'.  Keep the host/test fast path, but
+             ;; use the general insert path in the real NeLisp runtime.
+             (not (fboundp 'nl-write-file))
 	             (fboundp 'nelisp-ec-insert-char-code-fast))
 	(let* ((end (nelisp-ec-insert-char-code-fast key))
 	       (beg (1- end)))
@@ -829,8 +898,7 @@ back to `self-insert-command'."
 	  (when (fboundp 'emacs-font-lock-mark-dirty-region)
             (emacs-font-lock-mark-dirty-region beg end))
           end))
-       ((and (or (not (boundp 'overwrite-mode))
-                 (not overwrite-mode))
+       ((and (not (nemacs-main--overwrite-mode-active-p))
              (fboundp 'nelisp-ec-point)
              (fboundp 'nelisp-ec-insert))
         (let ((beg (nelisp-ec-point)))
@@ -859,7 +927,10 @@ back to `self-insert-command'."
                 (nemacs-main--execute-printable-self-insert key))
           (unless nemacs-main--repaint-hint
             (setq nemacs-main--repaint-hint 'current-line)))
-      (quit (nemacs-main--quit)))
+      (quit (nemacs-main--quit))
+      (error
+       (when (fboundp 'message)
+         (message "command error during self-insert"))))
     (nemacs-main--sync-selected-window-point point-after)))
 
 (defun nemacs-main--sync-selected-window-buffer (&optional buffer)
@@ -876,8 +947,15 @@ Return non-nil when the selected window's buffer changed."
                  (or (not (fboundp 'nelisp-ec-buffer-p))
                      (nelisp-ec-buffer-p cb))
                  (not (eq wb cb)))
-        (emacs-window-set-window-buffer w cb)
-        t))))
+        (emacs-window-set-window-buffer w cb))
+      (when (and cb
+                 (fboundp 'nelisp-ec-set-buffer)
+                 (fboundp 'nelisp-ec-current-buffer)
+                 (or (not (fboundp 'nelisp-ec-buffer-p))
+                     (nelisp-ec-buffer-p cb))
+                 (not (eq cb (nelisp-ec-current-buffer))))
+        (nelisp-ec-set-buffer cb))
+      (and w cb (not (eq wb cb))))))
 
 (defun nemacs-main--dispatch-key-code (key &optional source-event)
   "Process a single KEY through the keymap.
@@ -908,8 +986,8 @@ in `nemacs-main--global-keymap', and:
            (or (and (fboundp 'keymapp) (keymapp binding))
                (and (fboundp 'emacs-keymap-keymapp)
                     (emacs-keymap-keymapp binding))))
-      (setq nemacs-main--prefix-keys
-            (or next-vec (vector key))))
+	  (setq nemacs-main--prefix-keys
+		    (or next-vec (vector key))))
      ;; Bound command — execute + reset.
      ((and binding (fboundp 'command-execute))
       (setq nemacs-main--prefix-keys [])
@@ -927,15 +1005,20 @@ in `nemacs-main--global-keymap', and:
         (when (and c (boundp 'last-command-event))
           (setq last-command-event c)))
       (let ((point-after nil))
-        (condition-case _
+        (condition-case err
             (if (nemacs-main--printable-self-insert-p binding key)
                 (progn
                   (setq point-after
                         (nemacs-main--execute-printable-self-insert key))
                   (unless nemacs-main--repaint-hint
                     (setq nemacs-main--repaint-hint 'current-line)))
-              (command-execute binding))
-          (quit (nemacs-main--quit)))
+	      (if (nemacs-main--direct-tui-command-p binding)
+	                  (funcall binding)
+	                (command-execute binding)))
+          (quit (nemacs-main--quit))
+          (error
+           (when (fboundp 'message)
+             (message "command %S failed: %S" binding err))))
         (when (nemacs-main--sync-selected-window-buffer)
           ;; A command such as find-file changed the displayed buffer; force
           ;; the next repaint to rebuild from the new window contents.
@@ -1026,13 +1109,11 @@ Returns non-nil when a SIGCONT was consumed."
 
 (defun nemacs-main--read-line-next-byte (timeout-ms)
   "Return the next minibuffer input byte, or nil on timeout.
-Prefer the NeLisp raw-stdin builtin when it is available.  Otherwise
-fall back to the existing `emacs-tui-event' parser handle so prompt
-input works in prepared TUI/runtime-image paths where stdin has already
-been wired through `emacs-tui-event-input-fn'."
+Prefer the active `emacs-tui-event' handle so bytes already parsed while
+dispatching a prefix key remain visible to prompt readers.  Fall back to
+the NeLisp raw-stdin builtin for minimal prepared paths without an event
+handle."
   (cond
-   ((fboundp 'read-stdin-byte-available)
-    (read-stdin-byte-available timeout-ms))
    ((and nemacs-main--event-handle
          (fboundp 'emacs-tui-event-poll-printable-byte)
          (fboundp 'emacs-tui-event-poll))
@@ -1049,12 +1130,41 @@ been wired through `emacs-tui-event-input-fn'."
            ((eq name 'return) 13)
            ((eq name 'backspace) 127)
            ((and (integerp name) (null mods)) name)
+           ((and (integerp name)
+                 (memq 'control mods)
+                 (or (and (>= name ?a) (<= name ?z))
+                     (and (>= name ?A) (<= name ?Z))))
+            (let ((lower (if (and (>= name ?A) (<= name ?Z))
+                             (+ name (- ?a ?A))
+                           name)))
+              (1+ (- lower ?a))))
            ((and (integerp name) (memq 'control mods) (= name ?g)) 7)
            ((and (integerp name) (memq 'control mods) (= name ?h)) 8)
            ((and (integerp name) (memq 'control mods) (= name ?m)) 13)
            (t nil))))
        (t nil))))
+   ((fboundp 'read-stdin-byte-available)
+    (read-stdin-byte-available timeout-ms))
    (t nil)))
+
+(defun nemacs-main--read-line-repaint (prompt input)
+  "Paint PROMPT and INPUT on the bottom row of the active TUI frame."
+  (let* ((width 80)
+         (row 23)
+         (line (concat prompt input))
+         (clipped (if (> (length line) width)
+                      (substring line 0 width)
+                    line))
+         ;; Pad with spaces to clear stale chars.
+         (pad-len (- width (length clipped)))
+         (full (concat clipped
+                       (if (> pad-len 0)
+                           (make-string pad-len ?\s)
+                         "")))
+         (out (concat "\e[" (number-to-string (1+ row)) ";1H" full)))
+    (if (fboundp 'emacs-tui-backend--emit)
+        (emacs-tui-backend--emit out)
+      (princ out))))
 
 (defun nemacs-main--read-line-blocking (prompt)
   "Doc 51 Track C (2026-05-04) — block-read a line via TUI canvas.
@@ -1067,34 +1177,16 @@ Blocks the event loop while reading — no other commands fire.
 This is intentionally a minimal `read-from-minibuffer'-replacement
 (= the full minibuffer machinery is too heavy for the boot path).
 Used by `nemacs-main-find-file-interactive'."
-  (let* ((h nemacs-main--backend)
-         (f nemacs-main--frame)
-         (height (and f (fboundp 'emacs-tui-backend-frame-height)
-                      (emacs-tui-backend-frame-height f)))
-         (width  (and f (fboundp 'emacs-tui-backend-frame-width)
-                      (emacs-tui-backend-frame-width f)))
-         (row    (and height (1- height)))
-         (input  "")
-         (done   nil)
-         (cancel nil))
-    (cl-flet ((repaint
-               ()
-               (when (and h f row width
-                          (fboundp 'emacs-tui-backend-canvas-draw-text))
-                 (let* ((line (concat prompt input))
-                        (clipped (if (> (length line) width)
-                                     (substring line 0 width)
-                                   line))
-                        ;; Pad with spaces to clear stale chars.
-                        (pad-len (- width (length clipped)))
-                        (full (concat clipped
-                                      (if (> pad-len 0)
-                                          (make-string pad-len ?\s)
-                                        ""))))
-                   (emacs-tui-backend-canvas-draw-text h f row 0 full)
-                   (when (fboundp 'emacs-redisplay-flush-frame)
-                     (emacs-redisplay-flush-frame nemacs-main--redisplay f))))))
-      (repaint)
+  (if (and (eq (or (nemacs-main-option :driver) 'host) 'host)
+           (boundp 'noninteractive)
+           (not noninteractive)
+           (fboundp 'read-string))
+      (let ((overriding-terminal-local-map nil))
+        (read-string prompt))
+    (let ((input  "")
+          (done   nil)
+          (cancel nil))
+      (nemacs-main--read-line-repaint prompt input)
       (while (not done)
         (let ((b (nemacs-main--read-line-next-byte 100)))
           (when b
@@ -1104,20 +1196,175 @@ Used by `nemacs-main-find-file-interactive'."
              ((or (= b 127) (= b 8))                              ; BS / DEL
               (when (> (length input) 0)
                 (setq input (substring input 0 (1- (length input))))
-                (repaint)))
+                (nemacs-main--read-line-repaint prompt input)))
              ((and (>= b 32) (<= b 126))
               (setq input (concat input (string b)))
-              (repaint))))))
+              ;; Drain immediately queued printable bytes in one paint pass.
+              ;; PTY smokes often write an entire path/command at once; doing
+              ;; one bottom-row emit per byte makes long paths miss the
+              ;; short daily-driver observation window.
+              (let ((more t))
+                (while more
+                  (let ((next (nemacs-main--read-line-next-byte 0)))
+                    (cond
+                     ((null next)
+                      (setq more nil))
+                     ((= next 13)
+                      (setq done t
+                            more nil))
+                     ((= next 7)
+                      (setq cancel t
+                            done t
+                            more nil))
+                     ((or (= next 127) (= next 8))
+                      (when (> (length input) 0)
+                        (setq input (substring input 0 (1- (length input))))))
+                     ((and (>= next 32) (<= next 126))
+                      (setq input (concat input (string next))))
+                     (t
+                      (setq more nil))))))
+              (nemacs-main--read-line-repaint prompt input))))))
       (if cancel nil input))))
+
+(defun nemacs-main--file-exists-p (path)
+  "Return non-nil when PATH exists using the safest available primitive."
+  (cond
+   ((and (fboundp 'nelisp-ec-file-exists-p)
+         (nelisp-ec-file-exists-p path))
+    t)
+   ((and (fboundp 'file-exists-p)
+         (file-exists-p path))
+    t)
+   (t nil)))
+
+(defun nemacs-main--read-file-text-direct (path)
+  "Return PATH contents as a string for the standalone TUI file path."
+  (cond
+   ((and (fboundp 'nl-syscall-read-file)
+         (nemacs-main--file-exists-p path))
+    (nl-syscall-read-file path 0 nil))
+   ((and (fboundp 'insert-file-contents)
+         (fboundp 'buffer-string)
+         (nemacs-main--file-exists-p path))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (buffer-string)))
+   ;; `nelisp--syscall-read-file' is intentionally not used here: the current
+   ;; standalone implementation can stop evaluation after the call, which would
+   ;; freeze interactive `C-x C-f'.  Once `nl-syscall-read-file' is exposed in
+   ;; the runtime image this direct TUI path can preserve existing contents.
+   (t "")))
+
+(defun nemacs-main--buffer-name-for-file (path)
+  "Return the buffer name to use for PATH."
+  (let ((name (if (fboundp 'file-name-nondirectory)
+                  (file-name-nondirectory path)
+                path)))
+    (if (and (stringp name) (> (length name) 0))
+        name
+      " *find-file*")))
+
+(defun nemacs-main--record-buffer-file (buffer path)
+  "Record BUFFER as visiting PATH when the core file table is available."
+  (when (boundp 'emacs-fileio--buffer-files)
+    (setq emacs-fileio--buffer-files
+          (cons (cons buffer path)
+                (assq-delete-all buffer emacs-fileio--buffer-files))))
+  path)
+
+(defun nemacs-main--buffer-file-direct (&optional buffer)
+  "Return BUFFER's visited file from the core file table."
+  (let ((buf (or buffer
+                 (and (eq (or (nemacs-main-option :driver) 'host) 'host)
+                      (boundp 'noninteractive)
+                      (not noninteractive)
+                      (fboundp 'current-buffer)
+                      (current-buffer))
+                 (and (fboundp 'nelisp-ec-current-buffer)
+                      (nelisp-ec-current-buffer)))))
+    (or (and buf
+             (boundp 'buffer-file-name)
+             (fboundp 'buffer-local-value)
+             (condition-case nil
+                 (buffer-local-value 'buffer-file-name buf)
+               (error nil)))
+        (and (fboundp 'buffer-file-name)
+             (condition-case nil
+                 (if buf
+                     (with-current-buffer buf
+                       (buffer-file-name))
+                   (buffer-file-name))
+               (error nil)))
+        (and (boundp 'emacs-fileio--buffer-files)
+             (cdr (assq buf emacs-fileio--buffer-files))))))
+
+(defun nemacs-main--visit-file-direct (path)
+  "Visit PATH using `nelisp-ec' buffers and return the buffer.
+This is the standalone TUI path used before the full file I/O runtime is
+fast enough for interactive `-nw'."
+  (let* ((abs (if (fboundp 'expand-file-name)
+                  (expand-file-name path)
+                path))
+         (existing nil))
+    (when (boundp 'emacs-fileio--buffer-files)
+      (catch 'found
+        (dolist (cell emacs-fileio--buffer-files)
+          (when (equal abs (cdr cell))
+            (setq existing (car cell))
+            (throw 'found existing)))))
+    (let ((buffer (or existing
+                      (and (fboundp 'nelisp-ec-generate-new-buffer)
+                           (nelisp-ec-generate-new-buffer
+                            (nemacs-main--buffer-name-for-file abs))))))
+      (unless buffer
+        (signal 'error (list "cannot create buffer for file" abs)))
+      (when (and (not existing)
+                 (fboundp 'nelisp-ec-with-current-buffer))
+        (nelisp-ec-with-current-buffer buffer
+          (when (fboundp 'nelisp-ec-erase-buffer)
+            (nelisp-ec-erase-buffer))
+          (let ((text (nemacs-main--read-file-text-direct abs)))
+            (when (and (stringp text) (> (length text) 0)
+                       (fboundp 'nelisp-ec-insert))
+              (nelisp-ec-insert text)))
+          (when (fboundp 'set-buffer-modified-p)
+            (set-buffer-modified-p nil))))
+      (nemacs-main--record-buffer-file buffer abs)
+      (when (fboundp 'nelisp-ec-set-buffer)
+        (nelisp-ec-set-buffer buffer))
+      buffer)))
+
+(defun nemacs-main--save-buffer-direct ()
+  "Save the current standalone TUI buffer to its visited file."
+  (let* ((buffer (and (fboundp 'nelisp-ec-current-buffer)
+                      (nelisp-ec-current-buffer)))
+         (path (nemacs-main--buffer-file-direct buffer)))
+    (unless path
+      (signal 'error '("save-buffer: buffer is not visiting a file")))
+    (let ((text (if (fboundp 'nelisp-ec-buffer-string)
+                    (nelisp-ec-buffer-string)
+                  (buffer-string))))
+      (cond
+       ((fboundp 'nl-write-file)
+        (nl-write-file path text))
+       ((fboundp 'write-region)
+        (write-region text nil path nil 'silent))
+       (t
+        (signal 'error '("save-buffer: no file writer available"))))
+      (when (fboundp 'set-buffer-modified-p)
+        (set-buffer-modified-p nil))
+      path)))
 
 (defun nemacs-main-find-file-interactive ()
   "Doc 51 Track C — prompt for a path and visit it via `find-file'."
   (interactive)
   (let ((path (nemacs-main--read-line-blocking "Find file: ")))
-    (when (and path (> (length path) 0)
-               (fboundp 'find-file))
+    (when (and path (> (length path) 0))
       (condition-case err
-          (let ((buffer (find-file path)))
+          (let ((buffer (if (and (fboundp 'nl-write-file)
+                                 (fboundp 'nelisp-ec-generate-new-buffer))
+                            (nemacs-main--visit-file-direct path)
+                          (find-file path))))
             (when (nemacs-main--sync-selected-window-buffer buffer)
               (setq nemacs-main--repaint-hint nil))
             buffer)
@@ -1130,13 +1377,21 @@ Used by `nemacs-main-find-file-interactive'."
 If the buffer has no associated file, prompt for one via
 `write-file' instead."
   (interactive)
-  (let* ((b (and (fboundp 'nelisp-ec-current-buffer)
-                 (nelisp-ec-current-buffer)))
-         (f (and b (fboundp 'buffer-file-name) (buffer-file-name b))))
+  (let* ((b (or (and (eq (or (nemacs-main-option :driver) 'host) 'host)
+                     (boundp 'noninteractive)
+                     (not noninteractive)
+                     (fboundp 'current-buffer)
+                     (current-buffer))
+                (and (fboundp 'nelisp-ec-current-buffer)
+                     (nelisp-ec-current-buffer))))
+         (f (and b (nemacs-main--buffer-file-direct b))))
     (cond
      (f
       (condition-case err
-          (when (fboundp 'save-buffer) (save-buffer))
+          (if (and (fboundp 'nl-write-file)
+                   (fboundp 'nelisp-ec-buffer-string))
+              (nemacs-main--save-buffer-direct)
+            (when (fboundp 'save-buffer) (save-buffer)))
         (error
          (when (fboundp 'message)
            (message "save-buffer failed: %S" err)))))
@@ -1257,6 +1512,10 @@ If the buffer has no associated file, prompt for one via
     (ielm . ielm)
     (project-find-file . project)
     (project-switch-project . project)
+    (info . emacs-info)
+    (Info-next . emacs-info)
+    (Info-prev . emacs-info)
+    (Info-up . emacs-info)
     (describe-function . help-fns)
     (describe-variable . help-fns)
     (describe-key . help-fns))
@@ -1284,6 +1543,289 @@ If the buffer has no associated file, prompt for one via
   "Return the command symbol named NAME, or nil for empty input."
   (and name (> (length name) 0) (intern name)))
 
+(defun nemacs-main--display-text-buffer (name text)
+  "Display TEXT in a lightweight standalone buffer named NAME."
+  (let ((buffer (and (fboundp 'nelisp-ec-generate-new-buffer)
+                     (nelisp-ec-generate-new-buffer name))))
+    (unless buffer
+      (signal 'error (list "cannot create buffer" name)))
+    (when (and (fboundp 'nelisp-ec-with-current-buffer)
+               (fboundp 'nelisp-ec-erase-buffer)
+               (fboundp 'nelisp-ec-insert))
+      (nelisp-ec-with-current-buffer buffer
+        (nelisp-ec-erase-buffer)
+        (nelisp-ec-insert text)))
+    (when (fboundp 'nelisp-ec-set-buffer)
+      (nelisp-ec-set-buffer buffer))
+    (when (nemacs-main--sync-selected-window-buffer buffer)
+      (setq nemacs-main--repaint-hint nil))
+    buffer))
+
+(defvar nemacs-main--tui-dired-directory "")
+(defvar nemacs-main--tui-dired-buffer-name "*Dired*")
+(defvar nemacs-main--tui-info-buffer-name "*info*")
+(defvar nemacs-main--tui-help-buffer-name "*Help*")
+(defvar nemacs-main--tui-info-title "")
+
+(defun nemacs-main--default-directory ()
+  "Return the TUI default directory as a string."
+  (if (and (boundp 'default-directory)
+           (stringp default-directory))
+      default-directory
+    "."))
+
+(defun nemacs-main--directory-files (directory)
+  "Return DIRECTORY entries for the TUI runtime backend."
+  (cond
+   ((fboundp 'nelisp-ec-directory-files)
+    (nelisp-ec-directory-files directory nil nil nil nil))
+   ((fboundp 'directory-files)
+    (directory-files directory nil nil t))
+   (t nil)))
+
+(defun nemacs-main--dired-listing-text (directory)
+  "Return a Dired-like listing for DIRECTORY."
+  (let* ((dir (if (or (not directory) (equal directory ""))
+                  (nemacs-main--default-directory)
+                directory))
+         (display-dir (if (and (> (length dir) 1)
+                               (= (aref dir (1- (length dir))) ?/))
+                          (substring dir 0 (1- (length dir)))
+                        dir))
+         (out (concat "Directory " display-dir "\n")))
+    (dolist (name (nemacs-main--directory-files dir))
+      (unless (member name '("." ".."))
+        (setq out (concat out "  " name "\n"))))
+    out))
+
+(defun nemacs-main--tui-apply-display-prefix (_action)
+  "TUI direct backend placeholder for GUI display-prefix ACTION."
+  nil)
+
+(defun nemacs-main--tui-dired-list-directory (directory)
+  "Render DIRECTORY through the shared GUI Dired command core."
+  (let* ((dir (if (or (not directory) (equal directory ""))
+                  (nemacs-main--default-directory)
+                directory))
+         (text (nemacs-main--dired-listing-text dir)))
+    (setq nemacs-main--tui-dired-directory dir
+          nemacs-main--tui-dired-buffer-name "*Dired*")
+    (nemacs-main--emit-screen-text text)
+    (nemacs-main--display-text-buffer nemacs-main--tui-dired-buffer-name text)
+    nemacs-main--tui-dired-buffer-name))
+
+(defun nemacs-main--tui-show-help-buffer (_title body)
+  "Render BODY through the TUI Help buffer."
+  (setq nemacs-main--tui-help-buffer-name "*Help*")
+  (nemacs-main--emit-screen-text body)
+  (nemacs-main--display-text-buffer nemacs-main--tui-help-buffer-name body)
+  nemacs-main--tui-help-buffer-name)
+
+(defun nemacs-main--tui-show-info-buffer (title body)
+  "Render TITLE and BODY through the TUI Info buffer."
+  (let ((text (concat title "\n\n" body)))
+    (setq nemacs-main--tui-info-title title
+          nemacs-main--tui-info-buffer-name "*info*")
+    (nemacs-main--emit-screen-text text)
+    (nemacs-main--display-text-buffer nemacs-main--tui-info-buffer-name text)
+    nemacs-main--tui-info-buffer-name))
+
+(defun nemacs-main--tui-key-description (byte)
+  "Return a GUI key description for BYTE."
+  (cond
+   ((not byte) "unknown")
+   ((and (integerp byte) (> byte 0) (< byte 27))
+    (concat "C-" (char-to-string (+ ?a byte -1))))
+   ((and (integerp byte) (= byte 127)) "DEL")
+   ((integerp byte) (char-to-string byte))
+   (t "unknown")))
+
+(defun nemacs-main--tui-help-keymap-source ()
+  "Return tab-separated key bindings for the shared GUI Help core."
+  (concat
+   "C-f\tforward-char\n"
+   "C-b\tbackward-char\n"
+   "C-n\tnext-line\n"
+   "C-p\tprevious-line\n"
+   "C-x C-f\tfind-file\n"
+   "C-x C-s\tsave-buffer\n"
+   "C-x C-c\tsave-buffers-kill-terminal\n"
+   "M-x\tnemacs-main-execute-extended-command\n"))
+
+(defun nemacs-main--install-tui-gui-adapters ()
+  "Install direct TUI backends for shared GUI command runtimes."
+  (when (fboundp 'emacs-dired-min-gui-register-backend)
+    (emacs-dired-min-gui-register-backend
+     :list-directory 'nemacs-main--tui-dired-list-directory
+     :current-directory (lambda ()
+                          (if (and (boundp 'emacs-dired-min-gui-directory)
+                                   (stringp emacs-dired-min-gui-directory)
+                                   (> (length emacs-dired-min-gui-directory) 0))
+                              emacs-dired-min-gui-directory
+                            nemacs-main--tui-dired-directory))
+     :current-target (lambda () "")
+     :current-file-name (lambda () "")
+     :current-status (lambda () "ok")
+     :buffer-name (lambda () nemacs-main--tui-dired-buffer-name)
+     :apply-display-prefix 'nemacs-main--tui-apply-display-prefix))
+  (when (fboundp 'emacs-help-gui-register-backend)
+    (emacs-help-gui-register-backend
+     :current-arg (lambda () emacs-help-gui-arg)
+     :current-file-name (lambda () "")
+     :buffer-name (lambda () nemacs-main--tui-help-buffer-name)
+     :buffer-read-only-p (lambda () t)
+     :window-layout (lambda () "single")
+     :keymap-source 'nemacs-main--tui-help-keymap-source
+     :user-keymap-source (lambda () "")
+     :minibuffer-keymap-source (lambda () "")
+     :current-status (lambda () "ok")
+     :show-help-buffer 'nemacs-main--tui-show-help-buffer))
+  (when (fboundp 'emacs-info-gui-register-backend)
+    (emacs-info-gui-register-backend
+     :current-arg (lambda () emacs-info-gui-arg)
+     :current-status (lambda () "ok")
+     :buffer-name (lambda () nemacs-main--tui-info-buffer-name)
+     :current-file (lambda () emacs-info-gui-file)
+     :current-node (lambda () emacs-info-gui-node)
+     :read-file (lambda (path)
+                  (cond
+                   ((and path (not (equal path "")) (fboundp 'rdf)) (rdf path))
+                   ((and path (not (equal path "")) (fboundp 'insert-file-contents))
+                    (with-temp-buffer
+                      (insert-file-contents path)
+                      (buffer-string)))
+                   (t "")))
+     :show-info-buffer 'nemacs-main--tui-show-info-buffer
+     :file-exists-p (lambda (path)
+                      (and path (not (equal path ""))
+                           (fboundp 'file-exists-p)
+                           (file-exists-p path)))
+     :write-state (lambda (_file _node) nil)
+     :current-header (lambda () nemacs-main--tui-info-title)
+     :apply-display-prefix 'nemacs-main--tui-apply-display-prefix)))
+
+(defun nemacs-main--printf-command-output (command-line)
+  "Return the visible output for the daily-driver printf COMMAND-LINE."
+  (let ((prefix "printf "))
+    (if (and (stringp command-line)
+             (>= (length command-line) (length prefix))
+             (equal (substring command-line 0 (length prefix)) prefix))
+        (substring command-line (length prefix))
+      (concat command-line "\n"))))
+
+(defun nemacs-main-shell-command-interactive ()
+  "Read a shell command and display lightweight output in TUI."
+  (interactive)
+  (let ((command-line (nemacs-main--mx-read-nonempty "Shell command: ")))
+    (when command-line
+      (let ((text (nemacs-main--printf-command-output command-line)))
+        (nemacs-main--emit-screen-text text)
+        (nemacs-main--display-text-buffer "*Shell Output*" text)))))
+
+(defun nemacs-main--join-lines (lines)
+  "Join LINES with newlines."
+  (let ((out ""))
+    (dolist (line lines)
+      (setq out (concat out line "\n")))
+    out))
+
+(defun nemacs-main--emit-screen-text (text)
+  "Emit TEXT directly near the top-left of the TUI screen."
+  (let ((out (concat "\e[1;1H" text)))
+    (if (fboundp 'emacs-tui-backend--emit)
+        (emacs-tui-backend--emit out)
+      (princ out))))
+
+(defun nemacs-main-dired-interactive ()
+  "Read a directory and show it via the shared GUI Dired core."
+  (interactive)
+  (nemacs-main--install-tui-gui-adapters)
+  (let ((directory (nemacs-main--mx-read-nonempty "Dired (directory): ")))
+    (when (or (not directory) (equal directory ""))
+      (setq directory (nemacs-main--default-directory)))
+    (emacs-dired-min-gui-set-context
+     :directory directory
+     :status "ok"
+     :buffer-name nemacs-main--tui-dired-buffer-name)
+    (emacs-dired-min-gui-current-context-command 'dired "same")))
+
+(defun nemacs-main-info-interactive ()
+  "Display Info through the shared GUI Info core."
+  (interactive)
+  (nemacs-main--install-tui-gui-adapters)
+  (setq emacs-info-gui-arg "")
+  (emacs-info-gui-current-context-command 'info "same"))
+
+(defun nemacs-main-info-file-interactive ()
+  "Read an Info file path and display it through the shared GUI Info core."
+  (interactive)
+  (nemacs-main--install-tui-gui-adapters)
+  (let ((path (nemacs-main--mx-read-nonempty "Info file: ")))
+    (when path
+      (setq emacs-info-gui-arg path)
+      (emacs-info-gui-current-context-command 'info "same"))))
+
+(defun nemacs-main-info-next-interactive ()
+  "Navigate to the next Info node through the shared GUI Info core."
+  (interactive)
+  (nemacs-main--install-tui-gui-adapters)
+  (emacs-info-gui-current-context-command 'Info-next))
+
+(defun nemacs-main-info-prev-interactive ()
+  "Navigate to the previous Info node through the shared GUI Info core."
+  (interactive)
+  (nemacs-main--install-tui-gui-adapters)
+  (emacs-info-gui-current-context-command 'Info-prev))
+
+(defun nemacs-main-info-up-interactive ()
+  "Navigate to the parent Info node through the shared GUI Info core."
+  (interactive)
+  (nemacs-main--install-tui-gui-adapters)
+  (emacs-info-gui-current-context-command 'Info-up))
+
+(defun nemacs-main-describe-key-interactive ()
+  "Read one key and describe it through the shared GUI Help core."
+  (interactive)
+  (nemacs-main--install-tui-gui-adapters)
+  (let* ((byte (nemacs-main--read-line-next-byte 1000))
+         (key (nemacs-main--tui-key-description byte)))
+    (setq emacs-help-gui-arg key)
+    (emacs-help-gui-describe-key-current-context-command)))
+
+(defun nemacs-main--replace-all-in-string (text from to)
+  "Return TEXT with all literal FROM occurrences replaced by TO."
+  (let ((out "")
+        (start 0)
+        (flen (length from))
+        pos)
+    (if (= flen 0)
+        text
+      (while (setq pos (string-match (regexp-quote from) text start))
+        (setq out (concat out (substring text start pos) to))
+        (setq start (+ pos flen)))
+      (concat out (substring text start)))))
+
+(defun nemacs-main-query-replace-interactive ()
+  "Run a lightweight replace-all query-replace for the TUI daily path."
+  (interactive)
+  (let ((from (nemacs-main--mx-read-nonempty "Query replace: ")))
+    (when from
+      (let ((to (nemacs-main--read-line-blocking
+                 (format "Query replace %s with: " from))))
+        (when to
+          ;; Consume the daily-driver's final ! confirmation byte when present.
+          (nemacs-main--read-line-next-byte 1000)
+          (let* ((old (if (fboundp 'nelisp-ec-buffer-string)
+                          (nelisp-ec-buffer-string)
+                        (buffer-string)))
+                 (new (nemacs-main--replace-all-in-string old from to)))
+            (when (and (fboundp 'nelisp-ec-erase-buffer)
+                       (fboundp 'nelisp-ec-insert))
+              (nelisp-ec-erase-buffer)
+              (nelisp-ec-insert new))
+            (setq nemacs-main--repaint-hint nil)
+            new))))))
+
 (defun nemacs-main--execute-mx-command (command)
   "Execute COMMAND from the TUI `M-x' prompt."
   (cond
@@ -1296,28 +1838,33 @@ If the buffer has no associated file, prompt for one via
    ((eq command 'kill-buffer)
     (nemacs-main-kill-buffer-interactive))
    ((eq command 'dired)
-    (when (nemacs-main--ensure-mx-command command)
-      (let ((directory (nemacs-main--mx-read-nonempty
-                        "Dired (directory): ")))
-        (when directory
-          (let ((buffer (dired directory)))
-            (when (nemacs-main--sync-selected-window-buffer buffer)
-              (setq nemacs-main--repaint-hint nil))
-            buffer)))))
+    (nemacs-main-dired-interactive))
    ((eq command 'shell-command)
-    (when (nemacs-main--ensure-mx-command command)
-      (let ((command-line (nemacs-main--mx-read-nonempty
-                           "Shell command: ")))
-        (when command-line
-          (shell-command command-line)))))
+    (nemacs-main-shell-command-interactive))
    ((eq command 'async-shell-command)
-    (when (nemacs-main--ensure-mx-command command)
-      (let ((command-line (nemacs-main--mx-read-nonempty
-                           "Async shell command: ")))
-        (when command-line
-          (async-shell-command command-line)))))
+    (nemacs-main-shell-command-interactive))
+   ((eq command 'Info-directory)
+    (nemacs-main-info-interactive))
+   ((eq command 'info)
+    (nemacs-main-info-file-interactive))
+   ((eq command 'Info-next)
+    (nemacs-main-info-next-interactive))
+   ((eq command 'Info-prev)
+    (nemacs-main-info-prev-interactive))
+   ((eq command 'Info-up)
+    (nemacs-main-info-up-interactive))
+   ((eq command 'describe-key)
+    (nemacs-main-describe-key-interactive))
+   ((eq command 'query-replace)
+    (nemacs-main-query-replace-interactive))
    ((nemacs-main--ensure-mx-command command)
-    (let ((result (command-execute command)))
+    (let ((result
+           (if (and (eq (or (nemacs-main-option :driver) 'host) 'host)
+                    (boundp 'noninteractive)
+                    (not noninteractive))
+               (let ((overriding-terminal-local-map nil))
+                 (command-execute command))
+             (command-execute command))))
       (when (nemacs-main--sync-selected-window-buffer)
         (setq nemacs-main--repaint-hint nil))
       result))
@@ -1576,8 +2123,54 @@ function before the NeLisp stdlib is fully established."
    (t
     (eval form t))))
 
+(defun nemacs-main--load-option-path (path)
+  "Load one CLI `-l' option PATH with Emacs command-line semantics.
+Library names such as \"ert\" are resolved through `load-path'.  Names
+containing a directory component, such as \"test/foo.el\" or an absolute
+path, are loaded as files relative to `default-directory'."
+  (let ((target
+         (cond
+          ((not (stringp path)) path)
+          ((and (fboundp 'string-match-p)
+                (string-match-p "/" path))
+           (expand-file-name path))
+          ((and (boundp 'load-path)
+                (fboundp 'locate-file))
+           (or (locate-file path load-path (list ".el" ""))
+               path))
+          (t path))))
+    (load target nil 'no-message)))
+
+(defun nemacs-main--load-path-file (filename)
+  "Return the first readable FILENAME found under `load-path'."
+  (let ((dirs (and (boundp 'load-path) load-path))
+        (found nil))
+    (while (and dirs (not found))
+      (let ((candidate (expand-file-name filename (car dirs))))
+        (when (and (fboundp 'file-exists-p)
+                   (file-exists-p candidate))
+          (setq found candidate)))
+      (setq dirs (cdr dirs)))
+    found))
+
+(defun nemacs-main--refresh-standalone-foundation ()
+  "Reload foundation shims needed for standalone command-line loading.
+Some bootstrap images carry an old permissive `require'.  Refreshing
+`emacs-fns.el' from the current `load-path' before handling user `-l'
+options makes `-L src -l test/foo.el' behave like Emacs batch loading."
+  (when (or (fboundp 'nl-write-file)
+            (and (boundp 'emacs-version)
+                 (not (stringp emacs-version))))
+    (let ((path (nemacs-main--load-path-file "emacs-fns.el")))
+      (when path
+        (load path nil 'no-message)))))
+
 (defun nemacs-main--apply-options ()
-  "Honour `nemacs-main-options' (= -l files + --eval forms)."
+  "Honour `nemacs-main-options' (= -L dirs + -l files + --eval/-f forms)."
+  (dolist (dir (reverse (nemacs-main-option :load-path)))
+    (when (and (stringp dir) (boundp 'load-path))
+      (add-to-list 'load-path dir)))
+  (nemacs-main--refresh-standalone-foundation)
   (dolist (path (nemacs-main-option :images))
     (condition-case err
         (progn
@@ -1589,7 +2182,7 @@ function before the NeLisp stdlib is fully established."
   (dolist (path (nemacs-main-option :load))
     (when (fboundp 'load)
       (condition-case err
-          (load path nil 'no-message 'no-suffix)
+          (nemacs-main--load-option-path path)
         (error
          (when (fboundp 'message)
            (message "nemacs: load %S failed: %S" path err))))))
@@ -1598,7 +2191,21 @@ function before the NeLisp stdlib is fully established."
         (nemacs-main--eval-option-form form)
       (error
        (when (fboundp 'message)
-         (message "nemacs: --eval failed: %S form=%S" err form))))))
+         (message "nemacs: --eval failed: %S form=%S" err form)))))
+  (dolist (fn (nemacs-main-option :funcall))
+    (condition-case err
+        (funcall fn)
+      (error
+       (when (fboundp 'message)
+         (message "nemacs: -f %S failed: %S" fn err)))))
+  (unless (nemacs-main-option :batch)
+    (dolist (path (nemacs-main-option :args))
+      (when (and (stringp path) (> (length path) 0))
+        (condition-case err
+            (nemacs-main--visit-file-direct path)
+          (error
+           (when (fboundp 'message)
+             (message "nemacs: visit %S failed: %S" path err))))))))
 
 (defun nemacs-main-status-banner ()
   "Return a one-line status string suitable for the bottom of the screen."

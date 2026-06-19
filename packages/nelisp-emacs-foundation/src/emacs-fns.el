@@ -48,7 +48,9 @@
 ;; provided" after arity failure.  Host Emacs keeps its native primitive;
 ;; the polyfill is only installed on the standalone NeLisp path, before
 ;; `emacs-version' exists.
-(unless (boundp 'emacs-version)
+(when (or (fboundp 'nl-write-file)
+          (not (boundp 'emacs-version))
+          (not (stringp emacs-version)))
   (defun provide (feature &optional _subfeatures)
     "Mark FEATURE as available and return FEATURE.
 Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
@@ -59,7 +61,72 @@ Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
   (defun featurep (feature &optional _subfeature)
     "Return non-nil if FEATURE has been provided.
 Optional SUBFEATURE is accepted for Emacs compatibility and ignored."
-    (if (memq feature features) t nil)))
+    (if (memq feature features) t nil))
+
+  (defun locate-file (filename path &optional suffixes predicate)
+    "Find FILENAME in PATH using optional SUFFIXES and PREDICATE.
+This standalone implementation covers the `require' and batch-test
+lookup path: PATH is a list of directories, SUFFIXES may be nil, a
+string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
+    (let ((suffix-list (cond
+                        ((null suffixes) (list ""))
+                        ((stringp suffixes) (list suffixes))
+                        (t suffixes)))
+          (dirs path)
+          (found nil))
+      (while (and dirs (not found))
+        (let ((suffixes-left suffix-list))
+          (while (and suffixes-left (not found))
+            (let ((candidate
+                   (expand-file-name
+                    (concat filename (car suffixes-left))
+                    (car dirs))))
+              (when (if predicate
+                        (funcall predicate candidate)
+                      (file-exists-p candidate))
+                (setq found candidate)))
+            (setq suffixes-left (cdr suffixes-left))))
+        (setq dirs (cdr dirs)))
+      found))
+
+  (defun require (feature &optional filename noerror)
+    "Load FEATURE through `load-path' unless it is already provided.
+FILENAME and NOERROR follow the common Emacs `require' surface used by
+batch tests and local runtime modules."
+    (if (featurep feature)
+        feature
+      (let* ((base (or filename (symbol-name feature)))
+             (path (or (and (stringp base)
+                            (file-exists-p base)
+                            base)
+                       (and (boundp 'load-path)
+                            (locate-file base load-path (list ".el" ""))))))
+        (cond
+         (path
+          (load path nil 'no-message)
+          (cond
+           ((featurep feature) feature)
+           (noerror nil)
+           (t (error "Required feature was not provided: %S" feature))))
+         (noerror nil)
+         (t (error "Cannot open load file: %S" feature)))))))
+
+(when (and (fboundp 'rdf)
+           (not (fboundp 'nl-syscall-read-file)))
+  (defun nl-syscall-read-file (filename &optional beg end)
+    "Read FILENAME through the standalone `rdf' primitive.
+BEG and END are byte offsets accepted for compatibility with the
+newer file I/O runtime surface.  The current `rdf' backend reads the
+whole file, then this shim slices the string when offsets are supplied."
+    (let* ((text (rdf filename))
+           (len (and (stringp text) (length text)))
+           (from (or beg 0))
+           (to (or end len)))
+      (if (not (stringp text))
+          ""
+        (if (or beg end)
+            (substring text from to)
+          text)))))
 
 (unless (fboundp 'ignore)
   (defun ignore (&rest _ignore-args)
@@ -85,6 +152,18 @@ bound but value cell is unbound.")
 
 (unless (fboundp 'numberp)
   (defun numberp (obj) (or (integerp obj) (floatp obj))))
+
+(unless (fboundp 'make-bool-vector)
+  (defun make-bool-vector (length init)
+    "Polyfill: return a boolean vector of LENGTH initialized to INIT.
+Standalone NeLisp does not need bit-packed storage for editor dirty
+sets; a normal vector preserves the indexing semantics used here."
+    (make-vector length (and init t))))
+
+(unless (fboundp 'bool-vector-p)
+  (defun bool-vector-p (object)
+    "Polyfill predicate for `make-bool-vector' values."
+    (vectorp object)))
 
 
 ;;;; --- list iteration -----------------------------------------------------
@@ -301,6 +380,166 @@ on identity should re-bind the variable holding PLIST."
                        (nreverse kept)))
         (setq tail (cdr tail))))
     list))
+
+;;;; --- standalone TTY raw/input polyfill ---------------------------------
+
+(when (and (or (fboundp 'nl-write-file)
+               (not (boundp 'emacs-version))
+               (not (stringp emacs-version)))
+           (fboundp 'syscall-direct)
+           (fboundp 'alloc-bytes)
+           (fboundp 'ptr-read-u8)
+           (fboundp 'ptr-read-u32)
+           (fboundp 'ptr-read-u64)
+           (fboundp 'ptr-write-u8)
+           (fboundp 'ptr-write-u32)
+           (fboundp 'ptr-write-u64))
+  (defvar terminal-raw-mode--fd nil)
+  (defvar terminal-raw-mode--saved-termios nil)
+  (defvar terminal-raw-mode--scratch-termios nil)
+  (defvar terminal-raw-mode--pollfd nil)
+  (defvar terminal-raw-mode--byte nil)
+  (defvar terminal-raw-mode--winsize nil)
+  (defvar terminal-raw-mode--dev-tty nil)
+  (defvar terminal-raw-mode--active nil)
+  (defvar terminal-raw-mode--winsize-changed nil)
+
+  (defun terminal-raw-mode--ensure-buf (name size align)
+    (let ((ptr (and (boundp name) (symbol-value name))))
+      (if ptr
+          ptr
+        (let ((fresh (alloc-bytes size align)))
+          (set name fresh)
+          fresh))))
+
+  (defun terminal-raw-mode--dev-tty-path ()
+    (let ((buf (terminal-raw-mode--ensure-buf
+                'terminal-raw-mode--dev-tty 9 1)))
+      ;; "/dev/tty\0".  Write bytes individually because standalone
+      ;; interpreter integer precision is not yet reliable for this u64.
+      (ptr-write-u8 buf 0 47)
+      (ptr-write-u8 buf 1 100)
+      (ptr-write-u8 buf 2 101)
+      (ptr-write-u8 buf 3 118)
+      (ptr-write-u8 buf 4 47)
+      (ptr-write-u8 buf 5 116)
+      (ptr-write-u8 buf 6 116)
+      (ptr-write-u8 buf 7 121)
+      (ptr-write-u8 buf 8 0)
+      buf))
+
+  (defun terminal-raw-mode--copy-termios (src dst)
+    (ptr-write-u64 dst 0 (ptr-read-u64 src 0))
+    (ptr-write-u64 dst 8 (ptr-read-u64 src 8))
+    (ptr-write-u64 dst 16 (ptr-read-u64 src 16))
+    (ptr-write-u64 dst 24 (ptr-read-u64 src 24))
+    (ptr-write-u64 dst 32 (ptr-read-u64 src 32))
+    (ptr-write-u64 dst 40 (ptr-read-u64 src 40))
+    (ptr-write-u64 dst 48 (ptr-read-u64 src 48))
+    (ptr-write-u32 dst 56 (ptr-read-u32 src 56))
+    0)
+
+  (defun terminal-raw-mode--make-raw (buf)
+    ;; Linux x86_64 termios layout.  This mirrors cfmakeraw plus VMIN/VTIME.
+    (ptr-write-u32 buf 0 (logand (ptr-read-u32 buf 0) 4294965780))
+    (ptr-write-u32 buf 4 (logand (ptr-read-u32 buf 4) 4294967294))
+    (ptr-write-u32 buf 8
+                   (logior (logand (ptr-read-u32 buf 8) 4294966991) 48))
+    (ptr-write-u32 buf 12 (logand (ptr-read-u32 buf 12) 4294934452))
+    (ptr-write-u8 buf 22 0)
+    (ptr-write-u8 buf 23 1)
+    0)
+
+  (defun terminal-raw-mode-enter ()
+    (if terminal-raw-mode--active
+        t
+      (let* ((fd (syscall-direct 2 (terminal-raw-mode--dev-tty-path)
+                                 2 0 0 0 0))
+             (scratch (terminal-raw-mode--ensure-buf
+                       'terminal-raw-mode--scratch-termios 60 4))
+             (saved (terminal-raw-mode--ensure-buf
+                     'terminal-raw-mode--saved-termios 60 4)))
+        (if (< fd 0)
+            nil
+          (if (< (syscall-direct 16 fd 21505 scratch 0 0 0) 0)
+              (progn (syscall-direct 3 fd 0 0 0 0 0) nil)
+            (terminal-raw-mode--copy-termios scratch saved)
+            (terminal-raw-mode--make-raw scratch)
+            (if (< (syscall-direct 16 fd 21506 scratch 0 0 0) 0)
+                (progn (syscall-direct 3 fd 0 0 0 0 0) nil)
+              (setq terminal-raw-mode--fd fd)
+              (setq terminal-raw-mode--active t)
+              t))))))
+
+  (defun terminal-raw-mode-leave ()
+    (if (not terminal-raw-mode--active)
+        nil
+      (let ((fd terminal-raw-mode--fd)
+            (saved terminal-raw-mode--saved-termios))
+        (when (and fd saved)
+          (syscall-direct 16 fd 21506 saved 0 0 0)
+          (when (> fd 2)
+            (syscall-direct 3 fd 0 0 0 0 0)))
+        (setq terminal-raw-mode--active nil)
+        (setq terminal-raw-mode--fd nil)
+        t)))
+
+  (defun read-stdin-byte-available (timeout-ms)
+    (let ((fd (or terminal-raw-mode--fd 0))
+          (pfd (terminal-raw-mode--ensure-buf 'terminal-raw-mode--pollfd 8 4))
+          (byte (terminal-raw-mode--ensure-buf 'terminal-raw-mode--byte 1 1)))
+      (ptr-write-u32 pfd 0 fd)
+      (ptr-write-u32 pfd 4 1)
+      (let ((rc (syscall-direct 7 pfd 1 timeout-ms 0 0 0)))
+        (if (< rc 1)
+            nil
+          (if (= (logand (ptr-read-u8 pfd 6) 17) 0)
+              nil
+            (if (= (syscall-direct 0 fd byte 1 0 0 0) 1)
+                (ptr-read-u8 byte 0)
+              nil)))))))
+
+  (defun terminal-raw-mode--u16 (buf off)
+    (+ (ptr-read-u8 buf off)
+       (* (ptr-read-u8 buf (+ off 1)) 256)))
+
+  (defun install-winsize-handler ()
+    (setq terminal-raw-mode--winsize-changed nil)
+    t)
+
+  (defun install-sigint-handler ()
+    t)
+
+  (defun install-jobctrl-handlers ()
+    t)
+
+  (defun terminal-take-winsize-changed ()
+    (let ((pending terminal-raw-mode--winsize-changed))
+      (setq terminal-raw-mode--winsize-changed nil)
+      pending))
+
+  (defun terminal-take-sigcont ()
+    nil)
+
+  (defun terminal-current-winsize ()
+    (let* ((fd0 terminal-raw-mode--fd)
+           (fd (or fd0
+                   (syscall-direct 2 (terminal-raw-mode--dev-tty-path)
+                                   2 0 0 0 0)))
+           (buf (terminal-raw-mode--ensure-buf
+                 'terminal-raw-mode--winsize 8 4)))
+      (if (or (not fd) (< fd 0))
+          (cons 80 24)
+        (let ((rc (syscall-direct 16 fd 21523 buf 0 0 0)))
+          (unless fd0
+            (syscall-direct 3 fd 0 0 0 0 0))
+          (if (< rc 0)
+              (cons 80 24)
+            (let ((rows (terminal-raw-mode--u16 buf 0))
+                  (cols (terminal-raw-mode--u16 buf 2)))
+              (if (and (> rows 0) (> cols 0))
+                  (cons cols rows)
+                (cons 80 24))))))))
 
 (provide 'emacs-fns)
 
