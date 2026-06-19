@@ -419,7 +419,10 @@
 (defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-seq 0
   "Monotonic request id for the persistent standalone runner.")
 
-(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-publish-delay 0.005
+(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-poll-interval 0.001
+  "Seconds between host-side persistent runner file polls.")
+
+(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-publish-delay 0.001
   "Seconds to let host-side transport writes settle before publishing a request.")
 
 (defun nemacs-gui-file-bridge-runtime-test--wait-for
@@ -547,7 +550,7 @@ When INTERVAL is nil, poll every 0.1s."
                     (equal "1"
                            (nemacs-gui-file-bridge-runtime-test--slurp
                             (plist-get files :ready)))))
-             60 0.005)
+             60 nemacs-gui-file-bridge-runtime-test--persistent-runner-poll-interval)
       (let ((log (and (buffer-live-p buffer)
                       (with-current-buffer buffer (buffer-string)))))
         (when (process-live-p proc)
@@ -572,7 +575,7 @@ When INTERVAL is nil, poll every 0.1s."
                     nil 'silent)
       (nemacs-gui-file-bridge-runtime-test--wait-for
        (lambda () (not (process-live-p proc)))
-       5 0.005)
+       5 nemacs-gui-file-bridge-runtime-test--persistent-runner-poll-interval)
       (when (process-live-p proc)
         (delete-process proc)))
     (when (buffer-live-p buffer)
@@ -639,7 +642,8 @@ When INTERVAL is nil, poll every 0.1s."
                         (nemacs-gui-file-bridge-runtime-test--slurp
                          (nemacs-gui-file-bridge-runtime-test--runner-file
                           runner :response))))
-               120 0.005)
+               120
+               nemacs-gui-file-bridge-runtime-test--persistent-runner-poll-interval)
         (setq stderr
               (if (buffer-live-p (plist-get runner :buffer))
                   (with-current-buffer (plist-get runner :buffer)
