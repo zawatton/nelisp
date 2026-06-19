@@ -14743,6 +14743,86 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-prefix-writeback-helper ()
+  "Bridge prefix writeback helper should write prefix state only."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-prefix-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"0123456789abcdef\")
+                       (setq files--window-layout \"prefix-layout\")
+                       (setq files--window-selected \"3\")
+                       (setq files--point 12)
+                       (setq files--bridge-status \"ok\")
+                       (let ((same
+                              (files--bridge-prefix-writeback-current-context
+                               \"same-window-prefix\"))
+                             (same-status files--bridge-status))
+                         (setq files--bridge-status \"ok\")
+                         (let ((other
+                                (files--bridge-prefix-writeback-current-context
+                                 \"other-window-prefix\"))
+                               (other-status files--bridge-status))
+                           (setq files--bridge-status \"ok\")
+                           (let ((tab
+                                  (files--bridge-prefix-writeback-current-context
+                                   \"other-tab-prefix\"))
+                                 (tab-status files--bridge-status))
+                             (setq files--bridge-status \"ok\")
+                             (let ((frame
+                                    (files--bridge-prefix-writeback-current-context
+                                     \"other-frame-prefix\"))
+                                   (frame-status files--bridge-status))
+                               (setq files--bridge-status \"ok\")
+                               (let ((miss
+                                      (files--bridge-prefix-writeback-current-context
+                                       \"forward-char\"))
+                                     (miss-status files--bridge-status))
+                                 (nl-write-file
+                                  \"/tmp/nemacs-bridge-prefix-writeback-helper\"
+                                  (concat same
+                                          \":\"
+                                          same-status
+                                          \"\\t\"
+                                          other
+                                          \":\"
+                                          other-status
+                                          \"\\t\"
+                                          tab
+                                          \":\"
+                                          tab-status
+                                          \"\\t\"
+                                          frame
+                                          \":\"
+                                          frame-status
+                                          \"\\t\"
+                                          miss
+                                          \":\"
+                                          miss-status))))))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "same-window-prefix:written\tother-window-prefix:written\tother-tab-prefix:written\tother-frame-prefix:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "prefix-layout"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "3"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "00012"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here

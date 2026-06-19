@@ -21915,6 +21915,23 @@
           nil)
         cmd))
 
+(fset 'files--bridge-prefix-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "same-window-prefix")
+                t
+              (if (equal cmd "other-window-prefix")
+                  t
+                (if (equal cmd "other-tab-prefix")
+                    t
+                  (equal cmd "other-frame-prefix"))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+              (files--write-transport-point)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -22073,19 +22090,7 @@
 	                  (setq files--bridge-status "written"))
 		            (progn
                   (setq cmd (files--bridge-family-writeback-current-context cmd))
-		                  (if (if (equal cmd "same-window-prefix")
-		                          t
-	                        (if (equal cmd "other-window-prefix")
-	                            t
-	                          (if (equal cmd "other-tab-prefix")
-                                  t
-                                (equal cmd "other-frame-prefix"))))
-                      (progn
-                        (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                        (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                        (files--write-transport-point)
-                        (setq files--bridge-status "written"))
-                    nil)
+                  (setq cmd (files--bridge-prefix-writeback-current-context cmd))
 			              (if (equal cmd "find-file")
 		                  (progn
 		                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
