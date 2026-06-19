@@ -4735,9 +4735,8 @@ When REQUIRE-FORMS is non-nil, at least one form after FILE.el is required."
                                  (null externs))
                             (condition-case fast-err
                                 (progn
-                                  (nelisp-artifact--write-stdout
-                                   (nelisp-artifact-native-exec-fast-simple-stdout
-                                    path symbol native-args))
+                                  (nelisp-artifact-native-exec-fast-simple-write-stdout
+                                   path symbol native-args)
                                   (setq printed t)
                                   nil)
                               (error

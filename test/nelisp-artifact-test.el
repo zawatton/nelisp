@@ -805,6 +805,44 @@ must not run first, because the general trampoline provides the extern shims."
       (should (equal general-call '("m.neln" "hot-fn" (3 1))))
       (should (equal stdout "7\n")))))
 
+(ert-deftest nelisp-artifact/native-exec-cli-simple-path-streams-stdout ()
+  "CLI native exec should stream simple integer output without Lisp readback."
+  (let ((write-call nil)
+        (stdout nil))
+    (cl-letf (((symbol-function 'nelisp-artifact-read-manifest)
+               (lambda (_path)
+                 '(:kind neln
+                   :native
+                   (:extern-symbols nil
+                    :defuns
+                    ((:name "hot-fn"
+                      :arity 2
+                      :param-class gp
+                      :rt-slot-count 0
+                      :body-offset 13))))))
+              ((symbol-function
+                'nelisp-artifact-native-exec-fast-simple-write-stdout)
+               (lambda (path symbol args)
+                 (setq write-call (list path symbol args))
+                 0))
+              ((symbol-function 'nelisp-artifact-native-exec-fast-simple-stdout)
+               (lambda (&rest _)
+                 (error "stdout readback path should not run")))
+              ((symbol-function 'nelisp-artifact-native-exec)
+               (lambda (&rest _)
+                 (error "simple fallback should not run")))
+              ((symbol-function 'nelisp-artifact-native-exec-general)
+               (lambda (&rest _)
+                 (error "general path should not run")))
+              ((symbol-function 'nelisp-artifact--write-stdout)
+               (lambda (text)
+                 (setq stdout (concat (or stdout "") text)))))
+      (should (= 0
+                 (native-exec-elisp-artifact
+                  '("native-exec-elisp-artifact" "m.neln" "hot-fn" "3" "1"))))
+      (should (equal write-call '("m.neln" "hot-fn" (3 1))))
+      (should (null stdout)))))
+
 (ert-deftest nelisp-artifact/private-load-size-fast-path-skips-sha256 ()
   "Private `.neln' load can skip sha256 when manifest artifact size matches."
   (let* ((temp-dir (make-temp-file "nelisp-artifact-size-fast-" t))
