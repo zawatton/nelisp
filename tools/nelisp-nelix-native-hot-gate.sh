@@ -5,8 +5,7 @@
 # artifact contract with required native coverage.  Host Emacs is used for the
 # build step because target/nelisp compile-elisp-artifact is still dominated by
 # the standalone artifact compiler/reader fixed cost for these files.  The
-# resulting artifacts are then audited and executed through target/nelisp where
-# practical.
+# resulting artifacts are then audited and executed through target/nelisp.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -137,7 +136,7 @@ verify_required_manifest subset "$SUBSET_ART.manifest.el"
 run_timed standalone_audit_cli_required \
   timeout 60 "$NELISP" audit-elisp-artifacts --required "$CLI_SRC"
 expect_grep standalone_audit_cli_required 'artifact_audit_summary status=ok'
-expect_grep standalone_audit_cli_required 'defuns=5'
+expect_grep standalone_audit_cli_required 'defuns=9'
 expect_grep standalone_audit_cli_required 'gaps=0'
 
 line_payload="$(printf 'NELIX-AOT-MANIFEST-V1\ntarget\tmagit\tmagit\npin\tripgrep\ninstalled\tmagit\nend\n')"
@@ -147,23 +146,15 @@ run_timed standalone_cli_native_exec \
 expect_out standalone_cli_native_exec "556"
 
 id_audit_payload="$(printf 'NELIX-AOT-MANIFEST-V1\ntarget-id\t2\t2\ntarget-id\t4\t4\npin-id\t3\ninstalled-id\t2\nend\n')"
-run_timed host_subset_audit_id_native \
-  "$EMACS" -Q --batch \
-  -L "$REPO_ROOT/lisp" \
-  -L "$REPO_ROOT/src" \
-  --eval '(setq load-prefer-newer t)' \
-  --eval '(require (quote nelisp-artifact))' \
-  --eval "(princ (nelisp-artifact-native-exec-general \"$SUBSET_ART\" \"nelix-aot-native-builder-audit-id-report-proof\" (list \"$id_audit_payload\" \"\")))"
-expect_out host_subset_audit_id_native "$(printf 'ok\tfalse\npresent\tripgrep\nmissing\tbat\nbackend\tnix')"
+run_timed standalone_subset_audit_id_native \
+  timeout 120 "$NELISP" native-exec-elisp-artifact "$SUBSET_ART" \
+  nelix-aot-native-builder-audit-id-report-proof "$id_audit_payload" ""
+expect_out standalone_subset_audit_id_native '"ok\tfalse\npresent\tripgrep\nmissing\tbat\nbackend\tnix\n"'
 
 id_upgrade_payload="$(printf 'NELIX-AOT-MANIFEST-V1\ntarget-id\t1\t1\ntarget-id\t2\t2\ntarget-id\t3\t3\npin-id\t2\ninstalled-id\t1\ninstalled-id\t2\nend\n')"
-run_timed host_subset_upgrade_id_native \
-  "$EMACS" -Q --batch \
-  -L "$REPO_ROOT/lisp" \
-  -L "$REPO_ROOT/src" \
-  --eval '(setq load-prefer-newer t)' \
-  --eval '(require (quote nelisp-artifact))' \
-  --eval "(princ (nelisp-artifact-native-exec-general \"$SUBSET_ART\" \"nelix-aot-native-builder-upgrade-id-report-proof\" (list \"$id_upgrade_payload\" \"\")))"
-expect_out host_subset_upgrade_id_native "$(printf 'upgrade\tmagit\npinned\tripgrep\nmissing\tfd\nbackend\tnix')"
+run_timed standalone_subset_upgrade_id_native \
+  timeout 120 "$NELISP" native-exec-elisp-artifact "$SUBSET_ART" \
+  nelix-aot-native-builder-upgrade-id-report-proof "$id_upgrade_payload" ""
+expect_out standalone_subset_upgrade_id_native '"upgrade\tmagit\npinned\tripgrep\nmissing\tfd\nbackend\tnix\n"'
 
 echo "nelix_native_hot_gate_result label=nelix_native_hot_gate rc=0"
