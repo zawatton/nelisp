@@ -276,6 +276,7 @@ IMAGE_FILES=()
 EVAL_FORMS=()
 FUNCALLS=()
 EXTRA_ARGS=()
+HOST_EARLY_ARGS=()
 
 while (( $# > 0 )); do
   case "$1" in
@@ -286,6 +287,8 @@ while (( $# > 0 )); do
     --print-paths) print_paths; exit 0 ;;
     --doctor) DOCTOR=1; shift ;;
     -Q|--quick) shift ;;
+    -nw|--no-window-system)
+      HOST_EARLY_ARGS+=("$1"); shift ;;
     --batch) BATCH=1; shift ;;
     --no-banner) NO_BANNER=1; shift ;;
     --driver=*) NEMACS_DRIVER="${1#--driver=}"; shift ;;
@@ -409,6 +412,11 @@ for f in "${FUNCALLS[@]+"${FUNCALLS[@]}"}"; do
   FUNCALL_LIST+=" '$(shell_quote "$f")"
 done
 
+ARG_LIST=""
+for f in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
+  ARG_LIST+=" \"$(shell_quote "$f")\""
+done
+
 if (( BATCH )); then
   ENTRY_CALL='(nemacs-batch-main)'
 else
@@ -525,7 +533,8 @@ $BOOT_NELISP_SOURCE_REFRESH
               :load-path (list$LOAD_PATH_LIST)
               :load (list$LOAD_LIST)
               :eval-forms (list$EVAL_LIST)
-              :funcall (list$FUNCALL_LIST)))
+              :funcall (list$FUNCALL_LIST)
+              :args (list$ARG_LIST)))
 $BOOT_ENTRY_FORM)
 EOF
 )"
@@ -535,10 +544,10 @@ EOF
 case "$NEMACS_DRIVER" in
   host)
     if (( BATCH )); then
-      exec "$NEMACS_EMACS" -Q --batch --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+      exec "$NEMACS_EMACS" -Q --batch "${HOST_EARLY_ARGS[@]+"${HOST_EARLY_ARGS[@]}"}" --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
     else
       # Interactive: -Q keeps user init out of nemacs's way.
-      exec "$NEMACS_EMACS" -Q --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+      exec "$NEMACS_EMACS" -Q "${HOST_EARLY_ARGS[@]+"${HOST_EARLY_ARGS[@]}"}" --eval "$BOOT_FORM" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
     fi
     ;;
   nelisp)
@@ -581,7 +590,8 @@ case "$NEMACS_DRIVER" in
             :load-path (list$LOAD_PATH_LIST)
             :load (list$LOAD_LIST)
             :eval-forms (list$EVAL_LIST)
-            :funcall (list$FUNCALL_LIST)))
+            :funcall (list$FUNCALL_LIST)
+            :args (list$ARG_LIST)))
 EOF
 )"
         printf '%s\n' "$(one_line_form "$REPL_OPTIONS_FORM")" >> "$tmp"

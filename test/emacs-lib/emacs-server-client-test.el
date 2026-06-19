@@ -46,6 +46,11 @@
               "(defun server-eval-and-print"
               "emacs-server-client-polyfills--unquote"
               ":authenticated")
+             ("src/emacs-eventloop.el"
+              "emacs-eventloop--standalone-p"
+              "(defun accept-process-output"
+              "(defun sit-for"
+              "(defun sleep-for")
              ("scripts/nemacs-server-loop.el"
               "nemacs-server-loop-root"
               "(nemacs-server-start)")))

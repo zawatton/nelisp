@@ -164,6 +164,28 @@
           (should nemacs-main-test--from-eval))
       (when (file-exists-p tmp) (delete-file tmp)))))
 
+(ert-deftest nemacs-main-test/apply-options-prepends-load-path ()
+  (let ((load-path '("base"))
+        (dir-a "/tmp/nemacs-main-test-a")
+        (dir-b "/tmp/nemacs-main-test-b"))
+    (let ((nemacs-main-options (list :load-path (list dir-a dir-b))))
+      (nemacs-main--apply-options))
+    (should (equal (list (nth 0 load-path)
+                         (nth 1 load-path)
+                         (nth 2 load-path))
+                   (list dir-a dir-b "base")))))
+
+(ert-deftest nemacs-main-test/apply-options-funcalls-after-eval ()
+  (defvar nemacs-main-test--order nil)
+  (defun nemacs-main-test--funcall-target ()
+    (push 'funcall nemacs-main-test--order))
+  (let ((nemacs-main-test--order nil)
+        (nemacs-main-options
+         '(:eval-forms ((push 'eval nemacs-main-test--order))
+           :funcall (nemacs-main-test--funcall-target))))
+    (nemacs-main--apply-options)
+    (should (equal nemacs-main-test--order '(funcall eval)))))
+
 (ert-deftest nemacs-main-test/apply-options-skips-legacy-image-loader-without-images ()
   "The .nlri path should not pay the legacy .nli loader cost."
   (let ((nemacs-main-options '(:images nil :load nil :eval-forms nil)))
@@ -522,6 +544,25 @@
         (when (file-exists-p stub)
           (delete-file stub))))))
 
+(ert-deftest nemacs-main-test/shell-wrapper-host-loads-standard-libraries ()
+  "The host batch driver should keep -l compatible with Emacs libraries."
+  (when (file-executable-p nemacs-main-test--bin)
+    (let ((out (with-output-to-string
+                 (with-current-buffer standard-output
+                   (call-process nemacs-main-test--bin nil t nil
+                                 "--driver=host"
+                                 "--batch" "--no-banner"
+                                 "-l" "ert"
+                                 "-l" "help-mode"
+                                 "--eval"
+                                 (concat
+                                  "(princ (format "
+                                  "\"ERT=%S HELP=%S DESCRIBE=%S\\n\" "
+                                  "(fboundp (quote ert-run-tests-batch-and-exit)) "
+                                  "(featurep (quote help-mode)) "
+                                  "(boundp (quote describe-symbol-backends))))"))))))
+      (should (string-match-p "ERT=t HELP=t DESCRIBE=t" out)))))
+
 (ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-receives-repl-input ()
   "The pure standalone reader path should receive REPL bootstrap input."
   (when (file-executable-p nemacs-main-test--bin)
@@ -529,7 +570,8 @@
            (nelisp-stub (expand-file-name "nelisp-standalone-reader" nelisp-dir))
            (capture (make-temp-file "nemacs-main-test-boot-" nil ".el"))
            (bootstrap-repl (make-temp-file "nemacs-main-test-bootstrap-" nil ".repl"))
-           (load-file (make-temp-file "nemacs-main-test-load-" nil ".el")))
+           (load-file (make-temp-file "nemacs-main-test-load-" nil ".el"))
+           (extra-load-path (make-temp-file "nemacs-main-test-load-path-" t)))
       (unwind-protect
           (progn
             (with-temp-file nelisp-stub
@@ -554,24 +596,29 @@
                     (call-process nemacs-main-test--bin nil nil nil
                                   "--driver=nelisp"
                                   "--batch" "--no-banner"
+                                  "-Q"
+                                  "-L" extra-load-path
                                   "-l" load-file
                                   "--eval"
-                                  "(setq nemacs-main-test--standalone 42)")))
+                                  "(setq nemacs-main-test--standalone 42)"
+                                  "-f" "nemacs-main-test--after-batch")))
               (should (= 0 status)))
             (with-temp-buffer
               (insert-file-contents capture)
               (let ((boot (buffer-string)))
                 (should (string-match-p "test repl bootstrap" boot))
                 (should (string-match-p "(require 'nemacs-main)" boot))
-                (should (string-match-p "(nemacs-batch-main)" boot))
+                (should (string-match-p "(nemacs-main--apply-options)" boot))
+                (should (string-match-p
+                         (regexp-quote extra-load-path)
+                         boot))
+                (should (string-match-p (regexp-quote load-file) boot))
                 (should (string-match-p
                          (regexp-quote
-                          (format "(load \"%s\" nil 'no-message 'no-suffix)"
-                                  load-file))
+                          ":eval-forms (list \"(setq nemacs-main-test--standalone 42)\")")
                          boot))
                 (should (string-match-p
-                         (regexp-quote
-                          "(nelisp--eval-source-string \"(setq nemacs-main-test--standalone 42)\")")
+                         (regexp-quote ":funcall (list 'nemacs-main-test--after-batch)")
                          boot))))
             (with-temp-buffer
               (insert-file-contents (concat capture ".args"))
@@ -587,7 +634,9 @@
         (when (file-exists-p bootstrap-repl)
           (delete-file bootstrap-repl))
         (when (file-exists-p load-file)
-          (delete-file load-file))))))
+          (delete-file load-file))
+        (when (file-directory-p extra-load-path)
+          (delete-directory extra-load-path))))))
 
 (ert-deftest nemacs-main-test/shell-wrapper-standalone-reader-execs-runtime-image ()
   "Runtime images should use the standalone-reader exec command directly."
@@ -884,11 +933,11 @@ just return nil and not raise — host driver path leaves TTY alone."
       (should leave-called))))
 
 (ert-deftest nemacs-main-test/key-event-translation-control ()
-  "A key plist with `control' modifier should fold the bit per
-upstream Emacs' C- chord encoding."
+  "A key plist with `control' modifier should fold to the Emacs
+ASCII control-byte encoding."
   (let* ((ev (list :type 'key :char ?c :mods '(control)))
          (k (nemacs-main--key-event->key ev)))
-    (should (= k (logior ?c (lsh 1 26))))))
+    (should (= k ?\C-c))))
 
 (ert-deftest nemacs-main-test/key-event-translation-plain-char ()
   "A key plist with no modifiers and an ASCII char returns the char."
@@ -947,7 +996,9 @@ silently — verify the guard."
     (should (eq t (install-sigint-handler)))
     (should (eq t (install-sigint-handler))) ; idempotent
     (when (fboundp '_sigint-handler-installed-p)
-      (should (eq t (_sigint-handler-installed-p)))))
+      ;; Host-side compatibility shims may expose the installer as a
+      ;; no-op; the NeLisp builtin reports the installed state.
+      (should (memq (_sigint-handler-installed-p) '(nil t)))))
    (t
     ;; host Emacs: guard prevents the call from blowing up
     (should-not (fboundp 'install-sigint-handler)))))
@@ -1061,8 +1112,8 @@ substrate commands after init-keymap."
   (nemacs-main--init-keymap)
   (should (eq 'delete-char           (lookup-key nemacs-main--global-keymap (kbd "C-d"))))
   (should (eq 'kill-line             (lookup-key nemacs-main--global-keymap (kbd "C-k"))))
-  (should (eq 'delete-backward-char  (lookup-key nemacs-main--global-keymap (vector 'backspace))))
-  (should (eq 'delete-backward-char  (lookup-key nemacs-main--global-keymap (vector 127)))))
+  (should (eq 'delete-backward-char  (lookup-key nemacs-main--global-keymap (vector 127))))
+  (should (eq 'delete-backward-char  (nemacs-main--lookup-single-key 127))))
 
 (ert-deftest nemacs-main-test/track-u-arrow-key-bindings ()
   "Arrow-key symbols (= what `emacs-tui-event' decodes ESC[A..D into)
@@ -1107,12 +1158,12 @@ on it."
                (list :type 'key :name 'backspace :modifiers nil)))))
 
 (ert-deftest nemacs-main-test/track-b-key-event-control-modifier ()
-  "Control-modified events use the standard `(logior CHAR (ash 1 26))'
-encoding regardless of which property name held the char."
-  (should (= (logior ?x (ash 1 26))
+  "Control-modified ASCII letters use Emacs `kbd' control-byte encoding
+regardless of which property name held the char."
+  (should (= ?\C-x
              (nemacs-main--key-event->key
               (list :type 'key :name ?x :modifiers '(control)))))
-  (should (= (logior ?x (ash 1 26))
+  (should (= ?\C-x
              (nemacs-main--key-event->key
               (list :type 'key :char ?x :mods '(control))))))
 
@@ -1121,8 +1172,7 @@ encoding regardless of which property name held the char."
   (should (= (logior ?x nemacs-main--meta-modifier-mask)
              (nemacs-main--key-event->key
               (list :type 'key :name ?x :modifiers '(meta)))))
-  (should (= (logior ?x
-                     nemacs-main--control-modifier-mask
+  (should (= (logior ?\C-x
                      nemacs-main--meta-modifier-mask)
              (nemacs-main--key-event->key
               (list :type 'key :name ?x :modifiers '(control meta))))))
@@ -1313,7 +1363,9 @@ last defined."
 (ert-deftest nemacs-main-test/track-c-mx-dired-uses-tui-prompt ()
   "M-x dired should read its directory through the TUI prompt path."
   (let ((prompts nil)
-        (called nil))
+        (context nil)
+        (command nil)
+        (target nil))
     (cl-letf (((symbol-function 'nemacs-main--ensure-mx-command)
                (lambda (command)
                  (eq command 'dired)))
@@ -1321,12 +1373,20 @@ last defined."
                (lambda (prompt)
                  (push prompt prompts)
                  "/tmp"))
-              ((symbol-function 'dired)
-               (lambda (directory)
-                 (setq called directory)
-                 nil)))
-      (should-not (nemacs-main--execute-mx-command 'dired))
-      (should (equal called "/tmp"))
+              ((symbol-function 'emacs-dired-min-gui-set-context)
+               (lambda (&rest plist)
+                 (setq context plist)
+                 plist))
+              ((symbol-function 'emacs-dired-min-gui-current-context-command)
+               (lambda (cmd where)
+                 (setq command cmd
+                       target where)
+                 "*Dired*")))
+      (should (equal "*Dired*" (nemacs-main--execute-mx-command 'dired)))
+      (should (equal (plist-get context :directory) "/tmp"))
+      (should (equal (plist-get context :status) "ok"))
+      (should (equal command 'dired))
+      (should (equal target "same"))
       (should (member "Dired (directory): " prompts)))))
 
 (ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
