@@ -1181,6 +1181,30 @@ tools/nelisp-source-command-substrate-gate.sh --no-build
   source_command_substrate_gate rc=0
 #+end_example
 
+** 2026-06-20 follow-up: lighter private artifact feature reader
+
+The private =.nelc/.neln= load path now reads generated =:format=,
+=:kind=, and =:features= fields through token scanners instead of the generic
+sexp reader.  This keeps the fast path aligned with the manifest fast reader:
+load validation still falls back to the full parser on unexpected artifact
+shape, but normal generated artifacts no longer allocate a reader tree just to
+discover the feature symbols that must be provided after module replay.
+
+Verified checks:
+
+#+begin_example
+emacs -Q --batch ... nelisp-artifact/load-fast-private-streams-module-init
+emacs -Q --batch ... nelisp-artifact/load-fast-private-reads-features-with-token-reader
+emacs -Q --batch ... nelisp-artifact/load-neln-reads-manifest-once
+emacs -Q --batch ... nelisp-artifact/eval-private-artifact-reads-manifest-once
+make test-one FILE=test/nelisp-artifact-test.el
+#+end_example
+
+=make nelisp-performance-gate= was attempted, but the local
+=target/nelisp= executable was held by existing =nelisp-gui= /
+=nelisp-emacs= bridge sessions and the rebuild failed with =Text file busy=.
+The code path itself is covered by the artifact ERT suite above.
+
 The remaining items in the roadmap are explicitly post-shipping research and
 scale-up work: whole-substrate lower-level representation, larger real-world
 manifest allocator checks, and broader native compiler coverage.  They do not

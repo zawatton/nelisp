@@ -1229,6 +1229,38 @@ standalone plist parse cost as cache misses."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/load-fast-private-reads-features-with-token-reader ()
+  "Fast private load reads generated feature lists without the sexp reader."
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-fast-feature-" t))
+         (source-path (expand-file-name "mod.el" temp-dir))
+         (artifact-path (concat source-path ".nelc"))
+         (feature 'fast-private-feature-token))
+    (unwind-protect
+        (progn
+          (setq features (delq feature features))
+          (write-region
+           "(defvar fast-private-feature-token-value 29)
+(provide 'fast-private-feature-token)\n"
+           nil source-path nil 'silent)
+          (nelisp-artifact-compile-file
+           source-path artifact-path nil nil nil nil nil 'nelc nil 'eval-only)
+          (nelisp--reset)
+          (setq nelisp-artifact--loaded nil)
+          (let ((nelisp-artifact-fast-private-read t))
+            (cl-letf (((symbol-function 'nelisp-artifact--read-private-keyword-value)
+                       (lambda (_source keyword &rest _args)
+                         (when (eq keyword :features)
+                           (error "feature list must use token reader"))
+                         nelisp-artifact--missing-key)))
+              (nelisp-artifact-load-file artifact-path)))
+          (should (= (nelisp-eval 'fast-private-feature-token-value) 29))
+          (should (nelisp-eval '(featurep 'fast-private-feature-token))))
+      (when (boundp 'fast-private-feature-token-value)
+        (makunbound 'fast-private-feature-token-value))
+      (setq features (delq feature features))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (ert-deftest nelisp-artifact/module-policy-eval-only-skips-bytecode-defuns ()
   "`--module-policy eval-only' records every top-level form as replay.
 This keeps very large bootstrap substrates artifact-cacheable even when the

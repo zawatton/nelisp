@@ -760,10 +760,10 @@ return `nelisp-artifact--missing-key' instead of signaling."
         (car res)))))
 
 (defun nelisp-artifact--private-keyword-value-pos
-    (source keyword label &optional missing-ok)
+    (source keyword label &optional missing-ok start)
   "Return generated plist value start position for KEYWORD in SOURCE."
   (let* ((needle (concat (symbol-name keyword) " "))
-         (pos (nelisp-artifact--string-search-literal needle source)))
+         (pos (nelisp-artifact--string-search-literal needle source start)))
     (if (null pos)
         (if missing-ok
             nil
@@ -771,10 +771,10 @@ return `nelisp-artifact--missing-key' instead of signaling."
       (nelisp-read--skip-ws source (+ pos (length needle))))))
 
 (defun nelisp-artifact--read-private-symbol-token
-    (source keyword label &optional missing-ok)
+    (source keyword label &optional missing-ok start)
   "Read KEYWORD's generated symbol value without invoking the sexp reader."
   (let ((pos (nelisp-artifact--private-keyword-value-pos
-              source keyword label missing-ok)))
+              source keyword label missing-ok start)))
     (if (null pos)
         nelisp-artifact--missing-key
       (let ((end pos)
@@ -787,10 +787,10 @@ return `nelisp-artifact--missing-key' instead of signaling."
         (intern (substring source pos end))))))
 
 (defun nelisp-artifact--read-private-integer-token
-    (source keyword label &optional missing-ok)
+    (source keyword label &optional missing-ok start)
   "Read KEYWORD's generated integer value without invoking the sexp reader."
   (let ((pos (nelisp-artifact--private-keyword-value-pos
-              source keyword label missing-ok)))
+              source keyword label missing-ok start)))
     (if (null pos)
         nelisp-artifact--missing-key
       (let ((end pos)
@@ -803,10 +803,10 @@ return `nelisp-artifact--missing-key' instead of signaling."
         (string-to-number (substring source pos end))))))
 
 (defun nelisp-artifact--read-private-string-token
-    (source keyword label &optional missing-ok)
+    (source keyword label &optional missing-ok start)
   "Read KEYWORD's generated string value without invoking the sexp reader."
   (let ((pos (nelisp-artifact--private-keyword-value-pos
-              source keyword label missing-ok)))
+              source keyword label missing-ok start)))
     (if (null pos)
         nelisp-artifact--missing-key
       (unless (= (aref source pos) ?\")
@@ -832,6 +832,44 @@ return `nelisp-artifact--missing-key' instead of signaling."
         (unless done
           (error "unterminated string value for %S in %s" keyword label))
         out))))
+
+(defun nelisp-artifact--read-private-symbol-list-token
+    (source keyword label &optional missing-ok start)
+  "Read KEYWORD's generated symbol list without invoking the sexp reader."
+  (let ((pos (nelisp-artifact--private-keyword-value-pos
+              source keyword label missing-ok start)))
+    (if (null pos)
+        nelisp-artifact--missing-key
+      (let ((len (length source))
+            (items nil)
+            token-start)
+        (cond
+         ((and (<= (+ pos 3) len)
+               (= (aref source pos) ?n)
+               (= (aref source (1+ pos)) ?i)
+               (= (aref source (+ pos 2)) ?l))
+          nil)
+         ((= (aref source pos) ?\()
+          (setq pos (1+ pos))
+          (while (progn
+                   (setq pos (nelisp-read--skip-ws source pos))
+                   (and (< pos len) (not (= (aref source pos) ?\)))))
+            (setq token-start pos)
+            (while (and (< pos len)
+                        (let ((ch (aref source pos)))
+                          (not (or (= ch ?\s) (= ch ?\t) (= ch ?\n)
+                                   (= ch ?\r) (= ch ?\))))))
+              (setq pos (1+ pos)))
+            (when (= token-start pos)
+              (error "invalid symbol list value for %S in %s" keyword label))
+            (setq items
+                  (cons (intern (substring source token-start pos)) items)))
+          (unless (and (< pos len) (= (aref source pos) ?\)))
+            (error "unterminated symbol list value for %S in %s"
+                   keyword label))
+          (nreverse items))
+         (t
+          (error "expected symbol list value for %S in %s" keyword label)))))))
 
 (defun nelisp-artifact--plist-put-present (plist key value)
   "Return PLIST with KEY VALUE appended unless VALUE is the missing sentinel."
@@ -2072,12 +2110,12 @@ Return (t VALUE . END) when handled, otherwise nil."
   (let* ((total-start (nelisp-artifact--profile-time))
          (key-start total-start)
          (prefix-len (length nelisp-artifact--magic))
-         (format (nelisp-artifact--read-private-keyword-value
+         (format (nelisp-artifact--read-private-symbol-token
                   content :format full-path nil prefix-len))
-         (features (nelisp-artifact--read-private-keyword-value
+         (features (nelisp-artifact--read-private-symbol-list-token
                     content :features full-path t prefix-len))
          (kind (or (plist-get manifest :kind)
-                   (nelisp-artifact--read-private-keyword-value
+                   (nelisp-artifact--read-private-symbol-token
                     content :kind full-path nil prefix-len)))
          (native (and manifest (plist-get manifest :native)))
          (last nil))
