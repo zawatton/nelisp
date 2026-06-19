@@ -96,6 +96,9 @@ case を分割・集約する。
 
 - result file 方式で 6 request を 1 request にまとめても 108.432 秒。
 - writeback dispatch table 方式でも 108.649 秒。
+- =nemacs-gui-file-bridge-run= 本体内で direct motion 判定を先に行い、
+  kill ring / rectangle / global mark / tab / frame / custom などの read を
+  guarded block で飛ばす案も試したが、108.262 秒で短縮しなかった。
 - baseline 108 秒台から 5 秒以上短縮できなかった。
 - 採用しない。
 
@@ -128,6 +131,24 @@ case を分割・集約する。
 - miss path でも wrapper の cmd read が追加され、hit path も command-loop/writeback policy の
   再構成 cost が重く、十分な効果が出なかった。
 - runtime への後付け wrapper ではなく、生成元または full read body 自体を整理する必要がある。
+
+** in-body motion read-set guard
+
+- =cmd= / =keys= を先に読むため =nemacs-gui-file-bridge-run= の top-level =let= を
+  =let*= へ変え、=forward-char= / =backward-char= / =next-line= / =previous-line= /
+  =beginning-of-line= / =end-of-line= だけで重い state read block を skip する案。
+- skip 対象は kill ring、rectangle、global mark、tab/window/frame、coding/input、
+  custom state など。
+
+結果:
+
+- =standalone-session-bridge-roundtrip= は pass。
+- =make test-fast= は pass。
+- =standalone-save-and-transform= は 108.262 秒で、no-op helper 化後の 107.817 秒より悪化。
+- shape summary 上は pre-boundary linear body が 73 から 50 に縮むが、
+  runtime の conditional cost と対象 request 数では 5 秒以上の短縮に届かない。
+- 変更は戻した。次は大きい guarded block ではなく、実際に支配的な direct-cmd common path を
+  phase 単位で測れるようにしてから絞る。
 
 ** local editing group
 
@@ -230,10 +251,11 @@ make nemacs-gui-bridge-run-shape
 2. direct-cmd 257 request / 79.817 秒を主対象にし、key dispatch や compound form を
    初回対象から外す。
 3. =make nemacs-gui-bridge-run-shape= で本体構造を再生成する。
-4. no-op helper 化済みの =files--transport-read-current= を境界にして、
-   motion command の read-set を本体構造内で分割する。
-5. miss path で余分な transport read を増やさず、shape summary で direct read/write count と
-   boundary を確認する。
+4. coarse な motion read-set guard は 108.262 秒で不採用済み。次は
+   =nemacs-gui-file-bridge-run= の pre-boundary を setup/read/ingest/init/window-point などの
+   phase に分け、phase 単位で skip/計測できる境界を作る。
+5. phase 境界ごとに =standalone-save-and-transform= を fresh process で測り、
+   5 秒以上の短縮がない場合は戻して不採用理由を残す。
 6. direct-cmd の common read/writeback setup を本体構造として短くし、
    individual command の後付け wrapper には戻らない。
 7. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
