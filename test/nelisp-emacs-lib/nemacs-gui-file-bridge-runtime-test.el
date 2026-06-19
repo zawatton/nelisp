@@ -14906,6 +14906,93 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-find-file-writeback-helper ()
+  "Bridge find-file writeback helper should write file command state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-find-file-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"Find body\\n0123456789abcdef\")
+                       (setq files--current-file-name
+                             \"/tmp/nemacs-find-file.txt\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--window-layout \"find-layout\")
+                       (setq files--window-selected \"5\")
+                       (setq files--point 11)
+                       (fset 'capture-find-file-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-find-file-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-find-file-writeback-helper\"
+                        (concat
+                         (capture-find-file-writeback \"find-file\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-file-other-window\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-file-other-frame\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-file-other-tab\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-file-read-only\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-file-read-only-other-window\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-file-read-only-other-frame\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-file-read-only-other-tab\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"find-alternate-file\")
+                         \"\\t\"
+                         (capture-find-file-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "find-file:written\tfind-file-other-window:written\tfind-file-other-frame:written\tfind-file-other-tab:written\tfind-file-read-only:written\tfind-file-read-only-other-window:written\tfind-file-read-only-other-frame:written\tfind-file-read-only-other-tab:written\tfind-alternate-file:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "Find body\n0123456789abcdef"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/nemacs-find-file.txt"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              (should (equal "find-layout"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "5"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "00011"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
