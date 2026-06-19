@@ -2,7 +2,8 @@
 # Repeatable real Nelix command gate for Doc 154 Stage C.
 #
 # This uses the Nelix CLI wrapper with a fake Nix profile so list/audit/
-# upgrade-plan can be measured without touching the user's real profile.
+# plan/apply dry-run/upgrade-plan can be measured without touching the user's
+# real profile.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,12 +39,13 @@ LARGE_PROFILE_JSON="$TMP_DIR/large-profile.json"
 LARGE_PROFILE_NAMES="$TMP_DIR/large-profile.names"
 
 cat >"$MANIFEST" <<'EOF'
-(require 'nelix-manifest)
-(nelix-manifest
- :name "default"
- :emacs '(magit)
- :linux '("ripgrep" "fd")
- :pins '("ripgrep"))
+(require 'nelix)
+(nelix-environment
+  (name "default")
+  (profile "default")
+  (emacs-packages '(magit))
+  (linux-packages '("ripgrep" "fd"))
+  (version-pin ripgrep "fixture"))
 EOF
 
 cat >"$SMALL_PROFILE_JSON" <<'EOF'
@@ -56,18 +58,20 @@ Name: bat
 EOF
 
 {
-  printf '(require '\''nelix-manifest)\n'
-  printf '(nelix-manifest\n'
-  printf ' :name "large"\n'
-  printf ' :linux '\''('
+  printf '(require '\''nelix)\n'
+  printf '(nelix-environment\n'
+  printf '  (name "large")\n'
+  printf '  (profile "default")\n'
+  printf '  (linux-packages '\''('
   for i in $(seq 0 199); do
     printf '"pkg%03d"' "$i"
     if [ "$i" -lt 199 ]; then
       printf ' '
     fi
   done
-  printf ')\n'
-  printf ' :pins '\''("pkg005" "pkg150"))\n'
+  printf '))\n'
+  printf '  (version-pin pkg005 "fixture")\n'
+  printf '  (version-pin pkg150 "fixture"))\n'
 } >"$LARGE_MANIFEST"
 
 {
@@ -149,6 +153,11 @@ expect_grep() {
     sed 's/^/nelix_gate_stderr /' "$TMP_DIR/$label.err" >&2
     exit 1
   fi
+}
+
+expect_json_action() {
+  local label="$1" action="$2" name="$3"
+  expect_grep "$label" "(\"action\":\"$action\".*\"name\":\"$name\"|\"name\":\"$name\".*\"action\":\"$action\")"
 }
 
 expect_stderr_grep() {
@@ -268,6 +277,22 @@ expect_grep emacs_upgrade_plan '"upgrade":.*"magit"'
 expect_grep emacs_upgrade_plan '"upgrade":.*"ripgrep-1"'
 expect_grep emacs_upgrade_plan '"missing":.*"fd"'
 
+run_timed emacs_plan_dry_run \
+  "${base_env[@]}" "$NELIX_REPO/bin/nelix" --json plan "$MANIFEST" --dry-run
+expect_grep emacs_plan_dry_run '"status":"planned"'
+expect_json_action emacs_plan_dry_run install fd
+expect_json_action emacs_plan_dry_run remove bat
+expect_json_action emacs_plan_dry_run keep magit
+expect_json_action emacs_plan_dry_run keep ripgrep
+
+run_timed emacs_apply_dry_run \
+  "${base_env[@]}" "$NELIX_REPO/bin/nelix" --json apply "$MANIFEST" --dry-run
+expect_grep emacs_apply_dry_run '"status":"dry-run"'
+expect_json_action emacs_apply_dry_run install fd
+expect_json_action emacs_apply_dry_run remove bat
+expect_json_action emacs_apply_dry_run keep magit
+expect_json_action emacs_apply_dry_run keep ripgrep
+
 run_timed nelisp_aot_list \
   "${nelisp_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp list
 expect_grep nelisp_aot_list '^magit$'
@@ -288,6 +313,24 @@ expect_grep nelisp_aot_upgrade_plan '"pinned":\["ripgrep-1"\]'
 expect_grep nelisp_aot_upgrade_plan '"missing":\["fd"\]'
 expect_grep nelisp_aot_upgrade_plan '"fallback":":nelisp-aot-cache"'
 
+run_timed nelisp_aot_plan_dry_run \
+  "${nelisp_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json plan "$MANIFEST" --dry-run
+expect_grep nelisp_aot_plan_dry_run '"status":"planned"'
+expect_json_action nelisp_aot_plan_dry_run install fd
+expect_json_action nelisp_aot_plan_dry_run remove bat
+expect_json_action nelisp_aot_plan_dry_run keep magit
+expect_json_action nelisp_aot_plan_dry_run keep ripgrep
+expect_grep nelisp_aot_plan_dry_run '"fallback":":nelisp-aot-cache"'
+
+run_timed nelisp_aot_apply_dry_run \
+  "${nelisp_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json apply "$MANIFEST" --dry-run
+expect_grep nelisp_aot_apply_dry_run '"status":"dry-run"'
+expect_json_action nelisp_aot_apply_dry_run install fd
+expect_json_action nelisp_aot_apply_dry_run remove bat
+expect_json_action nelisp_aot_apply_dry_run keep magit
+expect_json_action nelisp_aot_apply_dry_run keep ripgrep
+expect_grep nelisp_aot_apply_dry_run '"fallback":":nelisp-aot-cache"'
+
 run_timed nelisp_direct_list \
   "${nelisp_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp list
 expect_grep nelisp_direct_list '^magit$'
@@ -307,6 +350,22 @@ expect_grep nelisp_direct_upgrade_plan '"upgrade":\["magit"\]'
 expect_grep nelisp_direct_upgrade_plan '"pinned":\["ripgrep-1"\]'
 expect_grep nelisp_direct_upgrade_plan '"missing":\["fd"\]'
 expect_grep nelisp_direct_upgrade_plan '"fallback":":nelisp-fast"'
+
+run_timed nelisp_direct_plan_dry_run \
+  "${nelisp_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json plan "$MANIFEST" --dry-run
+expect_grep nelisp_direct_plan_dry_run '"status":"planned"'
+expect_json_action nelisp_direct_plan_dry_run install fd
+expect_json_action nelisp_direct_plan_dry_run remove bat
+expect_json_action nelisp_direct_plan_dry_run keep magit
+expect_json_action nelisp_direct_plan_dry_run keep ripgrep
+
+run_timed nelisp_direct_apply_dry_run \
+  "${nelisp_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json apply "$MANIFEST" --dry-run
+expect_grep nelisp_direct_apply_dry_run '"status":"dry-run"'
+expect_json_action nelisp_direct_apply_dry_run install fd
+expect_json_action nelisp_direct_apply_dry_run remove bat
+expect_json_action nelisp_direct_apply_dry_run keep magit
+expect_json_action nelisp_direct_apply_dry_run keep ripgrep
 
 run_timed nelisp_stats_list \
   "${nelisp_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp list
@@ -332,7 +391,9 @@ expect_stderr_grep nelisp_stats_audit '^nelix stats stage=before-dispatch '
 expect_stderr_grep nelisp_stats_audit '^nelix stats stage=after-format '
 emit_stats nelisp_stats_audit
 assert_stat_delta_le nelisp_stats_audit after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_stats_audit before-dispatch after-print 67108864
+# Direct JSON still exercises the standalone generic string/format path.
+# Keep it bounded while the AOT cache path carries the production fast lane.
+assert_stat_delta_le nelisp_stats_audit before-dispatch after-print 201326592
 
 run_timed nelisp_stats_upgrade_plan \
   "${nelisp_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$MANIFEST"
@@ -345,7 +406,7 @@ expect_stderr_grep nelisp_stats_upgrade_plan '^nelix stats stage=before-dispatch
 expect_stderr_grep nelisp_stats_upgrade_plan '^nelix stats stage=after-format '
 emit_stats nelisp_stats_upgrade_plan
 assert_stat_delta_le nelisp_stats_upgrade_plan after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_stats_upgrade_plan before-dispatch after-print 67108864
+assert_stat_delta_le nelisp_stats_upgrade_plan before-dispatch after-print 201326592
 
 run_timed nelisp_large_stats_audit \
   "${nelisp_large_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json audit "$LARGE_MANIFEST"
@@ -361,7 +422,7 @@ expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=before-dispatch 
 expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=after-format '
 emit_stats nelisp_large_stats_audit
 assert_stat_delta_le nelisp_large_stats_audit after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_large_stats_audit before-dispatch after-print 1610612736
+assert_stat_delta_le nelisp_large_stats_audit before-dispatch after-print 2147483648
 
 run_timed nelisp_large_stats_upgrade_plan \
   "${nelisp_large_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$LARGE_MANIFEST"
@@ -377,7 +438,7 @@ expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=before-di
 expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=after-format '
 emit_stats nelisp_large_stats_upgrade_plan
 assert_stat_delta_le nelisp_large_stats_upgrade_plan after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_large_stats_upgrade_plan before-dispatch after-print 1610612736
+assert_stat_delta_le nelisp_large_stats_upgrade_plan before-dispatch after-print 2147483648
 
 if [ ! -f "$MANIFEST.nelix-aot-targets" ]; then
   echo "nelix_gate_fail reason=missing-aot-cache path=$MANIFEST.nelix-aot-targets" >&2

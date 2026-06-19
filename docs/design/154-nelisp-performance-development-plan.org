@@ -53,13 +53,16 @@ tools/nelisp-source-command-substrate-gate.sh
 
 It emits =gate_result= wall-time lines, =gate_stats= arena-stat lines, verifies
 cache fallback/restore behavior, and runs the focused artifact ERT set.  The
-Nelix command gate uses a fake Nix profile so command output and timings are
-repeatable without touching the user's real profile.  The native artifact gate
-verifies the generic =.el= -> adjacent =.neln= contract through the
-=target/nelisp= command itself.  The runtime-image cache gate verifies the
-runtime-image cache/freshness contract.  The source-command substrate gate
-keeps exposing the exact evaluator/reader/bytecode source as an independent
-whole-substrate research unit.
+Nelix command gate uses DSL v1 =nelix-environment= manifests and a fake Nix
+profile so command output and timings are repeatable without touching the
+user's real profile.  It covers =list=, =audit=, =upgrade-plan=, =plan
+--dry-run=, and =apply --dry-run= through both the AOT cache lane and the
+direct standalone NeLisp lane.  The native artifact gate verifies the generic
+=.el= -> adjacent =.neln= contract through the =target/nelisp= command
+itself.  The runtime-image cache gate verifies the runtime-image
+cache/freshness contract.  The source-command substrate gate keeps exposing the
+exact evaluator/reader/bytecode source as an independent whole-substrate
+research unit.
 
 The current native artifact contract is generic but not yet full-native:
 
@@ -1045,7 +1048,7 @@ Nelix command path when all three goals are proven:
 - GC/allocator pressure: arena stats show reduced allocation for startup,
   artifact load, and command execution phases.
 
-Current proof set, verified 2026-06-19:
+Current proof set, verified 2026-06-20:
 
 #+begin_example
 tools/nelisp-performance-gate.sh --no-build
@@ -1056,15 +1059,29 @@ tools/nelisp-performance-gate.sh --no-build
   nelisp_performance_gate rc=0
 
 tools/nelisp-nelix-command-gate.sh
+  manifest fixture uses nelix-environment DSL v1
   nelisp_aot_list rc=0
   nelisp_aot_audit rc=0
   nelisp_aot_upgrade_plan rc=0
+  nelisp_aot_plan_dry_run rc=0
+  nelisp_aot_apply_dry_run rc=0
   nelisp_direct_list rc=0
   nelisp_direct_audit rc=0
   nelisp_direct_upgrade_plan rc=0
+  nelisp_direct_plan_dry_run rc=0
+  nelisp_direct_apply_dry_run rc=0
   nelix_gate_stat_delta ... after-cli-load to after-print delta=0 max=1024
-  nelix_gate_stat_delta ... before-dispatch to after-print max=33554432
+  nelix_gate_stat_delta ... small before-dispatch to after-print max=201326592
+  nelix_gate_stat_delta ... large before-dispatch to after-print max=2147483648
   nelix_command_gate rc=0
+
+The 2026-06-20 gate also makes the current split visible: the AOT cache lane
+handles =plan --dry-run= and =apply --dry-run= in about 11-12ms on the fixture,
+while the direct NeLisp dry-run path still spends about 9-10s in the generic
+plan/apply path.  Direct JSON stats remain bounded but intentionally high
+(~160MB for the small audit/upgrade fixture and ~1.8GB for the 200-package
+fixture); these bounds are regression tripwires, not a claim that the direct
+path is finished.
 
 tools/nelisp-native-artifact-gate.sh --no-build
   bulk_required rc=0
