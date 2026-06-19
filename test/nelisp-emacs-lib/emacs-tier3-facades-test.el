@@ -81,6 +81,31 @@
      (load emacs-tier3-facades-test--source nil t)
      ,@body))
 
+(defun emacs-tier3-facades-test--make-novc-temp-dir ()
+  "Return a temporary directory whose ancestors are not VC roots.
+Some CI/development machines intentionally have `/tmp/.git'.  A no-VC
+fixture created under such a parent is correctly detected as Git, so try
+several temp parents and keep only one that the facade reports as no VC."
+  (let ((parents (delete-dups
+                  (delq nil
+                        (list "/var/tmp" "/dev/shm" temporary-file-directory
+                              default-directory))))
+        candidate
+        result)
+    (while (and parents (not result))
+      (let ((parent (file-name-as-directory (car parents))))
+        (setq parents (cdr parents))
+        (when (file-directory-p parent)
+          (setq candidate (make-temp-file
+                           (expand-file-name "emacs-tier3-novc-" parent) t))
+          (if (vc-responsible-backend candidate)
+              (progn
+                (delete-directory candidate t)
+                (setq candidate nil))
+            (setq result candidate)))))
+    (or result
+        (error "Could not create non-VC temporary directory"))))
+
 (ert-deftest emacs-tier3-facades-test/feature-loaders-resolve-to-src ()
   (let ((load-path (cons emacs-tier3-facades-test--src-dir load-path)))
     (dolist (loader emacs-tier3-facades-test--loaders)
@@ -139,7 +164,7 @@
     (should-not (url-port nil))
     (should-not (url-filename nil))
     (should-not (url-type nil))
-    (let ((root (make-temp-file "emacs-tier3-novc-" t)))
+    (let ((root (emacs-tier3-facades-test--make-novc-temp-dir)))
       (unwind-protect
           (progn
             (should-not (vc-responsible-backend root))

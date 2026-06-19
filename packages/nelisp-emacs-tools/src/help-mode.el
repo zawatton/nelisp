@@ -12,7 +12,9 @@
 
 ;;; Code:
 
-(defvar help-mode--standalone-p (boundp 'nelisp-emacs-vendor-root))
+(defvar help-mode--standalone-p
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))))
 
 (defun help-mode--host-load-standard ()
   "Load host Emacs's standard help-mode library."

@@ -23,6 +23,31 @@
    "src/nemacs-gui-file-bridge-runtime.el"
    nemacs-gui-file-bridge-runtime-test--repo-root))
 
+(defconst nemacs-gui-file-bridge-runtime-test--prelude
+  (expand-file-name
+   "../nelisp/scripts/nelisp-stdlib-prelude.el"
+   nemacs-gui-file-bridge-runtime-test--repo-root))
+
+(defconst nemacs-gui-file-bridge-runtime-test--fileio-gui
+  (expand-file-name
+   "src/emacs-fileio-gui.el"
+   nemacs-gui-file-bridge-runtime-test--repo-root))
+
+(defconst nemacs-gui-file-bridge-runtime-test--dired-gui
+  (expand-file-name
+   "src/emacs-dired-min-gui.el"
+   nemacs-gui-file-bridge-runtime-test--repo-root))
+
+(defconst nemacs-gui-file-bridge-runtime-test--info-gui
+  (expand-file-name
+   "src/emacs-info.el"
+   nemacs-gui-file-bridge-runtime-test--repo-root))
+
+(defconst nemacs-gui-file-bridge-runtime-test--help-gui
+  (expand-file-name
+   "src/emacs-help-gui.el"
+   nemacs-gui-file-bridge-runtime-test--repo-root))
+
 (defun nemacs-gui-file-bridge-runtime-test--slurp (file)
   "Return FILE contents as a string."
   (with-temp-buffer
@@ -66,7 +91,19 @@
   (let ((image (make-temp-file "nemacs-gui-file-bridge-" nil ".nlri")))
     (with-temp-file image
       (insert ";;; nelisp-runtime-image source-v1\n(progn\n")
+      (when (file-readable-p nemacs-gui-file-bridge-runtime-test--prelude)
+        (insert-file-contents nemacs-gui-file-bridge-runtime-test--prelude)
+        (goto-char (point-max)))
+      (insert-file-contents nemacs-gui-file-bridge-runtime-test--fileio-gui)
+      (goto-char (point-max))
+      (insert-file-contents nemacs-gui-file-bridge-runtime-test--dired-gui)
+      (goto-char (point-max))
+      (insert-file-contents nemacs-gui-file-bridge-runtime-test--info-gui)
+      (goto-char (point-max))
+      (insert-file-contents nemacs-gui-file-bridge-runtime-test--help-gui)
+      (goto-char (point-max))
       (insert-file-contents nemacs-gui-file-bridge-runtime-test--source)
+      (goto-char (point-max))
       (insert "\n)\n"))
     image))
 
@@ -203,10 +240,17 @@
 			                   "/tmp/nemacs-status"
 			                   "/tmp/nemacs-dired-marks"
 			                   "/tmp/nemacs-magit-root"
-			                   "/tmp/nemacs-magit-output"
+                           "/tmp/nemacs-magit-output"
 			                   "/tmp/nemacs-tramp-output"
 			                   "/tmp/nemacs-tramp-stage"
-			                   "/tmp/nemacs-org-time"
+                           "/tmp/nemacs-ime-pending"
+                           "/tmp/nemacs-ime-seg"
+                           "/tmp/nemacs-ime-cands"
+                           "/tmp/nemacs-ime-idx"
+                           "/tmp/nemacs-ime-reading"
+                           "/tmp/nemacs-ime-learn"
+                           "/tmp/nemacs-ime-okuri"
+                           "/tmp/nemacs-org-time"
 			                   "/tmp/nemacs-org-capture-file"))
 	          (dirs '("/tmp/nemacs-buffer-store"
 	                  "/tmp/nemacs-buffer-file-store"
@@ -381,6 +425,157 @@
          (nemacs-gui-file-bridge-runtime-test--slurp
           nemacs-gui-file-bridge-runtime-test--source)))
     (dolist (needle '("(fset 'commandp"
+	                      "emacs-command-loop-gui-command-registered-p"
+                          "emacs-command-loop-gui-command-accepted-p"
+	                      "emacs-command-loop-gui-read-only-command-p"
+                      "emacs-command-loop-gui-prefix-command-p"
+                      "emacs-command-loop-gui-prefix-repeat-command-p"
+                      "emacs-command-loop-gui-prefix-inverted-command"
+                      "emacs-command-loop-gui-prefix-arg-number"
+                      "emacs-command-loop-gui-prefix-digit-key"
+                      "emacs-command-loop-gui-universal-argument"
+                      "emacs-command-loop-gui-digit-argument"
+                      "emacs-command-loop-gui-negative-argument"
+                      "emacs-command-loop-gui-execute-with-prefix-arg"
+                      "emacs-command-loop-gui-undo-save-command-p"
+                      "emacs-command-loop-gui-save-undo-if-needed"
+                      "files--command-loop-save-undo-if-needed-current-context"
+                      ":save-undo-state"
+                      "emacs-command-loop-gui-register-backend"
+                      ":current-command"
+                      "files--command-loop-backend-current-command"
+                      ":current-command 'files--command-loop-backend-current-command"
+                      ":current-effective-command"
+                      ":current-keys"
+                      ":current-prefix-arg"
+                      ":current-minibuffer-arg"
+                      "files--command-loop-backend-current-minibuffer-arg"
+                      "files--command-loop-backend-set-command"
+                      "emacs-command-loop-gui-ingest-request-context"
+                      ":error-status-p"
+                      "files--command-loop-backend-error-status-p"
+                      ":clear-command-request"
+                      "files--command-loop-backend-clear-command-request"
+                      "emacs-command-loop-gui-keymap-command"
+                      "emacs-command-loop-gui-lookup-key-sequence-from-sources"
+                      "emacs-command-loop-gui-call-interactively-current-context"
+                      "emacs-command-loop-gui-command-execute-current-context"
+                      "emacs-command-loop-gui-execute-extended-command-current-context"
+                      "emacs-command-loop-gui-project-command"
+                      "emacs-command-loop-gui-call-interactively-context"
+                      "emacs-command-loop-gui-command-execute-context"
+                      "emacs-command-loop-gui-dispatch-current-context"
+                      "emacs-command-loop-gui-dispatch-context"
+                      "emacs-command-loop-gui-dispatch-key-request"
+                      "emacs-command-loop-gui-dispatch-key-request-current-context"
+                      "emacs-command-loop-gui-after-key-dispatch"
+                      "emacs-command-loop-gui-run-request-current-context"
+                      "files--command-loop-run-request-current-context"
+                      "files--command-loop-ensure-backend"
+                      "files--command-loop-set-command-arg"
+                      "emacs-command-loop-gui-writeback-command-name"
+                      "emacs-command-loop-gui-write-post-command-state"
+                      "emacs-command-loop-gui-lane-writeback-spec"
+                      "emacs-command-loop-gui-writeback-spec-flag"
+                      "emacs-command-loop-gui-write-lane-state"
+                      "files--command-loop-writeback-current-lane"
+                      ":write-minibuffer-state"
+                      "files--command-loop-backend-write-minibuffer-state"
+                      ":write-status-state"
+                      "files--command-loop-backend-write-status-state"
+                      ":write-buffer-state"
+                      "files--command-loop-backend-write-buffer-state"
+                      ":write-read-only-one-state"
+                      "files--command-loop-backend-write-read-only-one-state"
+                      ":mark-written-state"
+                      "files--command-loop-backend-mark-written-state"
+                      ":write-frame-state"
+                      "files--command-loop-backend-write-frame-state"
+                      ":after-key-dispatch"
+                      "files--command-loop-backend-after-key-dispatch"
+                      "emacs-command-loop-gui-before-command"
+                      "emacs-command-loop-gui-finish-command"
+                      "(fset 'emacs-command-loop-gui-call-interactively-context"
+                      "emacs-command-loop-gui-self-insert-key-text"
+                      "emacs-command-loop-gui-key-dispatch-spec"
+                      "emacs-command-loop-gui-minibuffer-active-p"
+                      "emacs-command-loop-gui-minibuffer-handle-key"
+                      "emacs-command-loop-gui-maybe-start-minibuffer"
+                      ":minibuffer-mode-keymap-source"
+                      ":minibuffer-keymap-source"
+                      "files--command-loop-backend-minibuffer-active-p"
+                      "files--command-loop-backend-minibuffer-keymap-source"
+                      "files--command-loop-backend-maybe-start-minibuffer"
+                      "files--command-loop-backend-lookup-key-sequence"
+                      "(fset 'files--command-loop-backend-call-adapted-command"
+                      ":call-adapted-command"
+                      ":clear-cycle-spacing-state"
+                      "emacs-minibuffer-gui-register-backend"
+                      "emacs-minibuffer-gui-filtered-candidates-for-purpose"
+                      "emacs-minibuffer-gui-start-purpose-read"
+                      "emacs-minibuffer-gui-start-from-keymap"
+                      "emacs-minibuffer-gui-start-spec-from-keymaps"
+                      "emacs-minibuffer-gui-maybe-start-from-keymap"
+                      "emacs-minibuffer-gui-maybe-start-from-keymaps"
+                      "emacs-minibuffer-gui-start-current-context"
+                      "emacs-minibuffer-gui-maybe-start-current-context"
+                      "emacs-minibuffer-gui-handle-key"
+                      "emacs-minibuffer-gui-handle-key-current-context"
+                      "emacs-minibuffer-gui-purpose-uses-read-p"
+                      "emacs-minibuffer-gui-keymap-entry"
+                      "emacs-minibuffer-gui-extended-command-followup"
+                      "emacs-minibuffer-gui-extended-command-commit-spec"
+                      "emacs-minibuffer-gui-replace-followup"
+                      "emacs-minibuffer-gui-replace-commit-command"
+                      "emacs-minibuffer-gui-command-commit-spec"
+                      ":finish-read 'files--minibuffer-finish"
+                      ":insert-text 'files--minibuffer-gui-backend-insert-text"
+                      ":delete-backward-char"
+                      "emacs-fileio-gui-register-backend"
+                      "emacs-fileio-gui-refresh-context-from-backend"
+                      ":current-arg"
+                      ":current-status"
+                      ":current-read-only-p"
+                      ":current-display-action"
+                      "emacs-fileio-gui-command-spec"
+                      "emacs-fileio-gui-current-context-command"
+                      "'find-file \"same\" nil"
+                      "'find-alternate-file"
+                      "'project-find-file"
+                      "'project-or-external-find-file"
+                      "'save-buffer"
+                      "'save-some-buffers"
+                      "'write-file"
+                      "'insert-file"
+                      "'insert-buffer"
+                      "'revert-buffer"
+                      "'switch-to-buffer \"same\""
+                      "'display-buffer \"other\""
+                      "'rename-buffer"
+                      "'kill-buffer"
+                      "'kill-buffer-and-window"
+                      "'list-buffers"
+                      "'project-list-buffers"
+	                      "'project-kill-buffers"
+	                      "emacs-fileio-gui-find-file-core"
+		                      "emacs-fileio-gui-save-buffer-core"
+		                      "emacs-fileio-gui-switch-to-buffer-command"
+		                      "emacs-fileio-gui-kill-buffer-command"
+		                      "emacs-fileio-gui-list-buffers-command"
+		                      "emacs-fileio-gui-writeback-spec"
+	                      "emacs-fileio-gui-writeback-spec-flag"
+	                      "emacs-fileio-gui-writeback-state"
+	                      ":write-buffer-state"
+	                      "files--fileio-backend-write-buffer-state"
+	                      ":mark-written-state"
+	                      "files--fileio-backend-mark-written-state"
+	                      "files--fileio-writeback-current-context"
+	                      "files--fileio-core-delegating"
+	                      "(fset 'files--find-file-core"
+	                      "(fset 'files--save-buffer-core"
+	                      "(fset 'files--switch-to-buffer"
+                      "(fset 'files--kill-buffer-core"
+                      "(fset 'files--list-buffers-core"
                       "(fset 'call-interactively"
 	                      "(fset 'command-execute"
 	                              "(fset 'execute-extended-command"
@@ -388,13 +583,23 @@
                                   "(fset 'call-process"
                                   "nelisp-process-call-process"
 		                              "(fset 'shell-command"
+                                  "(fset 'shell-command-core"
+                                  "emacs-shell-command-gui-register-backend"
+                                  "emacs-shell-command-gui-shell-command"
+                                  "emacs-shell-command-gui-project-shell-command"
+                                  "emacs-shell-command-gui-async-shell-command"
+                                  "emacs-shell-command-gui-project-compile"
 	                              "(fset 'shell-command-on-region"
 	                              "(fset 'async-shell-command"
+                                  "(fset 'async-shell-command-core"
                                   "(fset 'project-shell-command"
+                                  "(fset 'project-shell-command-core"
                                   "(fset 'project-async-shell-command"
+                                  "(fset 'project-async-shell-command-core"
                                   "(fset 'project-shell"
                                   "(fset 'project-eshell"
                                   "(fset 'project-compile"
+                                  "(fset 'project-compile-core"
                                   "(fset 'project-find-regexp"
                                   "(fset 'project-or-external-find-regexp"
                                   "(fset 'project-vc-dir"
@@ -426,13 +631,58 @@
 			                      "(fset 'describe-bindings"
 				                      "(fset 'help-for-help"
 				                      "(fset 'files--show-static-help"
+                                      "(fset 'files--show-static-help-core"
+                                      "(fset 'files--help-sync-context"
+                                      "(fset 'files--help-install-backend"
+                                      "(fset 'files--help-run-core"
+                                      "emacs-help-gui-show-help-buffer"
+                                      "emacs-help-gui-register-backend"
+                                      "emacs-help-gui-set-context"
+                                      "emacs-help-gui-refresh-context-from-backend"
+                                      ":current-arg"
+                                      ":current-file-name"
+                                      ":buffer-read-only-p"
+                                      ":keymap-source"
+                                      "emacs-help-gui-describe-function-core"
+                                      "emacs-help-gui-describe-function"
+                                      "emacs-help-gui-current-context-command"
+                                      "emacs-help-gui-describe-variable-core"
+                                      "emacs-help-gui-describe-variable"
+                                      "emacs-help-gui-describe-key-core"
+                                      "emacs-help-gui-describe-key"
+                                      "emacs-help-gui-describe-key-briefly-core"
+                                      "emacs-help-gui-describe-bindings-core"
+                                      "emacs-help-gui-describe-bindings"
+                                      "emacs-help-gui-help-for-help"
+                                      "emacs-help-gui-where-is-core"
+                                      "emacs-help-gui-where-is"
+                                      "emacs-help-gui-describe-command"
+                                      "emacs-help-gui-static-command"
+                                      "emacs-help-gui-apropos-command"
+                                      "emacs-help-gui-apropos-documentation"
 				                      "(fset 'describe-coding-system"
 				                      "(fset 'describe-input-method"
 				                      "(fset 'describe-language-environment"
 				                      "(fset 'apropos-command"
 				                      "(fset 'apropos-documentation"
 				                      "(fset 'view-echo-area-messages"
+				                      "(fset 'scratch-buffer"
+				                      "(fset 'messages-buffer"
+				                      "(fset 'warnings-buffer"
+				                      "(fset 'emacs-special-buffers-ensure-buffer"
+				                      "(fset 'emacs-special-buffers-append-to-buffer"
+				                      "(fset 'emacs-special-buffers-switch-to-buffer"
+				                      "(fset 'emacs-special-buffers-message"
+				                      "(fset 'emacs-special-buffers-display-warning"
+				                      "(fset 'message"
+				                      "(fset 'display-warning"
 				                      "(fset 'about-emacs"
+                                      "(fset 'files--write-toolbar-state-core"
+                                      "(fset 'files--toolbar-menu-for-label-core"
+                                      "(fset 'files--handle-toolbar-click"
+                                      "emacs-toolbar-gui-register-backend"
+                                      "emacs-toolbar-gui-write-state"
+                                      "emacs-toolbar-gui-handle-click"
 			                      "(fset 'describe-copying"
 			                      "(fset 'view-emacs-debugging"
 			                      "(fset 'view-external-packages"
@@ -454,6 +704,10 @@
                                       "(fset 'help-find-source"
                                       "(fset 'help-quick-toggle"
                                       "(fset 'search-forward-help-for-help"
+                                      "emacs-help-gui-writeback-spec"
+                                      "emacs-help-gui-writeback-spec-flag"
+                                      "emacs-help-gui-writeback-state"
+                                      "files--help-writeback-current-context"
                                       "(fset 'eval-last-sexp"
                                       "(fset 'eval-expression"
                                       "(fset 'repeat-complex-command"
@@ -468,6 +722,35 @@
                                       "(fset 'xref-find-definitions-other-frame"
                                       "(fset 'next-error"
                                       "(fset 'previous-error"
+                                      "(fset 'files--info-sync-context"
+                                      "(fset 'files--info-install-backend"
+                                      "(fset 'files--info-run-core"
+                                      "emacs-info-gui-set-context"
+                                      "emacs-info-gui-refresh-context-from-backend"
+                                      "emacs-info-gui-register-backend"
+                                      ":current-arg"
+                                      ":current-file"
+                                      ":current-node"
+                                      "emacs-info-gui-info-core"
+                                      "emacs-info-gui-info-command"
+                                      "emacs-info-gui-current-context-command"
+                                      "emacs-info-gui-render-node"
+                                      "emacs-info-gui-goto-pointer"
+                                      "emacs-info-gui-next-command"
+                                      "emacs-info-gui-prev-command"
+                                      "emacs-info-gui-up-command"
+                                      "emacs-info-gui-emacs-manual-command"
+                                      "emacs-info-gui-display-manual-command"
+                                      "emacs-info-gui-view-order-manuals-command"
+                                      "emacs-info-gui-goto-emacs-command-node-command"
+                                      "emacs-info-gui-goto-emacs-key-command-node-command"
+                                      "emacs-info-gui-lookup-symbol-command"
+                                      "emacs-info-gui-writeback-spec"
+                                      "emacs-info-gui-writeback-spec-flag"
+                                      "emacs-info-gui-writeback-state"
+                                      "files--info-writeback-current-context"
+                                      "emacs-info-gui-info"
+                                      "emacs-info-gui-next"
                                       "(fset 'info"
                                       "(fset 'info-other-window"
                                       "(fset 'info-emacs-manual"
@@ -535,12 +818,60 @@
 				                      "(fset 'basic-save-buffer"
 					                      "(fset 'save-some-buffers"
                                       "(fset 'list-directory"
+                                      "(fset 'files--dired-sync-context"
+                                      "(fset 'files--dired-install-backend"
+                                      "emacs-dired-min-gui-set-context"
+                                      "emacs-dired-min-gui-refresh-context-from-backend"
+                                      "emacs-dired-min-gui-register-backend"
+                                      ":current-directory"
+                                      ":current-target"
+                                      ":current-status"
+                                      ":project-directory"
+                                      "emacs-dired-min-gui-dired-command"
+                                      "emacs-dired-min-gui-current-context-command"
+                                      "'dired \"same\""
+                                      "'dired-jump \"same\""
+                                      "'project-find-dir \"same\""
+                                      "'project-dired \"same\""
+                                      "emacs-dired-min-gui-apply-mark-core"
+                                      "emacs-dired-min-gui-do-flagged-delete-core"
+                                      "emacs-dired-min-gui-do-rename-core"
+                                      "emacs-dired-min-gui-do-copy-core"
+                                      "emacs-dired-min-gui-dired"
+                                      "emacs-dired-min-gui-writeback-spec"
+                                      "emacs-dired-min-gui-writeback-spec-flag"
+                                      "emacs-dired-min-gui-writeback-state"
+                                      ":write-modeline-state"
+                                      "files--fileio-backend-write-modeline-state"
+                                      "files--dired-writeback-current-context"
+                                      "files--dired-core-delegating"
                                       "(fset 'dired"
                                       "(fset 'dired-jump"
                                       "(fset 'dired-jump-other-window"
                                       "(fset 'dired-other-window"
                                       "(fset 'dired-other-frame"
                                               "(fset 'dired-other-tab"
+                                      "(fset 'files--dired-backend-directory-buffer-p"
+                                      "(fset 'files--dired-backend-name-at-point"
+                                      "(fset 'files--dired-backend-marks-text"
+                                      "(fset 'files--dired-backend-expand-name"
+                                      "(fset 'files--dired-backend-directory-p"
+                                      "(fset 'files--dired-backend-delete-file"
+                                      "(fset 'files--dired-backend-rename-file"
+                                      "(fset 'files--dired-backend-file-exists-p"
+                                      "(fset 'files--dired-backend-project-directory"
+                                      "(fset 'files--dired-backend-read-file"
+                                      "(fset 'files--dired-backend-write-file"
+                                      "(fset 'files--dired-backend-remove-mark"
+                                      "(fset 'files--dired-backend-set-mark"
+                                      "(fset 'files--dired-backend-write-marks-state"
+                                      "(fset 'files--dired-backend-rerender"
+                                      "(fset 'files--dired-backend-next-line"
+                                      "(fset 'files--dired-backend-set-status"
+                                      "(fset 'files--dired-backend-set-modeline"
+                                      "(fset 'files--dired-do-flagged-delete-core"
+                                      "(fset 'files--dired-do-rename-core"
+                                      "(fset 'files--dired-do-copy-core"
                                       "(fset 'dired-mark"
                                       "(fset 'dired-unmark"
                                       "(fset 'dired-flag-file-deletion"
@@ -576,22 +907,40 @@
                                               "(fset 'project-dired"
                                               "(fset 'project-any-command"
                                               "(fset 'project-execute-extended-command"
+                                              "emacs-command-loop-gui-project-command"
                                               "(fset 'project-other-window-command"
                                               "(fset 'project-other-tab-command"
                                               "(fset 'project-other-frame-command"
                                               "(fset 'project-switch-project"
-								                      "(fset 'switch-to-buffer"
-							                      "(fset 'switch-to-buffer-other-window"
+									                      "(fset 'switch-to-buffer"
+                                              "(fset 'switch-to-buffer-other-window"
                                               "(fset 'switch-to-buffer-other-tab"
                                               "(fset 'project-switch-to-buffer"
-		                                          "(fset 'rename-buffer"
-                                          "(fset 'rename-uniquely"
-                                          "(fset 'clone-buffer"
-                                          "(fset 'clone-indirect-buffer-other-window"
-						                      "(fset 'kill-buffer"
-				                      "(fset 'kill-buffer-and-window"
+	                                              "emacs-fileio-gui-switch-to-buffer-command"
+	                                              "emacs-fileio-gui-kill-buffer-command"
+	                                              "emacs-fileio-gui-list-buffers-command"
+	                                              "emacs-fileio-gui-kill-buffer"
+                                              "emacs-fileio-gui-list-buffers"
+                                              "(fset 'files--fileio-backend-save-some-buffers"
+                                              "(fset 'files--fileio-backend-insert-file"
+                                              "(fset 'files--fileio-backend-insert-buffer"
+                                              "(fset 'files--fileio-backend-revert-buffer"
+                                              "(fset 'files--fileio-backend-rename-buffer"
+                                              "(fset 'files--fileio-backend-kill-buffer"
+                                              "(fset 'files--fileio-backend-list-buffers"
+                                              "(fset 'files--revert-buffer-core"
+			                                          "(fset 'rename-buffer"
+                                              "(fset 'files--rename-buffer-core"
+	                                          "(fset 'rename-uniquely"
+	                                          "(fset 'clone-buffer"
+	                                          "(fset 'clone-indirect-buffer-other-window"
+                                              "(fset 'files--kill-buffer-core"
+							                      "(fset 'kill-buffer"
+					                      "(fset 'kill-buffer-and-window"
                                               "(fset 'project-kill-buffers"
-					                      "(fset 'list-buffers"
+                                              "(fset 'files--list-buffers-core"
+						                      "(fset 'list-buffers"
+                                              "(fset 'files--project-list-buffers-core"
                                               "(fset 'project-list-buffers"
 					                      "(fset 'occur"
                                           "(fset 'imenu"
@@ -798,18 +1147,56 @@
 	                      "(fset 'append-next-kill"
 	                      "(fset 'undo"
 	                      "(fset 'undo-redo"
-		                      "(fset 'files--save-undo-state"
-	                      "(fset 'files--read-only-command-p"
-	                      "(fset 'revert-buffer"
+			                      "(fset 'files--save-undo-state"
+		                      "(fset 'files--read-only-command-p"
+		                      "emacs-command-loop-gui-read-only-command-p"
+		                      "(fset 'revert-buffer"
                           "(fset 'revert-buffer-quick"
                       "(command-execute)"
-                      "(fset 'nemacs-gui-file-bridge-run"))
-      (should (string-match-p (regexp-quote needle) source)))
-    (dolist (needle '("(setq files--transport-dir \"/tmp\")"
+	                      "(fset 'nemacs-gui-file-bridge-run"))
+	      (should (string-match-p (regexp-quote needle) source)))
+	    (dolist (needle '("emacs-fileio-gui-find-file-command"
+	                      "emacs-fileio-gui-find-file-read-only-command"
+	                      "emacs-fileio-gui-save-buffer-command"
+	                      "emacs-fileio-gui-save-some-buffers-command"
+	                      "emacs-fileio-gui-write-file-command"
+	                      "emacs-fileio-gui-insert-file-command"
+	                      "emacs-fileio-gui-insert-buffer-command"
+	                      "emacs-fileio-gui-display-buffer-command"
+	                      "emacs-fileio-gui-revert-buffer-command"
+	                      "emacs-fileio-gui-rename-buffer-command"
+	                      "emacs-fileio-gui-kill-buffer-and-window-command"
+	                      "emacs-fileio-gui-project-list-buffers-command"
+	                      "emacs-fileio-gui-project-kill-buffers-command"))
+	      (should-not (string-match-p (regexp-quote needle) source)))
+	    (dolist (needle '("(setq files--transport-dir \"/tmp\")"
                       "(fset 'files--transport-path"
                       "files--transport-name"))
       (should (string-match-p (regexp-quote needle) source)))
     (should (string-match-p "Runtime lambdas intentionally avoid" source))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/generated-image-includes-family-runtimes ()
+  "The generated source-v1 bridge image should load family runtimes first."
+  (let ((image (nemacs-gui-file-bridge-runtime-test--write-image)))
+    (unwind-protect
+        (let* ((text (nemacs-gui-file-bridge-runtime-test--slurp image))
+               (bridge-pos
+                (string-match
+                 (regexp-quote ";;; nemacs-gui-file-bridge-runtime.el")
+                 text)))
+          (dolist (needle '(";;; emacs-fileio-gui.el --- GUI bridge file/buffer adapter"
+                            ";;; emacs-dired-min-gui.el --- GUI bridge Dired adapter"
+                            ";;; emacs-info.el --- Minimal Info runtime"
+                            ";;; emacs-help-gui.el --- GUI bridge Help adapter"))
+            (should (string-match-p (regexp-quote needle) text)))
+          (dolist (needle '("(defun emacs-fileio-gui-register-backend"
+                            "(defun emacs-dired-min-gui-register-backend"
+                            "(defun emacs-info-gui-register-backend"
+                            "(defun emacs-help-gui-register-backend"))
+            (should (< (string-match (regexp-quote needle) text)
+                       bridge-pos))))
+      (when (file-exists-p image)
+        (delete-file image)))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/source-shape-tier-1-ui-smoke-contract ()
   "The checked-in bridge source should expose the Tier 1 UI smoke surface."
@@ -857,6 +1244,12 @@
                       "(fset 'call-interactively"))
       (ert-info ((format "Tier 1 callable %s" needle))
         (should (string-match-p (regexp-quote needle) source))))
+    (dolist (needle '("(if (eq files--bridge-command 'find-file) (find-file) nil)"
+                      "(if (eq files--bridge-command 'describe-function) (describe-function) nil)"
+                      "(if (eq files--bridge-command 'execute-extended-command) (execute-extended-command) nil)"))
+      (ert-info ((format "Bridge-local call-interactively dispatch %s"
+                         needle))
+        (should-not (string-match-p (regexp-quote needle) source))))
     (dolist (needle '("nemacs-buf"
                       "nemacs-file"
                       "nemacs-buffer-name"
@@ -1197,9 +1590,18 @@
 		                      "(setq cmd \"\")"
 		                      "emacs-minibuffer-gui-initial-input"
 	                      "(fset 'emacs-minibuffer-gui--collection-lines"
+	                      "emacs-minibuffer-gui-candidates-for-purpose"
 	                      "(fset 'emacs-minibuffer-gui-begin-read"
 	                      "(fset 'emacs-minibuffer-gui-complete"
-	                      "(files--lookup-key-sequence)"
+                          "(defun files--minibuffer-gui-backend-buffer-candidates"
+                          "(defun files--minibuffer-gui-backend-project-buffer-candidates"
+                          "(defun files--minibuffer-gui-backend-extended-command-candidates"
+                          "(defun files--minibuffer-gui-backend-key-candidates"
+                          ":buffer-candidates"
+                          ":project-buffer-candidates"
+                          ":extended-command-candidates"
+                          ":key-candidates"
+		                      ":lookup-key-sequence"
                       "(if (equal files--bridge-keys \"TAB\")"))
       (ert-info ((format "Tier 1 key/minibuffer dispatch %s" needle))
         (should (string-match-p (regexp-quote needle) source))))
@@ -1210,20 +1612,32 @@
                       "(if (equal files--bridge-keys \"M-g g\")"))
       (ert-info ((format "Tier 1 dispatch should not hard-code %s" needle))
         (should-not (string-match-p (regexp-quote needle) source))))
-		    (dolist (needle '("(if (equal cmd \"find-file\")"
-				                      "(if (equal cmd \"find-file-other-window\")"
-				                      "(if (equal cmd \"find-file-read-only-other-window\")"
-                                      "(if (equal cmd \"find-file-other-frame\")"
-                                      "(if (equal cmd \"find-file-read-only-other-frame\")"
-			                                  "(if (equal cmd \"find-file-other-tab\")"
-		                                  "(if (equal cmd \"find-file-read-only-other-tab\")"
-                                      "(if (equal cmd \"project-find-file\")"
-                                      "(if (equal cmd \"project-find-dir\")"
+			    (dolist (needle '("files--fileio-writeback-current-context"
+                                  "(if (equal cmd \"find-file\")"
+				                  "(if (equal cmd \"find-file-other-window\")"
+				                  "(if (equal cmd \"find-file-read-only-other-window\")"
+                                  "(if (equal cmd \"find-file-other-frame\")"
+                                  "(if (equal cmd \"find-file-read-only-other-frame\")"
+			                      "(if (equal cmd \"find-file-other-tab\")"
+		                          "(if (equal cmd \"find-file-read-only-other-tab\")"
+                                  "(if (equal cmd \"project-find-file\")"
+                                  "(if (equal cmd \"save-buffer\")"
+		                          "(if (equal cmd \"write-file\")"
+                                  "(if (equal cmd \"switch-to-buffer\")"
+					              "(if (equal cmd \"switch-to-buffer-other-window\")"
+                                  "(if (equal cmd \"switch-to-buffer-other-frame\")"
+			                      "(if (equal cmd \"switch-to-buffer-other-tab\")"
+                                  "(if (equal cmd \"project-switch-to-buffer\")"
+                                  "(if (equal cmd \"project-list-buffers\")"
+			                      "(if (equal cmd \"display-buffer\")"
+	                              "(if (equal cmd \"display-buffer-other-frame\")"
+		                          "(if (equal cmd \"rename-buffer\")"
+			                      "(if (equal cmd \"kill-buffer\")"
+                                  "(if (equal cmd \"project-kill-buffers\")"
+	                                      "(if (equal cmd \"project-find-dir\")"
                                       "(if (equal cmd \"project-dired\")"
                                       "(if (equal cmd \"project-switch-project\")"
 	                                      "(if (equal cmd \"add-change-log-entry-other-window\")"
-			                      "(if (equal cmd \"save-buffer\")"
-		                      "(if (equal cmd \"write-file\")"
                                       "(if (equal cmd \"frameset-to-register\")"
                                       "(if (equal cmd \"window-configuration-to-register\")"
                                       "(if (equal cmd \"expand-abbrev\")"
@@ -1234,12 +1648,6 @@
                                       "(if (equal cmd \"abbrev-prefix-mark\")"
                                       "(if (equal cmd \"expand-jump-to-next-slot\")"
                                       "(if (equal cmd \"expand-jump-to-previous-slot\")"
-					                      "(if (equal cmd \"switch-to-buffer\")"
-					                      "(if (equal cmd \"switch-to-buffer-other-window\")"
-                                          "(if (equal cmd \"switch-to-buffer-other-frame\")"
-			                                  "(if (equal cmd \"switch-to-buffer-other-tab\")"
-                                          "(if (equal cmd \"project-switch-to-buffer\")"
-                                          "(if (equal cmd \"project-list-buffers\")"
 	                                          "(if (equal cmd \"imenu\")"
 	                                      "(if (equal cmd \"dired-other-frame\")"
 		                                      "(if (equal cmd \"dired-other-tab\")"
@@ -1251,8 +1659,6 @@
                                       "(if (equal cmd \"2C-two-columns\")"
                                       "(if (equal cmd \"2C-associate-buffer\")"
                                       "(if (equal cmd \"2C-split\")"
-			                              "(if (equal cmd \"display-buffer\")"
-	                                      "(if (equal cmd \"display-buffer-other-frame\")"
                                       "(if (equal cmd \"delete-frame\")"
                                       "(if (equal cmd \"delete-other-frames\")"
                                       "(if (equal cmd \"make-frame-command\")"
@@ -1265,9 +1671,6 @@
                               "(if (equal cmd \"widen\")"
                               "(if (equal cmd \"kmacro-start-macro\")"
                               "(if (equal cmd \"kmacro-end-and-call-macro\")"
-		                              "(if (equal cmd \"rename-buffer\")"
-			                      "(if (equal cmd \"kill-buffer\")"
-                                      "(if (equal cmd \"project-kill-buffers\")"
 			                      "(if (equal cmd \"balance-windows\")"
 			                      "(if (equal cmd \"shrink-window-if-larger-than-buffer\")"
                                   "(if (equal cmd \"fit-window-to-buffer\")"
@@ -1665,6 +2068,16 @@
           (state (make-temp-file "nemacs-gui-shell-command-key-")))
       (unwind-protect
           (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-arg" nil 'silent)
+            (write-region "seed\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
             (nemacs-gui-file-bridge-runtime-test--run-ok
              reader image
              (format
@@ -3242,10 +3655,12 @@
 				            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
 				            (nemacs-gui-file-bridge-runtime-test--run-ok
 				             reader image "(nemacs-gui-file-bridge-run)")
-				            (should (string-match-p
-				                     "Echo Area Messages"
-				                     (nemacs-gui-file-bridge-runtime-test--slurp
-				                      "/tmp/nemacs-buf")))
+				            (should (equal "*Messages*"
+				                           (nemacs-gui-file-bridge-runtime-test--slurp
+				                            "/tmp/nemacs-buffer-name")))
+				            (should (equal "1"
+				                           (nemacs-gui-file-bridge-runtime-test--slurp
+				                            "/tmp/nemacs-read-only")))
 				            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
 				            (write-region "0" nil "/tmp/nemacs-minibuffer-active" nil 'silent)
 				            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
@@ -3730,12 +4145,35 @@
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
     (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
           (image (nemacs-gui-file-bridge-runtime-test--write-image))
-          (lowered "/tmp/nemacs-init-wrapped-pkgs-lowered"))
-      (unless (and (file-readable-p "/tmp/nemacs-init-wrapped")
-                   (file-readable-p lowered))
-        (ert-skip "wrapped user init / lowered packages not present"))
+          (init-dir (make-temp-file "nemacs-m192-init" t))
+          (pkg-dir (make-temp-file "nemacs-m192-pkg" t)))
       (unwind-protect
           (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region (concat "(defun s-join (separator strings)\n"
+                                  "  (mapconcat (lambda (x) x) strings separator))\n"
+                                  "(provide 's)\n")
+                          nil (expand-file-name "s.el" pkg-dir)
+                          nil 'silent)
+            (write-region (concat "(defun -map (function list)\n"
+                                  "  (mapcar function list))\n"
+                                  "(provide 'dash)\n")
+                          nil (expand-file-name "dash.el" pkg-dir)
+                          nil 'silent)
+            (write-region (format "(add-to-list 'load-path %S)\n"
+                                  pkg-dir)
+                          nil (expand-file-name "early-init.el" init-dir)
+                          nil 'silent)
+            (write-region "(require 's)\n(require 'dash)\n"
+                          nil (expand-file-name "init.el" init-dir)
+                          nil 'silent)
+            (load (expand-file-name "scripts/nemacs-wrap-init.el"
+                                    nemacs-gui-file-bridge-runtime-test--repo-root)
+                  nil t)
+            (should (= 3 (nemacs-wrap-init
+                          "/tmp/nemacs-init-wrapped"
+                          (expand-file-name "early-init.el" init-dir)
+                          (expand-file-name "init.el" init-dir))))
+            (should (file-readable-p "/tmp/nemacs-init-wrapped-pkgs-lowered"))
             (when (file-exists-p "/tmp/nemacs-init-report")
               (delete-file "/tmp/nemacs-init-report"))
             (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
@@ -3754,6 +4192,16 @@
                             "/tmp/nemacs-m192-probe"))))
         (when (file-exists-p "/tmp/nemacs-m192-probe")
           (delete-file "/tmp/nemacs-m192-probe"))
+        (dolist (f '("/tmp/nemacs-init-wrapped"
+                     "/tmp/nemacs-init-wrapped-packages"
+                     "/tmp/nemacs-init-wrapped-pkgs-lowered"
+                     "/tmp/nemacs-init-report"))
+          (when (file-exists-p f)
+            (delete-file f)))
+        (when (file-directory-p init-dir)
+          (delete-directory init-dir t))
+        (when (file-directory-p pkg-dir)
+          (delete-directory pkg-dir t))
         (when (file-exists-p image)
           (delete-file image))))))
 
@@ -3918,8 +4366,8 @@ Hermetic via a PATH-injected fake curl (the M11 stub-ssh pattern)."
             (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
             (write-region "C-b" nil "/tmp/nemacs-keys" nil 'silent)
             (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
-            ;; 日本語 = 9 bytes; C-b from byte 6 lands on byte 5 (inside
-            ;; 本): the cell walk counts 日 + 本 = 4 cells.
+            ;; 日本語 = 9 bytes; C-b from byte 6 moves back one character to
+            ;; byte 3, so the cell walk counts 日 = 2 cells.
             (write-region "日本語\nabc\n" nil "/tmp/nemacs-buf" nil 'silent)
             (write-region "6" nil "/tmp/nemacs-point" nil 'silent)
             (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
@@ -3929,7 +4377,7 @@ Hermetic via a PATH-injected fake curl (the M11 stub-ssh pattern)."
              reader image "(nemacs-gui-file-bridge-run)")
             (let ((cursor (nemacs-gui-file-bridge-runtime-test--slurp
                            "/tmp/nemacs-cursor")))
-              (should (string-match-p "cells\t4" cursor))))
+              (should (string-match-p "cells\t2" cursor))))
         (when (file-exists-p image)
           (delete-file image))))))
 
@@ -4082,6 +4530,89 @@ and the bridge reports applied/skipped instead of dying silently."
           (delete-file "/tmp/nemacs-info-state"))
         (when (file-exists-p image)
           (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-info-direct-core-runtime-adapter ()
+  "Standalone direct `info' should enter the Info GUI runtime core."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file (make-temp-file "nemacs-gui-info-core-runtime-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (setq emacs-info-gui-arg \"\")
+                 (setq emacs-info-gui-file \"\")
+                 (setq emacs-info-gui-node \"\")
+                 (setq emacs-info-gui-status \"ok\")
+                 (setq emacs-info-gui-buffer-name \"\")
+                 (fset 'emacs-info-gui-set-context
+                       (lambda (&rest _plist)
+                         (setq emacs-info-gui-arg files--bridge-arg)))
+                 (fset 'emacs-info-gui-info-core
+                       (lambda ()
+                         (nl-write-file %S emacs-info-gui-arg)
+                         (setq emacs-info-gui-status \"ok\")
+                         (setq emacs-info-gui-file emacs-info-gui-arg)
+                         (setq emacs-info-gui-node \"Top\")
+                         (setq emacs-info-gui-buffer-name \"*info*\")
+                         \"*info*\"))
+                 (setq files--bridge-arg \"/tmp/nemacs-info-core-probe.info\")
+                 (info))"
+              probe-file))
+            (should (equal "/tmp/nemacs-info-core-probe.info"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (dolist (f (list image probe-file))
+          (when (and f (file-exists-p f))
+            (delete-file f)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-info-current-context-command-wrappers ()
+  "Standalone Info command wrappers should prefer current-context helpers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file (make-temp-file "nemacs-gui-info-current-context-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (setq probe-log \"\")
+                 (fset 'append-log
+                       (lambda (text)
+                         (setq probe-log
+                               (concat probe-log text \"\\n\"))))
+                 (fset 'emacs-info-gui-current-context-command
+                       (lambda (command &optional action)
+                         (append-log
+                          (concat (symbol-name command)
+                                  \":\"
+                                  (if action action \"\")))
+                         \"*info*\"))
+                 (info)
+                 (info-other-window)
+                 (Info-next)
+                 (Info-prev)
+                 (Info-up)
+                 (info-emacs-manual)
+                 (info-display-manual)
+                 (view-order-manuals)
+                 (Info-goto-emacs-command-node)
+                 (Info-goto-emacs-key-command-node)
+                 (info-lookup-symbol)
+                 (nl-write-file %S probe-log))"
+              probe-file))
+            (should
+             (equal
+              "info:same\ninfo-other-window:other\nInfo-next:\nInfo-prev:\nInfo-up:\ninfo-emacs-manual:\ninfo-display-manual:\nview-order-manuals:\nInfo-goto-emacs-command-node:\nInfo-goto-emacs-key-command-node:\ninfo-lookup-symbol:\n"
+              (nemacs-gui-file-bridge-runtime-test--slurp probe-file))))
+        (dolist (f (list image probe-file))
+          (when (and f (file-exists-p f))
+            (delete-file f)))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-customize-set-save ()
   "M13: round-trip one defcustom-style variable set+save."
@@ -4729,7 +5260,184 @@ and the bridge reports applied/skipped instead of dying silently."
                             "/tmp/nemacs-buf")))
             (should (= 2 (nemacs-gui-file-bridge-runtime-test--point-value))))
         (when (file-exists-p image)
+            (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-insert-file-runtime-adapter ()
+  "In standalone NeLisp, `insert-file' should go through fileio GUI runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (source (make-temp-file "nemacs-gui-file-bridge-insert-file-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "INSERT" nil source nil 'silent)
+            (write-region "insert-file" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region source nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "ab" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "1" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-start" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "aINSERTb"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            (should (= 7 (nemacs-gui-file-bridge-runtime-test--point-value))))
+        (when (file-exists-p source)
+          (delete-file source))
+        (when (file-exists-p image)
           (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-insert-buffer-runtime-adapter ()
+  "In standalone NeLisp, `insert-buffer' should go through fileio GUI runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "other text\n" nil "/tmp/nemacs-buffer-store/other" nil 'silent)
+            (write-region "insert-buffer" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "other" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "before after\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "7" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-start" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "before other text\nafter\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buf")))
+            (should (= 18 (nemacs-gui-file-bridge-runtime-test--point-value))))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-save-some-buffers-runtime-adapter ()
+  "In standalone NeLisp, `save-some-buffers' should go through fileio GUI runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (main-file (make-temp-file "nemacs-gui-save-some-main-"))
+          (other-file (make-temp-file "nemacs-gui-save-some-other-"))
+          (readonly-file (make-temp-file "nemacs-gui-save-some-readonly-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "old main\n" nil main-file nil 'silent)
+            (write-region "old other\n" nil other-file nil 'silent)
+            (write-region "old readonly\n" nil readonly-file nil 'silent)
+            (write-region "save-some-buffers" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main changed\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region main-file nil "/tmp/nemacs-file" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-start" nil 'silent)
+            (write-region "main\nother\nreadonly\n" nil "/tmp/nemacs-buffer-list" nil 'silent)
+            (write-region "other changed\n" nil "/tmp/nemacs-buffer-store/other" nil 'silent)
+            (write-region other-file nil "/tmp/nemacs-buffer-file-store/other" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-buffer-read-only-store/other" nil 'silent)
+            (write-region "readonly changed\n" nil "/tmp/nemacs-buffer-store/readonly" nil 'silent)
+            (write-region readonly-file nil "/tmp/nemacs-buffer-file-store/readonly" nil 'silent)
+            (write-region "1" nil "/tmp/nemacs-buffer-read-only-store/readonly" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "main changed\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            main-file)))
+            (should (equal "other changed\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            other-file)))
+            (should (equal "old readonly\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            readonly-file))))
+        (dolist (file (list main-file other-file readonly-file image))
+          (when (file-exists-p file)
+            (delete-file file)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-before-command-policy ()
+  "In standalone NeLisp, command-loop runtime should clear cycle-spacing state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "forward-char" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "abc" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-start" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "one" nil "/tmp/nemacs-cycle-spacing-action" nil 'silent)
+            (write-region "2" nil "/tmp/nemacs-cycle-spacing-point" nil 'silent)
+            (write-region "  " nil "/tmp/nemacs-cycle-spacing-whitespace" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal ""
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-cycle-spacing-action")))
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-cycle-spacing-point")))
+            (should (equal ""
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-cycle-spacing-whitespace")))
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--cycle-spacing-action \"again\")
+                       (files--command-loop-backend-before-command
+                        'describe-key)
+                       (nl-write-file
+                        \"/tmp/nemacs-cycle-spacing-before-command-probe\"
+                        files--cycle-spacing-action))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal ""
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-cycle-spacing-before-command-probe")))))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-self-insert-key-policy ()
+  "In standalone NeLisp, command-loop runtime should own self-insert key policy."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-self-insert-policy"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (nl-write-file
+                      \"/tmp/nemacs-command-loop-self-insert-policy\"
+                      (concat
+                       (emacs-command-loop-gui-self-insert-key-text \"a\")
+                       \"\\t\"
+                       (emacs-command-loop-gui-self-insert-key-text \"SPC\")
+                       \"\\t\"
+                       (if (emacs-command-loop-gui-self-insert-key-text \"C-x\")
+                           \"bad\"
+                         \"nil\"))))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "a\t \tnil"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform ()
   "In standalone NeLisp, the bridge should execute commands through its adapter."
@@ -6070,7 +6778,7 @@ and the bridge reports applied/skipped instead of dying silently."
               (should (equal ""
                              (nemacs-gui-file-bridge-runtime-test--slurp
                               "/tmp/nemacs-buffer-store/proj")))
-              (should (equal "outside\n"
+              (should (equal "outside\n*scratch*\n*Messages*\n*Warnings*\n"
                              (nemacs-gui-file-bridge-runtime-test--slurp
                               "/tmp/nemacs-buffer-list")))
               (should (= 9 (nemacs-gui-file-bridge-runtime-test--point-value)))
@@ -10143,6 +10851,141 @@ and the bridge reports applied/skipped instead of dying silently."
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-special-buffers ()
+  "Standalone bridge should expose scratch, messages, and warnings buffers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image)))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "*scratch*" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "switch-to-buffer" nil "/tmp/nemacs-cmd" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*scratch*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (string-match-p
+                     "This buffer is for text"
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (should (equal "0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-read-only")))
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             "(progn
+                (files--refresh-transport-derived-paths)
+                (files--ensure-standard-special-buffers)
+                (message \"bridge message %s\" \"one\")
+                (display-warning 'nemacs \"bridge warning\" 'warning))")
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "C-h e" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Messages*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (string-match-p
+                     "bridge message one"
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (should (string-match-p
+                     "Warning \\[nemacs\\]: bridge warning"
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf")))
+            (should (equal "1"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-read-only")))
+            (write-region "warnings-buffer" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Warnings*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (string-match-p
+                     "Warning \\[nemacs\\]: bridge warning"
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      "/tmp/nemacs-buf"))))
+        (when (file-exists-p image)
+          (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-vc-keymap-coverage ()
+  "Standalone key lookup should cover the host Emacs C-x v VC prefix."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (state (make-temp-file "nemacs-gui-file-bridge-vc-keymap-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region "" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "x\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-read-only" nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (when (file-exists-p "/tmp/nemacs-status")
+              (delete-file "/tmp/nemacs-status"))
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (setq files--bridge-keys \"C-x v d\")
+                 (nl-write-file %S (files--lookup-key-sequence))
+                 (setq files--bridge-keys \"C-x v L\")
+                 (nl-write-file %S (files--lookup-key-sequence))
+                 (setq files--bridge-keys \"C-x v M D\")
+                 (nl-write-file %S (files--lookup-key-sequence))
+                 (setq files--bridge-keys \"C-x v v\")
+                 (nl-write-file %S (files--lookup-key-sequence)))"
+              state
+              (concat state ".root-log")
+              (concat state ".mergebase")
+              (concat state ".next")))
+            (should (equal "vc-dir"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            state)))
+            (should (equal "vc-print-root-log"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            (concat state ".root-log"))))
+            (should (equal "vc-diff-mergebase"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            (concat state ".mergebase"))))
+            (should (equal "vc-next-action"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            (concat state ".next"))))
+            (write-region "C-x v v" nil "/tmp/nemacs-keys" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "unsupported"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-status"))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (dolist (file (list state
+                            (concat state ".root-log")
+                            (concat state ".mergebase")
+                            (concat state ".next")))
+          (when (file-exists-p file)
+            (delete-file file)))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-describe-key-candidates-from-keymap ()
   "In standalone NeLisp, C-h k candidates should be derived from keymaps."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
@@ -10178,6 +11021,158 @@ and the bridge reports applied/skipped instead of dying silently."
           (delete-file image))
         (when (file-exists-p candidate-file)
           (delete-file candidate-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-help-description-core-runtime-adapter ()
+  "Standalone direct Help descriptions should enter GUI runtime cores."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (function-probe (make-temp-file "nemacs-gui-help-function-core-"))
+          (variable-probe (make-temp-file "nemacs-gui-help-variable-core-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (setq emacs-help-gui-arg \"\")
+                 (setq emacs-help-gui-current-file-name \"\")
+                 (setq emacs-help-gui-buffer-name \"\")
+                 (setq emacs-help-gui-buffer-read-only-p nil)
+                 (fset 'emacs-help-gui-set-context
+                       (lambda (&rest _plist)
+                         (setq emacs-help-gui-arg files--bridge-arg)))
+                 (fset 'emacs-help-gui-describe-function-core
+                       (lambda ()
+                         (nl-write-file %S emacs-help-gui-arg)
+                         (cons \"Function Core\" \"function core body\")))
+                 (fset 'emacs-help-gui-describe-variable-core
+                       (lambda ()
+                         (nl-write-file %S emacs-help-gui-arg)
+                         (cons \"Variable Core\" \"variable core body\")))
+                 (setq files--bridge-arg \"forward-char\")
+                 (describe-function)
+                 (setq files--bridge-arg \"buffer-file-name\")
+                 (describe-variable))"
+              function-probe variable-probe))
+            (should (equal "forward-char"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            function-probe)))
+            (should (equal "buffer-file-name"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            variable-probe))))
+        (dolist (file (list image function-probe variable-probe))
+          (when (and file (file-exists-p file))
+            (delete-file file)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-help-keymap-core-runtime-adapter ()
+  "Standalone direct keymap Help commands should enter GUI runtime cores."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (key-probe (make-temp-file "nemacs-gui-help-key-core-"))
+          (brief-probe (make-temp-file "nemacs-gui-help-brief-core-"))
+          (bindings-probe (make-temp-file "nemacs-gui-help-bindings-core-"))
+          (where-probe (make-temp-file "nemacs-gui-help-where-core-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (setq emacs-help-gui-arg \"\")
+                 (fset 'emacs-help-gui-set-context
+                       (lambda (&rest _plist)
+                         (setq emacs-help-gui-arg files--bridge-arg)))
+                 (fset 'emacs-help-gui-describe-key-core
+                       (lambda ()
+                         (nl-write-file %S emacs-help-gui-arg)
+                         (cons \"Key Core\" \"key core body\")))
+                 (fset 'emacs-help-gui-describe-key-briefly-core
+                       (lambda ()
+                         (nl-write-file %S emacs-help-gui-arg)
+                         (cons \"Brief Core\" \"brief core body\")))
+                 (fset 'emacs-help-gui-describe-bindings-core
+                       (lambda ()
+                         (nl-write-file %S \"bindings\")
+                         (cons \"Bindings Core\" \"bindings core body\")))
+                 (fset 'emacs-help-gui-where-is-core
+                       (lambda ()
+                         (nl-write-file %S emacs-help-gui-arg)
+                         (cons \"Where Core\" \"where core body\")))
+                 (setq files--bridge-arg \"C-x C-f\")
+                 (describe-key)
+                 (setq files--bridge-arg \"C-x C-s\")
+                 (describe-key-briefly)
+                 (describe-bindings)
+                 (setq files--bridge-arg \"find-file\")
+                 (where-is))"
+              key-probe brief-probe bindings-probe where-probe))
+            (should (equal "C-x C-f"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            key-probe)))
+            (should (equal "C-x C-s"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            brief-probe)))
+            (should (equal "bindings"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            bindings-probe)))
+            (should (equal "find-file"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            where-probe))))
+        (dolist (file (list image key-probe brief-probe bindings-probe
+                            where-probe))
+          (when (and file (file-exists-p file))
+            (delete-file file)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-help-current-context-command-wrappers ()
+  "Standalone Help command wrappers should prefer current-context helpers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file (make-temp-file "nemacs-gui-help-current-context-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (setq probe-log \"\")
+                 (fset 'append-log
+                       (lambda (text)
+                         (setq probe-log
+                               (concat probe-log text \"\\n\"))))
+                 (fset 'emacs-help-gui-current-context-command
+                       (lambda (command &optional static-command)
+                         (append-log
+                          (concat (symbol-name command)
+                                  \":\"
+                                  (if static-command
+                                      (symbol-name static-command)
+                                    \"\")))
+                         \"*Help*\"))
+                 (describe-function)
+                 (describe-variable)
+                 (describe-key)
+                 (describe-key-briefly)
+                 (describe-bindings)
+                 (where-is)
+                 (help-for-help)
+                 (describe-command)
+                 (describe-package)
+                 (describe-symbol)
+                 (apropos-command)
+                 (apropos-documentation)
+                 (finder-by-keyword)
+                 (nl-write-file %S probe-log))"
+              probe-file))
+            (should
+             (equal
+              "describe-function:\ndescribe-variable:\ndescribe-key:\ndescribe-key-briefly:\ndescribe-bindings:\nwhere-is:\nhelp-for-help:\ndescribe-command:\ndescribe-package:\ndescribe-symbol:\napropos-command:\napropos-documentation:\nfinder-by-keyword:finder-by-keyword\n"
+              (nemacs-gui-file-bridge-runtime-test--slurp probe-file))))
+        (dolist (file (list image probe-file))
+          (when (and file (file-exists-p file))
+            (delete-file file)))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-minibuffer-owned-switch-buffer ()
   "In one standalone NeLisp runtime, C-x b should own text and history."
@@ -10899,6 +11894,71 @@ fontset decision for an elisp buffer and a CJK buffer."
         (dolist (f (list image other-flag main-flag))
           (when (and f (file-exists-p f)) (delete-file f)))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-fileio-core-delegates-to-runtime ()
+  "Standalone direct file/buffer cores should enter `emacs-fileio-gui'."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (find-flag (make-temp-file "nemacs-gui-fileio-find-"))
+          (save-flag (make-temp-file "nemacs-gui-fileio-save-"))
+          (switch-flag (make-temp-file "nemacs-gui-fileio-switch-"))
+          (kill-flag (make-temp-file "nemacs-gui-fileio-kill-"))
+          (list-flag (make-temp-file "nemacs-gui-fileio-list-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (fset 'emacs-fileio-gui-find-file-core
+                       (lambda ()
+                         (nl-write-file %S \"find\")
+                         (setq files--current-file-name files--bridge-arg)
+                         files--current-file-name))
+                 (fset 'emacs-fileio-gui-save-buffer-core
+                       (lambda ()
+                         (nl-write-file %S \"save\")
+                         files--current-file-name))
+                 (fset 'emacs-fileio-gui-switch-to-buffer-command
+                       (lambda (&optional action)
+                         (nl-write-file %S
+                                        (if (equal action \"same\")
+                                            \"switch\"
+                                          \"bad-switch\"))))
+                 (fset 'emacs-fileio-gui-kill-buffer-command
+                       (lambda ()
+                         (nl-write-file %S \"kill\")))
+                 (fset 'emacs-fileio-gui-list-buffers-command
+                       (lambda ()
+                         (nl-write-file %S \"list\")))
+                 (setq files--bridge-arg \"/tmp/nemacs-fileio-probe\")
+                 (files--find-file-core)
+                 (files--save-buffer-core)
+                 (setq files--bridge-arg \"notes\")
+                 (files--switch-to-buffer)
+                 (setq files--bridge-arg \"notes\")
+                 (files--kill-buffer-core)
+                 (files--list-buffers-core))"
+              find-flag save-flag switch-flag kill-flag list-flag))
+            (should (equal "find"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            find-flag)))
+            (should (equal "save"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            save-flag)))
+            (should (equal "switch"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            switch-flag)))
+            (should (equal "kill"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            kill-flag)))
+            (should (equal "list"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            list-flag))))
+        (dolist (f (list image find-flag save-flag switch-flag kill-flag
+                         list-flag))
+          (when (and f (file-exists-p f)) (delete-file f)))))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-modeline-save-revert-write-lifecycle ()
   "Dirty edits show **, and save/revert/write-file return the mode-line to --."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
@@ -11042,6 +12102,108 @@ fontset decision for an elisp buffer and a CJK buffer."
                             "/tmp/nemacs-buf"))))
         (when (file-exists-p image)
           (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-dired-list-directory-runtime-adapter ()
+  "Standalone direct `list-directory' should enter the Dired GUI helper."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file (make-temp-file "nemacs-gui-dired-list-runtime-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (fset 'emacs-dired-min-gui-dired-command
+                       (lambda (&optional action)
+                         (nl-write-file %S
+                                        (if (equal action \"same\")
+                                            \"list\"
+                                          \"bad-action\"))
+                         \"*Directory*\"))
+                 (setq files--bridge-arg \"/tmp\")
+                 (list-directory))"
+              probe-file))
+            (should (equal "list"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (dolist (f (list image probe-file))
+          (when (and f (file-exists-p f)) (delete-file f)))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-dired-current-context-command-wrappers ()
+  "Standalone Dired command wrappers should prefer current-context helpers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file (make-temp-file "nemacs-gui-dired-current-context-")))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format
+              "(progn
+                 (setq probe-log \"\")
+                 (fset 'append-log
+                       (lambda (text)
+                         (setq probe-log
+                               (concat probe-log text \"\\n\"))))
+                 (fset 'emacs-dired-min-gui-current-context-command
+                       (lambda (command &optional action)
+                         (if (eq command 'dired)
+                             (append-log (concat \"dired:\" action))
+                           nil)
+                         (if (eq command 'dired-jump)
+                             (append-log (concat \"jump:\" action))
+                           nil)
+                         (if (eq command 'project-find-dir)
+                             (append-log (concat \"project-find-dir:\"
+                                                 action))
+                           nil)
+                         (if (eq command 'project-dired)
+                             (append-log (concat \"project-dired:\"
+                                                 action))
+                           nil)
+                         (if (eq command 'dired-mark)
+                             (append-log \"mark\")
+                           nil)
+                         (if (eq command 'dired-unmark)
+                             (append-log \"unmark\")
+                           nil)
+                         (if (eq command 'dired-flag-file-deletion)
+                             (append-log \"flag\")
+                           nil)
+                         (if (eq command 'dired-do-flagged-delete)
+                             (append-log \"delete\")
+                           nil)
+                         (if (eq command 'dired-do-rename)
+                             (append-log \"rename\")
+                           nil)
+                         (if (eq command 'dired-do-copy)
+                             (append-log \"copy\")
+                           nil)
+                         \"*Directory*\"))
+                 (dired)
+                 (dired-other-window)
+                 (dired-other-frame)
+                 (dired-other-tab)
+                 (dired-jump)
+                 (dired-jump-other-window)
+                 (project-find-dir)
+                 (project-dired)
+                 (dired-mark)
+                 (dired-unmark)
+                 (dired-flag-file-deletion)
+                 (dired-do-flagged-delete)
+                 (dired-do-rename)
+                 (dired-do-copy)
+                 (nl-write-file %S probe-log))"
+              probe-file))
+            (should (equal "dired:same\ndired:other\ndired:frame\ndired:tab\njump:same\njump:other\nproject-find-dir:same\nproject-dired:same\nmark\nunmark\nflag\ndelete\nrename\ncopy\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (dolist (f (list image probe-file))
+          (when (and f (file-exists-p f)) (delete-file f)))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-utf8-roundtrip ()
   "UTF-8 files should round-trip byte-for-byte through find-file/save-buffer."
@@ -11209,6 +12371,1988 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
               (should-not (string-match-p "beta line" occ))))
         (when (file-exists-p image)
           (delete-file image))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-commandp-runtime-accepted-policy ()
+  "commandp should use command-loop runtime accepted policy in source-v1."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-commandp-runtime-policy"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'nemacs-unregistered-probe
+                           (lambda () (setq files--bridge-status \"probe\")))
+                     (setq files--bridge-command 'nemacs-unregistered-probe)
+                     (nl-write-file
+                      \"/tmp/nemacs-commandp-runtime-policy\"
+                      (if (commandp) \"accepted\" \"rejected\")))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (string-match-p "accepted"
+                                    (nemacs-gui-file-bridge-runtime-test--slurp
+                                     probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-minibuffer-mode-keymap-entry-first ()
+  "Bridge-only source-v1 should parse mode-local minibuffer keys first."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-minibuffer-mode-keymap-policy"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'files--mode-minibuffer-keymap-source
+                           (lambda ()
+                             \"C-c x\\tmode-command\\tMode prompt: \\n\"))
+                     (setq files--minibuffer-keymap-source
+                           \"C-c x\\tglobal-command\\tGlobal prompt: \\n\")
+                     (setq files--bridge-keys \"C-c x\")
+                     (let ((entry
+                            (emacs-minibuffer-gui-keymap-entry
+                             (concat (files--mode-minibuffer-keymap-source)
+                                     files--minibuffer-keymap-source)
+                             files--bridge-keys)))
+                       (nl-write-file
+                        \"/tmp/nemacs-minibuffer-mode-keymap-policy\"
+                        (concat (car entry) \"\\t\" (cdr entry)))))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (string-match-p
+                     (regexp-quote "mode-command\tMode prompt: ")
+                     (nemacs-gui-file-bridge-runtime-test--slurp
+                      probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-minibuffer-start-spec-from-keymaps ()
+  "Bridge source-v1 should expose normalized minibuffer start specs."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-minibuffer-start-spec-from-keymaps"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (let ((spec
+                            (emacs-minibuffer-gui-start-spec-from-keymaps
+                             \"C-c x\\tmode-command\\tMode prompt: \\n\"
+                             \"C-c x\\tglobal-command\\tGlobal prompt: \\nC-c y\\tglobal-y\\tGlobal y: \\n\"
+                             \"C-c x\"
+                             \"seed\")))
+                       (nl-write-file
+                        \"/tmp/nemacs-minibuffer-start-spec-from-keymaps\"
+                        (concat (plist-get spec :purpose)
+                                \"\\t\"
+                                (plist-get spec :prompt)
+                                \"\\t\"
+                                (plist-get spec :initial-input)
+                                \"\\t\"
+                                (symbol-name (plist-get spec :source))))))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "mode-command\tMode prompt: \tseed\tmode"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-files-maybe-start-keymap-current-context ()
+  "Bridge keymap minibuffer start should enter minibuffer current-context runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-files-maybe-start-keymap-current-context"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-minibuffer-gui-maybe-start-from-keymaps
+                           (lambda (&rest _args)
+                             (error \"direct keymap helper used\")))
+                     (fset 'emacs-minibuffer-gui-maybe-start-current-context
+                           (lambda ()
+                             (nl-write-file
+                             \"/tmp/nemacs-files-maybe-start-keymap-current-context\"
+                             (concat files--bridge-keys
+                                     \"\\t\"
+                                      files--bridge-arg))
+                             t))
+                     (setq files--bridge-keys \"C-x C-f\")
+                     (setq files--bridge-arg \"/tmp/current-context.txt\")
+                     (files--maybe-start-minibuffer-from-keymap))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "C-x C-f\t/tmp/current-context.txt"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-minibuffer-finish-delegates-to-runtime ()
+  "Bridge minibuffer finish wrapper should leave commit policy to runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-minibuffer-finish-runtime"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-minibuffer-gui-finish-read
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-minibuffer-finish-runtime\"
+                              files--minibuffer-purpose)
+                             :runtime-finished))
+                     (setq files--minibuffer-purpose \"zap-to-char\")
+                     (files--minibuffer-finish))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "zap-to-char"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-minibuffer-start-policy ()
+  "Command-loop helper should delegate minibuffer start policy to runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-minibuffer-start-policy"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-minibuffer-gui-maybe-start-current-context
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-loop-minibuffer-start-policy\"
+                              \"current-context\")
+                             t))
+                     (fset 'files--mode-minibuffer-keymap-source
+                           (lambda ()
+                             \"mode-source\"))
+                     (setq files--minibuffer-keymap-source
+                           \"global-source\")
+                     (setq files--bridge-keys \"C-c x\")
+                     (setq files--bridge-arg \"seed\")
+                     (emacs-command-loop-gui-maybe-start-minibuffer))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "current-context"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+	        (when (file-exists-p probe-file)
+	          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-files-minibuffer-handle-key-uses-command-loop ()
+  "Bridge minibuffer key wrapper should enter command-loop runtime first."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-files-minibuffer-handle-key-command-loop"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-minibuffer-handle-key
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-files-minibuffer-handle-key-command-loop\"
+                              (concat files--bridge-keys
+                                      \"\\t\"
+                                      files--minibuffer-purpose))
+                             :handled))
+                     (fset 'emacs-minibuffer-gui-handle-key-current-context
+                           (lambda ()
+                             (error \"direct minibuffer key helper used\")))
+                     (setq files--bridge-keys \"a\")
+                     (setq files--minibuffer-purpose \"switch-to-buffer\")
+                     (files--minibuffer-handle-key))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "a\tswitch-to-buffer"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-files-minibuffer-handle-key-current-context ()
+  "Bridge minibuffer key fallback should enter minibuffer current-context runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-files-minibuffer-handle-key-current-context"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-minibuffer-gui-handle-key
+                           (lambda (&rest _args)
+                             (error \"direct minibuffer handle helper used\")))
+                     (fset 'emacs-minibuffer-gui-handle-key-current-context
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-files-minibuffer-handle-key-current-context\"
+                              (concat files--bridge-keys
+                                      \"\\t\"
+                                      files--minibuffer-purpose))
+                             :handled))
+                     (setq files--command-loop-minibuffer-handle-delegating t)
+                     (setq files--bridge-keys \"a\")
+                     (setq files--minibuffer-purpose \"switch-to-buffer\")
+                     (files--minibuffer-handle-key))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "a\tswitch-to-buffer"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-files-maybe-start-minibuffer-uses-command-loop ()
+  "Bridge minibuffer-start wrapper should enter command-loop runtime first."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-files-maybe-start-minibuffer-command-loop"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-maybe-start-minibuffer
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-files-maybe-start-minibuffer-command-loop\"
+                              (concat files--bridge-keys
+                                      \"\\t\"
+                                      files--bridge-arg))
+                             t))
+                     (fset 'emacs-minibuffer-gui-maybe-start-current-context
+                           (lambda ()
+                             (error \"direct minibuffer helper used\")))
+                     (setq files--bridge-keys \"C-x C-f\")
+                     (setq files--bridge-arg \"/tmp/from-wrapper.txt\")
+                     (files--maybe-start-minibuffer))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "C-x C-f\t/tmp/from-wrapper.txt"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-minibuffer-start-uses-current-context-fallback ()
+  "Bridge-only command-loop minibuffer start should use runtime-named fallback."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-minibuffer-current-fallback"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'files--maybe-start-minibuffer-from-keymap
+                           (lambda ()
+                             (error \"legacy minibuffer keymap fallback used\")))
+                     (setq files--bridge-keys \"C-x C-f\")
+                     (setq files--bridge-arg \"\")
+                     (setq files--minibuffer-active nil)
+                     (emacs-command-loop-gui-maybe-start-minibuffer)
+                     (nl-write-file
+                      \"/tmp/nemacs-command-loop-minibuffer-current-fallback\"
+                      (concat (if files--minibuffer-active \"1\" \"0\")
+                              \"\\t\"
+                              files--minibuffer-purpose
+                              \"\\t\"
+                              files--minibuffer-prompt
+                              \"\\t\"
+                              files--bridge-status)))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "1\tfind-file\tFind file: \tminibuffer"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-minibuffer-start-backend-adapter ()
+  "Bridge command-loop backend should keep minibuffer policy in runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-minibuffer-start-backend-adapter"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-minibuffer-gui-maybe-start-current-context
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-loop-minibuffer-start-backend-adapter\"
+                              (concat files--bridge-keys
+                                      \"\\t\"
+                                      files--bridge-arg))
+                             t))
+                     (setq files--bridge-keys \"C-x C-f\")
+                     (setq files--bridge-arg \"/tmp/a.txt\")
+                     (files--command-loop-backend-maybe-start-minibuffer))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "C-x C-f\t/tmp/a.txt"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-lookup-key-runtime-adapter ()
+  "Bridge key lookup should delegate source precedence to command-loop runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-lookup-key-runtime-adapter")
+          (result-file "/tmp/nemacs-command-loop-lookup-key-runtime-result"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (fset 'emacs-command-loop-gui-lookup-key-sequence-from-sources
+                             (lambda (key user-source mode-source global-source)
+                               (nl-write-file
+                                \"/tmp/nemacs-command-loop-lookup-key-runtime-adapter\"
+                                (concat key
+                                        \"\\t\"
+                                        user-source
+                                        \"\\t\"
+                                        mode-source
+                                        \"\\t\"
+                                        global-source))
+                               \"runtime-command\"))
+                       (fset 'files--mode-keymap-source
+                             (lambda ()
+                               \"mode-source\"))
+                       (setq files--keymap-source \"global-source\")
+                       (nl-write-file (files--user-keymap-path) \"user-source\")
+                       (setq files--bridge-keys \"C-c x\")
+                       (nl-write-file
+                        \"/tmp/nemacs-command-loop-lookup-key-runtime-result\"
+                        (files--lookup-key-sequence)))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "runtime-command"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              result-file)))
+              (should (equal "C-c x\tuser-source\tmode-source\tglobal-source"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))
+        (when (file-exists-p result-file)
+          (delete-file result-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-lookup-key-backend-adapter ()
+  "Command-loop backend key lookup should only gather bridge sources."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-lookup-key-backend-adapter")
+          (result-file "/tmp/nemacs-command-loop-lookup-key-backend-result"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (fset 'emacs-command-loop-gui-lookup-key-sequence-from-sources
+                             (lambda (key user-source mode-source global-source)
+                               (nl-write-file
+                                \"/tmp/nemacs-command-loop-lookup-key-backend-adapter\"
+                                (concat key
+                                        \"\\t\"
+                                        user-source
+                                        \"\\t\"
+                                        mode-source
+                                        \"\\t\"
+                                        global-source))
+                               \"backend-runtime-command\"))
+                       (fset 'files--mode-keymap-source
+                             (lambda ()
+                               \"mode-source\"))
+                       (setq files--keymap-source \"global-source\")
+                       (nl-write-file (files--user-keymap-path) \"user-source\")
+                       (setq files--bridge-keys \"C-c b\")
+                       (nl-write-file
+                        \"/tmp/nemacs-command-loop-lookup-key-backend-result\"
+                        (files--command-loop-backend-lookup-key-sequence)))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "backend-runtime-command"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              result-file)))
+              (should (equal "C-c b\tuser-source\tmode-source\tglobal-source"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))
+        (when (file-exists-p result-file)
+          (delete-file result-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-finish-command-policy ()
+  "Standalone source-v1 should expose GUI command finish bookkeeping."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-finish-command-policy"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (setq emacs-command-loop--this-command 'finish-probe)
+                     (setq emacs-command-loop--real-this-command 'finish-probe)
+                     (setq emacs-command-loop--last-command nil)
+                     (setq emacs-command-loop--this-command-keys \"C-x C-f\")
+                     (emacs-command-loop-gui-finish-command)
+                     (nl-write-file
+                      \"/tmp/nemacs-command-loop-finish-command-policy\"
+                      (if (eq emacs-command-loop--last-command 'finish-probe)
+                          (if emacs-command-loop--this-command
+                              \"bad-this\"
+                            (if emacs-command-loop--real-this-command
+                                \"bad-real\"
+                              (if (equal emacs-command-loop--this-command-keys
+                                         \"C-x C-f\")
+                                  \"ok\"
+                                \"bad-keys\")))
+                        \"bad-last\")))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "ok"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-call-interactively-context-policy ()
+  "Standalone source-v1 should route `call-interactively' through the helper."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-call-interactively-context-policy"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'nemacs-call-interactively-context-probe
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-call-interactively-context-policy\"
+                              (if (eq emacs-command-loop--this-command
+                                      'nemacs-call-interactively-context-probe)
+                                  \"called\"
+                                \"bad-this\"))))
+                     (setq files--bridge-command
+                           'nemacs-call-interactively-context-probe)
+                     (setq files--bridge-effective-command
+                           \"nemacs-call-interactively-context-probe\")
+                     (setq files--bridge-keys \"M-x\")
+                     (setq files--bridge-arg \"\")
+                     (setq files--bridge-status \"ok\")
+                     (setq files--prefix-arg \"\")
+                     (call-interactively)
+                     (if (eq emacs-command-loop--last-command
+                             'nemacs-call-interactively-context-probe)
+                         nil
+                       (nl-write-file
+                        \"/tmp/nemacs-call-interactively-context-policy\"
+                        \"bad-last\")))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "called"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-call-interactively-runtime-delegation ()
+  "Standalone `call-interactively' should not fall back to bridge-local command dispatch."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-call-interactively-runtime-delegation"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-call-interactively-current-context
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-call-interactively-runtime-delegation\"
+                              \"runtime\")
+                             :runtime))
+                     (fset 'find-file
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-call-interactively-runtime-delegation\"
+                              \"direct\")
+                             :direct))
+                     (setq files--bridge-command 'find-file)
+                     (setq files--bridge-effective-command \"find-file\")
+                     (call-interactively))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "runtime"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-execute-runtime-delegation ()
+  "Standalone `command-execute' should delegate policy to command-loop runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-execute-runtime-delegation"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-command-execute-current-context
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-execute-runtime-delegation\"
+                              \"runtime\")
+                             :runtime))
+                     (fset 'commandp
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-execute-runtime-delegation\"
+                              \"direct-commandp\")
+                             t))
+                     (fset 'find-file
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-execute-runtime-delegation\"
+                              \"direct-command\")
+                             :direct))
+                     (setq files--bridge-command 'find-file)
+                     (setq files--bridge-effective-command \"find-file\")
+                     (command-execute))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "runtime"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-execute-no-prefix-backend ()
+  "Standalone command-execute should treat missing prefix backend as empty."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (make-temp-file "nemacs-command-loop-bridge-" nil ".nlri"))
+          (probe-file "/tmp/nemacs-command-execute-no-prefix-backend"))
+      (unwind-protect
+          (progn
+            (with-temp-file image
+              (insert ";;; nelisp-runtime-image source-v1\n(progn\n")
+              (when (file-readable-p nemacs-gui-file-bridge-runtime-test--prelude)
+                (insert-file-contents
+                 nemacs-gui-file-bridge-runtime-test--prelude)
+                (goto-char (point-max)))
+              (insert-file-contents
+               (expand-file-name
+                "src/emacs-command-loop.el"
+                nemacs-gui-file-bridge-runtime-test--repo-root))
+              (goto-char (point-max))
+              (insert-file-contents nemacs-gui-file-bridge-runtime-test--source)
+              (goto-char (point-max))
+              (insert "\n)\n"))
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                     (fset 'nemacs-command-execute-no-prefix-commandp
+                           (lambda (command) t))
+                     (fset 'nemacs-command-execute-no-prefix-read-only-p
+                           (lambda () nil))
+                     (fset 'nemacs-command-execute-no-prefix-call-command
+                           (lambda (command)
+                             (nl-write-file
+                              \"/tmp/nemacs-command-execute-no-prefix-backend\"
+                              (symbol-name command))))
+                     (fset 'nemacs-command-execute-no-prefix-with-prefix
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-execute-no-prefix-backend\"
+                              \"bad-prefix\")))
+                     (emacs-command-loop-gui-register-backend
+                      :commandp
+                      'nemacs-command-execute-no-prefix-commandp
+                      :read-only-p
+                      'nemacs-command-execute-no-prefix-read-only-p
+                      :call-command
+                      'nemacs-command-execute-no-prefix-call-command
+                      :execute-with-prefix-arg
+                      'nemacs-command-execute-no-prefix-with-prefix)
+                     (emacs-command-loop-gui-set-context
+                      :command 'forward-char
+                      :effective-command \"forward-char\")
+                     (emacs-command-loop-gui-command-execute))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "forward-char"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-execute-call-helper-policy ()
+  "Bridge source-v1 command-execute call helper should own prefix dispatch."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-execute-call-helper-policy"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'nemacs-helper-direct-command
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-execute-call-helper-policy\"
+                              (concat (rdf \"/tmp/nemacs-command-execute-call-helper-policy\")
+                                      \"direct\\n\"))))
+                     (fset 'files--execute-with-prefix-arg
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-execute-call-helper-policy\"
+                              (concat (rdf \"/tmp/nemacs-command-execute-call-helper-policy\")
+                                      \"prefix\\n\"))))
+                     (setq files--bridge-command 'nemacs-helper-direct-command)
+                     (setq files--bridge-effective-command
+                           \"nemacs-helper-direct-command\")
+                     (setq files--prefix-arg \"\")
+                     (emacs-command-loop-gui-command-execute-call)
+                     (setq files--prefix-arg \"4\")
+                     (emacs-command-loop-gui-command-execute-call))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "direct\nprefix\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-read-only-command-policy-runtime ()
+  "Bridge read-only command wrapper should delegate policy to command-loop."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-read-only-command-policy-runtime"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (fset 'emacs-command-loop-gui-read-only-command-p
+                             (lambda (command)
+                               (nl-write-file
+                                \"/tmp/nemacs-read-only-command-policy-runtime\"
+                                (if (symbolp command)
+                                    (symbol-name command)
+                                  command))
+                               'runtime-policy))
+                       (setq files--bridge-command 'insert-file)
+                       (files--read-only-command-p))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "insert-file"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-run-request-adapter ()
+  "Bridge run-request adapter should delegate request semantics to runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-run-request-adapter"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-run-request-current-context
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-command-loop-run-request-adapter\"
+                              (concat files--bridge-keys
+                                      \"\\t\"
+                                      files--bridge-arg))
+                             :ran))
+                     (setq files--bridge-command nil)
+                     (setq files--bridge-keys \"C-c r\")
+                     (setq files--bridge-arg \"seed\")
+                     (files--command-loop-run-request-current-context))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "C-c r\tseed"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-run-request-appends-key-once ()
+  "Fallback run-request should leave post-key dispatch to the runtime helper."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-run-request-kmacro-once"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-dispatch-key-request-current-context
+                           (lambda ()
+                             (emacs-command-loop-gui-after-key-dispatch)
+                             :key))
+                     (setq files--bridge-command nil)
+                     (setq files--bridge-effective-command \"\")
+                     (setq files--bridge-keys \"a\")
+                     (setq files--bridge-arg \"\")
+                     (setq files--kmacro-recording t)
+                     (setq files--kmacro-replaying nil)
+                     (setq files--kmacro-keys \"\")
+                     (files--command-loop-run-request-current-context)
+                     (nl-write-file
+                      \"/tmp/nemacs-command-loop-run-request-kmacro-once\"
+                      files--kmacro-keys))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "a\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-kmacro-replay-uses-command-loop ()
+  "Bridge kmacro replay should delegate key-line parsing to command-loop runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-kmacro-replay-command-loop")
+          (state-file "/tmp/nemacs-kmacro-replay-state"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-replay-key-lines
+                           (lambda (source dispatch)
+                             (nl-write-file
+                              \"/tmp/nemacs-kmacro-replay-command-loop\"
+                              (concat \"source=\" source \"\\n\"))
+                             (funcall dispatch \"C-f\")
+                             (funcall dispatch \"a\")
+                             2))
+                     (fset 'files--dispatch-key-sequence
+                           (lambda ()
+                             (nl-write-file
+                              \"/tmp/nemacs-kmacro-replay-command-loop\"
+                              (concat
+                               (rdf \"/tmp/nemacs-kmacro-replay-command-loop\")
+                               \"dispatch=\" files--bridge-keys
+                               \"\\n\"))))
+                     (setq files--kmacro-keys \"C-f\\n\\na\\n\")
+                     (setq files--bridge-keys \"old-key\")
+                     (setq files--bridge-command 'old-command)
+                     (setq files--bridge-effective-command \"old-effective\")
+                     (setq files--bridge-arg \"old-arg\")
+                     (setq files--kmacro-replaying nil)
+                     (files--call-last-kbd-macro)
+                     (nl-write-file
+                      \"/tmp/nemacs-kmacro-replay-state\"
+                      (concat files--bridge-keys
+                              \"\\t\"
+                              (symbol-name files--bridge-command)
+                              \"\\t\"
+                              files--bridge-effective-command
+                              \"\\t\"
+                              files--bridge-arg
+                              \"\\t\"
+                              (if files--kmacro-replaying \"1\" \"0\"))))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "source=C-f\n\na\n\ndispatch=C-f\ndispatch=a\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file)))
+            (should (equal "old-key\told-command\told-effective\told-arg\t0"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            state-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))
+        (when (file-exists-p state-file)
+          (delete-file state-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-save-undo-adapter ()
+  "Bridge undo snapshot adapter should delegate policy to command-loop runtime."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-save-undo-adapter"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-save-undo-if-needed
+                           (lambda (command)
+                             (nl-write-file
+                              \"/tmp/nemacs-command-loop-save-undo-adapter\"
+                              (symbol-name command))
+                             :saved))
+                     (setq files--bridge-command 'kill-line)
+                     (files--command-loop-save-undo-if-needed-current-context))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "kill-line"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-current-context-wrappers ()
+  "Bridge wrappers should prefer command-loop current-context helpers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (call-probe "/tmp/nemacs-call-current-context-wrapper")
+          (execute-probe "/tmp/nemacs-execute-current-context-wrapper")
+          (mx-probe "/tmp/nemacs-mx-current-context-wrapper")
+          (dispatch-probe "/tmp/nemacs-dispatch-current-context-wrapper")
+          (ingest-probe "/tmp/nemacs-ingest-request-context-wrapper")
+          (finalize-probe "/tmp/nemacs-finalize-status-wrapper")
+          (run-dispatch-probe
+           "/tmp/nemacs-run-dispatch-current-context-wrapper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (fset 'emacs-command-loop-gui-call-interactively-current-context
+                             (lambda ()
+                               (nl-write-file
+                                \"/tmp/nemacs-call-current-context-wrapper\"
+                                (concat (symbol-name files--bridge-command)
+                                        \"\\t\"
+                                        files--bridge-effective-command))
+                               :called))
+                       (fset 'emacs-command-loop-gui-command-execute-current-context
+                             (lambda ()
+                              (nl-write-file
+                               \"/tmp/nemacs-execute-current-context-wrapper\"
+                               (concat (symbol-name files--bridge-command)
+                                       \"\\t\"
+                                       files--bridge-effective-command))
+                               :executed))
+                       (fset 'emacs-command-loop-gui-execute-extended-command-current-context
+                             (lambda ()
+                               (nl-write-file
+                                \"/tmp/nemacs-mx-current-context-wrapper\"
+                                (concat files--bridge-arg
+                                        \"\\t\"
+                                        files--bridge-minibuffer-arg))
+                               :mx))
+                       (fset 'emacs-command-loop-gui-ingest-request-context
+                             (lambda (&rest _plist)
+                               (nl-write-file
+                                \"/tmp/nemacs-ingest-request-context-wrapper\"
+                                (concat files--bridge-keys
+                                        \"\\t\"
+                                        files--bridge-arg
+                                        \"\\t\"
+                                        files--prefix-arg))
+                               (if (equal files--bridge-keys \"\")
+                                   nil
+                                 (progn
+                                   (setq files--bridge-command nil)
+                                   (setq files--bridge-effective-command
+                                         \"\")))
+                               (setq files--bridge-status \"ok\")
+                               :ingested))
+                       (fset 'emacs-command-loop-gui-finalize-status-current-context
+                             (lambda ()
+                               (nl-write-file
+                                \"/tmp/nemacs-finalize-status-wrapper\"
+                                (concat files--bridge-effective-command
+                                        \"\\t\"
+                                        files--bridge-status))
+                               'normal))
+                       (fset 'emacs-command-loop-gui-write-post-command-state
+                             (lambda (&optional command effective-command status)
+                               (nl-write-file
+                                \"/tmp/nemacs-finalize-status-wrapper\"
+                                (concat files--bridge-effective-command
+                                        \"\\t\"
+                                        files--bridge-status))
+                               (list :command-name
+                                     (if effective-command
+                                         effective-command
+                                       \"\")
+                                     :lane 'normal)))
+                       (fset 'emacs-command-loop-gui-dispatch-current-context
+                             (lambda ()
+                               (if (equal files--bridge-keys \"C-c p\")
+                                   (nl-write-file
+                                    \"/tmp/nemacs-dispatch-current-context-wrapper\"
+                                    (concat files--bridge-keys
+                                            \"\\t\"
+                                            files--bridge-arg))
+                                 nil)
+                               (nl-write-file
+                                \"/tmp/nemacs-run-dispatch-current-context-wrapper\"
+                                (concat files--bridge-keys
+                                        \"\\t\"
+                                       files--bridge-arg))
+                               :dispatched))
+                       (fset 'emacs-command-loop-gui-dispatch-key-request-current-context
+                             (lambda ()
+                               (if (equal files--bridge-keys \"C-c p\")
+                                   (nl-write-file
+                                    \"/tmp/nemacs-dispatch-current-context-wrapper\"
+                                    (concat files--bridge-keys
+                                            \"\\t\"
+                                            files--bridge-arg))
+                                 nil)
+                               (nl-write-file
+                                \"/tmp/nemacs-run-dispatch-current-context-wrapper\"
+                                (concat files--bridge-keys
+                                        \"\\t\"
+                                        files--bridge-arg))
+                               :key-request))
+                       (fset 'emacs-command-loop-gui-run-request-current-context
+                             (lambda ()
+                               (nl-write-file
+                                \"/tmp/nemacs-run-dispatch-current-context-wrapper\"
+                                (concat files--bridge-keys
+                                        \"\\t\"
+                                        files--bridge-arg))
+                               :ran))
+                       (setq files--bridge-command 'current-context-probe)
+                       (setq files--bridge-effective-command
+                             \"current-context-probe\")
+                       (setq files--bridge-keys \"C-c p\")
+                       (setq files--bridge-arg \"seed\")
+                       (call-interactively)
+                       (command-execute)
+                       (files--dispatch-key-sequence)
+                       (setq files--bridge-command
+                             'execute-extended-command)
+                       (setq files--bridge-effective-command
+                             \"execute-extended-command\")
+                       (setq files--bridge-arg \"goto-line\")
+                       (setq files--bridge-minibuffer-arg \"17\")
+                       (execute-extended-command)
+                       (nl-write-file \"/tmp/nemacs-cmd\" \"\")
+                       (nl-write-file \"/tmp/nemacs-keys\" \"C-c r\")
+                       (nl-write-file \"/tmp/nemacs-arg\" \"seed-run\")
+                       (nl-write-file \"/tmp/nemacs-buf\" \"\")
+                       (nl-write-file \"/tmp/nemacs-file\" \"\")
+                       (nl-write-file \"/tmp/nemacs-buffer-name\" \"main\")
+                       (nl-write-file \"/tmp/nemacs-read-only\" \"0\")
+                       (nl-write-file \"/tmp/nemacs-point\" \"0\")
+                       (nl-write-file \"/tmp/nemacs-mark\" \"0\")
+                       (nemacs-gui-file-bridge-run))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "current-context-probe\tcurrent-context-probe"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              call-probe)))
+              (should (equal "current-context-probe\tcurrent-context-probe"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              execute-probe)))
+              (should (equal "goto-line\t17"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              mx-probe)))
+              (should (equal "C-c p\tseed"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              dispatch-probe)))
+              (should (equal "C-c r\tseed-run\t"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              ingest-probe)))
+              (should (equal "\tok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              finalize-probe)))
+              (should (equal "C-c r\tseed-run"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              run-dispatch-probe)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p call-probe)
+          (delete-file call-probe))
+        (when (file-exists-p execute-probe)
+          (delete-file execute-probe))
+        (when (file-exists-p mx-probe)
+          (delete-file mx-probe))
+        (when (file-exists-p dispatch-probe)
+          (delete-file dispatch-probe))
+        (when (file-exists-p ingest-probe)
+          (delete-file ingest-probe))
+        (when (file-exists-p finalize-probe)
+          (delete-file finalize-probe))
+        (when (file-exists-p run-dispatch-probe)
+          (delete-file run-dispatch-probe))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-command-arg-wrappers ()
+  "Bridge call/execute wrappers should accept explicit COMMAND args."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (call-probe "/tmp/nemacs-call-command-arg-wrapper")
+          (execute-probe "/tmp/nemacs-execute-command-arg-wrapper"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (fset 'emacs-command-loop-gui-call-interactively
+                           (lambda (command)
+                             (nl-write-file
+                              \"/tmp/nemacs-call-command-arg-wrapper\"
+                              (concat (symbol-name command)
+                                      \"\\t\"
+                                      files--bridge-effective-command))
+                             :called))
+                     (fset 'emacs-command-loop-gui-command-execute
+                           (lambda (command)
+                             (nl-write-file
+                              \"/tmp/nemacs-execute-command-arg-wrapper\"
+                              (concat (symbol-name command)
+                                      \"\\t\"
+                                      files--bridge-effective-command))
+                             :executed))
+                     (setq files--bridge-command nil)
+                     (setq files--bridge-effective-command \"\")
+                     (call-interactively 'forward-char)
+                     (command-execute 'backward-char))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "forward-char\tforward-char"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            call-probe)))
+            (should (equal "backward-char\tbackward-char"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            execute-probe))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p call-probe)
+          (delete-file call-probe))
+        (when (file-exists-p execute-probe)
+          (delete-file execute-probe))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-wrappers-ensure-backend ()
+  "Bridge call/execute wrappers should install the command-loop backend first."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-wrapper-ensure-backend"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (setq nemacs-command-loop-wrapper-ensure-log \"\")
+                     (fset 'files--command-loop-install-backend
+                           (lambda ()
+                             (setq nemacs-command-loop-wrapper-ensure-log
+                                   (concat
+                                    nemacs-command-loop-wrapper-ensure-log
+                                    \"install:\"
+                                    files--bridge-effective-command
+                                    \"\\n\"))))
+                     (fset 'emacs-command-loop-gui-call-interactively-current-context
+                           (lambda ()
+                             (setq nemacs-command-loop-wrapper-ensure-log
+                                   (concat
+                                    nemacs-command-loop-wrapper-ensure-log
+                                    \"call:\"
+                                    files--bridge-effective-command
+                                    \"\\n\"))
+                             :called))
+                     (fset 'emacs-command-loop-gui-command-execute-current-context
+                           (lambda ()
+                             (setq nemacs-command-loop-wrapper-ensure-log
+                                   (concat
+                                    nemacs-command-loop-wrapper-ensure-log
+                                    \"execute:\"
+                                    files--bridge-effective-command
+                                    \"\\n\"))
+                             :executed))
+                     (setq files--bridge-command 'forward-char)
+                     (setq files--bridge-effective-command \"forward-char\")
+                     (call-interactively)
+                     (setq files--bridge-command 'backward-char)
+                     (setq files--bridge-effective-command \"backward-char\")
+                     (command-execute)
+                     (nl-write-file
+                      \"/tmp/nemacs-command-loop-wrapper-ensure-backend\"
+                      nemacs-command-loop-wrapper-ensure-log))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "install:forward-char\ncall:forward-char\ninstall:backward-char\nexecute:backward-char\n"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-writeback-command-name ()
+  "Bridge runtime image should expose command-loop writeback normalization."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-writeback-command-name"))
+      (unwind-protect
+          (let ((result
+                 (nemacs-gui-file-bridge-runtime-test--run-image
+                  reader image
+                  "(progn
+                     (nl-write-file
+                      \"/tmp/nemacs-writeback-command-name\"
+                      (concat
+                       (emacs-command-loop-gui-writeback-command-name
+                        'project-query-replace-regexp \"minibuffer\")
+                       \"\\t\"
+                       (emacs-command-loop-gui-writeback-command-name
+                        nil 'self-insert-command)
+                       \"\\t\"
+                       (emacs-command-loop-gui-writeback-command-name
+                        'save-buffer nil)))))")))
+            (should (equal 0 (plist-get result :status)))
+            (should (equal "project-query-replace-regexp\tself-insert-command\tsave-buffer"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            probe-file))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-post-command-state ()
+  "Bridge runtime image should flush post-command state through command-loop policy."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-post-command-state"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (setq files--bridge-command
+                             'project-query-replace-regexp)
+                       (setq files--bridge-effective-command
+                             \"minibuffer\")
+                       (setq files--bridge-status \"prefix-arg\")
+                       (setq files--prefix-arg \"C-u\")
+                       (setq files--kmacro-recording t)
+                       (setq files--kmacro-keys \"C-x\\n\")
+                       (setq files--buffer-string \"abcdef\\n\")
+                       (setq files--point 3)
+                       (setq files--mark 1)
+                       (setq files--window-start 0)
+                       (let ((state
+                              (emacs-command-loop-gui-write-post-command-state
+                               files--bridge-command
+                               files--bridge-effective-command
+                               files--bridge-status)))
+                         (nl-write-file
+                          \"/tmp/nemacs-post-command-state\"
+                          (concat
+                           (plist-get state :command-name)
+                           \"\\t\"
+                           (symbol-name (plist-get state :lane))))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "project-query-replace-regexp\tprefix-arg"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "C-u"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-prefix-arg")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-kmacro-recording")))
+              (should (equal "C-x\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-kmacro-keys")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-lane-writeback ()
+  "Bridge runtime image should apply command-loop lane writeback specs."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-lane-writeback"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (setq files--bridge-status \"read-only\")
+                       (setq files--bridge-writeback-lane \"read-only\")
+                       (setq files--buffer-string \"abc\")
+                       (setq files--point 2)
+                       (setq files--mark 1)
+                       (setq files--window-start 0)
+                       (files--command-loop-writeback-current-lane)
+                       (let ((read-only-status (rdf \"/tmp/nemacs-status\"))
+                             (read-only-buf (rdf \"/tmp/nemacs-buf\"))
+                             (read-only-flag (rdf \"/tmp/nemacs-read-only\")))
+                         (setq files--bridge-status \"prefix-arg\")
+                         (setq files--bridge-writeback-lane \"prefix-arg\")
+                         (setq files--prefix-arg \"C-u\")
+                         (setq files--point 3)
+                         (setq files--mark 2)
+                         (files--command-loop-writeback-current-lane)
+                         (nl-write-file
+                          \"/tmp/nemacs-command-loop-lane-writeback\"
+                          (concat
+                           read-only-status
+                           \"\\t\"
+                           read-only-buf
+                           \"\\t\"
+                           read-only-flag
+                           \"\\t\"
+                           (rdf \"/tmp/nemacs-status\")
+                           \"\\t\"
+                           (rdf \"/tmp/nemacs-prefix-arg\")))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "read-only\tabc\t1\tprefix-arg\tC-u"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-command-loop-lane-writeback-uses-command-loop-flag ()
+  "Command-loop lane writeback should not depend on fileio spec helpers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-command-loop-lane-flag-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (fset 'files--fileio-writeback-spec-flag
+                             (lambda (_spec _key)
+                               (error \"fileio flag helper used\")))
+                       (setq files--bridge-status \"prefix-arg\")
+                       (setq files--bridge-writeback-lane \"prefix-arg\")
+                       (setq files--prefix-arg \"C-u\")
+                       (files--command-loop-writeback-current-lane)
+                       (nl-write-file
+                        \"/tmp/nemacs-command-loop-lane-flag-helper\"
+                        (rdf \"/tmp/nemacs-prefix-arg\")))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "C-u"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-fileio-current-context-sync ()
+  "Bridge fileio sync should prefer the runtime current-context helper."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-fileio-current-context-sync"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (fset 'emacs-fileio-gui-refresh-context-from-backend
+                             (lambda ()
+                               (nl-write-file
+                                \"/tmp/nemacs-fileio-current-context-sync\"
+                                (concat files--bridge-arg
+                                        \"\\t\"
+                                        files--bridge-status
+                                        \"\\t\"
+                                        files--buffer-name
+                                        \"\\t\"
+                                        (if files--buffer-read-only-p
+                                            \"1\"
+                                          \"0\")))
+                               :synced))
+                       (setq files--bridge-arg \"/tmp/context.txt\")
+                       (setq files--bridge-status \"pending\")
+                       (setq files--buffer-name \"notes\")
+                       (setq files--buffer-read-only-p t)
+                       (files--fileio-sync-context))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "/tmp/context.txt\tpending\tnotes\t1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-fileio-current-context-command-wrappers ()
+  "Bridge file/buffer wrappers should prefer current-context commands."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-fileio-current-context-command-wrappers"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-image
+                    reader image
+                    "(progn
+                       (setq files--fileio-current-context-wrapper-log \"\")
+                       (fset 'files--fileio-wrapper-log
+                             (lambda (entry)
+                               (setq files--fileio-current-context-wrapper-log
+                                     (concat files--fileio-current-context-wrapper-log
+                                             entry
+                                             \"\\n\"))))
+                       (fset 'emacs-fileio-gui-current-context-command
+                             (lambda (command &optional action read-only)
+                               (let ((result nil))
+                                 (if (eq command 'find-file)
+                                     (progn
+                                       (files--fileio-wrapper-log
+                                        (concat \"find:\"
+                                                action
+                                                \":\"
+                                                (if read-only \"ro\" \"rw\")))
+                                       (setq result \"/tmp/current.txt\"))
+                                   nil)
+                                 (if (eq command 'find-alternate-file)
+                                     (progn
+                                       (files--fileio-wrapper-log \"alternate\")
+                                       (setq result \"/tmp/alternate.txt\"))
+                                   nil)
+                                 (if (eq command 'project-find-file)
+                                     (progn
+                                       (files--fileio-wrapper-log
+                                        \"project-find\")
+                                       (setq result \"/tmp/project.txt\"))
+                                   nil)
+                                 (if (eq command 'project-or-external-find-file)
+                                     (progn
+                                       (files--fileio-wrapper-log
+                                        \"project-or-external\")
+                                       (setq result \"/tmp/project-or-external.txt\"))
+                                   nil)
+                                 (if (eq command 'save-buffer)
+                                     (progn
+                                       (files--fileio-wrapper-log \"save\")
+                                       (setq result \"/tmp/current.txt\"))
+                                   nil)
+                                 (if (eq command 'save-some-buffers)
+                                     (progn
+                                       (files--fileio-wrapper-log \"save-some\")
+                                       (setq result t))
+                                   nil)
+                                 (if (eq command 'write-file)
+                                     (progn
+                                       (files--fileio-wrapper-log \"write\")
+                                       (setq result \"/tmp/write.txt\"))
+                                   nil)
+                                 (if (eq command 'insert-file)
+                                     (progn
+                                       (files--fileio-wrapper-log \"insert-file\")
+                                       (setq result files--bridge-arg))
+                                   nil)
+                                 (if (eq command 'insert-buffer)
+                                     (progn
+                                       (files--fileio-wrapper-log \"insert-buffer\")
+                                       (setq result files--bridge-arg))
+                                   nil)
+                                 (if (eq command 'revert-buffer)
+                                     (progn
+                                       (files--fileio-wrapper-log \"revert\")
+                                       (setq result files--current-file-name))
+                                   nil)
+                                 (if (eq command 'switch-to-buffer)
+                                     (progn
+                                       (files--fileio-wrapper-log
+                                        (concat \"switch:\" action))
+                                       (setq result \"main\"))
+                                   nil)
+                                 (if (eq command 'display-buffer)
+                                     (progn
+                                       (files--fileio-wrapper-log
+                                        (concat \"display:\" action))
+                                       (setq result \"main\"))
+                                   nil)
+                                 (if (eq command 'rename-buffer)
+                                     (progn
+                                       (files--fileio-wrapper-log \"rename\")
+                                       (setq result files--bridge-arg))
+                                   nil)
+                                 (if (eq command 'kill-buffer)
+                                     (progn
+                                       (files--fileio-wrapper-log \"kill\")
+                                       (setq result \"main\"))
+                                   nil)
+                                 (if (eq command 'kill-buffer-and-window)
+                                     (progn
+                                       (files--fileio-wrapper-log \"kill-window\")
+                                       (setq result \"main\"))
+                                   nil)
+                                 (if (eq command 'list-buffers)
+                                     (progn
+                                       (files--fileio-wrapper-log \"list\")
+                                       (setq result \"*Buffer List*\"))
+                                   nil)
+                                 (if (eq command 'project-list-buffers)
+                                     (progn
+                                       (files--fileio-wrapper-log \"project-list\")
+                                       (setq result \"*Buffer List*\"))
+                                   nil)
+                                 (if (eq command 'project-kill-buffers)
+                                     (progn
+                                       (files--fileio-wrapper-log \"project-kill\")
+                                       (setq result \"main\"))
+                                   nil)
+                                 result)))
+                       (find-file)
+                       (find-alternate-file)
+                       (project-find-file)
+                       (project-or-external-find-file)
+                       (save-buffer)
+                       (save-some-buffers)
+                       (write-file)
+                       (insert-file)
+                       (insert-buffer)
+                       (revert-buffer)
+                       (switch-to-buffer)
+                       (display-buffer)
+                       (rename-buffer)
+                       (kill-buffer)
+                       (kill-buffer-and-window)
+                       (list-buffers)
+                       (project-list-buffers)
+                       (project-kill-buffers)
+                       (nl-write-file
+                        \"/tmp/nemacs-fileio-current-context-command-wrappers\"
+                        files--fileio-current-context-wrapper-log))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "find:same:rw\nalternate\nproject-find\nproject-or-external\nsave\nsave-some\nwrite\ninsert-file\ninsert-buffer\nrevert\nswitch:same\ndisplay:other\nrename\nkill\nkill-window\nlist\nproject-list\nproject-kill\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-fileio-writeback-spec ()
+  "Bridge file/buffer writeback should be driven by runtime specs."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-fileio-writeback-spec-result"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"buffer text\")
+                       (setq files--current-file-name \"/tmp/current.txt\")
+                       (setq files--buffer-name \"notes\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--window-layout \"single\")
+                       (setq files--window-selected \"0\")
+                       (setq files--point 5)
+                       (setq files--mark 2)
+                       (setq files--window-start 1)
+                       (setq files--bridge-status \"ok\")
+                       (files--fileio-writeback-current-context
+                        \"switch-to-buffer-other-frame\")
+                       (nl-write-file
+                        \"/tmp/nemacs-fileio-writeback-spec-result\"
+                        files--bridge-status))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "written"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "buffer text"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/current.txt"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "notes"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "single"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "00005"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00002"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00001"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-fileio-writeback-uses-runtime-flag ()
+  "File/buffer writeback should consume the fileio runtime flag helper."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-fileio-writeback-runtime-flag"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (fset 'files--fileio-writeback-spec-flag
+                             (lambda (_spec _key)
+                               (error \"legacy fileio flag helper used\")))
+                       (setq files--buffer-string \"buffer text\")
+                       (setq files--current-file-name \"/tmp/current.txt\")
+                       (setq files--buffer-name \"notes\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--window-layout \"single\")
+                       (setq files--window-selected \"0\")
+                       (setq files--point 5)
+                       (setq files--mark 2)
+                       (setq files--window-start 1)
+                       (setq files--bridge-status \"ok\")
+                       (files--fileio-writeback-current-context
+                        \"switch-to-buffer-other-frame\")
+                       (nl-write-file
+                        \"/tmp/nemacs-fileio-writeback-runtime-flag\"
+                        files--bridge-status))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "written"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-fileio-writeback-uses-runtime-state-helper ()
+  "File/buffer writeback should delegate to the runtime state helper."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-fileio-writeback-state-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (fset 'emacs-fileio-gui-writeback-state
+                             (lambda (command status)
+                               (nl-write-file
+                                \"/tmp/nemacs-fileio-writeback-state-helper\"
+                                (concat
+                                 (if (symbolp command)
+                                     (symbol-name command)
+                                   command)
+                                 \"\\t\"
+                                 status))
+                               t))
+                       (fset 'emacs-fileio-gui-writeback-spec-flag
+                             (lambda (_spec _key)
+                               (error \"legacy fileio flag helper used\")))
+                       (setq files--bridge-status \"ok\")
+                       (files--fileio-writeback-current-context
+                        \"save-buffer\"))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "save-buffer\tok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-dired-writeback-spec ()
+  "Bridge Dired writeback should be driven by runtime specs."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-dired-writeback-spec-result"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"Directory /tmp\\n  a.txt\\n\")
+                       (setq files--current-file-name \"\")
+                       (setq files--buffer-name \"*Directory*\")
+                       (setq files--window-layout \"single\")
+                       (setq files--window-selected \"0\")
+                       (setq files--point 4)
+                       (setq files--mark 3)
+                       (setq files--window-start 2)
+                       (setq files--bridge-status \"ok\")
+                       (files--dired-writeback-current-context
+                        \"dired-other-tab\")
+                       (setq files--buffer-string \"Directory /tmp\\n\")
+                       (setq files--modeline-string \"Dired: /tmp\")
+                       (setq files--point 7)
+                       (setq files--mark 6)
+                       (setq files--window-start 5)
+                       (files--dired-writeback-current-context
+                        \"dired-do-flagged-delete\")
+                       (nl-write-file
+                        \"/tmp/nemacs-dired-writeback-spec-result\"
+                        files--bridge-status))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "written"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "Directory /tmp\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "*Directory*"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "Dired: /tmp"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-modeline")))
+              (should (equal "single"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "00007"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00006"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00005"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-info-writeback-spec ()
+  "Bridge Info writeback should be driven by runtime specs."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-info-writeback-spec-result"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"Info body\\n\")
+                       (setq files--current-file-name \"/tmp/manual.info\")
+                       (setq files--buffer-name \"*info*\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--window-layout \"info-window\")
+                       (setq files--window-selected \"1\")
+                       (setq files--point 8)
+                       (setq files--mark 4)
+                       (setq files--window-start 2)
+                       (setq files--bridge-status \"ok\")
+                       (files--info-writeback-current-context
+                        \"Info-next\")
+                       (nl-write-file
+                        \"/tmp/nemacs-info-writeback-spec-result\"
+                        files--bridge-status))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "written"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "Info body\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/manual.info"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "*info*"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              (should (equal "info-window"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "00008"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00004"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00002"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-help-writeback-spec ()
+  "Bridge Help writeback should be driven by runtime specs."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-help-writeback-spec-result"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"Help body\\n\")
+                       (setq files--current-file-name \"\")
+                       (setq files--buffer-name \"*Help*\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--window-layout \"help-window\")
+                       (setq files--window-selected \"2\")
+                       (setq files--point 9)
+                       (setq files--mark 5)
+                       (setq files--window-start 3)
+                       (setq files--bridge-status \"ok\")
+                       (files--help-writeback-current-context
+                        \"describe-function\")
+                       (setq files--buffer-string \"About body\\n\")
+                       (setq files--point 11)
+                       (setq files--mark 7)
+                       (setq files--window-start 4)
+                       (files--help-writeback-current-context
+                        \"about-emacs\")
+                       (nl-write-file
+                        \"/tmp/nemacs-help-writeback-spec-result\"
+                        files--bridge-status))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "written"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "About body\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal ""
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "*Help*"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              (should (equal "help-window"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "2"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "00011"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00007"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00004"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-family-writeback-uses-family-flags ()
+  "Dired/Info/Help writeback should not depend on fileio spec helpers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-family-writeback-flag-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (fset 'files--fileio-writeback-spec-flag
+                             (lambda (_spec _key)
+                               (error \"fileio flag helper used\")))
+                       (setq files--buffer-string \"Dired body\\n\")
+                       (setq files--buffer-name \"*Directory*\")
+                       (setq files--modeline-string \"Dired ok\")
+                       (setq files--bridge-status \"ok\")
+                       (files--dired-writeback-current-context
+                        \"dired-do-flagged-delete\")
+                       (let ((dired-status files--bridge-status))
+                         (setq files--buffer-string \"Info body\\n\")
+                         (setq files--buffer-name \"*info*\")
+                         (setq files--buffer-read-only-p t)
+                         (setq files--bridge-status \"ok\")
+                         (files--info-writeback-current-context
+                          \"Info-next\")
+                         (let ((info-status files--bridge-status))
+                           (setq files--buffer-string \"Help body\\n\")
+                           (setq files--buffer-name \"*Help*\")
+                           (setq files--buffer-read-only-p t)
+                           (setq files--bridge-status \"ok\")
+                           (files--help-writeback-current-context
+                            \"about-emacs\")
+                           (nl-write-file
+                            \"/tmp/nemacs-family-writeback-flag-helper\"
+                            (concat dired-status
+                                    \"\\t\"
+                                    info-status
+                                    \"\\t\"
+                                    files--bridge-status)))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "written\twritten\twritten"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-family-writeback-uses-runtime-state-helper ()
+  "Dired/Info/Help writeback should delegate to family runtime helpers."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-family-writeback-state-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--family-writeback-helper-log \"\")
+                       (fset 'append-family-log
+                             (lambda (family command)
+                               (setq files--family-writeback-helper-log
+                                     (concat files--family-writeback-helper-log
+                                             family
+                                             \":\"
+                                             (if (symbolp command)
+                                                 (symbol-name command)
+                                               command)
+                                             \"\\n\"))
+                               (setq files--bridge-status \"written\")
+                               t))
+                       (fset 'emacs-dired-min-gui-writeback-state
+                             (lambda (command)
+                               (append-family-log \"dired\" command)))
+                       (fset 'emacs-info-gui-writeback-state
+                             (lambda (command)
+                               (append-family-log \"info\" command)))
+                       (fset 'emacs-help-gui-writeback-state
+                             (lambda (command)
+                               (append-family-log \"help\" command)))
+                       (fset 'emacs-dired-min-gui-writeback-spec-flag
+                             (lambda (_spec _key)
+                               (error \"legacy dired flag helper used\")))
+                       (fset 'emacs-info-gui-writeback-spec-flag
+                             (lambda (_spec _key)
+                               (error \"legacy info flag helper used\")))
+                       (fset 'emacs-help-gui-writeback-spec-flag
+                             (lambda (_spec _key)
+                               (error \"legacy help flag helper used\")))
+                       (setq files--bridge-status \"ok\")
+                       (files--dired-writeback-current-context
+                        \"dired-do-flagged-delete\")
+                       (setq files--bridge-status \"ok\")
+                       (files--info-writeback-current-context \"Info-next\")
+                       (setq files--bridge-status \"ok\")
+                       (files--help-writeback-current-context \"about-emacs\")
+                       (nl-write-file
+                        \"/tmp/nemacs-family-writeback-state-helper\"
+                        files--family-writeback-helper-log))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "dired:dired-do-flagged-delete\ninfo:Info-next\nhelp:about-emacs\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
 
 (provide 'nemacs-gui-file-bridge-runtime-test)
 

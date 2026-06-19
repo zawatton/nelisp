@@ -13,6 +13,12 @@
          (nelisp-ec--current-buffer nil)
          (nelisp-ec--match-data nil)
          (emacs-dired-min--state (make-hash-table :test 'eq :weakness nil))
+         (emacs-dired-min-gui-backend nil)
+         (emacs-dired-min-gui-directory "")
+         (emacs-dired-min-gui-target "")
+         (emacs-dired-min-gui-current-file-name "")
+         (emacs-dired-min-gui-status "ok")
+         (emacs-dired-min-gui-buffer-name "")
          (emacs-mode--current-major-mode 'fundamental-mode)
          (emacs-mode--current-mode-name "Fundamental")
          (emacs-keymap-local-map nil))
@@ -84,6 +90,38 @@
               (should (cl-find-if (lambda (line)
                                     (string-prefix-p "  subdir\t" line))
                                   lines))))
+        (emacs-dired-min-test--cleanup-tree tree)))))
+
+(ert-deftest dired-host-interactive-mirror-renders-listing ()
+  "Host -nw mirrors the minimal Dired listing into a visible host buffer."
+  (emacs-dired-min-test--with-fresh-world
+    (let* ((tree (emacs-dired-min-test--make-tree))
+           (root (plist-get tree :root))
+           (name (emacs-dired-min--dired-buffer-name
+                  (emacs-dired-min--normalize-directory root)))
+           (shown nil))
+      (unwind-protect
+          (let ((noninteractive nil))
+            (cl-letf (((symbol-function 'selected-window)
+                       (lambda () :selected-window))
+                      ((symbol-function 'set-window-buffer)
+                       (lambda (_window buffer &optional _keep-margins)
+                         (setq shown buffer))))
+              (dired root)
+              (let ((host-buffer (get-buffer name)))
+                (should host-buffer)
+                (should (eq shown host-buffer))
+                (with-current-buffer host-buffer
+                  (should (eq major-mode 'dired-mode))
+                  (should (equal mode-name "Dired"))
+                  (should (save-excursion
+                            (goto-char (point-min))
+                            (search-forward "alpha.txt" nil t)))
+                  (should (save-excursion
+                            (goto-char (point-min))
+                            (search-forward "subdir" nil t)))))))
+        (when-let ((host-buffer (get-buffer name)))
+          (kill-buffer host-buffer))
         (emacs-dired-min-test--cleanup-tree tree)))))
 
 (ert-deftest dired-RET-opens-file-at-point ()
@@ -222,6 +260,509 @@
             ;; an unflagged file is untouched
             (should (nelisp-ec-file-attributes (plist-get tree :file-a))))
         (emacs-dired-min-test--cleanup-tree tree)))))
+
+(ert-deftest dired-gui-backend-opens-directory-with-display-action ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil))
+      (emacs-dired-min-gui-register-backend
+       :list-directory
+       (lambda (directory)
+         (push (list :list directory) calls)
+         "*Directory*")
+       :buffer-name
+       (lambda ()
+         "*Directory*")
+       :apply-display-prefix
+       (lambda (action)
+         (push (list :display action) calls)))
+      (emacs-dired-min-gui-set-context :directory "/tmp/demo")
+      (should (equal "*Directory*" (emacs-dired-min-gui-dired "other")))
+      (should (equal "*Directory*" emacs-dired-min-gui-buffer-name))
+      (should (equal '((:display "other")
+                       (:list "/tmp/demo"))
+                     calls)))))
+
+(ert-deftest dired-gui-backend-jump-derives-directory-from-current-file ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil))
+      (emacs-dired-min-gui-register-backend
+       :list-directory
+       (lambda (directory)
+         (push (list :list directory) calls)
+         "*Directory*")
+       :buffer-name
+       (lambda ()
+         "*Directory*")
+       :apply-display-prefix
+       (lambda (action)
+         (push (list :display action) calls)))
+      (emacs-dired-min-gui-set-context :directory "/old"
+                                       :current-file-name "/tmp/a/b.txt")
+      (should (equal "*Directory*" (emacs-dired-min-gui-dired-jump "same")))
+      (should (equal "/old" emacs-dired-min-gui-directory))
+      (should (equal '((:display "same")
+                       (:list "/tmp/a/"))
+                     calls)))))
+
+(ert-deftest dired-gui-refresh-context-from-backend ()
+  (emacs-dired-min-test--with-fresh-world
+    (emacs-dired-min-gui-register-backend
+     :current-directory (lambda () "/tmp/demo")
+     :current-target (lambda () "/tmp/target.txt")
+     :current-file-name (lambda () "/tmp/current.txt")
+     :current-status (lambda () "ok")
+     :buffer-name (lambda () "*Directory*"))
+    (should (equal '(:directory "/tmp/demo"
+                     :target "/tmp/target.txt"
+                     :current-file-name "/tmp/current.txt"
+                     :status "ok"
+                     :buffer-name "*Directory*")
+                   (emacs-dired-min-gui-refresh-context-from-backend)))
+    (should (equal "/tmp/demo" emacs-dired-min-gui-directory))
+    (should (equal "/tmp/target.txt" emacs-dired-min-gui-target))
+    (should (equal "/tmp/current.txt"
+                   emacs-dired-min-gui-current-file-name))
+    (should (equal "ok" emacs-dired-min-gui-status))
+    (should (equal "*Directory*" emacs-dired-min-gui-buffer-name))))
+
+(ert-deftest dired-gui-current-context-command-variants ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil))
+      (emacs-dired-min-gui-register-backend
+       :current-directory (lambda () "/tmp/demo")
+       :current-target (lambda () "")
+       :current-file-name (lambda () "/tmp/a/b.txt")
+       :current-status (lambda () "ok")
+       :list-directory
+       (lambda (directory)
+         (push (list :list directory) calls)
+         "*Directory*")
+       :buffer-name
+       (lambda ()
+         "*Directory*")
+       :apply-display-prefix
+       (lambda (action)
+         (push (list :display action) calls)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-dired-current-context-command
+                      "frame")))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-dired-jump-current-context-command
+                      "other")))
+      (should (equal '((:display "other")
+                       (:list "/tmp/a/")
+                       (:display "frame")
+                       (:list "/tmp/demo"))
+                     calls)))))
+
+(ert-deftest dired-gui-current-context-command-dispatcher ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil)
+          (directory "/tmp/demo")
+          (current-file "/tmp/a/b.txt"))
+      (emacs-dired-min-gui-register-backend
+       :current-directory (lambda () directory)
+       :current-target (lambda () "")
+       :current-file-name (lambda () current-file)
+       :current-status (lambda () "ok")
+       :list-directory
+       (lambda (dir)
+         (push (list :list dir) calls)
+         "*Directory*")
+       :mark
+       (lambda (mark)
+         (push (list :mark mark) calls)
+         "*Directory*")
+       :flagged-delete
+       (lambda ()
+         (push :delete calls)
+         "*Directory*")
+       :rename
+       (lambda (target)
+         (push (list :rename target) calls)
+         "*Directory*")
+       :copy
+       (lambda (target)
+         (push (list :copy target) calls)
+         "*Directory*")
+       :buffer-name
+       (lambda ()
+         "*Directory*")
+       :apply-display-prefix
+       (lambda (action)
+         (push (list :display action) calls)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired "frame")))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired-jump "other")))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired-mark)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired-unmark)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired-flag-file-deletion)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired-do-flagged-delete)))
+      (setq directory "renamed.txt")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired-do-rename)))
+      (setq directory "copy.txt")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'dired-do-copy)))
+      (should (equal nil
+                     (emacs-dired-min-gui-current-context-command
+                      'unknown-dired-command)))
+      (should (equal '((:copy "copy.txt")
+                       (:rename "renamed.txt")
+                       :delete
+                       (:mark "D")
+                       (:mark " ")
+                       (:mark "*")
+                       (:display "other")
+                       (:list "/tmp/a/")
+                       (:display "frame")
+                       (:list "/tmp/demo"))
+                     calls)))))
+
+(ert-deftest dired-gui-project-current-context-commands ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil)
+          (directory "nested")
+          (project-directory "/tmp/project/sub"))
+      (emacs-dired-min-gui-register-backend
+       :current-directory (lambda () directory)
+       :current-target (lambda () "")
+       :current-file-name (lambda () "/tmp/project/sub/current.txt")
+       :current-status (lambda () "ok")
+       :project-directory (lambda () project-directory)
+       :list-directory
+       (lambda (dir)
+         (push (list :list dir) calls)
+         "*Directory*")
+       :buffer-name
+       (lambda ()
+         "*Directory*")
+       :apply-display-prefix
+       (lambda (action)
+         (push (list :display action) calls)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'project-find-dir "same")))
+      (should (equal "nested" emacs-dired-min-gui-directory))
+      (setq directory "")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'project-dired "other")))
+      (should (equal "" emacs-dired-min-gui-directory))
+      (setq directory "/tmp/absolute")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-current-context-command
+                      'project-dired "frame")))
+      (should (equal '((:display "frame")
+                       (:list "/tmp/absolute")
+                       (:display "other")
+                       (:list "/tmp/project/sub")
+                       (:display "same")
+                       (:list "/tmp/project/sub/nested"))
+                     calls)))))
+
+(ert-deftest dired-gui-backend-mark-and-file-ops-delegate ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil))
+      (emacs-dired-min-gui-register-backend
+       :mark
+       (lambda (mark)
+         (push (list :mark mark) calls)
+         "*Directory*")
+       :flagged-delete
+       (lambda ()
+         (push :delete calls)
+         "*Directory*")
+       :rename
+       (lambda (target)
+         (push (list :rename target) calls)
+         "*Directory*")
+       :copy
+       (lambda (target)
+         (push (list :copy target) calls)
+         "*Directory*")
+       :buffer-name
+       (lambda ()
+         "*Directory*"))
+      (should (equal "*Directory*" (emacs-dired-min-gui-mark "D")))
+      (should (equal "*Directory*" (emacs-dired-min-gui-do-flagged-delete)))
+      (should (equal "*Directory*" (emacs-dired-min-gui-do-rename "new.txt")))
+      (should (equal "*Directory*" (emacs-dired-min-gui-do-copy "copy.txt")))
+      (should (equal '((:copy "copy.txt")
+                       (:rename "new.txt")
+                       :delete
+                       (:mark "D"))
+                     calls)))))
+
+(ert-deftest dired-gui-apply-mark-core-uses-low-level-backend ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil)
+          (buffer-name "*Directory*")
+          (entry "alpha.txt"))
+      (emacs-dired-min-gui-register-backend
+       :directory-buffer-p
+       (lambda ()
+         t)
+       :name-at-point
+       (lambda ()
+         entry)
+       :remove-mark
+       (lambda (name)
+         (push (list :remove name) calls))
+       :set-mark
+       (lambda (name mark)
+         (push (list :set name mark) calls))
+       :write-marks-state
+       (lambda ()
+         (push :write calls))
+       :rerender
+       (lambda ()
+         (push :rerender calls))
+       :next-line
+       (lambda ()
+         (push :next calls))
+       :buffer-name
+       (lambda ()
+         buffer-name)
+       :set-status
+       (lambda (status)
+         (push (list :status status) calls)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-mark "*")))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-mark " ")))
+      (setq entry "")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-mark "D")))
+      (should (equal '(:next
+                       :next
+                       :rerender
+                       :write
+                       (:remove "alpha.txt")
+                       :next
+                       :rerender
+                       :write
+                       (:set "alpha.txt" "*"))
+                     calls)))))
+
+(ert-deftest dired-gui-file-op-cores-use-low-level-backend ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil)
+          (buffer-name "*Directory*")
+          (entry "alpha.txt")
+          (existing '("/tmp/alpha.txt" "/tmp/beta.txt"))
+          (directories '("/tmp/subdir")))
+      (emacs-dired-min-gui-register-backend
+       :directory-buffer-p
+       (lambda ()
+         t)
+       :marks-text
+       (lambda ()
+         "alpha.txt\tD\nsubdir\tD\nbeta.txt\t*\n")
+       :name-at-point
+       (lambda ()
+         entry)
+       :expand-name
+       (lambda (name)
+         (concat "/tmp/" name))
+       :directory-p
+       (lambda (path)
+         (member path directories))
+       :delete-file
+       (lambda (path)
+         (push (list :delete path) calls)
+         t)
+       :rename-file
+       (lambda (source dest)
+         (push (list :rename source dest) calls)
+         t)
+       :file-exists-p
+       (lambda (path)
+         (member path existing))
+       :read-file
+       (lambda (path)
+         (push (list :read path) calls)
+         "contents")
+       :write-file
+       (lambda (path text)
+         (push (list :write-file path text) calls)
+         t)
+       :remove-mark
+       (lambda (name)
+         (push (list :remove name) calls))
+       :write-marks-state
+       (lambda ()
+         (push :write-marks calls))
+       :rerender
+       (lambda ()
+         (push :rerender calls))
+       :set-modeline
+       (lambda (text)
+         (push (list :modeline text) calls))
+       :set-status
+       (lambda (status)
+         (push (list :status status) calls))
+       :buffer-name
+       (lambda ()
+         buffer-name))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-do-flagged-delete)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-do-rename "renamed.txt")))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-do-copy "copy.txt")))
+      (should (equal '(:rerender
+                       (:write-file "/tmp/copy.txt" "contents")
+                       (:read "/tmp/alpha.txt")
+                       :rerender
+                       :write-marks
+                       (:remove "alpha.txt")
+                       (:rename "/tmp/alpha.txt" "/tmp/renamed.txt")
+                       (:modeline "Deleted 1 files")
+                       :rerender
+                       :write-marks
+                       (:remove "alpha.txt")
+                       (:delete "/tmp/alpha.txt"))
+                     calls)))))
+
+(ert-deftest dired-gui-command-variants ()
+  (emacs-dired-min-test--with-fresh-world
+    (let ((calls nil))
+      (emacs-dired-min-gui-register-backend
+       :list-directory
+       (lambda (directory)
+         (push (list :list directory) calls)
+         "*Directory*")
+       :mark
+       (lambda (mark)
+         (push (list :mark mark) calls)
+         "*Directory*")
+       :flagged-delete
+       (lambda ()
+         (push :delete calls)
+         "*Directory*")
+       :rename
+       (lambda (target)
+         (push (list :rename target) calls)
+         "*Directory*")
+       :copy
+       (lambda (target)
+         (push (list :copy target) calls)
+         "*Directory*")
+       :buffer-name
+       (lambda ()
+         "*Directory*")
+       :apply-display-prefix
+       (lambda (action)
+         (push (list :display action) calls)))
+      (emacs-dired-min-gui-set-context :directory "/tmp/demo"
+                                       :current-file-name "/tmp/a/b.txt")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-dired-command "frame")))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-dired-jump-command "other")))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-mark-command)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-unmark-command)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-flag-file-deletion-command)))
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-do-flagged-delete-command)))
+      (emacs-dired-min-gui-set-context :directory "renamed.txt")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-do-rename-command)))
+      (emacs-dired-min-gui-set-context :directory "copy.txt")
+      (should (equal "*Directory*"
+                     (emacs-dired-min-gui-do-copy-command)))
+      (should (equal '((:copy "copy.txt")
+                       (:rename "renamed.txt")
+                       :delete
+                       (:mark "D")
+                       (:mark " ")
+                       (:mark "*")
+                       (:display "other")
+                       (:list "/tmp/a/")
+                       (:display "frame")
+                       (:list "/tmp/demo"))
+                     calls)))))
+
+(ert-deftest emacs-dired-min-gui-writeback-spec ()
+  (emacs-dired-min-test--with-fresh-world
+    (should (equal '(:buffer t :file t :buffer-name t :window t
+                     :point t :mark t :window-start t)
+                   (emacs-dired-min-gui-writeback-spec 'dired)))
+    (should (equal '(:buffer t :file t :buffer-name t :window t
+                     :point t :mark t :window-start t)
+                   (emacs-dired-min-gui-writeback-spec
+                    "project-find-dir")))
+    (should (equal '(:buffer t :file t :buffer-name t :window t
+                     :frame t :point t :mark t :window-start t)
+                   (emacs-dired-min-gui-writeback-spec
+                    'dired-other-frame)))
+    (should (equal '(:buffer t :file t :buffer-name t :window t
+                     :tab t :point t :mark t :window-start t)
+                   (emacs-dired-min-gui-writeback-spec
+                    'dired-other-tab)))
+    (should (equal '(:buffer t :buffer-name t
+                     :point t :mark t :window-start t)
+                   (emacs-dired-min-gui-writeback-spec
+                    'dired-do-rename)))
+    (should (equal '(:buffer t :buffer-name t :modeline t
+                     :point t :mark t :window-start t)
+                   (emacs-dired-min-gui-writeback-spec
+                    'dired-do-flagged-delete)))
+    (should-not (emacs-dired-min-gui-writeback-spec 'find-file))))
+
+(ert-deftest emacs-dired-min-gui-writeback-spec-flag ()
+  (let ((spec (emacs-dired-min-gui-writeback-spec
+               'dired-do-flagged-delete)))
+    (should (emacs-dired-min-gui-writeback-spec-flag spec :buffer))
+    (should (emacs-dired-min-gui-writeback-spec-flag spec :modeline))
+    (should-not (emacs-dired-min-gui-writeback-spec-flag spec :file))
+    (should-not (emacs-dired-min-gui-writeback-spec-flag nil :buffer))))
+
+(ert-deftest emacs-dired-min-gui-writeback-state ()
+  (emacs-dired-min-test--with-fresh-world
+    (let (calls)
+      (emacs-dired-min-gui-register-backend
+       :write-buffer-state (lambda () (push :buffer calls))
+       :write-file-state (lambda () (push :file calls))
+       :write-buffer-name-state (lambda () (push :buffer-name calls))
+       :write-window-state (lambda () (push :window calls))
+       :write-frame-state (lambda () (push :frame calls))
+       :write-tab-state (lambda () (push :tab calls))
+       :write-modeline-state (lambda () (push :modeline calls))
+       :write-point-state (lambda () (push :point calls))
+       :write-mark-state (lambda () (push :mark calls))
+       :write-window-start-state (lambda () (push :window-start calls))
+       :mark-written-state (lambda () (push :written calls)))
+      (should (emacs-dired-min-gui-writeback-state 'dired-other-tab))
+      (should (equal '(:buffer :file :buffer-name :window :tab
+                       :point :mark :window-start :written)
+                     (nreverse calls)))
+      (setq calls nil)
+      (should (emacs-dired-min-gui-writeback-state
+               'dired-do-flagged-delete))
+      (should (equal '(:buffer :buffer-name :modeline
+                       :point :mark :window-start :written)
+                     (nreverse calls)))
+      (setq calls nil)
+      (should-not (emacs-dired-min-gui-writeback-state 'find-file))
+      (should-not calls))))
 
 (ert-deftest dired-do-rename-renames-file-at-point ()
   (emacs-dired-min-test--with-fresh-world

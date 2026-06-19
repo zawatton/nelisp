@@ -116,6 +116,19 @@
 ;; `emacs-buffer-builtins' (= depends on `current-buffer' /
 ;; `set-buffer' / `generate-new-buffer').
 (require 'emacs-fileio-builtins)
+;; Runtime special buffers shared by TUI/batch and GUI adapters.
+;; This owns the semantic surface for `*scratch*', `*Messages*',
+;; `*Warnings*', `message', and warning commands.  GUI bridge adapters may
+;; register a transport-backed backend instead of using core buffers.
+(require 'emacs-special-buffers)
+;; Minimal Info runtime shared by TUI/batch and GUI bridge adapters.
+;; The bridge registers a transport-backed backend; ordinary `require
+;; 'info' also reaches this implementation via src/info.el.
+(require 'emacs-info)
+;; Daily-driver Help runtime shared by TUI/batch and GUI bridge adapters.
+;; GUI code registers a transport-backed backend; help-mode/help-fns shims
+;; lazy-load this module for ordinary feature requires.
+(require 'emacs-help)
 ;; Track E.2 (2026-05-03) — undo subsystem.  Loads BEFORE
 ;; `emacs-edit-builtins' so the editing commands' record-on-mutate
 ;; guards (`(when (fboundp 'emacs-undo-record-insert) ...)') see

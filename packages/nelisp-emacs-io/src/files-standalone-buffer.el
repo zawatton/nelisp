@@ -542,7 +542,12 @@
                        (buffer-file-name))))
     (if filename
         (progn
-          (write-region (point-min) (point-max) filename)
+          ;; Save the explicit fallback buffer state directly.  In host ERT
+          ;; simulations the native buffer primitives may still be bound, but
+          ;; `save-some-buffers' is intentionally exercising the standalone
+          ;; per-buffer model.
+          (files--write-file-text filename (files--buffer-string-value)
+                                  nil nil nil nil)
           (set-buffer-modified-p nil)
           filename)
       nil)))
@@ -615,10 +620,6 @@
 (defun files-standalone-list-directory (dirname)
   "Return the names in DIRNAME."
   (cond
-   ((fboundp 'nelisp-ec-directory-files)
-    (nelisp-ec-directory-files dirname))
-   ((fboundp 'directory-files)
-    (directory-files dirname))
    ;; Reader builtin: newline-joined names ("." / ".." included).  Prefer
    ;; this over `nelisp--syscall-readdir', which resolves to the standalone
    ;; combiner's deferred-apply stash and aborts the caller.
@@ -627,6 +628,10 @@
       (and text (split-string text "\n" t))))
    ((fboundp 'nelisp--syscall-readdir)
     (cdr (nelisp--syscall-readdir dirname)))
+   ((fboundp 'nelisp-ec-directory-files)
+    (nelisp-ec-directory-files dirname))
+   ((fboundp 'directory-files)
+    (directory-files dirname))
    (t nil)))
 
 ;; --- file-system predicates -------------------------------------------------

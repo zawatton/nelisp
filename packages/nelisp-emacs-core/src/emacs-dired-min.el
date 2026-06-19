@@ -117,6 +117,18 @@ independent of which mark is shown."
          (modes (or (nth 8 attrs) "----------")))
     (format "%c %s\t%s\t%s\n" mark-char name size modes)))
 
+(defun emacs-dired-min--render-text (entries marks)
+  "Return listing text for ENTRIES using MARKS."
+  (let ((text ""))
+    (dolist (entry entries)
+      (setq text
+            (concat text
+                    (emacs-dired-min--format-entry
+                     entry
+                     (emacs-dired-min--mark-for
+                      marks (plist-get entry :name))))))
+    text))
+
 (defun emacs-dired-min--entries (directory)
   "Return dired entry plists for DIRECTORY."
   (let ((dir (emacs-dired-min--normalize-directory directory))
@@ -178,10 +190,10 @@ independent of which mark is shown."
                       (when cell (push cell kept))))
                   (nreverse kept))))
     (nelisp-ec-erase-buffer)
-    (dolist (entry entries)
-      (nelisp-ec-insert
-       (emacs-dired-min--format-entry
-        entry (emacs-dired-min--mark-for marks (plist-get entry :name)))))
+    (let ((text (emacs-dired-min--render-text entries marks)))
+      (nelisp-ec-insert text)
+      (emacs-dired-min--mirror-host-buffer
+       (emacs-dired-min--dired-buffer-name dir) text))
     (puthash buffer
              (list :directory dir
                    :entries entries
@@ -192,6 +204,32 @@ independent of which mark is shown."
     (when (> (length entries) 0)
       (nelisp-ec-goto-char 1))
     buffer))
+
+(defun emacs-dired-min--host-interactive-p ()
+  "Return non-nil when a host Emacs window should mirror Dired text."
+  (and (boundp 'noninteractive)
+       (not noninteractive)
+       (not (fboundp 'nl-write-file))
+       (fboundp 'get-buffer-create)
+       (fboundp 'selected-window)
+       (fboundp 'set-window-buffer)))
+
+(defun emacs-dired-min--mirror-host-buffer (name text)
+  "Mirror Dired listing TEXT into host buffer NAME when running interactively.
+The canonical Dired state remains the `nelisp-ec' buffer.  This mirror is
+only for host `-nw' visibility, where Emacs redisplay paints host buffers."
+  (when (emacs-dired-min--host-interactive-p)
+    (let ((host-buffer (get-buffer-create name)))
+      (with-current-buffer host-buffer
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert text)
+          (goto-char (point-min))
+          (setq major-mode 'dired-mode
+                mode-name "Dired"
+                buffer-read-only t)))
+      (set-window-buffer (selected-window) host-buffer)
+      host-buffer)))
 
 (defun emacs-dired-min--goto-entry-index (index)
   "Move point to entry INDEX in the current dired buffer."

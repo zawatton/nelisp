@@ -25,6 +25,7 @@
 (require 'emacs-buffer)
 (require 'emacs-buffer-builtins)
 (require 'emacs-fileio-builtins)
+(require 'emacs-fileio-gui)
 (require 'emacs-keymap-builtins)
 (require 'emacs-minibuffer-builtins)
 (require 'emacs-mode-builtins)
@@ -49,6 +50,14 @@ buffer becomes current via `find-file'.")
   '(("\\.el\\'" . emacs-lisp-mode)
     ("\\.org\\'" . org-mode))
   "Minimum file-extension → major-mode associations for M1.")
+
+(defvar emacs-fileio--primitive-kill-buffer
+  (and (fboundp 'kill-buffer) (symbol-function 'kill-buffer))
+  "Underlying `kill-buffer' implementation captured before this module wraps it.")
+
+(defvar emacs-fileio--primitive-rename-buffer
+  (and (fboundp 'rename-buffer) (symbol-function 'rename-buffer))
+  "Underlying `rename-buffer' implementation captured before this module wraps it.")
 
 (defun emacs-fileio--buffer-live-p (buffer)
   "Return non-nil when BUFFER is live in either host or standalone mode."
@@ -79,6 +88,84 @@ buffer becomes current via `find-file'.")
        (cons (cons buffer value)
              (assq-delete-all buffer (symbol-value table-symbol))))
   value)
+
+(defun emacs-fileio--forget-buffer-state (buffer)
+  "Forget all file I/O side-table state for BUFFER."
+  (setq emacs-fileio--buffer-files
+        (assq-delete-all buffer emacs-fileio--buffer-files))
+  (setq emacs-fileio--buffer-default-directories
+        (assq-delete-all buffer emacs-fileio--buffer-default-directories))
+  (setq emacs-fileio--buffer-major-modes
+        (assq-delete-all buffer emacs-fileio--buffer-major-modes))
+  (setq emacs-fileio--buffer-mode-names
+        (assq-delete-all buffer emacs-fileio--buffer-mode-names))
+  buffer)
+
+(defun emacs-fileio--buffer-name (buffer)
+  "Return BUFFER's name across host and standalone modes."
+  (cond
+   ((and (fboundp 'nelisp-ec-buffer-p)
+         (nelisp-ec-buffer-p buffer))
+    (nelisp-ec-buffer-name buffer))
+   ((and (fboundp 'buffer-name)
+         (condition-case nil
+             (buffer-name buffer)
+           (error nil))))
+   (t nil)))
+
+(defun emacs-fileio--buffer-object (buffer-or-name)
+  "Return a live buffer for BUFFER-OR-NAME, or nil."
+  (cond
+   ((null buffer-or-name) nil)
+   ((emacs-fileio--buffer-live-p buffer-or-name) buffer-or-name)
+   ((and (stringp buffer-or-name) (fboundp 'get-buffer))
+    (get-buffer buffer-or-name))
+   (t nil)))
+
+(defun emacs-fileio--get-buffer-create (buffer-or-name)
+  "Return a live buffer for BUFFER-OR-NAME, creating named buffers."
+  (or (emacs-fileio--buffer-object buffer-or-name)
+      (and (stringp buffer-or-name)
+           (if (fboundp 'get-buffer-create)
+               (get-buffer-create buffer-or-name)
+             (generate-new-buffer buffer-or-name)))))
+
+(defun emacs-fileio--registry-buffer-name-in-use-p (name &optional except)
+  "Return non-nil when NAME is used by a live buffer other than EXCEPT."
+  (catch 'found
+    (dolist (buffer (buffer-list))
+      (when (and (not (eq buffer except))
+                 (emacs-fileio--buffer-live-p buffer)
+                 (equal name (emacs-fileio--buffer-name buffer)))
+        (throw 'found t)))
+    nil))
+
+(defun emacs-fileio--generate-buffer-name (name &optional except)
+  "Return a buffer name based on NAME that is not used, ignoring EXCEPT."
+  (if (not (emacs-fileio--registry-buffer-name-in-use-p name except))
+      name
+    (let ((n 2)
+          (candidate ""))
+      (setq candidate (format "%s<%d>" name n))
+      (while (emacs-fileio--registry-buffer-name-in-use-p candidate except)
+        (setq n (1+ n))
+        (setq candidate (format "%s<%d>" name n)))
+      candidate)))
+
+(defun emacs-fileio--rename-standalone-buffer (buffer name unique)
+  "Rename standalone BUFFER to NAME, uniquifying when UNIQUE is non-nil."
+  (let* ((old-name (nelisp-ec-buffer-name buffer))
+         (new-name (if unique
+                       (emacs-fileio--generate-buffer-name name buffer)
+                     name)))
+    (when (and (not unique)
+               (emacs-fileio--registry-buffer-name-in-use-p new-name buffer))
+      (signal 'error (list "Buffer name is in use" new-name)))
+    (setq nelisp-ec--buffers
+          (cons (cons new-name buffer)
+                (assoc-delete-all old-name nelisp-ec--buffers)))
+    (nelisp-ec-buffer-name--setter buffer new-name)
+    new-name))
 
 (defun emacs-fileio--buffer-default-directory (&optional buffer)
   "Return BUFFER's recorded default directory, or nil."
@@ -140,6 +227,7 @@ Thin helper so callers do not need to know the builtins' state table."
   (with-current-buffer buffer
     (let ((mode (or (cdr (assq buffer emacs-fileio--buffer-major-modes))
                     (and filename (emacs-fileio--resolve-major-mode filename))
+                    (and (boundp 'major-mode) major-mode)
                     'fundamental-mode)))
       (when (fboundp mode)
         (funcall mode))
@@ -189,6 +277,101 @@ Thin helper so callers do not need to know the builtins' state table."
       (define-key map (kbd "C-x C-f") #'find-file)
       (define-key map (kbd "C-x C-s") #'save-buffer)
       (define-key map (kbd "C-x C-w") #'write-file))))
+
+;;;###autoload
+(defun switch-to-buffer (buffer-or-name &optional norecord force-same-window)
+  "Make BUFFER-OR-NAME current and return the selected buffer."
+  (interactive
+   (list (if (fboundp 'read-buffer)
+             (read-buffer "Switch to buffer: "
+                          (and (fboundp 'buffer-name)
+                               (buffer-name)))
+           "*scratch*")))
+  (ignore norecord force-same-window)
+  (let ((buffer (emacs-fileio--get-buffer-create
+                 (or buffer-or-name "*scratch*"))))
+    (unless buffer
+      (signal 'error (list "No buffer selected")))
+    (emacs-fileio--apply-buffer-state buffer)
+    buffer))
+
+;;;###autoload
+(defun rename-buffer (newname &optional unique)
+  "Rename the current buffer to NEWNAME and return NEWNAME.
+When UNIQUE is non-nil, append a numeric suffix if NEWNAME is already
+in use."
+  (interactive "sRename buffer: ")
+  (let ((buffer (current-buffer)))
+    (cond
+     ((and (fboundp 'nelisp-ec-buffer-p)
+           (nelisp-ec-buffer-p buffer))
+      (emacs-fileio--rename-standalone-buffer buffer newname unique))
+     (emacs-fileio--primitive-rename-buffer
+      (funcall emacs-fileio--primitive-rename-buffer newname unique))
+     (t
+      (signal 'error '("rename-buffer is unavailable"))))))
+
+;;;###autoload
+(defun kill-buffer (&optional buffer-or-name)
+  "Kill BUFFER-OR-NAME, defaulting to the current buffer."
+  (interactive)
+  (let* ((target (or (emacs-fileio--buffer-object buffer-or-name)
+                     (current-buffer))))
+    (unless target
+      (signal 'error '("No buffer to kill")))
+    (emacs-fileio--forget-buffer-state target)
+    (cond
+     ((and (fboundp 'nelisp-ec-buffer-p)
+           (nelisp-ec-buffer-p target)
+           (fboundp 'nelisp-ec-kill-buffer))
+      (nelisp-ec-kill-buffer target)
+      (when (and (null (current-buffer))
+                 (buffer-list))
+        (set-buffer (car (buffer-list))))
+      t)
+     (emacs-fileio--primitive-kill-buffer
+      (funcall emacs-fileio--primitive-kill-buffer target))
+     (t
+      (signal 'error '("kill-buffer is unavailable"))))))
+
+;;;###autoload
+(defun kill-buffer-and-window ()
+  "Kill the current buffer and delete its selected window when possible."
+  (interactive)
+  (let ((result (kill-buffer (current-buffer))))
+    (when (and (fboundp 'delete-window)
+               (condition-case nil
+                   (not (one-window-p))
+                 (error nil)))
+      (delete-window))
+    result))
+
+;;;###autoload
+(defun list-buffers (&optional files-only)
+  "Create and select a `*Buffer List*' buffer.
+FILES-ONLY limits rows to buffers visiting files."
+  (interactive "P")
+  (let ((current (current-buffer))
+        (out "Buffer\tFile\n"))
+    (dolist (buffer (buffer-list))
+      (when (emacs-fileio--buffer-live-p buffer)
+        (let ((file (or (emacs-fileio-buffer-file-name buffer) ""))
+              (name (or (emacs-fileio--buffer-name buffer) "")))
+          (when (or (not files-only) (not (equal file "")))
+            (setq out
+                  (concat out
+                          (if (eq buffer current) "* " "  ")
+                          name
+                          "\t"
+                          file
+                          "\n"))))))
+    (let ((buffer (emacs-fileio--get-buffer-create "*Buffer List*")))
+      (with-current-buffer buffer
+        (erase-buffer)
+        (insert out)
+        (set-buffer-modified-p nil))
+      (switch-to-buffer buffer)
+      buffer)))
 
 ;;;###autoload
 (defun find-file-noselect (filename &optional nowarn rawfile wildcards)
