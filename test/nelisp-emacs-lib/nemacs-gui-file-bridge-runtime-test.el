@@ -422,7 +422,7 @@
 (defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-poll-interval 0.001
   "Seconds between host-side persistent runner file polls.")
 
-(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-publish-delay 0.001
+(defvar nemacs-gui-file-bridge-runtime-test--persistent-runner-publish-delay 0.005
   "Seconds to let host-side transport writes settle before publishing a request.")
 
 (defun nemacs-gui-file-bridge-runtime-test--wait-for
