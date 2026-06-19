@@ -42,6 +42,7 @@
 (setq files--bridge-minibuffer-arg "")
 (setq files--bridge-snapshot "")
 (setq files--bridge-status "ok")
+(setq files--bridge-writeback-lane "normal")
 (setq files--eval-source "")
 (setq files--eval-pos 0)
 (setq files--eval-value 0)
@@ -137,6 +138,15 @@
 (setq files--number-file-value 0)
 (setq files--buffer-name "main")
 (setq files--target-buffer-name "")
+(setq files--fileio-core-delegating nil)
+(setq files--command-loop-maybe-start-delegating nil)
+(setq files--command-loop-minibuffer-handle-delegating nil)
+(setq files--special-buffer-name "")
+(setq files--special-buffer-text "")
+(setq files--message-line "")
+(setq files--warning-line "")
+(setq files--scratch-initial-message
+      ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with C-x C-f and enter text in its buffer.\n\n")
 (setq files--buffer-store-dir (progn (setq files--transport-name "nemacs-buffer-store") (files--transport-path)))
 (setq files--buffer-file-store-dir (progn (setq files--transport-name "nemacs-buffer-file-store") (files--transport-path)))
 (setq files--buffer-point-store-dir (progn (setq files--transport-name "nemacs-buffer-point-store") (files--transport-path)))
@@ -253,6 +263,7 @@
         (setq files--highlight-patterns-file (progn (setq files--transport-name "nemacs-highlight-patterns") (files--transport-path)))
         (setq files--face-spans-file (progn (setq files--transport-name "nemacs-face-spans") (files--transport-path)))
         (setq files--font-file (progn (setq files--transport-name "nemacs-font") (files--transport-path)))))
+
 (setq files--face-span-cap 2048)
 ;; M20 view slice: buffers beyond files--view-cap reach the GUI as a
 ;; window-start slice on the nemacs-view channel (nemacs-buf keeps the
@@ -317,6 +328,7 @@
 (setq files--modeline-override "")
 (setq files--dired-marks "")
 (setq files--dired-directory "")
+(setq files--dired-core-delegating nil)
 (setq files--magit-root "")
 (setq files--magit-last-status 0)
 (setq files--tramp-host "")
@@ -668,6 +680,29 @@
 	              "C-_\tundo\n"
 	              "C-M-_\tundo-redo\n"
                   "C-x `\tnext-error\n"
+                  "C-x v +\tvc-update\n"
+                  "C-x v G\tvc-ignore\n"
+                  "C-x v I\tvc-log-incoming\n"
+                  "C-x v L\tvc-print-root-log\n"
+                  "C-x v M D\tvc-diff-mergebase\n"
+                  "C-x v M L\tvc-log-mergebase\n"
+                  "C-x v O\tvc-log-outgoing\n"
+                  "C-x v P\tvc-push\n"
+                  "C-x v a\tvc-update-change-log\n"
+                  "C-x v b c\tvc-create-branch\n"
+                  "C-x v b l\tvc-print-branch-log\n"
+                  "C-x v b s\tvc-switch-branch\n"
+                  "C-x v d\tvc-dir\n"
+                  "C-x v g\tvc-annotate\n"
+                  "C-x v h\tvc-region-history\n"
+                  "C-x v i\tvc-register\n"
+                  "C-x v m\tvc-merge\n"
+                  "C-x v r\tvc-retrieve-tag\n"
+                  "C-x v s\tvc-create-tag\n"
+                  "C-x v u\tvc-revert\n"
+                  "C-x v v\tvc-next-action\n"
+                  "C-x v x\tvc-delete-file\n"
+                  "C-x v ~\tvc-revision-other-window\n"
                   "M-g n\tnext-error\n"
                   "M-g M-n\tnext-error\n"
                   "M-g p\tprevious-error\n"
@@ -2013,6 +2048,206 @@
               "main"
             name))))
 
+(fset 'files--special-buffer-p
+      (lambda ()
+        (if (equal files--special-buffer-name "*scratch*")
+            t
+          (if (equal files--special-buffer-name "*Messages*")
+              t
+            (equal files--special-buffer-name "*Warnings*")))))
+
+(fset 'files--special-buffer-default-text
+      (lambda ()
+        (if (equal files--special-buffer-name "*scratch*")
+            files--scratch-initial-message
+          "")))
+
+(fset 'files--special-buffer-read-only-p
+      (lambda ()
+        (if (equal files--special-buffer-name "*scratch*")
+            nil
+          t)))
+
+(fset 'files--ensure-special-buffer
+      (lambda ()
+        (if (files--special-buffer-p)
+            (let ((store-path (concat files--buffer-store-dir "/" files--special-buffer-name))
+                  (file-path (concat files--buffer-file-store-dir "/" files--special-buffer-name))
+                  (point-path (concat files--buffer-point-store-dir "/" files--special-buffer-name))
+                  (mark-path (concat files--buffer-mark-store-dir "/" files--special-buffer-name))
+                  (window-start-path (concat files--buffer-window-start-store-dir "/" files--special-buffer-name))
+                  (read-only-path (concat files--buffer-read-only-store-dir "/" files--special-buffer-name))
+                  (modified-path (concat files--buffer-modified-store-dir "/" files--special-buffer-name)))
+              (if (files--file-exists-p store-path)
+                  nil
+                (nl-write-file store-path (files--special-buffer-default-text)))
+              (if (files--file-exists-p file-path)
+                  nil
+                (nl-write-file file-path ""))
+              (if (files--file-exists-p point-path)
+                  nil
+                (nl-write-file point-path
+                               (if (equal files--special-buffer-name "*scratch*")
+                                   (number-to-string (length files--scratch-initial-message))
+                                 "0")))
+              (if (files--file-exists-p mark-path)
+                  nil
+                (nl-write-file mark-path "0"))
+              (if (files--file-exists-p window-start-path)
+                  nil
+                (nl-write-file window-start-path "0"))
+              (nl-write-file read-only-path
+                             (if (files--special-buffer-read-only-p) "1" "0"))
+              (if (files--file-exists-p modified-path)
+                  nil
+                (nl-write-file modified-path "0"))
+              (setq files--buffer-list-name files--special-buffer-name)
+              (files--buffer-list-add))
+          nil)))
+
+(fset 'files--ensure-standard-special-buffers
+      (lambda ()
+        (let ((old-name files--special-buffer-name)
+              (old-list-name files--buffer-list-name))
+          (setq files--special-buffer-name "*scratch*")
+          (files--ensure-special-buffer)
+          (setq files--special-buffer-name "*Messages*")
+          (files--ensure-special-buffer)
+          (setq files--special-buffer-name "*Warnings*")
+          (files--ensure-special-buffer)
+          (setq files--special-buffer-name old-name)
+          (setq files--buffer-list-name old-list-name))))
+
+(fset 'files--append-special-buffer
+      (lambda ()
+        (if (files--special-buffer-p)
+            (progn
+              (files--ensure-special-buffer)
+              (let* ((store-path (concat files--buffer-store-dir "/" files--special-buffer-name))
+                     (old-text (rdf store-path))
+                     (new-text (concat old-text files--special-buffer-text)))
+                (nl-write-file store-path new-text)
+                (nl-write-file (concat files--buffer-point-store-dir "/" files--special-buffer-name)
+                               (number-to-string (length new-text)))
+                (nl-write-file (concat files--buffer-modified-store-dir "/" files--special-buffer-name)
+                               "0")
+                (if (equal files--buffer-name files--special-buffer-name)
+                    (progn
+                      (setq files--buffer-string new-text)
+                      (setq files--point (length new-text))
+                      (setq files--mark files--point)
+                      (setq files--window-start 0)
+                      (setq files--buffer-modified-p nil)
+                      (setq files--buffer-read-only-p
+                            (files--special-buffer-read-only-p)))
+                  nil)))
+          nil)))
+
+(fset 'files--special-buffer-backend-ensure
+      (lambda (name)
+        (let ((old-name files--special-buffer-name))
+          (setq files--special-buffer-name name)
+          (files--ensure-special-buffer)
+          (setq files--special-buffer-name old-name)
+          name)))
+
+(fset 'files--special-buffer-backend-ensure-standard
+      (lambda ()
+        (files--ensure-standard-special-buffers)))
+
+(fset 'files--special-buffer-backend-append
+      (lambda (name text)
+        (let ((old-name files--special-buffer-name)
+              (old-text files--special-buffer-text))
+          (setq files--special-buffer-name name)
+          (setq files--special-buffer-text text)
+          (files--append-special-buffer)
+          (setq files--special-buffer-name old-name)
+          (setq files--special-buffer-text old-text)
+          text)))
+
+(fset 'files--special-buffer-backend-switch
+      (lambda (name)
+        (setq files--bridge-arg name)
+        (files--switch-to-buffer)))
+
+(fset 'files--special-buffer-install-backend
+      (lambda ()
+        (if (fboundp 'emacs-special-buffers-register-backend)
+            (emacs-special-buffers-register-backend
+             :ensure 'files--special-buffer-backend-ensure
+             :append 'files--special-buffer-backend-append
+             :switch 'files--special-buffer-backend-switch)
+          nil)))
+
+(if (fboundp 'emacs-special-buffers-register-backend)
+    (files--special-buffer-install-backend)
+  (progn
+    (fset 'emacs-special-buffers-ensure-buffer
+          (lambda (name)
+            (files--special-buffer-backend-ensure name)))
+
+    (fset 'emacs-special-buffers-ensure-standard-buffers
+          (lambda ()
+            (files--special-buffer-backend-ensure-standard)))
+
+    (fset 'emacs-special-buffers-append-to-buffer
+          (lambda (name text)
+            (files--special-buffer-backend-append name text)))
+
+    (fset 'emacs-special-buffers-switch-to-buffer
+          (lambda (name)
+            (files--special-buffer-backend-switch name)))
+
+    (fset 'emacs-special-buffers-message
+          (lambda (format-string &rest args)
+            (if format-string
+                (progn
+                  (setq files--message-line (apply 'format format-string args))
+                  (emacs-special-buffers-append-to-buffer
+                   "*Messages*"
+                   (concat files--message-line "\n"))
+                  files--message-line)
+              nil)))
+
+    (fset 'emacs-special-buffers-display-warning
+          (lambda (type message &optional level buffer-name)
+            (setq files--warning-line
+                  (concat "Warning [" (format "%s" type) "]: "
+                          (format "%s" message)))
+            (emacs-special-buffers-append-to-buffer
+             (if buffer-name buffer-name "*Warnings*")
+             (concat files--warning-line "\n"))
+            (emacs-special-buffers-append-to-buffer
+             "*Messages*"
+             (concat files--warning-line "\n"))
+            files--warning-line))
+
+    (fset 'emacs-special-buffers-lwarn
+          (lambda (type level message &rest args)
+            (emacs-special-buffers-display-warning
+             type (apply 'format message args) level)))
+
+    (fset 'emacs-special-buffers-warn
+          (lambda (message &rest args)
+            (apply 'emacs-special-buffers-lwarn 'emacs 'warning message args)))
+
+    (fset 'message
+          (lambda (format-string &rest args)
+            (apply 'emacs-special-buffers-message format-string args)))
+
+    (fset 'display-warning
+          (lambda (type message &optional level buffer-name)
+            (emacs-special-buffers-display-warning type message level buffer-name)))
+
+    (fset 'lwarn
+          (lambda (type level message &rest args)
+            (apply 'emacs-special-buffers-lwarn type level message args)))
+
+    (fset 'warn
+          (lambda (message &rest args)
+            (apply 'emacs-special-buffers-warn message args)))))
+
 (fset 'files--bookmark-key-from-name
       (lambda ()
         (let ((index 0)
@@ -2464,7 +2699,7 @@
         (files--write-undo-point)
         (files--write-undo-mark)
         (nl-write-file (progn (setq files--transport-name "nemacs-undo-ready") (files--transport-path)) "1")
-        nil))
+        t))
 
 (fset 'buffer-string
       (lambda ()
@@ -2920,39 +3155,282 @@
 
 (fset 'files--find-file-core
       (lambda ()
-        (if (files--tramp-ssh-path-p files--bridge-arg)
-            (let ((text (files--tramp-read-file files--bridge-arg)))
-              (if (= files--tramp-last-status 0)
-                  (progn
-                    (setq files--current-file-name files--bridge-arg)
-                    (setq files--buffer-string text)
-                    (files--clear-narrow-state)
-                    (setq files--point 0)
-                    (setq files--buffer-modified-p nil)
-                    (setq files--buffer-read-only-p nil)
-                    files--current-file-name)
-                (setq files--bridge-status "file-not-found")))
+        (if (if (fboundp 'emacs-fileio-gui-find-file-core)
+                (not files--fileio-core-delegating)
+              nil)
+            (let ((files--fileio-core-delegating t))
+              (files--fileio-sync-context)
+              (emacs-fileio-gui-find-file-core))
           (progn
-            (setq files--access-path files--bridge-arg)
-            (if (not (files--access-path-exists-p))
-                (setq files--bridge-status "file-not-found")
-              (if (not (files--access-path-readable-p))
-                  (setq files--bridge-status "permission-denied")
-	            (progn
-	              (setq files--current-file-name files--bridge-arg)
-	              (setq files--buffer-string (rdf files--bridge-arg))
-                  (files--clear-narrow-state)
-		              (setq files--point 0)
-		              (setq files--buffer-modified-p nil)
-		              (setq files--buffer-read-only-p nil)
-		              files--current-file-name)))))))
+            (if (files--tramp-ssh-path-p files--bridge-arg)
+                (let ((text (files--tramp-read-file files--bridge-arg)))
+                  (if (= files--tramp-last-status 0)
+                      (progn
+                        (setq files--current-file-name files--bridge-arg)
+                        (setq files--buffer-string text)
+                        (files--clear-narrow-state)
+                        (setq files--point 0)
+                        (setq files--buffer-modified-p nil)
+                        (setq files--buffer-read-only-p nil)
+                        files--current-file-name)
+                    (setq files--bridge-status "file-not-found")))
+              (progn
+                (setq files--access-path files--bridge-arg)
+                (if (not (files--access-path-exists-p))
+                    (setq files--bridge-status "file-not-found")
+                  (if (not (files--access-path-readable-p))
+                      (setq files--bridge-status "permission-denied")
+		                (progn
+		                  (setq files--current-file-name files--bridge-arg)
+		                  (setq files--buffer-string (rdf files--bridge-arg))
+                      (files--clear-narrow-state)
+		                  (setq files--point 0)
+		                  (setq files--buffer-modified-p nil)
+		                  (setq files--buffer-read-only-p nil)
+		                  files--current-file-name)))))))))
+
+(fset 'files--fileio-sync-context
+      (lambda ()
+        (if (fboundp 'files--fileio-install-backend)
+            (files--fileio-install-backend)
+          nil)
+        (if (fboundp 'emacs-fileio-gui-refresh-context-from-backend)
+            (emacs-fileio-gui-refresh-context-from-backend)
+          (if (fboundp 'emacs-fileio-gui-set-context)
+            (emacs-fileio-gui-set-context
+             :arg files--bridge-arg
+             :status files--bridge-status
+             :current-file-name files--current-file-name
+             :buffer-name files--buffer-name
+             :read-only-p files--buffer-read-only-p
+             :display-action files--display-prefix-action)
+            nil))))
+
+(fset 'files--fileio-backend-find-file-core
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--find-file-core)
+        files--current-file-name))
+
+(fset 'files--fileio-backend-current-file-name
+      (lambda ()
+        files--current-file-name))
+
+(fset 'files--fileio-backend-buffer-name
+      (lambda ()
+        files--buffer-name))
+
+(fset 'files--fileio-backend-buffer-list-source
+      (lambda ()
+        (rdf files--buffer-list-file)))
+
+(fset 'files--fileio-backend-buffer-file-name
+      (lambda (name)
+        (rdf (concat files--buffer-file-store-dir "/" name))))
+
+(fset 'files--fileio-backend-project-directory
+      (lambda ()
+        (files--project-command-directory)))
+
+(fset 'files--fileio-backend-file-exists-p
+      (lambda (path)
+        (files--file-exists-p path)))
+
+(fset 'files--fileio-backend-low-level-buffer-backend-p
+      (lambda ()
+        t))
+
+(fset 'files--fileio-backend-save-current-buffer-state
+      (lambda ()
+        (files--save-current-buffer-state)))
+
+(fset 'files--fileio-backend-load-buffer-state
+      (lambda (name)
+        (if (equal name "")
+            (setq name "main")
+          nil)
+        (setq files--buffer-name name)
+        (setq files--buffer-list-name files--buffer-name)
+        (setq files--special-buffer-name files--buffer-name)
+        (files--ensure-special-buffer)
+        (files--buffer-list-add)
+        (setq files--buffer-string
+              (rdf (concat files--buffer-store-dir "/" files--buffer-name)))
+        (setq files--current-file-name
+              (rdf (concat files--buffer-file-store-dir "/" files--buffer-name)))
+        (setq files--number-file-name
+              (concat files--buffer-point-store-dir "/" files--buffer-name))
+        (files--read-number-file)
+        (setq files--point files--number-file-value)
+        (setq files--number-file-name
+              (concat files--buffer-mark-store-dir "/" files--buffer-name))
+        (files--read-number-file)
+        (setq files--mark files--number-file-value)
+        (setq files--number-file-name
+              (concat files--buffer-window-start-store-dir "/" files--buffer-name))
+        (files--read-number-file)
+        (setq files--window-start files--number-file-value)
+        (setq files--buffer-read-only-p
+              (equal (rdf (concat files--buffer-read-only-store-dir "/" files--buffer-name))
+                     "1"))
+        (files--read-current-narrow-state)
+        (files--clamp-point)
+        (files--clamp-mark)
+        (if (> files--window-start (length files--buffer-string))
+            (setq files--window-start 0)
+          nil)
+        (setq files--buffer-modified-p
+              (equal (rdf (concat files--buffer-modified-store-dir "/" files--buffer-name))
+                     "1"))
+        files--buffer-name))
+
+(fset 'files--fileio-backend-clear-buffer-state
+      (lambda (name)
+        (setq files--target-buffer-name name)
+        (files--clear-target-buffer)))
+
+(fset 'files--fileio-backend-remove-buffer
+      (lambda (name)
+        (setq files--buffer-list-name name)
+        (files--buffer-list-remove)))
+
+(fset 'files--fileio-backend-add-buffer
+      (lambda (name)
+        (setq files--buffer-list-name name)
+        (files--buffer-list-add)))
+
+(fset 'files--fileio-backend-delete-window
+      (lambda ()
+        (delete-window)))
+
+(fset 'files--fileio-backend-show-buffer-list
+      (lambda (text)
+        (files--save-current-buffer-state)
+        (setq files--buffer-list-name "*Buffer List*")
+        (files--buffer-list-add)
+        (setq files--buffer-name "*Buffer List*")
+        (setq files--buffer-string text)
+        (setq files--current-file-name "")
+        (setq files--point 0)
+        (setq files--mark 0)
+        (setq files--window-start 0)
+        (setq files--buffer-modified-p nil)
+        (files--save-current-buffer-state)
+        files--buffer-name))
+
+(fset 'files--fileio-backend-set-current-file-name
+      (lambda (filename)
+        (setq files--current-file-name filename)
+        filename))
+
+(fset 'files--fileio-backend-set-buffer-name
+      (lambda (name)
+        (setq files--buffer-name name)
+        name))
+
+(fset 'files--fileio-backend-set-status
+      (lambda (status)
+        (setq files--bridge-status status)
+        status))
+
+(fset 'files--fileio-backend-set-read-only
+      (lambda (flag)
+        (setq files--buffer-read-only-p flag)
+        flag))
+
+(fset 'files--fileio-backend-apply-display-prefix
+      (lambda (action)
+        (let ((previous files--display-prefix-action))
+          (setq files--display-prefix-action
+                (if (equal previous "") action previous))
+          (if (if (equal action "other") t (equal action "frame"))
+              (files--apply-display-prefix-for-other-window-command)
+            (files--apply-display-prefix-for-same-window-command)))))
+
+(fset 'files--fileio-backend-write-buffer-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-buf")
+           (files--transport-path))
+         files--buffer-string)))
+
+(fset 'files--fileio-backend-write-file-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-file")
+           (files--transport-path))
+         (if files--current-file-name
+             files--current-file-name
+           ""))))
+
+(fset 'files--fileio-backend-write-buffer-name-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-buffer-name")
+           (files--transport-path))
+         files--buffer-name)))
+
+(fset 'files--fileio-backend-write-read-only-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-read-only")
+           (files--transport-path))
+         (if files--buffer-read-only-p "1" "0"))))
+
+(fset 'files--fileio-backend-write-modeline-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-modeline")
+           (files--transport-path))
+         files--modeline-string)))
+
+(fset 'files--fileio-backend-write-window-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-window-layout")
+           (files--transport-path))
+         files--window-layout)
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-window-selected")
+           (files--transport-path))
+         files--window-selected)))
+
+(fset 'files--fileio-backend-write-frame-state
+      (lambda ()
+        (files--write-transport-frame-state)))
+
+(fset 'files--fileio-backend-write-tab-state
+      (lambda ()
+        (files--write-transport-tab-state)))
+
+(fset 'files--fileio-backend-write-point-state
+      (lambda ()
+        (files--write-transport-point)))
+
+(fset 'files--fileio-backend-write-mark-state
+      (lambda ()
+        (files--write-transport-mark)))
+
+(fset 'files--fileio-backend-write-window-start-state
+      (lambda ()
+        (files--write-transport-window-start)))
+
+(fset 'files--fileio-backend-mark-written-state
+      (lambda ()
+        (setq files--bridge-status "written")))
 
 	(fset 'find-file
 	      (lambda ()
-	        (files--find-file-core)
-	        (if (equal files--bridge-status "ok")
-	            (files--apply-display-prefix-for-same-window-command)
-	          nil)
+          (if (fboundp 'emacs-fileio-gui-current-context-command)
+              (emacs-fileio-gui-current-context-command
+               'find-file "same" nil))
 	        files--current-file-name))
 
     (fset 'files--project-file-name
@@ -2969,70 +3447,58 @@
 
     (fset 'project-find-file
           (lambda ()
-            (let ((original files--bridge-arg)
-                  (target ""))
-              (setq target (files--project-file-name))
-              (setq files--bridge-arg target)
-              (find-file)
-              (setq files--bridge-arg original)
-              files--current-file-name)))
+            (if (fboundp 'emacs-fileio-gui-current-context-command)
+                (emacs-fileio-gui-current-context-command 'project-find-file))))
 
     (fset 'project-or-external-find-file
           (lambda ()
-            (let ((original files--bridge-arg)
-                  (target ""))
-              (setq target (files--project-file-name))
-              (setq files--access-path target)
-              (if (files--access-path-exists-p)
-                  (setq files--bridge-arg target)
-                (setq files--bridge-arg original))
-              (find-file)
-              (setq files--bridge-arg original)
-              files--current-file-name)))
+            (if (fboundp 'emacs-fileio-gui-current-context-command)
+                (emacs-fileio-gui-current-context-command
+                 'project-or-external-find-file))))
 
     (fset 'project-find-dir
           (lambda ()
-            (let ((original files--bridge-arg)
-                  (target ""))
-              (setq target (files--project-file-name))
-              (setq files--bridge-arg target)
-              (dired)
-              (setq files--bridge-arg original)
-              files--buffer-name)))
+            (if (fboundp 'emacs-dired-min-gui-current-context-command)
+                (emacs-dired-min-gui-current-context-command
+                 'project-find-dir "same"))))
 
     (fset 'project-dired
           (lambda ()
-            (let ((original files--bridge-arg)
-                  (target ""))
-              (if (equal files--bridge-arg "")
-                  (setq target (files--project-command-directory))
-                (setq target (files--project-file-name)))
-              (setq files--bridge-arg target)
-              (dired)
-              (setq files--bridge-arg original)
-              files--buffer-name)))
+            (if (fboundp 'emacs-dired-min-gui-current-context-command)
+                (emacs-dired-min-gui-current-context-command
+                 'project-dired "same"))))
 
     (fset 'project-switch-project
           (lambda ()
             (project-dired)))
 
-    (fset 'project-any-command
-          (lambda ()
-            (let ((requested files--bridge-arg)
-                  (command-arg files--bridge-minibuffer-arg))
-              (if (equal requested "")
-                  (setq requested "project-dired")
-                nil)
-              (setq files--bridge-effective-command requested)
-              (setq files--bridge-command (intern requested))
-              (setq files--bridge-arg command-arg)
-              (command-execute)
-              (setq files--bridge-command 'project-any-command))))
+	    (fset 'project-any-command
+	          (lambda ()
+	            (if (fboundp 'emacs-command-loop-gui-project-command)
+	                (emacs-command-loop-gui-project-command
+	                 files--bridge-arg files--bridge-minibuffer-arg
+	                 'project-any-command)
+	              (let ((requested files--bridge-arg)
+	                    (command-arg files--bridge-minibuffer-arg))
+	                (if (equal requested "")
+	                    (setq requested "project-dired")
+	                  nil)
+	                (setq files--bridge-effective-command requested)
+	                (setq files--bridge-command (intern requested))
+	                (setq files--bridge-arg command-arg)
+	                (command-execute)
+	                (setq files--bridge-command 'project-any-command)))))
 
-    (fset 'project-execute-extended-command
-          (lambda ()
-            (project-any-command)
-            (setq files--bridge-command 'project-execute-extended-command)))
+	    (fset 'project-execute-extended-command
+	          (lambda ()
+	            (if (fboundp 'emacs-command-loop-gui-project-command)
+	                (emacs-command-loop-gui-project-command
+	                 files--bridge-arg files--bridge-minibuffer-arg
+	                 'project-execute-extended-command)
+	              (progn
+	                (project-any-command)
+	                (setq files--bridge-command
+	                      'project-execute-extended-command)))))
 
     (fset 'project-other-window-command
           (lambda ()
@@ -3062,59 +3528,53 @@
 	      (lambda ()
 	        (find-file)))
 
-	(fset 'find-file-read-only
+		(fset 'find-file-read-only
 	      (lambda ()
-	        (find-file)
-	        (setq files--buffer-read-only-p t)
+          (if (fboundp 'emacs-fileio-gui-current-context-command)
+              (emacs-fileio-gui-current-context-command
+               'find-file-read-only "same"))
 	        files--current-file-name))
 
 			(fset 'find-file-other-window
 		      (lambda ()
-            (let ((action files--display-prefix-action))
-              (setq files--display-prefix-action "")
-		          (files--find-file-core)
-              (setq files--display-prefix-action action))
-		        (if (equal files--bridge-status "ok")
-		            (files--apply-display-prefix-for-other-window-command)
-			      nil)
+            (if (fboundp 'emacs-fileio-gui-current-context-command)
+                (emacs-fileio-gui-current-context-command
+                 'find-file "other" nil))
 		        files--current-file-name))
 
 				(fset 'find-file-read-only-other-window
 		      (lambda ()
-		        (find-file-other-window)
-		        (if (equal files--bridge-status "ok")
-		            (setq files--buffer-read-only-p t)
-		          nil)
+            (if (fboundp 'emacs-fileio-gui-current-context-command)
+                (emacs-fileio-gui-current-context-command
+                 'find-file-read-only "other"))
 		        files--current-file-name))
 
 (fset 'find-file-other-frame
       (lambda ()
-        (let ((action files--display-prefix-action))
-          (setq files--display-prefix-action "frame")
-          (find-file-other-window)
-          (setq files--display-prefix-action action))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command
+             'find-file "frame" nil))
         files--current-file-name))
 
 (fset 'find-file-read-only-other-frame
       (lambda ()
-        (find-file-other-frame)
-        (if (equal files--bridge-status "ok")
-            (setq files--buffer-read-only-p t)
-          nil)
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command
+             'find-file-read-only "frame"))
         files--current-file-name))
 
 (fset 'find-file-other-tab
       (lambda ()
-        (tab-new)
-        (find-file)
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command
+             'find-file "tab" nil))
         files--current-file-name))
 
 (fset 'find-file-read-only-other-tab
       (lambda ()
-        (find-file-other-tab)
-        (if (equal files--bridge-status "ok")
-            (setq files--buffer-read-only-p t)
-          nil)
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command
+             'find-file-read-only "tab"))
         files--current-file-name))
 
 	(fset 'toggle-read-only
@@ -3130,64 +3590,60 @@
 
 (fset 'find-alternate-file
       (lambda ()
-        (find-file)))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'find-alternate-file))))
 
 (fset 'insert-file
       (lambda ()
-        (files--clamp-point)
-        (let ((inserted (rdf files--bridge-arg)))
-          (setq files--buffer-string
-                (concat (substring files--buffer-string 0 files--point)
-                        inserted
-                        (substring files--buffer-string files--point)))
-          (setq files--point (+ files--point (length inserted)))
-          (files--clamp-mark)
-          (setq files--buffer-modified-p t)
-          files--bridge-arg)))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'insert-file))))
 
 (fset 'insert-buffer
       (lambda ()
-        (files--clamp-point)
-        (if (equal files--bridge-arg "")
-            (setq files--bridge-arg "main")
-          nil)
-        (let ((inserted (rdf (concat files--buffer-store-dir "/"
-                                     files--bridge-arg))))
-          (setq files--buffer-string
-                (concat (substring files--buffer-string 0 files--point)
-                        inserted
-                        (substring files--buffer-string files--point)))
-          (setq files--point (+ files--point (length inserted)))
-          (files--clamp-mark)
-          (setq files--buffer-modified-p t)
-          files--bridge-arg)))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'insert-buffer))))
+
+(fset 'files--save-buffer-core
+      (lambda ()
+        (if (if (fboundp 'emacs-fileio-gui-save-buffer-core)
+                (not files--fileio-core-delegating)
+              nil)
+            (let ((files--fileio-core-delegating t))
+              (files--fileio-sync-context)
+              (emacs-fileio-gui-save-buffer-core))
+          (if (if (not (equal (if files--current-file-name
+                                  files--current-file-name
+                                "")
+                              ""))
+                  (not files--buffer-read-only-p)
+                nil)
+              (progn
+                (files--sync-narrow-full-from-visible)
+                (if (if (files--tramp-ssh-path-p files--current-file-name)
+                        (files--tramp-write-file files--current-file-name
+                                                 (files--narrow-current-full-string))
+                      (nl-write-file files--current-file-name
+                                     (files--narrow-current-full-string)))
+                    (progn
+                      (setq files--buffer-modified-p nil)
+                      files--current-file-name)
+                  (setq files--bridge-status "permission-denied")))
+            (setq files--bridge-status "error")))))
+
+(fset 'files--fileio-backend-save-buffer
+      (lambda ()
+        (files--save-buffer-core)))
 
 (fset 'save-buffer
       (lambda ()
-        (if (if (not (equal (if files--current-file-name
-                                files--current-file-name
-                              "")
-                            ""))
-                (not files--buffer-read-only-p)
-              nil)
-            (progn
-              (files--sync-narrow-full-from-visible)
-              (if (if (files--tramp-ssh-path-p files--current-file-name)
-                      (files--tramp-write-file files--current-file-name
-                                               (files--narrow-current-full-string))
-                    (nl-write-file files--current-file-name
-                                   (files--narrow-current-full-string)))
-                (progn
-                  (setq files--buffer-modified-p nil)
-                  files--current-file-name)
-                (setq files--bridge-status "permission-denied")))
-          (setq files--bridge-status "error"))))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'save-buffer))))
 
 (fset 'basic-save-buffer
       (lambda ()
         (save-buffer)))
 
-(fset 'save-some-buffers
+(fset 'files--save-some-buffers-core
       (lambda ()
         (files--save-current-buffer-state)
         (let ((text (rdf files--buffer-list-file))
@@ -3224,7 +3680,16 @@
             (setq index (+ index 1))))
         t))
 
-(fset 'revert-buffer
+(fset 'files--fileio-backend-save-some-buffers
+      (lambda ()
+        (files--save-some-buffers-core)))
+
+(fset 'save-some-buffers
+      (lambda ()
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'save-some-buffers))))
+
+(fset 'files--revert-buffer-core
       (lambda ()
         (if files--current-file-name
             (progn
@@ -3240,11 +3705,16 @@
               files--current-file-name)
           nil)))
 
+(fset 'revert-buffer
+      (lambda ()
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'revert-buffer))))
+
 (fset 'revert-buffer-quick
       (lambda ()
         (revert-buffer)))
 
-(fset 'write-file
+(fset 'files--write-file-core
       (lambda ()
         (files--sync-narrow-full-from-visible)
         (if (nl-write-file files--bridge-arg (files--narrow-current-full-string))
@@ -3256,112 +3726,489 @@
               files--current-file-name)
           (setq files--bridge-status "permission-denied"))))
 
+(fset 'files--fileio-backend-write-file
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--write-file-core)))
+
+(fset 'files--insert-file-core
+      (lambda (arg)
+        (files--clamp-point)
+        (let ((inserted (rdf arg)))
+          (setq files--buffer-string
+                (concat (substring files--buffer-string 0 files--point)
+                        inserted
+                        (substring files--buffer-string files--point)))
+          (setq files--point (+ files--point (length inserted)))
+          (files--clamp-mark)
+          (setq files--buffer-modified-p t)
+          arg)))
+
+(fset 'files--fileio-backend-insert-file
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--insert-file-core arg)))
+
+(fset 'files--insert-buffer-core
+      (lambda (arg)
+        (files--clamp-point)
+        (if (equal arg "")
+            (setq arg "main")
+          nil)
+        (let ((inserted (rdf (concat files--buffer-store-dir "/" arg))))
+          (setq files--buffer-string
+                (concat (substring files--buffer-string 0 files--point)
+                        inserted
+                        (substring files--buffer-string files--point)))
+          (setq files--point (+ files--point (length inserted)))
+          (files--clamp-mark)
+          (setq files--buffer-modified-p t)
+          arg)))
+
+(fset 'files--fileio-backend-insert-buffer
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--insert-buffer-core arg)))
+
+(fset 'write-file
+      (lambda ()
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'write-file))))
+
 	(fset 'files--switch-to-buffer
 	      (lambda ()
-	        (if (equal files--buffer-name "")
-	            (setq files--buffer-name "main")
-          nil)
-        (if (equal files--bridge-arg "")
-            (setq files--bridge-arg "main")
-          nil)
-        (files--save-current-buffer-state)
-        (setq files--buffer-name files--bridge-arg)
-        (setq files--buffer-list-name files--buffer-name)
-        (files--buffer-list-add)
-        (setq files--buffer-string
-              (rdf (concat files--buffer-store-dir "/" files--buffer-name)))
-        (setq files--current-file-name
-              (rdf (concat files--buffer-file-store-dir "/" files--buffer-name)))
-        (setq files--number-file-name
-              (concat files--buffer-point-store-dir "/" files--buffer-name))
-        (files--read-number-file)
-        (setq files--point files--number-file-value)
-        (setq files--number-file-name
-              (concat files--buffer-mark-store-dir "/" files--buffer-name))
-        (files--read-number-file)
-        (setq files--mark files--number-file-value)
-        (setq files--number-file-name
-              (concat files--buffer-window-start-store-dir "/" files--buffer-name))
-        (files--read-number-file)
-        (setq files--window-start files--number-file-value)
-        (setq files--buffer-read-only-p
-              (equal (rdf (concat files--buffer-read-only-store-dir "/" files--buffer-name))
-                     "1"))
-        (files--read-current-narrow-state)
-        (files--clamp-point)
-        (files--clamp-mark)
-        (if (> files--window-start (length files--buffer-string))
-            (setq files--window-start 0)
-          nil)
-	        (setq files--buffer-modified-p
-	              (equal (rdf (concat files--buffer-modified-store-dir "/" files--buffer-name))
-	                     "1"))
-	        files--buffer-name))
+          (if (if (fboundp 'emacs-fileio-gui-switch-to-buffer-command)
+                  (not files--fileio-core-delegating)
+                nil)
+              (let ((files--fileio-core-delegating t))
+                (files--fileio-sync-context)
+                (emacs-fileio-gui-switch-to-buffer-command "same"))
+            (progn
+	            (if (equal files--buffer-name "")
+	                (setq files--buffer-name "main")
+              nil)
+            (if (equal files--bridge-arg "")
+                (setq files--bridge-arg "main")
+              nil)
+            (files--save-current-buffer-state)
+            (setq files--buffer-name files--bridge-arg)
+            (setq files--buffer-list-name files--buffer-name)
+            (setq files--special-buffer-name files--buffer-name)
+            (files--ensure-special-buffer)
+            (files--buffer-list-add)
+            (setq files--buffer-string
+                  (rdf (concat files--buffer-store-dir "/" files--buffer-name)))
+            (setq files--current-file-name
+                  (rdf (concat files--buffer-file-store-dir "/" files--buffer-name)))
+            (setq files--number-file-name
+                  (concat files--buffer-point-store-dir "/" files--buffer-name))
+            (files--read-number-file)
+            (setq files--point files--number-file-value)
+            (setq files--number-file-name
+                  (concat files--buffer-mark-store-dir "/" files--buffer-name))
+            (files--read-number-file)
+            (setq files--mark files--number-file-value)
+            (setq files--number-file-name
+                  (concat files--buffer-window-start-store-dir "/" files--buffer-name))
+            (files--read-number-file)
+            (setq files--window-start files--number-file-value)
+            (setq files--buffer-read-only-p
+                  (equal (rdf (concat files--buffer-read-only-store-dir "/" files--buffer-name))
+                         "1"))
+            (files--read-current-narrow-state)
+            (files--clamp-point)
+            (files--clamp-mark)
+            (if (> files--window-start (length files--buffer-string))
+                (setq files--window-start 0)
+              nil)
+	            (setq files--buffer-modified-p
+	                  (equal (rdf (concat files--buffer-modified-store-dir "/" files--buffer-name))
+	                         "1"))
+	            files--buffer-name))))
+
+(fset 'files--fileio-backend-switch-to-buffer
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--switch-to-buffer)))
+
+(fset 'files--fileio-backend-revert-buffer
+      (lambda ()
+        (files--revert-buffer-core)))
+
+(fset 'files--fileio-backend-rename-buffer
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--rename-buffer-core)))
+
+(fset 'files--fileio-backend-kill-buffer
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--kill-buffer-core)))
+
+(fset 'files--fileio-backend-kill-buffer-and-window
+      (lambda (arg)
+        (setq files--bridge-arg arg)
+        (files--kill-buffer-and-window-core)))
+
+(fset 'files--fileio-backend-list-buffers
+      (lambda ()
+        (files--list-buffers-core)))
+
+(fset 'files--fileio-backend-project-list-buffers
+      (lambda ()
+        (files--project-list-buffers-core)))
+
+(fset 'files--fileio-install-backend
+      (lambda ()
+        (if (fboundp 'emacs-fileio-gui-register-backend)
+            (emacs-fileio-gui-register-backend
+             :current-arg (lambda () files--bridge-arg)
+             :current-status (lambda () files--bridge-status)
+             :current-read-only-p (lambda () files--buffer-read-only-p)
+             :current-display-action
+             (lambda () files--display-prefix-action)
+             :find-file-core 'files--fileio-backend-find-file-core
+             :save-buffer 'files--fileio-backend-save-buffer
+             :save-some-buffers 'files--fileio-backend-save-some-buffers
+             :write-file 'files--fileio-backend-write-file
+             :insert-file 'files--fileio-backend-insert-file
+             :insert-buffer 'files--fileio-backend-insert-buffer
+             :switch-to-buffer 'files--fileio-backend-switch-to-buffer
+             :revert-buffer 'files--fileio-backend-revert-buffer
+             :rename-buffer 'files--fileio-backend-rename-buffer
+             :kill-buffer 'files--fileio-backend-kill-buffer
+             :kill-buffer-and-window
+             'files--fileio-backend-kill-buffer-and-window
+             :list-buffers 'files--fileio-backend-list-buffers
+             :project-list-buffers
+             'files--fileio-backend-project-list-buffers
+             :current-file-name 'files--fileio-backend-current-file-name
+             :buffer-name 'files--fileio-backend-buffer-name
+             :buffer-list-source
+             'files--fileio-backend-buffer-list-source
+             :buffer-file-name 'files--fileio-backend-buffer-file-name
+             :project-directory
+             'files--fileio-backend-project-directory
+             :file-exists-p 'files--fileio-backend-file-exists-p
+             :low-level-buffer-backend-p
+             'files--fileio-backend-low-level-buffer-backend-p
+             :save-current-buffer-state
+             'files--fileio-backend-save-current-buffer-state
+             :load-buffer-state 'files--fileio-backend-load-buffer-state
+             :clear-buffer-state
+             'files--fileio-backend-clear-buffer-state
+             :remove-buffer 'files--fileio-backend-remove-buffer
+             :add-buffer 'files--fileio-backend-add-buffer
+             :delete-window 'files--fileio-backend-delete-window
+             :show-buffer-list 'files--fileio-backend-show-buffer-list
+             :set-current-file-name
+             'files--fileio-backend-set-current-file-name
+             :set-buffer-name 'files--fileio-backend-set-buffer-name
+             :set-status 'files--fileio-backend-set-status
+             :set-read-only 'files--fileio-backend-set-read-only
+             :apply-display-prefix
+             'files--fileio-backend-apply-display-prefix
+             :write-buffer-state 'files--fileio-backend-write-buffer-state
+             :write-file-state 'files--fileio-backend-write-file-state
+             :write-buffer-name-state
+             'files--fileio-backend-write-buffer-name-state
+             :write-read-only-state
+             'files--fileio-backend-write-read-only-state
+             :write-window-state 'files--fileio-backend-write-window-state
+             :write-frame-state 'files--fileio-backend-write-frame-state
+             :write-tab-state 'files--fileio-backend-write-tab-state
+             :write-point-state 'files--fileio-backend-write-point-state
+             :write-mark-state 'files--fileio-backend-write-mark-state
+             :write-window-start-state
+             'files--fileio-backend-write-window-start-state
+             :mark-written-state 'files--fileio-backend-mark-written-state)
+          nil)))
+
+(files--fileio-install-backend)
+
+(if (not (fboundp 'emacs-fileio-gui-command-spec))
+    (fset 'emacs-fileio-gui-command-spec
+          (lambda (&optional command)
+            (let ((name (if (symbolp command)
+                            (symbol-name command)
+                          (if (stringp command) command ""))))
+              (if (equal name "find-file")
+                  '(:command find-file :action "same" :read-only nil)
+                (if (equal name "find-file-other-window")
+                    '(:command find-file :action "other" :read-only nil)
+                  (if (equal name "find-file-other-frame")
+                      '(:command find-file :action "frame" :read-only nil)
+                    (if (equal name "find-file-other-tab")
+                        '(:command find-file :action "tab" :read-only nil)
+                      (if (equal name "find-file-read-only")
+                          '(:command find-file :action "same" :read-only t)
+                        (if (equal name "find-file-read-only-other-window")
+                            '(:command find-file :action "other" :read-only t)
+                          (if (equal name "find-file-read-only-other-frame")
+                              '(:command find-file :action "frame" :read-only t)
+                            (if (equal name "find-file-read-only-other-tab")
+                                '(:command find-file :action "tab" :read-only t)
+                              (if (member name
+                                          '("find-alternate-file"
+                                            "project-find-file"
+                                            "project-or-external-find-file"
+                                            "save-some-buffers"
+                                            "write-file"
+                                            "insert-file"
+                                            "insert-buffer"
+                                            "rename-buffer"
+                                            "kill-buffer"
+                                            "kill-buffer-and-window"
+                                            "list-buffers"
+                                            "project-list-buffers"
+                                            "project-kill-buffers"))
+                                  (list :command (intern name)
+                                        :action nil
+                                        :read-only nil)
+                                (if (member name
+                                            '("save-buffer"
+                                              "basic-save-buffer"))
+                                    '(:command save-buffer
+                                      :action nil :read-only nil)
+                                  (if (member name
+                                              '("revert-buffer"
+                                                "revert-buffer-quick"))
+                                      '(:command revert-buffer
+                                        :action nil :read-only nil)
+                                    (if (member name
+                                                '("switch-to-buffer"
+                                                  "project-switch-to-buffer"))
+                                        '(:command switch-to-buffer
+                                          :action "same" :read-only nil)
+                                      (if (equal name
+                                                 "switch-to-buffer-other-window")
+                                          '(:command switch-to-buffer
+                                            :action "other" :read-only nil)
+                                        (if (equal name
+                                                   "switch-to-buffer-other-frame")
+                                            '(:command switch-to-buffer
+                                              :action "frame" :read-only nil)
+                                          (if (equal name
+                                                     "switch-to-buffer-other-tab")
+                                              '(:command switch-to-buffer
+                                                :action "tab" :read-only nil)
+                                            (if (equal name "display-buffer")
+                                                '(:command display-buffer
+                                                  :action "other"
+                                                  :read-only nil)
+                                              (if (equal name
+                                                         "display-buffer-other-frame")
+                                                  '(:command display-buffer
+                                                    :action "frame"
+                                                    :read-only nil)
+                                                nil))))))))))))))))))))
+  nil)
+
+(if (not (fboundp 'emacs-fileio-gui-writeback-spec))
+    (fset 'emacs-fileio-gui-writeback-spec
+          (lambda (&optional command status)
+            (let ((command (if (symbolp command)
+                               (symbol-name command)
+                             (if (stringp command) command "")))
+                  (status (if status status "ok")))
+              (if (member command
+                          '("find-file" "project-find-file"
+                            "project-or-external-find-file"
+                            "find-file-other-window"
+                            "find-file-read-only"
+                            "find-file-read-only-other-window"
+                            "find-alternate-file"))
+                  '(:buffer t :file t :read-only t :window t :point t)
+                (if (member command
+                            '("find-file-other-frame"
+                              "find-file-read-only-other-frame"))
+                    '(:buffer t :file t :read-only t
+                      :window t :frame t :point t)
+                  (if (member command
+                              '("find-file-other-tab"
+                                "find-file-read-only-other-tab"))
+                      '(:buffer t :file t :read-only t
+                        :window t :tab t :point t)
+                    (if (member command '("insert-file" "insert-buffer"))
+                        '(:buffer t :point t :mark t)
+                      (if (equal command "write-file")
+                          '(:file t :point t)
+                        (if (if (member command
+                                        '("save-buffer"
+                                          "basic-save-buffer"))
+                                (equal status "ok")
+                              nil)
+                            '(:file t :point t)
+                          (if (equal command "save-some-buffers")
+                              '(:file t :read-only t
+                                :point t :mark t :window-start t)
+                            (if (member command
+                                        '("revert-buffer"
+                                          "revert-buffer-quick"))
+                                '(:buffer t :file t :point t)
+                              (if (member command
+                                          '("switch-to-buffer"
+                                            "scratch-buffer"
+                                            "messages-buffer"
+                                            "warnings-buffer"
+                                            "project-switch-to-buffer"
+                                            "switch-to-buffer-other-window"
+                                            "display-buffer"
+                                            "rename-buffer"
+                                            "rename-uniquely"
+                                            "clone-buffer"
+                                            "clone-indirect-buffer-other-window"
+                                            "kill-buffer"
+                                            "kill-buffer-and-window"
+                                            "project-kill-buffers"
+                                            "list-buffers"
+                                            "project-list-buffers"))
+                                  '(:buffer t :file t :buffer-name t
+                                    :window t :point t :mark t
+                                    :window-start t)
+                                (if (member command
+                                            '("switch-to-buffer-other-frame"
+                                              "display-buffer-other-frame"))
+                                    '(:buffer t :file t :buffer-name t
+                                      :window t :frame t :point t
+                                      :mark t :window-start t)
+                                  (if (equal command
+                                             "switch-to-buffer-other-tab")
+                                      '(:buffer t :file t :buffer-name t
+                                        :window t :tab t :point t
+                                        :mark t :window-start t)
+                                    nil))))))))))))))
+  nil)
+
+(if (not (fboundp 'emacs-fileio-gui-writeback-spec-flag))
+    (fset 'emacs-fileio-gui-writeback-spec-flag
+          (lambda (spec key)
+            (if spec
+                (plist-get spec key)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-fileio-gui-writeback-state))
+    (fset 'emacs-fileio-gui-writeback-state
+          (lambda (&optional command status)
+            (let ((spec (emacs-fileio-gui-writeback-spec command status)))
+              (if spec
+                  (progn
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :buffer)
+                        (files--fileio-backend-write-buffer-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :file)
+                        (files--fileio-backend-write-file-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec
+                                                               :buffer-name)
+                        (files--fileio-backend-write-buffer-name-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :read-only)
+                        (files--fileio-backend-write-read-only-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :window)
+                        (files--fileio-backend-write-window-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :frame)
+                        (files--fileio-backend-write-frame-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :tab)
+                        (files--fileio-backend-write-tab-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :point)
+                        (files--fileio-backend-write-point-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec :mark)
+                        (files--fileio-backend-write-mark-state)
+                      nil)
+                    (if (emacs-fileio-gui-writeback-spec-flag spec
+                                                               :window-start)
+                        (files--fileio-backend-write-window-start-state)
+                      nil)
+                    (files--fileio-backend-mark-written-state)
+                    t)
+                nil))))
+  nil)
+
+(fset 'files--fileio-writeback-current-context
+      (lambda (command)
+        (files--fileio-install-backend)
+        (emacs-fileio-gui-writeback-state command files--bridge-status)))
 
     (fset 'files--project-buffer-list
           (lambda ()
-            (let ((directory (files--project-command-directory))
-                  (prefix "")
-                  (text (rdf files--buffer-list-file))
-                  (index 0)
-                  (start 0)
-                  (out ""))
-              (if (equal directory "/")
-                  (setq prefix "/")
-                (setq prefix (concat directory "/")))
-              (while (<= index (length text))
-                (if (if (= index (length text))
-                        t
-                      (= (aref text index) 10))
-                    (let* ((name (substring text start index))
-                           (file (rdf (concat files--buffer-file-store-dir "/" name))))
-                      (if (if (not (equal name ""))
-                              (if (not (equal file ""))
-                                  (files--string-prefix-p prefix file)
-                                nil)
-                            nil)
-                          (setq out (concat out name "\n"))
-                        nil)
-                      (setq start (+ index 1)))
-                  nil)
-                (setq index (+ index 1)))
-              out)))
+            (if (fboundp 'emacs-fileio-gui-project-buffer-candidates)
+                (emacs-fileio-gui-project-buffer-candidates)
+              (let ((directory (files--project-command-directory))
+                    (prefix "")
+                    (text (rdf files--buffer-list-file))
+                    (index 0)
+                    (start 0)
+                    (out ""))
+                (if (equal directory "/")
+                    (setq prefix "/")
+                  (setq prefix (concat directory "/")))
+                (while (<= index (length text))
+                  (if (if (= index (length text))
+                          t
+                        (= (aref text index) 10))
+                      (let* ((name (substring text start index))
+                             (file (rdf (concat files--buffer-file-store-dir "/" name))))
+                        (if (if (not (equal name ""))
+                                (if (not (equal file ""))
+                                    (files--string-prefix-p prefix file)
+                                  nil)
+                              nil)
+                            (setq out (concat out name "\n"))
+                          nil)
+                        (setq start (+ index 1)))
+                    nil)
+                  (setq index (+ index 1)))
+                out))))
 
-			(fset 'switch-to-buffer
-			      (lambda ()
-			        (files--switch-to-buffer)
-	            (files--apply-display-prefix-for-same-window-command)))
+				(fset 'switch-to-buffer
+				      (lambda ()
+              (if (fboundp 'emacs-fileio-gui-current-context-command)
+                  (emacs-fileio-gui-current-context-command
+                   'switch-to-buffer "same"))))
 
     (fset 'project-switch-to-buffer
           (lambda ()
-            (files--switch-to-buffer)
-            (files--apply-display-prefix-for-same-window-command)))
+            (if (fboundp 'emacs-fileio-gui-current-context-command)
+                (emacs-fileio-gui-current-context-command
+                 'switch-to-buffer "same"))))
 
-						(fset 'switch-to-buffer-other-window
-				      (lambda ()
-				        (files--apply-display-prefix-for-other-window-command)
-				        (files--switch-to-buffer)))
+							(fset 'switch-to-buffer-other-window
+					      (lambda ()
+                (if (fboundp 'emacs-fileio-gui-current-context-command)
+                    (emacs-fileio-gui-current-context-command
+                     'switch-to-buffer "other"))))
 
 (fset 'switch-to-buffer-other-frame
       (lambda ()
-        (let ((action files--display-prefix-action))
-          (setq files--display-prefix-action "frame")
-          (switch-to-buffer-other-window)
-          (setq files--display-prefix-action action))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command
+             'switch-to-buffer "frame"))
         files--buffer-name))
 
 (fset 'switch-to-buffer-other-tab
       (lambda ()
-        (tab-new)
-        (files--switch-to-buffer)))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command
+             'switch-to-buffer "tab"))))
 
-	        (fset 'display-buffer
-              (lambda ()
-                (switch-to-buffer-other-window)))
+		        (fset 'display-buffer
+	              (lambda ()
+	                (if (fboundp 'emacs-fileio-gui-current-context-command)
+	                    (emacs-fileio-gui-current-context-command
+	                     'display-buffer "other"))))
 
 (fset 'display-buffer-other-frame
       (lambda ()
-        (switch-to-buffer-other-frame)))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command
+             'display-buffer "frame"))))
 
 (fset 'files--register-path-from-arg
       (lambda ()
@@ -3729,7 +4576,7 @@
                       files--point)
                   nil)))))))
 
-(fset 'rename-buffer
+(fset 'files--rename-buffer-core
       (lambda ()
         (if (equal files--bridge-arg "")
             (read-from-minibuffer "Rename buffer: ")
@@ -3765,6 +4612,11 @@
                 (nl-write-file (concat files--buffer-read-only-store-dir "/" old-name)
                                "0")))
             files--buffer-name))))
+
+(fset 'rename-buffer
+      (lambda ()
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'rename-buffer))))
 
 (fset 'rename-uniquely
       (lambda ()
@@ -3913,159 +4765,138 @@
         (nl-write-file (concat files--buffer-read-only-store-dir "/" files--target-buffer-name)
                        "0")))
 
+(fset 'files--kill-buffer-core
+      (lambda ()
+        (if (if (fboundp 'emacs-fileio-gui-kill-buffer-command)
+                (not files--fileio-core-delegating)
+              nil)
+            (let ((files--fileio-core-delegating t))
+              (files--fileio-sync-context)
+              (emacs-fileio-gui-kill-buffer-command))
+          (progn
+            (if (equal files--bridge-arg "")
+                (setq files--target-buffer-name files--buffer-name)
+              (setq files--target-buffer-name files--bridge-arg))
+            (if (equal files--target-buffer-name "")
+                (setq files--target-buffer-name "main")
+              nil)
+            (setq files--buffer-list-name files--target-buffer-name)
+            (files--buffer-list-remove)
+            (if (equal files--target-buffer-name files--buffer-name)
+                (progn
+                  (files--clear-target-buffer)
+                  (if (equal files--target-buffer-name "main")
+                      (progn
+                        (setq files--buffer-name "main")
+                        (setq files--buffer-string "")
+                        (setq files--current-file-name "")
+                        (setq files--point 0)
+                        (setq files--mark 0)
+                        (setq files--window-start 0)
+                        (setq files--buffer-read-only-p nil))
+                    (progn
+                      (setq files--buffer-name "main")
+                      (setq files--buffer-string
+                            (rdf (concat files--buffer-store-dir "/" files--buffer-name)))
+                      (setq files--current-file-name
+                            (rdf (concat files--buffer-file-store-dir "/" files--buffer-name)))
+                      (setq files--number-file-name
+                            (concat files--buffer-point-store-dir "/" files--buffer-name))
+                      (files--read-number-file)
+                      (setq files--point files--number-file-value)
+                      (setq files--number-file-name
+                            (concat files--buffer-mark-store-dir "/" files--buffer-name))
+                      (files--read-number-file)
+                      (setq files--mark files--number-file-value)
+                      (setq files--number-file-name
+                            (concat files--buffer-window-start-store-dir "/" files--buffer-name))
+                      (files--read-number-file)
+                      (setq files--window-start files--number-file-value)
+                      (setq files--buffer-read-only-p
+                            (equal (rdf (concat files--buffer-read-only-store-dir "/" files--buffer-name))
+                                   "1"))
+                      (files--clamp-point)
+                      (files--clamp-mark))))
+              (files--clear-target-buffer))
+            (setq files--buffer-list-name files--buffer-name)
+            (files--buffer-list-add)
+            files--buffer-name))))
+
 (fset 'kill-buffer
       (lambda ()
-        (if (equal files--bridge-arg "")
-            (setq files--target-buffer-name files--buffer-name)
-          (setq files--target-buffer-name files--bridge-arg))
-        (if (equal files--target-buffer-name "")
-            (setq files--target-buffer-name "main")
-          nil)
-        (setq files--buffer-list-name files--target-buffer-name)
-        (files--buffer-list-remove)
-        (if (equal files--target-buffer-name files--buffer-name)
-            (progn
-              (files--clear-target-buffer)
-              (if (equal files--target-buffer-name "main")
-                  (progn
-                    (setq files--buffer-name "main")
-                    (setq files--buffer-string "")
-                    (setq files--current-file-name "")
-                    (setq files--point 0)
-                    (setq files--mark 0)
-                    (setq files--window-start 0)
-                    (setq files--buffer-read-only-p nil))
-                (progn
-                  (setq files--buffer-name "main")
-                  (setq files--buffer-string
-                        (rdf (concat files--buffer-store-dir "/" files--buffer-name)))
-                  (setq files--current-file-name
-                        (rdf (concat files--buffer-file-store-dir "/" files--buffer-name)))
-                  (setq files--number-file-name
-                        (concat files--buffer-point-store-dir "/" files--buffer-name))
-                  (files--read-number-file)
-                  (setq files--point files--number-file-value)
-                  (setq files--number-file-name
-                        (concat files--buffer-mark-store-dir "/" files--buffer-name))
-                  (files--read-number-file)
-                  (setq files--mark files--number-file-value)
-                  (setq files--number-file-name
-                        (concat files--buffer-window-start-store-dir "/" files--buffer-name))
-                  (files--read-number-file)
-                  (setq files--window-start files--number-file-value)
-                  (setq files--buffer-read-only-p
-                        (equal (rdf (concat files--buffer-read-only-store-dir "/" files--buffer-name))
-                               "1"))
-                  (files--clamp-point)
-                  (files--clamp-mark))))
-          (files--clear-target-buffer))
-        (setq files--buffer-list-name files--buffer-name)
-        (files--buffer-list-add)
-        files--buffer-name))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'kill-buffer))))
 
 (fset 'project-kill-buffers
       (lambda ()
-        (files--save-current-buffer-state)
-        (let ((targets (files--project-buffer-list))
-              (index 0)
-              (start 0)
-              (name "")
-              (fallback "main"))
-          (while (<= index (length targets))
-            (if (if (= index (length targets))
-                    t
-                  (= (aref targets index) 10))
-                (progn
-                  (setq name (substring targets start index))
-                  (if (not (equal name ""))
-                      (progn
-                        (setq files--target-buffer-name name)
-                        (setq files--buffer-list-name name)
-                        (files--buffer-list-remove)
-                        (files--clear-target-buffer))
-                    nil)
-                  (setq start (+ index 1)))
-              nil)
-            (setq index (+ index 1)))
-          (setq fallback (files--first-buffer-list-name))
-          (setq files--buffer-name fallback)
-          (setq files--buffer-list-name files--buffer-name)
-          (files--buffer-list-add)
-          (setq files--buffer-string
-                (rdf (concat files--buffer-store-dir "/" files--buffer-name)))
-          (setq files--current-file-name
-                (rdf (concat files--buffer-file-store-dir "/" files--buffer-name)))
-          (setq files--number-file-name
-                (concat files--buffer-point-store-dir "/" files--buffer-name))
-          (files--read-number-file)
-          (setq files--point files--number-file-value)
-          (setq files--number-file-name
-                (concat files--buffer-mark-store-dir "/" files--buffer-name))
-          (files--read-number-file)
-          (setq files--mark files--number-file-value)
-          (setq files--number-file-name
-                (concat files--buffer-window-start-store-dir "/" files--buffer-name))
-          (files--read-number-file)
-          (setq files--window-start files--number-file-value)
-          (setq files--buffer-read-only-p
-                (equal (rdf (concat files--buffer-read-only-store-dir "/" files--buffer-name))
-                       "1"))
-          (setq files--buffer-modified-p
-                (equal (rdf (concat files--buffer-modified-store-dir "/" files--buffer-name))
-                       "1"))
-          (files--read-current-narrow-state)
-          (files--clamp-point)
-          (files--clamp-mark)
-          files--buffer-name)))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'project-kill-buffers))))
 
-(fset 'kill-buffer-and-window
+(fset 'files--kill-buffer-and-window-core
       (lambda ()
-        (kill-buffer)
+        (files--kill-buffer-core)
         (delete-window)
         files--buffer-name))
 
+(fset 'kill-buffer-and-window
+      (lambda ()
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'kill-buffer-and-window))))
+
+(fset 'files--list-buffers-core
+      (lambda ()
+        (if (if (fboundp 'emacs-fileio-gui-list-buffers-command)
+                (not files--fileio-core-delegating)
+              nil)
+            (let ((files--fileio-core-delegating t))
+              (files--fileio-sync-context)
+              (emacs-fileio-gui-list-buffers-command))
+          (progn
+            (files--save-current-buffer-state)
+            (setq files--buffer-list-name "*Buffer List*")
+            (files--buffer-list-add)
+            (let ((current files--buffer-name)
+                  (text (rdf files--buffer-list-file))
+                  (index 0)
+                  (start 0)
+                  (out "Buffer\tFile\n"))
+              (if (equal text "")
+                  (setq text "main\n")
+                nil)
+              (while (<= index (length text))
+                (if (if (= index (length text))
+                        t
+                      (= (aref text index) 10))
+                    (let ((name (substring text start index)))
+                      (if (not (equal name ""))
+                          (let ((file (rdf (concat files--buffer-file-store-dir "/" name))))
+                            (setq out
+                                  (concat out
+                                          (if (equal name current) "* " "  ")
+                                          name
+                                          "\t"
+                                          file
+                                          "\n")))
+                        nil)
+                      (setq start (+ index 1)))
+                  nil)
+                (setq index (+ index 1)))
+              (setq files--buffer-name "*Buffer List*")
+              (setq files--buffer-string out)
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (files--save-current-buffer-state)
+              files--buffer-name)))))
+
 (fset 'list-buffers
       (lambda ()
-        (files--save-current-buffer-state)
-        (setq files--buffer-list-name "*Buffer List*")
-        (files--buffer-list-add)
-        (let ((current files--buffer-name)
-              (text (rdf files--buffer-list-file))
-              (index 0)
-              (start 0)
-              (out "Buffer\tFile\n"))
-          (if (equal text "")
-              (setq text "main\n")
-            nil)
-          (while (<= index (length text))
-            (if (if (= index (length text))
-                    t
-                  (= (aref text index) 10))
-                (let ((name (substring text start index)))
-                  (if (not (equal name ""))
-                      (let ((file (rdf (concat files--buffer-file-store-dir "/" name))))
-                        (setq out
-                              (concat out
-                                      (if (equal name current) "* " "  ")
-                                      name
-                                      "\t"
-                                      file
-                                      "\n")))
-                    nil)
-                  (setq start (+ index 1)))
-              nil)
-            (setq index (+ index 1)))
-          (setq files--buffer-name "*Buffer List*")
-          (setq files--buffer-string out)
-          (setq files--current-file-name "")
-          (setq files--point 0)
-          (setq files--mark 0)
-          (setq files--window-start 0)
-          (setq files--buffer-modified-p nil)
-          (files--save-current-buffer-state)
-          files--buffer-name)))
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'list-buffers))))
 
-(fset 'project-list-buffers
+(fset 'files--project-list-buffers-core
       (lambda ()
         (files--save-current-buffer-state)
         (let ((current files--buffer-name)
@@ -4115,155 +4946,612 @@
           (files--save-current-buffer-state)
           files--buffer-name)))
 
+(fset 'project-list-buffers
+      (lambda ()
+        (if (fboundp 'emacs-fileio-gui-current-context-command)
+            (emacs-fileio-gui-current-context-command 'project-list-buffers))))
+
 (fset 'list-directory
       (lambda ()
-        (let ((dir files--bridge-arg)
-              (entries nil)
-              (tail nil)
-              (name "")
-              (path "")
-              (out ""))
-          (if (equal dir "")
-              (setq dir ".")
-            nil)
-          (setq files--access-path dir)
-          (if (not (files--access-path-exists-p))
-              (setq files--bridge-status "file-not-found")
-            (if (not (if (files--access-path-readable-p)
-                         (files--access-path-executable-p)
-                       nil))
-                (setq files--bridge-status "permission-denied")
-              (progn
-                (if (fboundp 'directory-files)
-                    (setq entries (directory-files dir))
-                  (if (fboundp 'nelisp--syscall-readdir-names)
-                      (let ((names-text (nelisp--syscall-readdir-names dir))
-                            (scan 0)
-                            (line-start 0)
-                            (acc nil))
-                        (if names-text
-                            (progn
-                              (while (< scan (length names-text))
-                                (if (= (aref names-text scan) 10)
-                                    (progn
-                                      (setq acc (cons (substring names-text line-start scan) acc))
-                                      (setq line-start (+ scan 1)))
-                                  nil)
-                                (setq scan (+ scan 1)))
-                              (while acc
-                                (setq entries (cons (car acc) entries))
-                                (setq acc (cdr acc))))
-                          nil))
-                    (setq entries nil)))
-                (if (equal dir files--dired-directory)
-                    nil
+        (if (if (fboundp 'emacs-dired-min-gui-dired-command)
+                (not files--dired-core-delegating)
+              nil)
+            (let ((files--dired-core-delegating t))
+              (files--dired-sync-context)
+              (emacs-dired-min-gui-dired-command "same"))
+          (let ((dir files--bridge-arg)
+                (entries nil)
+                (tail nil)
+                (name "")
+                (path "")
+                (out ""))
+            (if (equal dir "")
+                (setq dir ".")
+              nil)
+            (setq files--access-path dir)
+            (if (not (files--access-path-exists-p))
+                (setq files--bridge-status "file-not-found")
+              (if (not (if (files--access-path-readable-p)
+                           (files--access-path-executable-p)
+                         nil))
+                  (setq files--bridge-status "permission-denied")
+                (progn
+                  (if (fboundp 'directory-files)
+                      (setq entries (directory-files dir))
+                    (if (fboundp 'nelisp--syscall-readdir-names)
+                        (let ((names-text (nelisp--syscall-readdir-names dir))
+                              (scan 0)
+                              (line-start 0)
+                              (acc nil))
+                          (if names-text
+                              (progn
+                                (while (< scan (length names-text))
+                                  (if (= (aref names-text scan) 10)
+                                      (progn
+                                        (setq acc (cons (substring names-text line-start scan) acc))
+                                        (setq line-start (+ scan 1)))
+                                    nil)
+                                  (setq scan (+ scan 1)))
+                                (while acc
+                                  (setq entries (cons (car acc) entries))
+                                  (setq acc (cdr acc))))
+                            nil))
+                      (setq entries nil)))
+                  (if (equal dir files--dired-directory)
+                      nil
+                    (progn
+                      (setq files--dired-directory dir)
+                      (setq files--dired-marks "")
+                      (files--write-dired-marks-state)))
+                  (let ((display-dir dir))
+                    (if (if (> (length display-dir) 1)
+                            (= (aref display-dir (- (length display-dir) 1)) 47)
+                          nil)
+                        (setq display-dir (substring display-dir 0 (- (length display-dir) 1)))
+                      nil)
+                    (setq out (concat "Directory " display-dir "\n")))
+                  (setq tail entries)
+                  (while tail
+                    (setq name (car tail))
+                    (if (if (not (equal name "."))
+                            (not (equal name ".."))
+                          nil)
+                        (progn
+                          (setq path
+                                (if (equal dir "/")
+                                    (concat "/" name)
+                                  (concat dir "/" name)))
+                          (setq out
+                                (concat out
+                                        (files--dired-mark-char-for name)
+                                        " "
+                                        name
+                                        (if (if (fboundp 'file-directory-p)
+                                                (file-directory-p path)
+                                              nil)
+                                            "/"
+                                          "")
+                                        "\n")))
+                      nil)
+                    (setq tail (cdr tail)))
+                  (files--save-current-buffer-state)
+                  (setq files--buffer-list-name "*Directory*")
+                  (files--buffer-list-add)
+                  (setq files--buffer-name "*Directory*")
+                  (setq files--buffer-string out)
+                  (setq files--current-file-name "")
+                  (setq files--point 0)
+                  (setq files--mark 0)
+	                  (setq files--window-start 0)
+	                  (setq files--buffer-modified-p nil)
+	                  (files--save-current-buffer-state)
+                    (files--apply-display-prefix-for-same-window-command))))
+	            files--buffer-name))))
+
+(fset 'files--dired-sync-context
+      (lambda ()
+        (if (fboundp 'files--dired-install-backend)
+            (files--dired-install-backend)
+          nil)
+        (if (fboundp 'emacs-dired-min-gui-refresh-context-from-backend)
+            (emacs-dired-min-gui-refresh-context-from-backend)
+          (if (fboundp 'emacs-dired-min-gui-set-context)
+              (emacs-dired-min-gui-set-context
+               :directory files--bridge-arg
+               :target files--bridge-target
+               :current-file-name files--current-file-name
+               :status files--bridge-status
+               :buffer-name files--buffer-name)
+            nil))))
+
+(fset 'files--dired-backend-list-directory
+      (lambda (directory)
+        (setq files--bridge-arg directory)
+        (list-directory)
+        files--buffer-name))
+
+(fset 'files--dired-backend-buffer-name
+      (lambda ()
+        files--buffer-name))
+
+(fset 'files--dired-backend-apply-display-prefix
+      (lambda (action)
+        (let ((previous files--display-prefix-action))
+          (setq files--display-prefix-action
+                (if (equal previous "") action previous))
+          (if (if (equal action "other") t (equal action "frame"))
+              (files--apply-display-prefix-for-other-window-command)
+            (files--apply-display-prefix-for-same-window-command)))))
+
+(if (not (fboundp 'emacs-dired-min-gui-writeback-spec))
+    (fset 'emacs-dired-min-gui-writeback-spec
+          (lambda (&optional command)
+            (let ((command (if (symbolp command)
+                               (symbol-name command)
+                             (if (stringp command) command "")))
+                  (result nil))
+              (if (member command
+                          '("list-directory" "dired" "dired-jump"
+                            "dired-jump-other-window" "dired-other-window"
+                            "project-find-dir" "project-dired"))
+                  (setq result
+                        '(:buffer t :file t :buffer-name t :window t
+                          :point t :mark t :window-start t))
+                nil)
+              (if (equal command "dired-other-frame")
+                  (setq result
+                        '(:buffer t :file t :buffer-name t :window t
+                          :frame t :point t :mark t :window-start t))
+                nil)
+              (if (equal command "dired-other-tab")
+                  (setq result
+                        '(:buffer t :file t :buffer-name t :window t
+                          :tab t :point t :mark t :window-start t))
+                nil)
+              (if (member command
+                          '("dired-mark" "dired-unmark"
+                            "dired-flag-file-deletion"
+                            "dired-do-rename" "dired-do-copy"))
+                  (setq result
+                        '(:buffer t :buffer-name t
+                          :point t :mark t :window-start t))
+                nil)
+              (if (equal command "dired-do-flagged-delete")
+                  (setq result
+                        '(:buffer t :buffer-name t :modeline t
+                          :point t :mark t :window-start t))
+                nil)
+              result)))
+  nil)
+
+(if (not (fboundp 'emacs-dired-min-gui-writeback-spec-flag))
+    (fset 'emacs-dired-min-gui-writeback-spec-flag
+          (lambda (spec key)
+            (if spec
+                (plist-get spec key)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-dired-min-gui-writeback-state))
+    (fset 'emacs-dired-min-gui-writeback-state
+          (lambda (&optional command)
+            (let ((spec (emacs-dired-min-gui-writeback-spec command)))
+              (if spec
                   (progn
-                    (setq files--dired-directory dir)
-                    (setq files--dired-marks "")
-                    (files--write-dired-marks-state)))
-                (setq out (concat "Directory " dir "\n"))
-                (setq tail entries)
-                (while tail
-                  (setq name (car tail))
-                  (if (if (not (equal name "."))
-                          (not (equal name ".."))
-                        nil)
-                      (progn
-                        (setq path
-                              (if (equal dir "/")
-                                  (concat "/" name)
-                                (concat dir "/" name)))
-                        (setq out
-                              (concat out
-                                      (files--dired-mark-char-for name)
-                                      " "
-                                      name
-                                      (if (if (fboundp 'file-directory-p)
-                                              (file-directory-p path)
-                                            nil)
-                                          "/"
-                                        "")
-                                      "\n")))
-                    nil)
-                  (setq tail (cdr tail)))
-                (files--save-current-buffer-state)
-                (setq files--buffer-list-name "*Directory*")
-                (files--buffer-list-add)
-                (setq files--buffer-name "*Directory*")
-                (setq files--buffer-string out)
-                (setq files--current-file-name "")
-                (setq files--point 0)
-                (setq files--mark 0)
-	                (setq files--window-start 0)
-	                (setq files--buffer-modified-p nil)
-	                (files--save-current-buffer-state)
-                  (files--apply-display-prefix-for-same-window-command))))
-	          files--buffer-name)))
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec :buffer)
+                        (files--fileio-backend-write-buffer-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec :file)
+                        (files--fileio-backend-write-file-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag
+                         spec :buffer-name)
+                        (files--fileio-backend-write-buffer-name-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec :window)
+                        (files--fileio-backend-write-window-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec :frame)
+                        (files--fileio-backend-write-frame-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec :tab)
+                        (files--fileio-backend-write-tab-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec
+                                                                  :modeline)
+                        (files--fileio-backend-write-modeline-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec :point)
+                        (files--fileio-backend-write-point-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag spec :mark)
+                        (files--fileio-backend-write-mark-state)
+                      nil)
+                    (if (emacs-dired-min-gui-writeback-spec-flag
+                         spec :window-start)
+                        (files--fileio-backend-write-window-start-state)
+                      nil)
+                    (files--fileio-backend-mark-written-state)
+                    t)
+                nil))))
+  nil)
+
+(fset 'files--dired-writeback-current-context
+      (lambda (command)
+        (files--dired-install-backend)
+        (emacs-dired-min-gui-writeback-state command)))
+
+(if (not (fboundp 'emacs-info-gui-writeback-spec))
+    (fset 'emacs-info-gui-writeback-spec
+          (lambda (&optional command)
+            (let ((command (if (symbolp command)
+                               (symbol-name command)
+                             (if (stringp command) command "")))
+                  (result nil))
+              (if (member command
+                          '("info" "info-other-window"
+                            "Info-next" "Info-prev" "Info-up"
+                            "info-emacs-manual" "info-display-manual"
+                            "view-order-manuals"
+                            "Info-goto-emacs-command-node"
+                            "Info-goto-emacs-key-command-node"
+                            "info-lookup-symbol"))
+                  (setq result
+                        '(:buffer t :file t :buffer-name t
+                          :read-only t :window t
+                          :point t :mark t :window-start t))
+                nil)
+              result)))
+  nil)
+
+(if (not (fboundp 'emacs-info-gui-writeback-spec-flag))
+    (fset 'emacs-info-gui-writeback-spec-flag
+          (lambda (spec key)
+            (if spec
+                (plist-get spec key)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-info-gui-writeback-state))
+    (fset 'emacs-info-gui-writeback-state
+          (lambda (&optional command)
+            (let ((spec (emacs-info-gui-writeback-spec command)))
+              (if spec
+                  (progn
+                    (if (emacs-info-gui-writeback-spec-flag spec :buffer)
+                        (files--fileio-backend-write-buffer-state)
+                      nil)
+                    (if (emacs-info-gui-writeback-spec-flag spec :file)
+                        (files--fileio-backend-write-file-state)
+                      nil)
+                    (if (emacs-info-gui-writeback-spec-flag spec
+                                                            :buffer-name)
+                        (files--fileio-backend-write-buffer-name-state)
+                      nil)
+                    (if (emacs-info-gui-writeback-spec-flag spec :read-only)
+                        (files--fileio-backend-write-read-only-state)
+                      nil)
+                    (if (emacs-info-gui-writeback-spec-flag spec :window)
+                        (files--fileio-backend-write-window-state)
+                      nil)
+                    (if (emacs-info-gui-writeback-spec-flag spec :point)
+                        (files--fileio-backend-write-point-state)
+                      nil)
+                    (if (emacs-info-gui-writeback-spec-flag spec :mark)
+                        (files--fileio-backend-write-mark-state)
+                      nil)
+                    (if (emacs-info-gui-writeback-spec-flag spec
+                                                            :window-start)
+                        (files--fileio-backend-write-window-start-state)
+                      nil)
+                    (files--fileio-backend-mark-written-state)
+                    t)
+                nil))))
+  nil)
+
+(fset 'files--info-writeback-current-context
+      (lambda (command)
+        (files--info-install-backend)
+        (emacs-info-gui-writeback-state command)))
+
+(if (not (fboundp 'emacs-help-gui-writeback-spec))
+    (fset 'emacs-help-gui-writeback-spec
+          (lambda (&optional command)
+            (let ((command (if (symbolp command)
+                               (symbol-name command)
+                             (if (stringp command) command "")))
+                  (result nil))
+              (if (member command
+                          '("describe-function" "describe-variable"
+                            "describe-key" "describe-key-briefly"
+                            "describe-bindings" "help-for-help"
+                            "where-is" "describe-command"
+                            "what-cursor-position"))
+                  (setq result
+                        '(:buffer t :file t :buffer-name t
+                          :read-only t
+                          :point t :mark t :window-start t))
+                nil)
+              (if (member command
+                          '("about-emacs" "describe-copying"
+                            "view-emacs-debugging"
+                            "view-external-packages"
+                            "view-emacs-FAQ" "view-emacs-news"
+                            "describe-distribution"
+                            "view-emacs-problems" "view-emacs-todo"
+                            "describe-no-warranty"
+                            "describe-gnu-project" "view-hello-file"
+                            "describe-coding-system"
+                            "describe-input-method"
+                            "describe-language-environment"
+                            "apropos-command" "apropos-documentation"
+                            "view-echo-area-messages" "view-lossage"
+                            "describe-mode" "describe-symbol"
+                            "help-quit" "describe-syntax"
+                            "help-with-tutorial" "display-local-help"
+                            "help-find-source" "help-quick-toggle"
+                            "search-forward-help-for-help"
+                            "xref-go-back" "xref-go-forward"
+                            "xref-find-definitions"
+                            "xref-find-references" "xref-find-apropos"
+                            "xref-find-definitions-other-window"
+                            "xref-find-definitions-other-frame"
+                            "repeat-complex-command"
+                            "describe-package" "finder-by-keyword"))
+                  (setq result
+                        '(:buffer t :file t :buffer-name t
+                          :read-only t :window t
+                          :point t :mark t :window-start t))
+                nil)
+              result)))
+  nil)
+
+(if (not (fboundp 'emacs-help-gui-writeback-spec-flag))
+    (fset 'emacs-help-gui-writeback-spec-flag
+          (lambda (spec key)
+            (if spec
+                (plist-get spec key)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-help-gui-writeback-state))
+    (fset 'emacs-help-gui-writeback-state
+          (lambda (&optional command)
+            (let ((spec (emacs-help-gui-writeback-spec command)))
+              (if spec
+                  (progn
+                    (if (emacs-help-gui-writeback-spec-flag spec :buffer)
+                        (files--fileio-backend-write-buffer-state)
+                      nil)
+                    (if (emacs-help-gui-writeback-spec-flag spec :file)
+                        (files--fileio-backend-write-file-state)
+                      nil)
+                    (if (emacs-help-gui-writeback-spec-flag spec
+                                                            :buffer-name)
+                        (files--fileio-backend-write-buffer-name-state)
+                      nil)
+                    (if (emacs-help-gui-writeback-spec-flag spec :read-only)
+                        (files--fileio-backend-write-read-only-state)
+                      nil)
+                    (if (emacs-help-gui-writeback-spec-flag spec :window)
+                        (files--fileio-backend-write-window-state)
+                      nil)
+                    (if (emacs-help-gui-writeback-spec-flag spec :point)
+                        (files--fileio-backend-write-point-state)
+                      nil)
+                    (if (emacs-help-gui-writeback-spec-flag spec :mark)
+                        (files--fileio-backend-write-mark-state)
+                      nil)
+                    (if (emacs-help-gui-writeback-spec-flag spec
+                                                            :window-start)
+                        (files--fileio-backend-write-window-start-state)
+                      nil)
+                    (files--fileio-backend-mark-written-state)
+                    t)
+                nil))))
+  nil)
+
+(fset 'files--help-writeback-current-context
+      (lambda (command)
+        (files--help-install-backend)
+        (emacs-help-gui-writeback-state command)))
+
+(fset 'files--dired-backend-directory-buffer-p
+      (lambda ()
+        (equal files--buffer-name "*Directory*")))
+
+(fset 'files--dired-backend-name-at-point
+      (lambda ()
+        (files--dired-name-at-point)))
+
+(fset 'files--dired-backend-marks-text
+      (lambda ()
+        files--dired-marks))
+
+(fset 'files--dired-backend-expand-name
+      (lambda (name)
+        (files--dired-expand name)))
+
+(fset 'files--dired-backend-directory-p
+      (lambda (path)
+        (files--dired-directory-p path)))
+
+(fset 'files--dired-backend-delete-file
+      (lambda (path)
+        (files--dired-delete-file path)))
+
+(fset 'files--dired-backend-rename-file
+      (lambda (source target)
+        (files--dired-rename-file source target)))
+
+(fset 'files--dired-backend-file-exists-p
+      (lambda (path)
+        (files--file-exists-p path)))
+
+(fset 'files--dired-backend-project-directory
+      (lambda ()
+        (files--project-command-directory)))
+
+(fset 'files--dired-backend-read-file
+      (lambda (path)
+        (files--read-file path)))
+
+(fset 'files--dired-backend-write-file
+      (lambda (path text)
+        (files--write-file path text)))
+
+(fset 'files--dired-backend-remove-mark
+      (lambda (name)
+        (files--dired-remove-mark name)))
+
+(fset 'files--dired-backend-set-mark
+      (lambda (name mark)
+        (files--dired-set-mark name mark)))
+
+(fset 'files--dired-backend-write-marks-state
+      (lambda ()
+        (files--write-dired-marks-state)))
+
+(fset 'files--dired-backend-rerender
+      (lambda ()
+        (files--dired-rerender)))
+
+(fset 'files--dired-backend-next-line
+      (lambda ()
+        (next-line)))
+
+(fset 'files--dired-backend-set-status
+      (lambda (status)
+        (setq files--bridge-status status)
+        status))
+
+(fset 'files--dired-backend-set-modeline
+      (lambda (text)
+        (setq files--modeline-string text)
+        (setq files--modeline-override files--modeline-string)
+        text))
+
+(fset 'files--dired-backend-mark
+      (lambda (mark)
+        (if (fboundp 'emacs-dired-min-gui-apply-mark-core)
+            (emacs-dired-min-gui-apply-mark-core mark)
+          (files--dired-apply-mark mark))))
+
+(fset 'files--dired-backend-flagged-delete
+      (lambda ()
+        (if (fboundp 'emacs-dired-min-gui-do-flagged-delete-core)
+            (emacs-dired-min-gui-do-flagged-delete-core)
+          (files--dired-do-flagged-delete-core))))
+
+(fset 'files--dired-backend-rename
+      (lambda (target)
+        (setq files--bridge-arg target)
+        (if (fboundp 'emacs-dired-min-gui-do-rename-core)
+            (emacs-dired-min-gui-do-rename-core target)
+          (files--dired-do-rename-core))))
+
+(fset 'files--dired-backend-copy
+      (lambda (target)
+        (setq files--bridge-arg target)
+        (if (fboundp 'emacs-dired-min-gui-do-copy-core)
+            (emacs-dired-min-gui-do-copy-core target)
+          (files--dired-do-copy-core))))
+
+(fset 'files--dired-install-backend
+      (lambda ()
+        (if (fboundp 'emacs-dired-min-gui-register-backend)
+            (emacs-dired-min-gui-register-backend
+             :list-directory 'files--dired-backend-list-directory
+             :current-directory (lambda () files--bridge-arg)
+             :current-target (lambda () files--bridge-target)
+             :current-file-name (lambda () files--current-file-name)
+             :current-status (lambda () files--bridge-status)
+             :buffer-name 'files--dired-backend-buffer-name
+             :apply-display-prefix 'files--dired-backend-apply-display-prefix
+             :directory-buffer-p 'files--dired-backend-directory-buffer-p
+             :name-at-point 'files--dired-backend-name-at-point
+             :marks-text 'files--dired-backend-marks-text
+             :expand-name 'files--dired-backend-expand-name
+             :directory-p 'files--dired-backend-directory-p
+             :delete-file 'files--dired-backend-delete-file
+             :rename-file 'files--dired-backend-rename-file
+             :file-exists-p 'files--dired-backend-file-exists-p
+             :project-directory 'files--dired-backend-project-directory
+             :read-file 'files--dired-backend-read-file
+             :write-file 'files--dired-backend-write-file
+             :remove-mark 'files--dired-backend-remove-mark
+             :set-mark 'files--dired-backend-set-mark
+             :write-marks-state 'files--dired-backend-write-marks-state
+             :rerender 'files--dired-backend-rerender
+             :next-line 'files--dired-backend-next-line
+             :set-status 'files--dired-backend-set-status
+             :set-modeline 'files--dired-backend-set-modeline
+             :mark 'files--dired-backend-mark
+             :flagged-delete 'files--dired-backend-flagged-delete
+             :rename 'files--dired-backend-rename
+             :copy 'files--dired-backend-copy
+             :write-buffer-state 'files--fileio-backend-write-buffer-state
+             :write-file-state 'files--fileio-backend-write-file-state
+             :write-buffer-name-state
+             'files--fileio-backend-write-buffer-name-state
+             :write-window-state 'files--fileio-backend-write-window-state
+             :write-frame-state 'files--fileio-backend-write-frame-state
+             :write-tab-state 'files--fileio-backend-write-tab-state
+             :write-modeline-state
+             'files--fileio-backend-write-modeline-state
+             :write-point-state 'files--fileio-backend-write-point-state
+             :write-mark-state 'files--fileio-backend-write-mark-state
+             :write-window-start-state
+             'files--fileio-backend-write-window-start-state
+             :mark-written-state 'files--fileio-backend-mark-written-state)
+          nil)))
+
+(files--dired-install-backend)
 
 (fset 'dired-jump
       (lambda ()
-        (let ((old-arg files--bridge-arg)
-              (target files--current-file-name)
-              (index 0)
-              (last-slash -1))
-          (if (equal target "")
-              (setq target files--bridge-target)
-            nil)
-          (if (equal target "")
-              (setq files--bridge-arg ".")
-            (progn
-              (while (< index (length target))
-                (if (= (aref target index) 47)
-                    (setq last-slash index)
-                  nil)
-                (setq index (+ index 1)))
-              (if (< last-slash 0)
-                  (setq files--bridge-arg ".")
-                (if (= last-slash 0)
-                    (setq files--bridge-arg "/")
-                  (setq files--bridge-arg (substring target 0 last-slash))))))
-          (list-directory)
-          (setq files--bridge-arg old-arg)
-          files--buffer-name)))
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (let ((files--dired-core-delegating t))
+              (emacs-dired-min-gui-current-context-command
+               'dired-jump "same")))))
 
 (fset 'dired
       (lambda ()
-        (list-directory)))
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (let ((files--dired-core-delegating t))
+              (emacs-dired-min-gui-current-context-command
+               'dired "same")))))
 
 (fset 'dired-jump-other-window
       (lambda ()
-        (let ((action files--display-prefix-action))
-          (setq files--display-prefix-action "")
-          (dired-jump)
-          (setq files--display-prefix-action action))
-        (if (equal files--bridge-status "ok")
-            (files--apply-display-prefix-for-other-window-command)
-          nil)
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (let ((files--dired-core-delegating t))
+              (emacs-dired-min-gui-current-context-command
+               'dired-jump "other")))
         files--buffer-name))
 
 	(fset 'dired-other-window
 	      (lambda ()
-	        (let ((action files--display-prefix-action))
-	          (setq files--display-prefix-action "")
-	          (list-directory)
-          (setq files--display-prefix-action action))
-        (if (equal files--bridge-status "ok")
-            (files--apply-display-prefix-for-other-window-command)
-	          nil)
+          (if (fboundp 'emacs-dired-min-gui-current-context-command)
+              (let ((files--dired-core-delegating t))
+                (emacs-dired-min-gui-current-context-command
+                 'dired "other")))
 	        files--buffer-name))
 
 (fset 'dired-other-frame
       (lambda ()
-        (let ((action files--display-prefix-action))
-          (setq files--display-prefix-action "frame")
-          (dired-other-window)
-          (setq files--display-prefix-action action))
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (let ((files--dired-core-delegating t))
+              (emacs-dired-min-gui-current-context-command
+               'dired "frame")))
         files--buffer-name))
 
     (fset 'dired-other-tab
           (lambda ()
-            (tab-new)
-            (list-directory)
+            (if (fboundp 'emacs-dired-min-gui-current-context-command)
+                (let ((files--dired-core-delegating t))
+                  (emacs-dired-min-gui-current-context-command
+                   'dired "tab")))
             files--buffer-name))
 
 (fset 'files--dired-marks-path
@@ -4460,17 +5748,21 @@
 
 (fset 'dired-mark
       (lambda ()
-        (files--dired-apply-mark "*")))
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (emacs-dired-min-gui-current-context-command 'dired-mark))))
 
 (fset 'dired-unmark
       (lambda ()
-        (files--dired-apply-mark " ")))
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (emacs-dired-min-gui-current-context-command 'dired-unmark))))
 
 (fset 'dired-flag-file-deletion
       (lambda ()
-        (files--dired-apply-mark "D")))
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (emacs-dired-min-gui-current-context-command
+             'dired-flag-file-deletion))))
 
-(fset 'dired-do-flagged-delete
+(fset 'files--dired-do-flagged-delete-core
       (lambda ()
         (if (equal files--buffer-name "*Directory*")
             (let ((text files--dired-marks)
@@ -4512,7 +5804,13 @@
           (setq files--bridge-status "unsupported"))
         files--buffer-name))
 
-(fset 'dired-do-rename
+(fset 'dired-do-flagged-delete
+      (lambda ()
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (emacs-dired-min-gui-current-context-command
+             'dired-do-flagged-delete))))
+
+(fset 'files--dired-do-rename-core
       (lambda ()
         (if (equal files--buffer-name "*Directory*")
             (let ((name (files--dired-name-at-point))
@@ -4534,7 +5832,12 @@
           (setq files--bridge-status "unsupported"))
         files--buffer-name))
 
-(fset 'dired-do-copy
+(fset 'dired-do-rename
+      (lambda ()
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (emacs-dired-min-gui-current-context-command 'dired-do-rename))))
+
+(fset 'files--dired-do-copy-core
       (lambda ()
         (if (equal files--buffer-name "*Directory*")
             (let ((name (files--dired-name-at-point))
@@ -4552,6 +5855,11 @@
                     (setq files--bridge-status "file-not-found")))))
           (setq files--bridge-status "unsupported"))
         files--buffer-name))
+
+(fset 'dired-do-copy
+      (lambda ()
+        (if (fboundp 'emacs-dired-min-gui-current-context-command)
+            (emacs-dired-min-gui-current-context-command 'dired-do-copy))))
 
 (fset 'files--org-line-start
       (lambda (pos)
@@ -6282,51 +7590,58 @@
 
 (fset 'files--info-render-node
       (lambda (target)
-        (let ((text (rdf files--info-file))
-              (i 0)
-              (n 0)
-              (hs 0)
-              (he 0)
-              (name "")
-              (node-start -1)
-              (node-end -1))
-          (setq n (length text))
-          (if (> n files--info-scan-cap)
-              (setq n files--info-scan-cap)
-            nil)
-          (while (< i n)
-            (if (= (aref text i) 31)
-                (if (>= node-start 0)
+        (if (fboundp 'emacs-info-gui-render-node)
+            (progn
+              (files--info-sync-context)
+              (let ((result (emacs-info-gui-render-node target)))
+                (setq files--info-file emacs-info-gui-file)
+                (setq files--info-node emacs-info-gui-node)
+                result))
+          (let ((text (rdf files--info-file))
+                (i 0)
+                (n 0)
+                (hs 0)
+                (he 0)
+                (name "")
+                (node-start -1)
+                (node-end -1))
+            (setq n (length text))
+            (if (> n files--info-scan-cap)
+                (setq n files--info-scan-cap)
+              nil)
+            (while (< i n)
+              (if (= (aref text i) 31)
+                  (if (>= node-start 0)
+                      (progn
+                        (setq node-end i)
+                        (setq i n))
                     (progn
-                      (setq node-end i)
-                      (setq i n))
-                  (progn
-                    (setq hs (+ i 1))
-                    (if (if (< hs n) (= (aref text hs) 10) nil)
-                        (setq hs (+ hs 1))
-                      nil)
-                    (setq he hs)
-                    (while (if (< he n) (if (= (aref text he) 10) nil t) nil)
-                      (setq he (+ he 1)))
-                    (setq name (files--info-header-field (substring text hs he) "Node: "))
-                    (if (if (equal target "") (> (length name) 0) (equal name target))
-                        (progn
-                          (setq node-start hs)
-                          (setq files--info-node name))
-                      nil)
-                    (setq i he)))
-              (setq i (+ i 1))))
-          (if (>= node-start 0)
-              (progn
-                (if (< node-end 0)
-                    (setq node-end n)
-                  nil)
-                (setq files--help-title (substring text node-start node-end))
-                (setq files--help-body
-                      (concat "[Info file: " files--info-file "]"))
-                (files--show-info-buffer)
-                t)
-            nil))))
+                      (setq hs (+ i 1))
+                      (if (if (< hs n) (= (aref text hs) 10) nil)
+                          (setq hs (+ hs 1))
+                        nil)
+                      (setq he hs)
+                      (while (if (< he n) (if (= (aref text he) 10) nil t) nil)
+                        (setq he (+ he 1)))
+                      (setq name (files--info-header-field (substring text hs he) "Node: "))
+                      (if (if (equal target "") (> (length name) 0) (equal name target))
+                          (progn
+                            (setq node-start hs)
+                            (setq files--info-node name))
+                        nil)
+                      (setq i he)))
+                (setq i (+ i 1))))
+            (if (>= node-start 0)
+                (progn
+                  (if (< node-end 0)
+                      (setq node-end n)
+                    nil)
+                  (setq files--help-title (substring text node-start node-end))
+                  (setq files--help-body
+                        (concat "[Info file: " files--info-file "]"))
+                  (files--show-info-buffer)
+                  t)
+              nil)))))
 
 (fset 'files--info-current-header
       (lambda ()
@@ -6338,29 +7653,160 @@
 
 (fset 'files--info-goto-pointer
       (lambda (field)
-        (if (if (equal files--buffer-name "*info*")
-                (not (equal files--info-file ""))
-              nil)
-            (let ((name (files--info-header-field (files--info-current-header) field)))
-              (if (equal name "")
-                  (setq files--bridge-status "unsupported")
-                (if (files--info-render-node name)
-                    (files--write-info-state)
-                  (setq files--bridge-status "unsupported"))))
-          (setq files--bridge-status "unsupported"))
+        (if (fboundp 'emacs-info-gui-goto-pointer)
+            (progn
+              (files--info-sync-context)
+              (let ((result (emacs-info-gui-goto-pointer field)))
+                (setq files--info-file emacs-info-gui-file)
+                (setq files--info-node emacs-info-gui-node)
+                (setq files--bridge-status emacs-info-gui-status)
+                result))
+          (if (if (equal files--buffer-name "*info*")
+                  (not (equal files--info-file ""))
+                nil)
+              (let ((name (files--info-header-field (files--info-current-header) field)))
+                (if (equal name "")
+                    (setq files--bridge-status "unsupported")
+                  (if (files--info-render-node name)
+                      (files--write-info-state)
+                    (setq files--bridge-status "unsupported"))))
+            (setq files--bridge-status "unsupported"))
+          files--buffer-name)))
+
+(fset 'files--info-sync-context
+      (lambda ()
+        (if (fboundp 'files--info-install-backend)
+            (files--info-install-backend)
+          nil)
+        (if (fboundp 'emacs-info-gui-refresh-context-from-backend)
+            (emacs-info-gui-refresh-context-from-backend)
+          (if (fboundp 'emacs-info-gui-set-context)
+              (emacs-info-gui-set-context
+               :arg files--bridge-arg
+               :status files--bridge-status
+               :buffer-name files--buffer-name
+               :file files--info-file
+               :node files--info-node)
+            nil))))
+
+(fset 'files--info-backend-read-file
+      (lambda (path)
+        (rdf path)))
+
+(fset 'files--info-backend-file-exists-p
+      (lambda (path)
+        (files--file-exists-p path)))
+
+(fset 'files--info-backend-show-info-buffer
+      (lambda (title body)
+        (setq files--help-title title)
+        (setq files--help-body body)
+        (files--show-info-buffer)))
+
+(fset 'files--info-backend-buffer-name
+      (lambda ()
+        files--buffer-name))
+
+(fset 'files--info-backend-current-header
+      (lambda ()
+        (files--info-current-header)))
+
+(fset 'files--info-backend-write-state
+      (lambda (file node)
+        (setq files--info-file file)
+        (setq files--info-node node)
+        (files--write-info-state)))
+
+(fset 'files--info-backend-set-status
+      (lambda (status)
+        (setq files--bridge-status status)
+        status))
+
+(fset 'files--info-backend-apply-display-prefix
+      (lambda (action)
+        (let ((previous files--display-prefix-action))
+          (setq files--display-prefix-action
+                (if (equal previous "") action previous))
+          (if (if (equal action "other") t (equal action "frame"))
+              (files--apply-display-prefix-for-other-window-command)
+            (files--apply-display-prefix-for-same-window-command)))))
+
+(fset 'files--info-install-backend
+      (lambda ()
+        (if (fboundp 'emacs-info-gui-register-backend)
+            (emacs-info-gui-register-backend
+             :read-file 'files--info-backend-read-file
+             :current-arg (lambda () files--bridge-arg)
+             :current-status (lambda () files--bridge-status)
+             :current-file (lambda () files--info-file)
+             :current-node (lambda () files--info-node)
+             :file-exists-p 'files--info-backend-file-exists-p
+             :show-info-buffer 'files--info-backend-show-info-buffer
+             :buffer-name 'files--info-backend-buffer-name
+             :current-header 'files--info-backend-current-header
+             :write-state 'files--info-backend-write-state
+             :set-status 'files--info-backend-set-status
+             :apply-display-prefix 'files--info-backend-apply-display-prefix
+             :write-buffer-state 'files--fileio-backend-write-buffer-state
+             :write-file-state 'files--fileio-backend-write-file-state
+             :write-buffer-name-state
+             'files--fileio-backend-write-buffer-name-state
+             :write-read-only-state
+             'files--fileio-backend-write-read-only-state
+             :write-window-state 'files--fileio-backend-write-window-state
+             :write-point-state 'files--fileio-backend-write-point-state
+             :write-mark-state 'files--fileio-backend-write-mark-state
+             :write-window-start-state
+             'files--fileio-backend-write-window-start-state
+             :mark-written-state 'files--fileio-backend-mark-written-state)
+          nil)))
+
+(files--info-install-backend)
+
+(fset 'files--info-run-core
+      (lambda (action)
+        (files--info-sync-context)
+        (emacs-info-gui-info-core)
+        (setq files--info-file emacs-info-gui-file)
+        (setq files--info-node emacs-info-gui-node)
+        (setq files--bridge-status emacs-info-gui-status)
+        (if (equal emacs-info-gui-buffer-name "")
+            nil
+          (setq files--buffer-name emacs-info-gui-buffer-name))
+        (if (equal files--bridge-status "ok")
+            (files--info-backend-apply-display-prefix action)
+          nil)
         files--buffer-name))
 
 (fset 'Info-next
       (lambda ()
-        (files--info-goto-pointer "Next: ")))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'Info-next)
+          (if (fboundp 'emacs-info-gui-next-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-next-command))
+            (files--info-goto-pointer "Next: ")))))
 
 (fset 'Info-prev
       (lambda ()
-        (files--info-goto-pointer "Prev: ")))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'Info-prev)
+          (if (fboundp 'emacs-info-gui-prev-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-prev-command))
+            (files--info-goto-pointer "Prev: ")))))
 
 (fset 'Info-up
       (lambda ()
-        (files--info-goto-pointer "Up: ")))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'Info-up)
+          (if (fboundp 'emacs-info-gui-up-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-up-command))
+            (files--info-goto-pointer "Up: ")))))
 
 ;; Customize-lite: read/set/save a known defcustom-style variable.
 ;; Values persist as NAME\tVALUE rows in the nemacs-custom-store
@@ -6729,6 +8175,102 @@
       (lambda ()
         (setq files--bridge-status "unsupported")
         files--buffer-name))
+
+(fset 'files--vc-unsupported-command
+      (lambda ()
+        (setq files--bridge-status "unsupported")
+        (setq files--modeline-override
+              (concat "Unsupported VC command: "
+                      files--bridge-effective-command))
+        files--buffer-name))
+
+(fset 'vc-dir
+      (lambda ()
+        (project-vc-dir)))
+
+(fset 'vc-diff-mergebase
+      (lambda ()
+        (vc-diff)))
+
+(fset 'vc-log-incoming
+      (lambda ()
+        (vc-print-log)))
+
+(fset 'vc-log-mergebase
+      (lambda ()
+        (vc-print-log)))
+
+(fset 'vc-log-outgoing
+      (lambda ()
+        (vc-print-log)))
+
+(fset 'vc-print-root-log
+      (lambda ()
+        (vc-print-log)))
+
+(fset 'vc-print-branch-log
+      (lambda ()
+        (vc-print-log)))
+
+(fset 'vc-region-history
+      (lambda ()
+        (vc-print-log)))
+
+(fset 'vc-revision-other-window
+      (lambda ()
+        (vc-print-log)))
+
+(fset 'vc-update
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-ignore
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-push
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-update-change-log
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-create-branch
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-switch-branch
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-annotate
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-register
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-merge
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-retrieve-tag
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-create-tag
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-revert
+      (lambda ()
+        (files--vc-unsupported-command)))
+
+(fset 'vc-delete-file
+      (lambda ()
+        (files--vc-unsupported-command)))
 
 (fset 'ispell-word
       (lambda ()
@@ -7152,7 +8694,7 @@
           (setq files--xref-match-count matches)
           body)))
 
-(fset 'files--show-static-help
+(fset 'files--show-static-help-core
       (lambda ()
         (files--save-current-buffer-state)
         (setq files--buffer-list-name "*Help*")
@@ -7172,6 +8714,127 @@
 		        (files--save-current-buffer-state)
         (files--apply-display-prefix-for-same-window-command)
 		        files--buffer-name))
+
+(fset 'files--show-static-help
+      (lambda ()
+        (if (fboundp 'emacs-help-gui-show-help-buffer)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-show-help-buffer
+               files--help-title files--help-body))
+          (files--show-static-help-core))))
+
+(fset 'files--help-backend-show-help-buffer
+      (lambda (title body)
+        (setq files--help-title title)
+        (setq files--help-body body)
+        (files--show-static-help-core)))
+
+(fset 'files--help-backend-current-arg
+      (lambda ()
+        files--bridge-arg))
+
+(fset 'files--help-backend-current-file-name
+      (lambda ()
+        files--current-file-name))
+
+(fset 'files--help-backend-buffer-name
+      (lambda ()
+        files--buffer-name))
+
+(fset 'files--help-backend-buffer-read-only-p
+      (lambda ()
+        files--buffer-read-only-p))
+
+(fset 'files--help-backend-window-layout
+      (lambda ()
+        files--window-layout))
+
+(fset 'files--help-backend-keymap-source
+      (lambda ()
+        files--keymap-source))
+
+(fset 'files--help-backend-user-keymap-source
+      (lambda ()
+        (rdf (files--user-keymap-path))))
+
+(fset 'files--help-backend-minibuffer-keymap-source
+      (lambda ()
+        files--minibuffer-keymap-source))
+
+(fset 'files--help-backend-current-status
+      (lambda ()
+        files--bridge-status))
+
+(fset 'files--help-backend-lookup-key-command
+      (lambda (source key)
+        (let ((old-source files--lookup-key-source)
+              (old-target files--lookup-key-target)
+              (result ""))
+          (setq files--lookup-key-source source)
+          (setq files--lookup-key-target key)
+          (setq result (files--lookup-key-command-in-source))
+          (setq files--lookup-key-source old-source)
+          (setq files--lookup-key-target old-target)
+          result)))
+
+(fset 'files--help-sync-context
+      (lambda ()
+        (if (fboundp 'files--help-install-backend)
+            (files--help-install-backend)
+          nil)
+        (if (fboundp 'emacs-help-gui-refresh-context-from-backend)
+            (emacs-help-gui-refresh-context-from-backend)
+          (if (fboundp 'emacs-help-gui-set-context)
+              (emacs-help-gui-set-context
+               :arg files--bridge-arg
+               :current-file-name files--current-file-name
+               :buffer-name files--buffer-name
+               :buffer-read-only-p files--buffer-read-only-p
+               :window-layout files--window-layout
+               :keymap-source files--keymap-source
+               :user-keymap-source (rdf (files--user-keymap-path))
+               :minibuffer-keymap-source files--minibuffer-keymap-source
+               :status files--bridge-status)
+            nil))))
+
+(fset 'files--help-install-backend
+      (lambda ()
+        (if (fboundp 'emacs-help-gui-register-backend)
+            (emacs-help-gui-register-backend
+             :current-arg 'files--help-backend-current-arg
+             :current-file-name 'files--help-backend-current-file-name
+             :buffer-name 'files--help-backend-buffer-name
+             :buffer-read-only-p 'files--help-backend-buffer-read-only-p
+             :window-layout 'files--help-backend-window-layout
+             :keymap-source 'files--help-backend-keymap-source
+             :user-keymap-source 'files--help-backend-user-keymap-source
+             :minibuffer-keymap-source
+             'files--help-backend-minibuffer-keymap-source
+             :current-status 'files--help-backend-current-status
+             :lookup-key-command 'files--help-backend-lookup-key-command
+             :show-help-buffer 'files--help-backend-show-help-buffer
+             :write-buffer-state 'files--fileio-backend-write-buffer-state
+             :write-file-state 'files--fileio-backend-write-file-state
+             :write-buffer-name-state
+             'files--fileio-backend-write-buffer-name-state
+             :write-read-only-state
+             'files--fileio-backend-write-read-only-state
+             :write-window-state 'files--fileio-backend-write-window-state
+             :write-point-state 'files--fileio-backend-write-point-state
+             :write-mark-state 'files--fileio-backend-write-mark-state
+             :write-window-start-state
+             'files--fileio-backend-write-window-start-state
+             :mark-written-state 'files--fileio-backend-mark-written-state)
+          nil)))
+
+(files--help-install-backend)
+
+(fset 'files--help-run-core
+      (lambda (core)
+        (files--help-sync-context)
+        (let ((entry (funcall core)))
+          (files--help-backend-show-help-buffer (car entry) (cdr entry)))))
 
 (fset 'call-process
       (lambda (&rest args)
@@ -7352,6 +9015,14 @@
 
     (fset 'files--project-interactive-shell-buffer
           (lambda (name kind prompt)
+            (if (fboundp 'emacs-shell-command-gui-project-interactive-shell-buffer)
+                (emacs-shell-command-gui-project-interactive-shell-buffer
+                 name kind prompt)
+              (files--project-interactive-shell-buffer-core
+               name kind prompt))))
+
+    (fset 'files--project-interactive-shell-buffer-core
+          (lambda (name kind prompt)
             (let ((directory (files--project-command-directory)))
               (files--save-current-buffer-state)
               (setq files--buffer-list-name name)
@@ -7385,7 +9056,128 @@
             (files--project-interactive-shell-buffer
              "*eshell*" "Eshell" "eshell> ")))
 
-	(fset 'shell-command
+    (fset 'files--shell-command-backend-arg
+          (lambda ()
+            files--bridge-arg))
+
+    (fset 'files--shell-command-backend-set-arg
+          (lambda (arg)
+            (setq files--bridge-arg arg)))
+
+    (fset 'files--shell-command-backend-set-status
+          (lambda (status)
+            (setq files--bridge-status status)))
+
+    (fset 'files--shell-command-backend-transport-path
+          (lambda (name)
+            (progn
+              (setq files--transport-name name)
+              (files--transport-path))))
+
+    (fset 'files--shell-command-backend-write-file
+          (lambda (path text)
+            (nl-write-file path text)))
+
+    (fset 'files--shell-command-backend-read-file
+          (lambda (path)
+            (rdf path)))
+
+    (fset 'files--shell-command-backend-save-current-buffer-state
+          (lambda ()
+            (files--save-current-buffer-state)))
+
+    (fset 'files--shell-command-backend-select-buffer
+          (lambda (name read-only)
+            (setq files--buffer-list-name name)
+            (files--buffer-list-add)
+            (setq files--buffer-name name)
+            (setq files--current-file-name "")
+            (setq files--point 0)
+            (setq files--mark 0)
+            (setq files--window-start 0)
+            (setq files--buffer-modified-p nil)
+            (setq files--buffer-read-only-p read-only)
+            (setq files--buffer-string "")))
+
+    (fset 'files--shell-command-backend-buffer-string
+          (lambda ()
+            files--buffer-string))
+
+    (fset 'files--shell-command-backend-set-buffer-string
+          (lambda (text)
+            (setq files--buffer-string text)))
+
+    (fset 'files--shell-command-backend-set-compilation-buffer-string
+          (lambda (text)
+            (setq files--compilation-buffer-string text)))
+
+    (fset 'files--shell-command-backend-show-compilation-buffer
+          (lambda ()
+            (files--show-compilation-buffer)))
+
+    (fset 'files--shell-command-backend-project-command-directory
+          (lambda ()
+            (files--project-command-directory)))
+
+    (fset 'files--shell-command-backend-set-point
+          (lambda (point)
+            (setq files--point point)
+            (setq files--mark point)
+            (setq files--window-start 0)))
+
+    (fset 'files--shell-command-backend-apply-display-prefix-same-window
+          (lambda ()
+            (files--apply-display-prefix-for-same-window-command)))
+
+    (fset 'files--shell-command-backend-async-native-available-p
+          (lambda ()
+            (files--async-shell-native-available-p)))
+
+    (fset 'files--shell-command-backend-async-start-native
+          (lambda (command)
+            (setq files--bridge-arg command)
+            (files--async-shell-start-native)))
+
+    (fset 'files--shell-command-backend-call-process
+          (lambda (&rest args)
+            (apply 'call-process args)))
+
+    (fset 'files--shell-command-install-backend
+          (lambda ()
+            (if (fboundp 'emacs-shell-command-gui-register-backend)
+                (emacs-shell-command-gui-register-backend
+                 :arg 'files--shell-command-backend-arg
+                 :set-arg 'files--shell-command-backend-set-arg
+                 :set-status 'files--shell-command-backend-set-status
+                 :transport-path 'files--shell-command-backend-transport-path
+                 :write-file 'files--shell-command-backend-write-file
+                 :read-file 'files--shell-command-backend-read-file
+                 :save-current-buffer-state
+                 'files--shell-command-backend-save-current-buffer-state
+                 :select-buffer 'files--shell-command-backend-select-buffer
+                 :buffer-string 'files--shell-command-backend-buffer-string
+                 :set-buffer-string
+                 'files--shell-command-backend-set-buffer-string
+                 :set-compilation-buffer-string
+                 'files--shell-command-backend-set-compilation-buffer-string
+                 :show-compilation-buffer
+                 'files--shell-command-backend-show-compilation-buffer
+                 :project-command-directory
+                 'files--shell-command-backend-project-command-directory
+                 :set-point 'files--shell-command-backend-set-point
+                 :apply-display-prefix-same-window
+                 'files--shell-command-backend-apply-display-prefix-same-window
+                 :async-native-available-p
+                 'files--shell-command-backend-async-native-available-p
+                 :async-start-native
+                 'files--shell-command-backend-async-start-native
+                 :call-process
+                 'files--shell-command-backend-call-process)
+              nil)))
+
+    (files--shell-command-install-backend)
+
+	(fset 'shell-command-core
 	      (lambda ()
 	        (let ((command files--bridge-arg)
               (output-file (progn (setq files--transport-name "nemacs-shell-command-output") (files--transport-path)))
@@ -7421,7 +9213,13 @@
 	          (files--save-current-buffer-state)
 	          status)))
 
-    (fset 'project-shell-command
+	(fset 'shell-command
+	      (lambda ()
+	        (if (fboundp 'emacs-shell-command-gui-shell-command)
+	            (emacs-shell-command-gui-shell-command)
+	          (shell-command-core))))
+
+    (fset 'project-shell-command-core
           (lambda ()
             (let ((original files--bridge-arg)
                   (directory (files--project-command-directory))
@@ -7437,7 +9235,13 @@
               (setq files--bridge-arg original)
               status)))
 
-    (fset 'project-compile
+    (fset 'project-shell-command
+          (lambda ()
+            (if (fboundp 'emacs-shell-command-gui-project-shell-command)
+                (emacs-shell-command-gui-project-shell-command)
+              (project-shell-command-core))))
+
+    (fset 'project-compile-core
           (lambda ()
             (let ((command files--bridge-arg)
                   (directory (files--project-command-directory))
@@ -7475,6 +9279,12 @@
                 (setq files--bridge-status "ok"))
               (files--show-compilation-buffer)
               status)))
+
+    (fset 'project-compile
+          (lambda ()
+            (if (fboundp 'emacs-shell-command-gui-project-compile)
+                (emacs-shell-command-gui-project-compile)
+              (project-compile-core))))
 
     (fset 'project-find-regexp
           (lambda ()
@@ -7885,7 +9695,7 @@
           (files--save-current-buffer-state)
           status)))
 
-(fset 'async-shell-command
+(fset 'async-shell-command-core
       (lambda ()
         (let ((command files--bridge-arg)
               (output-file (progn (setq files--transport-name "nemacs-async-shell-command-output") (files--transport-path)))
@@ -7923,7 +9733,13 @@
 	              (files--save-current-buffer-state)
 	              status)))))
 
-    (fset 'project-async-shell-command
+(fset 'async-shell-command
+      (lambda ()
+        (if (fboundp 'emacs-shell-command-gui-async-shell-command)
+            (emacs-shell-command-gui-async-shell-command)
+          (async-shell-command-core))))
+
+    (fset 'project-async-shell-command-core
           (lambda ()
             (let ((original files--bridge-arg)
                   (directory (files--project-command-directory))
@@ -7938,6 +9754,12 @@
               (files--save-current-buffer-state)
               (setq files--bridge-arg original)
               status)))
+
+    (fset 'project-async-shell-command
+          (lambda ()
+            (if (fboundp 'emacs-shell-command-gui-project-async-shell-command)
+                (emacs-shell-command-gui-project-async-shell-command)
+              (project-async-shell-command-core))))
 
 	(fset 'files--show-info-buffer
 	      (lambda ()
@@ -8016,208 +9838,362 @@
 
 (fset 'about-emacs
       (lambda ()
-        (setq files--help-title "About GNU Emacs")
-        (setq files--help-body
-              "GNU Emacs is the extensible, customizable, self-documenting editor.  This nemacs bridge runtime provides an Emacs-compatible help buffer for the native GUI replacement path.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'about-emacs))
+          (progn
+            (setq files--help-title "About GNU Emacs")
+            (setq files--help-body
+                  "GNU Emacs is the extensible, customizable, self-documenting editor.  This nemacs bridge runtime provides an Emacs-compatible help buffer for the native GUI replacement path.")
+            (files--show-static-help)))))
 
 (fset 'describe-copying
       (lambda ()
-        (setq files--help-title "GNU Emacs Copying Conditions")
-        (setq files--help-body
-              "GNU Emacs is free software.  You may redistribute and/or modify it under the terms of the GNU General Public License.  This bridge help text is a compact compatibility summary.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-copying))
+          (progn
+            (setq files--help-title "GNU Emacs Copying Conditions")
+            (setq files--help-body
+                  "GNU Emacs is free software.  You may redistribute and/or modify it under the terms of the GNU General Public License.  This bridge help text is a compact compatibility summary.")
+            (files--show-static-help)))))
 
 (fset 'view-emacs-debugging
       (lambda ()
-        (setq files--help-title "GNU Emacs Debugging")
-        (setq files--help-body
-              "Emacs provides debugging tools such as backtraces, debuggers, and bug reporting support.  The nemacs GUI bridge keeps command semantics in nelisp-emacs so failures can be isolated there.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-emacs-debugging))
+          (progn
+            (setq files--help-title "GNU Emacs Debugging")
+            (setq files--help-body
+                  "Emacs provides debugging tools such as backtraces, debuggers, and bug reporting support.  The nemacs GUI bridge keeps command semantics in nelisp-emacs so failures can be isolated there.")
+            (files--show-static-help)))))
 
 (fset 'view-external-packages
       (lambda ()
-        (setq files--help-title "External Packages")
-        (setq files--help-body
-              "External packages extend Emacs.  Package management UI is not yet implemented in this GUI bridge runtime; this command records the expected Help buffer behavior.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-external-packages))
+          (progn
+            (setq files--help-title "External Packages")
+            (setq files--help-body
+                  "External packages extend Emacs.  Package management UI is not yet implemented in this GUI bridge runtime; this command records the expected Help buffer behavior.")
+            (files--show-static-help)))))
 
 (fset 'view-emacs-FAQ
       (lambda ()
-        (setq files--help-title "GNU Emacs FAQ")
-        (setq files--help-body
-              "The GNU Emacs FAQ answers common questions about using and configuring Emacs.  Full Info/manual navigation is a future nelisp-emacs feature.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-emacs-FAQ))
+          (progn
+            (setq files--help-title "GNU Emacs FAQ")
+            (setq files--help-body
+                  "The GNU Emacs FAQ answers common questions about using and configuring Emacs.  Full Info/manual navigation is a future nelisp-emacs feature.")
+            (files--show-static-help)))))
 
 (fset 'view-emacs-news
       (lambda ()
-        (setq files--help-title "GNU Emacs News")
-        (setq files--help-body
-              "Emacs news normally lists recent user-visible changes.  This runtime exposes the Help command path while detailed release notes are not yet loaded.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-emacs-news))
+          (progn
+            (setq files--help-title "GNU Emacs News")
+            (setq files--help-body
+                  "Emacs news normally lists recent user-visible changes.  This runtime exposes the Help command path while detailed release notes are not yet loaded.")
+            (files--show-static-help)))))
 
 (fset 'describe-distribution
       (lambda ()
-        (setq files--help-title "GNU Emacs Distribution")
-        (setq files--help-body
-              "GNU Emacs is distributed by the GNU Project.  The nemacs replacement path keeps distribution/help command semantics in nelisp-emacs.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-distribution))
+          (progn
+            (setq files--help-title "GNU Emacs Distribution")
+            (setq files--help-body
+                  "GNU Emacs is distributed by the GNU Project.  The nemacs replacement path keeps distribution/help command semantics in nelisp-emacs.")
+            (files--show-static-help)))))
 
 (fset 'view-emacs-problems
       (lambda ()
-        (setq files--help-title "GNU Emacs Known Problems")
-        (setq files--help-body
-              "Known problems are normally documented with the Emacs distribution.  This bridge command opens a read-only Help buffer as the compatibility surface.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-emacs-problems))
+          (progn
+            (setq files--help-title "GNU Emacs Known Problems")
+            (setq files--help-body
+                  "Known problems are normally documented with the Emacs distribution.  This bridge command opens a read-only Help buffer as the compatibility surface.")
+            (files--show-static-help)))))
 
 (fset 'view-emacs-todo
       (lambda ()
-        (setq files--help-title "GNU Emacs TODO")
-        (setq files--help-body
-              "The Emacs TODO file tracks planned work.  Full distribution file viewing is not yet implemented in this GUI bridge runtime.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-emacs-todo))
+          (progn
+            (setq files--help-title "GNU Emacs TODO")
+            (setq files--help-body
+                  "The Emacs TODO file tracks planned work.  Full distribution file viewing is not yet implemented in this GUI bridge runtime.")
+            (files--show-static-help)))))
 
 (fset 'describe-no-warranty
       (lambda ()
-        (setq files--help-title "GNU Emacs No Warranty")
-        (setq files--help-body
-              "GNU Emacs is distributed in the hope that it will be useful, but without warranty.  See the GNU General Public License for the complete terms.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-no-warranty))
+          (progn
+            (setq files--help-title "GNU Emacs No Warranty")
+            (setq files--help-body
+                  "GNU Emacs is distributed in the hope that it will be useful, but without warranty.  See the GNU General Public License for the complete terms.")
+            (files--show-static-help)))))
 
 (fset 'describe-gnu-project
       (lambda ()
-        (setq files--help-title "About the GNU Project")
-        (setq files--help-body
-              "The GNU Project develops the GNU operating system and free software, including GNU Emacs.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-gnu-project))
+          (progn
+            (setq files--help-title "About the GNU Project")
+            (setq files--help-body
+                  "The GNU Project develops the GNU operating system and free software, including GNU Emacs.")
+            (files--show-static-help)))))
 
 (fset 'view-hello-file
       (lambda ()
-        (setq files--help-title "Hello")
-        (setq files--help-body
-              "Hello from GNU Emacs.  Multilingual hello text is not yet bundled in this bridge runtime.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-hello-file))
+          (progn
+            (setq files--help-title "Hello")
+            (setq files--help-body
+                  "Hello from GNU Emacs.  Multilingual hello text is not yet bundled in this bridge runtime.")
+            (files--show-static-help)))))
 
 (fset 'describe-coding-system
       (lambda ()
-        (setq files--help-title "Coding System")
-        (setq files--help-body
-              "Coding system inspection is not yet connected to the full Emacs coding database.  This bridge command records the Help buffer behavior in nelisp-emacs.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-coding-system))
+          (progn
+            (setq files--help-title "Coding System")
+            (setq files--help-body
+                  "Coding system inspection is not yet connected to the full Emacs coding database.  This bridge command records the Help buffer behavior in nelisp-emacs.")
+            (files--show-static-help)))))
 
 (fset 'describe-input-method
       (lambda ()
-        (setq files--help-title "Input Method")
-        (setq files--help-body
-              "Input method descriptions are not yet backed by the full Emacs input method registry.  GUI input decoding remains in nelisp-gui; input method semantics belong in nelisp-emacs.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-input-method))
+          (progn
+            (setq files--help-title "Input Method")
+            (setq files--help-body
+                  "Input method descriptions are not yet backed by the full Emacs input method registry.  GUI input decoding remains in nelisp-gui; input method semantics belong in nelisp-emacs.")
+            (files--show-static-help)))))
 
 (fset 'describe-language-environment
       (lambda ()
-        (setq files--help-title "Language Environment")
-        (setq files--help-body
-              "Language environment details are not yet loaded from Emacs data files.  This command provides the expected read-only Help buffer surface.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-language-environment))
+          (progn
+            (setq files--help-title "Language Environment")
+            (setq files--help-body
+                  "Language environment details are not yet loaded from Emacs data files.  This command provides the expected read-only Help buffer surface.")
+            (files--show-static-help)))))
 
 (fset 'apropos-command
       (lambda ()
-        (setq files--help-title "Apropos Commands")
-        (setq files--help-body
-              (concat "Apropos command search is not yet backed by the full command index.\nPattern: "
-                      files--bridge-arg))
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'apropos-command)
+          (if (fboundp 'emacs-help-gui-apropos-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-apropos-command))
+            (progn
+              (setq files--help-title "Apropos Commands")
+              (setq files--help-body
+                    (concat "Apropos command search is not yet backed by the full command index.\nPattern: "
+                            files--bridge-arg))
+              (files--show-static-help))))))
 
 (fset 'apropos-documentation
       (lambda ()
-        (setq files--help-title "Apropos Documentation")
-        (setq files--help-body
-              (concat "Apropos documentation search is not yet backed by the full documentation index.\nPattern: "
-                      files--bridge-arg))
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'apropos-documentation)
+          (if (fboundp 'emacs-help-gui-apropos-documentation)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-apropos-documentation))
+            (progn
+              (setq files--help-title "Apropos Documentation")
+              (setq files--help-body
+                    (concat "Apropos documentation search is not yet backed by the full documentation index.\nPattern: "
+                            files--bridge-arg))
+              (files--show-static-help))))))
 
 (fset 'view-echo-area-messages
       (lambda ()
-        (setq files--help-title "Echo Area Messages")
-        (setq files--help-body
-              "Echo area message history is not yet persisted by the GUI bridge runtime.")
-        (files--show-static-help)))
+        (emacs-special-buffers-switch-to-buffer "*Messages*")))
+
+(fset 'scratch-buffer
+      (lambda ()
+        (emacs-special-buffers-switch-to-buffer "*scratch*")))
+
+(fset 'messages-buffer
+      (lambda ()
+        (emacs-special-buffers-switch-to-buffer "*Messages*")))
+
+(fset 'warnings-buffer
+      (lambda ()
+        (emacs-special-buffers-switch-to-buffer "*Warnings*")))
+
+(fset 'get-scratch-buffer-create
+      (lambda ()
+        (emacs-special-buffers-ensure-buffer "*scratch*")
+        "*scratch*"))
 
 (fset 'view-lossage
       (lambda ()
-        (setq files--help-title "Recent Keys")
-        (setq files--help-body
-              "Recent key lossage is not yet persisted by the GUI bridge runtime.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'view-lossage))
+          (progn
+            (setq files--help-title "Recent Keys")
+            (setq files--help-body
+                  "Recent key lossage is not yet persisted by the GUI bridge runtime.")
+            (files--show-static-help)))))
 
 (fset 'describe-mode
       (lambda ()
-        (setq files--help-title "Mode Help")
-        (setq files--help-body
-              (concat "Major mode: Fundamental\nBuffer: "
-                      files--buffer-name
-                      "\nThe current GUI bridge runtime exposes a minimal mode description."))
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-mode))
+          (progn
+            (setq files--help-title "Mode Help")
+            (setq files--help-body
+                  (concat "Major mode: Fundamental\nBuffer: "
+                          files--buffer-name
+                          "\nThe current GUI bridge runtime exposes a minimal mode description."))
+            (files--show-static-help)))))
 
 (fset 'describe-symbol
       (lambda ()
-        (let ((name files--bridge-arg))
-          (if (equal name "")
-              (setq name "unknown")
-            nil)
-          (setq files--help-title "Describe Symbol")
-          (setq files--help-body
-                (concat name
-                        " is a symbol known to the GUI bridge help surface.  Detailed function/variable lookup is provided by describe-function and describe-variable where implemented."))
-          (files--show-static-help))))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'describe-symbol)
+          (if (fboundp 'emacs-help-gui-describe-symbol)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-describe-symbol))
+          (let ((name files--bridge-arg))
+            (if (equal name "")
+                (setq name "unknown")
+              nil)
+            (setq files--help-title "Describe Symbol")
+            (setq files--help-body
+                  (concat name
+                          " is a symbol known to the GUI bridge help surface.  Detailed function/variable lookup is provided by describe-function and describe-variable where implemented."))
+            (files--show-static-help))))))
 
 (fset 'help-quit
       (lambda ()
-        (setq files--help-title "Help Quit")
-        (setq files--help-body
-              "Help quit was requested.  Window closing is not modeled here; the command is represented as a read-only Help buffer update.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'help-quit))
+          (progn
+            (setq files--help-title "Help Quit")
+            (setq files--help-body
+                  "Help quit was requested.  Window closing is not modeled here; the command is represented as a read-only Help buffer update.")
+            (files--show-static-help)))))
 
 (fset 'describe-syntax
       (lambda ()
-        (setq files--help-title "Syntax Table")
-        (setq files--help-body
-              "Syntax table details are not yet backed by full Emacs syntax table data.  Word/symbol movement currently uses the bridge runtime character predicates.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'describe-syntax))
+          (progn
+            (setq files--help-title "Syntax Table")
+            (setq files--help-body
+                  "Syntax table details are not yet backed by full Emacs syntax table data.  Word/symbol movement currently uses the bridge runtime character predicates.")
+            (files--show-static-help)))))
 
 (fset 'help-with-tutorial
       (lambda ()
-        (setq files--help-title "Emacs Tutorial")
-        (setq files--help-body
-              "The full Emacs tutorial is not yet bundled in this bridge runtime.  This command opens the expected read-only Help buffer.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'help-with-tutorial))
+          (progn
+            (setq files--help-title "Emacs Tutorial")
+            (setq files--help-body
+                  "The full Emacs tutorial is not yet bundled in this bridge runtime.  This command opens the expected read-only Help buffer.")
+            (files--show-static-help)))))
 
 (fset 'display-local-help
       (lambda ()
-        (setq files--help-title "Local Help")
-        (setq files--help-body
-              "Local contextual help was requested.  The GUI bridge runtime represents the request as a read-only Help buffer; widget and text-property help lookup remains a nelisp-emacs task.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'display-local-help))
+          (progn
+            (setq files--help-title "Local Help")
+            (setq files--help-body
+                  "Local contextual help was requested.  The GUI bridge runtime represents the request as a read-only Help buffer; widget and text-property help lookup remains a nelisp-emacs task.")
+            (files--show-static-help)))))
 
 (fset 'help-find-source
       (lambda ()
-        (setq files--help-title "Find Source")
-        (setq files--help-body
-              "Source lookup for the current help target is not yet backed by full symbol-to-source metadata.  This command opens the expected Help surface without adding GUI-side command semantics.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'help-find-source))
+          (progn
+            (setq files--help-title "Find Source")
+            (setq files--help-body
+                  "Source lookup for the current help target is not yet backed by full symbol-to-source metadata.  This command opens the expected Help surface without adding GUI-side command semantics.")
+            (files--show-static-help)))))
 
 (fset 'help-quick-toggle
       (lambda ()
-        (setq files--help-title "Quick Help Toggle")
-        (setq files--help-body
-              "Quick help display toggling is represented in the bridge runtime as a Help buffer update.  Help window display policy remains owned by nelisp-emacs.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'help-quick-toggle))
+          (progn
+            (setq files--help-title "Quick Help Toggle")
+            (setq files--help-body
+                  "Quick help display toggling is represented in the bridge runtime as a Help buffer update.  Help window display policy remains owned by nelisp-emacs.")
+            (files--show-static-help)))))
 
 (fset 'search-forward-help-for-help
       (lambda ()
-        (setq files--help-title "Search Help")
-        (setq files--help-body
-              "Search within the Help-for-Help buffer was requested.  Full incremental help search is not yet implemented in the bridge runtime.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'search-forward-help-for-help))
+          (progn
+            (setq files--help-title "Search Help")
+            (setq files--help-body
+                  "Search within the Help-for-Help buffer was requested.  Full incremental help search is not yet implemented in the bridge runtime.")
+            (files--show-static-help)))))
 
 (fset 'xref-go-forward
       (lambda ()
@@ -8349,245 +10325,333 @@
 
 (fset 'info
       (lambda ()
-        ;; M13: a real .info file argument gets node parsing; the
-        ;; argument-less call keeps the legacy directory facade.
-        (if (if (equal files--bridge-arg "")
-                nil
-              (files--file-exists-p files--bridge-arg))
-            (progn
-              (setq files--info-file files--bridge-arg)
-              (setq files--info-node "")
-              (if (files--info-render-node "Top")
-                  nil
-                (if (files--info-render-node "")
-                    nil
-                  (setq files--bridge-status "unsupported")))
-              (files--write-info-state))
-          (progn
-            (setq files--help-title "Info Directory")
-            (setq files--help-body
-                  "Info directory navigation is represented by this read-only Info buffer.  Pass an .info file path argument for node parsing; /usr/share/info dir aggregation remains future work.")
-            (files--show-info-buffer)))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'info "same")
+          (if (fboundp 'emacs-info-gui-info-core)
+            (files--info-run-core "same")
+            (if (fboundp 'emacs-info-gui-info-command)
+                (progn
+                  (files--info-sync-context)
+                  (emacs-info-gui-info-command "same"))
+              (progn
+                ;; M13: a real .info file argument gets node parsing; the
+                ;; argument-less call keeps the legacy directory facade.
+                (if (if (equal files--bridge-arg "")
+                        nil
+                      (files--file-exists-p files--bridge-arg))
+                    (progn
+                      (setq files--info-file files--bridge-arg)
+                      (setq files--info-node "")
+                      (if (files--info-render-node "Top")
+                          nil
+                        (if (files--info-render-node "")
+                            nil
+                          (setq files--bridge-status "unsupported")))
+                      (files--write-info-state))
+                  (progn
+                    (setq files--help-title "Info Directory")
+                    (setq files--help-body
+                          "Info directory navigation is represented by this read-only Info buffer.  Pass an .info file path argument for node parsing; /usr/share/info dir aggregation remains future work.")
+                    (files--show-info-buffer)))))))
         files--buffer-name))
 
 (fset 'info-other-window
       (lambda ()
-        (let ((action files--display-prefix-action))
-          (setq files--display-prefix-action "")
-          (info)
-          (setq files--display-prefix-action action))
-        (files--apply-display-prefix-for-other-window-command)))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'info-other-window "other")
+          (if (fboundp 'emacs-info-gui-info-core)
+            (files--info-run-core "other")
+            (if (fboundp 'emacs-info-gui-info-command)
+                (progn
+                  (files--info-sync-context)
+                  (emacs-info-gui-info-command "other"))
+              (progn
+                (let ((action files--display-prefix-action))
+                  (setq files--display-prefix-action "")
+                  (info)
+                  (setq files--display-prefix-action action))
+                (files--apply-display-prefix-for-other-window-command)))))))
 
 (fset 'info-emacs-manual
       (lambda ()
-        (setq files--help-title "Emacs Manual")
-        (setq files--help-body
-              "The Emacs manual explains editing, files, buffers, windows, commands, customization, and Lisp.  Full manual navigation is not yet bundled in this bridge runtime.")
-        (files--show-info-buffer)))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'info-emacs-manual)
+          (if (fboundp 'emacs-info-gui-emacs-manual-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-emacs-manual-command))
+            (progn
+              (setq files--help-title "Emacs Manual")
+              (setq files--help-body
+                    "The Emacs manual explains editing, files, buffers, windows, commands, customization, and Lisp.  Full manual navigation is not yet bundled in this bridge runtime.")
+              (files--show-info-buffer))))))
 
 (fset 'info-display-manual
       (lambda ()
-        (let ((manual files--bridge-arg))
-          (if (equal manual "")
-              (setq manual "emacs")
-            nil)
-          (setq files--help-title (concat "Info Manual: " manual))
-          (setq files--help-body
-                (concat "Requested manual: "
-                        manual
-                        "\nFull Info manual lookup is not yet backed by parsed Info files."))
-          (files--show-info-buffer))))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'info-display-manual)
+          (if (fboundp 'emacs-info-gui-display-manual-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-display-manual-command))
+            (let ((manual files--bridge-arg))
+              (if (equal manual "")
+                  (setq manual "emacs")
+                nil)
+              (setq files--help-title (concat "Info Manual: " manual))
+              (setq files--help-body
+                    (concat "Requested manual: "
+                            manual
+                            "\nFull Info manual lookup is not yet backed by parsed Info files."))
+              (files--show-info-buffer))))))
 
 (fset 'view-order-manuals
       (lambda ()
-        (setq files--help-title "Ordering GNU Manuals")
-        (setq files--help-body
-              "GNU manuals are available from the GNU project and its documentation mirrors.  This command opens the expected read-only Info buffer surface.")
-        (files--show-info-buffer)))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'view-order-manuals)
+          (if (fboundp 'emacs-info-gui-view-order-manuals-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-view-order-manuals-command))
+            (progn
+              (setq files--help-title "Ordering GNU Manuals")
+              (setq files--help-body
+                    "GNU manuals are available from the GNU project and its documentation mirrors.  This command opens the expected read-only Info buffer surface.")
+              (files--show-info-buffer))))))
 
 (fset 'Info-goto-emacs-command-node
       (lambda ()
-        (let ((command files--bridge-arg))
-          (if (equal command "")
-              (setq command "unknown")
-            nil)
-          (setq files--help-title (concat "Emacs Command: " command))
-          (setq files--help-body
-                (concat "Requested Emacs command manual node for "
-                        command
-                        ".\nFull Info command-node resolution is not yet implemented."))
-          (files--show-info-buffer))))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'Info-goto-emacs-command-node)
+          (if (fboundp 'emacs-info-gui-goto-emacs-command-node-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-goto-emacs-command-node-command))
+            (let ((command files--bridge-arg))
+              (if (equal command "")
+                  (setq command "unknown")
+                nil)
+              (setq files--help-title (concat "Emacs Command: " command))
+              (setq files--help-body
+                    (concat "Requested Emacs command manual node for "
+                            command
+                            ".\nFull Info command-node resolution is not yet implemented."))
+              (files--show-info-buffer))))))
 
 (fset 'Info-goto-emacs-key-command-node
       (lambda ()
-        (let ((key files--bridge-arg))
-          (if (equal key "")
-              (setq key "unknown")
-            nil)
-          (setq files--help-title (concat "Emacs Key: " key))
-          (setq files--help-body
-                (concat "Requested Emacs manual node for key "
-                        key
-                        ".\nFull Info key-node resolution is not yet implemented."))
-          (files--show-info-buffer))))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'Info-goto-emacs-key-command-node)
+          (if (fboundp 'emacs-info-gui-goto-emacs-key-command-node-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-goto-emacs-key-command-node-command))
+            (let ((key files--bridge-arg))
+              (if (equal key "")
+                  (setq key "unknown")
+                nil)
+              (setq files--help-title (concat "Emacs Key: " key))
+              (setq files--help-body
+                    (concat "Requested Emacs manual node for key "
+                            key
+                            ".\nFull Info key-node resolution is not yet implemented."))
+              (files--show-info-buffer))))))
 
 (fset 'info-lookup-symbol
       (lambda ()
-        (let ((symbol files--bridge-arg))
-          (if (equal symbol "")
-              (setq symbol "unknown")
-            nil)
-          (setq files--help-title (concat "Info Lookup Symbol: " symbol))
-          (setq files--help-body
-                (concat "Requested Info lookup for symbol "
-                        symbol
-                        ".\nThe bridge runtime has not yet loaded language-specific Info lookup indexes."))
-          (files--show-info-buffer))))
+        (if (fboundp 'emacs-info-gui-current-context-command)
+            (emacs-info-gui-current-context-command 'info-lookup-symbol)
+          (if (fboundp 'emacs-info-gui-lookup-symbol-command)
+            (progn
+              (files--info-sync-context)
+              (emacs-info-gui-lookup-symbol-command))
+            (let ((symbol files--bridge-arg))
+              (if (equal symbol "")
+                  (setq symbol "unknown")
+                nil)
+              (setq files--help-title (concat "Info Lookup Symbol: " symbol))
+              (setq files--help-body
+                    (concat "Requested Info lookup for symbol "
+                            symbol
+                            ".\nThe bridge runtime has not yet loaded language-specific Info lookup indexes."))
+              (files--show-info-buffer))))))
 
 (fset 'describe-package
       (lambda ()
-        (let ((package files--bridge-arg))
-          (if (equal package "")
-              (setq package "unknown")
-            nil)
-          (setq files--help-title (concat "Package: " package))
-          (setq files--help-body
-                (concat package
-                        " is a package name requested through the Help surface.\nFull package metadata lookup is not yet connected."))
-          (files--show-static-help))))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'describe-package)
+          (if (fboundp 'emacs-help-gui-describe-package)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-describe-package))
+            (let ((package files--bridge-arg))
+              (if (equal package "")
+                  (setq package "unknown")
+                nil)
+              (setq files--help-title (concat "Package: " package))
+              (setq files--help-body
+                    (concat package
+                            " is a package name requested through the Help surface.\nFull package metadata lookup is not yet connected."))
+              (files--show-static-help))))))
 
 (fset 'finder-by-keyword
       (lambda ()
-        (setq files--help-title "Package Finder")
-        (setq files--help-body
-              "Package keyword browsing is not yet backed by the full package index.  This command opens the expected read-only Help buffer.")
-        (files--show-static-help)))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command
+             'finder-by-keyword 'finder-by-keyword)
+          (if (fboundp 'emacs-help-gui-static-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-static-command 'finder-by-keyword))
+            (progn
+              (setq files--help-title "Package Finder")
+              (setq files--help-body
+                    "Package keyword browsing is not yet backed by the full package index.  This command opens the expected read-only Help buffer.")
+              (files--show-static-help))))))
 
 (fset 'describe-function
       (lambda ()
-        (files--save-current-buffer-state)
-        (let ((name files--bridge-arg)
-              (doc "This function is known to the GUI bridge runtime, but no detailed documentation is available yet."))
-          (if (equal name "")
-              (setq name "unknown")
-            nil)
-          (if (equal name "forward-char")
-              (setq doc "Move point one character forward in the current buffer.")
-            nil)
-          (if (equal name "backward-char")
-              (setq doc "Move point one character backward in the current buffer.")
-            nil)
-          (if (equal name "find-file")
-              (setq doc "Visit the file named by the bridge argument and make it the current buffer.")
-            nil)
-          (if (equal name "find-file-read-only")
-              (setq doc "Visit the file named by the bridge argument and mark the buffer read-only.")
-            nil)
-          (if (equal name "save-buffer")
-              (setq doc "Save the current buffer to its visited file.")
-            nil)
-          (if (equal name "execute-extended-command")
-              (setq doc "Read a command name from the minibuffer argument and execute that command.")
-            nil)
-          (if (equal name "goto-line")
-              (setq doc "Move point to the beginning of the requested line.")
-            nil)
-          (if (equal name "switch-to-buffer")
-              (setq doc "Select the buffer named by the bridge argument, creating it if needed.")
-            nil)
-          (if (equal name "kill-buffer")
-              (setq doc "Remove the buffer named by the bridge argument from the buffer list.")
-            nil)
-          (if (equal name "list-buffers")
-              (setq doc "Display the current bridge buffer list.")
-            nil)
-          (if (equal name "sort-lines")
-              (setq doc "Sort the lines in the active region alphabetically.")
-            nil)
-          (if (equal name "kill-whole-line")
-              (setq doc "Kill the entire current line, including its trailing newline when present.")
-            nil)
-          (setq files--buffer-list-name "*Help*")
-          (files--buffer-list-add)
-          (setq files--buffer-name "*Help*")
-          (setq files--buffer-string
-                (concat name
-                        " is a function.\n\n"
-                        "Documentation:\n"
-                        doc
-                        "\n"))
-          (setq files--current-file-name "")
-          (setq files--point 0)
-          (setq files--mark 0)
-          (setq files--window-start 0)
-          (setq files--buffer-modified-p nil)
-          (setq files--buffer-read-only-p t)
-          (files--save-current-buffer-state)
-          files--buffer-name)))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'describe-function)
+          (if (fboundp 'emacs-help-gui-describe-function-core)
+            (files--help-run-core 'emacs-help-gui-describe-function-core)
+            (if (fboundp 'emacs-help-gui-describe-function)
+              (progn
+                (files--help-sync-context)
+                (emacs-help-gui-describe-function))
+            (progn
+              (files--save-current-buffer-state)
+              (let ((name files--bridge-arg)
+                  (doc "This function is known to the GUI bridge runtime, but no detailed documentation is available yet."))
+              (if (equal name "")
+                  (setq name "unknown")
+                nil)
+              (if (equal name "forward-char")
+                  (setq doc "Move point one character forward in the current buffer.")
+                nil)
+              (if (equal name "backward-char")
+                  (setq doc "Move point one character backward in the current buffer.")
+                nil)
+              (if (equal name "find-file")
+                  (setq doc "Visit the file named by the bridge argument and make it the current buffer.")
+                nil)
+              (if (equal name "find-file-read-only")
+                  (setq doc "Visit the file named by the bridge argument and mark the buffer read-only.")
+                nil)
+              (if (equal name "save-buffer")
+                  (setq doc "Save the current buffer to its visited file.")
+                nil)
+              (if (equal name "execute-extended-command")
+                  (setq doc "Read a command name from the minibuffer argument and execute that command.")
+                nil)
+              (if (equal name "goto-line")
+                  (setq doc "Move point to the beginning of the requested line.")
+                nil)
+              (if (equal name "switch-to-buffer")
+                  (setq doc "Select the buffer named by the bridge argument, creating it if needed.")
+                nil)
+              (if (equal name "kill-buffer")
+                  (setq doc "Remove the buffer named by the bridge argument from the buffer list.")
+                nil)
+              (if (equal name "list-buffers")
+                  (setq doc "Display the current bridge buffer list.")
+                nil)
+              (if (equal name "sort-lines")
+                  (setq doc "Sort the lines in the active region alphabetically.")
+                nil)
+              (if (equal name "kill-whole-line")
+                  (setq doc "Kill the entire current line, including its trailing newline when present.")
+                nil)
+              (setq files--buffer-list-name "*Help*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*Help*")
+              (setq files--buffer-string
+                    (concat name
+                            " is a function.\n\n"
+                            "Documentation:\n"
+                            doc
+                            "\n"))
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (setq files--buffer-read-only-p t)
+              (files--save-current-buffer-state)
+              files--buffer-name)))))))
 
 (fset 'describe-variable
       (lambda ()
-        (files--save-current-buffer-state)
-        (let ((name files--bridge-arg)
-              (value "void")
-              (doc "This variable is known to the GUI bridge runtime, but no detailed documentation is available yet."))
-          (if (equal name "")
-              (setq name "unknown")
-            nil)
-          (if (equal name "buffer-file-name")
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'describe-variable)
+          (if (fboundp 'emacs-help-gui-describe-variable-core)
+            (files--help-run-core 'emacs-help-gui-describe-variable-core)
+            (if (fboundp 'emacs-help-gui-describe-variable)
               (progn
-                (setq value (if (equal files--current-file-name "")
-                                "nil"
-                              files--current-file-name))
-                (setq doc "The visited file name of the current buffer, or nil when the buffer is not visiting a file."))
-            nil)
-          (if (equal name "buffer-read-only")
-              (progn
-                (setq value (if files--buffer-read-only-p "t" "nil"))
-                (setq doc "Non-nil means the current buffer rejects editing commands."))
-            nil)
-          (if (equal name "files--buffer-name")
-              (progn
-                (setq value files--buffer-name)
-                (setq doc "Bridge runtime name of the current buffer."))
-            nil)
-          (if (equal name "files--current-file-name")
-              (progn
-                (setq value (if (equal files--current-file-name "")
-                                "nil"
-                              files--current-file-name))
-                (setq doc "Bridge runtime visited file name of the current buffer."))
-            nil)
-          (if (equal name "files--buffer-read-only-p")
-              (progn
-                (setq value (if files--buffer-read-only-p "t" "nil"))
-                (setq doc "Bridge runtime read-only flag for the current buffer."))
-            nil)
-          (if (equal name "files--window-layout")
-              (progn
-                (setq value files--window-layout)
-                (setq doc "Bridge runtime window layout state returned to the GUI."))
-            nil)
-          (setq files--buffer-list-name "*Help*")
-          (files--buffer-list-add)
-          (setq files--buffer-name "*Help*")
-          (setq files--buffer-string
-                (concat name
-                        " is a variable.\n\n"
-                        "Value: "
-                        value
-                        "\n\n"
-                        "Documentation:\n"
-                        doc
-                        "\n"))
-          (setq files--current-file-name "")
-          (setq files--point 0)
-          (setq files--mark 0)
-          (setq files--window-start 0)
-          (setq files--buffer-modified-p nil)
-	          (setq files--buffer-read-only-p t)
-		          (files--save-current-buffer-state)
-		          files--buffer-name)))
+                (files--help-sync-context)
+                (emacs-help-gui-describe-variable))
+            (progn
+              (files--save-current-buffer-state)
+              (let ((name files--bridge-arg)
+                  (value "void")
+                  (doc "This variable is known to the GUI bridge runtime, but no detailed documentation is available yet."))
+              (if (equal name "")
+                  (setq name "unknown")
+                nil)
+              (if (equal name "buffer-file-name")
+                  (progn
+                    (setq value (if (equal files--current-file-name "")
+                                    "nil"
+                                  files--current-file-name))
+                    (setq doc "The visited file name of the current buffer, or nil when the buffer is not visiting a file."))
+                nil)
+              (if (equal name "buffer-read-only")
+                  (progn
+                    (setq value (if files--buffer-read-only-p "t" "nil"))
+                    (setq doc "Non-nil means the current buffer rejects editing commands."))
+                nil)
+              (if (equal name "files--buffer-name")
+                  (progn
+                    (setq value files--buffer-name)
+                    (setq doc "Bridge runtime name of the current buffer."))
+                nil)
+              (if (equal name "files--current-file-name")
+                  (progn
+                    (setq value (if (equal files--current-file-name "")
+                                    "nil"
+                                  files--current-file-name))
+                    (setq doc "Bridge runtime visited file name of the current buffer."))
+                nil)
+              (if (equal name "files--buffer-read-only-p")
+                  (progn
+                    (setq value (if files--buffer-read-only-p "t" "nil"))
+                    (setq doc "Bridge runtime read-only flag for the current buffer."))
+                nil)
+              (if (equal name "files--window-layout")
+                  (progn
+                    (setq value files--window-layout)
+                    (setq doc "Bridge runtime window layout state returned to the GUI."))
+                nil)
+              (setq files--buffer-list-name "*Help*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*Help*")
+              (setq files--buffer-string
+                    (concat name
+                            " is a variable.\n\n"
+                            "Value: "
+                            value
+                            "\n\n"
+                            "Documentation:\n"
+                            doc
+                            "\n"))
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (setq files--buffer-read-only-p t)
+              (files--save-current-buffer-state)
+              files--buffer-name)))))))
 
 (fset 'what-cursor-position
       (lambda ()
@@ -8773,187 +10837,236 @@
 
 		(fset 'describe-key
 		      (lambda ()
-	        (files--save-current-buffer-state)
-	        (let ((key files--bridge-arg)
-	              (command "")
-	              (doc "This key is not bound to a bridge command in the current GUI runtime."))
-	          (if (equal key "")
-	              (setq key "unknown")
-	            nil)
-	          ;; include user bindings (global-set-key overlay) so describe-key
-	          ;; reports what the dispatch would actually run
-	          (setq files--lookup-key-source
-	                (concat (rdf (files--user-keymap-path)) files--keymap-source))
-	          (setq files--lookup-key-target key)
-	          (setq command
-	                (files--lookup-key-command-in-source))
-	          (if (equal command "")
+	        (if (fboundp 'emacs-help-gui-current-context-command)
+	            (emacs-help-gui-current-context-command 'describe-key)
+	          (if (fboundp 'emacs-help-gui-describe-key-core)
+	            (files--help-run-core 'emacs-help-gui-describe-key-core)
+	            (if (fboundp 'emacs-help-gui-describe-key)
 	              (progn
-	                (setq files--lookup-key-source files--minibuffer-keymap-source)
-	                (setq command (files--lookup-key-command-in-source)))
-	            nil)
-	          (if (not (equal command ""))
-	              (setq doc "This key is resolved through the GUI bridge keymap.")
-	            nil)
-	          (setq files--buffer-list-name "*Help*")
-          (files--buffer-list-add)
-          (setq files--buffer-name "*Help*")
-          (setq files--buffer-string
-                (if (equal command "")
-                    (concat key
-                            " is not bound to a bridge command.\n\n"
-                            "Documentation:\n"
-                            doc
-                            "\n")
-                  (concat key
-                          " runs the command "
-                          command
-                          ".\n\n"
-                          "Documentation:\n"
-                          doc
-                          "\n")))
-          (setq files--current-file-name "")
-          (setq files--point 0)
-          (setq files--mark 0)
-          (setq files--window-start 0)
-          (setq files--buffer-modified-p nil)
-          (setq files--buffer-read-only-p t)
-          (files--save-current-buffer-state)
-          files--buffer-name)))
+	                (files--help-sync-context)
+	                (emacs-help-gui-describe-key))
+	            (progn
+	              (files--save-current-buffer-state)
+	              (let ((key files--bridge-arg)
+	                  (command "")
+	                  (doc "This key is not bound to a bridge command in the current GUI runtime."))
+	              (if (equal key "")
+	                  (setq key "unknown")
+	                nil)
+	              ;; include user bindings (global-set-key overlay) so describe-key
+	              ;; reports what the dispatch would actually run
+	              (setq files--lookup-key-source
+	                    (concat (rdf (files--user-keymap-path)) files--keymap-source))
+	              (setq files--lookup-key-target key)
+	              (setq command
+	                    (files--lookup-key-command-in-source))
+	              (if (equal command "")
+	                  (progn
+	                    (setq files--lookup-key-source files--minibuffer-keymap-source)
+	                    (setq command (files--lookup-key-command-in-source)))
+	                nil)
+	              (if (not (equal command ""))
+	                  (setq doc "This key is resolved through the GUI bridge keymap.")
+	                nil)
+	              (setq files--buffer-list-name "*Help*")
+	              (files--buffer-list-add)
+	              (setq files--buffer-name "*Help*")
+	              (setq files--buffer-string
+	                    (if (equal command "")
+	                        (concat key
+	                                " is not bound to a bridge command.\n\n"
+	                                "Documentation:\n"
+	                                doc
+	                                "\n")
+	                      (concat key
+	                              " runs the command "
+	                              command
+	                              ".\n\n"
+	                              "Documentation:\n"
+	                              doc
+	                              "\n")))
+	              (setq files--current-file-name "")
+	              (setq files--point 0)
+	              (setq files--mark 0)
+	              (setq files--window-start 0)
+	              (setq files--buffer-modified-p nil)
+	              (setq files--buffer-read-only-p t)
+	              (files--save-current-buffer-state)
+	              files--buffer-name)))))))
 
 (fset 'describe-key-briefly
       (lambda ()
-        (files--save-current-buffer-state)
-        (let ((key files--bridge-arg)
-              (command ""))
-          (if (equal key "")
-              (setq key "unknown")
-            nil)
-          (setq files--lookup-key-source files--keymap-source)
-          (setq files--lookup-key-target key)
-          (setq command (files--lookup-key-command-in-source))
-          (if (equal command "")
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'describe-key-briefly)
+          (if (fboundp 'emacs-help-gui-describe-key-briefly-core)
+            (files--help-run-core 'emacs-help-gui-describe-key-briefly-core)
+            (if (fboundp 'emacs-help-gui-describe-key-briefly)
               (progn
-                (setq files--lookup-key-source files--minibuffer-keymap-source)
-                (setq command (files--lookup-key-command-in-source)))
-            nil)
-          (setq files--buffer-list-name "*Help*")
-          (files--buffer-list-add)
-          (setq files--buffer-name "*Help*")
-          (setq files--buffer-string
-                (if (equal command "")
-                    (concat key " is undefined\n")
-                  (concat key " runs the command " command "\n")))
-          (setq files--current-file-name "")
-          (setq files--point 0)
-          (setq files--mark 0)
-          (setq files--window-start 0)
-          (setq files--buffer-modified-p nil)
-          (setq files--buffer-read-only-p t)
-          (files--save-current-buffer-state)
-          files--buffer-name)))
+                (files--help-sync-context)
+                (emacs-help-gui-describe-key-briefly))
+            (progn
+              (files--save-current-buffer-state)
+              (let ((key files--bridge-arg)
+                  (command ""))
+              (if (equal key "")
+                  (setq key "unknown")
+                nil)
+              (setq files--lookup-key-source files--keymap-source)
+              (setq files--lookup-key-target key)
+              (setq command (files--lookup-key-command-in-source))
+              (if (equal command "")
+                  (progn
+                    (setq files--lookup-key-source files--minibuffer-keymap-source)
+                    (setq command (files--lookup-key-command-in-source)))
+                nil)
+              (setq files--buffer-list-name "*Help*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*Help*")
+              (setq files--buffer-string
+                    (if (equal command "")
+                        (concat key " is undefined\n")
+                      (concat key " runs the command " command "\n")))
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (setq files--buffer-read-only-p t)
+              (files--save-current-buffer-state)
+              files--buffer-name)))))))
 
 (fset 'describe-bindings
       (lambda ()
-        (files--save-current-buffer-state)
-        (let ((bindings ""))
-          ;; user bindings (global-set-key overlay) first, so describe-bindings
-          ;; lists what the dispatch actually runs
-          (setq files--key-list-source
-                (concat (rdf (files--user-keymap-path)) files--keymap-source))
-          (setq bindings (files--binding-list-from-source))
-          (setq files--key-list-source files--minibuffer-keymap-source)
-          (setq bindings (concat bindings
-                                 (files--binding-list-from-source)))
-          (setq files--buffer-list-name "*Help*")
-          (files--buffer-list-add)
-          (setq files--buffer-name "*Help*")
-          (setq files--buffer-string
-                (concat "Key bindings in the current GUI runtime:\n\n"
-                        bindings))
-          (setq files--current-file-name "")
-          (setq files--point 0)
-          (setq files--mark 0)
-          (setq files--window-start 0)
-          (setq files--buffer-modified-p nil)
-          (setq files--buffer-read-only-p t)
-          (files--save-current-buffer-state)
-          files--buffer-name)))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'describe-bindings)
+          (if (fboundp 'emacs-help-gui-describe-bindings-core)
+            (files--help-run-core 'emacs-help-gui-describe-bindings-core)
+            (if (fboundp 'emacs-help-gui-describe-bindings)
+              (progn
+                (files--help-sync-context)
+                (emacs-help-gui-describe-bindings))
+            (progn
+              (files--save-current-buffer-state)
+              (let ((bindings ""))
+              ;; user bindings (global-set-key overlay) first, so describe-bindings
+              ;; lists what the dispatch actually runs
+              (setq files--key-list-source
+                    (concat (rdf (files--user-keymap-path)) files--keymap-source))
+              (setq bindings (files--binding-list-from-source))
+              (setq files--key-list-source files--minibuffer-keymap-source)
+              (setq bindings (concat bindings
+                                     (files--binding-list-from-source)))
+              (setq files--buffer-list-name "*Help*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*Help*")
+              (setq files--buffer-string
+                    (concat "Key bindings in the current GUI runtime:\n\n"
+                            bindings))
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (setq files--buffer-read-only-p t)
+              (files--save-current-buffer-state)
+              files--buffer-name)))))))
 
 (fset 'help-for-help
       (lambda ()
-        (files--save-current-buffer-state)
-        (setq files--buffer-list-name "*Help*")
-        (files--buffer-list-add)
-        (setq files--buffer-name "*Help*")
-        (setq files--buffer-string
-              (concat "Help commands in the current GUI runtime:\n\n"
-                      "C-h b\tdescribe-bindings\n"
-                      "C-h c\tdescribe-key-briefly\n"
-                      "C-h f\tdescribe-function\n"
-                      "C-h k\tdescribe-key\n"
-	                      "C-h v\tdescribe-variable\n"
-	                      "C-h w\twhere-is\n"
-	                      "C-h x\tdescribe-command\n"
-	                      "C-h C-a\tabout-emacs\n"
-	                      "C-h C-c\tdescribe-copying\n"
-	                      "C-h C-n\tview-emacs-news\n"
-	                      "C-h n\tview-emacs-news\n"
-	                      "C-h C-f\tview-emacs-FAQ\n"
-	                      "C-h g\tdescribe-gnu-project\n"
-	                      "C-h ?\thelp-for-help\n"
-	                      "C-h C-h\thelp-for-help\n"))
-        (setq files--current-file-name "")
-        (setq files--point 0)
-        (setq files--mark 0)
-        (setq files--window-start 0)
-        (setq files--buffer-modified-p nil)
-        (setq files--buffer-read-only-p t)
-        (files--save-current-buffer-state)
-        files--buffer-name))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'help-for-help)
+          (if (fboundp 'emacs-help-gui-help-for-help)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-help-for-help))
+            (progn
+            (files--save-current-buffer-state)
+            (setq files--buffer-list-name "*Help*")
+            (files--buffer-list-add)
+            (setq files--buffer-name "*Help*")
+            (setq files--buffer-string
+                  (concat "Help commands in the current GUI runtime:\n\n"
+                          "C-h b\tdescribe-bindings\n"
+                          "C-h c\tdescribe-key-briefly\n"
+                          "C-h f\tdescribe-function\n"
+                          "C-h k\tdescribe-key\n"
+                          "C-h v\tdescribe-variable\n"
+                          "C-h w\twhere-is\n"
+                          "C-h x\tdescribe-command\n"
+                          "C-h C-a\tabout-emacs\n"
+                          "C-h C-c\tdescribe-copying\n"
+                          "C-h C-n\tview-emacs-news\n"
+                          "C-h n\tview-emacs-news\n"
+                          "C-h C-f\tview-emacs-FAQ\n"
+                          "C-h g\tdescribe-gnu-project\n"
+                          "C-h ?\thelp-for-help\n"
+                          "C-h C-h\thelp-for-help\n"))
+            (setq files--current-file-name "")
+            (setq files--point 0)
+            (setq files--mark 0)
+            (setq files--window-start 0)
+            (setq files--buffer-modified-p nil)
+            (setq files--buffer-read-only-p t)
+            (files--save-current-buffer-state)
+            files--buffer-name)))))
 
 (fset 'where-is
       (lambda ()
-        (files--save-current-buffer-state)
-        (let ((command files--bridge-arg)
-              (keys ""))
-          (if (equal command "")
-              (setq command "unknown")
-            nil)
-          (setq files--lookup-key-target command)
-          ;; include user bindings (global-set-key overlay) so where-is reports
-          ;; the keys a user actually bound to the command
-          (setq files--key-list-source
-                (concat (rdf (files--user-keymap-path)) files--keymap-source))
-          (setq keys (files--keys-for-command-in-source))
-          (setq files--key-list-source files--minibuffer-keymap-source)
-          (setq keys
-                (concat keys
-                        (if (if (equal keys "")
-                                t
-                              (equal (files--keys-for-command-in-source) ""))
-                            ""
-                          ", ")
-                        (files--keys-for-command-in-source)))
-          (setq files--buffer-list-name "*Help*")
-          (files--buffer-list-add)
-          (setq files--buffer-name "*Help*")
-          (setq files--buffer-string
-                (if (equal keys "")
-                    (concat command " is not on any key\n")
-                  (concat command " is on " keys "\n")))
-          (setq files--current-file-name "")
-          (setq files--point 0)
-          (setq files--mark 0)
-          (setq files--window-start 0)
-          (setq files--buffer-modified-p nil)
-          (setq files--buffer-read-only-p t)
-          (files--save-current-buffer-state)
-          files--buffer-name)))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'where-is)
+          (if (fboundp 'emacs-help-gui-where-is-core)
+            (files--help-run-core 'emacs-help-gui-where-is-core)
+            (if (fboundp 'emacs-help-gui-where-is)
+              (progn
+                (files--help-sync-context)
+                (emacs-help-gui-where-is))
+            (progn
+              (files--save-current-buffer-state)
+              (let ((command files--bridge-arg)
+                  (keys ""))
+              (if (equal command "")
+                  (setq command "unknown")
+                nil)
+              (setq files--lookup-key-target command)
+              ;; include user bindings (global-set-key overlay) so where-is reports
+              ;; the keys a user actually bound to the command
+              (setq files--key-list-source
+                    (concat (rdf (files--user-keymap-path)) files--keymap-source))
+              (setq keys (files--keys-for-command-in-source))
+              (setq files--key-list-source files--minibuffer-keymap-source)
+              (setq keys
+                    (concat keys
+                            (if (if (equal keys "")
+                                    t
+                                  (equal (files--keys-for-command-in-source) ""))
+                                ""
+                              ", ")
+                            (files--keys-for-command-in-source)))
+              (setq files--buffer-list-name "*Help*")
+              (files--buffer-list-add)
+              (setq files--buffer-name "*Help*")
+              (setq files--buffer-string
+                    (if (equal keys "")
+                        (concat command " is not on any key\n")
+                      (concat command " is on " keys "\n")))
+              (setq files--current-file-name "")
+              (setq files--point 0)
+              (setq files--mark 0)
+              (setq files--window-start 0)
+              (setq files--buffer-modified-p nil)
+              (setq files--buffer-read-only-p t)
+              (files--save-current-buffer-state)
+              files--buffer-name)))))))
 
 (fset 'describe-command
       (lambda ()
-        (describe-function)))
+        (if (fboundp 'emacs-help-gui-current-context-command)
+            (emacs-help-gui-current-context-command 'describe-command)
+          (if (fboundp 'emacs-help-gui-describe-command)
+            (progn
+              (files--help-sync-context)
+              (emacs-help-gui-describe-command))
+            (describe-function)))))
 
 (fset 'save-buffers-kill-terminal
       (lambda ()
@@ -16015,29 +18128,34 @@
 
 (fset 'execute-extended-command
       (lambda ()
-        (let ((requested files--bridge-arg))
-          (if (if (equal requested "")
-                  t
-                (equal requested "execute-extended-command"))
+        (if (fboundp
+             'emacs-command-loop-gui-execute-extended-command-current-context)
+            (emacs-command-loop-gui-execute-extended-command-current-context)
+          (let ((requested files--bridge-arg))
+            (if (if (equal requested "")
+                    t
+                  (equal requested "execute-extended-command"))
+                (progn
+                  (setq files--bridge-status "unsupported")
+                  nil)
               (progn
-                (setq files--bridge-status "unsupported")
-                nil)
-            (progn
-              (setq files--bridge-effective-command requested)
-              (setq files--bridge-command (intern requested))
-              (if (not (equal files--bridge-minibuffer-arg ""))
-                  (setq files--bridge-arg files--bridge-minibuffer-arg)
-                nil)
+                (setq files--bridge-effective-command requested)
+                (setq files--bridge-command (intern requested))
+                (if (not (equal files--bridge-minibuffer-arg ""))
+                    (setq files--bridge-arg files--bridge-minibuffer-arg)
+                  nil)
 	              (command-execute)
-	              (setq files--bridge-command 'execute-extended-command))))))
+	              (setq files--bridge-command
+                      'execute-extended-command)))))))
 
 	(fset 'execute-extended-command-for-buffer
 	      (lambda ()
 	        (execute-extended-command)))
 
-	(fset 'emacs-minibuffer-gui-history-symbol-for-purpose
-      (lambda ()
-        (setq emacs-minibuffer-gui-history-symbol "minibuffer-history")
+	(if (not (fboundp 'emacs-minibuffer-gui-register-backend))
+	    (fset 'emacs-minibuffer-gui-history-symbol-for-purpose
+          (lambda ()
+            (setq emacs-minibuffer-gui-history-symbol "minibuffer-history")
         (if (if (equal emacs-minibuffer-gui-purpose "execute-extended-command")
                 t
               (equal emacs-minibuffer-gui-purpose "execute-extended-command-for-buffer"))
@@ -16204,529 +18322,496 @@
         (if (equal emacs-minibuffer-gui-purpose "set-terminal-coding-system")
             (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
           nil)
-        (if (equal emacs-minibuffer-gui-purpose "set-selection-coding-system")
-            (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
-          nil)
+            (if (equal emacs-minibuffer-gui-purpose "set-selection-coding-system")
+                (setq emacs-minibuffer-gui-history-symbol "coding-system-history")
+              nil)
 		        emacs-minibuffer-gui-history-symbol))
+	          nil)
 
-(fset 'files--refresh-minibuffer-candidates
-      (lambda ()
-        (let ((source "")
-              (prefix files--minibuffer-text)
-              (index 0)
-              (start 0)
-              (out ""))
-          (if (not (equal emacs-minibuffer-gui-completion-table ""))
-              (setq source emacs-minibuffer-gui-completion-table)
-            nil)
-	          (if (equal files--minibuffer-purpose "switch-to-buffer")
-	              (if (equal source "")
-	                  (setq source (rdf files--buffer-list-file))
-	                nil)
-	            nil)
-		          (if (equal files--minibuffer-purpose "switch-to-buffer-other-window")
-		              (if (equal source "")
-		                  (setq source (rdf files--buffer-list-file))
-		                nil)
-		            nil)
-              (if (equal files--minibuffer-purpose "switch-to-buffer-other-frame")
-                  (if (equal source "")
-                      (setq source (rdf files--buffer-list-file))
+(if (not (fboundp 'emacs-minibuffer-gui-extended-command-followup))
+    (fset 'emacs-minibuffer-gui-extended-command-followup
+          (lambda (command-name)
+            (if (equal command-name "goto-line")
+                (cons "goto-line" "Goto line: ")
+              (if (equal command-name "goto-line-relative")
+                  (cons "goto-line-relative" "Goto line: ")
+                (if (equal command-name "goto-char")
+                    (cons "goto-char" "Goto char: ")
+                  (if (equal command-name "move-to-column")
+                      (cons "move-to-column" "Move to column: ")
+                    (if (equal command-name "set-fill-column")
+                        (cons "set-fill-column" "Set fill column: ")
+                      (if (equal command-name "replace-string")
+                          (cons "replace-string" "Replace string: ")
+                        (if (equal command-name "query-replace")
+                            (cons "query-replace" "Query replace: ")
+                          (if (equal command-name "replace-regexp")
+                              (cons "replace-regexp" "Replace regexp: ")
+                            (if (equal command-name "query-replace-regexp")
+                                (cons "query-replace-regexp"
+                                      "Query replace regexp: ")
+                              (if (equal command-name
+                                         "project-query-replace-regexp")
+                                  (cons "project-query-replace-regexp"
+                                        "Project query replace regexp: ")
+                                nil))))))))))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-extended-command-commit-spec))
+    (fset 'emacs-minibuffer-gui-extended-command-commit-spec
+          (lambda (command-name)
+            (if (emacs-minibuffer-gui-extended-command-followup command-name)
+                nil
+              (cons "execute-extended-command"
+                    (cons "execute-extended-command" command-name)))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-replace-followup))
+    (fset 'emacs-minibuffer-gui-replace-followup
+          (lambda (purpose from)
+            (if (equal purpose "replace-string")
+                (cons "replace-string-to"
+                      (concat "Replace string " from " with: "))
+              (if (equal purpose "replace-regexp")
+                  (cons "replace-regexp-to"
+                        (concat "Replace regexp " from " with: "))
+                (if (equal purpose "query-replace")
+                    (cons "query-replace-to"
+                          (concat "Query replace " from " with: "))
+                  (if (equal purpose "query-replace-regexp")
+                      (cons "query-replace-regexp-to"
+                            (concat "Query replace regexp " from " with: "))
+                    (if (equal purpose "project-query-replace-regexp")
+                        (cons "project-query-replace-regexp-to"
+                              (concat "Project query replace regexp "
+                                      from " with: "))
+                      nil)))))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-replace-commit-command))
+    (fset 'emacs-minibuffer-gui-replace-commit-command
+          (lambda (purpose)
+            (if (equal purpose "replace-string-to")
+                "replace-string"
+              (if (equal purpose "replace-regexp-to")
+                  "replace-regexp"
+                (if (equal purpose "query-replace-to")
+                    "query-replace"
+                  (if (equal purpose "query-replace-regexp-to")
+                      "query-replace-regexp"
+                    (if (equal purpose "project-query-replace-regexp-to")
+                        "project-query-replace-regexp"
+                      nil)))))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-command-commit-spec))
+    (fset 'emacs-minibuffer-gui-command-commit-spec
+          (lambda (purpose text)
+            (cons purpose (cons purpose text))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui--finish-followup))
+    (fset 'emacs-minibuffer-gui--finish-followup
+          (lambda (purpose prompt)
+            (files--minibuffer-gui-backend-start-followup purpose prompt)
+            (let ((prefill (or (files--minibuffer-gui-backend-followup-prefill-text)
+                               "")))
+              (if (not (equal prefill ""))
+                  (progn
+                    (files--minibuffer-gui-backend-set-text prefill)
+                    (files--minibuffer-gui-backend-set-cursor
+                     (length prefill))
+                    (emacs-minibuffer-gui-finish-read))
+                nil))
+            t))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui--execute-command-spec))
+    (fset 'emacs-minibuffer-gui--execute-command-spec
+          (lambda (spec &optional save-undo)
+            (if spec
+                (progn
+                  (if save-undo
+                      (files--bridge-save-undo-if-needed)
+                    nil)
+                  (files--minibuffer-gui-backend-execute-command-spec
+                   (car spec)
+                   (car (cdr spec))
+                   (cdr (cdr spec)))
+                  t)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-finish-read))
+    (fset 'emacs-minibuffer-gui-finish-read
+          (lambda ()
+            (let ((purpose (or (files--minibuffer-gui-backend-purpose)
+                               emacs-minibuffer-gui-purpose
+                               ""))
+                  (text (emacs-minibuffer-gui-commit-read)))
+              (if (equal purpose "execute-extended-command-for-buffer")
+                  (setq purpose "execute-extended-command")
+                nil)
+              (let ((followup nil))
+                (if (equal purpose "execute-extended-command")
+                    (setq followup
+                          (emacs-minibuffer-gui-extended-command-followup
+                           text))
+                  nil)
+                (if followup
+                    (progn
+                      (emacs-minibuffer-gui--finish-followup
+                       (car followup) (cdr followup))
+                      (setq purpose ""))
+                  nil))
+              (if (equal purpose "execute-extended-command")
+                  (if (emacs-minibuffer-gui--execute-command-spec
+                       (emacs-minibuffer-gui-extended-command-commit-spec
+                        text)
+                       nil)
+                      (setq purpose "")
                     nil)
                 nil)
-              (if (equal files--minibuffer-purpose "switch-to-buffer-other-tab")
-                  (if (equal source "")
-                      (setq source (rdf files--buffer-list-file))
+              (let ((replace-followup nil)
+                    (replace-command nil))
+                (setq replace-followup
+                      (emacs-minibuffer-gui-replace-followup purpose text))
+                (if replace-followup
+                    (progn
+                      (files--minibuffer-gui-backend-set-replace-from text)
+                      (emacs-minibuffer-gui--finish-followup
+                       (car replace-followup) (cdr replace-followup))
+                      (setq purpose ""))
+                  (progn
+                    (setq replace-command
+                          (emacs-minibuffer-gui-replace-commit-command
+                           purpose))
+                    (if replace-command
+                        (progn
+                          (files--minibuffer-gui-backend-execute-replace-command
+                           replace-command
+                           (or (files--minibuffer-gui-backend-replace-from)
+                               "")
+                           text)
+                          (files--minibuffer-gui-backend-clear-replace-from)
+                          (setq purpose ""))
+                      nil))))
+              (if (if (not (equal purpose ""))
+                      (not (equal purpose "execute-extended-command"))
                     nil)
+                  (emacs-minibuffer-gui--execute-command-spec
+                   (emacs-minibuffer-gui-command-commit-spec purpose text)
+                   t)
                 nil)
-              (if (equal files--minibuffer-purpose "project-switch-to-buffer")
-                  (if (equal source "")
-                      (setq source (files--project-buffer-list))
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-keymap-entry))
+    (fset 'emacs-minibuffer-gui-keymap-entry
+          (lambda (source key)
+            (let ((rest "")
+                  (found nil))
+              (if (fboundp 'str-kv-line)
+                  (setq rest (str-kv-line source key))
+                (let ((index 0)
+                      (start 0))
+                  (while (if (<= index (length source)) (equal rest "") nil)
+                    (if (if (= index (length source))
+                            t
+                          (= (aref source index) 10))
+                        (let ((line (substring source start index))
+                              (tab 0))
+                          (while (if (< tab (length line))
+                                     (not (= (aref line tab) 9))
+                                   nil)
+                            (setq tab (+ tab 1)))
+                          (if (if (< tab (length line))
+                                  (equal key (substring line 0 tab))
+                                nil)
+                              (setq rest (substring line (+ tab 1)))
+                            nil)
+                          (setq start (+ index 1)))
+                      nil)
+                    (setq index (+ index 1)))))
+              (if (not (equal rest ""))
+                  (let ((tab 0))
+                    (while (if (< tab (length rest))
+                               (not (= (aref rest tab) 9))
+                             nil)
+                      (setq tab (+ tab 1)))
+                    (if (< tab (length rest))
+                        (setq found
+                              (cons (substring rest 0 tab)
+                                    (substring rest (+ tab 1))))
+                      nil))
+                nil)
+              found)))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-purpose-uses-read-p))
+    (fset 'emacs-minibuffer-gui-purpose-uses-read-p
+          (lambda (purpose)
+            (if (member purpose
+                        '("find-file" "find-file-other-window"
+                          "find-file-other-frame" "find-file-other-tab"
+                          "project-find-file" "project-find-dir"
+                          "write-file" "find-alternate-file"
+                          "find-file-read-only"
+                          "find-file-read-only-other-window"
+                          "find-file-read-only-other-frame"
+                          "find-file-read-only-other-tab"
+                          "list-directory" "dired" "dired-other-window"
+                          "dired-other-frame" "dired-other-tab"
+                          "insert-file" "insert-buffer"
+                          "point-to-register" "jump-to-register"
+                          "frameset-to-register"
+                          "window-configuration-to-register"
+                          "copy-to-register" "insert-register"
+                          "number-to-register" "increment-register"
+                          "add-global-abbrev" "add-mode-abbrev"
+                          "inverse-add-global-abbrev"
+                          "inverse-add-mode-abbrev" "2C-associate-buffer"
+                          "bookmark-set" "bookmark-set-no-overwrite"
+                          "bookmark-jump" "info-display-manual"
+                          "Info-goto-emacs-command-node"
+                          "Info-goto-emacs-key-command-node"
+                          "info-lookup-symbol" "describe-package"
+                          "shell-command" "project-shell-command"
+                          "project-async-shell-command" "project-compile"
+                          "project-find-regexp"
+                          "project-or-external-find-regexp"
+                          "eval-expression" "insert-char"
+                          "emoji-describe" "emoji-insert" "emoji-search"
+                          "highlight-regexp" "highlight-phrase"
+                          "highlight-lines-matching-regexp"
+                          "unhighlight-regexp"
+                          "activate-transient-input-method"
+                          "set-input-method"
+                          "set-file-name-coding-system"
+                          "set-next-selection-coding-system"
+                          "universal-coding-system-argument"
+                          "set-buffer-file-coding-system"
+                          "set-keyboard-coding-system"
+                          "set-language-environment"
+                          "set-buffer-process-coding-system"
+                          "revert-buffer-with-coding-system"
+                          "set-terminal-coding-system"
+                          "set-selection-coding-system"
+                          "xref-find-definitions" "xref-find-references"
+                          "xref-find-apropos"
+                          "xref-find-definitions-other-window"
+                          "xref-find-definitions-other-frame"
+                          "copy-rectangle-to-register" "string-rectangle"
+                          "goto-line" "goto-line-relative" "goto-char"
+                          "move-to-column" "set-fill-column"
+                          "rename-buffer" "project-switch-to-buffer"
+                          "zap-to-char" "replace-string"
+                          "replace-string-to" "replace-regexp"
+                          "replace-regexp-to" "query-replace"
+                          "query-replace-to" "query-replace-regexp"
+                          "query-replace-regexp-to"
+                          "project-query-replace-regexp"
+                          "project-query-replace-regexp-to"))
+                t
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-start-purpose-read))
+    (fset 'emacs-minibuffer-gui-start-purpose-read
+          (lambda (purpose prompt)
+            (setq emacs-minibuffer-gui-purpose purpose)
+            (setq emacs-minibuffer-gui-prompt prompt)
+            (if (emacs-minibuffer-gui-purpose-uses-read-p purpose)
+                (read-from-minibuffer prompt)
+              (completing-read prompt nil nil t))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-start-from-keymap))
+    (fset 'emacs-minibuffer-gui-start-from-keymap
+          (lambda (source key)
+            (emacs-minibuffer-gui-start-spec
+             (emacs-minibuffer-gui-start-spec-from-keymaps
+              "" source key nil))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-start-spec-from-keymaps))
+    (fset 'emacs-minibuffer-gui-start-spec-from-keymaps
+          (lambda (mode-source global-source key &optional initial-input)
+            (let ((mode-entry
+                   (emacs-minibuffer-gui-keymap-entry
+                    (or mode-source "") key))
+                  (global-entry nil))
+              (if mode-entry
+                  (list :purpose (car mode-entry)
+                        :prompt (cdr mode-entry)
+                        :key (or key "")
+                        :initial-input (or initial-input "")
+                        :source 'mode)
+                (progn
+                  (setq global-entry
+                        (emacs-minibuffer-gui-keymap-entry
+                         (or global-source "") key))
+                  (if global-entry
+                      (list :purpose (car global-entry)
+                            :prompt (cdr global-entry)
+                            :key (or key "")
+                            :initial-input (or initial-input "")
+                            :source 'global)
+                    nil))))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-start-spec))
+    (fset 'emacs-minibuffer-gui-start-spec
+          (lambda (spec)
+            (if spec
+                (progn
+                  (emacs-minibuffer-gui-start-purpose-read
+                   (plist-get spec :purpose)
+                   (plist-get spec :prompt))
+                  (let ((initial-input (plist-get spec :initial-input)))
+                    (if (and initial-input
+                             (not (equal initial-input "")))
+                        (progn
+                          (if (fboundp 'files--minibuffer-gui-backend-set-text)
+                              (files--minibuffer-gui-backend-set-text
+                               initial-input)
+                            (setq files--minibuffer-text initial-input))
+                          (if (fboundp 'files--minibuffer-gui-backend-set-cursor)
+                              (files--minibuffer-gui-backend-set-cursor
+                               (length initial-input))
+                            (setq files--minibuffer-cursor
+                                  (length initial-input)))
+                          (if (fboundp 'files--minibuffer-finish)
+                              (files--minibuffer-finish)
+                            (if (fboundp 'emacs-minibuffer-gui-finish-read)
+                                (emacs-minibuffer-gui-finish-read)
+                              nil)))
+                      nil))
+                  t)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-maybe-start-from-keymap))
+    (fset 'emacs-minibuffer-gui-maybe-start-from-keymap
+          (lambda (source key &optional initial-input)
+            (emacs-minibuffer-gui-start-spec
+             (emacs-minibuffer-gui-start-spec-from-keymaps
+              "" source key initial-input))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-maybe-start-from-keymaps))
+    (fset 'emacs-minibuffer-gui-maybe-start-from-keymaps
+          (lambda (mode-source global-source key &optional initial-input)
+            (emacs-minibuffer-gui-start-spec
+             (emacs-minibuffer-gui-start-spec-from-keymaps
+              mode-source global-source key initial-input))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-maybe-start-current-context))
+    (fset 'emacs-minibuffer-gui-maybe-start-current-context
+          (lambda ()
+            (emacs-minibuffer-gui-maybe-start-from-keymaps
+             (files--mode-minibuffer-keymap-source)
+             files--minibuffer-keymap-source
+             files--bridge-keys
+             files--bridge-arg)))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-filter-candidate-lines))
+    (fset 'emacs-minibuffer-gui-filter-candidate-lines
+          (lambda (source prefix)
+            (if (fboundp 'str-filter-prefix-lines)
+                (str-filter-prefix-lines source prefix)
+              (let ((index 0)
+                    (start 0)
+                    (out ""))
+                (while (<= index (length source))
+                  (if (if (= index (length source))
+                          t
+                        (= (aref source index) 10))
+                      (let ((line (substring source start index)))
+                        (if (if (not (equal line ""))
+                                (if (<= (length prefix) (length line))
+                                    (equal (substring line 0 (length prefix))
+                                           prefix)
+                                  nil)
+                              nil)
+                            (setq out (concat out line "\n"))
+                          nil)
+                        (setq start (+ index 1)))
                     nil)
+                  (setq index (+ index 1)))
+                out))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-candidates-for-purpose))
+    (fset 'emacs-minibuffer-gui-candidates-for-purpose
+          (lambda (purpose)
+            (let ((source ""))
+              (if (not (equal emacs-minibuffer-gui-completion-table ""))
+                  (setq source emacs-minibuffer-gui-completion-table)
                 nil)
-		              (if (equal files--minibuffer-purpose "display-buffer")
-                  (if (equal source "")
-                      (setq source (rdf files--buffer-list-file))
+              (if (if (equal source "")
+                      (if (equal purpose "switch-to-buffer") t
+                        (if (equal purpose "switch-to-buffer-other-window") t
+                          (if (equal purpose "switch-to-buffer-other-frame") t
+                            (if (equal purpose "switch-to-buffer-other-tab") t
+                              (if (equal purpose "display-buffer") t
+                                (if (equal purpose "display-buffer-other-frame") t
+                                  (if (equal purpose "2C-associate-buffer") t
+                                    (if (equal purpose "rename-buffer") t
+                                      (if (equal purpose "insert-buffer") t
+                                        (equal purpose "kill-buffer"))))))))))
                     nil)
-                nil)
-              (if (equal files--minibuffer-purpose "display-buffer-other-frame")
-                  (if (equal source "")
-                      (setq source (rdf files--buffer-list-file))
-                    nil)
-                nil)
-              (if (equal files--minibuffer-purpose "2C-associate-buffer")
-                  (if (equal source "")
-                      (setq source (rdf files--buffer-list-file))
-                    nil)
-                nil)
-              (if (if (equal files--minibuffer-purpose "emoji-insert")
-                      t
-                    (if (equal files--minibuffer-purpose "emoji-search")
-                        t
-                      (equal files--minibuffer-purpose "emoji-describe")))
-                  (if (equal source "")
-                      (setq source (files--emoji-candidates))
-                    nil)
-                nil)
-		          (if (equal files--minibuffer-purpose "rename-buffer")
-		              (if (equal source "")
-		                  (setq source (rdf files--buffer-list-file))
-		                nil)
-		            nil)
-          (if (equal files--minibuffer-purpose "insert-buffer")
-              (if (equal source "")
                   (setq source (rdf files--buffer-list-file))
                 nil)
-            nil)
-          (if (equal files--minibuffer-purpose "kill-buffer")
-              (if (equal source "")
-                  (setq source (rdf files--buffer-list-file))
+              (if (if (equal source "")
+                      (equal purpose "project-switch-to-buffer")
+                    nil)
+                  (setq source (files--project-buffer-list))
                 nil)
-            nil)
-          (if (if (equal files--minibuffer-purpose "execute-extended-command")
-                  t
-                (equal files--minibuffer-purpose "execute-extended-command-for-buffer"))
-              (if (equal source "")
-	                  (setq source
-					                        (concat "find-file\n"
-	                                      "same-window-prefix\n"
-	                                      "other-window-prefix\n"
-	                                      "other-frame-prefix\n"
-	                                      "project-other-window-command\n"
-	                                      "project-other-frame-command\n"
-	                                      "project-other-tab-command\n"
-						                                "find-file-other-window\n"
-                                                        "find-file-other-frame\n"
-	                                                "find-file-other-tab\n"
-                                                "project-shell\n"
-                                                "project-eshell\n"
-                                                "project-or-external-find-file\n"
-                                                "project-find-file\n"
-                                                "project-find-dir\n"
-                                                "project-dired\n"
-                                                "project-any-command\n"
-                                                "project-execute-extended-command\n"
-                                                "project-switch-project\n"
-					                                "find-file-read-only\n"
-					                                "find-file-read-only-other-window\n"
-                                                    "find-file-read-only-other-frame\n"
-	                                                "find-file-read-only-other-tab\n"
-				                                "find-alternate-file\n"
-                                            "list-directory\n"
-	                                            "dired\n"
-	                                            "dired-jump\n"
-			                                "dired-jump-other-window\n"
-	                                            "dired-other-window\n"
-                                                "dired-other-frame\n"
-	                                                "dired-other-tab\n"
-	                                                "dired-mark\n"
-	                                                "dired-unmark\n"
-	                                                "dired-flag-file-deletion\n"
-	                                                "dired-do-flagged-delete\n"
-	                                                "dired-do-rename\n"
-	                                                "dired-do-copy\n"
-	                                                "org-todo\n"
-	                                                "org-narrow-to-subtree\n"
-	                                                "org-table-next-field\n"
-	                                                "org-capture\n"
-	                                                "org-agenda\n"
-	                                                "magit-status\n"
-	                                                "magit-stage-file\n"
-	                                                "magit-unstage-file\n"
-	                                                "magit-commit\n"
-	                                                "magit-diff\n"
-	                                                "magit-log\n"
-	                                                "Info-next\n"
-	                                                "Info-prev\n"
-	                                                "Info-up\n"
-	                                                "customize-variable\n"
-	                                                "customize-save-variable\n"
-	                                                "org-cycle\n"
-	                                                "org-shifttab\n"
-	                                                "org-table-align\n"
-	                                                "vc-root-diff\n"
-	                                                "vc-edit-next-command\n"
-	                                                "vc-next-action\n"
-	                                                "ispell-word\n"
-	                                                "eww-search-words\n"
-                                                "compose-mail\n"
-                                                "compose-mail-other-window\n"
-                                                "compose-mail-other-frame\n"
-                                                "calc-dispatch\n"
-                                                "2C-command\n"
-                                                "2C-two-columns\n"
-                                                "2C-associate-buffer\n"
-                                                "2C-split\n"
-                                                "emoji-zoom-increase\n"
-                                                "emoji-zoom-decrease\n"
-                                                "emoji-zoom-reset\n"
-                                                "emoji-describe\n"
-                                                "emoji-insert\n"
-                                                "emoji-list\n"
-                                                "emoji-recent\n"
-                                                "emoji-search\n"
-                                                "add-change-log-entry-other-window\n"
-				                                "insert-file\n"
-                                        "insert-buffer\n"
-	                                "save-buffer\n"
-	                                "basic-save-buffer\n"
-	                                "save-some-buffers\n"
-	                                "revert-buffer\n"
-                                    "revert-buffer-quick\n"
-                                    "point-to-register\n"
-                                    "jump-to-register\n"
-                                    "frameset-to-register\n"
-                                    "window-configuration-to-register\n"
-                                    "copy-to-register\n"
-                                    "insert-register\n"
-                                    "number-to-register\n"
-                                    "increment-register\n"
-                                    "bookmark-set\n"
-                                    "bookmark-set-no-overwrite\n"
-                                    "bookmark-jump\n"
-                                    "bookmark-bmenu-list\n"
-                                    "copy-rectangle-to-register\n"
-                                    "copy-rectangle-as-kill\n"
-                                    "rectangle-number-lines\n"
-                                    "kill-rectangle\n"
-                                    "delete-rectangle\n"
-                                    "clear-rectangle\n"
-                                    "open-rectangle\n"
-                                    "string-rectangle\n"
-                                    "yank-rectangle\n"
-			                                "write-file\n"
-                                            "expand-abbrev\n"
-                                            "add-global-abbrev\n"
-                                            "add-mode-abbrev\n"
-                                            "inverse-add-global-abbrev\n"
-                                            "inverse-add-mode-abbrev\n"
-                                            "abbrev-prefix-mark\n"
-                                            "expand-jump-to-next-slot\n"
-                                            "expand-jump-to-previous-slot\n"
-					                                "switch-to-buffer\n"
-					                                "switch-to-buffer-other-window\n"
-                                                    "switch-to-buffer-other-frame\n"
-                                                    "switch-to-buffer-other-tab\n"
-                                                    "project-switch-to-buffer\n"
-		                                                "display-buffer\n"
-                                                    "display-buffer-other-frame\n"
-                                                "rename-buffer\n"
-                                                "rename-uniquely\n"
-                                                "clone-buffer\n"
-                                                "clone-indirect-buffer-other-window\n"
-					                                "kill-buffer\n"
-			                                "kill-buffer-and-window\n"
-		                                "list-buffers\n"
-                                                "project-list-buffers\n"
-                                                "project-kill-buffers\n"
-                                                "project-any-command\n"
-                                                "project-execute-extended-command\n"
-                                                "project-other-window-command\n"
-                                                "project-other-frame-command\n"
-                                                "project-other-tab-command\n"
-                                                "project-switch-project\n"
-		                                "occur\n"
-                                        "imenu\n"
-		                                "keyboard-escape-quit\n"
-			                                "exit-recursive-edit\n"
-			                                "abort-recursive-edit\n"
-			                                "goto-line\n"
-                                            "goto-line-relative\n"
-                                            "narrow-to-defun\n"
-                                            "narrow-to-region\n"
-                                            "narrow-to-page\n"
-                                            "widen\n"
-                                            "move-to-column\n"
-	                                            "eval-last-sexp\n"
-	                                            "shell-command\n"
-                                                "project-shell-command\n"
-                                                "project-async-shell-command\n"
-                                                "project-compile\n"
-                                                "project-or-external-find-regexp\n"
-                                                "project-find-regexp\n"
-                                                "project-query-replace-regexp\n"
-                                                "project-vc-dir\n"
-                                                "vc-diff\n"
-                                                "vc-print-log\n"
-			                                            "eval-expression\n"
-	                                            "font-lock-update\n"
-	                                            "insert-char\n"
-	                                            "text-scale-adjust\n"
-	                                            "global-text-scale-adjust\n"
-	                                            "suspend-frame\n"
-	                                            "tmm-menubar\n"
-	                                            "set-selective-display\n"
-	                                            "toggle-input-method\n"
-	                                            "activate-transient-input-method\n"
-	                                            "set-input-method\n"
-	                                            "set-file-name-coding-system\n"
-	                                            "set-next-selection-coding-system\n"
-	                                            "universal-coding-system-argument\n"
-	                                            "set-buffer-file-coding-system\n"
-	                                            "set-keyboard-coding-system\n"
-	                                            "set-language-environment\n"
-	                                            "set-buffer-process-coding-system\n"
-	                                            "revert-buffer-with-coding-system\n"
-	                                            "set-terminal-coding-system\n"
-	                                            "set-selection-coding-system\n"
-	                                            "highlight-symbol-at-point\n"
-	                                            "highlight-regexp\n"
-	                                            "highlight-phrase\n"
-	                                            "highlight-lines-matching-regexp\n"
-	                                            "unhighlight-regexp\n"
-	                                            "hi-lock-find-patterns\n"
-	                                            "hi-lock-write-interactive-patterns\n"
-                                            "kmacro-start-macro\n"
-                                            "kmacro-end-macro\n"
-                                            "kmacro-end-and-call-macro\n"
-                                            "kbd-macro-query\n"
-                                            "kmacro-keymap\n"
-                                            "kmacro-delete-ring-head\n"
-                                            "kmacro-edit-macro-repeat\n"
-                                            "kmacro-set-format\n"
-                                            "kmacro-end-or-call-macro-repeat\n"
-                                            "kmacro-call-ring-2nd-repeat\n"
-                                            "kmacro-cycle-ring-next\n"
-                                            "kmacro-cycle-ring-previous\n"
-                                            "kmacro-swap-ring\n"
-                                            "kmacro-view-macro-repeat\n"
-                                            "kmacro-edit-macro\n"
-                                            "kmacro-step-edit-macro\n"
-                                            "kmacro-bind-to-key\n"
-                                            "kmacro-redisplay\n"
-                                            "edit-kbd-macro\n"
-                                            "kmacro-edit-lossage\n"
-                                            "kmacro-name-last-macro\n"
-                                            "apply-macro-to-region-lines\n"
-                                            "kmacro-to-register\n"
-				                                "replace-string\n"
-		                                "replace-regexp\n"
-		                                "query-replace\n"
-		                                "query-replace-regexp\n"
-	                                "goto-char\n"
-		                                "describe-function\n"
-		                                "describe-variable\n"
-		                                "describe-key\n"
-		                                "describe-key-briefly\n"
-		                                "describe-bindings\n"
-		                                "help-for-help\n"
-		                                "describe-coding-system\n"
-		                                "describe-input-method\n"
-		                                "describe-language-environment\n"
-		                                "apropos-command\n"
-		                                "apropos-documentation\n"
-		                                "view-echo-area-messages\n"
-		                                "about-emacs\n"
-		                                "describe-copying\n"
-		                                "view-emacs-debugging\n"
-		                                "view-external-packages\n"
-		                                "view-emacs-FAQ\n"
-		                                "view-emacs-news\n"
-		                                "describe-distribution\n"
-		                                "view-emacs-problems\n"
-		                                "view-emacs-todo\n"
-		                                "describe-no-warranty\n"
-		                                "describe-gnu-project\n"
-		                                "view-hello-file\n"
-		                                "view-lossage\n"
-		                                "describe-mode\n"
-		                                "describe-symbol\n"
-		                                "help-quit\n"
-		                                "describe-syntax\n"
-		                                "help-with-tutorial\n"
-                                        "display-local-help\n"
-                                        "help-find-source\n"
-                                        "help-quick-toggle\n"
-                                        "search-forward-help-for-help\n"
-                                        "xref-go-back\n"
-                                        "xref-go-forward\n"
-                                        "xref-find-definitions\n"
-                                        "xref-find-references\n"
-                                        "xref-find-apropos\n"
-                                        "xref-find-definitions-other-window\n"
-                                        "xref-find-definitions-other-frame\n"
-                                        "next-error\n"
-                                        "previous-error\n"
-                                        "repeat-complex-command\n"
-                                        "info\n"
-                                        "info-other-window\n"
-                                        "info-emacs-manual\n"
-                                        "info-display-manual\n"
-                                        "view-order-manuals\n"
-                                        "Info-goto-emacs-command-node\n"
-                                        "Info-goto-emacs-key-command-node\n"
-                                        "info-lookup-symbol\n"
-                                        "describe-package\n"
-                                        "finder-by-keyword\n"
-                                        "where-is\n"
-		                                "describe-command\n"
-		                                "what-cursor-position\n"
-		                                "universal-argument\n"
-		                                "digit-argument\n"
-		                                "negative-argument\n"
-		                                "forward-char\n"
-	                                "backward-char\n"
-	                                "beginning-of-buffer\n"
-	                                "end-of-buffer\n"
-		                                "beginning-of-line\n"
-		                                "back-to-indentation\n"
-		                                "end-of-line\n"
-	                                "next-line\n"
-	                                "previous-line\n"
-	                                "set-goal-column\n"
-	                                "scroll-up-command\n"
-	                                "scroll-down-command\n"
-	                                "scroll-left\n"
-	                                "scroll-right\n"
-	                                "scroll-other-window\n"
-		                                "scroll-other-window-down\n"
-		                                "recenter-top-bottom\n"
-                                    "move-to-window-line-top-bottom\n"
-		                                "reposition-window\n"
-		                                "recenter-other-window\n"
-	                                "isearch-forward\n"
-	                                "isearch-backward\n"
-	                                "isearch-forward-regexp\n"
-	                                "isearch-backward-regexp\n"
-                                  "isearch-forward-symbol-at-point\n"
-                                  "isearch-forward-thing-at-point\n"
-                                  "isearch-forward-symbol\n"
-                                  "isearch-forward-word\n"
-	                                "indent-region\n"
-		                                "delete-other-windows\n"
-	                                "delete-window\n"
-	                                "split-window-right\n"
-	                                "split-window-below\n"
-                                    "balance-windows\n"
-                                    "shrink-window-if-larger-than-buffer\n"
-                                    "fit-window-to-buffer\n"
-                                    "delete-windows-on\n"
-                                    "split-root-window-below\n"
-                                    "split-root-window-right\n"
-                                    "tear-off-window\n"
-                                    "toggle-window-dedicated\n"
-                                    "quit-window\n"
-                                    "window-toggle-side-windows\n"
-                                    "enlarge-window\n"
-                                    "shrink-window-horizontally\n"
-                                    "enlarge-window-horizontally\n"
-	                                "other-window\n"
-	                                "forward-word\n"
-	                                "backward-word\n"
-	                                "beginning-of-defun\n"
-	                                "forward-sexp\n"
-	                                "backward-sexp\n"
-	                                "end-of-defun\n"
-	                                "mark-defun\n"
-	                                "mark-sexp\n"
-	                                "kill-sexp\n"
-	                                "down-list\n"
-	                                "forward-list\n"
-	                                "backward-list\n"
-	                                "transpose-sexps\n"
-	                                "backward-up-list\n"
-	                                "kill-word\n"
-			                                "backward-kill-word\n"
-		                                "zap-to-char\n"
-			                                "dabbrev-expand\n"
-			                                "dabbrev-completion\n"
-			                                "complete-symbol\n"
-			                                "transpose-words\n"
-		                                "insert-parentheses\n"
-	                                "move-past-close-and-reindent\n"
-	                                "transpose-lines\n"
-	                                "mark-word\n"
-	                                "count-words-region\n"
-                                    "count-lines-page\n"
-	                                "forward-paragraph\n"
-		                                "backward-paragraph\n"
-			                                "mark-paragraph\n"
-			                                "fill-paragraph\n"
-			                                "set-fill-column\n"
-			                                "set-fill-prefix\n"
-			                                "comment-set-column\n"
-			                                "forward-sentence\n"
-	                                "backward-sentence\n"
-	                                "kill-sentence\n"
-	                                "backward-kill-sentence\n"
-	                                "transpose-chars\n"
-	                                "delete-horizontal-space\n"
-		                                "cycle-spacing\n"
-		                                "not-modified\n"
-		                                "just-one-space\n"
-		                                "delete-indentation\n"
-		                                "comment-line\n"
-		                                "comment-dwim\n"
-		                                "upcase-word\n"
-	                                "downcase-word\n"
-	                                "capitalize-word\n"
-	                                "upcase-region\n"
-	                                "downcase-region\n"
-	                                "capitalize-region\n"
-	                                "sort-lines\n"
-	                                "delete-char\n"
-	                                "delete-backward-char\n"
-	                                "self-insert-command\n"
-		                                "quoted-insert\n"
-		                                "indent-for-tab-command\n"
-		                                "tab-to-tab-stop\n"
-		                                "newline\n"
-		                                "electric-newline-and-maybe-indent\n"
-		                                "default-indent-new-line\n"
-	                                "open-line\n"
-	                                "split-line\n"
-		                                "delete-blank-lines\n"
-	                                "kill-line\n"
-	                                "kill-whole-line\n"
-	                                "yank\n"
-	                                "yank-pop\n"
-	                                "set-mark-command\n"
-	                                "exchange-point-and-mark\n"
-	                                "pop-global-mark\n"
-	                                "rectangle-mark-mode\n"
-	                                "toggle-truncate-lines\n"
-	                                "mark-whole-buffer\n"
-                                    "mark-page\n"
-                                    "backward-page\n"
-                                    "forward-page\n"
-	                                "indent-rigidly\n"
-	                                "delete-region\n"
-	                                "kill-region\n"
-	                                "copy-region-as-kill\n"
-		                                "kill-ring-save\n"
-		                                "append-next-kill\n"
-		                                "undo\n"
-		                                "undo-redo\n"
-		                                "delete-trailing-whitespace\n"
-	                                "untabify\n"))
+              (if (if (equal source "")
+                      (if (equal purpose "emoji-insert") t
+                        (if (equal purpose "emoji-search") t
+                          (equal purpose "emoji-describe")))
+                    nil)
+                  (setq source (files--emoji-candidates))
                 nil)
-            nil)
-          (if (equal files--minibuffer-purpose "describe-function")
-              (if (equal source "")
+              (if (if (equal source "")
+                      (if (equal purpose "execute-extended-command") t
+                        (equal purpose "execute-extended-command-for-buffer"))
+                    nil)
+                  (if (fboundp 'emacs-command-loop-gui-extended-command-candidates)
+                      (setq source
+                            (emacs-command-loop-gui-extended-command-candidates))
+                    (setq source "find-file\nsave-buffer\nforward-char\n"))
+                nil)
+              (if (if (equal source "")
+                      (equal purpose "describe-function")
+                    nil)
                   (setq source
                         (concat "find-file\n"
                                 "save-buffer\n"
-	                                "switch-to-buffer\n"
-	                                "rename-buffer\n"
-	                                "kill-buffer\n"
+                                "switch-to-buffer\n"
+                                "rename-buffer\n"
+                                "kill-buffer\n"
                                 "goto-line\n"
                                 "forward-char\n"
                                 "backward-char\n"))
                 nil)
-            nil)
-          (if (equal files--minibuffer-purpose "describe-variable")
-              (if (equal source "")
+              (if (if (equal source "")
+                      (equal purpose "describe-variable")
+                    nil)
                   (setq source
                         (concat "buffer-file-name\n"
                                 "buffer-read-only\n"
                                 "point\n"
                                 "mark\n"))
                 nil)
-            nil)
-          (if (if (equal files--minibuffer-purpose "describe-key")
-                  t
-                (equal files--minibuffer-purpose "describe-key-briefly"))
-              (if (equal source "")
+              (if (if (equal source "")
+                      (if (equal purpose "describe-key") t
+                        (equal purpose "describe-key-briefly"))
+                    nil)
                   (progn
                     (setq files--key-list-source files--keymap-source)
                     (setq source (files--key-list-from-source))
@@ -16734,178 +18819,318 @@
                     (setq source
                           (concat source (files--key-list-from-source))))
                 nil)
-            nil)
-          ;; Prefix-filter the candidate lines.  The interpreted per-char
-          ;; walk + (concat out line) accumulation allocates ~hundreds of MB
-          ;; per keystroke on the standalone reader (string deep-copies per
-          ;; access, GC only at form boundaries) — prefer the native scan.
-          (if (fboundp 'str-filter-prefix-lines)
-              (setq out (str-filter-prefix-lines source prefix))
-            (progn
-              (while (<= index (length source))
-                (if (if (= index (length source))
-                        t
-                      (= (aref source index) 10))
-                    (let ((line (substring source start index)))
-                      (if (if (not (equal line ""))
-                              (if (<= (length prefix) (length line))
-                                  (equal (substring line 0 (length prefix)) prefix)
-                                nil)
-                            nil)
-                          (setq out (concat out line "\n"))
+              source)))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-filtered-candidates-for-purpose))
+    (fset 'emacs-minibuffer-gui-filtered-candidates-for-purpose
+          (lambda (purpose prefix)
+            (emacs-minibuffer-gui-filter-candidate-lines
+             (emacs-minibuffer-gui-candidates-for-purpose purpose)
+             prefix)))
+  nil)
+
+		(fset 'files--refresh-minibuffer-candidates
+		      (lambda ()
+            (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
+            (setq files--minibuffer-candidates
+                  (emacs-minibuffer-gui-filtered-candidates-for-purpose
+                   files--minibuffer-purpose files--minibuffer-text))
+	          files--minibuffer-candidates))
+
+(defun files--minibuffer-gui-backend-begin-read ()
+  (emacs-minibuffer-gui-history-symbol-for-purpose)
+  (setq files--minibuffer-purpose emacs-minibuffer-gui-purpose)
+  (setq files--minibuffer-prompt emacs-minibuffer-gui-prompt)
+  (setq files--minibuffer-active t)
+  (setq files--minibuffer-text "")
+  (setq files--minibuffer-cursor 0)
+  (setq files--minibuffer-candidates "")
+  (files--refresh-minibuffer-candidates)
+  (setq files--bridge-effective-command "minibuffer")
+  (setq files--bridge-status "minibuffer"))
+
+(defun files--minibuffer-gui-backend-set-initial-input ()
+  (if (if emacs-minibuffer-gui-initial-input
+          (not (equal emacs-minibuffer-gui-initial-input ""))
+        nil)
+      (progn
+        (setq files--minibuffer-text emacs-minibuffer-gui-initial-input)
+        (setq files--minibuffer-cursor (length files--minibuffer-text))
+        (files--refresh-minibuffer-candidates))
+    nil))
+
+(defun files--minibuffer-gui-backend-commit-read ()
+  (let ((text files--minibuffer-text))
+    (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
+    (emacs-minibuffer-gui-history-symbol-for-purpose)
+    (if (not (equal text ""))
+        (setq files--minibuffer-history
+              (concat files--minibuffer-history
+                      files--minibuffer-purpose "\t" text "\n"
+                      emacs-minibuffer-gui-history-symbol "\t" text "\n"))
+      nil)
+    (setq files--minibuffer-active nil)
+    (setq files--minibuffer-prompt "")
+    (setq files--minibuffer-text "")
+    (setq files--minibuffer-cursor 0)
+    (setq files--minibuffer-candidates "")
+    (setq emacs-minibuffer-gui-require-match nil)
+    text))
+
+(defun files--minibuffer-gui-backend-complete ()
+  (files--refresh-minibuffer-candidates)
+  (let ((candidates files--minibuffer-candidates)
+        (index 0))
+    (while (if (< index (length candidates))
+               (not (= (aref candidates index) 10))
+             nil)
+      (setq index (+ index 1)))
+    (if (> index 0)
+        (progn
+          (setq files--minibuffer-text (substring candidates 0 index))
+          (setq files--minibuffer-cursor (length files--minibuffer-text))
+          (files--refresh-minibuffer-candidates))
+      nil)
+    (setq files--bridge-effective-command "minibuffer")
+    (setq files--bridge-status "minibuffer")))
+
+(defun files--minibuffer-gui-backend-key ()
+  files--bridge-keys)
+
+(defun files--minibuffer-gui-backend-purpose ()
+  files--minibuffer-purpose)
+
+(defun files--minibuffer-gui-backend-prompt ()
+  files--minibuffer-prompt)
+
+(defun files--minibuffer-gui-backend-initial-input ()
+  files--bridge-arg)
+
+(defun files--minibuffer-gui-backend-set-text (text)
+  (setq files--minibuffer-text text))
+
+(defun files--minibuffer-gui-backend-set-cursor (cursor)
+  (setq files--minibuffer-cursor cursor))
+
+(defun files--minibuffer-gui-backend-set-effective-command (command)
+  (setq files--bridge-effective-command command))
+
+(defun files--minibuffer-gui-backend-set-status (status)
+  (setq files--bridge-status status))
+
+(defun files--minibuffer-gui-backend-delete-backward-char ()
+  (if (> files--minibuffer-cursor 0)
+      (progn
+        (setq files--minibuffer-text
+              (concat (substring files--minibuffer-text 0
+                                 (- files--minibuffer-cursor 1))
+                      (substring files--minibuffer-text
+                                 files--minibuffer-cursor)))
+        (setq files--minibuffer-cursor (- files--minibuffer-cursor 1)))
+    nil))
+
+(defun files--minibuffer-gui-backend-insert-text (text)
+  (setq files--minibuffer-text
+        (concat (substring files--minibuffer-text 0
+                           files--minibuffer-cursor)
+                text
+                (substring files--minibuffer-text
+                           files--minibuffer-cursor)))
+  (setq files--minibuffer-cursor
+        (+ files--minibuffer-cursor (length text))))
+
+(defun files--minibuffer-gui-backend-buffer-candidates ()
+  (if (fboundp 'emacs-fileio-gui-buffer-candidates)
+      (emacs-fileio-gui-buffer-candidates)
+    (rdf files--buffer-list-file)))
+
+(defun files--minibuffer-gui-backend-project-buffer-candidates ()
+  (if (fboundp 'emacs-fileio-gui-project-buffer-candidates)
+      (emacs-fileio-gui-project-buffer-candidates)
+    (files--project-buffer-list)))
+
+(defun files--minibuffer-gui-backend-emoji-candidates ()
+  (files--emoji-candidates))
+
+(defun files--minibuffer-gui-backend-extended-command-candidates ()
+  (if (fboundp 'emacs-command-loop-gui-extended-command-candidates)
+      (emacs-command-loop-gui-extended-command-candidates)
+    ""))
+
+(defun files--minibuffer-gui-backend-key-candidates ()
+  (let ((source ""))
+    (setq files--key-list-source files--keymap-source)
+    (setq source (files--key-list-from-source))
+    (setq files--key-list-source files--minibuffer-keymap-source)
+    (concat source (files--key-list-from-source))))
+
+(defun files--minibuffer-gui-backend-start-followup (purpose prompt)
+  (setq files--minibuffer-purpose purpose)
+  (setq files--minibuffer-prompt prompt)
+  (files--start-minibuffer))
+
+(defun files--minibuffer-gui-backend-followup-prefill-text ()
+  files--bridge-minibuffer-arg)
+
+(defun files--minibuffer-gui-backend-set-replace-from (text)
+  (setq files--replace-string-from text)
+  text)
+
+(defun files--minibuffer-gui-backend-replace-from ()
+  files--replace-string-from)
+
+(defun files--minibuffer-gui-backend-clear-replace-from ()
+  (setq files--replace-string-from ""))
+
+(defun files--minibuffer-gui-backend-execute-command-spec
+    (command effective arg)
+  (setq files--bridge-command (intern command))
+  (setq files--bridge-effective-command effective)
+  (setq files--bridge-arg arg)
+  (setq files--bridge-status "ok")
+  (command-execute))
+
+(defun files--minibuffer-gui-backend-execute-replace-command
+    (command from to)
+  (setq files--bridge-arg from)
+  (setq files--bridge-minibuffer-arg to)
+  (setq files--bridge-effective-command command)
+  (setq files--bridge-command (intern command))
+  (setq files--bridge-status "ok")
+  (files--command-loop-save-undo-if-needed-current-context)
+  (command-execute))
+
+(defun files--minibuffer-gui-install-backend ()
+  (emacs-minibuffer-gui-register-backend
+   :begin-read 'files--minibuffer-gui-backend-begin-read
+   :set-initial-input 'files--minibuffer-gui-backend-set-initial-input
+   :commit-read 'files--minibuffer-gui-backend-commit-read
+   :complete 'files--minibuffer-gui-backend-complete
+   :buffer-candidates 'files--minibuffer-gui-backend-buffer-candidates
+   :project-buffer-candidates
+   'files--minibuffer-gui-backend-project-buffer-candidates
+   :emoji-candidates 'files--minibuffer-gui-backend-emoji-candidates
+   :extended-command-candidates
+   'files--minibuffer-gui-backend-extended-command-candidates
+   :key-candidates 'files--minibuffer-gui-backend-key-candidates
+   :key 'files--minibuffer-gui-backend-key
+   :purpose 'files--minibuffer-gui-backend-purpose
+   :prompt 'files--minibuffer-gui-backend-prompt
+   :initial-input 'files--minibuffer-gui-backend-initial-input
+   :mode-keymap-source 'files--mode-minibuffer-keymap-source
+   :keymap-source 'files--command-loop-backend-minibuffer-keymap-source
+   :set-text 'files--minibuffer-gui-backend-set-text
+   :set-cursor 'files--minibuffer-gui-backend-set-cursor
+   :finish-read 'files--minibuffer-finish
+   :start-followup 'files--minibuffer-gui-backend-start-followup
+   :followup-prefill-text
+   'files--minibuffer-gui-backend-followup-prefill-text
+   :set-replace-from 'files--minibuffer-gui-backend-set-replace-from
+   :replace-from 'files--minibuffer-gui-backend-replace-from
+   :clear-replace-from
+   'files--minibuffer-gui-backend-clear-replace-from
+   :execute-command-spec
+   'files--minibuffer-gui-backend-execute-command-spec
+   :execute-replace-command
+   'files--minibuffer-gui-backend-execute-replace-command
+   :save-undo-if-needed 'files--bridge-save-undo-if-needed
+   :refresh-candidates 'files--refresh-minibuffer-candidates
+   :set-effective-command
+   'files--minibuffer-gui-backend-set-effective-command
+   :set-status 'files--minibuffer-gui-backend-set-status
+   :delete-backward-char
+   'files--minibuffer-gui-backend-delete-backward-char
+   :insert-text 'files--minibuffer-gui-backend-insert-text
+   :clear-quit-state 'files--clear-quit-state
+   :handle-query-replace-key 'files--query-replace-handle-key))
+
+(if (fboundp 'emacs-minibuffer-gui-register-backend)
+    (files--minibuffer-gui-install-backend)
+  (progn
+    (fset 'emacs-minibuffer-gui-begin-read
+          (lambda ()
+            (files--minibuffer-gui-backend-begin-read)))
+
+    (fset 'emacs-minibuffer-gui--set-initial-input
+          (lambda ()
+            (files--minibuffer-gui-backend-set-initial-input)))
+
+    (fset 'emacs-minibuffer-gui--collection-lines
+          (lambda ()
+            ""))
+
+    (fset 'emacs-minibuffer-read-from-minibuffer
+          (lambda (&rest args)
+            (setq emacs-minibuffer-gui-initial-input "")
+            (setq emacs-minibuffer-gui-completion-table "")
+            (if args
+                (progn
+                  (if (stringp (car args))
+                      (setq emacs-minibuffer-gui-prompt (car args))
+                    nil)
+                  (setq args (cdr args))
+                  (if args
+                      (if (stringp (car args))
+                          (setq emacs-minibuffer-gui-initial-input (car args))
                         nil)
-                      (setq start (+ index 1)))
-                  nil)
-                (setq index (+ index 1)))))
-          (setq files--minibuffer-candidates out)
-          files--minibuffer-candidates)))
-
-(fset 'emacs-minibuffer-gui-begin-read
-      (lambda ()
-        (emacs-minibuffer-gui-history-symbol-for-purpose)
-        (setq files--minibuffer-purpose emacs-minibuffer-gui-purpose)
-        (setq files--minibuffer-prompt emacs-minibuffer-gui-prompt)
-        (setq files--minibuffer-active t)
-        (setq files--minibuffer-text "")
-        (setq files--minibuffer-cursor 0)
-        (setq files--minibuffer-candidates "")
-        (files--refresh-minibuffer-candidates)
-        (setq files--bridge-effective-command "minibuffer")
-        (setq files--bridge-status "minibuffer")))
-
-(fset 'emacs-minibuffer-gui--set-initial-input
-      (lambda ()
-        (if (if emacs-minibuffer-gui-initial-input
-                (not (equal emacs-minibuffer-gui-initial-input ""))
+                    nil))
               nil)
-            (progn
-              (setq files--minibuffer-text emacs-minibuffer-gui-initial-input)
-              (setq files--minibuffer-cursor (length files--minibuffer-text))
-              (files--refresh-minibuffer-candidates))
-          nil)))
+            (setq emacs-minibuffer-gui-require-match nil)
+            (emacs-minibuffer-gui-begin-read)
+            (emacs-minibuffer-gui--set-initial-input)))
 
-(fset 'emacs-minibuffer-gui--collection-lines
-      (lambda ()
-        (let ((collection emacs-minibuffer-gui-collection)
-              (out ""))
-          (if (equal collection nil)
-              nil
-            (if (stringp collection)
-                (setq out collection)
-              (while collection
-                (if (stringp (car collection))
-                    (setq out (concat out (car collection) "\n"))
-                  (if (consp (car collection))
-                      (if (stringp (car (car collection)))
-                          (setq out (concat out (car (car collection)) "\n"))
+    (fset 'read-from-minibuffer
+          (lambda (&rest args)
+            (apply 'emacs-minibuffer-read-from-minibuffer args)))
+
+    (fset 'emacs-minibuffer-completing-read
+          (lambda (&rest args)
+            (setq emacs-minibuffer-gui-initial-input "")
+            (setq emacs-minibuffer-gui-collection nil)
+            (setq emacs-minibuffer-gui-completion-table "")
+            (setq emacs-minibuffer-gui-require-match nil)
+            (if args
+                (progn
+                  (if (stringp (car args))
+                      (setq emacs-minibuffer-gui-prompt (car args))
+                    nil)
+                  (setq args (cdr args))
+                  (if args
+                      (progn
+                        (setq emacs-minibuffer-gui-collection (car args))
+                        (setq emacs-minibuffer-gui-completion-table
+                              (emacs-minibuffer-gui--collection-lines))
+                        (setq args (cdr args)))
+                    nil)
+                  (if args (setq args (cdr args)) nil)
+                  (if args
+                      (progn
+                        (if (car args)
+                            (setq emacs-minibuffer-gui-require-match t)
+                          nil)
+                        (setq args (cdr args)))
+                    nil)
+                  (if args
+                      (if (stringp (car args))
+                          (setq emacs-minibuffer-gui-initial-input (car args))
                         nil)
-                    (if (symbolp (car collection))
-                        (setq out
-                              (concat out (symbol-name (car collection)) "\n"))
-                      nil)))
-                (setq collection (cdr collection)))))
-          out)))
+                    nil))
+              (setq emacs-minibuffer-gui-require-match t))
+            (emacs-minibuffer-gui-begin-read)
+            (emacs-minibuffer-gui--set-initial-input)))
 
-(fset 'emacs-minibuffer-read-from-minibuffer
-      (lambda (&rest args)
-        (setq emacs-minibuffer-gui-initial-input "")
-        (setq emacs-minibuffer-gui-completion-table "")
-        (if args
-            (progn
-              (if (stringp (car args))
-                  (setq emacs-minibuffer-gui-prompt (car args))
-                nil)
-              (setq args (cdr args))
-              (if args
-                  (if (stringp (car args))
-                      (setq emacs-minibuffer-gui-initial-input (car args))
-                    nil)
-                nil))
-          nil)
-        (setq emacs-minibuffer-gui-require-match nil)
-        (emacs-minibuffer-gui-begin-read)
-        (emacs-minibuffer-gui--set-initial-input)))
+    (fset 'completing-read
+          (lambda (&rest args)
+            (apply 'emacs-minibuffer-completing-read args)))
 
-(fset 'read-from-minibuffer
-      (lambda (&rest args)
-        (apply 'emacs-minibuffer-read-from-minibuffer args)))
+    (fset 'emacs-minibuffer-gui-commit-read
+          (lambda ()
+            (files--minibuffer-gui-backend-commit-read)))
 
-(fset 'emacs-minibuffer-completing-read
-      (lambda (&rest args)
-        (setq emacs-minibuffer-gui-initial-input "")
-        (setq emacs-minibuffer-gui-collection nil)
-        (setq emacs-minibuffer-gui-completion-table "")
-        (setq emacs-minibuffer-gui-require-match nil)
-        (if args
-            (progn
-              (if (stringp (car args))
-                  (setq emacs-minibuffer-gui-prompt (car args))
-                nil)
-              (setq args (cdr args))
-              (if args
-                  (progn
-                    (setq emacs-minibuffer-gui-collection (car args))
-                    (setq emacs-minibuffer-gui-completion-table
-                          (emacs-minibuffer-gui--collection-lines))
-                    (setq args (cdr args)))
-                nil)
-              (if args (setq args (cdr args)) nil)
-              (if args
-                  (progn
-                    (if (car args)
-                        (setq emacs-minibuffer-gui-require-match t)
-                      nil)
-                    (setq args (cdr args)))
-                nil)
-              (if args
-                  (if (stringp (car args))
-                      (setq emacs-minibuffer-gui-initial-input (car args))
-                    nil)
-                nil))
-          (setq emacs-minibuffer-gui-require-match t))
-        (emacs-minibuffer-gui-begin-read)
-        (emacs-minibuffer-gui--set-initial-input)))
-
-(fset 'completing-read
-      (lambda (&rest args)
-        (apply 'emacs-minibuffer-completing-read args)))
-
-(fset 'emacs-minibuffer-gui-commit-read
-      (lambda ()
-        (let ((text files--minibuffer-text))
-          (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
-          (emacs-minibuffer-gui-history-symbol-for-purpose)
-          (if (not (equal text ""))
-              (setq files--minibuffer-history
-                    (concat files--minibuffer-history
-                            files--minibuffer-purpose "\t" text "\n"
-                            emacs-minibuffer-gui-history-symbol "\t" text "\n"))
-            nil)
-          (setq files--minibuffer-active nil)
-          (setq files--minibuffer-prompt "")
-          (setq files--minibuffer-text "")
-          (setq files--minibuffer-cursor 0)
-          (setq files--minibuffer-candidates "")
-          (setq emacs-minibuffer-gui-require-match nil)
-          text)))
-
-(fset 'emacs-minibuffer-gui-complete
-      (lambda ()
-        (files--refresh-minibuffer-candidates)
-        (let ((candidates files--minibuffer-candidates)
-              (index 0))
-          (while (if (< index (length candidates))
-                     (not (= (aref candidates index) 10))
-                   nil)
-            (setq index (+ index 1)))
-          (if (> index 0)
-              (progn
-                (setq files--minibuffer-text (substring candidates 0 index))
-                (setq files--minibuffer-cursor (length files--minibuffer-text))
-                (files--refresh-minibuffer-candidates))
-            nil)
-          (setq files--bridge-effective-command "minibuffer")
-          (setq files--bridge-status "minibuffer"))))
+    (fset 'emacs-minibuffer-gui-complete
+          (lambda ()
+            (files--minibuffer-gui-backend-complete)))))
 
 	(fset 'files--write-minibuffer-state
 	      (lambda ()
@@ -17075,17 +19300,23 @@
               "Paste\tC-y\n"
               "Search\tC-s\n"))
 
-(fset 'files--write-toolbar-state
+(fset 'files--write-toolbar-state-core
       (lambda ()
         (nl-write-file (progn (setq files--transport-name "nemacs-toolbar") (files--transport-path))
                        files--toolbar-spec)))
+
+(fset 'files--write-toolbar-state
+      (lambda ()
+        (if (fboundp 'emacs-toolbar-gui-write-state)
+            (emacs-toolbar-gui-write-state)
+          (files--write-toolbar-state-core))))
 
 (fset 'files--toolbar-menu-path
       (lambda ()
         (progn (setq files--transport-name "nemacs-toolbar-menu")
                (files--transport-path))))
 
-(fset 'files--toolbar-menu-for-label
+(fset 'files--toolbar-menu-for-label-core
       (lambda (label)
         (if (equal label "New")
             (concat "Find File\tC-x C-f\n"
@@ -17117,16 +19348,28 @@
                                   "Query Replace\tM-%\n")
                         ""))))))))))
 
-(fset 'files--write-toolbar-menu
+(fset 'files--toolbar-menu-for-label
+      (lambda (label)
+        (if (fboundp 'emacs-toolbar-gui-menu-for-label)
+            (emacs-toolbar-gui-menu-for-label label)
+          (files--toolbar-menu-for-label-core label))))
+
+(fset 'files--write-toolbar-menu-core
       (lambda (menu)
         (nl-write-file (files--toolbar-menu-path) menu)))
+
+(fset 'files--write-toolbar-menu
+      (lambda (menu)
+        (if (fboundp 'emacs-toolbar-gui-write-menu)
+            (emacs-toolbar-gui-write-menu menu)
+          (files--write-toolbar-menu-core menu))))
 
 (fset 'ignore
       (lambda (&rest _)
         (setq files--bridge-status "ok")
         nil))
 
-(fset 'files--toolbar-cell-width
+(fset 'files--toolbar-cell-width-core
       (lambda ()
         (let ((raw (rdf (progn (setq files--transport-name "nemacs-cell-width")
                                (files--transport-path))))
@@ -17140,11 +19383,17 @@
             (setq i (+ i 1)))
           (if (if (> n 0) (< n 256) nil) n 9))))
 
+(fset 'files--toolbar-cell-width
+      (lambda ()
+        (if (fboundp 'emacs-toolbar-gui-cell-width)
+            (emacs-toolbar-gui-cell-width)
+          (files--toolbar-cell-width-core))))
+
 ;; M22: map a tool-bar click x-coordinate to the clicked button's key
 ;; sequence.  Mirrors the GUI strip layout (nemacs--toolbar-draw-form):
 ;; buttons start at x=6 and each is (14 + LABEL-chars*cell-width) px wide, in
 ;; spec order.  Returns "" when the click lands past the last button.
-(fset 'files--toolbar-keys-at-x
+(fset 'files--toolbar-keys-at-x-core
       (lambda (clickx)
         (let ((spec files--toolbar-spec)
               (i 0) (n 0) (tx 6) (found "") (done nil)
@@ -17173,7 +19422,13 @@
                 (setq tx (+ tx bw)))))
           found)))
 
-(fset 'files--toolbar-label-at-x
+(fset 'files--toolbar-keys-at-x
+      (lambda (clickx)
+        (if (fboundp 'emacs-toolbar-gui-keys-at-x)
+            (emacs-toolbar-gui-keys-at-x clickx)
+          (files--toolbar-keys-at-x-core clickx))))
+
+(fset 'files--toolbar-label-at-x-core
       (lambda (clickx)
         (let ((spec files--toolbar-spec)
               (i 0) (n 0) (tx 6) (found "") (done nil)
@@ -17197,7 +19452,13 @@
                 (setq tx (+ tx bw)))))
           found)))
 
-(fset 'files--toolbar-menu-keys-at-row
+(fset 'files--toolbar-label-at-x
+      (lambda (clickx)
+        (if (fboundp 'emacs-toolbar-gui-label-at-x)
+            (emacs-toolbar-gui-label-at-x clickx)
+          (files--toolbar-label-at-x-core clickx))))
+
+(fset 'files--toolbar-menu-keys-at-row-core
       (lambda (menu row)
         (let ((i 0) (n 0) (cur 0) (keys "") (done nil))
           (setq n (length menu))
@@ -17219,7 +19480,13 @@
                 nil)))
           keys)))
 
-(fset 'files--parse-toolbar-click
+(fset 'files--toolbar-menu-keys-at-row
+      (lambda (menu row)
+        (if (fboundp 'emacs-toolbar-gui-menu-keys-at-row)
+            (emacs-toolbar-gui-menu-keys-at-row menu row)
+          (files--toolbar-menu-keys-at-row-core menu row))))
+
+(fset 'files--parse-toolbar-click-core
       (lambda (raw)
         (let ((i 0) (n 0) (x 0) (y 0) (seen-comma nil))
           (setq n (length raw))
@@ -17235,6 +19502,80 @@
             (setq i (+ i 1)))
           (if seen-comma nil (setq y 0))
           (cons x y))))
+
+(fset 'files--parse-toolbar-click
+      (lambda (raw)
+        (if (fboundp 'emacs-toolbar-gui-parse-click)
+            (emacs-toolbar-gui-parse-click raw)
+          (files--parse-toolbar-click-core raw))))
+
+(fset 'files--toolbar-backend-write-state
+      (lambda (spec)
+        (nl-write-file (progn (setq files--transport-name "nemacs-toolbar")
+                              (files--transport-path))
+                       spec)))
+
+(fset 'files--toolbar-backend-write-menu
+      (lambda (menu)
+        (files--write-toolbar-menu-core menu)))
+
+(fset 'files--toolbar-backend-read-menu
+      (lambda ()
+        (rdf (files--toolbar-menu-path))))
+
+(fset 'files--toolbar-backend-cell-width
+      (lambda ()
+        (files--toolbar-cell-width-core)))
+
+(fset 'files--toolbar-install-backend
+      (lambda ()
+        (if (fboundp 'emacs-toolbar-gui-register-backend)
+            (emacs-toolbar-gui-register-backend
+             :write-state 'files--toolbar-backend-write-state
+             :write-menu 'files--toolbar-backend-write-menu
+             :read-menu 'files--toolbar-backend-read-menu
+             :cell-width 'files--toolbar-backend-cell-width)
+          nil)))
+
+(files--toolbar-install-backend)
+
+(fset 'files--handle-toolbar-click
+      (lambda (raw)
+        (setq files--bridge-command nil)
+        (setq files--bridge-effective-command "")
+        (if (fboundp 'emacs-toolbar-gui-handle-click)
+            (let ((result (emacs-toolbar-gui-handle-click raw)))
+              (setq files--bridge-keys
+                    (or (plist-get result :keys) ""))
+              (setq files--bridge-command
+                    (plist-get result :command))
+              (setq files--bridge-effective-command
+                    (or (plist-get result :effective-command) "")))
+          (let* ((xy (files--parse-toolbar-click raw))
+                 (cx (car xy))
+                 (cy (cdr xy)))
+            (if (< cy 18)
+                (let* ((label (files--toolbar-label-at-x cx))
+                       (menu (files--toolbar-menu-for-label label)))
+                  (if (equal menu "")
+                      (progn
+                        (files--write-toolbar-menu "")
+                        (setq files--bridge-keys (files--toolbar-keys-at-x cx)))
+                    (progn
+                      (files--write-toolbar-menu menu)
+                      (setq files--bridge-keys "")
+                      (setq files--bridge-command 'ignore)
+                      (setq files--bridge-effective-command "ignore"))))
+              (let* ((menu (rdf (files--toolbar-menu-path)))
+                     (row (/ (- cy 18) 16))
+                     (keys (files--toolbar-menu-keys-at-row menu row)))
+                (files--write-toolbar-menu "")
+                (if (equal keys "")
+                    (progn
+                      (setq files--bridge-keys "")
+                      (setq files--bridge-command 'ignore)
+                      (setq files--bridge-effective-command "ignore"))
+                  (setq files--bridge-keys keys))))))))
 
 (fset 'files--view-base
       (lambda ()
@@ -17283,7 +19624,7 @@
 
 ;; M20b: the launcher seeds the theme's font-lock palette here so
 ;; syntax/org spans follow the user's color theme instead of the
-;; bridge's built-in defaults (which stay as the no-theme fallback).
+  ;; runtime's built-in defaults when no theme transport is present.
 (setq files--face-theme-loaded nil)
 
 (fset 'files--face-theme-path
@@ -17454,7 +19795,7 @@
           ;; ITERATION (value-semantics clones, GC only at form boundaries),
           ;; so a 500KB buffer OOM'd the host (Doc 142 Gate 5, 2026-06-10).
           ;; Use the native scan builtins when present; keep the interpreted
-          ;; walk only as a host-Emacs / old-reader fallback.
+          ;; walk only for host Emacs and older standalone readers.
           (if (fboundp 'str-count-nl)
               (progn
                 (setq line (+ 1 (str-count-nl files--buffer-string files--point)))
@@ -17528,410 +19869,152 @@
 
 (fset 'files--start-minibuffer
       (lambda ()
-        (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
-        (setq emacs-minibuffer-gui-prompt files--minibuffer-prompt)
-        (let ((ok nil))
-			          (if (equal files--minibuffer-purpose "find-file") (setq ok t) nil)
-			          (if (equal files--minibuffer-purpose "find-file-other-window") (setq ok t) nil)
-                      (if (equal files--minibuffer-purpose "find-file-other-frame") (setq ok t) nil)
-		              (if (equal files--minibuffer-purpose "find-file-other-tab") (setq ok t) nil)
-                  (if (equal files--minibuffer-purpose "project-find-file") (setq ok t) nil)
-                  (if (equal files--minibuffer-purpose "project-find-dir") (setq ok t) nil)
-		          (if (equal files--minibuffer-purpose "write-file") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "find-alternate-file") (setq ok t) nil)
-			          (if (equal files--minibuffer-purpose "find-file-read-only") (setq ok t) nil)
-			          (if (equal files--minibuffer-purpose "find-file-read-only-other-window") (setq ok t) nil)
-                      (if (equal files--minibuffer-purpose "find-file-read-only-other-frame") (setq ok t) nil)
-	                  (if (equal files--minibuffer-purpose "find-file-read-only-other-tab") (setq ok t) nil)
-              (if (equal files--minibuffer-purpose "list-directory") (setq ok t) nil)
-              (if (equal files--minibuffer-purpose "dired") (setq ok t) nil)
-              (if (equal files--minibuffer-purpose "dired-other-window") (setq ok t) nil)
-              (if (equal files--minibuffer-purpose "dired-other-frame") (setq ok t) nil)
-              (if (equal files--minibuffer-purpose "dired-other-tab") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "insert-file") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "insert-buffer") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "point-to-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "jump-to-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "frameset-to-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "window-configuration-to-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "copy-to-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "insert-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "number-to-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "increment-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "add-global-abbrev") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "add-mode-abbrev") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "inverse-add-global-abbrev") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "inverse-add-mode-abbrev") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "2C-associate-buffer") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "bookmark-set") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "bookmark-set-no-overwrite") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "bookmark-jump") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "info-display-manual") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "Info-goto-emacs-command-node") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "Info-goto-emacs-key-command-node") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "info-lookup-symbol") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "describe-package") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "shell-command") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "project-shell-command") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "project-async-shell-command") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "project-compile") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "project-find-regexp") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "project-or-external-find-regexp") (setq ok t) nil)
-			          (if (equal files--minibuffer-purpose "eval-expression") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "insert-char") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "emoji-describe") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "emoji-insert") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "emoji-search") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "highlight-regexp") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "highlight-phrase") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "highlight-lines-matching-regexp") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "unhighlight-regexp") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "activate-transient-input-method") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-input-method") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-file-name-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-next-selection-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "universal-coding-system-argument") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-buffer-file-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-keyboard-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-language-environment") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-buffer-process-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "revert-buffer-with-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-terminal-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "set-selection-coding-system") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "xref-find-definitions") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "xref-find-references") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "xref-find-apropos") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "xref-find-definitions-other-window") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "xref-find-definitions-other-frame") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "copy-rectangle-to-register") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "string-rectangle") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "goto-line") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "goto-line-relative") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "goto-char") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "move-to-column") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "set-fill-column") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "rename-buffer") (setq ok t) nil)
-              (if (equal files--minibuffer-purpose "project-switch-to-buffer") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "zap-to-char") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "replace-string") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "replace-string-to") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "replace-regexp") (setq ok t) nil)
-          (if (equal files--minibuffer-purpose "replace-regexp-to") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "query-replace") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "query-replace-to") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "query-replace-regexp") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "query-replace-regexp-to") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "project-query-replace-regexp") (setq ok t) nil)
-	          (if (equal files--minibuffer-purpose "project-query-replace-regexp-to") (setq ok t) nil)
-	          (if ok
-              (read-from-minibuffer)
-            (completing-read)))))
+        (if (fboundp 'emacs-minibuffer-gui-start-current-context)
+            (emacs-minibuffer-gui-start-current-context)
+          (progn
+            (setq emacs-minibuffer-gui-purpose files--minibuffer-purpose)
+            (setq emacs-minibuffer-gui-prompt files--minibuffer-prompt)
+            (emacs-minibuffer-gui-start-purpose-read
+             files--minibuffer-purpose files--minibuffer-prompt)))))
 
-(fset 'files--maybe-start-minibuffer
-      (lambda ()
-        (let ((started nil))
-          (if (files--maybe-start-minibuffer-from-keymap)
-              (progn
-                (setq started t)
-                (if (not (equal files--bridge-arg ""))
-                    (progn
-                      (setq files--minibuffer-text files--bridge-arg)
-                      (setq files--minibuffer-cursor
-                            (length files--minibuffer-text))
-                      (files--minibuffer-finish))
-                  nil))
-            nil)
-          started)))
+	(fset 'files--maybe-start-minibuffer
+	      (lambda ()
+	        (cond
+             ((and (fboundp 'emacs-command-loop-gui-maybe-start-minibuffer)
+                   (not files--command-loop-maybe-start-delegating))
+              (let ((files--command-loop-maybe-start-delegating t))
+                (if (fboundp 'files--command-loop-install-backend)
+                    (files--command-loop-install-backend)
+                  nil)
+                (emacs-command-loop-gui-maybe-start-minibuffer)))
+             ((fboundp 'emacs-minibuffer-gui-maybe-start-current-context)
+	            (emacs-minibuffer-gui-maybe-start-current-context)
+             )
+             (t
+              (let ((started nil))
+	                (if (files--maybe-start-minibuffer-from-keymap)
+	                    (progn
+	                      (setq started t)
+                      (if (not (equal files--bridge-arg ""))
+                          (progn
+                            (setq files--minibuffer-text files--bridge-arg)
+                            (setq files--minibuffer-cursor
+                                  (length files--minibuffer-text))
+                            (files--minibuffer-finish))
+	                        nil))
+		                  nil)
+		                started)))))
 
 	(fset 'files--minibuffer-finish
 	      (lambda ()
-	        (let ((purpose files--minibuffer-purpose)
-		              (text (emacs-minibuffer-gui-commit-read)))
-            (if (equal purpose "execute-extended-command-for-buffer")
-                (setq purpose "execute-extended-command")
-              nil)
-		          (if (equal purpose "execute-extended-command")
-		                  (if (equal text "goto-line")
-		                  (progn
-		                    (setq files--minibuffer-purpose "goto-line")
-		                    (setq files--minibuffer-prompt "Goto line: ")
-	                    (files--start-minibuffer)
-	                    (if (not (equal files--bridge-minibuffer-arg ""))
-	                        (progn
-	                          (setq files--minibuffer-text
-	                                files--bridge-minibuffer-arg)
-	                          (setq files--minibuffer-cursor
-	                                (length files--minibuffer-text))
-		                          (files--minibuffer-finish))
-		                      nil))
-		                (if (equal text "goto-line-relative")
-		                    (progn
-		                      (setq files--minibuffer-purpose "goto-line-relative")
-		                      (setq files--minibuffer-prompt "Goto line: ")
-	                      (files--start-minibuffer)
-	                      (if (not (equal files--bridge-minibuffer-arg ""))
-	                          (progn
-	                            (setq files--minibuffer-text
-	                                  files--bridge-minibuffer-arg)
-	                            (setq files--minibuffer-cursor
-	                                  (length files--minibuffer-text))
-			                            (files--minibuffer-finish))
-			                        nil))
-		                (if (equal text "goto-char")
-		                    (progn
-		                      (setq files--minibuffer-purpose "goto-char")
-		                      (setq files--minibuffer-prompt "Goto char: ")
-	                      (files--start-minibuffer)
-	                      (if (not (equal files--bridge-minibuffer-arg ""))
-	                          (progn
-	                            (setq files--minibuffer-text
-	                                  files--bridge-minibuffer-arg)
-	                            (setq files--minibuffer-cursor
-	                                  (length files--minibuffer-text))
-			                            (files--minibuffer-finish))
-			                        nil))
-			                  (if (equal text "move-to-column")
-			                      (progn
-			                        (setq files--minibuffer-purpose "move-to-column")
-			                        (setq files--minibuffer-prompt "Move to column: ")
-			                        (files--start-minibuffer)
-			                        (if (not (equal files--bridge-minibuffer-arg ""))
-			                            (progn
-			                              (setq files--minibuffer-text
-			                                    files--bridge-minibuffer-arg)
-			                              (setq files--minibuffer-cursor
-			                                    (length files--minibuffer-text))
-			                              (files--minibuffer-finish))
-			                          nil))
-				                (if (equal text "set-fill-column")
-			                    (progn
-			                      (setq files--minibuffer-purpose "set-fill-column")
-			                      (setq files--minibuffer-prompt "Set fill column: ")
-			                      (files--start-minibuffer)
-			                      (if (not (equal files--bridge-minibuffer-arg ""))
-			                          (progn
-			                            (setq files--minibuffer-text
-			                                  files--bridge-minibuffer-arg)
-			                            (setq files--minibuffer-cursor
-			                                  (length files--minibuffer-text))
-			                            (files--minibuffer-finish))
-			                        nil))
-			                (if (equal text "replace-string")
-			                    (progn
-		                      (setq files--minibuffer-purpose "replace-string")
-		                      (setq files--minibuffer-prompt "Replace string: ")
-		                      (files--start-minibuffer))
-			                  (if (equal text "query-replace")
-			                      (progn
-			                        (setq files--minibuffer-purpose "query-replace")
-			                        (setq files--minibuffer-prompt "Query replace: ")
-			                        (files--start-minibuffer))
-				                    (if (equal text "replace-regexp")
-				                        (progn
-				                          (setq files--minibuffer-purpose "replace-regexp")
-				                          (setq files--minibuffer-prompt "Replace regexp: ")
-				                          (files--start-minibuffer))
-				                      (if (equal text "query-replace-regexp")
-				                          (progn
-				                            (setq files--minibuffer-purpose "query-replace-regexp")
-				                            (setq files--minibuffer-prompt "Query replace regexp: ")
-				                            (files--start-minibuffer))
-                                        (if (equal text "project-query-replace-regexp")
-                                            (progn
-                                              (setq files--minibuffer-purpose "project-query-replace-regexp")
-                                              (setq files--minibuffer-prompt "Project query replace regexp: ")
-                                              (files--start-minibuffer))
-				                        (progn
-				                          (setq files--bridge-arg text)
-				                          (setq files--bridge-effective-command "execute-extended-command")
-				                          (setq files--bridge-command 'execute-extended-command)
-				                          (setq files--bridge-status "ok")
-						                          (command-execute))))))))))))
-	            (if (equal purpose "replace-string")
-	                (progn
-	                  (setq files--replace-string-from text)
-	                  (setq files--minibuffer-purpose "replace-string-to")
-	                  (setq files--minibuffer-prompt
-	                        (concat "Replace string " text " with: "))
-	                  (files--start-minibuffer)
-	                  (if (not (equal files--bridge-minibuffer-arg ""))
-	                      (progn
-	                        (setq files--minibuffer-text
-	                              files--bridge-minibuffer-arg)
-	                        (setq files--minibuffer-cursor
-	                              (length files--minibuffer-text))
-	                        (files--minibuffer-finish))
-	                    nil))
-		              (if (equal purpose "replace-string-to")
-		                  (progn
-		                    (setq files--bridge-arg files--replace-string-from)
-		                    (setq files--bridge-minibuffer-arg text)
-		                    (setq files--replace-string-from "")
-	                    (setq files--bridge-effective-command "replace-string")
-	                    (setq files--bridge-command 'replace-string)
-	                    (setq files--bridge-status "ok")
-		                    (files--bridge-save-undo-if-needed)
-		                    (command-execute))
-		                (if (equal purpose "replace-regexp")
-		                    (progn
-		                      (setq files--replace-string-from text)
-		                      (setq files--minibuffer-purpose "replace-regexp-to")
-		                      (setq files--minibuffer-prompt
-		                            (concat "Replace regexp " text " with: "))
-		                      (files--start-minibuffer)
-		                      (if (not (equal files--bridge-minibuffer-arg ""))
-		                          (progn
-		                            (setq files--minibuffer-text
-		                                  files--bridge-minibuffer-arg)
-		                            (setq files--minibuffer-cursor
-		                                  (length files--minibuffer-text))
-		                            (files--minibuffer-finish))
-		                        nil))
-		                  (if (equal purpose "replace-regexp-to")
-		                      (progn
-		                        (setq files--bridge-arg files--replace-string-from)
-		                        (setq files--bridge-minibuffer-arg text)
-		                        (setq files--replace-string-from "")
-		                        (setq files--bridge-effective-command "replace-regexp")
-		                        (setq files--bridge-command 'replace-regexp)
-		                        (setq files--bridge-status "ok")
-		                        (files--bridge-save-undo-if-needed)
-		                        (command-execute))
-		                    (if (equal purpose "query-replace")
-		                    (progn
-		                      (setq files--replace-string-from text)
-		                      (setq files--minibuffer-purpose "query-replace-to")
-		                      (setq files--minibuffer-prompt
-		                            (concat "Query replace " text " with: "))
-	                      (files--start-minibuffer)
-	                      (if (not (equal files--bridge-minibuffer-arg ""))
-	                          (progn
-	                            (setq files--minibuffer-text
-	                                  files--bridge-minibuffer-arg)
-	                            (setq files--minibuffer-cursor
-	                                  (length files--minibuffer-text))
-	                            (files--minibuffer-finish))
-	                        nil))
-		                  (if (equal purpose "query-replace-to")
-		                      (progn
-		                        (setq files--bridge-arg files--replace-string-from)
-		                        (setq files--bridge-minibuffer-arg text)
-		                        (setq files--replace-string-from "")
-	                        (setq files--bridge-effective-command "query-replace")
-	                        (setq files--bridge-command 'query-replace)
-	                        (setq files--bridge-status "ok")
-			                        (files--bridge-save-undo-if-needed)
-			                        (command-execute))
-		                    (if (equal purpose "query-replace-regexp")
-		                        (progn
-		                          (setq files--replace-string-from text)
-		                          (setq files--minibuffer-purpose "query-replace-regexp-to")
-		                          (setq files--minibuffer-prompt
-		                                (concat "Query replace regexp " text " with: "))
-		                          (files--start-minibuffer)
-		                          (if (not (equal files--bridge-minibuffer-arg ""))
-		                              (progn
-		                                (setq files--minibuffer-text
-		                                      files--bridge-minibuffer-arg)
-		                                (setq files--minibuffer-cursor
-		                                      (length files--minibuffer-text))
-		                                (files--minibuffer-finish))
-		                            nil))
-		                      (if (equal purpose "query-replace-regexp-to")
-		                          (progn
-		                            (setq files--bridge-arg files--replace-string-from)
-		                            (setq files--bridge-minibuffer-arg text)
-		                            (setq files--replace-string-from "")
-		                            (setq files--bridge-effective-command "query-replace-regexp")
-		                            (setq files--bridge-command 'query-replace-regexp)
-		                            (setq files--bridge-status "ok")
-		                            (files--bridge-save-undo-if-needed)
-		                            (command-execute))
-                                (if (equal purpose "project-query-replace-regexp")
-                                    (progn
-                                      (setq files--replace-string-from text)
-                                      (setq files--minibuffer-purpose "project-query-replace-regexp-to")
-                                      (setq files--minibuffer-prompt
-                                            (concat "Project query replace regexp " text " with: "))
-                                      (files--start-minibuffer)
-                                      (if (not (equal files--bridge-minibuffer-arg ""))
-                                          (progn
-                                            (setq files--minibuffer-text
-                                                  files--bridge-minibuffer-arg)
-                                            (setq files--minibuffer-cursor
-                                                  (length files--minibuffer-text))
-                                            (files--minibuffer-finish))
-                                        nil))
-                                  (if (equal purpose "project-query-replace-regexp-to")
-                                      (progn
-                                        (setq files--bridge-arg files--replace-string-from)
-                                        (setq files--bridge-minibuffer-arg text)
-                                        (setq files--replace-string-from "")
-                                        (setq files--bridge-effective-command "project-query-replace-regexp")
-                                        (setq files--bridge-command 'project-query-replace-regexp)
-                                        (setq files--bridge-status "ok")
-                                        (files--bridge-save-undo-if-needed)
-                                        (command-execute))
-			                    (progn
-			                      (setq files--bridge-arg text)
-			                      (setq files--bridge-effective-command purpose)
-			                      (setq files--bridge-command (intern purpose))
-			                      (setq files--bridge-status "ok")
-			                      (files--bridge-save-undo-if-needed)
-			                      (command-execute))))))))))))))))
+            (emacs-minibuffer-gui-finish-read)))
+
+(if (not (fboundp 'emacs-minibuffer-gui-handle-key))
+    (fset 'emacs-minibuffer-gui-handle-key
+          (lambda (&optional key purpose)
+            (let ((key (if key key files--bridge-keys))
+                  (purpose (if purpose purpose files--minibuffer-purpose)))
+              (if (equal purpose "query-replace-confirm")
+                  (files--query-replace-handle-key)
+                (if (if (equal key "C-g")
+                        t
+                      (if (equal key "M-ESC ESC")
+                          t
+                        (if (equal key "C-M-c")
+                            t
+                          (equal key "C-]"))))
+                    (progn
+                      (files--clear-quit-state)
+                      (setq files--bridge-effective-command "minibuffer")
+                      (setq files--bridge-status "minibuffer"))
+                  (if (equal key "RET")
+                      (files--minibuffer-finish)
+                    (if (equal key "DEL")
+                        (progn
+                          (if (fboundp
+                               'files--minibuffer-gui-backend-delete-backward-char)
+                              (files--minibuffer-gui-backend-delete-backward-char)
+                            (if (> files--minibuffer-cursor 0)
+                                (progn
+                                  (setq files--minibuffer-text
+                                        (concat
+                                         (substring files--minibuffer-text 0
+                                                    (- files--minibuffer-cursor
+                                                       1))
+                                         (substring files--minibuffer-text
+                                                    files--minibuffer-cursor)))
+                                  (setq files--minibuffer-cursor
+                                        (- files--minibuffer-cursor 1)))
+                              nil))
+                          (files--refresh-minibuffer-candidates)
+                          (setq files--bridge-effective-command "minibuffer")
+                          (setq files--bridge-status "minibuffer"))
+                      (if (= (length key) 1)
+                          (progn
+                            (if (fboundp
+                                 'files--minibuffer-gui-backend-insert-text)
+                                (files--minibuffer-gui-backend-insert-text key)
+                              (progn
+                                (setq files--minibuffer-text
+                                      (concat
+                                       (substring files--minibuffer-text 0
+                                                  files--minibuffer-cursor)
+                                       key
+                                       (substring files--minibuffer-text
+                                                  files--minibuffer-cursor)))
+                                (setq files--minibuffer-cursor
+                                      (+ files--minibuffer-cursor
+                                         (length key)))))
+                            (files--refresh-minibuffer-candidates)
+                            (setq files--bridge-effective-command
+                                  "minibuffer")
+                            (setq files--bridge-status "minibuffer"))
+                        (if (equal key "TAB")
+                            (emacs-minibuffer-gui-complete)
+                          (progn
+                            (setq files--bridge-effective-command
+                                  "minibuffer")
+                            (setq files--bridge-status
+                                  "minibuffer")))))))))))
+  nil)
+
+(if (not (fboundp 'emacs-minibuffer-gui-handle-key-current-context))
+    (fset 'emacs-minibuffer-gui-handle-key-current-context
+          (lambda ()
+            (emacs-minibuffer-gui-handle-key
+             files--bridge-keys files--minibuffer-purpose)))
+  nil)
 
 (fset 'files--minibuffer-handle-key
       (lambda ()
-        (if (equal files--minibuffer-purpose "query-replace-confirm")
-            (files--query-replace-handle-key)
-          (if (if (equal files--bridge-keys "C-g")
-                  t
-                (if (equal files--bridge-keys "M-ESC ESC")
-                    t
-                  (if (equal files--bridge-keys "C-M-c")
-                      t
-                    (equal files--bridge-keys "C-]"))))
-            (progn
-              (files--clear-quit-state)
-	              (setq files--bridge-effective-command "minibuffer")
-	              (setq files--bridge-status "minibuffer"))
-          (if (equal files--bridge-keys "RET")
-              (files--minibuffer-finish)
-            (if (equal files--bridge-keys "DEL")
-                (progn
-                  (if (> files--minibuffer-cursor 0)
-                      (progn
-                        (setq files--minibuffer-text
-                              (concat (substring files--minibuffer-text 0
-                                                 (- files--minibuffer-cursor 1))
-                                      (substring files--minibuffer-text
-                                                 files--minibuffer-cursor)))
-		                        (setq files--minibuffer-cursor (- files--minibuffer-cursor 1)))
-		                    nil)
-	                  (files--refresh-minibuffer-candidates)
-	                  (setq files--bridge-effective-command "minibuffer")
-	                  (setq files--bridge-status "minibuffer"))
-              (if (= (length files--bridge-keys) 1)
-                  (progn
-                    (setq files--minibuffer-text
-                          (concat (substring files--minibuffer-text 0
-                                             files--minibuffer-cursor)
-                                  files--bridge-keys
-	                                  (substring files--minibuffer-text
-	                                             files--minibuffer-cursor)))
-	                    (setq files--minibuffer-cursor (+ files--minibuffer-cursor 1))
-	                    (files--refresh-minibuffer-candidates)
-	                    (setq files--bridge-effective-command "minibuffer")
-	                    (setq files--bridge-status "minibuffer"))
-		                (if (equal files--bridge-keys "TAB")
-		                    (emacs-minibuffer-gui-complete)
-		                  (progn
-		                    (setq files--bridge-effective-command "minibuffer")
-		                    (setq files--bridge-status "minibuffer"))))))))))
+        (if (if (fboundp 'emacs-command-loop-gui-minibuffer-handle-key)
+                (not files--command-loop-minibuffer-handle-delegating)
+              nil)
+            (let ((files--command-loop-minibuffer-handle-delegating t))
+              (if (fboundp 'files--command-loop-install-backend)
+                  (files--command-loop-install-backend)
+                nil)
+              (emacs-command-loop-gui-minibuffer-handle-key))
+          (progn
+            (if (if (fboundp 'files--minibuffer-gui-install-backend)
+                    (fboundp 'emacs-minibuffer-gui-register-backend)
+                  nil)
+                (files--minibuffer-gui-install-backend)
+              nil)
+            (emacs-minibuffer-gui-handle-key-current-context)))))
 
 (fset 'files--bridge-save-undo-if-needed
       (lambda ()
-        (if (eq files--bridge-command 'kill-word) (files--save-undo-state) nil)
+        (if (fboundp 'emacs-command-loop-gui-save-undo-if-needed)
+            (emacs-command-loop-gui-save-undo-if-needed
+             files--bridge-command)
+          (if (fboundp 'emacs-command-loop-gui-undo-save-command-p)
+              (if (emacs-command-loop-gui-undo-save-command-p
+                   files--bridge-command)
+                  (files--save-undo-state)
+                nil)
+            (progn
+            (if (eq files--bridge-command 'kill-word) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'kill-sexp) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'backward-kill-word) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'zap-to-char) (files--save-undo-state) nil)
@@ -18000,7 +20083,14 @@
         (if (eq files--bridge-command 'insert-file) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'insert-buffer) (files--save-undo-state) nil)
         (if (eq files--bridge-command 'insert-register) (files--save-undo-state) nil)
-        (if (eq files--bridge-command 'increment-register) (files--save-undo-state) nil)))
+            (if (eq files--bridge-command 'increment-register) (files--save-undo-state) nil))))))
+
+(fset 'files--command-loop-save-undo-if-needed-current-context
+      (lambda ()
+        (if (fboundp 'emacs-command-loop-gui-save-undo-if-needed)
+            (emacs-command-loop-gui-save-undo-if-needed
+             files--bridge-command)
+          (files--bridge-save-undo-if-needed))))
 
 (fset 'files--org-buffer-p
       (lambda ()
@@ -18028,8 +20118,8 @@
                         "u\tInfo-up\n")
               (if (files--org-buffer-p)
                   ;; org-mode keybindings.  The newer commands aren't in the
-                  ;; commandp allowlist, but command-execute's fboundp fallback
-                  ;; runs them.  M-<arrow> bindings work now that the GUI emits
+                  ;; commandp allowlist, but command-execute's direct fboundp
+                  ;; path runs them.  M-<arrow> bindings work now that the GUI emits
                   ;; "M-<left>" etc. for Meta+arrow (alt+keysym) through the key
                   ;; transport instead of a bare movement command.
                   (concat "TAB\torg-cycle\n"
@@ -18078,6 +20168,35 @@
 (unless (fboundp 'kbd)
   (fset 'kbd (lambda (s) s)))
 
+(if (not (fboundp 'emacs-command-loop-gui-keymap-command))
+    (fset 'emacs-command-loop-gui-keymap-command
+          (lambda (source key)
+            (if (fboundp 'str-kv-line)
+                (str-kv-line source key)
+              (let ((index 0)
+                    (start 0)
+                    (found ""))
+                (while (if (<= index (length source)) (equal found "") nil)
+                  (if (if (= index (length source))
+                          t
+                        (= (aref source index) 10))
+                      (let ((line (substring source start index))
+                            (tab 0))
+                        (while (if (< tab (length line))
+                                   (not (= (aref line tab) 9))
+                                 nil)
+                          (setq tab (+ tab 1)))
+                        (if (if (< tab (length line))
+                                (equal key (substring line 0 tab))
+                              nil)
+                            (setq found (substring line (+ tab 1)))
+                          nil)
+                        (setq start (+ index 1)))
+                    nil)
+                  (setq index (+ index 1)))
+                found))))
+  nil)
+
 (fset 'files--user-keymap-remove
       (lambda (source key)
         ;; drop any "KEY\t...\n" line for KEY from SOURCE
@@ -18116,15 +20235,29 @@
 
 (fset 'files--lookup-key-sequence
       (lambda ()
-        ;; Keymap-table line lookup.  The interpreted per-char fallback walk
-        ;; allocates ~hundreds of MB per key dispatch on the standalone
-        ;; reader (string deep-copies per access, GC only at form
-        ;; boundaries) — prefer the native scan builtin.
-        (if (fboundp 'str-kv-line)
-            (str-kv-line (concat (rdf (files--user-keymap-path))
-                                 (files--mode-keymap-source) files--keymap-source)
-                         files--bridge-keys)
-          (files--lookup-key-sequence-interp))))
+        (if (fboundp 'emacs-command-loop-gui-lookup-key-sequence-from-sources)
+            (let ((result
+                   (emacs-command-loop-gui-lookup-key-sequence-from-sources
+                    files--bridge-keys
+                    (rdf (files--user-keymap-path))
+                    (files--mode-keymap-source)
+                    files--keymap-source)))
+              (if (equal result "")
+                  (emacs-command-loop-gui-keymap-command
+                   (concat (rdf (files--user-keymap-path))
+                           "\n"
+                           (files--mode-keymap-source)
+                           "\n"
+                           files--keymap-source)
+                   files--bridge-keys)
+                result))
+          (emacs-command-loop-gui-keymap-command
+           (concat (rdf (files--user-keymap-path))
+                   "\n"
+                   (files--mode-keymap-source)
+                   "\n"
+                   files--keymap-source)
+           files--bridge-keys))))
 
 (fset 'files--lookup-key-sequence-interp
       (lambda ()
@@ -18155,66 +20288,34 @@
 
 (fset 'files--maybe-start-minibuffer-from-keymap
       (lambda ()
-        ;; Same native-scan-first split as files--lookup-key-sequence.
-        (if (fboundp 'str-kv-line)
-            (let ((rest (str-kv-line (concat (files--mode-minibuffer-keymap-source)
-                                             files--minibuffer-keymap-source)
-                                     files--bridge-keys))
-                  (tab 0))
-              (if (equal rest "")
-                  nil
-                (progn
-                  (while (if (< tab (length rest))
-                             (not (= (aref rest tab) 9))
-                           nil)
-                    (setq tab (+ tab 1)))
-                  (if (< tab (length rest))
-                      (progn
-                        (setq files--minibuffer-purpose (substring rest 0 tab))
-                        (setq files--minibuffer-prompt (substring rest (+ tab 1)))
-                        (files--start-minibuffer)
-                        t)
-                    nil))))
-          (files--maybe-start-minibuffer-from-keymap-interp))))
+        (if (fboundp 'emacs-minibuffer-gui-maybe-start-current-context)
+            (progn
+              (if (if (fboundp 'files--minibuffer-gui-install-backend)
+                      (fboundp 'emacs-minibuffer-gui-register-backend)
+                    nil)
+                  (files--minibuffer-gui-install-backend)
+                nil)
+              (emacs-minibuffer-gui-maybe-start-current-context))
+          (emacs-minibuffer-gui-start-from-keymap
+           (concat (files--mode-minibuffer-keymap-source)
+                   files--minibuffer-keymap-source)
+           files--bridge-keys))))
 
 (fset 'files--maybe-start-minibuffer-from-keymap-interp
       (lambda ()
-        (let ((source (concat (files--mode-minibuffer-keymap-source)
-                              files--minibuffer-keymap-source))
-              (index 0)
-              (start 0)
-              (found nil))
-          (while (if (<= index (length source)) (not found) nil)
-            (if (if (= index (length source))
-                    t
-                  (= (aref source index) 10))
-                (let ((line (substring source start index))
-                      (tab1 0)
-                      (tab2 0))
-                  (while (if (< tab1 (length line))
-                             (not (= (aref line tab1) 9))
-                           nil)
-                    (setq tab1 (+ tab1 1)))
-                  (setq tab2 (+ tab1 1))
-                  (while (if (< tab2 (length line))
-                             (not (= (aref line tab2) 9))
-                           nil)
-                    (setq tab2 (+ tab2 1)))
-                  (if (if (if (< tab1 (length line)) (< tab2 (length line)) nil)
-                          (equal files--bridge-keys (substring line 0 tab1))
-                        nil)
-                      (progn
-                        (setq files--minibuffer-purpose
-                              (substring line (+ tab1 1) tab2))
-                        (setq files--minibuffer-prompt
-                              (substring line (+ tab2 1)))
-                        (files--start-minibuffer)
-                        (setq found t))
-                    nil)
-                  (setq start (+ index 1)))
-              nil)
-		            (setq index (+ index 1)))
-		          found)))
+        (let ((spec (emacs-minibuffer-gui-start-spec-from-keymaps
+                     (files--mode-minibuffer-keymap-source)
+                     files--minibuffer-keymap-source
+                     files--bridge-keys)))
+          (if spec
+              (progn
+                (setq files--minibuffer-purpose
+                      (plist-get spec :purpose))
+                (setq files--minibuffer-prompt
+                      (plist-get spec :prompt))
+                (files--start-minibuffer)
+                t)
+            nil))))
 
 (fset 'files--quoted-insert-key-text
       (lambda ()
@@ -18229,144 +20330,176 @@
 
 (fset 'files--prefix-number-string
       (lambda ()
-        (let ((value files--prefix-number-value)
-              (negative nil)
-              (started nil)
-              (out ""))
-          (if (< value 0)
-              (progn
-                (setq negative t)
-                (setq value (- 0 value)))
-            nil)
-          (if (= value 0)
-              (setq out "0")
-            (let ((place 10000))
-              (while (> place 0)
-                (let ((digit (/ value place)))
-                  (if (if started t (> digit 0))
-                      (progn
-                        (setq started t)
-                        (setq files--digit-value digit)
-                        (setq out (concat out (files--digit-string))))
-                    nil)
-                  (setq value (mod value place))
-                  (setq place (/ place 10))))))
-          (if negative
-              (setq out (concat "-" out))
-            nil)
-          out)))
+        (if (fboundp 'emacs-command-loop-gui-prefix-number-string)
+            (emacs-command-loop-gui-prefix-number-string
+             files--prefix-number-value)
+          (let ((value files--prefix-number-value)
+                (negative nil)
+                (started nil)
+                (out ""))
+            (if (< value 0)
+                (progn
+                  (setq negative t)
+                  (setq value (- 0 value)))
+              nil)
+            (if (= value 0)
+                (setq out "0")
+              (let ((place 10000))
+                (while (> place 0)
+                  (let ((digit (/ value place)))
+                    (if (if started t (> digit 0))
+                        (progn
+                          (setq started t)
+                          (setq files--digit-value digit)
+                          (setq out (concat out (files--digit-string))))
+                      nil)
+                    (setq value (mod value place))
+                    (setq place (/ place 10))))))
+            (if negative
+                (setq out (concat "-" out))
+              nil)
+            out))))
 
 (fset 'files--prefix-digit-key
       (lambda ()
-        (let ((digit ""))
-          (if (> (length files--bridge-arg) 0)
-              (let ((ch (aref files--bridge-arg 0)))
-                (if (if (>= ch 48) (< ch 58) nil)
-                    (setq digit (substring files--bridge-arg 0 1))
-                  nil))
-            nil)
-          (if (equal digit "")
-              (if (> (length files--bridge-keys) 0)
-                  (let ((ch (aref files--bridge-keys (- (length files--bridge-keys) 1))))
-                    (if (if (>= ch 48) (< ch 58) nil)
-                        (setq digit (substring files--bridge-keys
-                                               (- (length files--bridge-keys) 1)))
-                      nil))
-                nil)
-            nil)
-          digit)))
+        (if (fboundp 'emacs-command-loop-gui-prefix-digit-key)
+            (emacs-command-loop-gui-prefix-digit-key
+             files--bridge-arg files--bridge-keys)
+          (let ((digit ""))
+            (if (> (length files--bridge-arg) 0)
+                (let ((ch (aref files--bridge-arg 0)))
+                  (if (if (>= ch 48) (< ch 58) nil)
+                      (setq digit (substring files--bridge-arg 0 1))
+                    nil))
+              nil)
+            (if (equal digit "")
+                (if (> (length files--bridge-keys) 0)
+                    (let ((ch (aref files--bridge-keys (- (length files--bridge-keys) 1))))
+                      (if (if (>= ch 48) (< ch 58) nil)
+                          (setq digit (substring files--bridge-keys
+                                                 (- (length files--bridge-keys) 1)))
+                        nil))
+                  nil)
+              nil)
+            digit))))
 
 (fset 'files--prefix-arg-number
       (lambda ()
-        (let ((index 0)
-              (value 0)
-              (negative nil)
-              (seen-digit nil))
-          (if (if (> (length files--prefix-arg) 0)
-                  (= (aref files--prefix-arg 0) 45)
-                nil)
-              (progn
-                (setq negative t)
-                (setq index 1))
-            nil)
-          (while (< index (length files--prefix-arg))
-            (let ((ch (aref files--prefix-arg index)))
-              (if (if (>= ch 48) (< ch 58) nil)
-                  (progn
-                    (setq seen-digit t)
-                    (setq value (+ (* value 10) (- ch 48))))
-                nil))
-            (setq index (+ index 1)))
-          (if seen-digit
-              (if negative (- 0 value) value)
-            (if negative -1 1)))))
+        (if (fboundp 'emacs-command-loop-gui-prefix-arg-number)
+            (emacs-command-loop-gui-prefix-arg-number files--prefix-arg)
+          (let ((index 0)
+                (value 0)
+                (negative nil)
+                (seen-digit nil))
+            (if (if (> (length files--prefix-arg) 0)
+                    (= (aref files--prefix-arg 0) 45)
+                  nil)
+                (progn
+                  (setq negative t)
+                  (setq index 1))
+              nil)
+            (while (< index (length files--prefix-arg))
+              (let ((ch (aref files--prefix-arg index)))
+                (if (if (>= ch 48) (< ch 58) nil)
+                    (progn
+                      (setq seen-digit t)
+                      (setq value (+ (* value 10) (- ch 48))))
+                  nil))
+              (setq index (+ index 1)))
+            (if seen-digit
+                (if negative (- 0 value) value)
+              (if negative -1 1))))))
 
 (fset 'files--prefix-arg-absolute-number
       (lambda ()
-        (let ((value (files--prefix-arg-number)))
-          (if (< value 0)
-              (- 0 value)
-            value))))
+        (if (fboundp 'emacs-command-loop-gui-prefix-arg-absolute-number)
+            (emacs-command-loop-gui-prefix-arg-absolute-number files--prefix-arg)
+          (let ((value (files--prefix-arg-number)))
+            (if (< value 0)
+                (- 0 value)
+              value)))))
 
 (fset 'files--prefix-command-p
       (lambda ()
-        (let ((ok nil))
-          (if (eq files--bridge-command 'universal-argument) (setq ok t) nil)
-          (if (eq files--bridge-command 'digit-argument) (setq ok t) nil)
-          (if (eq files--bridge-command 'negative-argument) (setq ok t) nil)
-          ok)))
+        (if (fboundp 'emacs-command-loop-gui-prefix-command-p)
+            (emacs-command-loop-gui-prefix-command-p files--bridge-command)
+          (let ((ok nil))
+            (if (eq files--bridge-command 'universal-argument) (setq ok t) nil)
+            (if (eq files--bridge-command 'digit-argument) (setq ok t) nil)
+            (if (eq files--bridge-command 'negative-argument) (setq ok t) nil)
+            ok))))
 
 (fset 'files--prefix-repeat-command-p
       (lambda ()
-        (let ((ok nil))
-          (if (eq files--bridge-command 'forward-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'next-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'previous-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-delete-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-backward-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'self-insert-command) (setq ok t) nil)
-          ok)))
+        (if (fboundp 'emacs-command-loop-gui-prefix-repeat-command-p)
+            (emacs-command-loop-gui-prefix-repeat-command-p files--bridge-command)
+          (let ((ok nil))
+            (if (eq files--bridge-command 'forward-char) (setq ok t) nil)
+            (if (eq files--bridge-command 'backward-char) (setq ok t) nil)
+            (if (eq files--bridge-command 'next-line) (setq ok t) nil)
+            (if (eq files--bridge-command 'previous-line) (setq ok t) nil)
+            (if (eq files--bridge-command 'delete-char) (setq ok t) nil)
+            (if (eq files--bridge-command 'backward-delete-char) (setq ok t) nil)
+            (if (eq files--bridge-command 'delete-backward-char) (setq ok t) nil)
+            (if (eq files--bridge-command 'self-insert-command) (setq ok t) nil)
+            ok))))
 
 (fset 'files--prefix-invert-command-if-needed
       (lambda ()
         (if (< (files--prefix-arg-number) 0)
-            (let ((original-command files--bridge-command))
-              (if (eq original-command 'forward-char)
+            (let ((original-command files--bridge-command)
+                  (inverted nil)
+                  (handled nil))
+              (if (fboundp 'emacs-command-loop-gui-prefix-inverted-command)
                   (progn
-                    (setq files--bridge-command 'backward-char)
-                    (setq files--bridge-effective-command "backward-char"))
+                    (setq inverted
+                          (emacs-command-loop-gui-prefix-inverted-command
+                           original-command))
+                    (if inverted
+                        (progn
+                          (setq files--bridge-command inverted)
+                          (setq files--bridge-effective-command
+                                (symbol-name inverted))
+                          (setq handled t))
+                      nil))
                 nil)
-              (if (eq original-command 'backward-char)
+              (if (not handled)
                   (progn
-                    (setq files--bridge-command 'forward-char)
-                    (setq files--bridge-effective-command "forward-char"))
-                nil)
-              (if (eq original-command 'next-line)
-                  (progn
-                    (setq files--bridge-command 'previous-line)
-                    (setq files--bridge-effective-command "previous-line"))
-                nil)
-              (if (eq original-command 'previous-line)
-                  (progn
-                    (setq files--bridge-command 'next-line)
-                    (setq files--bridge-effective-command "next-line"))
-                nil)
-              (if (eq original-command 'delete-char)
-                  (progn
-                    (setq files--bridge-command 'delete-backward-char)
-                    (setq files--bridge-effective-command "delete-backward-char"))
-                nil)
-              (if (eq original-command 'delete-backward-char)
-                  (progn
-                    (setq files--bridge-command 'delete-char)
-                    (setq files--bridge-effective-command "delete-char"))
-                nil)
-              (if (eq original-command 'backward-delete-char)
-                  (progn
-                    (setq files--bridge-command 'delete-char)
-                    (setq files--bridge-effective-command "delete-char"))
+                    (if (eq original-command 'forward-char)
+                        (progn
+                          (setq files--bridge-command 'backward-char)
+                          (setq files--bridge-effective-command "backward-char"))
+                      nil)
+                    (if (eq original-command 'backward-char)
+                        (progn
+                          (setq files--bridge-command 'forward-char)
+                          (setq files--bridge-effective-command "forward-char"))
+                      nil)
+                    (if (eq original-command 'next-line)
+                        (progn
+                          (setq files--bridge-command 'previous-line)
+                          (setq files--bridge-effective-command "previous-line"))
+                      nil)
+                    (if (eq original-command 'previous-line)
+                        (progn
+                          (setq files--bridge-command 'next-line)
+                          (setq files--bridge-effective-command "next-line"))
+                      nil)
+                    (if (eq original-command 'delete-char)
+                        (progn
+                          (setq files--bridge-command 'delete-backward-char)
+                          (setq files--bridge-effective-command "delete-backward-char"))
+                      nil)
+                    (if (eq original-command 'delete-backward-char)
+                        (progn
+                          (setq files--bridge-command 'delete-char)
+                          (setq files--bridge-effective-command "delete-char"))
+                      nil)
+                    (if (eq original-command 'backward-delete-char)
+                        (progn
+                          (setq files--bridge-command 'delete-char)
+                          (setq files--bridge-effective-command "delete-char"))
+                      nil))
                 nil))
           nil)))
 
@@ -18380,6 +20513,19 @@
                 (setq count (- count 1)))
             (call-interactively))
           (setq files--prefix-arg ""))))
+
+(fset 'files--command-loop-backend-execute-with-prefix-arg
+      (lambda ()
+        (if (fboundp 'emacs-command-loop-gui-execute-with-prefix-arg)
+            (emacs-command-loop-gui-execute-with-prefix-arg)
+          (let ((count (files--prefix-arg-absolute-number)))
+            (files--prefix-invert-command-if-needed)
+            (if (files--prefix-repeat-command-p)
+                (while (> count 0)
+                  (emacs-command-loop-gui-call-interactively files--bridge-command)
+                  (setq count (- count 1)))
+              (emacs-command-loop-gui-call-interactively files--bridge-command))
+            (setq files--prefix-arg "")))))
 
 (fset 'files--write-prefix-arg-state
       (lambda ()
@@ -18468,33 +20614,46 @@
                   (concat files--kmacro-keys files--bridge-keys "\n"))
           nil)))
 
+(if (not (fboundp 'emacs-command-loop-gui-replay-key-lines))
+    (fset 'emacs-command-loop-gui-replay-key-lines
+          (lambda (source dispatch)
+            (let ((source (if source source ""))
+                  (index 0)
+                  (start 0)
+                  (count 0))
+              (while (<= index (length source))
+                (if (if (= index (length source))
+                        t
+                      (= (aref source index) 10))
+                    (let ((line (substring source start index)))
+                      (if (not (equal line ""))
+                          (progn
+                            (funcall dispatch line)
+                            (setq count (+ count 1)))
+                        nil)
+                      (setq start (+ index 1)))
+                  nil)
+                (setq index (+ index 1)))
+              count)))
+  nil)
+
 (fset 'files--call-last-kbd-macro
       (lambda ()
         (let ((source files--kmacro-keys)
-              (index 0)
-              (start 0)
               (old-keys files--bridge-keys)
               (old-command files--bridge-command)
               (old-effective files--bridge-effective-command)
               (old-arg files--bridge-arg)
               (old-replaying files--kmacro-replaying))
           (setq files--kmacro-replaying t)
-          (while (<= index (length source))
-            (if (if (= index (length source))
-                    t
-                  (= (aref source index) 10))
-                (let ((line (substring source start index)))
-                  (if (not (equal line ""))
-                      (progn
-                        (setq files--bridge-keys line)
-                        (setq files--bridge-command nil)
-                        (setq files--bridge-effective-command "")
-                        (setq files--bridge-arg "")
-                        (files--dispatch-key-sequence))
-                    nil)
-                  (setq start (+ index 1)))
-              nil)
-            (setq index (+ index 1)))
+          (emacs-command-loop-gui-replay-key-lines
+           source
+           (lambda (line)
+             (setq files--bridge-keys line)
+             (setq files--bridge-command nil)
+             (setq files--bridge-effective-command "")
+             (setq files--bridge-arg "")
+             (files--dispatch-key-sequence)))
           (setq files--kmacro-replaying old-replaying)
           (setq files--bridge-keys old-keys)
           (setq files--bridge-command old-command)
@@ -18504,1104 +20663,1102 @@
 
 (fset 'digit-argument
       (lambda ()
-        (let ((digit (files--prefix-digit-key)))
-          (if (not (equal digit ""))
-              (setq files--prefix-arg (concat files--prefix-arg digit))
-            nil)
-          (setq files--bridge-status "prefix-arg")
-          files--prefix-arg)))
+        (if (fboundp 'emacs-command-loop-gui-digit-argument)
+            (emacs-command-loop-gui-digit-argument)
+          (let ((digit (files--prefix-digit-key)))
+            (if (not (equal digit ""))
+                (setq files--prefix-arg (concat files--prefix-arg digit))
+              nil)
+            (setq files--bridge-status "prefix-arg")
+            files--prefix-arg))))
 
 (fset 'negative-argument
       (lambda ()
-        (if (if (> (length files--prefix-arg) 0)
-                (= (aref files--prefix-arg 0) 45)
-              nil)
-            (setq files--prefix-arg (substring files--prefix-arg 1))
-          (setq files--prefix-arg (concat "-" files--prefix-arg)))
-        (setq files--bridge-status "prefix-arg")
-        files--prefix-arg))
+        (if (fboundp 'emacs-command-loop-gui-negative-argument)
+            (emacs-command-loop-gui-negative-argument)
+          (progn
+            (if (if (> (length files--prefix-arg) 0)
+                    (= (aref files--prefix-arg 0) 45)
+                  nil)
+                (setq files--prefix-arg (substring files--prefix-arg 1))
+              (setq files--prefix-arg (concat "-" files--prefix-arg)))
+            (setq files--bridge-status "prefix-arg")
+            files--prefix-arg))))
 
 (fset 'universal-argument
       (lambda ()
-        (if (equal files--prefix-arg "")
-            (setq files--prefix-arg "4")
+        (if (fboundp 'emacs-command-loop-gui-universal-argument)
+            (emacs-command-loop-gui-universal-argument)
           (progn
-            (setq files--prefix-number-value (* (files--prefix-arg-number) 4))
-            (setq files--prefix-arg (files--prefix-number-string))))
-        (setq files--bridge-status "prefix-arg")
-        files--prefix-arg))
+            (if (equal files--prefix-arg "")
+                (setq files--prefix-arg "4")
+              (progn
+                (setq files--prefix-number-value (* (files--prefix-arg-number) 4))
+                (setq files--prefix-arg (files--prefix-number-string))))
+            (setq files--bridge-status "prefix-arg")
+            files--prefix-arg))))
+
+(if (not (fboundp 'emacs-command-loop-gui-self-insert-key-text))
+    (fset 'emacs-command-loop-gui-self-insert-key-text
+          (lambda (&optional keys)
+            (let ((keys (if keys keys files--bridge-keys)))
+              (if (equal keys "SPC")
+                  " "
+                (if (= (length keys) 1)
+                    keys
+                  nil)))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-minibuffer-active-p))
+    (fset 'emacs-command-loop-gui-minibuffer-active-p
+          (lambda ()
+            files--minibuffer-active))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-minibuffer-key))
+    (fset 'emacs-command-loop-gui-minibuffer-key
+          (lambda ()
+            files--bridge-keys))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-minibuffer-initial-input))
+    (fset 'emacs-command-loop-gui-minibuffer-initial-input
+          (lambda ()
+            files--bridge-arg))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-finish-command))
+    (fset 'emacs-command-loop-gui-finish-command
+          (lambda ()
+            (if (boundp 'emacs-command-loop--last-command)
+                (progn
+                  (setq emacs-command-loop--last-command
+                        emacs-command-loop--this-command)
+                  (setq emacs-command-loop--this-command nil)
+                  (setq emacs-command-loop--real-this-command nil)
+                  emacs-command-loop--last-command)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-writeback-command-name))
+    (fset 'emacs-command-loop-gui-writeback-command-name
+          (lambda (&optional command effective-command)
+            (if (if (equal effective-command "minibuffer")
+                    (eq command 'project-query-replace-regexp)
+                  nil)
+                "project-query-replace-regexp"
+              (if (stringp effective-command)
+                  effective-command
+                (if (if effective-command
+                        (symbolp effective-command)
+                      nil)
+                    (symbol-name effective-command)
+                  (if (if command
+                          (symbolp command)
+                        nil)
+                      (symbol-name command)
+                    (if (stringp command)
+                        command
+                      "")))))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-write-post-command-state))
+    (fset 'emacs-command-loop-gui-write-post-command-state
+          (lambda (&optional command effective-command status)
+            (let ((cmd (emacs-command-loop-gui-writeback-command-name
+                        command effective-command))
+                  (lane 'normal))
+              (files--clear-display-prefix-after-command)
+              (files--write-minibuffer-state)
+              (files--write-redisplay-state)
+              (files--write-prefix-arg-state)
+              (files--write-kmacro-state)
+              (files--write-last-command-state)
+              (files--write-kill-ring-state)
+              (files--write-transport-window-split-delta)
+              (files--write-transport-window-dedicated-state)
+              (files--write-transport-side-windows-state)
+              (files--write-transport-frame-state)
+              (if (if status (not (equal status "")) nil)
+                  (setq files--bridge-status status)
+                nil)
+              (if (if (fboundp 'emacs-command-loop-gui-finalize-status)
+                      t
+                    nil)
+                  (setq lane
+                        (emacs-command-loop-gui-finalize-status
+                         :command command
+                         :effective-command effective-command
+                         :status files--bridge-status))
+                (progn
+                  (if (equal cmd "org-metaright") (setq files--bridge-status "ok") nil)
+                  (if (equal cmd "org-metaleft") (setq files--bridge-status "ok") nil)
+                  (if (equal cmd "ignore") (setq files--bridge-status "ok") nil)
+                  (if (equal effective-command "org-metaright") (setq files--bridge-status "ok") nil)
+                  (if (equal effective-command "org-metaleft") (setq files--bridge-status "ok") nil)
+                  (if (equal effective-command "ignore") (setq files--bridge-status "ok") nil)
+                  (setq lane
+                        (if (equal files--bridge-status "read-only")
+                            'read-only
+                          (if (equal files--bridge-status "unsupported")
+                              'unsupported
+                            (if (files--bridge-error-status-p)
+                                'error
+                              (if (equal files--bridge-status "minibuffer")
+                                  'minibuffer
+                                (if (equal files--bridge-status "prefix-arg")
+                                  'prefix-arg
+                                  'normal))))))))
+              (list :command-name cmd :lane lane))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-lane-writeback-spec))
+    (fset 'emacs-command-loop-gui-lane-writeback-spec
+          (lambda (&optional lane)
+            (let ((lane (if (symbolp lane)
+                            lane
+                          (if (stringp lane)
+                              (intern lane)
+                            'normal))))
+              (if (eq lane 'read-only)
+                  '(:status t :buffer t :read-only-one t
+                    :point t :mark t :window-start t :written t)
+                (if (eq lane 'unsupported)
+                    '(:status t)
+                  (if (eq lane 'error)
+                      '(:status t :buffer t :file t :read-only t
+                        :point t :mark t :window-start t :written t)
+                    (if (eq lane 'minibuffer)
+                        '(:status t :minibuffer t :buffer t
+                          :point t :mark t :window-start t :written t)
+                      (if (eq lane 'prefix-arg)
+                          '(:status t :point t :mark t :window-start t
+                            :prefix-arg t :written t)
+                        nil))))))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-writeback-spec-flag))
+    (fset 'emacs-command-loop-gui-writeback-spec-flag
+          (lambda (spec key)
+            (if spec
+                (plist-get spec key)
+              nil)))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-write-lane-state))
+    (fset 'emacs-command-loop-gui-write-lane-state
+          (lambda (&optional lane)
+            (let ((spec (emacs-command-loop-gui-lane-writeback-spec
+                         lane)))
+              (if spec
+                  (progn
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :status)
+                        (files--command-loop-backend-write-status-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :minibuffer)
+                        (files--command-loop-backend-write-minibuffer-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :buffer)
+                        (files--command-loop-backend-write-buffer-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :file)
+                        (files--command-loop-backend-write-file-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :read-only-one)
+                        (files--command-loop-backend-write-read-only-one-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :read-only)
+                        (files--command-loop-backend-write-read-only-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :point)
+                        (files--command-loop-backend-write-point-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :mark)
+                        (files--command-loop-backend-write-mark-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :window-start)
+                        (files--command-loop-backend-write-window-start-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :prefix-arg)
+                        (files--command-loop-backend-write-prefix-arg-state)
+                      nil)
+                    (if (emacs-command-loop-gui-writeback-spec-flag
+                         spec :written)
+                        (files--command-loop-backend-mark-written-state)
+                      nil)
+                    t)
+                nil))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-before-command))
+    (fset 'emacs-command-loop-gui-before-command
+          (lambda (&optional command)
+            (if (eq command 'cycle-spacing)
+                nil
+              (if (fboundp 'files--command-loop-backend-before-command)
+                  (files--command-loop-backend-before-command command)
+                (files--cycle-spacing-clear-state)))))
+  nil)
+
+(fset 'files--command-loop-writeback-current-lane
+      (lambda ()
+        (files--command-loop-ensure-backend)
+        (emacs-command-loop-gui-write-lane-state
+         files--bridge-writeback-lane)))
+
+(if (not (fboundp 'emacs-command-loop-gui-call-interactively-context))
+    (fset 'emacs-command-loop-gui-call-interactively-context
+          (lambda (&rest plist)
+            (while plist
+              (let ((key (car plist))
+                    (value (car (cdr plist))))
+                (if (eq key :command)
+                    (setq files--bridge-command value)
+                  nil)
+                (if (eq key :effective-command)
+                    (setq files--bridge-effective-command value)
+                  nil)
+                (if (eq key :keys)
+                    (setq files--bridge-keys value)
+                  nil)
+                (if (eq key :arg)
+                    (setq files--bridge-arg value)
+                  nil)
+                (if (eq key :status)
+                    (setq files--bridge-status value)
+                  nil)
+                (if (eq key :prefix-arg)
+                    (setq files--prefix-arg value)
+                  nil))
+              (setq plist (cdr (cdr plist))))
+            (setq emacs-command-loop--this-command files--bridge-command)
+            (setq emacs-command-loop--real-this-command files--bridge-command)
+            (if (not (boundp 'emacs-command-loop--last-command))
+                (setq emacs-command-loop--last-command nil)
+              nil)
+            (let ((adapter-kind nil)
+                  (result nil))
+              (if (fboundp 'emacs-command-loop-gui-command-adapter-kind)
+                  (setq adapter-kind
+                        (emacs-command-loop-gui-command-adapter-kind
+                         files--bridge-command))
+                (if (eq files--bridge-command 'goto-char)
+                    (setq adapter-kind 'goto-char)
+                  (if (eq files--bridge-command 'zap-to-char)
+                      (setq adapter-kind 'zap-to-char)
+                    nil)))
+              (if adapter-kind
+                  (if (fboundp 'files--command-loop-backend-call-adapted-command)
+                      (setq result
+                            (files--command-loop-backend-call-adapted-command
+                             files--bridge-command adapter-kind))
+                    nil)
+                (if (fboundp 'files--command-loop-backend-call-command)
+                    (setq result
+                          (files--command-loop-backend-call-command
+                           files--bridge-command))
+                  (if (fboundp files--bridge-command)
+                      (setq result (funcall files--bridge-command))
+                    nil)))
+              (emacs-command-loop-gui-finish-command)
+              result)))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-minibuffer-handle-key))
+    (fset 'emacs-command-loop-gui-minibuffer-handle-key
+          (lambda ()
+            (if (fboundp 'emacs-minibuffer-gui-handle-key-current-context)
+                (emacs-minibuffer-gui-handle-key-current-context)
+              (if (fboundp 'emacs-minibuffer-gui-handle-key)
+                (emacs-minibuffer-gui-handle-key
+                 (emacs-command-loop-gui-minibuffer-key)
+                 files--minibuffer-purpose)
+                (files--minibuffer-handle-key)))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-maybe-start-minibuffer))
+    (fset 'emacs-command-loop-gui-maybe-start-minibuffer
+          (lambda ()
+            (if (fboundp 'emacs-minibuffer-gui-maybe-start-current-context)
+                (emacs-minibuffer-gui-maybe-start-current-context)
+              (if (fboundp 'emacs-minibuffer-gui-maybe-start-from-keymaps)
+                (emacs-minibuffer-gui-maybe-start-from-keymaps
+                 (files--mode-minibuffer-keymap-source)
+                 files--minibuffer-keymap-source
+                 (emacs-command-loop-gui-minibuffer-key)
+                 (emacs-command-loop-gui-minibuffer-initial-input))
+                (files--maybe-start-minibuffer)))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-key-dispatch-spec))
+    (fset 'emacs-command-loop-gui-key-dispatch-spec
+          (lambda (&optional resolved keys arg)
+            (let* ((resolved (or resolved
+                                 (files--lookup-key-sequence)
+                                 ""))
+                   (keys (or keys files--bridge-keys ""))
+                   (arg (or arg files--bridge-arg ""))
+                   (self-insert-text
+                    (emacs-command-loop-gui-self-insert-key-text keys)))
+              (if (if (equal resolved "") self-insert-text)
+                  (list :command 'self-insert-command
+                        :effective-command "self-insert-command"
+                        :arg (if (equal arg "") self-insert-text arg)
+                        :status "ok"
+                        :self-insert-text self-insert-text)
+                (if (equal resolved "")
+                    (list :command nil
+                          :effective-command keys
+                          :arg arg
+                          :status "unsupported")
+                  (list :command (intern resolved)
+                        :effective-command resolved
+                        :arg arg
+                        :status "ok"))))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-dispatch-context))
+    (fset 'emacs-command-loop-gui-dispatch-context
+          (lambda (&rest plist)
+            (while plist
+              (let ((key (car plist))
+                    (value (car (cdr plist))))
+                (if (eq key :command)
+                    (setq files--bridge-command value)
+                  nil)
+                (if (eq key :effective-command)
+                    (setq files--bridge-effective-command value)
+                  nil)
+                (if (eq key :keys)
+                    (setq files--bridge-keys value)
+                  nil)
+                (if (eq key :arg)
+                    (setq files--bridge-arg value)
+                  nil)
+                (if (eq key :status)
+                    (setq files--bridge-status value)
+                  nil)
+                (if (eq key :prefix-arg)
+                    (setq files--prefix-arg value)
+                  nil))
+              (setq plist (cdr (cdr plist))))
+            (let ((handled nil))
+              (if files--quoted-insert-p
+                  (progn
+                    (setq handled t)
+                    (setq files--quoted-insert-p nil)
+                    (setq files--bridge-arg (files--quoted-insert-key-text))
+                    (if (equal files--bridge-arg "")
+                        (progn
+                          (setq files--bridge-effective-command files--bridge-keys)
+                          (setq files--bridge-status "unsupported")
+                          nil)
+                      (setq files--bridge-effective-command "quoted-insert")
+                      (setq files--bridge-command 'quoted-insert)
+                      (files--command-loop-save-undo-if-needed-current-context)
+                      (command-execute)))
+                nil)
+              (if (not handled)
+                  (if (emacs-command-loop-gui-minibuffer-active-p)
+                      (progn
+                        (setq handled t)
+                        (emacs-command-loop-gui-minibuffer-handle-key))
+                    nil)
+                nil)
+              (if (not handled)
+                  (if (emacs-command-loop-gui-maybe-start-minibuffer)
+                      (setq handled t)
+                    nil)
+	                nil)
+	              (if (not handled)
+	                  (let* ((spec (emacs-command-loop-gui-key-dispatch-spec))
+                         (command (plist-get spec :command))
+                         (effective-command
+                          (plist-get spec :effective-command))
+                         (status (plist-get spec :status)))
+                    (if (plist-member spec :self-insert-text)
+                        (setq files--bridge-arg (plist-get spec :arg))
+                      nil)
+                    (if (not command)
+                        (progn
+                          (setq files--bridge-effective-command
+                                effective-command)
+                          (setq files--bridge-status status)
+                          nil)
+                      (setq files--bridge-effective-command
+                            effective-command)
+                      (setq files--bridge-command command)
+                      (files--command-loop-save-undo-if-needed-current-context)
+                      (command-execute)))
+                nil))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-after-key-dispatch))
+    (fset 'emacs-command-loop-gui-after-key-dispatch
+          (lambda ()
+            (if (fboundp 'files--command-loop-backend-after-key-dispatch)
+                (files--command-loop-backend-after-key-dispatch)
+              (files--append-kmacro-key-if-needed))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-dispatch-key-request-context))
+    (fset 'emacs-command-loop-gui-dispatch-key-request-context
+          (lambda (&rest plist)
+            (let ((result (apply 'emacs-command-loop-gui-dispatch-context
+                                 plist)))
+              (emacs-command-loop-gui-after-key-dispatch)
+              result)))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-dispatch-key-request-current-context))
+    (fset 'emacs-command-loop-gui-dispatch-key-request-current-context
+          (lambda ()
+            (emacs-command-loop-gui-dispatch-key-request-context
+             :command files--bridge-command
+             :effective-command files--bridge-effective-command
+             :keys files--bridge-keys
+             :arg files--bridge-arg
+             :status files--bridge-status
+             :prefix-arg files--prefix-arg)))
+  nil)
 
 (fset 'files--dispatch-key-sequence
       (lambda ()
-        (if files--quoted-insert-p
-            (progn
-              (setq files--quoted-insert-p nil)
-              (setq files--bridge-arg (files--quoted-insert-key-text))
-              (if (equal files--bridge-arg "")
-                  (progn
-                    (setq files--bridge-effective-command files--bridge-keys)
-                    (setq files--bridge-status "unsupported")
-                    nil)
-                (progn
-                  (setq files--bridge-effective-command "quoted-insert")
-                  (setq files--bridge-command 'quoted-insert)
-                  (files--bridge-save-undo-if-needed)
-                  (command-execute))))
-          (if files--minibuffer-active
-              (files--minibuffer-handle-key)
-            (if (files--maybe-start-minibuffer)
-                nil
-              (let ((resolved (files--lookup-key-sequence)))
-                (if (if (equal resolved "")
-                        (if (= (length files--bridge-keys) 1)
-                            t
-                          (equal files--bridge-keys "SPC"))
-                      nil)
-                    (progn
-                      (setq resolved "self-insert-command")
-                      (if (equal files--bridge-arg "")
-                          (setq files--bridge-arg
-                                (if (equal files--bridge-keys "SPC")
-                                    " "
-                                  files--bridge-keys))
-                        nil))
-                  nil)
-                (if (equal resolved "")
-                    (progn
-                      (setq files--bridge-effective-command files--bridge-keys)
-                      (setq files--bridge-status "unsupported")
-                      nil)
-                  (progn
-                    (setq files--bridge-effective-command resolved)
-                    (setq files--bridge-command (intern resolved))
-                    (files--bridge-save-undo-if-needed)
-                    (command-execute)))))))))
+        (files--command-loop-ensure-backend)
+        (if (fboundp 'emacs-command-loop-gui-dispatch-key-request-current-context)
+            (emacs-command-loop-gui-dispatch-key-request-current-context)
+          (if (fboundp 'emacs-command-loop-gui-dispatch-current-context)
+              (emacs-command-loop-gui-dispatch-current-context)
+            (emacs-command-loop-gui-dispatch-context
+             :command files--bridge-command
+             :effective-command files--bridge-effective-command
+             :keys files--bridge-keys
+             :arg files--bridge-arg
+             :status files--bridge-status
+             :prefix-arg files--prefix-arg)))))
 
+(fset 'files--command-loop-run-request-current-context
+      (lambda ()
+        (if (fboundp 'emacs-command-loop-gui-run-request-current-context)
+            (emacs-command-loop-gui-run-request-current-context)
+          (if files--bridge-command
+              (command-execute)
+            (if (equal files--bridge-keys "")
+                (command-execute)
+              (files--dispatch-key-sequence))))))
+
+;; commandp: prefer the command-loop runtime recognition policy
+;; (`emacs-command-loop-gui-command-accepted-p').  The standalone image
+;; does not load emacs-command-loop, so the `let' below is the live path
+;; there.  It used to carry a 449-entry hand-rolled
+;; `(eq files--bridge-command 'NAME)' allowlist, but every one of those
+;; names is fset in the standalone image (probed 2026-06-16:
+;; MISSING-COUNT=0), so the unconditional `(fboundp files--bridge-command)'
+;; check already accepts them all.  The per-name list was fully redundant
+;; and was removed; recognition policy now lives in the runtime registry
+;; `emacs-command-loop-gui-command-registry-names'.
 (fset 'commandp
       (lambda ()
+        (if (fboundp 'emacs-command-loop-gui-command-accepted-p)
+            (emacs-command-loop-gui-command-accepted-p files--bridge-command)
 	        (let ((ok nil))
-	          (if (eq files--bridge-command 'execute-extended-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'execute-extended-command-for-buffer) (setq ok t) nil)
-	          (if (eq files--bridge-command 'describe-function) (setq ok t) nil)
-	          (if (eq files--bridge-command 'describe-variable) (setq ok t) nil)
-	          (if (eq files--bridge-command 'describe-key) (setq ok t) nil)
-	          (if (eq files--bridge-command 'describe-key-briefly) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-bindings) (setq ok t) nil)
-			          (if (eq files--bridge-command 'help-for-help) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-coding-system) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-input-method) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-language-environment) (setq ok t) nil)
-			          (if (eq files--bridge-command 'apropos-command) (setq ok t) nil)
-			          (if (eq files--bridge-command 'apropos-documentation) (setq ok t) nil)
-			          (if (eq files--bridge-command 'view-echo-area-messages) (setq ok t) nil)
-			          (if (eq files--bridge-command 'about-emacs) (setq ok t) nil)
-		          (if (eq files--bridge-command 'describe-copying) (setq ok t) nil)
-		          (if (eq files--bridge-command 'view-emacs-debugging) (setq ok t) nil)
-		          (if (eq files--bridge-command 'view-external-packages) (setq ok t) nil)
-		          (if (eq files--bridge-command 'view-emacs-FAQ) (setq ok t) nil)
-		          (if (eq files--bridge-command 'view-emacs-news) (setq ok t) nil)
-		          (if (eq files--bridge-command 'describe-distribution) (setq ok t) nil)
-		          (if (eq files--bridge-command 'view-emacs-problems) (setq ok t) nil)
-		          (if (eq files--bridge-command 'view-emacs-todo) (setq ok t) nil)
-		          (if (eq files--bridge-command 'describe-no-warranty) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-gnu-project) (setq ok t) nil)
-			          (if (eq files--bridge-command 'view-hello-file) (setq ok t) nil)
-			          (if (eq files--bridge-command 'view-lossage) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-mode) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-symbol) (setq ok t) nil)
-			          (if (eq files--bridge-command 'help-quit) (setq ok t) nil)
-			          (if (eq files--bridge-command 'describe-syntax) (setq ok t) nil)
-			          (if (eq files--bridge-command 'help-with-tutorial) (setq ok t) nil)
-                      (if (eq files--bridge-command 'display-local-help) (setq ok t) nil)
-                      (if (eq files--bridge-command 'help-find-source) (setq ok t) nil)
-                      (if (eq files--bridge-command 'help-quick-toggle) (setq ok t) nil)
-                      (if (eq files--bridge-command 'search-forward-help-for-help) (setq ok t) nil)
-                      (if (eq files--bridge-command 'eval-last-sexp) (setq ok t) nil)
-                      (if (eq files--bridge-command 'eval-expression) (setq ok t) nil)
-                      (if (eq files--bridge-command 'font-lock-update) (setq ok t) nil)
-                      (if (eq files--bridge-command 'insert-char) (setq ok t) nil)
-                      (if (eq files--bridge-command 'text-scale-adjust) (setq ok t) nil)
-                      (if (eq files--bridge-command 'global-text-scale-adjust) (setq ok t) nil)
-                      (if (eq files--bridge-command 'suspend-frame) (setq ok t) nil)
-                      (if (eq files--bridge-command 'tmm-menubar) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-selective-display) (setq ok t) nil)
-                      (if (eq files--bridge-command 'toggle-input-method) (setq ok t) nil)
-                      (if (eq files--bridge-command 'activate-transient-input-method) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-input-method) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-file-name-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-next-selection-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'universal-coding-system-argument) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-buffer-file-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-keyboard-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-language-environment) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-buffer-process-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'revert-buffer-with-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-terminal-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'set-selection-coding-system) (setq ok t) nil)
-                      (if (eq files--bridge-command 'highlight-symbol-at-point) (setq ok t) nil)
-                      (if (eq files--bridge-command 'highlight-regexp) (setq ok t) nil)
-                      (if (eq files--bridge-command 'highlight-phrase) (setq ok t) nil)
-                      (if (eq files--bridge-command 'highlight-lines-matching-regexp) (setq ok t) nil)
-                      (if (eq files--bridge-command 'unhighlight-regexp) (setq ok t) nil)
-                      (if (eq files--bridge-command 'hi-lock-find-patterns) (setq ok t) nil)
-                      (if (eq files--bridge-command 'hi-lock-write-interactive-patterns) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-zoom-increase) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-zoom-decrease) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-zoom-reset) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-describe) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-insert) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-list) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-recent) (setq ok t) nil)
-                      (if (eq files--bridge-command 'emoji-search) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-start-macro) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-end-macro) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-end-and-call-macro) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kbd-macro-query) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-set-counter) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-add-counter) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-insert-counter) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-keymap) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-delete-ring-head) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-edit-macro-repeat) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-set-format) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-end-or-call-macro-repeat) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-call-ring-2nd-repeat) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-cycle-ring-next) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-cycle-ring-previous) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-swap-ring) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-view-macro-repeat) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-edit-macro) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-step-edit-macro) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-bind-to-key) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-redisplay) (setq ok t) nil)
-                      (if (eq files--bridge-command 'edit-kbd-macro) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-edit-lossage) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-name-last-macro) (setq ok t) nil)
-                      (if (eq files--bridge-command 'apply-macro-to-region-lines) (setq ok t) nil)
-                      (if (eq files--bridge-command 'kmacro-to-register) (setq ok t) nil)
-                      (if (eq files--bridge-command 'xref-go-back) (setq ok t) nil)
-                      (if (eq files--bridge-command 'xref-go-forward) (setq ok t) nil)
-                      (if (eq files--bridge-command 'xref-find-definitions) (setq ok t) nil)
-	                      (if (eq files--bridge-command 'xref-find-references) (setq ok t) nil)
-	                      (if (eq files--bridge-command 'xref-find-apropos) (setq ok t) nil)
-	                      (if (eq files--bridge-command 'xref-find-definitions-other-window) (setq ok t) nil)
-	                      (if (eq files--bridge-command 'xref-find-definitions-other-frame) (setq ok t) nil)
-                          (if (eq files--bridge-command 'next-error) (setq ok t) nil)
-                          (if (eq files--bridge-command 'previous-error) (setq ok t) nil)
-	                      (if (eq files--bridge-command 'repeat-complex-command) (setq ok t) nil)
-	                      (if (eq files--bridge-command 'info) (setq ok t) nil)
-                      (if (eq files--bridge-command 'info-other-window) (setq ok t) nil)
-                      (if (eq files--bridge-command 'info-emacs-manual) (setq ok t) nil)
-                      (if (eq files--bridge-command 'info-display-manual) (setq ok t) nil)
-                      (if (eq files--bridge-command 'view-order-manuals) (setq ok t) nil)
-                      (if (eq files--bridge-command 'Info-goto-emacs-command-node) (setq ok t) nil)
-                      (if (eq files--bridge-command 'Info-goto-emacs-key-command-node) (setq ok t) nil)
-                      (if (eq files--bridge-command 'info-lookup-symbol) (setq ok t) nil)
-                      (if (eq files--bridge-command 'describe-package) (setq ok t) nil)
-                      (if (eq files--bridge-command 'finder-by-keyword) (setq ok t) nil)
-			          (if (eq files--bridge-command 'where-is) (setq ok t) nil)
-	          (if (eq files--bridge-command 'describe-command) (setq ok t) nil)
-	          (if (eq files--bridge-command 'what-cursor-position) (setq ok t) nil)
-	          (if (eq files--bridge-command 'shell-command) (setq ok t) nil)
-	          (if (eq files--bridge-command 'shell-command-on-region) (setq ok t) nil)
-	          (if (eq files--bridge-command 'async-shell-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-shell-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-async-shell-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-shell) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-eshell) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-compile) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-find-regexp) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-or-external-find-regexp) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-vc-dir) (setq ok t) nil)
-          (if (eq files--bridge-command 'vc-diff) (setq ok t) nil)
-          (if (eq files--bridge-command 'vc-print-log) (setq ok t) nil)
-			          (if (eq files--bridge-command 'repeat) (setq ok t) nil)
-	          (if (eq files--bridge-command 'universal-argument) (setq ok t) nil)
-	          (if (eq files--bridge-command 'digit-argument) (setq ok t) nil)
-	          (if (eq files--bridge-command 'negative-argument) (setq ok t) nil)
-				          (if (eq files--bridge-command 'find-file) (setq ok t) nil)
-                      (if (eq files--bridge-command 'same-window-prefix) (setq ok t) nil)
-                      (if (eq files--bridge-command 'other-window-prefix) (setq ok t) nil)
-                      (if (eq files--bridge-command 'other-tab-prefix) (setq ok t) nil)
-                      (if (eq files--bridge-command 'other-frame-prefix) (setq ok t) nil)
-						          (if (eq files--bridge-command 'find-file-other-window) (setq ok t) nil)
-                        (if (eq files--bridge-command 'find-file-other-frame) (setq ok t) nil)
-	                        (if (eq files--bridge-command 'find-file-other-tab) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-or-external-find-file) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-find-file) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-find-dir) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-dired) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-any-command) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-execute-extended-command) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-other-window-command) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-other-tab-command) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-other-frame-command) (setq ok t) nil)
-                        (if (eq files--bridge-command 'project-switch-project) (setq ok t) nil)
-                            (if (eq files--bridge-command 'add-change-log-entry-other-window) (setq ok t) nil)
-			          (if (eq files--bridge-command 'find-file-read-only) (setq ok t) nil)
-			          (if (eq files--bridge-command 'find-file-read-only-other-window) (setq ok t) nil)
-                  (if (eq files--bridge-command 'find-file-read-only-other-frame) (setq ok t) nil)
-	                  (if (eq files--bridge-command 'find-file-read-only-other-tab) (setq ok t) nil)
-		          (if (eq files--bridge-command 'toggle-read-only) (setq ok t) nil)
-          (if (eq files--bridge-command 'read-only-mode) (setq ok t) nil)
-	          (if (eq files--bridge-command 'find-alternate-file) (setq ok t) nil)
-	          (if (eq files--bridge-command 'list-directory) (setq ok t) nil)
-              (if (eq files--bridge-command 'dired) (setq ok t) nil)
-              (if (eq files--bridge-command 'dired-jump) (setq ok t) nil)
-              (if (eq files--bridge-command 'dired-jump-other-window) (setq ok t) nil)
-              (if (eq files--bridge-command 'dired-other-window) (setq ok t) nil)
-              (if (eq files--bridge-command 'dired-other-frame) (setq ok t) nil)
-              (if (eq files--bridge-command 'dired-other-tab) (setq ok t) nil)
-              (if (eq files--bridge-command 'compose-mail) (setq ok t) nil)
-              (if (eq files--bridge-command 'compose-mail-other-window) (setq ok t) nil)
-              (if (eq files--bridge-command 'compose-mail-other-frame) (setq ok t) nil)
-              (if (eq files--bridge-command 'calc-dispatch) (setq ok t) nil)
-              (if (eq files--bridge-command '2C-command) (setq ok t) nil)
-              (if (eq files--bridge-command '2C-two-columns) (setq ok t) nil)
-              (if (eq files--bridge-command '2C-associate-buffer) (setq ok t) nil)
-              (if (eq files--bridge-command '2C-split) (setq ok t) nil)
-	          (if (eq files--bridge-command 'insert-file) (setq ok t) nil)
-          (if (eq files--bridge-command 'insert-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'point-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'jump-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'frameset-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'window-configuration-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'copy-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'insert-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'number-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'increment-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-set) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-set-no-overwrite) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-jump) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-bmenu-list) (setq ok t) nil)
-          (if (eq files--bridge-command 'write-file) (setq ok t) nil)
-          (if (eq files--bridge-command 'save-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'basic-save-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'save-some-buffers) (setq ok t) nil)
-          (if (eq files--bridge-command 'revert-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'revert-buffer-quick) (setq ok t) nil)
-          (if (eq files--bridge-command 'forward-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'beginning-of-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'end-of-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'beginning-of-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'back-to-indentation) (setq ok t) nil)
-          (if (eq files--bridge-command 'end-of-line) (setq ok t) nil)
-	          (if (eq files--bridge-command 'move-beginning-of-line) (setq ok t) nil)
-	          (if (eq files--bridge-command 'move-end-of-line) (setq ok t) nil)
-	        (if (eq files--bridge-command 'goto-line) (setq ok t) nil)
-	        (if (eq files--bridge-command 'goto-line-relative) (setq ok t) nil)
-	        (if (eq files--bridge-command 'goto-char) (setq ok t) nil)
-	        (if (eq files--bridge-command 'move-to-column) (setq ok t) nil)
-            (if (eq files--bridge-command 'narrow-to-defun) (setq ok t) nil)
-            (if (eq files--bridge-command 'narrow-to-region) (setq ok t) nil)
-            (if (eq files--bridge-command 'narrow-to-page) (setq ok t) nil)
-            (if (eq files--bridge-command 'widen) (setq ok t) nil)
-	        (if (eq files--bridge-command 'next-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'previous-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'set-goal-column) (setq ok t) nil)
-          (if (eq files--bridge-command 'scroll-up-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'scroll-down-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'scroll-left) (setq ok t) nil)
-          (if (eq files--bridge-command 'scroll-right) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-new) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-new-to) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-group) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-undo) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-move) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-move-to) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-close) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-close-other) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-detach) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-window-detach) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-frame) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-other-frames) (setq ok t) nil)
-          (if (eq files--bridge-command 'make-frame-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'other-frame) (setq ok t) nil)
-          (if (eq files--bridge-command 'clone-frame) (setq ok t) nil)
-          (if (eq files--bridge-command 'undelete-frame) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-next) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-previous) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-duplicate) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-switch) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-rename) (setq ok t) nil)
-          (if (eq files--bridge-command 'scroll-other-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'scroll-other-window-down) (setq ok t) nil)
-          (if (eq files--bridge-command 'recenter-top-bottom) (setq ok t) nil)
-          (if (eq files--bridge-command 'move-to-window-line-top-bottom) (setq ok t) nil)
-          (if (eq files--bridge-command 'reposition-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'recenter-other-window) (setq ok t) nil)
-	          (if (eq files--bridge-command 'isearch-forward) (setq ok t) nil)
-	          (if (eq files--bridge-command 'isearch-backward) (setq ok t) nil)
-	          (if (eq files--bridge-command 'isearch-forward-regexp) (setq ok t) nil)
-	          (if (eq files--bridge-command 'isearch-backward-regexp) (setq ok t) nil)
-            (if (eq files--bridge-command 'isearch-forward-symbol-at-point) (setq ok t) nil)
-            (if (eq files--bridge-command 'isearch-forward-thing-at-point) (setq ok t) nil)
-            (if (eq files--bridge-command 'isearch-forward-symbol) (setq ok t) nil)
-            (if (eq files--bridge-command 'isearch-forward-word) (setq ok t) nil)
-	          (if (eq files--bridge-command 'replace-string) (setq ok t) nil)
-	          (if (eq files--bridge-command 'replace-regexp) (setq ok t) nil)
-		          (if (eq files--bridge-command 'query-replace) (setq ok t) nil)
-		          (if (eq files--bridge-command 'query-replace-regexp) (setq ok t) nil)
-		          (if (eq files--bridge-command 'project-query-replace-regexp) (setq ok t) nil)
-					          (if (eq files--bridge-command 'switch-to-buffer) (setq ok t) nil)
-				          (if (eq files--bridge-command 'switch-to-buffer-other-window) (setq ok t) nil)
-                          (if (eq files--bridge-command 'switch-to-buffer-other-frame) (setq ok t) nil)
-                          (if (eq files--bridge-command 'switch-to-buffer-other-tab) (setq ok t) nil)
-                          (if (eq files--bridge-command 'project-switch-to-buffer) (setq ok t) nil)
-		          (if (eq files--bridge-command 'display-buffer) (setq ok t) nil)
-                  (if (eq files--bridge-command 'display-buffer-other-frame) (setq ok t) nil)
-	          (if (eq files--bridge-command 'rename-buffer) (setq ok t) nil)
-	          (if (eq files--bridge-command 'rename-uniquely) (setq ok t) nil)
-	          (if (eq files--bridge-command 'clone-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'clone-indirect-buffer-other-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-buffer-and-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-kill-buffers) (setq ok t) nil)
-          (if (eq files--bridge-command 'list-buffers) (setq ok t) nil)
-          (if (eq files--bridge-command 'project-list-buffers) (setq ok t) nil)
-          (if (eq files--bridge-command 'occur) (setq ok t) nil)
-          (if (eq files--bridge-command 'imenu) (setq ok t) nil)
-          (if (eq files--bridge-command 'save-buffers-kill-terminal) (setq ok t) nil)
-          (if (eq files--bridge-command 'save-buffers-kill-emacs) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-emacs) (setq ok t) nil)
-          (if (eq files--bridge-command 'keyboard-quit) (setq ok t) nil)
-          (if (eq files--bridge-command 'keyboard-escape-quit) (setq ok t) nil)
-          (if (eq files--bridge-command 'exit-recursive-edit) (setq ok t) nil)
-          (if (eq files--bridge-command 'abort-recursive-edit) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-other-windows) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'split-window-right) (setq ok t) nil)
-          (if (eq files--bridge-command 'split-window-below) (setq ok t) nil)
-          (if (eq files--bridge-command 'balance-windows) (setq ok t) nil)
-          (if (eq files--bridge-command 'shrink-window-if-larger-than-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'fit-window-to-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-windows-on) (setq ok t) nil)
-          (if (eq files--bridge-command 'split-root-window-below) (setq ok t) nil)
-          (if (eq files--bridge-command 'split-root-window-right) (setq ok t) nil)
-          (if (eq files--bridge-command 'tear-off-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'toggle-window-dedicated) (setq ok t) nil)
-          (if (eq files--bridge-command 'quit-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'dired-mark) (setq ok t) nil)
-          (if (eq files--bridge-command 'dired-unmark) (setq ok t) nil)
-          (if (eq files--bridge-command 'dired-flag-file-deletion) (setq ok t) nil)
-          (if (eq files--bridge-command 'dired-do-flagged-delete) (setq ok t) nil)
-          (if (eq files--bridge-command 'dired-do-rename) (setq ok t) nil)
-          (if (eq files--bridge-command 'dired-do-copy) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-todo) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-narrow-to-subtree) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-table-next-field) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-capture) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-agenda) (setq ok t) nil)
-          (if (eq files--bridge-command 'magit-status) (setq ok t) nil)
-          (if (eq files--bridge-command 'magit-stage-file) (setq ok t) nil)
-          (if (eq files--bridge-command 'magit-unstage-file) (setq ok t) nil)
-          (if (eq files--bridge-command 'magit-commit) (setq ok t) nil)
-          (if (eq files--bridge-command 'magit-diff) (setq ok t) nil)
-          (if (eq files--bridge-command 'magit-log) (setq ok t) nil)
-          (if (eq files--bridge-command 'Info-next) (setq ok t) nil)
-          (if (eq files--bridge-command 'Info-prev) (setq ok t) nil)
-          (if (eq files--bridge-command 'Info-up) (setq ok t) nil)
-          (if (eq files--bridge-command 'customize-variable) (setq ok t) nil)
-          (if (eq files--bridge-command 'customize-save-variable) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-cycle) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-shifttab) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-table-align) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-metaright) (setq ok t) nil)
-          (if (eq files--bridge-command 'org-metaleft) (setq ok t) nil)
-          (if (eq files--bridge-command 'vc-root-diff) (setq ok t) nil)
-          (if (eq files--bridge-command 'vc-edit-next-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'vc-next-action) (setq ok t) nil)
-          (if (eq files--bridge-command 'ispell-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'eww-search-words) (setq ok t) nil)
-          (if (eq files--bridge-command 'window-toggle-side-windows) (setq ok t) nil)
-          (if (eq files--bridge-command 'enlarge-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'shrink-window-horizontally) (setq ok t) nil)
-          (if (eq files--bridge-command 'enlarge-window-horizontally) (setq ok t) nil)
-          (if (eq files--bridge-command 'other-window) (setq ok t) nil)
-          (if (eq files--bridge-command 'forward-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'beginning-of-defun) (setq ok t) nil)
-          (if (eq files--bridge-command 'forward-sexp) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-sexp) (setq ok t) nil)
-          (if (eq files--bridge-command 'end-of-defun) (setq ok t) nil)
-          (if (eq files--bridge-command 'mark-defun) (setq ok t) nil)
-          (if (eq files--bridge-command 'mark-sexp) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-sexp) (setq ok t) nil)
-          (if (eq files--bridge-command 'down-list) (setq ok t) nil)
-          (if (eq files--bridge-command 'forward-list) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-list) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-sexps) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-up-list) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-kill-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'zap-to-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'expand-abbrev) (setq ok t) nil)
-          (if (eq files--bridge-command 'add-global-abbrev) (setq ok t) nil)
-          (if (eq files--bridge-command 'add-mode-abbrev) (setq ok t) nil)
-          (if (eq files--bridge-command 'inverse-add-global-abbrev) (setq ok t) nil)
-          (if (eq files--bridge-command 'inverse-add-mode-abbrev) (setq ok t) nil)
-          (if (eq files--bridge-command 'abbrev-prefix-mark) (setq ok t) nil)
-          (if (eq files--bridge-command 'expand-jump-to-next-slot) (setq ok t) nil)
-          (if (eq files--bridge-command 'expand-jump-to-previous-slot) (setq ok t) nil)
-          (if (eq files--bridge-command 'dabbrev-expand) (setq ok t) nil)
-          (if (eq files--bridge-command 'dabbrev-completion) (setq ok t) nil)
-          (if (eq files--bridge-command 'complete-symbol) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-words) (setq ok t) nil)
-          (if (eq files--bridge-command 'insert-parentheses) (setq ok t) nil)
-          (if (eq files--bridge-command 'move-past-close-and-reindent) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'mark-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'count-words-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'count-lines-page) (setq ok t) nil)
-          (if (eq files--bridge-command 'forward-paragraph) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-paragraph) (setq ok t) nil)
-          (if (eq files--bridge-command 'mark-paragraph) (setq ok t) nil)
-          (if (eq files--bridge-command 'fill-paragraph) (setq ok t) nil)
-          (if (eq files--bridge-command 'set-fill-column) (setq ok t) nil)
-          (if (eq files--bridge-command 'set-fill-prefix) (setq ok t) nil)
-          (if (eq files--bridge-command 'comment-set-column) (setq ok t) nil)
-          (if (eq files--bridge-command 'forward-sentence) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-sentence) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-sentence) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-kill-sentence) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-chars) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-horizontal-space) (setq ok t) nil)
-          (if (eq files--bridge-command 'cycle-spacing) (setq ok t) nil)
-          (if (eq files--bridge-command 'not-modified) (setq ok t) nil)
-          (if (eq files--bridge-command 'just-one-space) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-indentation) (setq ok t) nil)
-          (if (eq files--bridge-command 'comment-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'comment-dwim) (setq ok t) nil)
-          (if (eq files--bridge-command 'upcase-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'downcase-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'capitalize-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'upcase-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'downcase-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'capitalize-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'sort-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-delete-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-backward-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'self-insert-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'quoted-insert) (setq ok t) nil)
-          (if (eq files--bridge-command 'indent-for-tab-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-to-tab-stop) (setq ok t) nil)
-          (if (eq files--bridge-command 'indent-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'indent-rigidly) (setq ok t) nil)
-          (if (eq files--bridge-command 'newline) (setq ok t) nil)
-          (if (eq files--bridge-command 'electric-newline-and-maybe-indent) (setq ok t) nil)
-          (if (eq files--bridge-command 'default-indent-new-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'open-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'split-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-blank-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-whole-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'yank) (setq ok t) nil)
-          (if (eq files--bridge-command 'yank-pop) (setq ok t) nil)
-          (if (eq files--bridge-command 'set-mark-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'exchange-point-and-mark) (setq ok t) nil)
-          (if (eq files--bridge-command 'pop-global-mark) (setq ok t) nil)
-          (if (eq files--bridge-command 'rectangle-mark-mode) (setq ok t) nil)
-          (if (eq files--bridge-command 'toggle-truncate-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'mark-whole-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'mark-page) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-page) (setq ok t) nil)
-          (if (eq files--bridge-command 'forward-page) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'copy-region-as-kill) (setq ok t) nil)
-	          (if (eq files--bridge-command 'kill-ring-save) (setq ok t) nil)
-          (if (eq files--bridge-command 'copy-rectangle-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'copy-rectangle-as-kill) (setq ok t) nil)
-          (if (eq files--bridge-command 'rectangle-number-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'clear-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'open-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'string-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'yank-rectangle) (setq ok t) nil)
-	          (if (eq files--bridge-command 'append-next-kill) (setq ok t) nil)
-	          (if (eq files--bridge-command 'undo) (setq ok t) nil)
-	          (if (eq files--bridge-command 'undo-redo) (setq ok t) nil)
-	          (if (eq files--bridge-command 'delete-trailing-whitespace) (setq ok t) nil)
-          (if (eq files--bridge-command 'untabify) (setq ok t) nil)
-          ok)))
+          (if (if (fboundp 'emacs-command-loop-gui-command-registered-p)
+                  (emacs-command-loop-gui-command-registered-p
+                   files--bridge-command)
+                nil)
+              (setq ok t)
+            nil)
+          (if (fboundp files--bridge-command) (setq ok t) nil)
+          ok))))
 
-	(fset 'call-interactively
-	      (lambda ()
-	        (if (eq files--bridge-command 'execute-extended-command) (execute-extended-command) nil)
-        (if (eq files--bridge-command 'execute-extended-command-for-buffer) (execute-extended-command-for-buffer) nil)
-	        (if (eq files--bridge-command 'describe-function) (describe-function) nil)
-	        (if (eq files--bridge-command 'describe-variable) (describe-variable) nil)
-	        (if (eq files--bridge-command 'describe-key) (describe-key) nil)
-		        (if (eq files--bridge-command 'describe-key-briefly) (describe-key-briefly) nil)
-			        (if (eq files--bridge-command 'describe-bindings) (describe-bindings) nil)
-			        (if (eq files--bridge-command 'help-for-help) (help-for-help) nil)
-			        (if (eq files--bridge-command 'describe-coding-system) (describe-coding-system) nil)
-			        (if (eq files--bridge-command 'describe-input-method) (describe-input-method) nil)
-			        (if (eq files--bridge-command 'describe-language-environment) (describe-language-environment) nil)
-			        (if (eq files--bridge-command 'apropos-command) (apropos-command) nil)
-			        (if (eq files--bridge-command 'apropos-documentation) (apropos-documentation) nil)
-			        (if (eq files--bridge-command 'view-echo-area-messages) (view-echo-area-messages) nil)
-			        (if (eq files--bridge-command 'about-emacs) (about-emacs) nil)
-		        (if (eq files--bridge-command 'describe-copying) (describe-copying) nil)
-		        (if (eq files--bridge-command 'view-emacs-debugging) (view-emacs-debugging) nil)
-		        (if (eq files--bridge-command 'view-external-packages) (view-external-packages) nil)
-		        (if (eq files--bridge-command 'view-emacs-FAQ) (view-emacs-FAQ) nil)
-		        (if (eq files--bridge-command 'view-emacs-news) (view-emacs-news) nil)
-		        (if (eq files--bridge-command 'describe-distribution) (describe-distribution) nil)
-		        (if (eq files--bridge-command 'view-emacs-problems) (view-emacs-problems) nil)
-		        (if (eq files--bridge-command 'view-emacs-todo) (view-emacs-todo) nil)
-		        (if (eq files--bridge-command 'describe-no-warranty) (describe-no-warranty) nil)
-			        (if (eq files--bridge-command 'describe-gnu-project) (describe-gnu-project) nil)
-			        (if (eq files--bridge-command 'view-hello-file) (view-hello-file) nil)
-			        (if (eq files--bridge-command 'view-lossage) (view-lossage) nil)
-			        (if (eq files--bridge-command 'describe-mode) (describe-mode) nil)
-			        (if (eq files--bridge-command 'describe-symbol) (describe-symbol) nil)
-			        (if (eq files--bridge-command 'help-quit) (help-quit) nil)
-			        (if (eq files--bridge-command 'describe-syntax) (describe-syntax) nil)
-			        (if (eq files--bridge-command 'help-with-tutorial) (help-with-tutorial) nil)
-                    (if (eq files--bridge-command 'display-local-help) (display-local-help) nil)
-                    (if (eq files--bridge-command 'help-find-source) (help-find-source) nil)
-                    (if (eq files--bridge-command 'help-quick-toggle) (help-quick-toggle) nil)
-                    (if (eq files--bridge-command 'search-forward-help-for-help) (search-forward-help-for-help) nil)
-                    (if (eq files--bridge-command 'eval-last-sexp) (eval-last-sexp) nil)
-                    (if (eq files--bridge-command 'eval-expression) (eval-expression) nil)
-                    (if (eq files--bridge-command 'font-lock-update) (font-lock-update) nil)
-                    (if (eq files--bridge-command 'insert-char) (insert-char) nil)
-                    (if (eq files--bridge-command 'text-scale-adjust) (text-scale-adjust) nil)
-                    (if (eq files--bridge-command 'global-text-scale-adjust) (global-text-scale-adjust) nil)
-                    (if (eq files--bridge-command 'suspend-frame) (suspend-frame) nil)
-                    (if (eq files--bridge-command 'tmm-menubar) (tmm-menubar) nil)
-                    (if (eq files--bridge-command 'set-selective-display) (set-selective-display) nil)
-                    (if (eq files--bridge-command 'toggle-input-method) (toggle-input-method) nil)
-                    (if (eq files--bridge-command 'activate-transient-input-method) (activate-transient-input-method) nil)
-                    (if (eq files--bridge-command 'set-input-method) (set-input-method) nil)
-                    (if (eq files--bridge-command 'set-file-name-coding-system) (set-file-name-coding-system) nil)
-                    (if (eq files--bridge-command 'set-next-selection-coding-system) (set-next-selection-coding-system) nil)
-                    (if (eq files--bridge-command 'universal-coding-system-argument) (universal-coding-system-argument) nil)
-                    (if (eq files--bridge-command 'set-buffer-file-coding-system) (set-buffer-file-coding-system) nil)
-                    (if (eq files--bridge-command 'set-keyboard-coding-system) (set-keyboard-coding-system) nil)
-                    (if (eq files--bridge-command 'set-language-environment) (set-language-environment) nil)
-                    (if (eq files--bridge-command 'set-buffer-process-coding-system) (set-buffer-process-coding-system) nil)
-                    (if (eq files--bridge-command 'revert-buffer-with-coding-system) (revert-buffer-with-coding-system) nil)
-                    (if (eq files--bridge-command 'set-terminal-coding-system) (set-terminal-coding-system) nil)
-                    (if (eq files--bridge-command 'set-selection-coding-system) (set-selection-coding-system) nil)
-                    (if (eq files--bridge-command 'highlight-symbol-at-point) (highlight-symbol-at-point) nil)
-                    (if (eq files--bridge-command 'highlight-regexp) (highlight-regexp) nil)
-                    (if (eq files--bridge-command 'highlight-phrase) (highlight-phrase) nil)
-                    (if (eq files--bridge-command 'highlight-lines-matching-regexp) (highlight-lines-matching-regexp) nil)
-                    (if (eq files--bridge-command 'unhighlight-regexp) (unhighlight-regexp) nil)
-                    (if (eq files--bridge-command 'hi-lock-find-patterns) (hi-lock-find-patterns) nil)
-                    (if (eq files--bridge-command 'hi-lock-write-interactive-patterns) (hi-lock-write-interactive-patterns) nil)
-                    (if (eq files--bridge-command 'emoji-zoom-increase) (emoji-zoom-increase) nil)
-                    (if (eq files--bridge-command 'emoji-zoom-decrease) (emoji-zoom-decrease) nil)
-                    (if (eq files--bridge-command 'emoji-zoom-reset) (emoji-zoom-reset) nil)
-                    (if (eq files--bridge-command 'emoji-describe) (emoji-describe) nil)
-                    (if (eq files--bridge-command 'emoji-insert) (emoji-insert) nil)
-                    (if (eq files--bridge-command 'emoji-list) (emoji-list) nil)
-                    (if (eq files--bridge-command 'emoji-recent) (emoji-recent) nil)
-                    (if (eq files--bridge-command 'emoji-search) (emoji-search) nil)
-                    (if (eq files--bridge-command 'kmacro-start-macro) (kmacro-start-macro) nil)
-                    (if (eq files--bridge-command 'kmacro-end-macro) (kmacro-end-macro) nil)
-                    (if (eq files--bridge-command 'kmacro-end-and-call-macro) (kmacro-end-and-call-macro) nil)
-                    (if (eq files--bridge-command 'kbd-macro-query) (kbd-macro-query) nil)
-                    (if (eq files--bridge-command 'kmacro-set-counter) (kmacro-set-counter) nil)
-                    (if (eq files--bridge-command 'kmacro-add-counter) (kmacro-add-counter) nil)
-                    (if (eq files--bridge-command 'kmacro-insert-counter) (kmacro-insert-counter) nil)
-                    (if (eq files--bridge-command 'kmacro-keymap) (kmacro-keymap) nil)
-                    (if (eq files--bridge-command 'kmacro-delete-ring-head) (kmacro-delete-ring-head) nil)
-                    (if (eq files--bridge-command 'kmacro-edit-macro-repeat) (kmacro-edit-macro-repeat) nil)
-                    (if (eq files--bridge-command 'kmacro-set-format) (kmacro-set-format) nil)
-                    (if (eq files--bridge-command 'kmacro-end-or-call-macro-repeat) (kmacro-end-or-call-macro-repeat) nil)
-                    (if (eq files--bridge-command 'kmacro-call-ring-2nd-repeat) (kmacro-call-ring-2nd-repeat) nil)
-                    (if (eq files--bridge-command 'kmacro-cycle-ring-next) (kmacro-cycle-ring-next) nil)
-                    (if (eq files--bridge-command 'kmacro-cycle-ring-previous) (kmacro-cycle-ring-previous) nil)
-                    (if (eq files--bridge-command 'kmacro-swap-ring) (kmacro-swap-ring) nil)
-                    (if (eq files--bridge-command 'kmacro-view-macro-repeat) (kmacro-view-macro-repeat) nil)
-                    (if (eq files--bridge-command 'kmacro-edit-macro) (kmacro-edit-macro) nil)
-                    (if (eq files--bridge-command 'kmacro-step-edit-macro) (kmacro-step-edit-macro) nil)
-                    (if (eq files--bridge-command 'kmacro-bind-to-key) (kmacro-bind-to-key) nil)
-                    (if (eq files--bridge-command 'kmacro-redisplay) (kmacro-redisplay) nil)
-                    (if (eq files--bridge-command 'edit-kbd-macro) (edit-kbd-macro) nil)
-                    (if (eq files--bridge-command 'kmacro-edit-lossage) (kmacro-edit-lossage) nil)
-                    (if (eq files--bridge-command 'kmacro-name-last-macro) (kmacro-name-last-macro) nil)
-                    (if (eq files--bridge-command 'apply-macro-to-region-lines) (apply-macro-to-region-lines) nil)
-                    (if (eq files--bridge-command 'kmacro-to-register) (kmacro-to-register) nil)
-                    (if (eq files--bridge-command 'xref-go-back) (xref-go-back) nil)
-                    (if (eq files--bridge-command 'xref-go-forward) (xref-go-forward) nil)
-                    (if (eq files--bridge-command 'xref-find-definitions) (xref-find-definitions) nil)
-                    (if (eq files--bridge-command 'xref-find-references) (xref-find-references) nil)
-                    (if (eq files--bridge-command 'xref-find-apropos) (xref-find-apropos) nil)
-                    (if (eq files--bridge-command 'xref-find-definitions-other-window) (xref-find-definitions-other-window) nil)
-                    (if (eq files--bridge-command 'xref-find-definitions-other-frame) (xref-find-definitions-other-frame) nil)
-                    (if (eq files--bridge-command 'next-error) (next-error) nil)
-                    (if (eq files--bridge-command 'previous-error) (previous-error) nil)
-                    (if (eq files--bridge-command 'repeat-complex-command) (repeat-complex-command) nil)
-                    (if (eq files--bridge-command 'info) (info) nil)
-                    (if (eq files--bridge-command 'info-other-window) (info-other-window) nil)
-                    (if (eq files--bridge-command 'info-emacs-manual) (info-emacs-manual) nil)
-                    (if (eq files--bridge-command 'info-display-manual) (info-display-manual) nil)
-                    (if (eq files--bridge-command 'view-order-manuals) (view-order-manuals) nil)
-                    (if (eq files--bridge-command 'Info-goto-emacs-command-node) (Info-goto-emacs-command-node) nil)
-                    (if (eq files--bridge-command 'Info-goto-emacs-key-command-node) (Info-goto-emacs-key-command-node) nil)
-                    (if (eq files--bridge-command 'info-lookup-symbol) (info-lookup-symbol) nil)
-                    (if (eq files--bridge-command 'describe-package) (describe-package) nil)
-                    (if (eq files--bridge-command 'finder-by-keyword) (finder-by-keyword) nil)
-			        (if (eq files--bridge-command 'where-is) (where-is) nil)
-		        (if (eq files--bridge-command 'describe-command) (describe-command) nil)
-		        (if (eq files--bridge-command 'what-cursor-position) (what-cursor-position) nil)
-	            (if (eq files--bridge-command 'shell-command) (shell-command) nil)
-	            (if (eq files--bridge-command 'shell-command-on-region) (shell-command-on-region) nil)
-	            (if (eq files--bridge-command 'async-shell-command) (async-shell-command) nil)
-            (if (eq files--bridge-command 'project-shell-command) (project-shell-command) nil)
-            (if (eq files--bridge-command 'project-async-shell-command) (project-async-shell-command) nil)
-            (if (eq files--bridge-command 'project-shell) (project-shell) nil)
-            (if (eq files--bridge-command 'project-eshell) (project-eshell) nil)
-            (if (eq files--bridge-command 'project-compile) (project-compile) nil)
-            (if (eq files--bridge-command 'project-find-regexp) (project-find-regexp) nil)
-            (if (eq files--bridge-command 'project-or-external-find-regexp) (project-or-external-find-regexp) nil)
-            (if (eq files--bridge-command 'project-vc-dir) (project-vc-dir) nil)
-            (if (eq files--bridge-command 'vc-diff) (vc-diff) nil)
-            (if (eq files--bridge-command 'vc-print-log) (vc-print-log) nil)
-				          (if (eq files--bridge-command 'repeat) (repeat) nil)
-	        (if (eq files--bridge-command 'universal-argument) (universal-argument) nil)
-	        (if (eq files--bridge-command 'digit-argument) (digit-argument) nil)
-	        (if (eq files--bridge-command 'negative-argument) (negative-argument) nil)
-				        (if (eq files--bridge-command 'find-file) (find-file) nil)
-                (if (eq files--bridge-command 'same-window-prefix) (same-window-prefix) nil)
-                (if (eq files--bridge-command 'other-window-prefix) (other-window-prefix) nil)
-                (if (eq files--bridge-command 'other-tab-prefix) (other-tab-prefix) nil)
-                (if (eq files--bridge-command 'other-frame-prefix) (other-frame-prefix) nil)
-						        (if (eq files--bridge-command 'find-file-other-window) (find-file-other-window) nil)
-                        (if (eq files--bridge-command 'find-file-other-frame) (find-file-other-frame) nil)
-	                        (if (eq files--bridge-command 'find-file-other-tab) (find-file-other-tab) nil)
-                        (if (eq files--bridge-command 'project-or-external-find-file) (project-or-external-find-file) nil)
-                        (if (eq files--bridge-command 'project-find-file) (project-find-file) nil)
-                        (if (eq files--bridge-command 'project-find-dir) (project-find-dir) nil)
-                        (if (eq files--bridge-command 'project-dired) (project-dired) nil)
-                        (if (eq files--bridge-command 'project-any-command) (project-any-command) nil)
-                        (if (eq files--bridge-command 'project-execute-extended-command) (project-execute-extended-command) nil)
-                        (if (eq files--bridge-command 'project-other-window-command) (project-other-window-command) nil)
-                        (if (eq files--bridge-command 'project-other-tab-command) (project-other-tab-command) nil)
-                        (if (eq files--bridge-command 'project-other-frame-command) (project-other-frame-command) nil)
-                        (if (eq files--bridge-command 'project-switch-project) (project-switch-project) nil)
-                            (if (eq files--bridge-command 'add-change-log-entry-other-window) (add-change-log-entry-other-window) nil)
-			        (if (eq files--bridge-command 'find-file-read-only) (find-file-read-only) nil)
-			        (if (eq files--bridge-command 'find-file-read-only-other-window) (find-file-read-only-other-window) nil)
-                (if (eq files--bridge-command 'find-file-read-only-other-frame) (find-file-read-only-other-frame) nil)
-	                (if (eq files--bridge-command 'find-file-read-only-other-tab) (find-file-read-only-other-tab) nil)
-		        (if (eq files--bridge-command 'toggle-read-only) (toggle-read-only) nil)
-        (if (eq files--bridge-command 'read-only-mode) (read-only-mode) nil)
-	        (if (eq files--bridge-command 'find-alternate-file) (find-alternate-file) nil)
-	        (if (eq files--bridge-command 'list-directory) (list-directory) nil)
-            (if (eq files--bridge-command 'dired) (dired) nil)
-            (if (eq files--bridge-command 'dired-jump) (dired-jump) nil)
-            (if (eq files--bridge-command 'dired-jump-other-window) (dired-jump-other-window) nil)
-            (if (eq files--bridge-command 'dired-other-window) (dired-other-window) nil)
-            (if (eq files--bridge-command 'dired-other-frame) (dired-other-frame) nil)
-            (if (eq files--bridge-command 'dired-other-tab) (dired-other-tab) nil)
-            (if (eq files--bridge-command 'compose-mail) (compose-mail) nil)
-            (if (eq files--bridge-command 'compose-mail-other-window) (compose-mail-other-window) nil)
-            (if (eq files--bridge-command 'compose-mail-other-frame) (compose-mail-other-frame) nil)
-            (if (eq files--bridge-command 'calc-dispatch) (calc-dispatch) nil)
-            (if (eq files--bridge-command '2C-command) (2C-command) nil)
-            (if (eq files--bridge-command '2C-two-columns) (2C-two-columns) nil)
-            (if (eq files--bridge-command '2C-associate-buffer) (2C-associate-buffer) nil)
-            (if (eq files--bridge-command '2C-split) (2C-split) nil)
-	        (if (eq files--bridge-command 'insert-file) (insert-file) nil)
-            (if (eq files--bridge-command 'insert-buffer) (insert-buffer) nil)
-            (if (eq files--bridge-command 'point-to-register) (point-to-register) nil)
-            (if (eq files--bridge-command 'jump-to-register) (jump-to-register) nil)
-            (if (eq files--bridge-command 'frameset-to-register) (frameset-to-register) nil)
-            (if (eq files--bridge-command 'window-configuration-to-register) (window-configuration-to-register) nil)
-            (if (eq files--bridge-command 'copy-to-register) (copy-to-register) nil)
-            (if (eq files--bridge-command 'insert-register) (insert-register) nil)
-            (if (eq files--bridge-command 'number-to-register) (number-to-register) nil)
-            (if (eq files--bridge-command 'increment-register) (increment-register) nil)
-            (if (eq files--bridge-command 'bookmark-set) (bookmark-set) nil)
-            (if (eq files--bridge-command 'bookmark-set-no-overwrite) (bookmark-set-no-overwrite) nil)
-            (if (eq files--bridge-command 'bookmark-jump) (bookmark-jump) nil)
-            (if (eq files--bridge-command 'bookmark-bmenu-list) (bookmark-bmenu-list) nil)
-        (if (eq files--bridge-command 'write-file) (write-file) nil)
-        (if (eq files--bridge-command 'save-buffer) (save-buffer) nil)
-        (if (eq files--bridge-command 'basic-save-buffer) (basic-save-buffer) nil)
-        (if (eq files--bridge-command 'save-some-buffers) (save-some-buffers) nil)
-        (if (eq files--bridge-command 'revert-buffer) (revert-buffer) nil)
-        (if (eq files--bridge-command 'revert-buffer-quick) (revert-buffer-quick) nil)
-        (if (eq files--bridge-command 'forward-char) (forward-char) nil)
-        (if (eq files--bridge-command 'backward-char) (backward-char) nil)
-        (if (eq files--bridge-command 'beginning-of-buffer) (beginning-of-buffer) nil)
-        (if (eq files--bridge-command 'end-of-buffer) (end-of-buffer) nil)
-        (if (eq files--bridge-command 'beginning-of-line) (beginning-of-line) nil)
-        (if (eq files--bridge-command 'back-to-indentation) (back-to-indentation) nil)
-        (if (eq files--bridge-command 'end-of-line) (end-of-line) nil)
-        (if (eq files--bridge-command 'move-beginning-of-line) (move-beginning-of-line) nil)
-	        (if (eq files--bridge-command 'move-end-of-line) (move-end-of-line) nil)
-	        (if (eq files--bridge-command 'goto-line) (goto-line) nil)
-	        (if (eq files--bridge-command 'goto-line-relative) (goto-line-relative) nil)
-	        (if (eq files--bridge-command 'goto-char) (files--goto-char-command) nil)
-	        (if (eq files--bridge-command 'move-to-column) (move-to-column) nil)
-            (if (eq files--bridge-command 'narrow-to-defun) (narrow-to-defun) nil)
-            (if (eq files--bridge-command 'narrow-to-region) (narrow-to-region) nil)
-            (if (eq files--bridge-command 'narrow-to-page) (narrow-to-page) nil)
-            (if (eq files--bridge-command 'widen) (widen) nil)
-	        (if (eq files--bridge-command 'next-line) (next-line) nil)
-        (if (eq files--bridge-command 'previous-line) (previous-line) nil)
-        (if (eq files--bridge-command 'set-goal-column) (set-goal-column) nil)
-        (if (eq files--bridge-command 'scroll-up-command) (scroll-up-command) nil)
-        (if (eq files--bridge-command 'scroll-down-command) (scroll-down-command) nil)
-        (if (eq files--bridge-command 'scroll-left) (scroll-left) nil)
-        (if (eq files--bridge-command 'scroll-right) (scroll-right) nil)
-        (if (eq files--bridge-command 'tab-new) (tab-new) nil)
-        (if (eq files--bridge-command 'tab-new-to) (tab-new-to) nil)
-        (if (eq files--bridge-command 'tab-group) (tab-group) nil)
-        (if (eq files--bridge-command 'tab-undo) (tab-undo) nil)
-        (if (eq files--bridge-command 'tab-move) (tab-move) nil)
-        (if (eq files--bridge-command 'tab-move-to) (tab-move-to) nil)
-        (if (eq files--bridge-command 'tab-close) (tab-close) nil)
-        (if (eq files--bridge-command 'tab-close-other) (tab-close-other) nil)
-        (if (eq files--bridge-command 'tab-detach) (tab-detach) nil)
-        (if (eq files--bridge-command 'tab-window-detach) (tab-window-detach) nil)
-        (if (eq files--bridge-command 'delete-frame) (delete-frame) nil)
-        (if (eq files--bridge-command 'delete-other-frames) (delete-other-frames) nil)
-        (if (eq files--bridge-command 'make-frame-command) (make-frame-command) nil)
-        (if (eq files--bridge-command 'other-frame) (other-frame) nil)
-        (if (eq files--bridge-command 'clone-frame) (clone-frame) nil)
-        (if (eq files--bridge-command 'undelete-frame) (undelete-frame) nil)
-        (if (eq files--bridge-command 'tab-next) (tab-next) nil)
-        (if (eq files--bridge-command 'tab-previous) (tab-previous) nil)
-        (if (eq files--bridge-command 'tab-duplicate) (tab-duplicate) nil)
-        (if (eq files--bridge-command 'tab-switch) (tab-switch) nil)
-        (if (eq files--bridge-command 'tab-rename) (tab-rename) nil)
-        (if (eq files--bridge-command 'scroll-other-window) (scroll-other-window) nil)
-        (if (eq files--bridge-command 'scroll-other-window-down) (scroll-other-window-down) nil)
-        (if (eq files--bridge-command 'recenter-top-bottom) (recenter-top-bottom) nil)
-        (if (eq files--bridge-command 'move-to-window-line-top-bottom) (move-to-window-line-top-bottom) nil)
-        (if (eq files--bridge-command 'reposition-window) (reposition-window) nil)
-        (if (eq files--bridge-command 'recenter-other-window) (recenter-other-window) nil)
-	        (if (eq files--bridge-command 'isearch-forward) (isearch-forward) nil)
-	        (if (eq files--bridge-command 'isearch-backward) (isearch-backward) nil)
-	        (if (eq files--bridge-command 'isearch-forward-regexp) (isearch-forward-regexp) nil)
-	        (if (eq files--bridge-command 'isearch-backward-regexp) (isearch-backward-regexp) nil)
-          (if (eq files--bridge-command 'isearch-forward-symbol-at-point) (isearch-forward-symbol-at-point) nil)
-          (if (eq files--bridge-command 'isearch-forward-thing-at-point) (isearch-forward-thing-at-point) nil)
-          (if (eq files--bridge-command 'isearch-forward-symbol) (isearch-forward-symbol) nil)
-          (if (eq files--bridge-command 'isearch-forward-word) (isearch-forward-word) nil)
-	        (if (eq files--bridge-command 'replace-string) (replace-string) nil)
-	        (if (eq files--bridge-command 'replace-regexp) (replace-regexp) nil)
-	        (if (eq files--bridge-command 'query-replace) (query-replace) nil)
-	        (if (eq files--bridge-command 'query-replace-regexp) (query-replace-regexp) nil)
-	        (if (eq files--bridge-command 'project-query-replace-regexp) (project-query-replace-regexp) nil)
-					        (if (eq files--bridge-command 'switch-to-buffer) (switch-to-buffer) nil)
-				        (if (eq files--bridge-command 'switch-to-buffer-other-window) (switch-to-buffer-other-window) nil)
-                        (if (eq files--bridge-command 'switch-to-buffer-other-frame) (switch-to-buffer-other-frame) nil)
-                        (if (eq files--bridge-command 'switch-to-buffer-other-tab) (switch-to-buffer-other-tab) nil)
-                        (if (eq files--bridge-command 'project-switch-to-buffer) (project-switch-to-buffer) nil)
-		        (if (eq files--bridge-command 'display-buffer) (display-buffer) nil)
-                (if (eq files--bridge-command 'display-buffer-other-frame) (display-buffer-other-frame) nil)
-        (if (eq files--bridge-command 'rename-buffer) (rename-buffer) nil)
-        (if (eq files--bridge-command 'rename-uniquely) (rename-uniquely) nil)
-        (if (eq files--bridge-command 'clone-buffer) (clone-buffer) nil)
-        (if (eq files--bridge-command 'clone-indirect-buffer-other-window) (clone-indirect-buffer-other-window) nil)
-        (if (eq files--bridge-command 'kill-buffer) (kill-buffer) nil)
-        (if (eq files--bridge-command 'kill-buffer-and-window) (kill-buffer-and-window) nil)
-        (if (eq files--bridge-command 'project-kill-buffers) (project-kill-buffers) nil)
-        (if (eq files--bridge-command 'list-buffers) (list-buffers) nil)
-        (if (eq files--bridge-command 'project-list-buffers) (project-list-buffers) nil)
-        (if (eq files--bridge-command 'occur) (occur) nil)
-        (if (eq files--bridge-command 'imenu) (imenu) nil)
-        (if (eq files--bridge-command 'save-buffers-kill-terminal) (save-buffers-kill-terminal) nil)
-        (if (eq files--bridge-command 'save-buffers-kill-emacs) (save-buffers-kill-emacs) nil)
-        (if (eq files--bridge-command 'kill-emacs) (kill-emacs) nil)
-        (if (eq files--bridge-command 'keyboard-quit) (keyboard-quit) nil)
-        (if (eq files--bridge-command 'keyboard-escape-quit) (keyboard-escape-quit) nil)
-        (if (eq files--bridge-command 'exit-recursive-edit) (exit-recursive-edit) nil)
-        (if (eq files--bridge-command 'abort-recursive-edit) (abort-recursive-edit) nil)
-        (if (eq files--bridge-command 'delete-other-windows) (delete-other-windows) nil)
-        (if (eq files--bridge-command 'delete-window) (delete-window) nil)
-        (if (eq files--bridge-command 'split-window-right) (split-window-right) nil)
-        (if (eq files--bridge-command 'split-window-below) (split-window-below) nil)
-        (if (eq files--bridge-command 'balance-windows) (balance-windows) nil)
-        (if (eq files--bridge-command 'shrink-window-if-larger-than-buffer) (shrink-window-if-larger-than-buffer) nil)
-        (if (eq files--bridge-command 'fit-window-to-buffer) (fit-window-to-buffer) nil)
-        (if (eq files--bridge-command 'delete-windows-on) (delete-windows-on) nil)
-        (if (eq files--bridge-command 'split-root-window-below) (split-root-window-below) nil)
-        (if (eq files--bridge-command 'split-root-window-right) (split-root-window-right) nil)
-        (if (eq files--bridge-command 'tear-off-window) (tear-off-window) nil)
-        (if (eq files--bridge-command 'toggle-window-dedicated) (toggle-window-dedicated) nil)
-        (if (eq files--bridge-command 'quit-window) (quit-window) nil)
-        (if (eq files--bridge-command 'dired-mark) (dired-mark) nil)
-        (if (eq files--bridge-command 'dired-unmark) (dired-unmark) nil)
-        (if (eq files--bridge-command 'dired-flag-file-deletion) (dired-flag-file-deletion) nil)
-        (if (eq files--bridge-command 'dired-do-flagged-delete) (dired-do-flagged-delete) nil)
-        (if (eq files--bridge-command 'dired-do-rename) (dired-do-rename) nil)
-        (if (eq files--bridge-command 'dired-do-copy) (dired-do-copy) nil)
-        (if (eq files--bridge-command 'org-todo) (org-todo) nil)
-        (if (eq files--bridge-command 'org-narrow-to-subtree) (org-narrow-to-subtree) nil)
-        (if (eq files--bridge-command 'org-table-next-field) (org-table-next-field) nil)
-        (if (eq files--bridge-command 'org-capture) (org-capture) nil)
-        (if (eq files--bridge-command 'org-agenda) (org-agenda) nil)
-        (if (eq files--bridge-command 'magit-status) (magit-status) nil)
-        (if (eq files--bridge-command 'magit-stage-file) (magit-stage-file) nil)
-        (if (eq files--bridge-command 'magit-unstage-file) (magit-unstage-file) nil)
-        (if (eq files--bridge-command 'magit-commit) (magit-commit) nil)
-        (if (eq files--bridge-command 'magit-diff) (magit-diff) nil)
-        (if (eq files--bridge-command 'magit-log) (magit-log) nil)
-        (if (eq files--bridge-command 'Info-next) (Info-next) nil)
-        (if (eq files--bridge-command 'Info-prev) (Info-prev) nil)
-        (if (eq files--bridge-command 'Info-up) (Info-up) nil)
-        (if (eq files--bridge-command 'customize-variable) (customize-variable) nil)
-        (if (eq files--bridge-command 'customize-save-variable) (customize-save-variable) nil)
-        (if (eq files--bridge-command 'org-cycle) (org-cycle) nil)
-        (if (eq files--bridge-command 'org-shifttab) (org-shifttab) nil)
-        (if (eq files--bridge-command 'org-table-align) (org-table-align) nil)
-        (if (eq files--bridge-command 'org-metaright) (org-metaright) nil)
-        (if (eq files--bridge-command 'org-metaleft) (org-metaleft) nil)
-        (if (eq files--bridge-command 'vc-root-diff) (vc-root-diff) nil)
-        (if (eq files--bridge-command 'vc-edit-next-command) (vc-edit-next-command) nil)
-        (if (eq files--bridge-command 'vc-next-action) (vc-next-action) nil)
-        (if (eq files--bridge-command 'ispell-word) (ispell-word) nil)
-        (if (eq files--bridge-command 'eww-search-words) (eww-search-words) nil)
-        (if (eq files--bridge-command 'window-toggle-side-windows) (window-toggle-side-windows) nil)
-        (if (eq files--bridge-command 'enlarge-window) (enlarge-window) nil)
-        (if (eq files--bridge-command 'shrink-window-horizontally) (shrink-window-horizontally) nil)
-        (if (eq files--bridge-command 'enlarge-window-horizontally) (enlarge-window-horizontally) nil)
-        (if (eq files--bridge-command 'other-window) (other-window) nil)
-        (if (eq files--bridge-command 'forward-word) (forward-word) nil)
-        (if (eq files--bridge-command 'backward-word) (backward-word) nil)
-        (if (eq files--bridge-command 'beginning-of-defun) (beginning-of-defun) nil)
-        (if (eq files--bridge-command 'forward-sexp) (forward-sexp) nil)
-        (if (eq files--bridge-command 'backward-sexp) (backward-sexp) nil)
-        (if (eq files--bridge-command 'end-of-defun) (end-of-defun) nil)
-        (if (eq files--bridge-command 'mark-defun) (mark-defun) nil)
-        (if (eq files--bridge-command 'mark-sexp) (mark-sexp) nil)
-        (if (eq files--bridge-command 'kill-sexp) (kill-sexp) nil)
-        (if (eq files--bridge-command 'down-list) (down-list) nil)
-        (if (eq files--bridge-command 'forward-list) (forward-list) nil)
-        (if (eq files--bridge-command 'backward-list) (backward-list) nil)
-        (if (eq files--bridge-command 'transpose-sexps) (transpose-sexps) nil)
-        (if (eq files--bridge-command 'backward-up-list) (backward-up-list) nil)
-        (if (eq files--bridge-command 'kill-word) (kill-word) nil)
-        (if (eq files--bridge-command 'backward-kill-word) (backward-kill-word) nil)
-        (if (eq files--bridge-command 'zap-to-char) (zap-to-char) nil)
-        (if (eq files--bridge-command 'expand-abbrev) (expand-abbrev) nil)
-        (if (eq files--bridge-command 'add-global-abbrev) (add-global-abbrev) nil)
-        (if (eq files--bridge-command 'add-mode-abbrev) (add-mode-abbrev) nil)
-        (if (eq files--bridge-command 'inverse-add-global-abbrev) (inverse-add-global-abbrev) nil)
-        (if (eq files--bridge-command 'inverse-add-mode-abbrev) (inverse-add-mode-abbrev) nil)
-        (if (eq files--bridge-command 'abbrev-prefix-mark) (abbrev-prefix-mark) nil)
-        (if (eq files--bridge-command 'expand-jump-to-next-slot) (expand-jump-to-next-slot) nil)
-        (if (eq files--bridge-command 'expand-jump-to-previous-slot) (expand-jump-to-previous-slot) nil)
-        (if (eq files--bridge-command 'dabbrev-expand) (dabbrev-expand) nil)
-        (if (eq files--bridge-command 'dabbrev-completion) (dabbrev-completion) nil)
-        (if (eq files--bridge-command 'complete-symbol) (complete-symbol) nil)
-        (if (eq files--bridge-command 'transpose-words) (transpose-words) nil)
-        (if (eq files--bridge-command 'insert-parentheses) (insert-parentheses) nil)
-        (if (eq files--bridge-command 'move-past-close-and-reindent) (move-past-close-and-reindent) nil)
-        (if (eq files--bridge-command 'transpose-lines) (transpose-lines) nil)
-        (if (eq files--bridge-command 'mark-word) (mark-word) nil)
-        (if (eq files--bridge-command 'count-words-region) (count-words-region) nil)
-        (if (eq files--bridge-command 'count-lines-page) (count-lines-page) nil)
-        (if (eq files--bridge-command 'forward-paragraph) (forward-paragraph) nil)
-        (if (eq files--bridge-command 'backward-paragraph) (backward-paragraph) nil)
-        (if (eq files--bridge-command 'mark-paragraph) (mark-paragraph) nil)
-        (if (eq files--bridge-command 'fill-paragraph) (fill-paragraph) nil)
-        (if (eq files--bridge-command 'set-fill-column) (set-fill-column) nil)
-        (if (eq files--bridge-command 'set-fill-prefix) (set-fill-prefix) nil)
-        (if (eq files--bridge-command 'comment-set-column) (comment-set-column) nil)
-        (if (eq files--bridge-command 'forward-sentence) (forward-sentence) nil)
-        (if (eq files--bridge-command 'backward-sentence) (backward-sentence) nil)
-        (if (eq files--bridge-command 'kill-sentence) (kill-sentence) nil)
-        (if (eq files--bridge-command 'backward-kill-sentence) (backward-kill-sentence) nil)
-        (if (eq files--bridge-command 'transpose-chars) (transpose-chars) nil)
-        (if (eq files--bridge-command 'delete-horizontal-space) (delete-horizontal-space) nil)
-        (if (eq files--bridge-command 'cycle-spacing) (cycle-spacing) nil)
-        (if (eq files--bridge-command 'not-modified) (not-modified) nil)
-        (if (eq files--bridge-command 'just-one-space) (just-one-space) nil)
-        (if (eq files--bridge-command 'delete-indentation) (delete-indentation) nil)
-        (if (eq files--bridge-command 'comment-line) (comment-line) nil)
-        (if (eq files--bridge-command 'comment-dwim) (comment-dwim) nil)
-        (if (eq files--bridge-command 'upcase-word) (upcase-word) nil)
-        (if (eq files--bridge-command 'downcase-word) (downcase-word) nil)
-        (if (eq files--bridge-command 'capitalize-word) (capitalize-word) nil)
-        (if (eq files--bridge-command 'upcase-region) (upcase-region) nil)
-        (if (eq files--bridge-command 'downcase-region) (downcase-region) nil)
-        (if (eq files--bridge-command 'capitalize-region) (capitalize-region) nil)
-        (if (eq files--bridge-command 'sort-lines) (sort-lines) nil)
-        (if (eq files--bridge-command 'delete-char) (delete-char) nil)
-        (if (eq files--bridge-command 'backward-delete-char) (backward-delete-char) nil)
-        (if (eq files--bridge-command 'delete-backward-char) (delete-backward-char) nil)
-        (if (eq files--bridge-command 'self-insert-command) (self-insert-command) nil)
-        (if (eq files--bridge-command 'quoted-insert) (quoted-insert) nil)
-        (if (eq files--bridge-command 'indent-for-tab-command) (indent-for-tab-command) nil)
-        (if (eq files--bridge-command 'tab-to-tab-stop) (tab-to-tab-stop) nil)
-        (if (eq files--bridge-command 'indent-region) (indent-region) nil)
-        (if (eq files--bridge-command 'indent-rigidly) (indent-rigidly) nil)
-        (if (eq files--bridge-command 'newline) (newline) nil)
-        (if (eq files--bridge-command 'electric-newline-and-maybe-indent) (electric-newline-and-maybe-indent) nil)
-        (if (eq files--bridge-command 'default-indent-new-line) (default-indent-new-line) nil)
-        (if (eq files--bridge-command 'open-line) (open-line) nil)
-        (if (eq files--bridge-command 'split-line) (split-line) nil)
-        (if (eq files--bridge-command 'delete-blank-lines) (delete-blank-lines) nil)
-        (if (eq files--bridge-command 'kill-line) (kill-line) nil)
-        (if (eq files--bridge-command 'kill-whole-line) (kill-whole-line) nil)
-        (if (eq files--bridge-command 'yank) (yank) nil)
-        (if (eq files--bridge-command 'yank-pop) (yank-pop) nil)
-        (if (eq files--bridge-command 'set-mark-command) (set-mark-command) nil)
-        (if (eq files--bridge-command 'exchange-point-and-mark) (exchange-point-and-mark) nil)
-        (if (eq files--bridge-command 'pop-global-mark) (pop-global-mark) nil)
-        (if (eq files--bridge-command 'rectangle-mark-mode) (rectangle-mark-mode) nil)
-        (if (eq files--bridge-command 'toggle-truncate-lines) (toggle-truncate-lines) nil)
-        (if (eq files--bridge-command 'mark-whole-buffer) (mark-whole-buffer) nil)
-        (if (eq files--bridge-command 'mark-page) (mark-page) nil)
-        (if (eq files--bridge-command 'backward-page) (backward-page) nil)
-        (if (eq files--bridge-command 'forward-page) (forward-page) nil)
-        (if (eq files--bridge-command 'delete-region) (delete-region) nil)
-        (if (eq files--bridge-command 'kill-region) (kill-region) nil)
-        (if (eq files--bridge-command 'copy-region-as-kill) (copy-region-as-kill) nil)
-	        (if (eq files--bridge-command 'kill-ring-save) (kill-ring-save) nil)
-        (if (eq files--bridge-command 'copy-rectangle-to-register) (copy-rectangle-to-register) nil)
-        (if (eq files--bridge-command 'copy-rectangle-as-kill) (copy-rectangle-as-kill) nil)
-        (if (eq files--bridge-command 'rectangle-number-lines) (rectangle-number-lines) nil)
-        (if (eq files--bridge-command 'kill-rectangle) (kill-rectangle) nil)
-        (if (eq files--bridge-command 'delete-rectangle) (delete-rectangle) nil)
-        (if (eq files--bridge-command 'clear-rectangle) (clear-rectangle) nil)
-        (if (eq files--bridge-command 'open-rectangle) (open-rectangle) nil)
-        (if (eq files--bridge-command 'string-rectangle) (string-rectangle) nil)
-        (if (eq files--bridge-command 'yank-rectangle) (yank-rectangle) nil)
-	        (if (eq files--bridge-command 'append-next-kill) (append-next-kill) nil)
-	        (if (eq files--bridge-command 'undo) (undo) nil)
-	        (if (eq files--bridge-command 'undo-redo) (undo-redo) nil)
-	        (if (eq files--bridge-command 'delete-trailing-whitespace) (delete-trailing-whitespace) nil)
-        (if (eq files--bridge-command 'untabify) (untabify) nil)))
+(fset 'files--command-loop-backend-with-command
+      (lambda (command thunk)
+        (let ((old files--bridge-command))
+          (setq files--bridge-command command)
+          (let ((result (funcall thunk)))
+            (setq files--bridge-command old)
+            result))))
+
+(fset 'files--command-loop-backend-commandp
+      (lambda (command)
+        (if (fboundp 'emacs-command-loop-gui-command-accepted-p)
+            (emacs-command-loop-gui-command-accepted-p command)
+          (if (fboundp 'emacs-command-loop-gui-command-registered-p)
+              (emacs-command-loop-gui-command-registered-p command)
+          (files--command-loop-backend-with-command
+           command
+           (lambda () (commandp)))))))
+
+(fset 'files--command-loop-backend-read-only-p
+      (lambda ()
+        files--buffer-read-only-p))
+
+(fset 'files--command-loop-backend-read-only-command-p
+      (lambda (command)
+        (if (fboundp 'emacs-command-loop-gui-read-only-command-p)
+            (emacs-command-loop-gui-read-only-command-p command)
+          (files--command-loop-backend-with-command
+           command
+           (lambda () (files--read-only-command-p))))))
+
+(fset 'files--command-loop-backend-prefix-command-p
+      (lambda (command)
+        (if (fboundp 'emacs-command-loop-gui-prefix-command-p)
+            (emacs-command-loop-gui-prefix-command-p command)
+          (files--command-loop-backend-with-command
+           command
+           (lambda () (files--prefix-command-p))))))
+
+(fset 'files--command-loop-backend-before-command
+      (lambda (command)
+        (if (eq command 'cycle-spacing)
+            nil
+          (files--cycle-spacing-clear-state))))
+
+(fset 'files--command-loop-backend-call-command
+      (lambda (command)
+        (if (fboundp command)
+            (funcall command)
+          nil)))
+
+(fset 'files--command-loop-backend-call-adapted-command
+      (lambda (command kind)
+        (if (eq kind 'goto-char)
+            (files--goto-char-command)
+          (if (eq kind 'zap-to-char)
+              (zap-to-char)
+            (if (fboundp command)
+                (funcall command)
+              nil)))))
+
+(fset 'files--command-loop-backend-current-command
+      (lambda ()
+        files--bridge-command))
+
+(fset 'files--command-loop-backend-current-effective-command
+      (lambda ()
+        files--bridge-effective-command))
+
+(fset 'files--command-loop-backend-current-keys
+      (lambda ()
+        files--bridge-keys))
+
+(fset 'files--command-loop-backend-current-arg
+      (lambda ()
+        files--bridge-arg))
+
+(fset 'files--command-loop-backend-current-status
+      (lambda ()
+        files--bridge-status))
+
+(fset 'files--command-loop-backend-current-prefix-arg
+      (lambda ()
+        files--prefix-arg))
+
+(fset 'files--command-loop-backend-set-command
+      (lambda (command)
+        (setq files--bridge-command command)))
+
+(fset 'files--command-loop-backend-set-effective-command
+      (lambda (name)
+        (setq files--bridge-effective-command name)))
+
+(fset 'files--command-loop-backend-set-keys
+      (lambda (keys)
+        (setq files--bridge-keys keys)))
+
+(fset 'files--command-loop-backend-set-status
+      (lambda (status)
+        (setq files--bridge-status status)))
+
+(fset 'files--command-loop-backend-set-arg
+      (lambda (arg)
+        (setq files--bridge-arg arg)))
+
+(fset 'files--command-loop-backend-set-prefix-arg
+      (lambda (arg)
+        (setq files--prefix-arg arg)))
+
+(fset 'files--command-loop-backend-clear-command-request
+      (lambda ()
+        (nl-write-file (progn (setq files--transport-name "nemacs-cmd")
+                              (files--transport-path))
+                       "")
+        (nl-write-file (progn (setq files--transport-name "nemacs-keys")
+                              (files--transport-path))
+                       "")))
+
+(fset 'files--command-loop-backend-prefix-arg-empty-p
+      (lambda ()
+        (equal files--prefix-arg "")))
+
+(fset 'files--command-loop-backend-error-status-p
+      (lambda (status)
+        (let ((old files--bridge-status))
+          (setq files--bridge-status status)
+          (let ((result (files--bridge-error-status-p)))
+            (setq files--bridge-status old)
+            result))))
+
+(fset 'files--command-loop-backend-quoted-insert-p
+      (lambda ()
+        files--quoted-insert-p))
+
+(fset 'files--command-loop-backend-clear-quoted-insert
+      (lambda ()
+        (setq files--quoted-insert-p nil)))
+
+(fset 'files--command-loop-backend-minibuffer-active-p
+      (lambda ()
+        files--minibuffer-active))
+
+(fset 'files--command-loop-backend-minibuffer-key
+      (lambda ()
+        files--bridge-keys))
+
+(fset 'files--command-loop-backend-minibuffer-initial-input
+      (lambda ()
+        files--bridge-arg))
+
+(fset 'files--command-loop-backend-current-minibuffer-arg
+      (lambda ()
+        files--bridge-minibuffer-arg))
+
+(fset 'files--command-loop-backend-minibuffer-purpose
+      (lambda ()
+        files--minibuffer-purpose))
+
+(fset 'files--command-loop-backend-minibuffer-keymap-source
+      (lambda ()
+        files--minibuffer-keymap-source))
+
+(fset 'files--command-loop-backend-maybe-start-minibuffer
+      (lambda ()
+        (if (fboundp 'emacs-minibuffer-gui-maybe-start-current-context)
+            (emacs-minibuffer-gui-maybe-start-current-context)
+          (files--maybe-start-minibuffer))))
+
+(fset 'files--command-loop-backend-lookup-key-sequence
+      (lambda ()
+        (if (fboundp 'emacs-command-loop-gui-lookup-key-sequence-from-sources)
+            (emacs-command-loop-gui-lookup-key-sequence-from-sources
+             files--bridge-keys
+             (rdf (files--user-keymap-path))
+             (files--mode-keymap-source)
+             files--keymap-source)
+          (files--lookup-key-sequence))))
+
+(fset 'files--command-loop-backend-after-key-dispatch
+      (lambda ()
+        (files--append-kmacro-key-if-needed)))
+
+(fset 'files--command-loop-backend-clear-display-prefix-after-command
+      (lambda ()
+        (files--clear-display-prefix-after-command)))
+
+(fset 'files--command-loop-backend-write-minibuffer-state
+      (lambda ()
+        (files--write-minibuffer-state)))
+
+(fset 'files--command-loop-backend-write-redisplay-state
+      (lambda ()
+        (files--write-redisplay-state)))
+
+(fset 'files--command-loop-backend-write-prefix-arg-state
+      (lambda ()
+        (files--write-prefix-arg-state)))
+
+(fset 'files--command-loop-backend-write-kmacro-state
+      (lambda ()
+        (files--write-kmacro-state)))
+
+(fset 'files--command-loop-backend-write-last-command-state
+      (lambda ()
+        (files--write-last-command-state)))
+
+(fset 'files--command-loop-backend-write-kill-ring-state
+      (lambda ()
+        (files--write-kill-ring-state)))
+
+(fset 'files--command-loop-backend-write-status-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-status")
+           (files--transport-path))
+         files--bridge-status)))
+
+(fset 'files--command-loop-backend-write-buffer-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-buf")
+           (files--transport-path))
+         files--buffer-string)))
+
+(fset 'files--command-loop-backend-write-file-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-file")
+           (files--transport-path))
+         (if files--current-file-name
+             files--current-file-name
+           ""))))
+
+(fset 'files--command-loop-backend-write-read-only-one-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-read-only")
+           (files--transport-path))
+         "1")))
+
+(fset 'files--command-loop-backend-write-read-only-state
+      (lambda ()
+        (nl-write-file
+         (progn
+           (setq files--transport-name "nemacs-read-only")
+           (files--transport-path))
+         (if files--buffer-read-only-p "1" "0"))))
+
+(fset 'files--command-loop-backend-write-point-state
+      (lambda ()
+        (files--write-transport-point)))
+
+(fset 'files--command-loop-backend-write-mark-state
+      (lambda ()
+        (files--write-transport-mark)))
+
+(fset 'files--command-loop-backend-write-window-start-state
+      (lambda ()
+        (files--write-transport-window-start)))
+
+(fset 'files--command-loop-backend-mark-written-state
+      (lambda ()
+        (setq files--bridge-status "written")))
+
+(fset 'files--command-loop-backend-write-window-split-delta
+      (lambda ()
+        (files--write-transport-window-split-delta)))
+
+(fset 'files--command-loop-backend-write-window-dedicated-state
+      (lambda ()
+        (files--write-transport-window-dedicated-state)))
+
+(fset 'files--command-loop-backend-write-side-windows-state
+      (lambda ()
+        (files--write-transport-side-windows-state)))
+
+(fset 'files--command-loop-backend-write-frame-state
+      (lambda ()
+        (files--write-transport-frame-state)))
+
+(fset 'files--command-loop-install-backend
+      (lambda ()
+        (if (fboundp 'emacs-command-loop-gui-register-backend)
+            (emacs-command-loop-gui-register-backend
+             :current-command 'files--command-loop-backend-current-command
+             :current-effective-command
+             'files--command-loop-backend-current-effective-command
+             :current-keys 'files--command-loop-backend-current-keys
+             :current-arg 'files--command-loop-backend-current-arg
+             :current-status 'files--command-loop-backend-current-status
+             :current-prefix-arg
+             'files--command-loop-backend-current-prefix-arg
+             :current-minibuffer-arg
+             'files--command-loop-backend-current-minibuffer-arg
+             :set-command 'files--command-loop-backend-set-command
+             :set-effective-command
+             'files--command-loop-backend-set-effective-command
+             :set-keys 'files--command-loop-backend-set-keys
+             :set-status 'files--command-loop-backend-set-status
+             :set-arg 'files--command-loop-backend-set-arg
+             :set-prefix-arg 'files--command-loop-backend-set-prefix-arg
+             :clear-command-request
+             'files--command-loop-backend-clear-command-request
+             :error-status-p
+             'files--command-loop-backend-error-status-p
+             :commandp 'files--command-loop-backend-commandp
+             :call-command 'files--command-loop-backend-call-command
+             :call-adapted-command
+             'files--command-loop-backend-call-adapted-command
+             :read-only-p 'files--command-loop-backend-read-only-p
+             :read-only-command-p
+             'files--command-loop-backend-read-only-command-p
+             :prefix-command-p 'files--command-loop-backend-prefix-command-p
+             :before-command 'files--command-loop-backend-before-command
+             :clear-cycle-spacing-state 'files--cycle-spacing-clear-state
+             :prefix-arg-empty-p
+             'files--command-loop-backend-prefix-arg-empty-p
+             :execute-with-prefix-arg
+             'files--command-loop-backend-execute-with-prefix-arg
+             :quoted-insert-p 'files--command-loop-backend-quoted-insert-p
+             :clear-quoted-insert
+             'files--command-loop-backend-clear-quoted-insert
+             :quoted-insert-key-text 'files--quoted-insert-key-text
+             :minibuffer-active-p
+             'files--command-loop-backend-minibuffer-active-p
+             :minibuffer-key 'files--command-loop-backend-minibuffer-key
+             :minibuffer-initial-input
+             'files--command-loop-backend-minibuffer-initial-input
+             :minibuffer-purpose
+             'files--command-loop-backend-minibuffer-purpose
+             :minibuffer-mode-keymap-source
+             'files--mode-minibuffer-keymap-source
+             :minibuffer-keymap-source
+             'files--command-loop-backend-minibuffer-keymap-source
+             :minibuffer-handle-key 'files--minibuffer-handle-key
+             :maybe-start-minibuffer
+             'files--command-loop-backend-maybe-start-minibuffer
+             :lookup-key-sequence
+             'files--command-loop-backend-lookup-key-sequence
+             :after-key-dispatch
+             'files--command-loop-backend-after-key-dispatch
+             :clear-display-prefix-after-command
+             'files--command-loop-backend-clear-display-prefix-after-command
+             :write-minibuffer-state
+             'files--command-loop-backend-write-minibuffer-state
+             :write-redisplay-state
+             'files--command-loop-backend-write-redisplay-state
+             :write-prefix-arg-state
+             'files--command-loop-backend-write-prefix-arg-state
+             :write-kmacro-state
+             'files--command-loop-backend-write-kmacro-state
+             :write-last-command-state
+             'files--command-loop-backend-write-last-command-state
+             :write-kill-ring-state
+             'files--command-loop-backend-write-kill-ring-state
+             :write-status-state
+             'files--command-loop-backend-write-status-state
+             :write-buffer-state
+             'files--command-loop-backend-write-buffer-state
+             :write-file-state
+             'files--command-loop-backend-write-file-state
+             :write-read-only-one-state
+             'files--command-loop-backend-write-read-only-one-state
+             :write-read-only-state
+             'files--command-loop-backend-write-read-only-state
+             :write-point-state
+             'files--command-loop-backend-write-point-state
+             :write-mark-state
+             'files--command-loop-backend-write-mark-state
+             :write-window-start-state
+             'files--command-loop-backend-write-window-start-state
+             :mark-written-state
+             'files--command-loop-backend-mark-written-state
+             :write-window-split-delta
+             'files--command-loop-backend-write-window-split-delta
+             :write-window-dedicated-state
+             'files--command-loop-backend-write-window-dedicated-state
+             :write-side-windows-state
+             'files--command-loop-backend-write-side-windows-state
+             :write-frame-state
+             'files--command-loop-backend-write-frame-state
+             :save-undo-state 'files--save-undo-state
+             :save-undo-if-needed 'files--bridge-save-undo-if-needed)
+          nil)))
+
+(files--command-loop-install-backend)
+
+(fset 'files--command-loop-ensure-backend
+      (lambda ()
+        (if (fboundp 'files--command-loop-install-backend)
+            (files--command-loop-install-backend)
+          nil)))
+
+(fset 'files--command-loop-set-command-arg
+      (lambda (command)
+        (if command
+            (progn
+              (setq files--bridge-command command)
+              (setq files--bridge-effective-command
+                    (cond
+                     ((symbolp command) (symbol-name command))
+                     ((stringp command) command)
+                     (t files--bridge-effective-command)))))
+        command))
+
+(if (not (fboundp 'emacs-command-loop-gui-call-interactively))
+    (fset 'emacs-command-loop-gui-call-interactively
+          (lambda (&optional command)
+            (let ((resolved-command
+                   (if command command files--bridge-command)))
+              (if resolved-command
+                  (emacs-command-loop-gui-call-interactively-context
+                   :command resolved-command
+                   :effective-command
+                   (cond
+                    ((symbolp resolved-command)
+                     (symbol-name resolved-command))
+                    ((stringp resolved-command) resolved-command)
+                    (t files--bridge-effective-command))
+                   :keys files--bridge-keys
+                   :arg files--bridge-arg
+                   :status files--bridge-status
+                   :prefix-arg files--prefix-arg)
+                nil))))
+  nil)
+
+(if (not (fboundp 'emacs-command-loop-gui-call-interactively-current-context))
+    (fset 'emacs-command-loop-gui-call-interactively-current-context
+          (lambda ()
+            (emacs-command-loop-gui-call-interactively-context
+             :command files--bridge-command
+             :effective-command files--bridge-effective-command
+             :keys files--bridge-keys
+             :arg files--bridge-arg
+             :status files--bridge-status
+             :prefix-arg files--prefix-arg)))
+  nil)
+
+(fset 'call-interactively
+      (lambda (&optional command &rest _ignored)
+        (files--command-loop-set-command-arg command)
+        (files--command-loop-ensure-backend)
+        (if command
+            (emacs-command-loop-gui-call-interactively command)
+          (emacs-command-loop-gui-call-interactively-current-context))))
+
+(if (not (fboundp 'emacs-command-loop-gui-read-only-command-p))
+    (fset 'emacs-command-loop-gui-read-only-command-p
+          (lambda (&optional command)
+            (let* ((command (or command files--bridge-command))
+                   (name (if (symbolp command)
+                             (symbol-name command)
+                           (if (stringp command) command ""))))
+              (if (member name
+                          '("insert-file" "insert-buffer" "insert-register"
+                            "number-to-register" "increment-register"
+                            "bookmark-set" "bookmark-set-no-overwrite"
+                            "write-file" "save-buffer" "basic-save-buffer"
+                            "kill-word" "kill-sexp" "backward-kill-word"
+                            "zap-to-char" "dabbrev-expand"
+                            "dabbrev-completion" "complete-symbol"
+                            "transpose-words" "transpose-sexps"
+                            "insert-parentheses"
+                            "move-past-close-and-reindent"
+                            "transpose-lines" "fill-paragraph"
+                            "kill-sentence" "backward-kill-sentence"
+                            "transpose-chars" "delete-horizontal-space"
+                            "cycle-spacing" "just-one-space"
+                            "delete-indentation" "comment-line"
+                            "comment-dwim" "upcase-word" "downcase-word"
+                            "capitalize-word" "upcase-region"
+                            "downcase-region" "capitalize-region"
+                            "sort-lines" "delete-char"
+                            "backward-delete-char" "delete-backward-char"
+                            "self-insert-command" "quoted-insert"
+                            "indent-for-tab-command" "tab-to-tab-stop"
+                            "indent-region" "indent-rigidly" "newline"
+                            "electric-newline-and-maybe-indent"
+                            "default-indent-new-line" "open-line"
+                            "split-line" "delete-blank-lines" "kill-line"
+                            "kill-whole-line" "yank" "yank-pop"
+                            "delete-region" "kill-region" "kill-rectangle"
+                            "rectangle-number-lines" "delete-rectangle"
+                            "clear-rectangle" "open-rectangle"
+                            "string-rectangle" "yank-rectangle"
+                            "replace-string" "replace-regexp"
+                            "query-replace" "query-replace-regexp"
+                            "project-query-replace-regexp" "undo"
+                            "undo-redo" "delete-trailing-whitespace"
+                            "untabify"))
+                  t
+                nil))))
+  nil)
 
 (fset 'files--read-only-command-p
       (lambda ()
-        (let ((ok nil))
-          (if (eq files--bridge-command 'insert-file) (setq ok t) nil)
-          (if (eq files--bridge-command 'insert-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'insert-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'number-to-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'increment-register) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-set) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-set-no-overwrite) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-jump) (setq ok t) nil)
-          (if (eq files--bridge-command 'bookmark-bmenu-list) (setq ok t) nil)
-          (if (eq files--bridge-command 'emoji-list) (setq ok t) nil)
-          (if (eq files--bridge-command 'emoji-recent) (setq ok t) nil)
-          (if (eq files--bridge-command 'emoji-search) (setq ok t) nil)
-          (if (eq files--bridge-command 'emoji-describe) (setq ok t) nil)
-          (if (eq files--bridge-command 'emoji-zoom-increase) (setq ok t) nil)
-          (if (eq files--bridge-command 'emoji-zoom-decrease) (setq ok t) nil)
-          (if (eq files--bridge-command 'emoji-zoom-reset) (setq ok t) nil)
-          (if (eq files--bridge-command 'text-scale-adjust) (setq ok t) nil)
-          (if (eq files--bridge-command 'global-text-scale-adjust) (setq ok t) nil)
-          (if (eq files--bridge-command 'suspend-frame) (setq ok t) nil)
-          (if (eq files--bridge-command 'tmm-menubar) (setq ok t) nil)
-          (if (eq files--bridge-command 'repeat) (setq ok t) nil)
-          (if (eq files--bridge-command 'write-file) (setq ok t) nil)
-          (if (eq files--bridge-command 'save-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'basic-save-buffer) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-sexp) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-kill-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'zap-to-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'dabbrev-expand) (setq ok t) nil)
-          (if (eq files--bridge-command 'dabbrev-completion) (setq ok t) nil)
-          (if (eq files--bridge-command 'complete-symbol) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-words) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-sexps) (setq ok t) nil)
-          (if (eq files--bridge-command 'insert-parentheses) (setq ok t) nil)
-          (if (eq files--bridge-command 'move-past-close-and-reindent) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'fill-paragraph) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-sentence) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-kill-sentence) (setq ok t) nil)
-          (if (eq files--bridge-command 'transpose-chars) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-horizontal-space) (setq ok t) nil)
-          (if (eq files--bridge-command 'cycle-spacing) (setq ok t) nil)
-          (if (eq files--bridge-command 'just-one-space) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-indentation) (setq ok t) nil)
-          (if (eq files--bridge-command 'comment-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'comment-dwim) (setq ok t) nil)
-          (if (eq files--bridge-command 'upcase-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'downcase-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'capitalize-word) (setq ok t) nil)
-          (if (eq files--bridge-command 'upcase-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'downcase-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'capitalize-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'sort-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'backward-delete-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-backward-char) (setq ok t) nil)
-          (if (eq files--bridge-command 'self-insert-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'quoted-insert) (setq ok t) nil)
-          (if (eq files--bridge-command 'indent-for-tab-command) (setq ok t) nil)
-          (if (eq files--bridge-command 'tab-to-tab-stop) (setq ok t) nil)
-          (if (eq files--bridge-command 'indent-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'indent-rigidly) (setq ok t) nil)
-          (if (eq files--bridge-command 'newline) (setq ok t) nil)
-          (if (eq files--bridge-command 'electric-newline-and-maybe-indent) (setq ok t) nil)
-          (if (eq files--bridge-command 'default-indent-new-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'open-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'split-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-blank-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-whole-line) (setq ok t) nil)
-          (if (eq files--bridge-command 'yank) (setq ok t) nil)
-          (if (eq files--bridge-command 'yank-pop) (setq ok t) nil)
-	          (if (eq files--bridge-command 'delete-region) (setq ok t) nil)
-	          (if (eq files--bridge-command 'kill-region) (setq ok t) nil)
-          (if (eq files--bridge-command 'kill-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'rectangle-number-lines) (setq ok t) nil)
-          (if (eq files--bridge-command 'delete-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'clear-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'open-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'string-rectangle) (setq ok t) nil)
-          (if (eq files--bridge-command 'yank-rectangle) (setq ok t) nil)
-	          (if (eq files--bridge-command 'replace-string) (setq ok t) nil)
-	          (if (eq files--bridge-command 'replace-regexp) (setq ok t) nil)
-		          (if (eq files--bridge-command 'query-replace) (setq ok t) nil)
-		          (if (eq files--bridge-command 'query-replace-regexp) (setq ok t) nil)
-		          (if (eq files--bridge-command 'project-query-replace-regexp) (setq ok t) nil)
-			          (if (eq files--bridge-command 'undo) (setq ok t) nil)
-		          (if (eq files--bridge-command 'undo-redo) (setq ok t) nil)
-	          (if (eq files--bridge-command 'delete-trailing-whitespace) (setq ok t) nil)
-          (if (eq files--bridge-command 'untabify) (setq ok t) nil)
-          ok)))
+        (emacs-command-loop-gui-read-only-command-p
+         files--bridge-command)))
+
+(if (not (fboundp 'emacs-command-loop-gui-command-execute-call))
+    (fset 'emacs-command-loop-gui-command-execute-call
+          (lambda (&optional command)
+            (files--command-loop-set-command-arg command)
+            (if (eq files--bridge-command 'cycle-spacing)
+                nil
+              (files--cycle-spacing-clear-state))
+            (if (equal files--prefix-arg "")
+                (call-interactively files--bridge-command)
+              (files--execute-with-prefix-arg))))
+  nil)
 
 (fset 'command-execute
-      (lambda ()
-        (if (commandp)
-            (if (if files--buffer-read-only-p (files--read-only-command-p) nil)
+      (lambda (&optional command &rest _ignored)
+        (files--command-loop-set-command-arg command)
+        (let ((handled nil))
+          (if (and command
+                   (fboundp 'emacs-command-loop-gui-command-execute))
+              (progn
+                (files--command-loop-ensure-backend)
+                (emacs-command-loop-gui-command-execute command)
+                (setq handled t))
+            (if (fboundp 'emacs-command-loop-gui-command-execute-current-context)
                 (progn
-                  (setq files--bridge-status "read-only")
-                  nil)
-              (if (files--prefix-command-p)
-                  (call-interactively)
-                (progn
-                  (if (eq files--bridge-command 'cycle-spacing)
-                      nil
-                    (files--cycle-spacing-clear-state))
-                  (if (equal files--prefix-arg "")
-                      (call-interactively)
-                    (files--execute-with-prefix-arg)))))
+                  (files--command-loop-ensure-backend)
+                  (emacs-command-loop-gui-command-execute-current-context)
+                  (setq handled t))
+              (if (fboundp 'emacs-command-loop-gui-command-execute-context)
+                  (progn
+                    (files--command-loop-ensure-backend)
+                    (emacs-command-loop-gui-command-execute-context
+                     :command files--bridge-command
+                     :effective-command files--bridge-effective-command
+                     :keys files--bridge-keys
+                     :arg files--bridge-arg
+                     :status files--bridge-status
+                     :prefix-arg files--prefix-arg)
+                    (setq handled t))
+                nil)))
+          (if (not handled)
+              (if (commandp)
+                  (progn
+                    (setq handled t)
+                    (if (if files--buffer-read-only-p
+                            (files--read-only-command-p)
+                          nil)
+                        (progn
+                          (setq files--bridge-status "read-only")
+                          nil)
+                      (if (files--prefix-command-p)
+                          (call-interactively)
+                        (emacs-command-loop-gui-command-execute-call
+                         files--bridge-command))))
+                nil)
+            nil)
           ;; Not a known built-in command, but if the symbol names a bound
           ;; function (e.g. a user `defun' bound via global-set-key), run it.
-          (if (fboundp files--bridge-command)
-              (progn
-                (funcall files--bridge-command)
-                (setq files--bridge-status "ok")
+          (if (not handled)
+              (if (fboundp files--bridge-command)
+                  (progn
+                    (setq handled t)
+                    (funcall files--bridge-command)
+                    (setq files--bridge-status "ok")
+                    nil)
                 nil)
-            (progn
-              (setq files--bridge-status "unsupported")
-              nil)))))
+            nil)
+          (if (not handled)
+              (progn
+                (setq files--bridge-status "unsupported")
+                nil)
+            nil))))
 
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
+        (files--ensure-standard-special-buffers)
         (let ((cmd (rdf (progn (setq files--transport-name "nemacs-cmd") (files--transport-path))))
               (keys (rdf (progn (setq files--transport-name "nemacs-keys") (files--transport-path))))
               (target (rdf (progn (setq files--transport-name "nemacs-file") (files--transport-path))))
@@ -19646,33 +21803,7 @@
 	                nil
 	              (progn
 	                (nl-write-file tbpath "")
-	                (setq files--bridge-command nil)
-	                (setq files--bridge-effective-command "")
-	                (let* ((xy (files--parse-toolbar-click tbclick))
-	                       (cx (car xy))
-	                       (cy (cdr xy)))
-	                  (if (< cy 18)
-	                      (let* ((label (files--toolbar-label-at-x cx))
-	                             (menu (files--toolbar-menu-for-label label)))
-	                        (if (equal menu "")
-	                            (progn
-	                              (files--write-toolbar-menu "")
-	                              (setq files--bridge-keys (files--toolbar-keys-at-x cx)))
-	                          (progn
-	                            (files--write-toolbar-menu menu)
-	                            (setq files--bridge-keys "")
-	                            (setq files--bridge-command 'ignore)
-	                            (setq files--bridge-effective-command "ignore"))))
-	                    (let* ((menu (rdf (files--toolbar-menu-path)))
-	                           (row (/ (- cy 18) 16))
-	                           (keys (files--toolbar-menu-keys-at-row menu row)))
-	                      (files--write-toolbar-menu "")
-	                      (if (equal keys "")
-	                          (progn
-	                            (setq files--bridge-keys "")
-	                            (setq files--bridge-command 'ignore)
-	                            (setq files--bridge-effective-command "ignore"))
-	                        (setq files--bridge-keys keys))))))))
+		                (files--handle-toolbar-click tbclick))))
 			          (setq files--bridge-minibuffer-text minibuffer-text)
 				          (setq files--bridge-minibuffer-arg minibuffer-arg)
 				          (setq files--prefix-arg prefix-arg-text)
@@ -19705,21 +21836,57 @@
               (files--read-transport-tab-undo-state)
               (files--read-transport-frame-state)
               (files--read-transport-frame-undo-state)
-          (if (equal files--bridge-keys "")
-              nil
+          (if (fboundp 'emacs-command-loop-gui-ingest-request-context)
+              (let ((request-context
+                     (emacs-command-loop-gui-ingest-request-context
+                      :command-name cmd
+                      :keys files--bridge-keys
+                      :arg files--bridge-arg
+                      :minibuffer-text files--bridge-minibuffer-text
+                      :prefix-arg files--prefix-arg
+                      :status "ok")))
+                (if (plist-member request-context :command)
+                    (setq files--bridge-command
+                          (plist-get request-context :command))
+                  nil)
+                (if (plist-member request-context :effective-command)
+                    (setq files--bridge-effective-command
+                          (plist-get request-context :effective-command))
+                  nil)
+                (if (plist-member request-context :keys)
+                    (setq files--bridge-keys
+                          (plist-get request-context :keys))
+                  nil)
+                (if (plist-member request-context :arg)
+                    (setq files--bridge-arg
+                          (plist-get request-context :arg))
+                  nil)
+                (if (plist-member request-context :prefix-arg)
+                    (setq files--prefix-arg
+                          (plist-get request-context :prefix-arg))
+                  nil)
+                (if (plist-member request-context :status)
+                    (setq files--bridge-status
+                          (plist-get request-context :status))
+                  nil))
             (progn
-              (setq cmd "")
-              (nl-write-file (progn (setq files--transport-name "nemacs-cmd") (files--transport-path)) "")
-              (nl-write-file (progn (setq files--transport-name "nemacs-keys") (files--transport-path)) "")
-              (setq files--bridge-command nil)
-              (setq files--bridge-effective-command "")))
-          (if (if (equal files--bridge-keys "")
-                  nil
-                (not (equal files--bridge-minibuffer-text "")))
-              (setq files--bridge-arg files--bridge-minibuffer-text)
-            nil)
+              (if (not (equal files--bridge-keys ""))
+                  (progn
+                    (setq cmd "")
+                    (nl-write-file (progn (setq files--transport-name "nemacs-cmd") (files--transport-path)) "")
+                    (nl-write-file (progn (setq files--transport-name "nemacs-keys") (files--transport-path)) "")
+                    (setq files--bridge-command nil)
+                    (setq files--bridge-effective-command ""))
+                nil)
+              (if (if (equal cmd "")
+                      (if (equal files--bridge-keys "")
+                          nil
+                        (not (equal files--bridge-minibuffer-text "")))
+                    nil)
+                  (setq files--bridge-arg files--bridge-minibuffer-text)
+                nil)
+              (setq files--bridge-status "ok")))
           (setq files--bridge-snapshot snapshot)
-          (setq files--bridge-status "ok")
           (if (if files--bridge-session-active files--bridge-session-initialized nil)
               nil
             (progn
@@ -19800,106 +21967,26 @@
             nil)
           (files--clamp-point)
           (files--clamp-mark)
-          (if (equal cmd "kill-word") (files--save-undo-state) nil)
-          (if (equal cmd "kill-sexp") (files--save-undo-state) nil)
-          (if (equal cmd "backward-kill-word") (files--save-undo-state) nil)
-          (if (equal cmd "zap-to-char") (files--save-undo-state) nil)
-          (if (equal cmd "expand-abbrev") (files--save-undo-state) nil)
-          (if (equal cmd "dabbrev-expand") (files--save-undo-state) nil)
-          (if (equal cmd "dabbrev-completion") (files--save-undo-state) nil)
-          (if (equal cmd "complete-symbol") (files--save-undo-state) nil)
-          (if (equal cmd "transpose-words") (files--save-undo-state) nil)
-          (if (equal cmd "transpose-sexps") (files--save-undo-state) nil)
-          (if (equal cmd "insert-parentheses") (files--save-undo-state) nil)
-          (if (equal cmd "move-past-close-and-reindent") (files--save-undo-state) nil)
-          (if (equal cmd "transpose-lines") (files--save-undo-state) nil)
-          (if (equal cmd "fill-paragraph") (files--save-undo-state) nil)
-          (if (equal cmd "kill-sentence") (files--save-undo-state) nil)
-          (if (equal cmd "backward-kill-sentence") (files--save-undo-state) nil)
-          (if (equal cmd "transpose-chars") (files--save-undo-state) nil)
-          (if (equal cmd "delete-horizontal-space") (files--save-undo-state) nil)
-          (if (equal cmd "cycle-spacing") (files--save-undo-state) nil)
-          (if (equal cmd "just-one-space") (files--save-undo-state) nil)
-          (if (equal cmd "delete-indentation") (files--save-undo-state) nil)
-          (if (equal cmd "comment-line") (files--save-undo-state) nil)
-          (if (equal cmd "comment-dwim") (files--save-undo-state) nil)
-          (if (equal cmd "upcase-word") (files--save-undo-state) nil)
-          (if (equal cmd "downcase-word") (files--save-undo-state) nil)
-          (if (equal cmd "capitalize-word") (files--save-undo-state) nil)
-          (if (equal cmd "upcase-region") (files--save-undo-state) nil)
-          (if (equal cmd "downcase-region") (files--save-undo-state) nil)
-          (if (equal cmd "capitalize-region") (files--save-undo-state) nil)
-          (if (equal cmd "sort-lines") (files--save-undo-state) nil)
-          (if (equal cmd "delete-char") (files--save-undo-state) nil)
-          (if (equal cmd "backward-delete-char") (files--save-undo-state) nil)
-          (if (equal cmd "delete-backward-char") (files--save-undo-state) nil)
-          (if (equal cmd "self-insert-command") (files--save-undo-state) nil)
-          (if (equal cmd "insert-char") (files--save-undo-state) nil)
-          (if (equal cmd "emoji-insert") (files--save-undo-state) nil)
-          (if (equal cmd "quoted-insert") (files--save-undo-state) nil)
-          (if (equal cmd "indent-for-tab-command") (files--save-undo-state) nil)
-          (if (equal cmd "tab-to-tab-stop") (files--save-undo-state) nil)
-          (if (equal cmd "indent-region") (files--save-undo-state) nil)
-          (if (equal cmd "indent-rigidly") (files--save-undo-state) nil)
-          (if (equal cmd "newline") (files--save-undo-state) nil)
-          (if (equal cmd "electric-newline-and-maybe-indent") (files--save-undo-state) nil)
-          (if (equal cmd "default-indent-new-line") (files--save-undo-state) nil)
-          (if (equal cmd "open-line") (files--save-undo-state) nil)
-          (if (equal cmd "split-line") (files--save-undo-state) nil)
-          (if (equal cmd "delete-blank-lines") (files--save-undo-state) nil)
-          (if (equal cmd "kill-line") (files--save-undo-state) nil)
-          (if (equal cmd "kill-whole-line") (files--save-undo-state) nil)
-          (if (equal cmd "yank") (files--save-undo-state) nil)
-          (if (equal cmd "yank-pop") (files--save-undo-state) nil)
-	          (if (equal cmd "delete-region") (files--save-undo-state) nil)
-	          (if (equal cmd "kill-region") (files--save-undo-state) nil)
-          (if (equal cmd "kill-rectangle") (files--save-undo-state) nil)
-          (if (equal cmd "rectangle-number-lines") (files--save-undo-state) nil)
-          (if (equal cmd "delete-rectangle") (files--save-undo-state) nil)
-          (if (equal cmd "clear-rectangle") (files--save-undo-state) nil)
-          (if (equal cmd "open-rectangle") (files--save-undo-state) nil)
-          (if (equal cmd "string-rectangle") (files--save-undo-state) nil)
-          (if (equal cmd "yank-rectangle") (files--save-undo-state) nil)
-	          (if (equal cmd "replace-string") (files--save-undo-state) nil)
-	          (if (equal cmd "replace-regexp") (files--save-undo-state) nil)
-		          (if (equal cmd "query-replace") (files--save-undo-state) nil)
-		          (if (equal cmd "query-replace-regexp") (files--save-undo-state) nil)
-		          (if (equal cmd "project-query-replace-regexp") (files--save-undo-state) nil)
-		          (if (equal cmd "delete-trailing-whitespace") (files--save-undo-state) nil)
-          (if (equal cmd "untabify") (files--save-undo-state) nil)
-          (if (equal cmd "insert-file") (files--save-undo-state) nil)
-          (if (equal cmd "insert-buffer") (files--save-undo-state) nil)
-          (if (equal cmd "insert-register") (files--save-undo-state) nil)
-          (if (equal cmd "increment-register") (files--save-undo-state) nil)
-		          (if (equal files--bridge-keys "")
-		              (command-execute)
-                (progn
-                  (files--dispatch-key-sequence)
-                  (files--append-kmacro-key-if-needed)))
-				          (setq cmd
-                                (if (if (equal files--bridge-effective-command "minibuffer")
-                                        (eq files--bridge-command 'project-query-replace-regexp)
-                                      nil)
-                                    "project-query-replace-regexp"
-                                  files--bridge-effective-command))
-                  (files--clear-display-prefix-after-command)
-				          (files--write-minibuffer-state)
-			          (files--write-redisplay-state)
-				          (files--write-prefix-arg-state)
-	                  (files--write-kmacro-state)
-					          (files--write-last-command-state)
-				          (files--write-kill-ring-state)
-	                  (files--write-transport-window-split-delta)
-                  (files--write-transport-window-dedicated-state)
-                  (files--write-transport-side-windows-state)
-                  (files--write-transport-frame-state)
-                  (if (equal cmd "org-metaright") (setq files--bridge-status "ok") nil)
-                  (if (equal cmd "org-metaleft") (setq files--bridge-status "ok") nil)
-                  (if (equal cmd "ignore") (setq files--bridge-status "ok") nil)
-                  (if (equal files--bridge-effective-command "org-metaright") (setq files--bridge-status "ok") nil)
-                  (if (equal files--bridge-effective-command "org-metaleft") (setq files--bridge-status "ok") nil)
-                  (if (equal files--bridge-effective-command "ignore") (setq files--bridge-status "ok") nil)
-			          (if (equal files--bridge-status "read-only")
+          (files--command-loop-save-undo-if-needed-current-context)
+          (files--command-loop-run-request-current-context)
+                  (let ((post-command-state
+                         (emacs-command-loop-gui-write-post-command-state
+                          files--bridge-command
+                          files--bridge-effective-command
+                          files--bridge-status)))
+                    (setq cmd
+                          (or (plist-get post-command-state :command-name)
+                              ""))
+                    (setq files--bridge-writeback-lane
+                          (symbol-name
+                           (or (plist-get post-command-state :lane)
+                               'normal))))
+                  (if (files--command-loop-writeback-current-lane)
+                      (progn
+                        (setq cmd "")
+                        (setq files--bridge-writeback-lane "normal"))
+                    nil)
+			          (if (equal files--bridge-writeback-lane "read-only")
               (progn
                 (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)
                 (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
@@ -19908,9 +21995,9 @@
                 (files--write-transport-mark)
                 (files--write-transport-window-start)
                 (setq files--bridge-status "written"))
-            (if (equal files--bridge-status "unsupported")
+            (if (equal files--bridge-writeback-lane "unsupported")
               (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)
-            (if (files--bridge-error-status-p)
+            (if (equal files--bridge-writeback-lane "error")
                 (progn
                   (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)
                   (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
@@ -19924,7 +22011,7 @@
                   (files--write-transport-mark)
                   (files--write-transport-window-start)
                   (setq files--bridge-status "written"))
-            (if (equal files--bridge-status "minibuffer")
+            (if (equal files--bridge-writeback-lane "minibuffer")
                 (progn
                   (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)
                   (files--write-minibuffer-state)
@@ -19933,7 +22020,7 @@
 	                  (files--write-transport-mark)
 	                  (files--write-transport-window-start)
 	                  (setq files--bridge-status "written"))
-	            (if (equal files--bridge-status "prefix-arg")
+	            (if (equal files--bridge-writeback-lane "prefix-arg")
 	                (progn
 	                  (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status)
 	                  (files--write-transport-point)
@@ -19942,6 +22029,18 @@
 	                  (files--write-prefix-arg-state)
 	                  (setq files--bridge-status "written"))
 		            (progn
+                  (if (files--fileio-writeback-current-context cmd)
+                      (setq cmd "")
+                    nil)
+                  (if (files--dired-writeback-current-context cmd)
+                      (setq cmd "")
+                    nil)
+                  (if (files--info-writeback-current-context cmd)
+                      (setq cmd "")
+                    nil)
+                  (if (files--help-writeback-current-context cmd)
+                      (setq cmd "")
+                    nil)
 	                  (if (if (equal cmd "same-window-prefix")
 	                          t
 	                        (if (equal cmd "other-window-prefix")
@@ -22599,10 +24698,12 @@
               (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
                              (if files--buffer-read-only-p "1" "0"))
               (if (equal files--bridge-status "ok")
-	                  (progn
-	                    (setq files--bridge-status "unsupported")
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status))
-	                nil))))))))))
+                  (progn
+                    (setq files--bridge-status "unsupported")
+                    (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status))
+                (if (equal files--bridge-status "written")
+                    nil
+                  (nl-write-file (progn (setq files--transport-name "nemacs-status") (files--transport-path)) files--bridge-status))))))))))))
 
 (fset 'files--session-idle-sleep
       (lambda ()
