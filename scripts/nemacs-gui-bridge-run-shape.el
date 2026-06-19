@@ -68,22 +68,30 @@
       (error "Expected lambda fset for nemacs-gui-file-bridge-run"))
     (cddr value)))
 
+(defun nemacs-gui-bridge-run-shape--linear-run-entries (lambda-body)
+  "Return linear entries from LAMBDA-BODY with source metadata."
+  (let (entries)
+    (dolist (form lambda-body)
+      (if (and (consp form) (eq (car form) 'let))
+          (progn
+            (dolist (binding (cadr form))
+              (push (list :source 'binding
+                          :name (if (consp binding) (car binding) binding)
+                          :form (if (consp binding) (cadr binding) nil))
+                    entries))
+            (dolist (body-form (cddr form))
+              (push (list :source 'body :form body-form) entries)))
+        (push (list :source 'top :form form) entries)))
+    (nreverse entries)))
+
 (defun nemacs-gui-bridge-run-shape--linear-run-forms (lambda-body)
   "Return a linear sequence from LAMBDA-BODY for phase splitting.
 The bridge runner stores nearly all work in one top-level `let'.  Treat
 its binding initializers and body forms as a linear stream so the
 command-run boundary can split setup from writeback without counting
 binding variable names as calls."
-  (let (forms)
-    (dolist (form lambda-body)
-      (if (and (consp form) (eq (car form) 'let))
-          (progn
-            (dolist (binding (cadr form))
-              (push (if (consp binding) (cadr binding) nil) forms))
-            (dolist (body-form (cddr form))
-              (push body-form forms)))
-        (push form forms)))
-    (nreverse forms)))
+  (mapcar (lambda (entry) (plist-get entry :form))
+          (nemacs-gui-bridge-run-shape--linear-run-entries lambda-body)))
 
 (defun nemacs-gui-bridge-run-shape--walk (form fn)
   "Walk FORM recursively and call FN for each cons."
@@ -120,6 +128,23 @@ binding variable names as calls."
           (setq seen t)))
        (t
         (push form after))))
+    (list (nreverse before) (nreverse after) seen)))
+
+(defun nemacs-gui-bridge-run-shape--split-entries-at-command-run (entries)
+  "Split ENTRIES before and after `files--command-loop-run-request-current-context'."
+  (let ((before nil)
+        (after nil)
+        (seen nil))
+    (dolist (entry entries)
+      (let ((form (plist-get entry :form)))
+        (cond
+         ((not seen)
+          (push entry before)
+          (when (nemacs-gui-bridge-run-shape--contains-call-p
+                 form 'files--command-loop-run-request-current-context)
+            (setq seen t)))
+         (t
+          (push entry after)))))
     (list (nreverse before) (nreverse after) seen)))
 
 (defun nemacs-gui-bridge-run-shape--inc (table key)
@@ -254,6 +279,183 @@ binding variable names as calls."
            (push (cl-caddr node) names)))))
     (sort (delete-dups (nreverse names)) #'string<)))
 
+(defun nemacs-gui-bridge-run-shape--contains-call-prefix-p (form prefix)
+  "Return non-nil when FORM contains a call whose name starts with PREFIX."
+  (let ((found nil))
+    (nemacs-gui-bridge-run-shape--walk-calls
+     form
+     (lambda (node)
+       (when (and (consp node)
+                  (symbolp (car node))
+                  (string-prefix-p prefix (symbol-name (car node))))
+         (setq found t))))
+    found))
+
+(defun nemacs-gui-bridge-run-shape--contains-symbol-p (form symbol)
+  "Return non-nil when FORM contains SYMBOL anywhere."
+  (cond
+   ((eq form symbol) t)
+   ((consp form)
+    (or (nemacs-gui-bridge-run-shape--contains-symbol-p (car form) symbol)
+        (nemacs-gui-bridge-run-shape--contains-symbol-p (cdr form) symbol)))
+   (t nil)))
+
+(defun nemacs-gui-bridge-run-shape--contains-setq-p (form symbol)
+  "Return non-nil when FORM contains a setq to SYMBOL."
+  (let ((found nil))
+    (nemacs-gui-bridge-run-shape--walk
+     form
+     (lambda (node)
+       (when (and (consp node)
+                  (eq (car node) 'setq)
+                  (eq (cadr node) symbol))
+         (setq found t))))
+    found))
+
+(defconst nemacs-gui-bridge-run-shape--phase-order
+  '("setup"
+    "transport-input-bindings"
+    "local-scratch-bindings"
+    "bridge-context"
+    "toolbar"
+    "broad-state-read"
+    "request-ingest"
+    "buffer-init"
+    "window-point-init"
+    "command-run-prep"
+    "command-run"
+    "other")
+  "Preferred phase order for bridge-run pre-boundary summaries.")
+
+(defun nemacs-gui-bridge-run-shape--entry-phase (entry)
+  "Return phase name for linear ENTRY."
+  (let ((source (plist-get entry :source))
+        (name (plist-get entry :name))
+        (form (plist-get entry :form)))
+    (cond
+     ((or (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--refresh-transport-derived-paths)
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--ensure-standard-special-buffers))
+      "setup")
+     ((and (eq source 'binding)
+           (nemacs-gui-bridge-run-shape--contains-call-p
+            form 'files--transport-read-current))
+      "transport-input-bindings")
+     ((eq source 'binding)
+      "local-scratch-bindings")
+     ((nemacs-gui-bridge-run-shape--contains-call-p
+       form 'files--command-loop-run-request-current-context)
+      "command-run")
+     ((or (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--command-loop-save-undo-if-needed-current-context)
+          (nemacs-gui-bridge-run-shape--contains-call-p form 'files--clamp-point)
+          (nemacs-gui-bridge-run-shape--contains-call-p form 'files--clamp-mark)
+          (nemacs-gui-bridge-run-shape--contains-setq-p
+           form 'files--bridge-session-initialized))
+      "command-run-prep")
+     ((nemacs-gui-bridge-run-shape--contains-call-p form 'files--handle-toolbar-click)
+      "toolbar")
+     ((or (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'emacs-command-loop-gui-ingest-request-context)
+          (nemacs-gui-bridge-run-shape--transport-name-in-node form))
+      "request-ingest")
+     ((or (memq name '(transport-point transport-point-index
+                       transport-mark transport-mark-index
+                       kill-ring-index-scan
+                       transport-window-start transport-window-start-index))
+          (nemacs-gui-bridge-run-shape--contains-call-p form 'files--read-current-narrow-state)
+          (nemacs-gui-bridge-run-shape--contains-call-p form 'files--read-minibuffer-state)
+          (nemacs-gui-bridge-run-shape--contains-call-p form 'files--kill-ring-push)
+          (and (consp form)
+               (eq (car form) 'if)
+               (or (nemacs-gui-bridge-run-shape--contains-call-p form 'rdf)
+                   (nemacs-gui-bridge-run-shape--contains-symbol-p
+                    form 'files--buffer-name))))
+      "buffer-init")
+     ((or (nemacs-gui-bridge-run-shape--contains-call-prefix-p
+           form "files--read")
+          (nemacs-gui-bridge-run-shape--contains-call-p
+           form 'files--load-user-init)
+          (and (consp form)
+               (eq (car form) 'setq)
+               (memq (cadr form) '(files--window-hscroll
+                                    files--window-split-delta))))
+      "broad-state-read")
+     ((or (nemacs-gui-bridge-run-shape--contains-call-p form 'aref)
+          (nemacs-gui-bridge-run-shape--contains-call-p form 'files--clamp-point)
+          (nemacs-gui-bridge-run-shape--contains-call-p form 'files--clamp-mark))
+      "window-point-init")
+     ((and (consp form)
+           (eq (car form) 'setq)
+           (symbolp (cadr form))
+           (or (string-prefix-p "files--bridge" (symbol-name (cadr form)))
+               (eq (cadr form) 'files--prefix-arg)))
+      "bridge-context")
+     ((and (consp form)
+           (eq (car form) 'if)
+           (or (nemacs-gui-bridge-run-shape--contains-call-p form 'intern)
+               (nemacs-gui-bridge-run-shape--contains-call-p form 'plist-member)
+               (nemacs-gui-bridge-run-shape--contains-call-p form 'plist-get)))
+      "bridge-context")
+     (t
+      "other"))))
+
+(defun nemacs-gui-bridge-run-shape--phase-index (phase)
+  "Return sorting index for PHASE."
+  (or (cl-position phase nemacs-gui-bridge-run-shape--phase-order
+                   :test #'equal)
+      (length nemacs-gui-bridge-run-shape--phase-order)))
+
+(defun nemacs-gui-bridge-run-shape--phase-summaries (entries direct-read-symbols)
+  "Return phase summaries for ENTRIES using DIRECT-READ-SYMBOLS."
+  (let ((phase-forms (make-hash-table :test 'equal)))
+    (dolist (entry entries)
+      (let ((phase (nemacs-gui-bridge-run-shape--entry-phase entry)))
+        (puthash phase
+                 (cons (plist-get entry :form)
+                       (gethash phase phase-forms nil))
+                 phase-forms)))
+    (let (summaries)
+      (maphash
+       (lambda (phase forms)
+         (let* ((forms (nreverse forms))
+                (counts (nemacs-gui-bridge-run-shape--call-counts forms)))
+           (push (list :phase phase
+                       :forms (length forms)
+                       :direct-read
+                       (nemacs-gui-bridge-run-shape--symbol-total
+                        counts direct-read-symbols)
+                       :direct-write (gethash "nl-write-file" counts 0)
+                       :read-helper
+                       (nemacs-gui-bridge-run-shape--prefix-total
+                        counts "files--read")
+                       :write-helper
+                       (nemacs-gui-bridge-run-shape--prefix-total
+                        counts "files--write"))
+                 summaries)))
+       phase-forms)
+      (sort summaries
+            (lambda (a b)
+              (< (nemacs-gui-bridge-run-shape--phase-index
+                  (plist-get a :phase))
+                 (nemacs-gui-bridge-run-shape--phase-index
+                  (plist-get b :phase))))))))
+
+(defun nemacs-gui-bridge-run-shape--insert-phase-table (title summaries)
+  "Insert TITLE and phase SUMMARIES."
+  (insert (format "\n** %s\n\n" title))
+  (insert "| phase | forms | direct-read | direct-write | read-helper | write-helper |\n")
+  (insert "|-+-------+-------------+--------------+-------------+--------------|\n")
+  (dolist (summary summaries)
+    (insert (format "| %s | %d | %d | %d | %d | %d |\n"
+                    (plist-get summary :phase)
+                    (plist-get summary :forms)
+                    (plist-get summary :direct-read)
+                    (plist-get summary :direct-write)
+                    (plist-get summary :read-helper)
+                    (plist-get summary :write-helper)))))
+
 (defun nemacs-gui-bridge-run-shape--line-number (text pattern)
   "Return 1-based line number of PATTERN in TEXT, or nil."
   (let ((pos (string-match-p pattern text)))
@@ -281,16 +483,27 @@ binding variable names as calls."
          (run-form (nemacs-gui-bridge-run-shape--find-fset
                     forms "nemacs-gui-file-bridge-run"))
          (body (nemacs-gui-bridge-run-shape--lambda-body run-form))
-         (linear-body (nemacs-gui-bridge-run-shape--linear-run-forms body))
-         (split (nemacs-gui-bridge-run-shape--split-at-command-run
-                 linear-body))
-         (before (nth 0 split))
-         (after (nth 1 split))
-         (found-run (nth 2 split))
+         (linear-entries
+          (nemacs-gui-bridge-run-shape--linear-run-entries body))
+         (linear-body (mapcar (lambda (entry) (plist-get entry :form))
+                              linear-entries))
+         (entry-split
+          (nemacs-gui-bridge-run-shape--split-entries-at-command-run
+           linear-entries))
+         (before-entries (nth 0 entry-split))
+         (after-entries (nth 1 entry-split))
+         (found-run (nth 2 entry-split))
+         (before (mapcar (lambda (entry) (plist-get entry :form))
+                         before-entries))
+         (after (mapcar (lambda (entry) (plist-get entry :form))
+                        after-entries))
          (before-counts (nemacs-gui-bridge-run-shape--call-counts before))
          (after-counts (nemacs-gui-bridge-run-shape--call-counts after))
          (all-counts (nemacs-gui-bridge-run-shape--call-counts linear-body))
          (direct-read-symbols '(rdf files--transport-read-current))
+         (phase-summaries
+          (nemacs-gui-bridge-run-shape--phase-summaries
+           before-entries direct-read-symbols))
          (cmd-tests (nemacs-gui-bridge-run-shape--cmd-tests after))
          (read-names
           (nemacs-gui-bridge-run-shape--transport-names
@@ -324,6 +537,8 @@ binding variable names as calls."
                        after-counts "files--write")))
       (insert (format "- command-specific =equal cmd= tests after boundary: %d\n"
                       (length cmd-tests)))
+      (nemacs-gui-bridge-run-shape--insert-phase-table
+       "Pre-Boundary Phases" phase-summaries)
       (nemacs-gui-bridge-run-shape--insert-table
        "Top Calls Before Boundary"
        (cl-subseq
@@ -351,6 +566,7 @@ binding variable names as calls."
       (insert "\n** Machine Notes\n\n")
       (insert "- The initial helper extraction target is the pre-boundary setup, not an extra wrapper.\n")
       (insert "- A valid no-op refactor must keep these counts stable before optimization.\n")
+      (insert "- The pre-boundary phase table is the next guard for phase helper extraction.\n")
       (insert (format "- Total distinct calls in body: %d\n"
                       (hash-table-count all-counts))))))
 
