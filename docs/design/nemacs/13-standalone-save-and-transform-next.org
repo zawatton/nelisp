@@ -37,18 +37,18 @@ case を分割・集約する。
   117.294 秒へ悪化したため不採用。
 - =make nemacs-gui-bridge-run-shape= で本体構造の static summary を生成できる。
   - =nemacs-gui-file-bridge-run= は runtime 内の fset が source of truth。
-  - command-run boundary 前: linear body 48 forms、direct transport read 21、
-    =files--read*= helper call 2。
+  - command-run boundary 前: linear body 41 forms、direct transport read 20、
+    =files--read*= helper call 0。
   - command-run boundary 後: linear body 3 forms、direct transport write 588、
     =files--write*= helper call 642、=equal cmd= tests 378。
-  - 初回 helper 化では、この count を no-op refactor の guard にする。
+  - 以降の helper 化では、この count を no-op refactor の guard にする。
 - =make nemacs-gui-bridge-run-shape= は pre-boundary phase table も出力する。
   - setup: 2 forms。
   - transport-input-bindings: 19 forms / direct read 19。
   - broad-state-read: 1 helper call。
   - request-ingest: 1 form / direct write 2。
-  - buffer-init: 2 forms / direct read 1 / =files--read*= helper 2。
-  - window-point-init: 1 form。
+  - buffer-init: 2 forms / helper call 1。
+  - window-point-init: 1 form / helper call 1。
   - command-run-prep: 4 forms。
   - 次の no-op refactor では、この phase count を guard にする。
 - 2026-06-20 に =broad-state-read= phase を
@@ -56,6 +56,16 @@ case を分割・集約する。
   - command-run boundary、direct transport read、post-boundary write count は維持。
   - 本体 linear body は 73 forms から 48 forms へ減少。
   - =standalone-save-and-transform= は 107.543 秒で pass。
+  - これは短縮採用ではなく、runtime state reset 境界を作るための no-op helper 化。
+- 2026-06-20 に =buffer-init= / =window-point-init= phase を
+  =files--bridge-initialize-buffer-state= /
+  =files--bridge-initialize-window-point-state= へ切り出した。
+  - command-run boundary と post-boundary write count は維持。
+  - 本体 linear body は 48 forms から 41 forms へ減少。
+  - pre-boundary direct transport read は 21 から 20、=files--read*= helper call は
+    2 から 0 に減少。これは helper 内へ隠れたためで挙動変更ではない。
+  - =standalone-save-and-transform= は 107.891 秒で pass。
+  - =standalone-session-bridge-roundtrip= と =make test-fast= も green。
   - これは短縮採用ではなく、runtime state reset 境界を作るための no-op helper 化。
 - 2026-06-20 に pre-boundary の明示 transport read 20 個を
   0-arity helper =files--transport-read-current= へ置換した。
@@ -267,14 +277,11 @@ make nemacs-gui-bridge-run-shape
    初回対象から外す。
 3. =make nemacs-gui-bridge-run-shape= で本体構造を再生成する。
 4. coarse な motion read-set guard は 108.262 秒で不採用済み。
-   =broad-state-read= は no-op helper 化済みなので、次は
-   =buffer-init= / =window-point-init= を小さい helper へ切り出す。
-5. helper 切り出し後、phase count と boundary count が維持されることを確認してから、
-   phase 境界ごとに =standalone-save-and-transform= を fresh process で測り、
-   5 秒以上の短縮がない場合は戻して不採用理由を残す。
-6. direct-cmd の common read/writeback setup を本体構造として短くし、
+   =broad-state-read= / =buffer-init= / =window-point-init= の no-op helper 化も
+   5 秒以上の短縮には届かず、state reset 境界作りとして採用済み。
+5. 次は direct-cmd の common read/writeback setup を本体構造として短くし、
    individual command の後付け wrapper には戻らない。
-7. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
+6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
 
 小さい request batch、table fallback、後付け wrapper ではなく、command ごとの
 read/writeback 副作用を保持した本体構造の整理を先に作ること。
