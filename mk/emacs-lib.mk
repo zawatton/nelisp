@@ -34,6 +34,8 @@ NEMACS_GUI_KEYMAP_COVERAGE_SUMMARY ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-su
 NEMACS_GUI_KEYMAP_COVERAGE_MISSING_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-missing.tsv
 NEMACS_GUI_KEYMAP_COVERAGE_COMMAND_MISSING_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-command-missing.tsv
 NEMACS_GUI_KEYMAP_COVERAGE_DIFFERENT_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-different.tsv
+NEMACS_GUI_BRIDGE_PROFILE_LOG ?= $(BUILD_DIR)/nemacs-gui-bridge-profile.log
+NEMACS_GUI_BRIDGE_PROFILE_SUMMARY ?= $(BUILD_DIR)/nemacs-gui-bridge-profile-summary.org
 NEMACS_GUI_BRIDGE_RUNTIME_INVENTORY ?= $(BUILD_DIR)/gui-bridge-runtime-inventory.tsv
 NEMACS_STUB_FALLBACK_SKIP_INVENTORY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-inventory.tsv
 NEMACS_STUB_FALLBACK_SKIP_SUMMARY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-summary.org
@@ -540,6 +542,7 @@ help:
 	@echo "  make test-nemacs-gui-bridge-gate  run GUI bridge gate without slow tail"
 	@echo "  make test-nemacs-gui-bridge-slow  run only the GUI bridge slow tail"
 	@echo "  make test-nemacs-gui-bridge-slow-profile  run slow tail with per-runtime timing"
+	@echo "  make nemacs-gui-bridge-profile-summary  summarize NEMACS_GUI_BRIDGE_PROFILE log"
 	@echo "  make test-nemacs-gui-bridge-select NEMACS_GUI_BRIDGE_TEST_SELECTOR=TEST  run selected GUI bridge ERT"
 	@echo "  make test-nemacs-server-client  run standalone server/emacsclient round-trip ERT"
 	@echo "  make nemacs-gui-keymap-coverage  write GUI keymap coverage TSV and summary artifacts"
@@ -656,6 +659,15 @@ test-nemacs-gui-bridge-slow-profile:
 		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_SLOW_SELECTOR)))'
+
+nemacs-gui-bridge-profile-summary:
+	mkdir -p "$(BUILD_DIR)"
+	test -f "$(NEMACS_GUI_BRIDGE_PROFILE_LOG)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-gui-bridge-profile-summary-input "$(abspath $(NEMACS_GUI_BRIDGE_PROFILE_LOG))")' \
+		--eval '(setq nemacs-gui-bridge-profile-summary-output "$(abspath $(NEMACS_GUI_BRIDGE_PROFILE_SUMMARY))")' \
+		-l scripts/nemacs-gui-bridge-profile-summary.el \
+		-f nemacs-gui-bridge-profile-summary-batch
 
 test-nemacs-gui-bridge-select:
 	test -x "$(NELISP_BIN)"

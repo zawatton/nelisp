@@ -22,6 +22,13 @@ case を分割・集約する。
 - =NEMACS_GUI_BRIDGE_PROFILE=1= での baseline は 336 request、profile 合計 107.901 秒。
   - 1 秒以上の request は 14 件。
   - 遅延は一部の host publish ではなく、多数の bridge run に分散している。
+- 2026-06-20 の再 profile は 107.934 秒。保存 log の parse 可能行は 335 request、
+  profile 合計 106.881 秒。
+  - direct-cmd: 257 request / 79.817 秒 / 74.7%。
+  - key-or-empty: 68 request / 19.452 秒 / 18.2%。
+  - compound-form: 10 request / 7.612 秒 / 7.1%。
+  - family 上位は other 17.941 秒、editing 16.453 秒、motion/mark 14.461 秒。
+  - 単一 command/family ではなく、direct-cmd 共通 path が支配的。
 - runtime writeback fast path も試したが、=pop-global-mark= 系の state writeback を落として
   =/tmp/nemacs-global-mark= missing になり、140 秒台へ悪化したため不採用。
 - writeback dispatch table 化も試したが、broad table は 124.498 秒へ悪化し、
@@ -185,9 +192,12 @@ make test-fast
 性能判断用:
 
 #+begin_src sh
+mkdir -p build
 NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_PROFILE=1 emacs -Q --batch \
   -L src -L test -l test/nemacs-gui-file-bridge-runtime-test.el \
-  --eval "(ert-run-tests-batch-and-exit 'nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform)"
+  --eval "(ert-run-tests-batch-and-exit 'nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform)" \
+  > build/nemacs-gui-bridge-profile.log 2>&1
+make nemacs-gui-bridge-profile-summary
 #+end_src
 
 * 採用基準
@@ -202,12 +212,15 @@ NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_PROFILE=1 emacs -Q --batch \
 
 * 次の作業開始点
 
-1. runtime 生成元がないか再確認し、なければ本体内で full read/writeback body を
+1. =make nemacs-gui-bridge-profile-summary= で command 分布を再生成する。
+2. direct-cmd 257 request / 79.817 秒を主対象にし、key dispatch や compound form を
+   初回対象から外す。
+3. runtime 生成元がないか再確認し、なければ本体内で full read/writeback body を
    機械的に helper 化する。
-2. helper 化後、miss path の追加 read が 0 であることを確認する。
-3. command group ごとに read set / writeback set を同じ helper 境界へ移す。
-4. motion group だけでなく、profile 上位 request の command 分布を先に集計する。
-5. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
+4. helper 化後、miss path の追加 read が 0 であることを確認する。
+5. direct-cmd の common read/writeback setup を本体構造として短くし、
+   individual command の後付け wrapper には戻らない。
+6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
 
 小さい request batch、table fallback、後付け wrapper ではなく、command ごとの
 read/writeback 副作用を保持した本体構造の整理を先に作ること。
