@@ -37,6 +37,9 @@ SMALL_PROFILE_JSON="$TMP_DIR/small-profile.json"
 SMALL_PROFILE_NAMES="$TMP_DIR/small-profile.names"
 LARGE_PROFILE_JSON="$TMP_DIR/large-profile.json"
 LARGE_PROFILE_NAMES="$TMP_DIR/large-profile.names"
+LARGE_TARGET_LAST=511
+LARGE_INSTALLED_LAST=479
+LARGE_EXTRA_LAST=31
 
 cat >"$MANIFEST" <<'EOF'
 (require 'nelix)
@@ -63,21 +66,21 @@ EOF
   printf '  (name "large")\n'
   printf '  (profile "default")\n'
   printf '  (linux-packages '\''('
-  for i in $(seq 0 199); do
+  for i in $(seq 0 "$LARGE_TARGET_LAST"); do
     printf '"pkg%03d"' "$i"
-    if [ "$i" -lt 199 ]; then
+    if [ "$i" -lt "$LARGE_TARGET_LAST" ]; then
       printf ' '
     fi
   done
   printf '))\n'
   printf '  (version-pin pkg005 "fixture")\n'
-  printf '  (version-pin pkg150 "fixture"))\n'
+  printf '  (version-pin pkg450 "fixture"))\n'
 } >"$LARGE_MANIFEST"
 
 {
   printf '{"elements":{'
   first=1
-  for i in $(seq 0 179); do
+  for i in $(seq 0 "$LARGE_INSTALLED_LAST"); do
     if [ "$first" -eq 0 ]; then
       printf ','
     fi
@@ -86,7 +89,7 @@ EOF
     printf '"%s":{"attrPath":"legacyPackages.x86_64-linux.%s","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/%s"]}' \
       "$name" "$name" "$name"
   done
-  for i in $(seq 0 19); do
+  for i in $(seq 0 "$LARGE_EXTRA_LAST"); do
     printf ','
     name="$(printf 'extra%03d' "$i")"
     printf '"%s":{"attrPath":"legacyPackages.x86_64-linux.%s","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/%s"]}' \
@@ -96,10 +99,10 @@ EOF
 } >"$LARGE_PROFILE_JSON"
 
 {
-  for i in $(seq 0 179); do
+  for i in $(seq 0 "$LARGE_INSTALLED_LAST"); do
     printf 'Name: pkg%03d\n' "$i"
   done
-  for i in $(seq 0 19); do
+  for i in $(seq 0 "$LARGE_EXTRA_LAST"); do
     printf 'Name: extra%03d\n' "$i"
   done
 } >"$LARGE_PROFILE_NAMES"
@@ -349,22 +352,22 @@ expect_grep nelisp_aot_apply_dry_run '"fallback":":nelisp-aot-cache"'
 run_timed nelisp_large_aot_audit \
   "${nelisp_large_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json audit "$LARGE_MANIFEST"
 expect_grep nelisp_large_aot_audit '"present":.*"pkg000"'
-expect_grep nelisp_large_aot_audit '"present":.*"pkg179"'
-expect_grep nelisp_large_aot_audit '"missing":.*"pkg180"'
-expect_grep nelisp_large_aot_audit '"missing":.*"pkg199"'
+expect_grep nelisp_large_aot_audit '"present":.*"pkg479"'
+expect_grep nelisp_large_aot_audit '"missing":.*"pkg480"'
+expect_grep nelisp_large_aot_audit '"missing":.*"pkg511"'
 expect_grep nelisp_large_aot_audit '"extra":.*"extra000"'
-expect_grep nelisp_large_aot_audit '"extra":.*"extra019"'
+expect_grep nelisp_large_aot_audit '"extra":.*"extra031"'
 expect_grep nelisp_large_aot_audit '"fallback":":nelisp-aot-cache"'
 expect_grep nelisp_large_aot_audit '"skipped":'
 
 run_timed nelisp_large_aot_upgrade_plan \
   "${nelisp_large_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$LARGE_MANIFEST"
 expect_grep nelisp_large_aot_upgrade_plan '"upgrade":.*"pkg000"'
-expect_grep nelisp_large_aot_upgrade_plan '"upgrade":.*"pkg179"'
+expect_grep nelisp_large_aot_upgrade_plan '"upgrade":.*"pkg479"'
 expect_grep nelisp_large_aot_upgrade_plan '"pinned":.*"pkg005"'
-expect_grep nelisp_large_aot_upgrade_plan '"pinned":.*"pkg150"'
-expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg180"'
-expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg199"'
+expect_grep nelisp_large_aot_upgrade_plan '"pinned":.*"pkg450"'
+expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg480"'
+expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg511"'
 expect_grep nelisp_large_aot_upgrade_plan '"fallback":":nelisp-aot-cache"'
 expect_grep nelisp_large_aot_upgrade_plan '"skipped":'
 
@@ -448,34 +451,34 @@ assert_stat_delta_le nelisp_stats_upgrade_plan before-dispatch after-print 20132
 run_timed nelisp_large_stats_audit \
   "${nelisp_large_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json audit "$LARGE_MANIFEST"
 expect_grep nelisp_large_stats_audit '"present":.*"pkg000"'
-expect_grep nelisp_large_stats_audit '"present":.*"pkg179"'
-expect_grep nelisp_large_stats_audit '"missing":.*"pkg180"'
-expect_grep nelisp_large_stats_audit '"missing":.*"pkg199"'
+expect_grep nelisp_large_stats_audit '"present":.*"pkg479"'
+expect_grep nelisp_large_stats_audit '"missing":.*"pkg480"'
+expect_grep nelisp_large_stats_audit '"missing":.*"pkg511"'
 expect_grep nelisp_large_stats_audit '"extra":.*"extra000"'
-expect_grep nelisp_large_stats_audit '"extra":.*"extra019"'
+expect_grep nelisp_large_stats_audit '"extra":.*"extra031"'
 expect_grep nelisp_large_stats_audit '"fallback":":nelisp-fast"'
 expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=after-preload '
 expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=before-dispatch '
 expect_stderr_grep nelisp_large_stats_audit '^nelix stats stage=after-format '
 emit_stats nelisp_large_stats_audit
 assert_stat_delta_le nelisp_large_stats_audit after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_large_stats_audit before-dispatch after-print 2147483648
+assert_stat_delta_le nelisp_large_stats_audit before-dispatch after-print 5368709120
 
 run_timed nelisp_large_stats_upgrade_plan \
   "${nelisp_large_stats_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$LARGE_MANIFEST"
 expect_grep nelisp_large_stats_upgrade_plan '"upgrade":.*"pkg000"'
-expect_grep nelisp_large_stats_upgrade_plan '"upgrade":.*"pkg179"'
+expect_grep nelisp_large_stats_upgrade_plan '"upgrade":.*"pkg479"'
 expect_grep nelisp_large_stats_upgrade_plan '"pinned":.*"pkg005"'
-expect_grep nelisp_large_stats_upgrade_plan '"pinned":.*"pkg150"'
-expect_grep nelisp_large_stats_upgrade_plan '"missing":.*"pkg180"'
-expect_grep nelisp_large_stats_upgrade_plan '"missing":.*"pkg199"'
+expect_grep nelisp_large_stats_upgrade_plan '"pinned":.*"pkg450"'
+expect_grep nelisp_large_stats_upgrade_plan '"missing":.*"pkg480"'
+expect_grep nelisp_large_stats_upgrade_plan '"missing":.*"pkg511"'
 expect_grep nelisp_large_stats_upgrade_plan '"fallback":":nelisp-fast"'
 expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=after-preload '
 expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=before-dispatch '
 expect_stderr_grep nelisp_large_stats_upgrade_plan '^nelix stats stage=after-format '
 emit_stats nelisp_large_stats_upgrade_plan
 assert_stat_delta_le nelisp_large_stats_upgrade_plan after-cli-load before-dispatch 1024
-assert_stat_delta_le nelisp_large_stats_upgrade_plan before-dispatch after-print 2147483648
+assert_stat_delta_le nelisp_large_stats_upgrade_plan before-dispatch after-print 5368709120
 
 if [ ! -f "$MANIFEST.nelix-aot-targets" ]; then
   echo "nelix_gate_fail reason=missing-aot-cache path=$MANIFEST.nelix-aot-targets" >&2
