@@ -64,6 +64,13 @@ cache/freshness contract.  The source-command substrate gate keeps exposing the
 exact evaluator/reader/bytecode source as an independent whole-substrate
 research unit.
 
+The Nelix command gate also keeps a 200-target manifest fixture on both the
+production AOT cache lane and the direct =:nelisp-fast= lane.  For the AOT
+cache route, =audit= and =upgrade-plan= must report the expected present,
+missing, extra, upgrade, and pinned sets with =:nelisp-aot-cache=.  For the
+direct route, the same fixture remains an allocator-pressure diagnostic with
+explicit arena delta limits.
+
 The current native artifact contract is generic but not yet full-native:
 
 - every readable =.el= should be compilable to a valid =.neln= cache;

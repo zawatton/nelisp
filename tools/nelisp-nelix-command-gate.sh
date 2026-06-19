@@ -245,6 +245,21 @@ nelisp_aot_env=(
   "NELIX_NIX_PROGRAM=$FAKE_NIX"
 )
 
+nelisp_large_aot_env=(
+  env
+  "PATH=$TMP_DIR/bin:$PATH"
+  "HOME=$TMP_DIR/home"
+  "NELIX_LISPDIR=$NELIX_REPO"
+  "NELIX_PROFILE_DIR=$TMP_DIR/profile"
+  "NELIX_FAKE_PROFILE_JSON=$LARGE_PROFILE_JSON"
+  "NELIX_FAKE_PROFILE_NAMES=$LARGE_PROFILE_NAMES"
+  "NELIX_RUNTIME=nelisp"
+  "NELIX_NELISP_AOT=1"
+  "NELIX_NIX_PROGRAM=$FAKE_NIX"
+  "NELISP=$NELISP"
+  "NELISP_ROOT=$REPO_ROOT"
+)
+
 nelisp_large_stats_env=(
   env
   "PATH=$TMP_DIR/bin:$PATH"
@@ -330,6 +345,28 @@ expect_json_action nelisp_aot_apply_dry_run remove bat
 expect_json_action nelisp_aot_apply_dry_run keep magit
 expect_json_action nelisp_aot_apply_dry_run keep ripgrep
 expect_grep nelisp_aot_apply_dry_run '"fallback":":nelisp-aot-cache"'
+
+run_timed nelisp_large_aot_audit \
+  "${nelisp_large_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json audit "$LARGE_MANIFEST"
+expect_grep nelisp_large_aot_audit '"present":.*"pkg000"'
+expect_grep nelisp_large_aot_audit '"present":.*"pkg179"'
+expect_grep nelisp_large_aot_audit '"missing":.*"pkg180"'
+expect_grep nelisp_large_aot_audit '"missing":.*"pkg199"'
+expect_grep nelisp_large_aot_audit '"extra":.*"extra000"'
+expect_grep nelisp_large_aot_audit '"extra":.*"extra019"'
+expect_grep nelisp_large_aot_audit '"fallback":":nelisp-aot-cache"'
+expect_grep nelisp_large_aot_audit '"skipped":'
+
+run_timed nelisp_large_aot_upgrade_plan \
+  "${nelisp_large_aot_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp --json upgrade-plan "$LARGE_MANIFEST"
+expect_grep nelisp_large_aot_upgrade_plan '"upgrade":.*"pkg000"'
+expect_grep nelisp_large_aot_upgrade_plan '"upgrade":.*"pkg179"'
+expect_grep nelisp_large_aot_upgrade_plan '"pinned":.*"pkg005"'
+expect_grep nelisp_large_aot_upgrade_plan '"pinned":.*"pkg150"'
+expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg180"'
+expect_grep nelisp_large_aot_upgrade_plan '"missing":.*"pkg199"'
+expect_grep nelisp_large_aot_upgrade_plan '"fallback":":nelisp-aot-cache"'
+expect_grep nelisp_large_aot_upgrade_plan '"skipped":'
 
 run_timed nelisp_direct_list \
   "${nelisp_env[@]}" "$NELIX_REPO/bin/nelix" --runtime nelisp list
