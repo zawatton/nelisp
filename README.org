@@ -27,6 +27,13 @@ bytecode interp, reader, special forms, builtin dispatcher, object
 file writers, native code emitters, and standalone OS surface) is
 written in Elisp itself.
 
+In the wider "replace Emacs" effort, this repo is *Layer 1* (the
+runtime / reader / AOT compiler that produces =target/nelisp=).  It is
+consumed by *Layer 2 =../nelisp-emacs=* (Emacs 意味論) and *Layer 3
+=../nelisp-gui=* (X11 描画/入力).  The 3-layer responsibility boundary,
+inter-layer contracts, and completion conditions are fixed in
+=../nelisp-gui/docs/design/00-three-layer-architecture.org=.
+
 The important claim is not merely "Elisp can call into a runtime".
 NeLisp's runtime implementation is Elisp: the evaluator, reader,
 compiler, allocator, GC, object writers, and native code emitters live
@@ -203,6 +210,45 @@ nelisp> (defun hot () 42)
 hot
 nelisp> (hot)
 42
+#+end_src
+
+Runtime sources can also be pre-bundled into a replay image.  This is
+the portable bootstrap cache used before the native artifact layer:
+
+#+begin_src shell
+printf '(defun cached-hot () 42)\n' >/tmp/runtime-src.el
+target/nelisp dump-runtime-image /tmp/runtime.nlri --load /tmp/runtime-src.el
+target/nelisp eval-runtime-image /tmp/runtime.nlri '(cached-hot)'
+#+end_src
+
+For repeated command execution, compile the replay image into a NeLisp
+artifact cache.  =.nelc= removes repeated source parsing/replay from
+the command path.  The =.neln= native hot path uses the same flattened
+runtime-image input in the host/dev native compiler gate; wiring that
+compiler into the standalone command path is tracked separately.
+
+When a =.neln= artifact is loaded, native-eligible functions are
+registered as ordinary NeLisp functions with a native-first wrapper and
+bytecode fallback.  The integer native proof path also caches the linked
+driver executable under the user cache directory, so repeated calls do
+not pay object extraction and link cost every time.
+
+Generic source loading can use the same artifact layer.  Compile a tree
+with =compile-elisp-artifacts --kind neln FILE.el DIR...= to create
+adjacent =FILE.el.neln= artifacts; =nelisp-load-file= probes fresh
+adjacent =.neln= then =.nelc= before source replay.  If
+=nelisp-load-auto-compile-artifacts= is enabled, a missing or stale
+adjacent artifact is rebuilt on demand.  =inspect-elisp-artifact= shows
+=:native-report= so unsupported native bodies are visible while the
+portable fallback remains usable.
+
+#+begin_src shell
+target/nelisp compile-runtime-image \
+  --kind nelc \
+  --input /tmp/runtime.nlri \
+  --output /tmp/runtime.nelc
+
+target/nelisp eval-elisp-artifact /tmp/runtime.nelc '(cached-hot)'
 #+end_src
 
 For editor integration or scripted probes, use =--no-prompt=:
@@ -444,6 +490,13 @@ echo $?                                # => 42
 # evaluate or load and print the result
 target/nelisp --eval '(concat "hello" " " "world")'
 target/nelisp --load /tmp/prog.el
+
+# bundle runtime sources once, then evaluate forms against the image
+printf '(defun cached-hot () 42)\n' >/tmp/runtime-src.el
+target/nelisp dump-runtime-image /tmp/runtime.nlri --load /tmp/runtime-src.el
+target/nelisp eval-runtime-image /tmp/runtime.nlri '(cached-hot)'
+target/nelisp compile-runtime-image --kind nelc --input /tmp/runtime.nlri --output /tmp/runtime.nelc
+target/nelisp eval-elisp-artifact /tmp/runtime.nelc '(cached-hot)'
 
 # interactive runtime development
 target/nelisp

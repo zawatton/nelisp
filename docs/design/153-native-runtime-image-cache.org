@@ -1,0 +1,618 @@
+#+TITLE: Doc 153 - Native Runtime Image Cache for Nelix Workloads
+#+DATE: 2026-06-18
+#+STATUS: ACTIVE
+
+* 1. Problem
+
+Nelix workloads expose a startup cost that native compilation alone does
+not remove:
+
+- standalone process startup
+- runtime source loading
+- macro/DSL rendering
+- plist/list/alist manifest traversal
+- JSON/string formatting
+- GC and allocator pressure from long single-form execution
+
+For =nelix --runtime nelisp list/audit/upgrade-plan=, the critical path
+must avoid replaying the whole Emacs-compatible runtime surface on every
+command.  The desired end state is:
+
+#+begin_src text
+load runtime sources once -> materialize image/cache -> execute hot
+manifest operations through native artifacts
+#+end_src
+
+* 2. Cache Layers
+
+** 2.1 Source replay image
+
+The existing =nelisp-runtime-image source-v1= format is a replayable
+source bundle.  It is portable and works on Linux, macOS, and Windows,
+but it still reads and evaluates source at runtime.
+
+Current command surface:
+
+#+begin_src sh
+nelisp dump-runtime-image IMAGE [--load FILE]... [FORM...]
+nelisp extend-runtime-image BASE-IMAGE OUT-IMAGE [--load FILE]... FORM...
+nelisp eval-runtime-image IMAGE [--cache-kind nelc|neln|auto] FORM...
+nelisp exec-runtime-image IMAGE [--cache-kind nelc|neln|auto] FORM...
+nelisp compile-runtime-image --kind nelc|neln|auto --input IMAGE --output ARTIFACT
+#+end_src
+
+This layer is the bootstrap cache.  It lets Nelix package all runtime
+sources into one file before command execution, and it gives the next
+native layer a deterministic input.  =compile-runtime-image= flattens
+the source-v1 =progn= bundles before artifact compilation so top-level
+=defun= forms remain native-eligible.
+
+For command execution, =eval-runtime-image= / =exec-runtime-image= can now
+take =--cache-kind=.  In that mode the command loads =IMAGE.nelc= or
+=IMAGE.neln= instead of replaying the image source.  Missing, stale, or
+invalid artifacts are regenerated before the requested forms are evaluated.
+
+** 2.2 Bytecode/native artifact layer
+
+The artifact layer must avoid source replay for hot modules:
+
+#+begin_src sh
+nelisp compile-elisp-artifact --kind nelc --input runtime.el --output runtime.nelc
+nelisp compile-elisp-artifact --kind neln --input hot.el --output hot.neln
+nelisp exec-elisp-artifact runtime.nelc FORM...
+nelisp native-exec-elisp-artifact hot.neln SYMBOL ARG...
+#+end_src
+
+For Nelix, =.neln= should first target small, pure hot paths:
+
+- manifest target name indexing
+- profile name set indexing
+- audit set difference
+- upgrade-plan set difference
+- compact line/JSON writers
+
+** 2.3 Heap/runtime snapshot
+
+The final image form should not replay source.  It should serialize the
+post-load runtime environment:
+
+- function cells and constants
+- feature list
+- package/module metadata
+- immutable strings/symbols
+- native artifact references
+- cache ABI and source hashes
+
+This requires a stronger heap-image contract than =source-v1= and must
+reject stale images before any code runs.
+
+* 3. Nelix Execution Model
+
+Nelix should select the fastest valid route in this order:
+
+1. native hot artifact for the exact command and manifest/profile cache
+2. bytecode/native runtime artifact
+3. source replay runtime image
+4. raw source load fallback
+
+The fallback must be explicit in diagnostics so slow paths are visible.
+
+The =.neln= load path installs native wrappers into the ordinary NeLisp
+function table.  Calls therefore use the same =(fn ...)= surface as
+bytecode/interpreter functions, but try native execution first and keep
+the portable bytecode closure as fallback.  The integer native proof
+path caches its linked driver executable under =XDG_CACHE_HOME= (or
+=~/.cache=) using a key derived from artifact metadata, native object
+hash, symbol, arity, and host target.  This removes repeated object
+extraction/objcopy/link fixed cost from hot repeated calls.
+
+Generic source loading now has an adjacent artifact path:
+
+#+begin_src sh
+nelisp compile-elisp-artifacts --kind neln FILE.el DIR...
+#+end_src
+
+For each source, the compiler writes =FILE.el.neln= plus its sibling
+manifest.  =nelisp-load-file= probes =FILE.el.neln= first and then
+=FILE.el.nelc= before reading =FILE.el=.  This makes compiled artifacts
+usable through the ordinary load/require surface instead of forcing each
+caller to special-case artifact paths.
+
+=.neln= is intentionally *native-capable*, not "native-only".  Every
+top-level form is still represented by the portable module-init payload;
+native sections are added opportunistically for currently supported
+top-level =defun= bodies.  Files with no native-eligible function still
+compile to a valid =.neln= so a whole tree can use one command.  Runtime
+calls use native wrappers only when metadata exists and fall back to
+bytecode/eval semantics otherwise.
+
+This is the generic answer to "can all =.el= code be native compiled?"
+The required invariant is not native-only execution for every form.  The
+required invariant is:
+
+- every supported =.el= file can be represented as a =.neln= artifact;
+- every load-time effect is preserved by the portable module payload;
+- every native-eligible =defun= is wrapped with native-first dispatch;
+- unsupported native bodies keep bytecode/eval fallback;
+- the manifest records =:native-report= so remaining native coverage gaps
+  are inspectable instead of hidden.
+
+Current interpretation for Nelix:
+
+- =--kind neln --native-policy opportunistic= is the default tree-wide policy.
+  It must work for arbitrary package/source trees without per-file fixes.  A
+  file whose native coverage is zero is still a valid =.neln= because its
+  portable module payload preserves load-time semantics.
+- =--native-policy required= is a diagnostic/release gate, not the normal
+  package-manager path.  Use it only when a specific hot module is expected to
+  be fully native and a fallback would hide a performance regression.
+- "all =.el= code is native compiled" means "all =.el= code enters one
+  artifact/load contract and uses native-first dispatch wherever supported".
+  It does not mean every Emacs Lisp special form, macro expansion, dynamic
+  binding case, and load-time side effect is already lowered to machine code.
+- =nelisp-load-file= and the CLI =load-elisp-source= / =eval-elisp-source=
+  must remain the single place that decides artifact probing, stale rejection,
+  optional recompilation, native wrapper installation, and source fallback.
+  Nelix must not duplicate that logic per package or command.
+
+Verified 2026-06-18 on Linux x86_64 with =target/nelisp=:
+
+#+begin_src sh
+nelisp compile-elisp-artifact --kind neln --input mod.el --output mod.el.neln
+nelisp eval-elisp-source mod.el '(generic-native-smoke-add 41)'
+nelisp inspect-elisp-artifact mod.el.neln
+#+end_src
+
+The smoke returned =42= through the adjacent =.neln= load path.  The manifest
+recorded =:artifact-class native=, =:runtime-abi "nelisp-neln-aot-v1"=, a
+native section with =generic-native-smoke-add=, and =:native-report
+((:name "generic-native-smoke-add" :native t))=.
+
+Remaining blocker for startup speed, separate from generic =.el= artifact
+coverage: the private standalone artifact runtime cache can currently select
+the cache source, but replaying the large runtime =:module-init= from
+=target/nelisp-artifact-runtime.el.nelc= fails before command functions are
+materialized in =nelisp--functions=.  Until that scanner/replay path is fixed,
+the cache remains opt-in behind =target/nelisp-artifact-runtime.el.nelc.enable=
+and the binary falls back to the full source runtime path by default.
+
+On-demand refresh is available through =nelisp-load-file= when
+=nelisp-load-auto-compile-artifacts= is non-nil.  In that mode the loader
+first probes adjacent =FILE.el.neln= / =FILE.el.nelc=, and if no fresh
+artifact exists, recompiles =FILE.el= to =FILE.el.neln= before falling back
+to source replay.  This keeps the policy centralized in the artifact/load
+layer rather than requiring Nelix or individual packages to special-case
+cache rebuilds.
+
+The private artifact load path must avoid duplicate metadata parsing.
+=.neln= and =.nelc= are selected by suffix, then validated once.  Only
+=.elc= needs manifest-based host bytecode handling before host =load=.
+This keeps adjacent =FILE.el.neln= loads to one manifest read/parse plus
+one artifact read/parse.
+
+The source-command marker path also avoids full =:module-init= materialization.
+It validates the artifact header and =:format=, reads the small =:features=
+value, then scans the generated =:module-init= list item-by-item.  Each item is
+read and replayed immediately, so the loader no longer builds one large module
+list before installing functions/evaluating forms.  The 2026-06-18 smoke moved
+the marker path from approximately:
+
+#+begin_example
+cache_load rc=0 ms=3109 out=bench-native-smoke
+cache_eval rc=0 ms=3797 out=42
+artifact-after-module ~= 494 MB arena high-water
+#+end_example
+
+to:
+
+#+begin_example
+cache_load rc=0 ms=2515 out=bench-native-smoke
+cache_eval rc=0 ms=3191 out=42
+artifact-after-module ~= 402 MB arena high-water
+#+end_example
+
+This is still not the final runtime image solution: the evaluator/bytecode
+substrate is still source-evaluated at marker startup.  It does, however,
+remove one large avoidable allocation phase from adjacent artifact loading.
+
+Freshness checks use recorded file metadata before falling back to hash
+validation.  Source files, runtime images, and preloads record size,
+mtime, and ctime.  If all three still match, the loader avoids reading
+the file body and avoids recomputing SHA-256.  If any metadata is absent
+or changed, validation reads the file and compares the recorded hash.
+
+* 4. Native Compilation Scope
+
+Native compilation is required, but only for the hot path first.  The
+priority order is:
+
+1. =equal=, =member=, =assoc=, =plist-get=, list traversal
+2. string append/escape/format/print
+3. hash/name-set construction
+4. manifest target comparison
+5. JSON/line result writers
+
+Current allocator-pressure work keeps cycle-safe structure comparison
+intact, but avoids allocating the visited hash table for scalar/string
+=equal= cases.  This matters because manifest and package matching do
+many keyword, symbol, number, and string comparisons where cycle
+tracking is impossible and therefore pure overhead.
+
+List search now follows the same direction: =member= and =assoc=
+dispatch string, symbol, and number keys to direct comparisons before
+falling back to generic =equal=.  This removes one generic function
+call per scanned cell in the manifest/package-name fast path.
+
+List finalization now avoids one full copy on the common reverse-accumulator
+pattern.  =nreverse= is destructive, matching Emacs semantics, and =mapcar=
+returns =(nreverse acc)= instead of building a second output list.  This
+reduces cons pressure in =mapcar= itself and in callers that accumulate
+chunks/parts in reverse order before finalization.
+
+=mapconcat= now streams directly into the output string instead of first
+building a reversed =parts= list and then reversing it.  This removes one
+cons cell per sequence element from the evaluator builtin, the stdlib
+implementation, and the standalone prelude path.  The result is still a
+simple string concat loop; a future mutable string builder can address the
+remaining O(total-output) copying cost separately.
+
+The S-expression printer follows the same allocator-pressure direction:
+string escaping, list body printing, vector printing, and record printing no
+longer allocate reversed fragment lists before final =concat=.  They stream
+through a simple output accumulator.  This avoids a cons cell per printed
+element/fragment on =prin1-to-string= heavy paths such as manifest and
+artifact inspection.  As with =mapconcat=, this is a GC-pressure reduction;
+large-output throughput should later move to a mutable string builder.
+
+Compact JSON encoding now follows the same rule for Nelix command output:
+arrays and objects stream directly into the output accumulator instead of
+building =mapcar= result lists and joining them.  Vector encoding walks vector
+slots directly instead of converting to a list with =append=; hash-table and
+plist object encoding avoid materializing intermediate pair lists on the compact
+path.  Pretty printing still uses the older generic shape and is not on the
+Nelix hot command path.
+
+Compiling the entire Emacs compatibility surface before this subset is
+not the right first milestone; it increases build complexity while still
+leaving startup and data-shape costs in place.
+
+* 5. Acceptance Gates
+
+- =target/nelisp dump-runtime-image IMAGE --load FILE FORM= writes a
+  replayable image.
+- =target/nelisp eval-runtime-image IMAGE FORM= sees definitions loaded
+  from the image.
+- =target/nelisp eval-runtime-image IMAGE --cache-kind auto FORM= creates
+  and loads a runtime-image artifact cache instead of replaying source; for
+  hot defuns the default =auto= route creates =IMAGE.neln=.
+- =compile-runtime-image --kind nelc= emits a loadable artifact whose
+  manifest records the source runtime image and rejects stale image
+  changes.
+- =compile-runtime-image --kind neln= preserves top-level hot =defun=
+  visibility for native artifact compilation when the native compiler is
+  available, and the standalone command path can execute the resulting cache
+  through =eval-runtime-image --cache-kind neln=.
+- =compile-elisp-artifacts --kind neln FILE.el DIR...= writes adjacent
+  =.neln= artifacts for arbitrary source trees, including files whose
+  native section is empty.
+- =nelisp-load-file FILE.el= loads a fresh adjacent =FILE.el.neln= or
+  =FILE.el.nelc= before falling back to source replay.
+- With =nelisp-load-auto-compile-artifacts= enabled, =nelisp-load-file
+  FILE.el= refreshes a missing/stale adjacent =FILE.el.neln= and loads the
+  refreshed artifact.
+- =inspect-elisp-artifact FILE.el.neln= exposes =:native-report= for
+  native coverage diagnostics even when =:native= is absent.
+- =nreverse= mutates the input spine and =mapcar= finalizes through it,
+  avoiding the previous extra result-list copy while preserving output order.
+- =mapconcat= does not allocate a reversed intermediate parts list in the
+  evaluator builtin or stdlib/prelude implementations.
+- =prin1-to-string= helper paths for escaped strings, lists, vectors, and
+  records avoid reversed fragment lists in stdlib and standalone prelude.
+- =nelisp-json-encode= compact array/object paths avoid =mapcar= + comma-join,
+  vector-to-list conversion, and plist/hash pair materialization.
+- Loading a private =.neln= or =.nelc= artifact reads/parses its sibling
+  manifest once on the hot path.
+- Unchanged source/runtime/preload freshness validation avoids body reads
+  via size/mtime/ctime metadata checks.
+- =make standalone-reader-test= covers the source replay cache.
+- A future native gate must prove that Nelix audit/upgrade-plan can run
+  against a preloaded cache without source replay on the command path.
+
+* 6. Open Work
+
+- Teach Nelix to probe for runtime image/artifact freshness before
+  falling back to raw source.
+- Move manifest-specific set comparison to a native =.neln= hot module.
+- Wire the full native compiler into the standalone
+  =target/nelisp compile-runtime-image --kind neln= command path.
+
+* 7. 2026-06-18 Status: generic =.el= native artifact contract
+
+The generic package-manager contract is now confirmed on the normal
+standalone command path:
+
+#+begin_src sh
+target/nelisp compile-elisp-artifact --kind neln --input mod.el --output mod.el.neln
+target/nelisp eval-elisp-source mod.el '(generic-native-smoke-add 41)'
+target/nelisp inspect-elisp-artifact mod.el.neln
+#+end_src
+
+The smoke returned =42=.  The manifest recorded =:artifact-class native= and
+=:native-report ((:name "generic-native-smoke-add" :native t))=.  This is the
+policy Nelix should depend on: arbitrary =.el= files enter the same =.neln=
+artifact/load contract, native-capable defuns run through native-first
+wrappers, and unsupported forms remain represented in the portable module
+payload.
+
+The standalone artifact runtime cache remains experimental and disabled unless
+=target/nelisp-artifact-runtime.el.nelc.enable= exists.  Current cache replay
+findings:
+
+- compiling the cache from only the =nelisp-artifact.el= body avoids replaying
+  bootstrap/prelude/evaluator definitions over the active runtime;
+- replaying =:eval= items must use =nelisp-eval=, not host =eval=, otherwise
+  command defuns never enter =nelisp--functions=;
+- streaming item replay still misdetects the =:module-init= boundary after a
+  few items under standalone =read-from-string= position handling;
+- whole-module parsing avoids the boundary bug but is too slow for the runtime
+  cache goal.
+
+Therefore the reliable path today is the normal adjacent =.el.neln= artifact
+load path.  The next cache-specific task is a dedicated private module scanner
+that does not depend on generic reader position returns for giant payloads.
+
+** 2026-06-18 follow-up: precompiled =:fn= cache replay
+
+The runtime cache builder was moved back toward the intended hot path: the
+generated =target/nelisp-artifact-runtime.el.nelc= now preserves compiled
+=:fn= entries for top-level defuns instead of forcing every form through
+=:eval=.  On the current build this yields:
+
+#+begin_example
+(:module-count 162 :fn-count 132 :eval-count 30 :top-level-count 162)
+#+end_example
+
+The cache replay scanner was also tightened for standalone constraints:
+
+- wrapper item boundaries are computed by a private scanner instead of trusting
+  =read-from-string= cdr positions for the whole =(:eval FORM)= wrapper;
+- critical parenthesis checks use numeric byte values =40= and =41= because
+  standalone character literal handling for =?\\(= / =?\\)= is not reliable in
+  this generated path;
+- command defuns should come from =:fn= items and install directly into
+  =nelisp--functions=;
+- =defvar= replay is reduced to special declaration only for now because
+  standalone replay currently stalls on nil-valued global =puthash= and on
+  host-style =defvar= evaluation.
+
+Result: the cache no longer crashes at the initial bootstrap forms, and it can
+progress past the old item-12 boundary with diagnostics enabled.  It is still
+not accepted: with =target/nelisp-artifact-runtime.el.nelc.enable= present,
+=eval-elisp-source= against a tiny adjacent =.neln= smoke still timed out at
+90 seconds.  The marker remains opt-in and must not be enabled by default.
+
+Next cache-specific work:
+
+- avoid generic =read-from-string= for =:fn= payloads, or emit a compact
+  function-table cache format that can install bytecode closures without
+  parsing the full printed BCL object;
+- represent nil globals safely in the standalone hash table path, or avoid
+  replaying nil-valued =defvar= forms entirely by recording only non-default
+  runtime state;
+- replace the remaining generated-source control forms that depend on
+  standalone-weak =cond= / =and= / =or= behavior in hot cache code.
+
+** 2026-06-18 follow-up: boundary scanner and native-exec skip
+
+The runtime cache payload now has fewer source-eval defuns.  Refactoring
+=nelisp-artifact--validate= out of =cl-labels= and removing captured lexical
+=setq= from the native-exec driver builders allows the bytecode compiler to
+lower more of =nelisp-artifact.el= into =:fn= items.  Current cache shape:
+
+#+begin_example
+(:module-count 163 :fn-count 136 :eval-count 27
+ :eval-defuns (nelisp-artifact--native-fast-driver-c
+               nelisp-artifact--native-driver-c)
+ :top-level-count 163)
+#+end_example
+
+The replay loop no longer trusts =read-from-string= cdr positions for =:fn=
+items.  Every item now advances with the private parenthesis scanner's end
+position, and =item-start= can recover from the standalone reader returning a
+position a few bytes into the next =(:fn ...)= item.
+
+The cache loader also has a first compact-skip path: native-exec-only helper
+items can be skipped without reading their printed BCL payload.  This is the
+right direction for the final cache format, but the marker path is still not
+accepted.  A tiny =eval-elisp-source= smoke with
+=target/nelisp-artifact-runtime.el.nelc.enable= still times out; diagnostics
+show replay progressing farther than before but still spending too much time in
+early =:fn= payload handling.
+
+Verified non-cache invariant after these changes:
+
+#+begin_src sh
+target/nelisp compile-elisp-artifact --kind neln --input mod.el --output mod.el.neln
+target/nelisp eval-elisp-source mod.el '(generic-native-smoke-add 41)'
+target/nelisp inspect-elisp-artifact mod.el.neln
+#+end_src
+
+The normal adjacent =.el.neln= path still returns =42= and records native
+coverage for the hot defun.  The cache marker remains opt-in and must remain
+absent by default.
+
+** 2026-06-18 follow-up: load-only runtime cache shrink
+
+The standalone runtime cache now has a load-only filtering stage.  During
+=target/nelisp-artifact-runtime.el.nelc= generation, heavy defuns that belong
+to artifact creation, native-exec, native compile/report generation, private
+fast-reader internals, and native wrapper installation are omitted from the
+cache payload.  The cache dispatch then registers small host-side replacements
+for fixed helpers such as =nelisp-artifact--compiler-plist=,
+=nelisp-artifact--read-file-as-string=, and
+=nelisp-artifact--read-all-from-string=.
+
+For the experimental cache path, native dispatch and fast private read are
+disabled so an adjacent =.el.neln= can be loaded through its portable module
+payload without replaying native-exec/native-wrapper helper BCL.  The normal
+non-cache path still keeps native dispatch enabled by default.
+
+Current generated cache shape:
+
+#+begin_example
+(:module-count 70 :fn-count 44 :eval-count 26 :top-level-count 70)
+#+end_example
+
+This is a large reduction from the earlier =163 / 136 / 27= shape, and the
+normal standalone artifact path remains green:
+
+#+begin_example
+compile_rc=0 eval_rc=0 inspect_rc=0 out=42
+#+end_example
+
+The marker path is still not accepted: a tiny =eval-elisp-source= smoke with
+=target/nelisp-artifact-runtime.el.nelc.enable= still times out.  The remaining
+work is to stop replaying printed BCL for the load/eval core itself.  The next
+design step should be a compact function table cache format or host-side
+bootstrap definitions for the remaining load-only helper set, rather than more
+ad hoc printed-BCL replay.
+
+** 2026-06-18 follow-up: generic adjacent =.neln= with runtime cache marker
+
+The marker path is now accepted for the narrow source-eval smoke that Nelix
+needs as the first generic package-manager contract:
+
+#+begin_src sh
+target/nelisp compile-elisp-artifact --kind neln --input mod.el --output mod.el.neln
+target/nelisp eval-elisp-source mod.el '(generic-native-smoke-add 41)'
+touch target/nelisp-artifact-runtime.el.nelc.enable
+target/nelisp eval-elisp-source mod.el '(generic-native-smoke-add 41)'
+rm -f target/nelisp-artifact-runtime.el.nelc.enable
+#+end_src
+
+Both the normal path and the marker-enabled runtime cache path returned =42=.
+The generated runtime cache shape is now:
+
+#+begin_example
+(:module-count 31 :fn-count 6 :eval-count 25 :top-level-count 0)
+#+end_example
+
+Implementation notes:
+
+- cache generation filters out source-load parser/compile/native-exec-heavy
+  defuns and installs fixed host-side replacements for the load-only helpers;
+- the cache replay loop no longer parses or registers runtime-cache
+  =:features= because the cache is an internal command bootstrap, not a public
+  module load;
+- module replay now treats a non-list token after the final item as the
+  =:module-init= boundary, covering the private payload shape where the final
+  item scan consumes the module-list close;
+- the marker dispatch calls a dedicated
+  =nelisp-standalone-cache-eval-elisp-source-fast= path for
+  =eval-elisp-source=, which directly selects an adjacent =.neln= / =.nelc=,
+  loads it, evaluates the requested forms, and writes via
+  =nelisp--write-stdout-bytes=.
+- =load-elisp-source= now has the same marker-only adjacent-artifact fast path
+  through =nelisp-standalone-cache-load-elisp-source-fast=.  This matters for
+  Nelix package/runtime bootstrap because package files often need only load
+  semantics, not an extra evaluation form.
+
+This does not mean every Elisp form is native-only.  The stable generic
+contract is still =--kind neln --native-policy opportunistic=: all =.el= files
+can enter the same artifact/load path, native-eligible =defun= bodies get
+native-first dispatch on the normal path, and unsupported bodies/forms keep the
+portable bytecode/eval fallback.  Full native coverage remains a diagnostic
+gate for specific hot modules, not the default package-manager behavior.
+
+Verified checks:
+
+#+begin_example
+compile_rc=0
+load_normal_rc=0 out=generic-native-smoke
+eval_normal_rc=0 out=42
+load_cache_rc=0 out=generic-native-smoke
+eval_cache_rc=0 out=42
+ERT: 4 artifact tests passed
+#+end_example
+
+** 2026-06-18 follow-up: inline source-command marker path
+
+The marker path for =load-elisp-source= / =eval-elisp-source= no longer uses
+the general artifact runtime cache source.  Those commands now select a
+source-command cache that inlines the evaluator substrate instead of loading
+those files one by one at command time:
+
+#+begin_example
+source-cache bytes=356135 forms=674
+artifact-cache bytes=25184 forms=74
+#+end_example
+
+The source-command path still evaluates the minimal evaluator/reader/bytecode
+substrate needed to run adjacent =.neln= / =.nelc= module payloads.  However,
+it avoids loading =lisp/nelisp-artifact.el= and avoids replaying
+=target/nelisp-artifact-runtime.el.nelc= for source commands.  Inlining the
+substrate made the source literal much larger than the 4.8KB wrapper-only
+variant, but reduced runtime file IO and was modestly faster in practice.
+The artifact payload reader is now partial: it validates =:format= and reads
+only =:module-init= and =:features=.  It deliberately skips the =:native=
+section and its base64 object payload in the source-command marker path.  This
+keeps the native metadata available for the normal `.neln' loader while
+removing a large allocation from the startup-oriented marker path.
+
+Measured on Linux x86_64 with a tiny adjacent =.neln= smoke:
+
+#+begin_example
+normal_load rc=0 ms=13877 out=bench-native-smoke
+normal_eval rc=0 ms=15147 out=42
+cache_load rc=0 ms=3109 out=bench-native-smoke
+cache_eval rc=0 ms=3797 out=42
+#+end_example
+
+So the source-command marker path is now roughly 4x faster for this smoke.
+The remaining fixed cost is the source-level bootstrap of
+=scripts/nelisp-stdlib-prelude.el=, =src/nelisp-read.el=,
+=src/nelisp-eval.el=, =src/nelisp-macro.el=, =src/nelisp-load.el=, and
+=src/nelisp-bytecode.el=.  Attempts to drop =macro/load= from this bootstrap
+made the standalone source-eval path return incorrectly, so the next real
+speed step is not more source trimming.  It is to materialize that substrate as
+a precompiled image/artifact or move the source-command adjacent-artifact loader
+closer to the standalone driver.
+
+The source-command marker path also has an opt-in allocator diagnostic marker:
+
+#+begin_src sh
+touch target/nelisp-source-command-cache.stats
+target/nelisp eval-elisp-source mod.el '(bench-native-smoke-add 41)' 2>stats.log
+rm -f target/nelisp-source-command-cache.stats
+#+end_src
+
+When present, the loader prints =entry=, =after-load=, and =after-eval=
+=nelisp--arena-stats= lines to stderr.  A tiny =.neln= smoke currently shows:
+
+#+begin_example
+source-cache stats stage=entry (... 134508688)
+source-cache stats stage=after-load (... 487510768)
+source-cache stats stage=after-eval (... 591780848)
+#+end_example
+
+This confirms that after the =:native= payload skip, the next allocator target
+is the evaluator substrate / module replay itself, not native object metadata.
+
+The diagnostic was then expanded inside artifact load:
+
+#+begin_example
+source-cache stats stage=entry (... 134518648)
+source-cache stats stage=artifact-before-read (... 137161360)
+source-cache stats stage=artifact-after-read (... 139849640)
+source-cache stats stage=artifact-after-parse (... 407808496)
+source-cache stats stage=artifact-after-module (... 494771408)
+source-cache stats stage=artifact-after-features (... 498061648)
+source-cache stats stage=after-load (... 500695560)
+source-cache stats stage=after-eval (... 604965640)
+#+end_example
+
+The largest remaining jump is parsing =:module-init=.  A trial that first
+scanned the value boundary and passed only a substring into =read-from-string=
+was rejected: substring allocation made the parse stage worse
+(~474MB instead of ~408MB in this smoke).  Keep the no-substring scanner and
+target the reader/module replay path next.

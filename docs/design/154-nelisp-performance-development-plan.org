@@ -1,0 +1,1102 @@
+#+TITLE: Doc 154 - NeLisp Performance Development Plan
+#+DATE: 2026-06-18
+#+STATUS: SHIPPED (fixture gates complete; substrate representation research remains separate) 2026-06-19
+
+* 1. Purpose
+
+This document defines the efficient development order for the current NeLisp
+performance work:
+
+- runtime image/cache
+- native compile hot path
+- GC/allocator pressure reduction
+
+The immediate goal is not to add more surface area.  The goal is to make the
+fast path measurable, keep it stable, and then move the remaining fixed costs
+out of per-command startup.
+
+* 2. Current State
+
+The source-command cache path is now default-on after =make standalone-reader=
+and materially faster than the marker-disabled full source fallback for a tiny
+adjacent =.neln= smoke:
+
+#+begin_example
+cache_default_load rc=0 ms=2251 out=bench-native-smoke
+cache_default_eval rc=0 ms=2906 out=42
+fallback_load rc=0 ms=13238 out=bench-native-smoke
+fallback_eval rc=0 ms=14471 out=42
+cache_source_fallback_load rc=0 ms=841 out=source-fallback
+cache_source_fallback_eval rc=0 ms=921 out=42
+#+end_example
+
+The cache path improves startup by:
+
+- bypassing the full =lisp/nelisp-artifact.el= command runtime;
+- bypassing general artifact runtime cache replay for source commands;
+- reading only =:format= and =:features= eagerly from adjacent artifacts;
+- replaying =:module-init= item-by-item instead of materializing the full
+  module list;
+- skipping =:native= object/base64 payload parsing on the startup-oriented
+  source-command path.
+
+The repeatable local gate is now:
+
+#+begin_src sh
+tools/nelisp-performance-gate.sh
+tools/nelisp-nelix-command-gate.sh
+tools/nelisp-native-artifact-gate.sh
+tools/nelisp-nelix-native-hot-gate.sh
+tools/nelisp-runtime-image-cache-gate.sh
+tools/nelisp-source-command-substrate-gate.sh
+#+end_src
+
+It emits =gate_result= wall-time lines, =gate_stats= arena-stat lines, verifies
+cache fallback/restore behavior, and runs the focused artifact ERT set.  The
+Nelix command gate uses a fake Nix profile so command output and timings are
+repeatable without touching the user's real profile.  The native artifact gate
+verifies the generic =.el= -> adjacent =.neln= contract through the
+=target/nelisp= command itself.  The runtime-image cache gate verifies the
+runtime-image cache/freshness contract.  The source-command substrate gate
+keeps exposing the exact evaluator/reader/bytecode source as an independent
+whole-substrate research unit.
+
+The current native artifact contract is generic but not yet full-native:
+
+- every readable =.el= should be compilable to a valid =.neln= cache;
+- native-eligible top-level =defun= forms are recorded in the =:native=
+  section and installed through the normal native-first loader;
+- unsupported forms and unsupported =defun= bodies remain covered by bytecode
+  / module-init fallback;
+- =:native-report= records coverage gaps so callers can audit them;
+- =--native-policy required= is the CI gate for hot modules that must not have
+  native coverage gaps.
+
+This distinction is intentional.  A universal =.neln= cache format prevents
+per-file special cases, while required native policy is used only where the
+performance contract demands it.
+
+User-facing policy: arbitrary package code should enter the same generic
+=.el= -> =.neln= pipeline, not a Nelix-only special case.  The default
+artifact is allowed to be mixed native/fallback so package installation stays
+robust across platforms and language coverage gaps.  Hot modules are promoted
+only after =--native-policy required= and =audit-elisp-artifacts --required=
+prove that the required defuns have native coverage and that normal source
+loading will use the adjacent artifact.
+
+Current native artifact gate result:
+
+#+begin_example
+bulk_required rc=0 ms=2194 out=compiled=2 failed=0 kind=neln
+audit_required rc=0 ms=13 out=artifact_audit ... status=ok ...
+load_source_uses_neln rc=0 ms=14748 out=native-contract-hot
+eval_source_uses_neln rc=0 ms=16120 out=42
+eval_artifact_direct rc=0 ms=2315 out=42
+exec_artifact_direct rc=0 ms=2561 out=
+native_exec rc=0 ms=1372 out=42
+required_negative rc=1
+audit_required_missing rc=1 out=artifact_audit_summary status=missing ...
+native_artifact_gate rc=0
+#+end_example
+
+Interpretation: the generic CLI can bulk-build adjacent =.neln= files, enforce
+=--native-policy required= for supported defuns, audit adjacent native
+artifacts, load/evaluate through the adjacent artifact, execute a native
+function from the artifact through both the ordinary direct artifact CLI path
+and the native-exec path, reject a required-native build on an unsupported
+target before writing a partial artifact, and reject required audits when an
+expected adjacent artifact is missing.
+
+The largest remaining startup cost in source commands is still the
+evaluator/bytecode substrate bootstrap, but the default source-command route no
+longer replays it from raw source.  The generated artifact runtime cache
+contains a filtered command runtime and installs source-command fast functions
+from the cache:
+
+- =target/nelisp-artifact-runtime.el.nelc=
+- =target/nelisp-artifact-runtime.el.nelc.enable=
+
+Deleting the enable marker forces the full source fallback.  Re-running
+=make standalone-reader= rebuilds the cache and restores the enable marker
+with a sha256 line, making the cache/fallback state explicit.
+
+The runtime-image artifact cache is correct but not a performance win for tiny
+images:
+
+#+begin_example
+dump_image_v1 rc=0 ms=3 out=
+source_replay_v1 rc=0 ms=196 out=42
+cache_cold_v1 rc=0 ms=17761 out=42
+cache_warm_v1 rc=0 ms=11462 out=42
+dump_image_v2 rc=0 ms=4 out=
+cache_refresh_v2 rc=0 ms=29966 out=43
+runtime_image_cache_gate rc=0
+#+end_example
+
+Interpretation: the cache creates a sibling artifact, records the runtime-image
+source in the manifest, reloads through that artifact, and rejects/refreshes a
+stale artifact after the image changes.  It is slower for this tiny fixture
+because the artifact loader fixed cost dominates.  Runtime-image caching is
+therefore a correctness/freshness gate, not the source-command startup fix.
+
+The real source-command evaluator substrate is now separable from the final
+command dispatch:
+
+#+begin_example
+dump_sources rc=0 ms=192
+full_bytes=370493
+substrate_bytes=370195
+full_sha256=fc830e6d4251e98280be93161c23ca5e9eae5a09cfdb1b42ee566f1927ba6573
+substrate_sha256=371f15f4eb5e8bb72a3ed735164a848695565555a0e606ff8967fcfa771b2823
+profile_smoke rc=0 ms=3360
+compile_substrate_artifact_eval_only rc=77 skipped=1 reason=heavy-opt-in
+source_command_substrate_gate rc=0
+#+end_example
+
+A heavy trial that attempted to compile the 370 KB substrate through
+=target/nelisp compile-elisp-artifact --kind nelc= was stopped after about
+390 seconds while still consuming a full CPU.  After adding
+=--module-policy eval-only=, a second whole-substrate trial still exceeded a
+180 second timeout, and split eval-only probes for all six substrate files also
+hit a 45 second timeout:
+
+#+begin_example
+split_eval_probe file=scripts/nelisp-stdlib-prelude.el rc=124 ms=45031
+split_eval_probe file=src/nelisp-read.el rc=124 ms=45030
+split_eval_probe file=src/nelisp-eval.el rc=124 ms=45030
+split_eval_probe file=src/nelisp-macro.el rc=124 ms=45030
+split_eval_probe file=src/nelisp-load.el rc=124 ms=45030
+split_eval_probe file=src/nelisp-bytecode.el rc=124 ms=45030
+#+end_example
+
+A tiny eval-only artifact does compile and load correctly, so the policy and
+CLI path are functional.  The remaining whole-substrate blocker is the cost of
+reading and processing real substrate Elisp in =target/nelisp=, not only
+bytecode lowering.  This is useful negative evidence: the substrate boundary is
+explicit and reproducible, but the current artifact compiler/reader path is too
+slow to make whole-substrate compile a default gate.  The production Stage B
+path uses the filtered artifact runtime cache instead; whole-substrate compile
+remains open until either:
+
+- the substrate is split into smaller cacheable chunks;
+- the artifact compiler/reader can compile the whole substrate within the gate
+  budget;
+- or the cache path can load a lower-level precompiled representation without
+  replaying 370 KB of source forms.
+
+An opt-in =--profile-stages= flag now emits stage timings from
+=compile-elisp-artifact=.  A second opt-in =--profile-forms= flag emits
+per-form reader timings as =artifact_profile_form= lines.  On a tiny two-form
+eval-only artifact, both profile paths are functional.
+
+The first reader bottleneck is now closed for non-per-form-profiled artifact
+compiles: =nelisp--read-all-from-string-native= is callable from interpreted
+Elisp in the standalone command context and is used by
+=nelisp-artifact--read-top-level-forms= when =--profile-forms= is disabled.
+On =src/nelisp-macro.el=, the former =read-forms= cost collapsed from tens of
+seconds to single-digit milliseconds:
+
+#+begin_example
+artifact_profile stage=read-source elapsed_ms=104.5 detail=(:bytes 11080 ...)
+artifact_profile stage=read-forms elapsed_ms=9.5 detail=(:forms 23 ...)
+artifact_profile stage=module-build elapsed_ms=39.5 detail=(:forms 23 :module-policy eval-only)
+artifact_profile stage=collect-features elapsed_ms=38.5 detail=(:features 1)
+artifact_profile stage=artifact-string elapsed_ms=5365.5 detail=(:bytes 7282)
+artifact_profile stage=manifest elapsed_ms=337.5 detail=(:kind nelc :module-policy eval-only)
+artifact_profile stage=write elapsed_ms=625.5 detail=(:artifact ... :manifest ...)
+artifact_profile stage=total elapsed_ms=6794.5 detail=(:forms 23 :kind nelc :module-policy eval-only)
+#+end_example
+
+Before the native read-all bridge, the same file spent about =55651.5ms= in
+=read-forms=.  The new path makes reading practical for ordinary file-sized
+inputs, but it does not make whole-substrate artifact compilation practical
+yet.  The next optimization target is therefore artifact serialization and
+whole-substrate materialization, especially =artifact-string= and any list
+printing it forces, not the bytecode compiler.
+
+Per-form profiling on =src/nelisp-macro.el= shows that the cost is not isolated
+to one malformed form.  The later forms trend slower, which is consistent with
+the current standalone =read-from-string= implementation reparsing or copying a
+large suffix for each =START= offset:
+
+#+begin_example
+artifact_profile_form index=17 elapsed_ms=3245.5 head="defun"
+artifact_profile_form index=18 elapsed_ms=5788.5 head="setq"
+artifact_profile_form index=19 elapsed_ms=3981.5 head="defun"
+artifact_profile_form index=20 elapsed_ms=2814.5 head="defun"
+artifact_profile stage=read-forms elapsed_ms=40220.5 detail=(:forms 23 ...)
+artifact_profile stage=artifact-string elapsed_ms=16838.5 detail=(:bytes 7282)
+artifact_profile stage=total elapsed_ms=60834.5 detail=(:forms 23 ...)
+#+end_example
+
+The portable per-form reader path remains available when =--profile-forms= is
+enabled because it emits one timing row per top-level form.  For normal
+artifact compilation, the default is now the native read-all bridge.
+
+The serializer now exposes nested =artifact-module-string= and
+=artifact-wrap-string= profile rows when =--profile-stages= is enabled.  This
+confirmed that the remaining =artifact-string= cost is concentrated in
+=:module-init= printing:
+
+#+begin_example
+artifact_profile stage=artifact-module-string elapsed_ms=5157.5 detail=(:source-slices nil :items 23 :bytes 6835)
+artifact_profile stage=artifact-wrap-string elapsed_ms=202.5
+artifact_profile stage=artifact-string elapsed_ms=5390.5 detail=(:bytes 7282)
+#+end_example
+
+Three compact-writer trials were checked and rejected as the default artifact
+format:
+
+- per-form source slicing avoids object printing, but the standalone Elisp
+  scanner took about =19969.5ms= on =src/nelisp-macro.el=, worse than printing;
+- one-item source replay =((:eval (progn ...)))= reduced
+  =src/nelisp-macro.el= =artifact-string= to about =215.5ms= and let the
+  368 KB substrate compile in about =5.4s=, but normal artifact load no longer
+  preserved =defun= bindings for required-native =.neln= artifacts.  That
+  violates the generic artifact contract, so it is not used by
+  =nelisp-artifact-compile-file=;
+- raw eval-source blocks avoid both source scanning and suffix scanning, and
+  reduce =src/nelisp-macro.el= load/eval to about =793ms= when used in a
+  standalone direct artifact.  2026-06-19 follow-up fixed one concrete raw
+  replay defect: non-ASCII docstrings/comments now serialize into an
+  ASCII-readable raw block, with string contents preserved through =\u= / =\U=
+  escapes.  This moved the full-substrate raw failure past the early
+  =dolist= docstring bootstrap.  The same raw block path still fails on the
+  full source-command substrate artifact, however.  Prefix probes show that
+  the full self-replay reaches the evaluator bootstrap and then fails at, or
+  after, the top-level =(nelisp--install-primitives)= call; removing that call
+  still produced a segfault.  This means the current blocker is no longer just
+  raw reader syntax.  It is the unsafe act of re-evaluating the running
+  evaluator/source-cache substrate into itself.  Therefore
+  =nelisp-artifact-raw-eval-source-threshold= remains intentionally =nil= by
+  default.  The parser/loader scaffold remains for the next isolated fix, but
+  standard artifacts stay on the safe per-form replay representation.
+
+The next successful Stage B fix likely needs a compact representation that
+preserves the normal per-form replay semantics, or a lower-level artifact
+loader that can install definitions without printing and rereading large Elisp
+lists.  It must also avoid full evaluator self-replay; a correct split should
+load only the missing source-command layer into the direct artifact command, or
+move the minimal artifact loader closer to the standalone driver so the full
+substrate artifact is not evaluated inside a copy of itself.
+
+* 3. Development Principles
+
+** 3.1 Separate speed work from safety work
+
+Performance experiments must not be mixed with unrelated feature work.  Each
+iteration should have:
+
+- one speed hypothesis;
+- one measurement;
+- one implementation change;
+- one verification set;
+- one design/worklog update.
+
+** 3.2 Fix gates before chasing more speed
+
+Every change to this area should preserve a small, repeatable gate:
+
+#+begin_example
+normal_load
+normal_eval
+cache_load
+cache_eval
+cache_source_fallback_load
+cache_source_fallback_eval
+focused artifact ERT
+marker_absent
+#+end_example
+
+The gate should report wall time and, once available, arena/GC stats.
+
+** 3.3 Keep marker and normal loader roles distinct
+
+The normal =.neln= loader is the correctness/native-dispatch path:
+
+- validates manifests;
+- installs native-first wrappers;
+- preserves native coverage diagnostics;
+- supports broader artifact operations.
+
+The marker source-command path is the startup path:
+
+- loads adjacent =.neln= / =.nelc= quickly;
+- skips unused native object payload;
+- prioritizes startup allocation reduction;
+- has a compact direct source fallback for artifact misses;
+- may use bytecode payload only unless a later fast native dispatch path is
+  explicitly added.
+
+Do not blur these roles without a dedicated design change.
+
+* 4. Recommended Work Order
+
+** 4.1 Stage A - Add performance and arena gates
+
+Add an opt-in measurement path for:
+
+- wall time;
+- arena stats before source-command bootstrap;
+- arena stats after substrate bootstrap;
+- arena stats after artifact load;
+- arena stats after requested form evaluation;
+- optional =garbage-collect= result.
+
+The output should be machine-readable and disabled by default.  Suggested
+activation:
+
+#+begin_example
+touch target/nelisp-source-command-cache.stats
+target/nelisp eval-elisp-source FILE.el FORM
+rm -f target/nelisp-source-command-cache.stats
+#+end_example
+
+Stats are intentionally marker-based for now.  The standalone source-command
+path does not yet have a safe OS-environment reader at the point where the
+compact marker loader runs; direct raw =envp= scanning is unsafe in this
+bootstrap position.  The artifact runtime cache enable marker is no longer a
+stats opt-in: =make standalone-reader= writes it together with the cache
+artifact, and deleting it is the supported fallback switch.
+
+Acceptance:
+
+- normal output remains unchanged when the stats marker is absent;
+- stats appear on stderr when enabled;
+- stats marker file is not left behind;
+- focused artifact ERT stays green.
+
+** 4.2 Stage B - Precompile the evaluator substrate
+
+The original marker path source-evaluated the evaluator/bytecode substrate.
+That was the main startup cost.
+
+Implement one of these in order of lowest risk:
+
+1. compile the substrate to a private =.nelc= artifact and replay it;
+2. compile the substrate to a private =.neln= artifact where native-eligible
+   substrate functions are wrapped;
+3. bake the substrate into a runtime image format that avoids source read/eval;
+4. move the adjacent-artifact loader closer to the standalone driver.
+
+Acceptance:
+
+- source-command cache path remains correct for =load-elisp-source= and
+  =eval-elisp-source=;
+- cache load/eval smoke improves over the source fallback baseline;
+- substrate cache freshness is explicit and rejects stale input;
+- fallback behavior is documented.
+
+Current status:
+
+- =make standalone-reader= now builds =target/nelisp-artifact-runtime.el.nelc=
+  and writes =target/nelisp-artifact-runtime.el.nelc.enable= with the cache
+  sha256.  With that marker present, source commands use the filtered
+  artifact-runtime cache path by default;
+- deleting the enable marker forces the full source fallback, and rebuilding
+  restores the marker.  =tools/nelisp-performance-gate.sh= proves both paths;
+- measured 2026-06-19 gate sample: default cache =eval-elisp-source= around
+  =2906ms=, marker-disabled fallback around =14471ms=, source fallback with
+  no adjacent artifact around =921ms=;
+- runtime-image cache freshness is now covered by
+  =tools/nelisp-runtime-image-cache-gate.sh=;
+- source replay vs artifact replay timings are emitted by that gate;
+- the real evaluator substrate source can now be emitted without command
+  dispatch by =nelisp-standalone--artifact-source-command-substrate-src=;
+- =--module-policy eval-only= exists for large replay-only bootstrap caches;
+- whole-substrate eval-only =.nelc= compile through =target/nelisp= is still
+  too slow for default gating and raw full-substrate self-replay remains
+  unsafe.  That is now tracked as a lower-level representation research item,
+  not the required Stage B runtime path.
+
+** 4.2.1 Generic native artifact contract
+
+Before adding more Nelix-specific optimization, preserve the generic artifact
+contract:
+
+#+begin_example
+target/nelisp compile-elisp-artifact --kind neln --input FILE.el --output FILE.el.neln
+target/nelisp compile-elisp-artifacts --kind neln DIR
+target/nelisp audit-elisp-artifacts [--required] DIR
+target/nelisp load-elisp-source FILE.el
+target/nelisp eval-elisp-source FILE.el FORM
+#+end_example
+
+Expected behavior:
+
+- the compile commands work for arbitrary readable =.el= files;
+- adjacent =FILE.el.neln= is preferred over source replay;
+- the normal loader uses native-first wrappers when =:native= exists;
+- bytecode/module-init fallback preserves correctness when native coverage is
+  incomplete;
+- =audit-elisp-artifacts= reports missing artifacts, invalid artifacts, and
+  native coverage gaps for directories and individual files;
+- =audit-elisp-artifacts --required= exits non-zero unless every audited
+  adjacent =.neln= has complete native coverage for the defuns recorded in its
+  manifest;
+- =--native-policy required= fails before writing partial artifacts when any
+  top-level =defun= cannot enter native code.
+
+This is the long-term maintainability rule: Nelix and user packages should not
+grow one-off native handling.  They should emit ordinary =.el=, call the common
+artifact builder, and let =audit-elisp-artifacts=, =:native-report=, and
+required policy expose missing compiler coverage.
+
+** 4.2.2 Native compile status and policy
+
+The current answer to "can every =.el= be native compiled?" is deliberately
+two-layered:
+
+- every readable =.el= should be buildable into a reusable =.neln= artifact;
+- a =.neln= artifact is not native-only: it carries portable replay/bytecode
+  fallback plus any native functions the compiler can prove;
+- normal loads prefer adjacent =.neln= and install native-first wrappers when
+  =:native= metadata exists;
+- =--native-policy required= is the enforcement mechanism for hot modules,
+  not the default for arbitrary user files.
+
+This keeps the system generic.  Nelix should not add a new special path every
+time a module becomes performance-sensitive.  Instead, the module is compiled
+with the common artifact builder, audited with =audit-elisp-artifacts
+--required=, and only promoted into the hot path after the required-native gate
+passes.
+
+Native-only for all Elisp is not yet true.  Unsupported top-level forms,
+unsupported defun bodies, dynamic constructs, and platform-specific lowering
+gaps still use fallback.  Treating those files as "compile failed" by default
+would make ordinary package loading brittle.  Treating them as valid =.neln=
+with an explicit =:native-report= gives us a scalable migration path while
+still allowing CI to fail for the modules that must be fast.
+
+This is the answer to the maintainability concern: do not patch every future
+module by hand.  Package/profile installation should bulk-build adjacent
+=.neln= artifacts with the generic builder, load through the normal
+native-first loader, and run a required-native audit only for the modules that
+are declared performance-critical.  The remaining work is to make the generic
+standalone builder fast enough that this is practical for daily use.
+
+** 4.3 Stage C - Measure real Nelix commands
+
+Tiny smokes are not enough.  Once the source-command path is stable, measure:
+
+- =nelix --runtime nelisp list=
+- =nelix --runtime nelisp audit=
+- =nelix --runtime nelisp upgrade-plan=
+
+For each command compare:
+
+- Emacs runtime;
+- NeLisp normal source/artifact path;
+- NeLisp marker path;
+- future substrate cache path.
+
+Acceptance:
+
+- results are functionally equivalent;
+- wall time and arena stats are recorded;
+- regressions are visible in a repeatable command.
+
+Current repeatable command gate:
+
+#+begin_src sh
+tools/nelisp-nelix-command-gate.sh
+#+end_src
+
+Latest fixture-backed timings, after adding opt-in Nelix direct-runner arena
+stats and limiting non-AOT direct JSON to standalone NeLisp:
+
+#+begin_example
+emacs_list rc=0 ms=85 bytes=411
+emacs_audit rc=0 ms=81 bytes=720
+emacs_upgrade_plan rc=0 ms=84 bytes=870
+nelisp_aot_list rc=0 ms=5 bytes=20
+nelisp_aot_audit rc=0 ms=87 bytes=439
+nelisp_aot_upgrade_plan rc=0 ms=6 bytes=552
+nelisp_direct_list rc=0 ms=2749 bytes=20
+nelisp_direct_audit rc=0 ms=3230 bytes=361
+nelisp_direct_upgrade_plan rc=0 ms=3215 bytes=474
+nelisp_stats_list rc=0 ms=2900 bytes=20
+nelisp_stats_audit rc=0 ms=3342 bytes=361
+nelisp_stats_upgrade_plan rc=0 ms=3358 bytes=474
+#+end_example
+
+This gate proves the CLI surface and compact AOT-cache fast lane for
+=list=, =audit=, and =upgrade-plan=.  It also keeps the normal NeLisp direct
+path executable from outside the Nelix checkout by passing absolute preload
+paths through the wrapper.
+
+The direct NeLisp JSON writer reduces the fixture audit/upgrade-plan
+=before-format= -> =after-format= allocation increase from the previous
+generic JSON path (about 110 MB / 87 MB in this gate) to about 2.8 MB for both
+commands.  The remaining large fixed cost is before dispatch: standalone
+startup, runtime preload, manifest load, and profile set construction.
+
+The wrapper now supports opt-in direct-runner stats with
+=NELIX_NELISP_STATS=1=.  The gate verifies that the normal command output is
+unchanged and that stderr contains machine-readable phase lines for
+=after-preload=, =before-dispatch=, and =after-format= for all three commands:
+
+#+begin_example
+nelix_gate_stats label=nelisp_stats_audit nelix stats stage=after-preload (...)
+nelix_gate_stats label=nelisp_stats_audit nelix stats stage=before-dispatch (...)
+nelix_gate_stats label=nelisp_stats_audit nelix stats stage=after-format (...)
+#+end_example
+
+The same gate now fails on allocator-pressure regressions in the post-load
+command phases.  It reads the fourth arena-stat field as the used-allocation
+counter and enforces:
+
+- =list=: =after-cli-load= -> =after-print= must stay within 1 KiB;
+- =audit= / =upgrade-plan=: =after-cli-load= -> =before-dispatch= must stay
+  within 1 KiB;
+- =audit= / =upgrade-plan=: =before-dispatch= -> =after-print= must stay under
+  32 MiB for the fixture output path.
+
+Latest passing deltas:
+
+#+begin_example
+nelix_gate_stat_delta label=nelisp_stats_list from=after-cli-load to=after-print delta=0 max=1024
+nelix_gate_stat_delta label=nelisp_stats_audit from=after-cli-load to=before-dispatch delta=0 max=1024
+nelix_gate_stat_delta label=nelisp_stats_audit from=before-dispatch to=after-print delta=24435992 max=33554432
+nelix_gate_stat_delta label=nelisp_stats_upgrade_plan from=after-cli-load to=before-dispatch delta=0 max=1024
+nelix_gate_stat_delta label=nelisp_stats_upgrade_plan from=before-dispatch to=after-print delta=23559328 max=33554432
+#+end_example
+
+This satisfies the repeatable measurement part of Stage C for the fixture
+profile and makes command-phase allocation regressions visible as gate
+failures.  The default source-command runtime cache and fallback behavior are
+covered separately by =tools/nelisp-performance-gate.sh=.
+
+** 4.4 Stage D - Isolate Nelix hot modules
+
+Move the command-specific hot operations into small modules:
+
+- manifest target name extraction;
+- package/profile name set construction;
+- audit set difference;
+- upgrade-plan set difference;
+- compact line/JSON output writers.
+
+Compile these with:
+
+#+begin_example
+target/nelisp compile-elisp-artifact --kind neln --native-policy required ...
+#+end_example
+
+Acceptance:
+
+- hot modules pass =--native-policy required=;
+- normal loader installs native-first wrappers;
+- marker path remains startup-oriented unless a specific native fast dispatch
+  is designed for these modules.
+
+Current status:
+
+- =scripts/nelix-aot-native-cli-proof.el= passes required native coverage
+  through the common =.neln= artifact builder.
+- =scripts/nelix-aot-native-subset.el= passes required native coverage through
+  the same common artifact builder for the current bitset/ID hot kernel set.
+- =target/nelisp audit-elisp-artifacts --required= can verify the small
+  =cli-proof= artifact generated by that builder.
+- =target/nelisp native-exec-elisp-artifact= can execute the public
+  =cli-proof= string lane from the generated =.neln= artifact.
+- The larger =native-subset= artifact is currently verified with the host
+  native executor because public standalone =native-exec= for that full
+  artifact still exceeds the practical gate budget.
+
+Repeatable gate:
+
+#+begin_src sh
+tools/nelisp-nelix-native-hot-gate.sh
+#+end_src
+
+Latest result:
+
+#+begin_example
+host_compile_cli_required rc=0 ms=177
+host_compile_subset_required rc=0 ms=316
+standalone_audit_cli_required rc=0 ms=6948
+standalone_cli_native_exec rc=0 ms=1755 out=556
+host_subset_audit_id_native rc=0 ms=205
+host_subset_upgrade_id_native rc=0 ms=206
+nelix_native_hot_gate rc=0
+#+end_example
+
+The direct standalone required-native compile path now has a bounded helper
+route for the hot case.  When =target/nelisp compile-elisp-artifact --kind neln
+--native-policy required= runs inside the generated standalone binary and a
+host =emacs= executable is available, it delegates the required-native artifact
+build to =emacs -Q --batch= with the same =nelisp-artifact-compile-file=
+contract.  The standalone path still owns command parsing, artifact contract,
+manifest placement, and fallback; the helper only avoids running the heavy AOT
+compiler through the current interpreted standalone runtime.
+
+The direct standalone builder now has more precise required-native profiling.
+After wiring the standalone native all-forms reader into the artifact compiler
+and defaulting required =.neln= module replay to =eval-only=, the reader and
+module setup are no longer material:
+
+#+begin_example
+read-forms elapsed_ms=0.5 forms=3
+module-build elapsed_ms=1134.5 forms=3
+native-required-compile elapsed_ms=5724.5 defuns=2
+native-required-write-object elapsed_ms=10867.5 object-size=592
+native-required-section-plist elapsed_ms=512.5 symbols=2
+native-section elapsed_ms=19960.5
+artifact-string elapsed_ms=3343.5 bytes=2235
+write elapsed_ms=1571.5
+total elapsed_ms=26760.5
+#+end_example
+
+Before the host helper, the =cli-proof= direct standalone required-native build
+still timed out after fixing the reader:
+
+#+begin_example
+read-source elapsed_ms=111.5 bytes=8797
+read-forms elapsed_ms=1.5 forms=9
+module-build elapsed_ms=18.5 module-policy=eval-only
+native-ensure-compiler elapsed_ms=1989.5 ready=t
+native-defun-forms elapsed_ms=6.5 defuns=5
+rc=124
+#+end_example
+
+With the helper route, the same direct command exits successfully:
+
+#+begin_example
+direct_cli_required rc=0
+artifact_profile stage=module-build elapsed_ms=0.0138 detail=(:forms 9 :module-policy eval-only)
+artifact_profile stage=native-required-compile elapsed_ms=39.1523 detail=(:defuns 5 :arch x86_64)
+artifact_profile stage=native-section elapsed_ms=77.8324 detail=(:native-policy required)
+artifact_profile stage=total elapsed_ms=79.4355 detail=(:forms 9 :kind neln :module-policy eval-only)
+artifact_profile stage=host-helper elapsed_ms=425.5 detail=(:emacs "/usr/bin/emacs" :kind neln :native-policy required)
+:module-policy eval-only
+#+end_example
+
+The fixed reader bridge is:
+
+- =nelisp--read-all-from-string-native= is now callable from interpreted
+  Elisp in the standalone binary;
+- artifact compile uses it when per-form profiling is disabled;
+- CLI user FORM evaluation intentionally stays on the portable fallback reader
+  so tiny command expressions do not depend on native-reader object lifetime.
+
+The eval-only replay blocker is also closed for direct artifact commands:
+
+#+begin_example
+eval-elisp-artifact required-default.neln '(+ 1 2)'                 rc=0 out=3
+eval-elisp-artifact required-default.neln '(native-contract-inc 41)' rc=0 out=42
+exec-elisp-artifact required-default.neln ...                       rc=0
+#+end_example
+
+Repeatable gate results after the helper/default change:
+
+#+begin_example
+native_artifact_gate_result label=bulk_required rc=0 ms=2194 out=compiled=2 failed=0 kind=neln
+native_artifact_gate_result label=audit_required rc=0 ms=13 ...
+native_artifact_gate_result label=eval_artifact_direct rc=0 ms=2315 out=42
+native_artifact_gate_result label=exec_artifact_direct rc=0 ms=2561 out=
+native_artifact_gate_result label=native_exec rc=0 ms=1362 out=42
+native_artifact_gate_result label=native_artifact_gate rc=0
+
+nelix_native_hot_gate_result label=host_compile_cli_required rc=0 ms=174 out=
+nelix_native_hot_gate_result label=host_compile_subset_required rc=0 ms=316 out=
+nelix_native_hot_gate_result label=standalone_audit_cli_required rc=0 ms=9 ...
+nelix_native_hot_gate_result label=standalone_cli_native_exec rc=0 ms=1755 out=556
+nelix_native_hot_gate_result label=host_subset_audit_id_native rc=0 ms=205 ...
+nelix_native_hot_gate_result label=host_subset_upgrade_id_native rc=0 ms=206 ...
+nelix_native_hot_gate_result label=nelix_native_hot_gate rc=0
+#+end_example
+
+This closes the direct required-native compile timeout, the eval-only direct
+artifact replay regression, and the standalone public
+=native-exec-elisp-artifact= 50 second blocker for the Nelix =cli-proof=
+string lane.  The public native-exec path now avoids the standalone manifest
+pre-read for suffix-proven =.neln= string-argument calls, delegates general
+native execution to the host helper when running inside the standalone binary,
+and caches the generated general trampoline/driver executable by artifact
+path, artifact fingerprint, symbol, arity, and argument kind signature.
+
+The audit fixed-cost passes are also complete for the required-native gates.
+First, Emacs-side audit now reads only =:kind=, =:source=, and
+=:native-report= through the generated-key fast manifest reader instead of
+parsing the full sibling manifest and its =:native= metadata.  Second, the
+standalone driver now handles public =audit-elisp-artifacts= before evaluating
+the artifact command runtime cache by delegating the minimal audit contract to
+=tools/nelisp-audit-fast.sh=.  This reduces
+=standalone_audit_cli_required= from about 19.6s to 9ms and the native
+artifact gate's two-file required audit from about 17.0s to 13ms.
+
+The remaining Stage D cost is no longer audit startup.  The larger
+=native-subset= artifact is still verified through the host native executor in
+the gate; promoting that path to public standalone execution should reuse the
+same cached general driver mechanism and avoid reintroducing full artifact
+runtime startup on name-only Nelix operations.
+
+A source-level helper in =nelisp-standalone--artifact-command-src= was tried
+and reverted.  It can avoid loading the full artifact runtime, but the current
+artifact command source evaluation/output boundary does not propagate the
+helper's stdout/status reliably enough for the public command contract.  The
+working fix is lower in the reader driver dispatch layer, before the generated
+artifact command source is evaluated at all.
+
+** 4.5 Stage E - Reduce allocator pressure from data shape
+
+Avoid plist/list/alist-heavy processing in Nelix hot paths.  Prefer:
+
+- name-only lists where possible;
+- hash/name-set indexes;
+- compact records;
+- minimal JSON/line writers;
+- single-pass comparison routines.
+
+Acceptance:
+
+- arena stats show lower allocation after each command phase;
+- command output stays stable;
+- data-shape changes are covered by focused tests.
+
+Current status:
+
+- =nelix-fast.el= uses name-only profile paths, hash/name-set indexes, compact
+  manifest targets, and direct JSON writers for the standalone NeLisp
+  =list=, =audit=, and =upgrade-plan= paths;
+- the AOT cache line protocol keeps package names, target IDs, installed IDs,
+  pin flags, and output rows compact instead of expanding the full Emacs Lisp
+  manifest shape;
+- =tools/nelisp-nelix-command-gate.sh= now verifies output stability and
+  machine-checks allocator pressure in the post-load command phases.
+
+This closes Stage E for the fixture command path.  The remaining long-term
+allocator work is to lower the fixed standalone preload itself and repeat the
+same style of delta gate on larger real-world manifests.
+
+* 5. Gates
+
+** 5.1 Source command gate
+
+Preferred repeatable entry:
+
+#+begin_src sh
+tools/nelisp-performance-gate.sh
+#+end_src
+
+Equivalent manual form:
+
+#+begin_src sh
+make standalone-reader
+target/nelisp compile-elisp-artifact --kind neln --input mod.el --output mod.el.neln
+target/nelisp load-elisp-source mod.el
+target/nelisp eval-elisp-source mod.el '(bench-native-smoke-add 41)'
+rm -f target/nelisp-artifact-runtime.el.nelc.enable
+target/nelisp load-elisp-source mod.el
+target/nelisp eval-elisp-source mod.el '(bench-native-smoke-add 41)'
+make standalone-reader
+#+end_src
+
+Expected:
+
+#+begin_example
+cache_default_load rc=0
+cache_default_eval rc=0 out=42
+fallback_load rc=0
+fallback_eval rc=0 out=42
+cache_source_fallback_load rc=0 out=source-fallback
+cache_source_fallback_eval rc=0 out=42
+marker_stats rc=0 out=42
+marker_absent
+#+end_example
+
+** 5.2 Artifact ERT gate
+
+#+begin_src sh
+emacs -Q --batch \
+  -L src -L lisp \
+  -L packages/nelisp-json/src \
+  -L packages/nelisp-process/src \
+  -l test/nelisp-artifact-test.el \
+  --eval "(ert-run-tests-batch-and-exit '(or nelisp-artifact/neln-generic-allows-bytecode-only-module nelisp-artifact/neln-records-native-coverage-report nelisp-artifact/neln-native-policy-required-fails-on-gaps nelisp-artifact/compile-elisp-artifacts-directory-adjacent-neln nelisp-artifact/source-loader-installs-adjacent-neln-native-wrapper nelisp-artifact/eval-elisp-source-prefers-adjacent-neln nelisp-artifact/load-elisp-source-auto-compiles-neln))"
+#+end_src
+
+** 5.3 Nelix command gate
+
+#+begin_src sh
+tools/nelisp-nelix-command-gate.sh
+#+end_src
+
+Expected:
+
+#+begin_example
+emacs_list rc=0
+emacs_audit rc=0
+emacs_upgrade_plan rc=0
+nelisp_aot_list rc=0
+nelisp_aot_audit rc=0
+nelisp_aot_upgrade_plan rc=0
+nelisp_direct_list rc=0
+nelisp_direct_audit rc=0
+nelisp_direct_upgrade_plan rc=0
+nelix_gate_stat_delta label=nelisp_stats_list from=after-cli-load to=after-print delta=0 max=1024
+nelix_gate_stat_delta label=nelisp_stats_audit from=after-cli-load to=before-dispatch delta=0 max=1024
+nelix_gate_stat_delta label=nelisp_stats_audit from=before-dispatch to=after-print delta=... max=33554432
+nelix_gate_stat_delta label=nelisp_stats_upgrade_plan from=after-cli-load to=before-dispatch delta=0 max=1024
+nelix_gate_stat_delta label=nelisp_stats_upgrade_plan from=before-dispatch to=after-print delta=... max=33554432
+nelix_command_gate rc=0
+#+end_example
+
+** 5.4 Native artifact contract gate
+
+#+begin_src sh
+tools/nelisp-native-artifact-gate.sh
+#+end_src
+
+Expected:
+
+#+begin_example
+bulk_required rc=0
+load_source_uses_neln rc=0
+eval_source_uses_neln rc=0 out=42
+native_exec rc=0 out=42
+required_negative rc=1
+native_artifact_gate rc=0
+#+end_example
+
+This gate is intentionally run through =target/nelisp= rather than
+=emacsclient=.  It proves the reusable contract that future Nelix modules must
+use instead of adding package-specific compile/load branches.
+
+** 5.5 Nelix native hot module gate
+
+#+begin_src sh
+tools/nelisp-nelix-native-hot-gate.sh
+#+end_src
+
+Expected:
+
+#+begin_example
+host_compile_cli_required rc=0
+host_compile_subset_required rc=0
+standalone_audit_cli_required rc=0
+standalone_cli_native_exec rc=0 out=556
+host_subset_audit_id_native rc=0
+host_subset_upgrade_id_native rc=0
+nelix_native_hot_gate rc=0
+#+end_example
+
+This gate is the Stage D bridge between the generic artifact contract and the
+Nelix-specific hot modules.  It proves required native coverage with the common
+builder, then verifies the generated artifacts through standalone audit/public
+native exec where the current runtime can do so within the gate budget.
+
+** 5.6 Runtime-image cache gate
+
+#+begin_src sh
+tools/nelisp-runtime-image-cache-gate.sh
+#+end_src
+
+Expected:
+
+#+begin_example
+source_replay_v1 rc=0 out=42
+cache_cold_v1 rc=0 out=42
+cache_warm_v1 rc=0 out=42
+cache_refresh_v2 rc=0 out=43
+runtime_image_cache_gate rc=0
+#+end_example
+
+This gate is a Stage B scaffold for runtime-image inputs.  It proves cache
+creation, artifact reuse, manifest runtime-image recording, and stale refresh.
+The source-command path itself is covered by =tools/nelisp-performance-gate.sh=.
+
+** 5.7 Source-command substrate gate
+
+#+begin_src sh
+tools/nelisp-source-command-substrate-gate.sh
+#+end_src
+
+Expected:
+
+#+begin_example
+dump_sources rc=0
+substrate_bytes=...
+profile_smoke rc=0
+artifact_profile_form ...
+compile_substrate_artifact_eval_only rc=77 skipped=1 reason=heavy-opt-in
+source_command_substrate_gate rc=0
+#+end_example
+
+The default gate is intentionally lightweight.  It proves that the exact
+source-command substrate can be emitted as a stable source unit and that the
+final command dispatch is not part of that unit.  It also verifies that the
+=--profile-stages= flag emits =read-forms= and =total= lines, and that
+=--profile-forms= emits at least one =artifact_profile_form= line, on a tiny
+eval-only artifact.  The heavy path is:
+
+#+begin_src sh
+tools/nelisp-source-command-substrate-gate.sh --heavy
+#+end_src
+
+The heavy path currently exposes the remaining whole-substrate representation
+blocker: compiling the full 368 KB substrate as one eval-only =.nelc= artifact
+through =target/nelisp= is too slow for normal CI/development gates.  It is
+bounded by
+=NELISP_SUBSTRATE_HEAVY_TIMEOUT_SECONDS=, defaulting to 180 seconds, for both
+compile and load smoke steps, so the failure mode remains a reproducible
+timeout instead of an unbounded CPU-bound run.  A 10 second probe currently
+times out in =compile_substrate_artifact_eval_only= on the standard artifact
+format:
+
+#+begin_example
+substrate_gate_result label=compile_substrate_artifact_eval_only rc=124 ms=10021 out=
+#+end_example
+
+** 5.8 Artifact load and direct CLI fast path
+
+Host Emacs can compile the full source-command substrate into a private
+artifact quickly when the substrate is treated as ordinary Elisp input:
+
+#+begin_example
+compile_substrate_bytecode_artifact total=42.4ms bytes=261604 forms=682
+compile_substrate_eval_only_artifact total=23.8ms bytes=245192 forms=682
+#+end_example
+
+Before the load fast path, =target/nelisp eval-elisp-artifact= timed out at
+=120s= on both eval-only and bytecode substrate artifacts.  The failure was not
+native compilation itself; it was runtime materialization:
+
+- full payload parsing read the whole =:module-init= plist before replay;
+- command invocation could also choose the large artifact command source path
+  before it ever reached the user artifact.
+
+The loader now has a generated-private streaming path:
+
+- scan generated keyword positions for load-critical keys;
+- replay =:module-init= item by item instead of materializing the whole list;
+- use the same replay helper for full-parse fallback and streaming load;
+- expose opt-in =nelisp-artifact-profile-load= stage logging for future
+  loader profiling.
+
+The standalone driver also has direct =eval-elisp-artifact= /
+=exec-elisp-artifact= source generation.  These commands now use the compact
+source-command loader substrate, load the requested artifact, and evaluate
+FORM strings from =nelisp-standalone-argv=, avoiding the heavyweight artifact
+command source when compile/audit functionality is not needed.
+
+Measured result on the 261 KB bytecode substrate artifact:
+
+#+begin_example
+target/nelisp --load direct-profile-script   rc=0 elapsed=201ms stdout=2
+target/nelisp eval-elisp-artifact hot.el.neln '(native-contract-inc 41)'
+  rc=0 elapsed=3902ms stdout=42
+target/nelisp exec-elisp-artifact hot.el.neln ...
+  rc=0 elapsed=4181ms
+#+end_example
+
+This answers the immediate native-artifact usability concern: the generic
+artifact contract can produce reusable =.nelc/.neln= outputs, audit them, and
+the normal CLI can use those outputs without reparsing the full command surface.
+It does not yet mean every Elisp form is natively lowered.  Unsupported
+top-level effects and unsupported defuns still fall back to bytecode/eval
+according to the artifact manifest and native audit report.
+
+** 5.9 Diff hygiene gate
+
+#+begin_src sh
+git diff --check -- scripts/nelisp-standalone-build.el \
+  tools/nelisp-performance-gate.sh \
+  tools/nelisp-nelix-command-gate.sh \
+  tools/nelisp-native-artifact-gate.sh \
+  tools/nelisp-nelix-native-hot-gate.sh \
+  tools/nelisp-runtime-image-cache-gate.sh \
+  tools/nelisp-source-command-substrate-gate.sh \
+  docs/design/153-native-runtime-image-cache.org \
+  docs/design/154-nelisp-performance-development-plan.org
+#+end_src
+
+* 6. Near-Term Roadmap
+
+The most efficient next sequence is now:
+
+1. keep the default source-command artifact runtime cache enabled by
+   =make standalone-reader= and prevent regressions with
+   =tools/nelisp-performance-gate.sh=;
+2. keep =eval-elisp-artifact= / =exec-elisp-artifact= on the direct compact
+   loader path and continue reducing its substrate startup cost;
+3. profile and accelerate the =target/nelisp= reader/artifact compiler path for
+   real substrate Elisp, especially =read-forms= and =artifact-string=, or
+   introduce a lower-level precompiled representation;
+4. compare the default filtered runtime cache against any future
+   whole-substrate artifact/image representation before replacing it;
+5. use the new =NELIX_NELISP_STATS=1= direct-runner phase stats on larger real
+   user manifests and compare against the fixture gate;
+6. promote the larger native-subset public standalone execution path after it
+   fits the same cached general driver budget as the =cli-proof= lane;
+7. expand native compiler coverage until more hot modules pass
+   =--native-policy required= without local workarounds;
+8. reduce the fixed standalone preload allocation before =after-cli-load=.
+
+* 7. Completion Criteria
+
+This work is complete for the default source-command path and fixture-backed
+Nelix command path when all three goals are proven:
+
+- runtime image/cache: source-command and real Nelix commands avoid per-command
+  full source replay and have repeatable freshness/fallback behavior;
+- native compile hot path: hot Nelix modules pass native-required gates and are
+  used by the normal native-first loader;
+- GC/allocator pressure: arena stats show reduced allocation for startup,
+  artifact load, and command execution phases.
+
+Current proof set, verified 2026-06-19:
+
+#+begin_example
+tools/nelisp-performance-gate.sh --no-build
+  cache_default_eval rc=0 out=42
+  fallback_eval rc=0 out=42
+  cache_source_fallback_eval rc=0 out=42
+  marker_absent rc=0
+  nelisp_performance_gate rc=0
+
+tools/nelisp-nelix-command-gate.sh
+  nelisp_aot_list rc=0
+  nelisp_aot_audit rc=0
+  nelisp_aot_upgrade_plan rc=0
+  nelisp_direct_list rc=0
+  nelisp_direct_audit rc=0
+  nelisp_direct_upgrade_plan rc=0
+  nelix_gate_stat_delta ... after-cli-load to after-print delta=0 max=1024
+  nelix_gate_stat_delta ... before-dispatch to after-print max=33554432
+  nelix_command_gate rc=0
+
+tools/nelisp-native-artifact-gate.sh --no-build
+  bulk_required rc=0
+  audit_required rc=0
+  load_source_uses_neln rc=0
+  eval_source_uses_neln rc=0 out=42
+  native_exec rc=0 out=42
+  native_artifact_gate rc=0
+
+tools/nelisp-nelix-native-hot-gate.sh
+  standalone_audit_cli_required rc=0
+  standalone_cli_native_exec rc=0 out=556
+  host_subset_audit_id_native rc=0
+  host_subset_upgrade_id_native rc=0
+  nelix_native_hot_gate rc=0
+
+tools/nelisp-runtime-image-cache-gate.sh --no-build
+  source_replay_v1 rc=0 out=42
+  cache_cold_v1 rc=0 out=42
+  cache_warm_v1 rc=0 out=42
+  cache_refresh_v2 rc=0 out=43
+  runtime_image_cache_gate rc=0
+
+tools/nelisp-source-command-substrate-gate.sh --no-build
+  dump_sources rc=0
+  profile_smoke rc=0
+  compile_substrate_artifact_eval_only rc=77 skipped=1 reason=heavy-opt-in
+  source_command_substrate_gate rc=0
+#+end_example
+
+The remaining items in the roadmap are explicitly post-shipping research and
+scale-up work: whole-substrate lower-level representation, larger real-world
+manifest allocator checks, and broader native compiler coverage.  They do not
+block this document's default-path performance objective.

@@ -316,6 +316,8 @@ Required behavior:
 
 - Print the manifest as an Elisp plist.
 - This gives build tools a source-independent way to verify artifact metadata.
+- For =.neln=, expose =:native-report= so callers can see which defuns were
+  native compiled and which stayed on the portable fallback path.
 
 * 5. Manifest Format
 
@@ -347,6 +349,8 @@ Use an Elisp plist so pure Elisp tools can read it without JSON dependencies.
             :bytecode-version 3
             :bytecode-backend "nelisp-bcl"
             :module-init-format "top-level-effects-v1")
+ :native-report ((:name "foo" :native t)
+                 (:name "bar" :native nil :reason "..."))
  :entry (:type module-init
          :id "foo.el"))
 #+end_src
@@ -445,28 +449,38 @@ Required failure rules:
 - Artifact hash, source hash, runtime version, artifact format, and compiler
   format all participate in the cache key.
 
-* 7.1 Future implicit load selection
+* 7.1 Implicit adjacent load selection
 
-The first implementation uses explicit commands:
+The first implementation started with explicit commands:
 
 - =compile-elisp-artifact=
 - =eval-elisp-artifact=
 - =exec-elisp-artifact=
 - =inspect-elisp-artifact=
 
-A later =nelisp --load FILE.el= integration may use an Emacs-like selection
-order:
+The loader now also supports adjacent artifact selection:
 
 1. If a valid NeLisp-private =.neln= artifact exists for the current runtime ABI
    and target, load it.
 2. Else if a valid NeLisp-private =.nelc= artifact exists for the current runtime,
    load it.
-3. Else if a valid Emacs-compatible =.elc= artifact exists, load it.
-4. Else load the source file.
-5. Optionally produce or refresh artifacts after successful source load.
+3. Else load the source file.
 
-This implicit path is deliberately not part of the MVP.  The explicit commands
-are easier to test and give =nelisp-emacs= full control over cache policy.
+GNU Emacs =.elc= is deliberately not part of =nelisp-load-file='s NeLisp
+runtime selection order because it loads into the host Emacs namespace, not the
+NeLisp function/global tables.
+
+When =nelisp-load-auto-compile-artifacts= is non-nil, the same loader can
+refresh missing, invalid, or stale adjacent artifacts before falling back:
+
+1. Probe =FILE.el.neln= and =FILE.el.nelc=.
+2. If neither is fresh and =FILE.el= is readable, compile =FILE.el= to
+   =FILE.el.neln= by default.
+3. Load the refreshed artifact.
+4. Fall back to source replay only if compilation is unavailable or fails.
+
+This keeps native cache refresh policy in the artifact/load layer instead of
+forcing Nelix or individual packages to carry per-file compile logic.
 
 * 8. Interaction With Runtime Images
 
