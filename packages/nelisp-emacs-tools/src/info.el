@@ -3,6 +3,7 @@
 ;;; Code:
 
 (require 'emacs-tier3-facades)
+(require 'emacs-info)
 
 (provide 'info)
 
