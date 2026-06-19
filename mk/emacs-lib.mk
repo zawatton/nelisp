@@ -36,6 +36,7 @@ NEMACS_GUI_KEYMAP_COVERAGE_COMMAND_MISSING_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap
 NEMACS_GUI_KEYMAP_COVERAGE_DIFFERENT_TSV ?= $(BUILD_DIR)/nemacs-gui-keymap-coverage-different.tsv
 NEMACS_GUI_BRIDGE_PROFILE_LOG ?= $(BUILD_DIR)/nemacs-gui-bridge-profile.log
 NEMACS_GUI_BRIDGE_PROFILE_SUMMARY ?= $(BUILD_DIR)/nemacs-gui-bridge-profile-summary.org
+NEMACS_GUI_BRIDGE_RUN_SHAPE ?= $(BUILD_DIR)/nemacs-gui-bridge-run-shape.org
 NEMACS_GUI_BRIDGE_RUNTIME_INVENTORY ?= $(BUILD_DIR)/gui-bridge-runtime-inventory.tsv
 NEMACS_STUB_FALLBACK_SKIP_INVENTORY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-inventory.tsv
 NEMACS_STUB_FALLBACK_SKIP_SUMMARY ?= $(BUILD_DIR)/nemacs-stub-fallback-skip-summary.org
@@ -527,7 +528,7 @@ TEST_FAST_FILES = \
 	test/emacs-vc-test.el \
 	test/emacs-tier3-facades-test.el
 
-.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
 
 help:
 	@echo "Targets:"
@@ -543,6 +544,7 @@ help:
 	@echo "  make test-nemacs-gui-bridge-slow  run only the GUI bridge slow tail"
 	@echo "  make test-nemacs-gui-bridge-slow-profile  run slow tail with per-runtime timing"
 	@echo "  make nemacs-gui-bridge-profile-summary  summarize NEMACS_GUI_BRIDGE_PROFILE log"
+	@echo "  make nemacs-gui-bridge-run-shape  summarize nemacs-gui-file-bridge-run structure"
 	@echo "  make test-nemacs-gui-bridge-select NEMACS_GUI_BRIDGE_TEST_SELECTOR=TEST  run selected GUI bridge ERT"
 	@echo "  make test-nemacs-server-client  run standalone server/emacsclient round-trip ERT"
 	@echo "  make nemacs-gui-keymap-coverage  write GUI keymap coverage TSV and summary artifacts"
@@ -668,6 +670,13 @@ nemacs-gui-bridge-profile-summary:
 		--eval '(setq nemacs-gui-bridge-profile-summary-output "$(abspath $(NEMACS_GUI_BRIDGE_PROFILE_SUMMARY))")' \
 		-l scripts/nemacs-gui-bridge-profile-summary.el \
 		-f nemacs-gui-bridge-profile-summary-batch
+
+nemacs-gui-bridge-run-shape:
+	mkdir -p "$(BUILD_DIR)"
+	$(EMACS) -Q -L scripts \
+		--eval '(setq nemacs-gui-bridge-run-shape-output "$(abspath $(NEMACS_GUI_BRIDGE_RUN_SHAPE))")' \
+		-l scripts/nemacs-gui-bridge-run-shape.el \
+		-f nemacs-gui-bridge-run-shape-batch
 
 test-nemacs-gui-bridge-select:
 	test -x "$(NELISP_BIN)"

@@ -35,6 +35,13 @@ case を分割・集約する。
   motion command 限定 table でも 108.649 秒で 5 秒以上の短縮に届かなかったため不採用。
 - =nemacs-gui-file-bridge-run= wrapper 型の motion minimal read path も試したが、
   117.294 秒へ悪化したため不採用。
+- =make nemacs-gui-bridge-run-shape= で本体構造の static summary を生成できる。
+  - =nemacs-gui-file-bridge-run= は runtime 内の fset が source of truth。
+  - command-run boundary 前: linear body 73 forms、direct transport read 21、
+    =files--read*= helper call 23。
+  - command-run boundary 後: linear body 3 forms、direct transport write 588、
+    =files--write*= helper call 642、=equal cmd= tests 378。
+  - 初回 helper 化では、この count を no-op refactor の guard にする。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -198,6 +205,7 @@ NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_PROFILE=1 emacs -Q --batch \
   --eval "(ert-run-tests-batch-and-exit 'nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform)" \
   > build/nemacs-gui-bridge-profile.log 2>&1
 make nemacs-gui-bridge-profile-summary
+make nemacs-gui-bridge-run-shape
 #+end_src
 
 * 採用基準
@@ -215,12 +223,13 @@ make nemacs-gui-bridge-profile-summary
 1. =make nemacs-gui-bridge-profile-summary= で command 分布を再生成する。
 2. direct-cmd 257 request / 79.817 秒を主対象にし、key dispatch や compound form を
    初回対象から外す。
-3. runtime 生成元がないか再確認し、なければ本体内で full read/writeback body を
-   機械的に helper 化する。
-4. helper 化後、miss path の追加 read が 0 であることを確認する。
-5. direct-cmd の common read/writeback setup を本体構造として短くし、
+3. =make nemacs-gui-bridge-run-shape= で本体構造を再生成する。
+4. runtime 生成元は見つからないため、=src/nemacs-gui-file-bridge-runtime.el= 本体内で
+   full read/writeback body を機械的に helper 化する。
+5. helper 化後、shape summary の boundary count が no-op refactor として維持されることを確認する。
+6. direct-cmd の common read/writeback setup を本体構造として短くし、
    individual command の後付け wrapper には戻らない。
-6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
+7. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
 
 小さい request batch、table fallback、後付け wrapper ではなく、command ごとの
 read/writeback 副作用を保持した本体構造の整理を先に作ること。
