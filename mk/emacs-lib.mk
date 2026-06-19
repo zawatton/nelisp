@@ -993,26 +993,17 @@ verify-vendor-class-a: build-nelisp-bootstrap
 
 verify-vendor-core: build-nelisp-bootstrap
 	test -x "$(NELISP_BIN)"
+	test -r "$(NEMACS_BOOTSTRAP_REPL)"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
-	tmp=$$(mktemp "$${TMPDIR:-/tmp}/nemacs-vendor-core.XXXXXX.el"); \
-	{ \
-		printf '%s\n' ';;; standalone vendor-core embedded smoke'; \
-		printf '%s\n' '(setq nelisp-emacs-vendor-root "$(abspath vendor)")'; \
-		printf '%s\n' '(setq load-path (list "$(abspath src)" "$(abspath scripts)" "$(abspath vendor/emacs-lisp)" "$(abspath vendor/emacs-lisp/emacs-lisp)" "$(abspath vendor/emacs-lisp/vc)"))'; \
-		cat "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))"; \
-		printf '\n'; \
-		cat "$(abspath scripts/vendor-core-smoke.el)"; \
-		printf '%s\n' '(setq vendor-core-smoke-module-spec "$(VENDOR_CORE_MODULES)")'; \
-		printf '%s\n' '(setq vendor-core-smoke-default-limit $(VENDOR_CORE_LIMIT))'; \
-		printf '%s\n' '(setq vendor-core-smoke-strict $(VENDOR_CORE_STRICT_ELISP))'; \
-		printf '%s\n' '(vendor-core-smoke-batch)'; \
-		printf '%s\n' '(exit 42)'; \
-	} > "$$tmp"; \
 	timeout $(NELISP_VENDOR_CORE_TIMEOUT) env NELISP_HOME="$(abspath $(NELISP_ROOT))" \
-		"$(NELISP_BIN)" --load "$$tmp"; \
-	rc=$$?; \
-	rm -f "$$tmp"; \
-	if [ "$$rc" -eq 42 ]; then echo "VENDOR-CORE-STANDALONE=ok exit=42"; else echo "VENDOR-CORE-STANDALONE=fail exit=$$rc expected=42"; exit "$$rc"; fi
+		NELISP_ROOT="$(abspath $(NELISP_ROOT))" \
+		NELISP_BIN="$(abspath $(NELISP_BIN))" \
+		REPO_ROOT="$(abspath .)" \
+		NEMACS_BOOTSTRAP_REPL="$(abspath $(NEMACS_BOOTSTRAP_REPL))" \
+		VENDOR_CORE_MODULES="$(VENDOR_CORE_MODULES)" \
+		VENDOR_CORE_LIMIT="$(VENDOR_CORE_LIMIT)" \
+		VENDOR_CORE_STRICT_ELISP="$(VENDOR_CORE_STRICT_ELISP)" \
+		./scripts/verify-vendor-core-repl.sh
 
 bench:
 	$(EMACS) -L src -L bench $(NELISP_LOAD_PATH) \

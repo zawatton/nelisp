@@ -688,12 +688,28 @@ support and Class-A utility/i18n surfaces for =subr-x=, =seq=, =map=,
 =charprop=, =charscript=, =emoji-labels=, =iso-transl=, =cp51932=,
 =eucjp-ms=, =fontset=, =idna-mapping=, and =ja-dic-utl=.  In host
 smoke, running the vendor-core extension and then =VENDOR_CORE_LIMIT=0=
-now proves all 29 candidates without source =require= during extension.
+now proves all 32 candidates without source =require= during extension.
+
+Vendor-core audit order:
+1. Run the host contract first when editing the preload helper:
+   =emacs --batch -Q -L src -L test -L scripts -l ert -l test/nemacs-runtime-image-preload-test.el --eval '(ert-run-tests-batch-and-exit "vendor-core")'=.
+   This proves the extension covers the full =vendor-core-smoke= candidate
+   set and the daily edit/file flows without invoking the standalone reader.
+2. Run =make verify-vendor-core= for the authoritative standalone-reader
+   lane.  This uses =build/nemacs-bootstrap.repl= and
+   =scripts/verify-vendor-core-repl.sh=, then fails the gate unless the
+   printed =vendor-core-summary= reports zero failures.  Direct
+   =build/nemacs-bootstrap.el= =--load= replay is not the daily gate because
+   current standalone-reader builds can crash on that monolithic path before
+   any module smoke executes.
+3. Use =VENDOR_CORE_MODULES=NAME= or a comma/space-separated list only after
+   the =files= lane passes, so candidate-specific failures stay separate from
+   bootstrap/runtime faults.
 
 =make verify-vendor= includes the generated vendor inventory, a small
 Class-A load lane, and a strict daily-driver core lane.  Both smoke lanes
 are part of the pure standalone-reader gate.  The vendor-core lane uses a
-  temporary file-based boot script for the standalone reader.  By default the
+generated =.repl= boot script for the standalone reader.  By default the
 Class-A lane proves all eighteen lightweight modules
 (=case-table=, =cdl=, =backquote=, =lisp-float-type=,
 =hex-util=, =lisp=, =map-ynp=, =range=, =regi=,

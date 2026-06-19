@@ -45,6 +45,7 @@
 (defun emacs-frame-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
   (or (not (boundp 'emacs-version))
+      (not (stringp emacs-version))
       (not (fboundp symbol))))
 
 ;;;; --- constructors / predicates --------------------------------------

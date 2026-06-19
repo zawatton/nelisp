@@ -117,6 +117,8 @@
   ;; NeLisp, while preserving host Emacs builtins.
   (should (fboundp 'emacs-frame-builtins--install-function-p))
   (should-not (emacs-frame-builtins--install-function-p 'make-frame))
+  (let ((emacs-version 'nelisp--unbound-marker))
+    (should (emacs-frame-builtins--install-function-p 'make-frame)))
   (let* ((file (locate-library "emacs-frame-builtins"))
          (file (if (and file (string-match-p "\\.elc\\'" file))
                    (concat (substring file 0 (- (length file) 1)))
