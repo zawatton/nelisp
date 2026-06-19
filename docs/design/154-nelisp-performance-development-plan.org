@@ -1094,16 +1094,26 @@ tools/nelisp-nelix-command-gate.sh
   nelisp_direct_apply_dry_run rc=0
   nelix_gate_stat_delta ... after-cli-load to after-print delta=0 max=1024
   nelix_gate_stat_delta ... small before-dispatch to after-print max=201326592
-  nelix_gate_stat_delta ... large before-dispatch to after-print max=2147483648
+  nelix_gate_stat_delta ... large before-dispatch to after-print max=5368709120
   nelix_command_gate rc=0
 
 The 2026-06-20 gate also makes the current split visible: the AOT cache lane
-handles =plan --dry-run= and =apply --dry-run= in about 11-12ms on the fixture,
-while the direct NeLisp dry-run path still spends about 9-10s in the generic
-plan/apply path.  Direct JSON stats remain bounded but intentionally high
-(~160MB for the small audit/upgrade fixture and ~1.8GB for the 200-package
-fixture); these bounds are regression tripwires, not a claim that the direct
-path is finished.
+handles =plan --dry-run= and =apply --dry-run= in about 11-12ms on the small
+fixture, and the 512-target audit/upgrade fixtures in about 0.1s and 0.015s.
+The direct NeLisp dry-run path still spends about 9-10s in the generic
+plan/apply path, and direct 512-target JSON still takes about 51-55s with
+~4.3-4.5GB of allocator delta from dispatch to print.  The 5GB large-fixture
+bound is therefore a regression tripwire for the diagnostic direct path, not a
+claim that direct manifest processing is finished.
+
+The remaining direct-path hotspot is inside dispatch, before CLI formatting:
+profile name listing alone stays around 3s and under 512KiB delta, while
+manifest compilation/comparison plus direct JSON construction dominate the
+large fixture.  A safe balanced-concat JSON list builder is now required for
+standalone compatibility because the Emacs buffer builder path produced empty
+arrays under NeLisp.  The next meaningful direct-path reduction is to extend
+the manifest/AOT target cache so =NELIX_NELISP_AOT=0= can bypass literal DSL
+walks without changing the public JSON fallback marker.
 
 tools/nelisp-native-artifact-gate.sh --no-build
   bulk_required rc=0
