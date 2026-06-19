@@ -1,7 +1,13 @@
 *.elc
 *.bak
 build/
+target/
+tmp-diag/
 .worktrees/
+
+# Generated/local one-off artifacts.
+*.elc.disabled-*
+docs/worklog/*~
 
 # Claude Code session ephemera — never commit
 .claude/
