@@ -15042,6 +15042,90 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-buffer-switch-writeback-helper ()
+  "Bridge buffer switch writeback helper should write buffer/window state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-buffer-switch-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"Switch body\\n0123456789abcdef\")
+                       (setq files--current-file-name
+                             \"/tmp/nemacs-switch-buffer.txt\")
+                       (setq files--buffer-name \"SwitchBuffer\")
+                       (setq files--window-layout \"switch-layout\")
+                       (setq files--window-selected \"6\")
+                       (setq files--point 12)
+                       (setq files--mark 3)
+                       (setq files--window-start 2)
+                       (fset 'capture-buffer-switch-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-buffer-switch-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-buffer-switch-writeback-helper\"
+                        (concat
+                         (capture-buffer-switch-writeback
+                          \"switch-to-buffer\")
+                         \"\\t\"
+                         (capture-buffer-switch-writeback
+                          \"project-switch-to-buffer\")
+                         \"\\t\"
+                         (capture-buffer-switch-writeback
+                          \"switch-to-buffer-other-window\")
+                         \"\\t\"
+                         (capture-buffer-switch-writeback
+                          \"switch-to-buffer-other-frame\")
+                         \"\\t\"
+                         (capture-buffer-switch-writeback
+                          \"switch-to-buffer-other-tab\")
+                         \"\\t\"
+                         (capture-buffer-switch-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "switch-to-buffer:written\tproject-switch-to-buffer:written\tswitch-to-buffer-other-window:written\tswitch-to-buffer-other-frame:written\tswitch-to-buffer-other-tab:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "Switch body\n0123456789abcdef"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/nemacs-switch-buffer.txt"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "SwitchBuffer"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "switch-layout"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "6"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "00012"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00002"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
