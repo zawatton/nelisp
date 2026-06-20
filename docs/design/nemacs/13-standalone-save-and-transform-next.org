@@ -440,6 +440,24 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、delete/insert command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の emoji writeback chunk を
+  =files--bridge-emoji-writeback-current-context= へ切り出した。
+  - 対象は =emoji-insert= / =emoji-list= / =emoji-recent= /
+    =emoji-search= / =emoji-describe= / =emoji-zoom-increase= /
+    =emoji-zoom-decrease= / =emoji-zoom-reset=。
+  - helper 内では buf+point+mark+modeline、buffer metadata+point+mark+window-start、
+    modeline-only の branch に分けた。
+  - command-writeback-chain の direct transport write は 371 から 350、
+    =files--write*= helper は 420 から 406、=equal cmd= tests は 234 から 226。
+    これは emoji block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-emoji-writeback-current-context= が 1 件追加され、
+    =setq= は 594 から 566、=if= は 286 から 274 へ減少。
+  - =standalone-save-and-transform= は 108.790056 秒で pass。
+  - =standalone-bridge-emoji-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、emoji command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -656,7 +674,8 @@ make nemacs-gui-bridge-run-shape
    mark/count/eval chunk も helper 化済み。
    paragraph/region edit chunk も helper 化済み。
    delete/insert chunk も helper 化済み。
-   次は command-writeback-chain 内の =emoji-insert= から始まる emoji 系の小さい chunk を
+   emoji chunk も helper 化済み。
+   次は command-writeback-chain 内の =kmacro-start-macro= から始まる kmacro 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
