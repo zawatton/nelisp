@@ -78,7 +78,7 @@ A3 (bridge 依存でやや重い) → A6 (棚卸しは継続タスク化) → A7
 
 | ID | 内容 | 根拠 | close signal | Status |
 |----+------+------+--------------+--------|
-| B2 | bridge file-read / buffer-ops subsystem: syscall ベース =insert-file-contents(-literal)= / =buffer-substring= 等 | Doc 14:125-141 | skk CDB / google-ime server の実 round-trip 含む E2E | TODO |
+| B2 | bridge GUI image の file-read 修正 (下記 §3.2 で診断訂正)。実装は既存、欠落は image composition | Doc 14:125-141, §3.2 | bridge image で cdb read pattern が range bytes を返す | nelisp-ec-insert-file-contents を bridge image で active 化 | 診断済 / 実装 TODO |
 | B1 | raw =(load pkg.el)= runtime macroexpand: 生 =defun= の wrap-init/fset gap を埋める | Doc 14:191-198 | 任意 MELPA pkg の runtime load + callable | TODO |
 | B3 | process / PTY / comint / compile: =shell-command= + 基本 =make-process= の先 (comint, PTY, =compile=/=grep=/next-error) | Doc 11 §3.8, emacs-process.el:52 | comint smoke + compile next-error | TODO |
 | B4 | vendor callable promotion: load-proof → 実行時 callable behavior、MELPA promotion gate の確定 | Doc 11 §3.6,§7 | featurep でなく callable ERT | TODO |
@@ -86,6 +86,31 @@ A3 (bridge 依存でやや重い) → A6 (棚卸しは継続タスク化) → A7
 ** 3.1 波 B の着手順
 B2 (I/O subsystem、日本語入力 unblock) → B1 (任意 pkg load) → B3 (process 系) →
 B4 (promotion gate)。B1/B2 は相互に補完。
+
+** 3.2 B2 診断訂正 (2026-06-20, 着手調査)
+
+Doc 14 (2026-06-14) は「bridge runtime に file-read/buffer ops 無し (fboundp
+nil)」と記したが、その後の bridge image 再 bake で状況が変わっており、実地
+調査で *診断を訂正*:
+
+- *file-read/buffer-ops は実装済で full =--batch= stack では完動*:
+  =insert-file-contents-literally= は BEG/END range を honor
+  (=nelisp-ec-insert-file-contents= = =nelisp-emacs-compat-fileio.el:625=、
+  =nelisp-ec--read-raw-bytes file beg end= + =nelisp-ec-insert=)、
+  =buffer-substring=/=-no-properties= は nelisp-ec 本実装、=point-min/max= 実動。
+  cdb read pattern が byte-exact に =(65 66 67 230)= を返す (binary 高 byte 保持)。
+- *真の gap = GUI bridge image (=build/nemacs-gui-file-bridge.nlri=)*:
+  そこでは全 op が fboundp t だが =insert-file-contents-literally= が *prelude の
+  delegating closure* で、prelude の =insert-file-contents= は (a) BEG/END 無視で
+  whole-file (len 13)、(b) bridge の buffer model に *insert されない*
+  (=buffer-string-len 0=)。=insert= 自体は bridge で動く。= 正しい
+  =nelisp-ec-insert-file-contents= が bridge image で非 active = prelude fallback。
+- *fix 候補*: (a) =nelisp-emacs-compat-fileio= の install を bridge image bake で
+  active 化、(b) bridge 向け =insert= ベース range polyfill を bake。install 経路
+  (backend dispatch) の特定が次の一手。
+- *副産物*: pread64(17) buffer-free byte-exact range reader 実証済 (offset=4 len=4
+  → (65 66 67 230))。大 dict の whole-file read 回避の最適化として後で有用 (今回は
+  blocker でないため未 commit)。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
