@@ -307,7 +307,8 @@
                            "/tmp/nemacs-ime-okuri"
                            "/tmp/nemacs-org-time"
 			                   "/tmp/nemacs-org-capture-file"
-			                   "/tmp/nemacs-org-agenda-files"))
+			                   "/tmp/nemacs-org-agenda-files"
+			                   "/tmp/nemacs-org-roam-nodes"))
 	          (dirs '("/tmp/nemacs-buffer-store"
 	                  "/tmp/nemacs-buffer-file-store"
 		                  "/tmp/nemacs-buffer-point-store"
@@ -4426,6 +4427,82 @@ not total line count."
               (should-not (string-match-p (regexp-quote "plain alpha") buf))))
         (ignore-errors (delete-file file-a))
         (ignore-errors (delete-file file-b))))))
+
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-org-roam-id-open ()
+  "org-roam-id-open resolves an org-id (via nemacs-org-roam-nodes) and visits
+the node's file at its heading line.
+
+The node table is plain `ID<TAB>TITLE<TAB>FILE<TAB>LINE' text (the GUI runtime
+has no sqlite); the bridge resolves the id with the native str-kv-line
+primitive.  An unknown id leaves the current buffer untouched and reports
+unsupported."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (node-file "/tmp/nemacs-test-roam-node.org"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((node-text (concat "#+title: Roam Test\n"   ; line 1
+                                     "* First\n"               ; line 2
+                                     ":PROPERTIES:\n"          ; line 3
+                                     ":ID: roam-first-0001\n"  ; line 4
+                                     ":END:\n"                 ; line 5
+                                     "content\n"               ; line 6
+                                     "* Target heading\n"      ; line 7
+                                     ":PROPERTIES:\n"          ; line 8
+                                     ":ID: roam-target-0002\n" ; line 9
+                                     ":END:\n"                 ; line 10
+                                     "target body\n")))        ; line 11
+              (write-region node-text nil node-file nil 'silent)
+              ;; node table: target node points at line 7 ("* Target heading")
+              (write-region
+               (concat "roam-first-0001\tFirst\t" node-file "\t2\n"
+                       "roam-target-0002\tTarget heading\t" node-file "\t7\n")
+               nil "/tmp/nemacs-org-roam-nodes" nil 'silent)
+              ;; minimal current-buffer state (unrelated scratch)
+              (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+              (write-region "/tmp/nemacs-scratch.org" nil "/tmp/nemacs-file"
+                            nil 'silent)
+              (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region "scratch\n" nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+              ;; --- hit: resolve roam-target-0002 ---
+              (write-region "org-roam-id-open" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "roam-target-0002" nil "/tmp/nemacs-arg" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "nemacs-test-roam-node.org"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              ;; visited file content + point landed on the target heading
+              (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                          "/tmp/nemacs-buf"))
+                    (pt (string-to-number
+                         (nemacs-gui-file-bridge-runtime-test--slurp
+                          "/tmp/nemacs-point"))))
+                (should (string-match-p (regexp-quote "* Target heading") buf))
+                (should (string-prefix-p "* Target heading"
+                                         (substring buf pt))))
+              ;; not read-only (a visited file, unlike the agenda buffer)
+              (should (equal "0"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              ;; --- miss: unknown id leaves the buffer untouched ---
+              (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region "scratch\n" nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region "org-roam-id-open" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "no-such-id-9999" nil "/tmp/nemacs-arg" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "main"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))))
+        (ignore-errors (delete-file node-file))))))
 
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-magit-min ()

@@ -7467,6 +7467,99 @@
         files--buffer-name))
 
 (fset 'org-sparse-tree (lambda (&rest args) (apply 'org-occur args)))
+;; --- org-roam-lite: visit the node for an org-id ----------------------------
+;; The node table (ID<TAB>TITLE<TAB>FILE<TAB>LINE per line) is produced
+;; host-side by scripts/nemacs-org-roam-index.sh and delivered on the
+;; nemacs-org-roam-nodes transport.  The GUI runtime has no sqlite, so org-roam
+;; lookup is plain text resolved by the native `str-kv-line' primitive (one
+;; pass).  org-roam-id-open takes an org-id in files--bridge-arg, resolves it to
+;; FILE:LINE, and visits that file at the heading.  Status "unsupported" when the
+;; id is absent, unknown, or its file is unreadable.
+(fset 'files--org-roam-nodes-text
+      (lambda ()
+        (rdf (progn (setq files--transport-name "nemacs-org-roam-nodes")
+                    (files--transport-path)))))
+
+(fset 'org-roam-id-open
+      (lambda ()
+        (let ((id files--bridge-arg))
+          (if (equal id "")
+              (setq files--bridge-status "unsupported")
+            (let* ((tbl (files--org-roam-nodes-text))
+                   (val (if (if tbl (> (length tbl) 0) nil)
+                            (str-kv-line tbl id)
+                          "")))
+              (if (equal val "")
+                  (setq files--bridge-status "unsupported")
+                ;; val = TITLE<TAB>FILE<TAB>LINE ; locate the two tab (byte 9)
+                ;; separators to peel FILE and LINE.
+                (let ((m (length val)) (i 0) (t1 -1) (t2 -1))
+                  (while (< i m)
+                    (if (= (aref val i) 9)
+                        (if (< t1 0) (setq t1 i)
+                          (if (< t2 0) (setq t2 i) nil))
+                      nil)
+                    (setq i (+ i 1)))
+                  (if (if (> t1 0) (> t2 t1) nil)
+                      (let* ((file (substring val (+ t1 1) t2))
+                             (line-str (substring val (+ t2 1) m))
+                             (content (rdf file)))
+                        (if (if content (> (length content) 0) nil)
+                            (progn
+                              ;; Visit through the find-file path so the new
+                              ;; buffer registers in the buffer store and the
+                              ;; run's writeback emits the right buffer-name and
+                              ;; status.  Hand-setting files--buffer-* leaves the
+                              ;; store on the old buffer, so the writeback wrote
+                              ;; the previous buffer back and marked unsupported.
+                              (setq files--bridge-arg file)
+                              (if (fboundp 'emacs-fileio-gui-current-context-command)
+                                  (emacs-fileio-gui-current-context-command
+                                   'find-file "same" nil)
+                                (progn
+                                  (files--save-current-buffer-state)
+                                  (setq files--buffer-string content)
+                                  (setq files--current-file-name file)))
+                              ;; find-file-core sets current-file-name +
+                              ;; buffer-string but NOT buffer-name; name the
+                              ;; buffer and register it so the writeback emits it
+                              (setq files--buffer-read-only-p nil)
+                              (setq files--buffer-modified-p nil)
+                              (setq files--buffer-list-name
+                                    (files--org-agenda-basename file))
+                              (files--buffer-list-add)
+                              (setq files--buffer-name
+                                    (files--org-agenda-basename file))
+                              (files--save-current-buffer-state)
+                              ;; line number -> point (byte 10 = newline)
+                              (let ((target 0) (k 0) (ls (length line-str)))
+                                (while (< k ls)
+                                  (let ((ch (aref line-str k)))
+                                    (if (if (>= ch 48) (< ch 58) nil)
+                                        (setq target (+ (* target 10) (- ch 48)))
+                                      nil))
+                                  (setq k (+ k 1)))
+                                (if (< target 1) (setq target 1) nil)
+                                (let ((n (length files--buffer-string))
+                                      (cur 1) (j 0) (done nil))
+                                  (if (= target 1)
+                                      (setq files--point 0)
+                                    (while (if (< j n) (not done) nil)
+                                      (if (= (aref files--buffer-string j) 10)
+                                          (progn
+                                            (setq cur (+ cur 1))
+                                            (if (= cur target)
+                                                (progn (setq files--point (+ j 1))
+                                                       (setq done t))
+                                              nil))
+                                        nil)
+                                      (setq j (+ j 1)))
+                                    (if (not done) (setq files--point n) nil))))
+                              (files--clamp-point)
+                              files--buffer-name)
+                          (setq files--bridge-status "unsupported")))
+                    (setq files--bridge-status "unsupported")))))))))
+
 
 ;; M15 user-init lane.
 ;; The launcher generates nemacs-init-wrapped (scripts/nemacs-wrap-init.el)
@@ -22487,7 +22580,9 @@
           nil)
         (if (if (equal cmd "org-agenda")
                 t
-              (equal cmd "org-shifttab"))
+              (if (equal cmd "org-shifttab")
+                  t
+                (equal cmd "org-roam-id-open")))
             (progn
               (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
               (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
