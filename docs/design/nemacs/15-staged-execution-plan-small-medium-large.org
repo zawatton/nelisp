@@ -243,6 +243,20 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   (seq-test +1)、seq.el byte-compile 新規警告 0 (HEAD の pre-existing 7 と同数)。
   所見: facade file が「定義済みだが未 bundle」で全 VOID という failure mode は grep
   では見抜けず、full-runtime fboundp probe が必須。commit 1d406a0。
+- *Doc 16 breadth round 3 — orphan facade 監査 + json/range 収録 (2026-06-21)*:
+  bundle marker (=;;; >>> src/FILE=) から収録集合を抽出し src 178 vs bundle 102 の
+  差分 = *76 orphan* を算出。大半は意図的除外 (GUI / encoding-table / host-only /
+  test / 重 buffer 依存)。うち *self-contained (require 無し) で load clean かつ全 VOID*
+  な 2 facade を full-runtime probe + load test で特定し収録 (104 files):
+  =json.el= (=json-encode= / =json-read= / =json-read-from-string= = classic JSON API、
+  従来は C の =json-serialize= のみ存在) と =range.el= (=range-compress-list= /
+  =range-length= 等 Emacs 29 ranges)。両者を =nelisp-bootstrap-extra-files= (map.el の後)
+  に追加。検証: full boot で =json-encode '((a.1)(b.2))= → ={"a":1,"b":2}=、
+  json round-trip ok、range-compress ok、round2 の seq/map regression 無し (boot 16s)、
+  host ERT json-test + range-test 33/33。json.el の byte-compile 警告 2 件は pre-existing
+  (file 無改変、bundle list のみ編集)。所見: orphan 監査は =;;; >>> src/= marker 抽出 →
+  「require 無し or 既収録依存のみ」かつ load clean な facade を優先収録すると低リスク高利得。
+  commit (round 3)。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
