@@ -22751,6 +22751,93 @@
           nil)
         cmd))
 
+(fset 'files--bridge-kmacro-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "kmacro-start-macro")
+                t
+              (if (equal cmd "kmacro-end-macro")
+                  t
+                (if (equal cmd "kmacro-end-and-call-macro")
+                    t
+                  (equal cmd "kbd-macro-query"))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "kmacro-insert-counter")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "kmacro-set-counter")
+                t
+              (equal cmd "kmacro-add-counter"))
+            (setq files--bridge-status "written")
+          nil)
+        (if (if (equal cmd "kmacro-edit-macro-repeat")
+                t
+              (if (equal cmd "kmacro-view-macro-repeat")
+                  t
+                (if (equal cmd "kmacro-edit-macro")
+                    t
+                  (if (equal cmd "kmacro-step-edit-macro")
+                      t
+                    (if (equal cmd "edit-kbd-macro")
+                        t
+                      (equal cmd "kmacro-edit-lossage"))))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "kmacro-end-or-call-macro-repeat")
+                t
+              (if (equal cmd "kmacro-call-ring-2nd-repeat")
+                  t
+                (equal cmd "apply-macro-to-region-lines")))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "kmacro-keymap")
+                t
+              (if (equal cmd "kmacro-delete-ring-head")
+                  t
+                (if (equal cmd "kmacro-set-format")
+                    t
+                  (if (equal cmd "kmacro-cycle-ring-next")
+                      t
+                    (if (equal cmd "kmacro-cycle-ring-previous")
+                        t
+                      (if (equal cmd "kmacro-swap-ring")
+                          t
+                        (if (equal cmd "kmacro-bind-to-key")
+                            t
+                          (if (equal cmd "kmacro-redisplay")
+                              t
+                            (if (equal cmd "kmacro-name-last-macro")
+                                t
+                              (equal cmd "kmacro-to-register"))))))))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -24031,89 +24118,7 @@
               (setq cmd (files--bridge-paragraph-region-edit-writeback-current-context cmd))
               (setq cmd (files--bridge-delete-insert-writeback-current-context cmd))
               (setq cmd (files--bridge-emoji-writeback-current-context cmd))
-              (if (if (equal cmd "kmacro-start-macro")
-                      t
-                    (if (equal cmd "kmacro-end-macro")
-                        t
-                      (if (equal cmd "kmacro-end-and-call-macro")
-                          t
-                        (equal cmd "kbd-macro-query"))))
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "kmacro-insert-counter")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (if (equal cmd "kmacro-set-counter")
-                      t
-                    (equal cmd "kmacro-add-counter"))
-                  (setq files--bridge-status "written")
-                nil)
-              (if (if (equal cmd "kmacro-edit-macro-repeat")
-                      t
-                    (if (equal cmd "kmacro-view-macro-repeat")
-                        t
-                      (if (equal cmd "kmacro-edit-macro")
-                          t
-                        (if (equal cmd "kmacro-step-edit-macro")
-                            t
-                          (if (equal cmd "edit-kbd-macro")
-                              t
-                            (equal cmd "kmacro-edit-lossage"))))))
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (if (equal cmd "kmacro-end-or-call-macro-repeat")
-                      t
-                    (if (equal cmd "kmacro-call-ring-2nd-repeat")
-                        t
-                      (equal cmd "apply-macro-to-region-lines")))
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (if (equal cmd "kmacro-keymap")
-                      t
-                    (if (equal cmd "kmacro-delete-ring-head")
-                        t
-                      (if (equal cmd "kmacro-set-format")
-                          t
-                        (if (equal cmd "kmacro-cycle-ring-next")
-                            t
-                          (if (equal cmd "kmacro-cycle-ring-previous")
-                              t
-                            (if (equal cmd "kmacro-swap-ring")
-                                t
-                              (if (equal cmd "kmacro-bind-to-key")
-                                  t
-                                (if (equal cmd "kmacro-redisplay")
-                                    t
-                                  (if (equal cmd "kmacro-name-last-macro")
-                                      t
-                                    (equal cmd "kmacro-to-register"))))))))))
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-kmacro-writeback-current-context cmd))
               (if (equal cmd "quoted-insert")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
