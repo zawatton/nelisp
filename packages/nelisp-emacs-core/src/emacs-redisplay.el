@@ -1282,6 +1282,17 @@ run instead of splitting it."
       (aset levels i (emacs-redisplay--char-level (aref classes i) base-level)))
     levels))
 
+(defun emacs-redisplay--bidi-mirror-char (ch)
+  "Return the mirror image of CH (UAX #9 L4 / Bidi_Mirrored), or nil.
+Covers the common mirrored characters: brackets, angle brackets, guillemets."
+  (cond
+   ((eq ch ?\() ?\)) ((eq ch ?\)) ?\()
+   ((eq ch ?\[) ?\]) ((eq ch ?\]) ?\[)
+   ((eq ch ?{)  ?})  ((eq ch ?})  ?{)
+   ((eq ch ?<)  ?>)  ((eq ch ?>)  ?<)
+   ((eq ch #x00AB) #x00BB) ((eq ch #x00BB) #x00AB)
+   (t nil)))
+
 (defun emacs-redisplay--bidi-reorder-glyphs (vec base-level)
   "Reorder VEC into visual order for BASE-LEVEL (UAX #9 L2, simplified).
 Assign each glyph an embedding level (`emacs-redisplay--char-level'), then for
@@ -1313,6 +1324,15 @@ Hebrew) in their own internal order.  Returns a new vector; LTR-only text
                       (setq i j))
                   (setq i (1+ i)))))
             (setq lev (1- lev))))
+        ;; L4: mirror Bidi_Mirrored glyphs at odd (RTL) levels for display.
+        ;; `levels' was reversed in lock-step with `out', so levels[i] is the
+        ;; embedding level of out[i].
+        (dotimes (i n)
+          (when (= (logand (aref levels i) 1) 1)
+            (let* ((g (aref out i))
+                   (m (and g (emacs-redisplay--bidi-mirror-char
+                              (emacs-redisplay-glyph-char g)))))
+              (when m (setf (emacs-redisplay-glyph-char g) m)))))
         out))))
 
 (defun emacs-redisplay--right-align-glyphs (vec width)
