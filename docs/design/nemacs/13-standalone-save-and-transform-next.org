@@ -307,6 +307,21 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、magit/vc command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の customize writeback chunk を
+  =files--bridge-customize-writeback-current-context= へ切り出した。
+  - 対象は =customize-variable= / =customize-save-variable=。
+  - modeline writeback も含む。
+  - command-writeback-chain の direct transport write は 430 から 425、
+    =files--write*= helper は 539 から 536、=equal cmd= tests は 309 から 307。
+    これは customize block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-customize-writeback-current-context= が 1 件追加され、
+    =setq= は 720 から 715、=if= は 362 から 359 へ減少。
+  - =standalone-save-and-transform= は 108.302 秒で pass。
+  - =standalone-bridge-customize-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、customize command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -517,8 +532,8 @@ make nemacs-gui-bridge-run-shape
    chunk、project writeback chunk、find-file variants chunk、read-only chunk、
    buffer switch chunk、display-buffer chunk、register chunk、window layout chunk、
    window split chunk、window state chunk、dired chunk、org chunk、magit/vc chunk は
-   helper 化済み。
-   次は command-writeback-chain 内の customize 系の小さい chunk を
+   helper 化済み。customize chunk も helper 化済み。
+   次は command-writeback-chain 内の side/window resize 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
