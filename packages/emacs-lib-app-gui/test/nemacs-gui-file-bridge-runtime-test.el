@@ -14993,6 +14993,55 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-read-only-writeback-helper ()
+  "Bridge read-only writeback helper should write read-only state only."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-read-only-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (fset 'capture-read-only-writeback
+                             (lambda (command flag)
+                               (setq files--buffer-read-only-p flag)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-read-only-writeback-current-context
+                                       command))
+                                     (state
+                                      (progn
+                                        (setq files--transport-name
+                                              \"nemacs-read-only\")
+                                        (files--transport-read-current))))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status
+                                         \":\"
+                                         state))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-read-only-writeback-helper\"
+                        (concat
+                         (capture-read-only-writeback
+                          \"toggle-read-only\" t)
+                         \"\\t\"
+                         (capture-read-only-writeback
+                          \"read-only-mode\" nil)
+                         \"\\t\"
+                         (capture-read-only-writeback
+                          \"forward-char\" t))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "toggle-read-only:written:1\tread-only-mode:written:0\tforward-char:ok:0"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
