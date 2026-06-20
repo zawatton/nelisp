@@ -776,6 +776,30 @@ test-redisplay-core-smoke:
 		-l scripts/emacs-redisplay-core-smoke.el \
 		-f ert-run-tests-batch-and-exit
 
+# Regression smoke for the pure-elisp bidirectional subprocess layer in
+# scripts/nemacs-runtime-process-preload.el — the interactive `make-process'
+# + `process-send-string' + `accept-process-output' pattern that the portable
+# IMAP engine (anvil-wl-imap.el) drives.  Runs on the NeLisp standalone
+# reader (NOT host Emacs); asserts a live child round-trips a sent line back
+# through its `:filter', and that a self-exiting child fires its sentinel.
+test-nemacs-process-bidi-smoke: standalone-reader-passthrough
+	test -x "$(NELISP_BIN)"
+	@out="$$(timeout $(NELISP_BOOT_TIMEOUT) env \
+		NEMACS_PROCESS_PRELOAD="$(abspath scripts/nemacs-runtime-process-preload.el)" \
+		"$(NELISP_BIN)" --load "$(abspath test/nemacs-process-bidi-smoke.el)" 2>&1)"; \
+	printf '%s\n' "$$out"; \
+	if printf '%s\n' "$$out" | grep -q '^ROUNDTRIP=PASS$$' && \
+	   printf '%s\n' "$$out" | grep -q '^EXIT-SENTINEL=PASS$$'; then \
+	  echo "[test-nemacs-process-bidi-smoke] PASS"; \
+	else \
+	  echo "[test-nemacs-process-bidi-smoke] FAIL"; exit 1; \
+	fi
+
+# Ensure the standalone reader binary exists (build it if missing) without
+# rebuilding when present, so the smoke can run cheaply.
+standalone-reader-passthrough:
+	@test -x "$(NELISP_BIN)" || $(MAKE) -C "$(NELISP_ROOT)" standalone-reader
+
 doctor:
 	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
