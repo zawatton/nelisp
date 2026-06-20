@@ -975,7 +975,7 @@ to plug into a real event source."
         (keymap-unset map key remove))))
   (defun define-keymap (&rest definitions)
     "Standalone NeLisp fallback for GNU `define-keymap'."
-    (let (full suppress parent name keymap)
+    (let (full suppress parent name keymap prefix)
       (while (and definitions
                   (keywordp (car definitions))
                   (not (eq (car definitions) :menu)))
@@ -990,9 +990,17 @@ to plug into a real event source."
              ((eq keyword :suppress) (setq suppress value))
              ((eq keyword :name) (setq name value))
              ((eq keyword :prefix)
-              (error "define-keymap :prefix is not implemented in standalone NeLisp"))
+              (setq prefix value))
              (t (error "Invalid keyword: %s" keyword))))))
       (let ((map (or keymap
+                     ;; :prefix -> a sparse keymap stored as the symbol's
+                     ;; function (a prefix command) and value cell, matching
+                     ;; GNU `define-prefix-command'.
+                     (and prefix
+                          (let ((m (emacs-keymap-make-sparse-keymap name)))
+                            (fset prefix m)
+                            (set prefix m)
+                            m))
                      (if full
                          (emacs-keymap-make-keymap name)
                        (emacs-keymap-make-sparse-keymap name)))))

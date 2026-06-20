@@ -107,27 +107,34 @@ yields DEFAULT.  Returns nil on no match."
 
 (unless (fboundp 'cl-reduce)
   (defun cl-reduce (function sequence &rest keys)
-    "Reduce SEQUENCE (a list) with FUNCTION.  Supports :initial-value and :key.
-A pragmatic subset of cl-reduce (left fold) sufficient for typical config
-code; :from-end is not implemented.  The keyword scan is done by hand so this
-depends on no `plist-*' (absent from the bare prelude)."
-    (let ((key nil) (init nil) (has-init nil) (k keys))
+    "Reduce SEQUENCE (a list) with FUNCTION.  Supports :initial-value, :key,
+and :from-end.  A pragmatic subset of cl-reduce (left/right fold) sufficient
+for typical config code.  The keyword scan is done by hand so this depends on
+no `plist-*' (absent from the bare prelude)."
+    (let ((key nil) (init nil) (has-init nil) (from-end nil) (k keys))
       (while k
         (cond ((eq (car k) :key)
                (when (car (cdr k)) (setq key (car (cdr k)))))
               ((eq (car k) :initial-value)
-               (setq init (car (cdr k)) has-init t)))
+               (setq init (car (cdr k)) has-init t))
+              ((eq (car k) :from-end)
+               (setq from-end (car (cdr k)))))
         (setq k (cdr (cdr k))))
       ;; Apply :key only when given -- avoids depending on `identity', which
-      ;; the bare prelude does not provide.
-      (let ((lst (if key (mapcar key sequence) sequence)) acc rest)
+      ;; the bare prelude does not provide.  For :from-end, fold right by
+      ;; reversing the list and combining (FUNCTION element accumulator).
+      (let* ((keyed (if key (mapcar key sequence) sequence))
+             (lst (if from-end (reverse keyed) keyed))
+             acc rest)
         (if has-init
             (setq acc init rest lst)
           (if lst
               (setq acc (car lst) rest (cdr lst))
             (setq acc (funcall function))))
         (while rest
-          (setq acc (funcall function acc (car rest)))
+          (setq acc (if from-end
+                        (funcall function (car rest) acc)
+                      (funcall function acc (car rest))))
           (setq rest (cdr rest)))
         acc))))
 

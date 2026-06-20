@@ -408,6 +408,25 @@
     (should (emacs-keymap-keymapp
              (emacs-keymap-keymap-lookup m "C-x")))))
 
+(ert-deftest emacs-keymap-define-keymap-prefix-source-shape ()
+  "define-keymap :prefix is implemented (no longer a not-implemented stub).
+The standalone `define-keymap' fallback is gated on the reader (`nl-write-file'),
+so host ERT pins the source shape; the live behaviour (the symbol's function and
+value cells become the keymap) is exercised by the standalone boot."
+  (let* ((lib (locate-library "emacs-keymap"))
+         (src (and lib (concat (file-name-sans-extension lib) ".el")))
+         (source (and src (file-readable-p src)
+                      (with-temp-buffer (insert-file-contents src)
+                                        (buffer-string)))))
+    (should source)
+    (should-not (string-match-p
+                 (regexp-quote "define-keymap :prefix is not implemented")
+                 source))
+    (dolist (needle '("(setq prefix value)"
+                      "(fset prefix m)"
+                      "(set prefix m)"))
+      (should (string-match-p (regexp-quote needle) source)))))
+
 (ert-deftest emacs-keymap-keymap-set-invalid-syntax-signals ()
   (let ((m (emacs-keymap-make-sparse-keymap)))
     (should-error (emacs-keymap-keymap-set m "not a kbd" 'foo)
