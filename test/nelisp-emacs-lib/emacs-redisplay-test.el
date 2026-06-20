@@ -1011,6 +1011,50 @@ char width and codepoint must stay intact so they do not regress."
           (should (eq 'right-to-left
                       (emacs-redisplay-glyph-row-direction row))))))))
 
+;;; H''''''. bidi RTL reordering (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-rtl-row-reversed ()
+  "An RTL paragraph row reverses its glyphs into visual order."
+  (emacs-redisplay-test--with-fresh-world
+    ;; alef U+05D0, bet U+05D1, gimel U+05D2 (logical order)
+    (emacs-redisplay-test--with-buffer b (string #x05D0 #x05D1 #x05D2)
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq 'right-to-left (emacs-redisplay-glyph-row-direction row)))
+          ;; visual col 0 = logical-last char (gimel, pos 3)
+          (should (= #x05D2 (emacs-redisplay-glyph-char (aref v 0))))
+          (should (= 3 (emacs-redisplay-glyph-buf-pos (aref v 0))))
+          ;; visual col 2 = logical-first char (alef, pos 1)
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v 2))))
+          (should (= 1 (emacs-redisplay-glyph-buf-pos (aref v 2)))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-ltr-row-not-reversed ()
+  "An LTR paragraph row keeps logical order (no reordering)."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq 'left-to-right (emacs-redisplay-glyph-row-direction row)))
+          (should (eq ?a (emacs-redisplay-glyph-char (aref v 0))))
+          (should (eq ?c (emacs-redisplay-glyph-char (aref v 2)))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-reverse-glyph-vector ()
+  "reverse-glyph-vector returns glyphs in reverse order; originals intact."
+  (let* ((g0 (emacs-redisplay--make-glyph :char ?a))
+         (g1 (emacs-redisplay--make-glyph :char ?b))
+         (g2 (emacs-redisplay--make-glyph :char ?c))
+         (out (emacs-redisplay--reverse-glyph-vector (vector g0 g1 g2))))
+    (should (= 3 (length out)))
+    (should (eq g2 (aref out 0)))
+    (should (eq g1 (aref out 1)))
+    (should (eq g0 (aref out 2)))))
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."
