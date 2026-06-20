@@ -24829,4 +24829,23 @@ uses).  REPLACE erases the buffer first.  Reads are byte-exact."
     "Like `insert-file-contents' but byte-literal; honours BEG/END."
     (insert-file-contents filename visit beg end replace)))
 
+;;;; --- B1: match-data stubs for runtime-loaded packages -----------------
+;;
+;; Doc 15 wave B (B1).  Runtime macro-expansion already works in the bridge
+;; (defun / defmacro / cl-defstruct / when-let expand at load), so real
+;; packages load -- dash.el's `-map' etc. are callable.  But string packages
+;; (s.el's `s-trim') call `save-match-data', which the bridge image does not
+;; bake (it lives in emacs-stub.el).  Mirror emacs-stub's no-op match-data
+;; stubs here so loaded packages are callable.  `match-beginning' /
+;; `match-end' are real in the bridge (so `match-string' works); only the
+;; bundled match-data list ops are no-ops -- exactly as on the full --batch
+;; stack, where these same stubs are active.
+(unless (fboundp 'match-data)
+  (defun match-data (&optional integers reuse reseat)
+    (ignore integers reuse reseat) nil))
+(unless (fboundp 'set-match-data)
+  (defun set-match-data (data &optional reseat) (ignore data reseat) nil))
+(unless (fboundp 'save-match-data)
+  (defmacro save-match-data (&rest body) (cons 'progn body)))
+
 (provide 'nemacs-gui-file-bridge-runtime)
