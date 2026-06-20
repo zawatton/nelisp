@@ -341,6 +341,25 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、side/window resize command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の word/sexp/defun motion writeback chunk を
+  =files--bridge-word-sexp-defun-motion-writeback-current-context= へ切り出した。
+  - 対象は =forward-word= / =backward-word= /
+    =beginning-of-defun= / =forward-sexp= / =backward-sexp= /
+    =end-of-defun= / =down-list= / =forward-list= /
+    =backward-list= / =backward-up-list= / =forward-sentence= /
+    =backward-sentence= / =mark-defun= / =mark-sexp=。
+  - point-only command と point+mark command を helper 内で分けた。
+  - command-writeback-chain の direct transport write は 417 のまま、
+    =files--write*= helper は 532 から 516、=equal cmd= tests は 302 から 288。
+    これは word/sexp/defun motion block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-word-sexp-defun-motion-writeback-current-context= が 1 件追加され、
+    =setq= は 703 から 690、=if= は 354 から 340 へ減少。
+  - =standalone-save-and-transform= は 108.335 秒で pass。
+  - =standalone-bridge-word-sexp-defun-motion-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、word/sexp/defun motion command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -552,7 +571,8 @@ make nemacs-gui-bridge-run-shape
    buffer switch chunk、display-buffer chunk、register chunk、window layout chunk、
    window split chunk、window state chunk、dired chunk、org chunk、magit/vc chunk は
    helper 化済み。customize chunk と side/window resize chunk も helper 化済み。
-   次は command-writeback-chain 内の word/sexp/defun motion 系の小さい chunk を
+   word/sexp/defun motion chunk も helper 化済み。
+   次は command-writeback-chain 内の kill/abbrev 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。

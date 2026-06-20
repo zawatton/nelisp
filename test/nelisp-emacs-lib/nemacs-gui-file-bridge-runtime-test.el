@@ -15877,6 +15877,93 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-word-sexp-defun-motion-writeback-helper ()
+  "Bridge word/sexp/defun motion writeback helper should write point and mark."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-word-sexp-defun-motion-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"alpha beta gamma delta epsilon zeta eta theta iota\")
+                       (setq files--point 42)
+                       (setq files--mark 7)
+                       (fset 'capture-word-sexp-defun-motion-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-word-sexp-defun-motion-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-word-sexp-defun-motion-writeback-helper\"
+                        (concat
+                         (capture-word-sexp-defun-motion-writeback
+                          \"forward-word\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"backward-word\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"beginning-of-defun\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"forward-sexp\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"backward-sexp\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"end-of-defun\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"down-list\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"forward-list\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"backward-list\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"backward-up-list\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"forward-sentence\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"backward-sentence\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"mark-defun\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"mark-sexp\")
+                         \"\\t\"
+                         (capture-word-sexp-defun-motion-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "forward-word:written\tbackward-word:written\tbeginning-of-defun:written\tforward-sexp:written\tbackward-sexp:written\tend-of-defun:written\tdown-list:written\tforward-list:written\tbackward-list:written\tbackward-up-list:written\tforward-sentence:written\tbackward-sentence:written\tmark-defun:written\tmark-sexp:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "00042"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00007"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
