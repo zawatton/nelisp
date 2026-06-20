@@ -458,6 +458,34 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、emoji command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の kmacro writeback chunk を
+  =files--bridge-kmacro-writeback-current-context= へ切り出した。
+  - 対象は =kmacro-start-macro= / =kmacro-end-macro= /
+    =kmacro-end-and-call-macro= / =kbd-macro-query= /
+    =kmacro-insert-counter= / =kmacro-set-counter= /
+    =kmacro-add-counter= / =kmacro-edit-macro-repeat= /
+    =kmacro-view-macro-repeat= / =kmacro-edit-macro= /
+    =kmacro-step-edit-macro= / =edit-kbd-macro= /
+    =kmacro-edit-lossage= / =kmacro-end-or-call-macro-repeat= /
+    =kmacro-call-ring-2nd-repeat= / =apply-macro-to-region-lines= /
+    =kmacro-keymap= / =kmacro-delete-ring-head= / =kmacro-set-format= /
+    =kmacro-cycle-ring-next= / =kmacro-cycle-ring-previous= /
+    =kmacro-swap-ring= / =kmacro-bind-to-key= / =kmacro-redisplay= /
+    =kmacro-name-last-macro= / =kmacro-to-register=。
+  - helper 内では buf+point+mark+window-start、buf+point、status-only、
+    buffer metadata+point+mark+window-start、
+    buf+point+mark+window-start+modeline、modeline-only の branch に分けた。
+  - command-writeback-chain の direct transport write は 350 から 341、
+    =files--write*= helper は 406 から 396、=equal cmd= tests は 226 から 200。
+    これは kmacro block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-kmacro-writeback-current-context= が 1 件追加され、
+    =setq= は 566 から 552、=if= は 274 から 247 へ減少。
+  - =standalone-save-and-transform= は 108.976717 秒で pass。
+  - =standalone-bridge-kmacro-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、kmacro command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -675,7 +703,8 @@ make nemacs-gui-bridge-run-shape
    paragraph/region edit chunk も helper 化済み。
    delete/insert chunk も helper 化済み。
    emoji chunk も helper 化済み。
-   次は command-writeback-chain 内の =kmacro-start-macro= から始まる kmacro 系の小さい chunk を
+   kmacro chunk も helper 化済み。
+   次は command-writeback-chain 内の =quoted-insert= から始まる indent/newline 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。

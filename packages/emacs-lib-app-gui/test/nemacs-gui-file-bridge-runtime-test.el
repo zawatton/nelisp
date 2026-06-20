@@ -16408,6 +16408,146 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-kmacro-writeback-helper ()
+  "Bridge kmacro writeback helper should write matching state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-kmacro-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"kmacro buffer\")
+                       (setq files--current-file-name \"/tmp/kmacro.el\")
+                       (setq files--buffer-name \"kmacro.el\")
+                       (setq files--buffer-read-only-p nil)
+                       (setq files--modeline-string \"Kmacro active\")
+                       (setq files--point 9)
+                       (setq files--mark 4)
+                       (setq files--window-start 3)
+                       (fset 'capture-kmacro-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-kmacro-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-kmacro-writeback-helper\"
+                        (concat
+                         (capture-kmacro-writeback
+                          \"kmacro-start-macro\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-end-macro\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-end-and-call-macro\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kbd-macro-query\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-insert-counter\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-set-counter\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-add-counter\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-edit-macro-repeat\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-view-macro-repeat\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-edit-macro\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-step-edit-macro\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"edit-kbd-macro\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-edit-lossage\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-end-or-call-macro-repeat\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-call-ring-2nd-repeat\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"apply-macro-to-region-lines\")
+                         \"\\t\"
+                         (capture-kmacro-writeback \"kmacro-keymap\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-delete-ring-head\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-set-format\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-cycle-ring-next\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-cycle-ring-previous\")
+                         \"\\t\"
+                         (capture-kmacro-writeback \"kmacro-swap-ring\")
+                         \"\\t\"
+                         (capture-kmacro-writeback \"kmacro-bind-to-key\")
+                         \"\\t\"
+                         (capture-kmacro-writeback \"kmacro-redisplay\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-name-last-macro\")
+                         \"\\t\"
+                         (capture-kmacro-writeback
+                          \"kmacro-to-register\")
+                         \"\\t\"
+                         (capture-kmacro-writeback \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "kmacro-start-macro:written\tkmacro-end-macro:written\tkmacro-end-and-call-macro:written\tkbd-macro-query:written\tkmacro-insert-counter:written\tkmacro-set-counter:written\tkmacro-add-counter:written\tkmacro-edit-macro-repeat:written\tkmacro-view-macro-repeat:written\tkmacro-edit-macro:written\tkmacro-step-edit-macro:written\tedit-kbd-macro:written\tkmacro-edit-lossage:written\tkmacro-end-or-call-macro-repeat:written\tkmacro-call-ring-2nd-repeat:written\tapply-macro-to-region-lines:written\tkmacro-keymap:written\tkmacro-delete-ring-head:written\tkmacro-set-format:written\tkmacro-cycle-ring-next:written\tkmacro-cycle-ring-previous:written\tkmacro-swap-ring:written\tkmacro-bind-to-key:written\tkmacro-redisplay:written\tkmacro-name-last-macro:written\tkmacro-to-register:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "kmacro buffer"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/kmacro.el"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "kmacro.el"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "0"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              (should (equal "Kmacro active"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-modeline")))
+              (should (equal "00009"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00004"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
