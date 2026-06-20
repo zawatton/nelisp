@@ -1039,6 +1039,8 @@ CJK letters are L."
         (and (>= ch #xFB50) (<= ch #xFDFF))
         (and (>= ch #xFE70) (<= ch #xFEFF)))
     'AL)
+   ;; EN: European numbers (read left-to-right even inside RTL)
+   ((and (>= ch ?0) (<= ch ?9)) 'EN)
    ;; strong L: ASCII letters, Latin-1/Extended letters, CJK and beyond
    ((or (and (>= ch ?A) (<= ch ?Z))
         (and (>= ch ?a) (<= ch ?z))
@@ -1074,6 +1076,65 @@ a follow-up."
       (aset out i (aref vec (- n 1 i))))
     out))
 
+
+(defun emacs-redisplay--char-level (cls base-level)
+  "Embedding level for a glyph of bidi CLS given BASE-LEVEL (0 or 1).
+Simplified UAX #9 level assignment: a strong char matching the base direction
+stays at BASE-LEVEL; an opposite-direction strong char gets BASE-LEVEL+1 (an
+embedded run); European numbers (EN) read left-to-right, so in an RTL base they
+get BASE-LEVEL+1 (even level); neutrals take the base level."
+  (let ((base-rtl (= (logand base-level 1) 1)))
+    (cond
+     ((eq cls 'L)  (if base-rtl (1+ base-level) base-level))
+     ((or (eq cls 'R) (eq cls 'AL)) (if base-rtl base-level (1+ base-level)))
+     ((eq cls 'EN) (if base-rtl (1+ base-level) base-level))
+     (t base-level))))
+
+(defun emacs-redisplay--reverse-subrange (vec i j)
+  "Reverse VEC[I..J] (inclusive) in place."
+  (while (< i j)
+    (let ((tmp (aref vec i)))
+      (aset vec i (aref vec j))
+      (aset vec j tmp))
+    (setq i (1+ i) j (1- j))))
+
+(defun emacs-redisplay--bidi-reorder-glyphs (vec base-level)
+  "Reorder VEC into visual order for BASE-LEVEL (UAX #9 L2, simplified).
+Assign each glyph an embedding level (`emacs-redisplay--char-level'), then for
+L from the maximum level down to 1, reverse every maximal contiguous run of
+glyphs whose level is >= L.  This flips the overall flow for an RTL paragraph
+while leaving embedded opposite-direction runs (a Latin word or a number inside
+Hebrew) in their own internal order.  Returns a new vector; LTR-only text
+(max level 0) is returned in logical order."
+  (let ((n (length vec)))
+    (if (= n 0)
+        vec
+      (let ((levels (make-vector n base-level))
+            (out (make-vector n nil))
+            (maxlevel base-level))
+        (dotimes (i n)
+          (let* ((g (aref vec i))
+                 (cls (if g (emacs-redisplay--char-bidi-class
+                             (emacs-redisplay-glyph-char g))
+                        'neutral))
+                 (lvl (emacs-redisplay--char-level cls base-level)))
+            (aset levels i lvl)
+            (when (> lvl maxlevel) (setq maxlevel lvl)))
+          (aset out i (aref vec i)))
+        (let ((lev maxlevel))
+          (while (>= lev 1)
+            (let ((i 0))
+              (while (< i n)
+                (if (>= (aref levels i) lev)
+                    (let ((j i))
+                      (while (and (< j n) (>= (aref levels j) lev))
+                        (setq j (1+ j)))
+                      (emacs-redisplay--reverse-subrange out i (1- j))
+                      (emacs-redisplay--reverse-subrange levels i (1- j))
+                      (setq i j))
+                  (setq i (1+ i)))))
+            (setq lev (1- lev))))
+        out))))
 (defun emacs-redisplay--buffer-name (buffer)
   "Return BUFFER's display name for the MVP mode-line."
   (cond
@@ -1696,12 +1757,12 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
           (let* ((laid (emacs-redisplay--lay-out-line
                         line pos buffer overlays width))
                  (dir (emacs-redisplay--base-direction line))
-                 ;; RTL paragraph: reverse the laid-out glyphs to visual order
-                 ;; before they enter the row (so the row hash covers the final
-                 ;; order).  LTR rows pass through unchanged.
-                 (gvec (if (eq dir 'right-to-left)
-                           (emacs-redisplay--reverse-glyph-vector (car laid))
-                         (car laid)))
+                 ;; Reorder the laid-out glyphs into visual order (UAX #9 L2)
+                 ;; before they enter the row, so the row hash covers the final
+                 ;; order.  LTR-only rows come back in logical order; embedded
+                 ;; opposite-direction runs keep their own internal order.
+                 (gvec (emacs-redisplay--bidi-reorder-glyphs
+                        (car laid) (if (eq dir 'right-to-left) 1 0)))
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
             (setf (emacs-redisplay-glyph-row-direction row) dir)

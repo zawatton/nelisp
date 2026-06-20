@@ -973,8 +973,9 @@ char width and codepoint must stay intact so they do not regress."
   (should (eq 'L (emacs-redisplay--char-bidi-class #x3042)))  ; HIRAGANA A
   (should (eq 'R (emacs-redisplay--char-bidi-class #x05D0)))  ; HEBREW ALEF
   (should (eq 'AL (emacs-redisplay--char-bidi-class #x0627))) ; ARABIC ALEF
-  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?5)))
-  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\s))))
+  (should (eq 'EN (emacs-redisplay--char-bidi-class ?5)))     ; digits are EN
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\s)))
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?.))))
 
 (ert-deftest emacs-redisplay-test-bidi-base-direction ()
   "Base direction follows the first strong char (UAX #9 P2/P3)."
@@ -1054,6 +1055,59 @@ char width and codepoint must stay intact so they do not regress."
     (should (eq g2 (aref out 0)))
     (should (eq g1 (aref out 1)))
     (should (eq g0 (aref out 2)))))
+
+;;; H'''''''. bidi mixed-run level reordering (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-mixed-latin-keeps-order ()
+  "In an RTL row, an embedded Latin run keeps its internal (logical) order."
+  (emacs-redisplay-test--with-fresh-world
+    ;; logical: alef(1) bet(2) a(3) b(4) — base is RTL (first strong = Hebrew)
+    (emacs-redisplay-test--with-buffer b (concat (string #x05D0 #x05D1) "ab")
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq 'right-to-left (emacs-redisplay-glyph-row-direction row)))
+          ;; embedded Latin "ab" sits left, in order a then b (ascending pos)
+          (should (eq ?a (emacs-redisplay-glyph-char (aref v 0))))
+          (should (eq ?b (emacs-redisplay-glyph-char (aref v 1))))
+          (should (< (emacs-redisplay-glyph-buf-pos (aref v 0))
+                     (emacs-redisplay-glyph-buf-pos (aref v 1))))
+          ;; Hebrew is reversed on the right: bet then alef
+          (should (= #x05D1 (emacs-redisplay-glyph-char (aref v 2))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v 3)))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-mixed-number-keeps-order ()
+  "In an RTL row, an embedded number keeps its left-to-right digit order."
+  (emacs-redisplay-test--with-fresh-world
+    ;; logical: alef(1) 1(2) 2(3)
+    (emacs-redisplay-test--with-buffer b (concat (string #x05D0) "12")
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq ?1 (emacs-redisplay-glyph-char (aref v 0))))
+          (should (eq ?2 (emacs-redisplay-glyph-char (aref v 1))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v 2)))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-reorder-glyphs-unit ()
+  "bidi-reorder-glyphs: pure RTL fully reverses; LTR-only keeps order."
+  (let ((mk (lambda (c) (emacs-redisplay--make-glyph :char c))))
+    ;; pure RTL (all Hebrew) at base level 1 -> fully reversed
+    (let ((out (emacs-redisplay--bidi-reorder-glyphs
+                (vector (funcall mk #x05D0) (funcall mk #x05D1)
+                        (funcall mk #x05D2))
+                1)))
+      (should (= #x05D2 (emacs-redisplay-glyph-char (aref out 0))))
+      (should (= #x05D0 (emacs-redisplay-glyph-char (aref out 2)))))
+    ;; LTR-only at base level 0 -> logical order preserved
+    (let ((out (emacs-redisplay--bidi-reorder-glyphs
+                (vector (funcall mk ?a) (funcall mk ?b) (funcall mk ?c))
+                0)))
+      (should (eq ?a (emacs-redisplay-glyph-char (aref out 0))))
+      (should (eq ?c (emacs-redisplay-glyph-char (aref out 2)))))))
 
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
