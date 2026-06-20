@@ -1323,6 +1323,47 @@ content and surrounding context (N1 alone could split the pair)."
                       (funcall mk ?\)) (funcall mk ?c))))
     (should (equal [1 1 1 1 0] (emacs-redisplay--bidi-levels vec 0)))))
 
+;;; H'''''''''''''. bidi mirroring — rule L4 (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-mirror-char-unit ()
+  "bidi-mirror-char mirrors brackets / angle brackets / guillemets."
+  (should (eq ?\) (emacs-redisplay--bidi-mirror-char ?\()))
+  (should (eq ?\( (emacs-redisplay--bidi-mirror-char ?\))))
+  (should (eq ?\] (emacs-redisplay--bidi-mirror-char ?\[)))
+  (should (eq ?> (emacs-redisplay--bidi-mirror-char ?<)))
+  (should (eq #x00BB (emacs-redisplay--bidi-mirror-char #x00AB)))
+  (should-not (emacs-redisplay--bidi-mirror-char ?a)))
+
+(ert-deftest emacs-redisplay-test-bidi-rtl-mirroring ()
+  "Rule L4: brackets at an RTL level are displayed mirrored, so an RTL
+\"(text)\" still visually reads as parentheses around the text."
+  (emacs-redisplay-test--with-fresh-world
+    ;; ( alef ) -- base RTL (first strong char is alef)
+    (emacs-redisplay-test--with-buffer b (concat "(" (string #x05D0) ")")
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
+          ;; right-aligned last 3 cells display as "(", alef, ")"
+          (should (eq ?\( (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 2)))))
+          (should (eq ?\) (emacs-redisplay-glyph-char (aref v (- W 1))))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-ltr-no-mirror ()
+  "LTR rows are not mirrored: \"(a)\" stays \"(a)\"."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "(a)"
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq ?\( (emacs-redisplay-glyph-char (aref v 0))))
+          (should (eq ?a (emacs-redisplay-glyph-char (aref v 1))))
+          (should (eq ?\) (emacs-redisplay-glyph-char (aref v 2)))))))))
+
 
 (ert-deftest emacs-redisplay-test-redisplay-skips-invisible-property ()
   "redisplay-window omits characters with non-nil `invisible'."
