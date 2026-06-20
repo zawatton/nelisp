@@ -15201,6 +15201,109 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-register-writeback-helper ()
+  "Bridge register writeback helper should write register state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-register-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"Register body\\n0123456789abcdef\")
+                       (setq files--current-file-name
+                             \"/tmp/nemacs-register-buffer.txt\")
+                       (setq files--buffer-name \"RegisterBuffer\")
+                       (setq files--window-layout \"register-layout\")
+                       (setq files--window-selected \"8\")
+                       (setq files--window-split-delta 4)
+                       (setq files--frame-selected-index 1)
+                       (setq files--frame-count 3)
+                       (setq files--frame-selected-name \"FrameB\")
+                       (setq files--point 14)
+                       (setq files--mark 5)
+                       (setq files--window-start 3)
+                       (fset 'capture-register-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-register-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-register-writeback-helper\"
+                        (concat
+                         (capture-register-writeback
+                          \"point-to-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"frameset-to-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"window-configuration-to-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"jump-to-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"copy-to-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"insert-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"number-to-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"increment-register\")
+                         \"\\t\"
+                         (capture-register-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "point-to-register:written\tframeset-to-register:written\twindow-configuration-to-register:written\tjump-to-register:written\tcopy-to-register:written\tinsert-register:written\tnumber-to-register:written\tincrement-register:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "Register body\n0123456789abcdef"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/nemacs-register-buffer.txt"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "RegisterBuffer"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "register-layout"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "8"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "4"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-split-delta")))
+              (should (equal "1\t3\tFrameB"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-state")))
+              (should (equal "00014"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00005"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here

@@ -196,6 +196,23 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、display-buffer command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の register writeback chunk を
+  =files--bridge-register-writeback-current-context= へ切り出した。
+  - 対象は =point-to-register= / =frameset-to-register= /
+    =window-configuration-to-register= / =jump-to-register= /
+    =copy-to-register= / =insert-register= / =number-to-register= /
+    =increment-register=。
+  - command-writeback-chain の direct transport write は 484 から 475、
+    =files--write*= helper は 594 から 569、=equal cmd= tests は 351 から 343。
+    これは register block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-register-writeback-current-context= が 1 件追加され、
+    =setq= は 795 から 779、=if= は 407 から 399 へ減少。
+  - =standalone-save-and-transform= は 108.279 秒で pass。
+  - =standalone-bridge-register-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、register command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -404,8 +421,8 @@ make nemacs-gui-bridge-run-shape
    5 秒以上の短縮には届かず、state reset 境界作りとして採用済み。
 5. direct-cmd の common read/writeback setup、family writeback chunk、prefix writeback
    chunk、project writeback chunk、find-file variants chunk、read-only chunk、
-   buffer switch chunk、display-buffer chunk は helper 化済み。
-   次は command-writeback-chain 内の register/window 系の小さい chunk を
+   buffer switch chunk、display-buffer chunk、register chunk は helper 化済み。
+   次は command-writeback-chain 内の window 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
