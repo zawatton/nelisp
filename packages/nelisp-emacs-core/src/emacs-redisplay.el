@@ -1171,6 +1171,75 @@ this pass CLASSES holds only L, R, EN, AN, and neutral."
            ((and (eq c 'EN) (eq last-strong 'L)) (aset classes i 'L))))))
     classes))
 
+(defun emacs-redisplay--bidi-open-bracket (ch)
+  "Return the matching closing-bracket char for opening bracket CH, else nil."
+  (cond ((eq ch ?\() ?\))
+        ((eq ch ?\[) ?\])
+        ((eq ch ?{) ?})
+        (t nil)))
+
+(defun emacs-redisplay--bidi-close-bracket-p (ch)
+  "Non-nil when CH is a closing bracket."
+  (memq ch '(?\) ?\] ?})))
+
+(defun emacs-redisplay--bidi-bracket-dir (cls)
+  "Direction (`L'/`R') of a resolved class CLS for N0 (EN/AN count as R), or nil."
+  (cond ((eq cls 'L) 'L)
+        ((memq cls '(R EN AN)) 'R)
+        (t nil)))
+
+(defun emacs-redisplay--bidi-prev-strong-dir (classes pos base-level)
+  "Direction of the first strong class before POS in CLASSES; sos if none."
+  (let ((i (1- pos)) (dir nil))
+    (while (and (>= i 0) (null dir))
+      (setq dir (emacs-redisplay--bidi-bracket-dir (aref classes i)))
+      (setq i (1- i)))
+    (or dir (if (= (logand base-level 1) 1) 'R 'L))))
+
+(defun emacs-redisplay--bidi-apply-n0 (classes open close base-level)
+  "Apply rule N0 to the bracket pair at OPEN/CLOSE positions in CLASSES.
+Both brackets take the embedding direction when a matching strong type is
+inside; the opposite direction only when the inside has it AND the preceding
+context is also that direction; otherwise they are left for N1."
+  (let* ((e (if (= (logand base-level 1) 1) 'R 'L))
+         (o (if (eq e 'L) 'R 'L))
+         (has-e nil) (has-o nil) (k (1+ open)))
+    (while (< k close)
+      (let ((d (emacs-redisplay--bidi-bracket-dir (aref classes k))))
+        (cond ((eq d e) (setq has-e t))
+              ((eq d o) (setq has-o t))))
+      (setq k (1+ k)))
+    (let ((resolved
+           (cond
+            (has-e e)
+            (has-o (if (eq (emacs-redisplay--bidi-prev-strong-dir
+                            classes open base-level)
+                           o)
+                       o e))
+            (t nil))))
+      (when resolved
+        (aset classes open resolved)
+        (aset classes close resolved)))))
+
+(defun emacs-redisplay--bidi-resolve-brackets (vec classes base-level)
+  "Resolve matched bracket pairs in CLASSES in place (UAX #9 N0, simplified).
+Pairs are matched with a stack over (), [], {}; each pair is resolved by
+`emacs-redisplay--bidi-apply-n0'.  Operates after the weak pass and before
+N1 so unresolved (no-strong-inside) brackets fall through to N1."
+  (let ((n (length vec)) (stack nil))
+    (dotimes (i n)
+      (let* ((g (aref vec i))
+             (ch (and g (emacs-redisplay-glyph-char g)))
+             (closer (and ch (emacs-redisplay--bidi-open-bracket ch))))
+        (cond
+         (closer (push (cons i closer) stack))
+         ((and ch (emacs-redisplay--bidi-close-bracket-p ch)
+               stack (eq (cdar stack) ch))
+          (let ((open (caar stack)))
+            (setq stack (cdr stack))
+            (emacs-redisplay--bidi-apply-n0 classes open i base-level))))))
+    classes))
+
 (defun emacs-redisplay--bidi-levels (vec base-level)
   "Return a vector of embedding levels for VEC's glyphs (simplified UAX #9).
 Resolve neutral runs by rule N1 -- a run of neutrals between two strong
@@ -1186,8 +1255,9 @@ run instead of splitting it."
         (aset classes i (if g (emacs-redisplay--char-bidi-class
                                (emacs-redisplay-glyph-char g))
                           'neutral))))
-    ;; W2-W7 (weak types) before N1/N2 (neutrals), per UAX #9 ordering
+    ;; W2-W7 (weak), then N0 (bracket pairs), then N1/N2 (neutrals): UAX #9 order
     (emacs-redisplay--bidi-resolve-weak classes base-level)
+    (emacs-redisplay--bidi-resolve-brackets vec classes base-level)
     (let ((i 0))
       (while (< i n)
         (if (emacs-redisplay--bidi-neutral-p (aref classes i))

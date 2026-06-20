@@ -1287,6 +1287,42 @@ as one left-to-right run inside RTL text (not split into \"14.3\")."
           (should (eq ?4 (emacs-redisplay-glyph-char (aref v (- W 2)))))
           (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1))))))))))
 
+;;; H''''''''''''. bidi bracket pairs — rule N0 (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-brackets-n0 ()
+  "Rule N0: a matched bracket pair takes one consistent direction from its
+content and surrounding context (N1 alone could split the pair)."
+  (let ((mk (lambda (c) (emacs-redisplay--make-glyph :char c))))
+    ;; LTR base, "alef ( bet ) c": opposite-dir (R) content + R context before
+    ;; -> both brackets resolve to R together
+    (let ((vec (vector (funcall mk #x05D0) (funcall mk ?\() (funcall mk #x05D1)
+                       (funcall mk ?\)) (funcall mk ?c)))
+          (cl  (vector 'R 'neutral 'R 'neutral 'L)))
+      (emacs-redisplay--bidi-resolve-brackets vec cl 0)
+      (should (eq 'R (aref cl 1)))
+      (should (eq 'R (aref cl 3))))
+    ;; embedding-direction (L) content inside -> brackets take the embedding (L)
+    (let ((vec (vector (funcall mk #x05D0) (funcall mk ?\() (funcall mk ?x)
+                       (funcall mk ?\)) (funcall mk ?c)))
+          (cl  (vector 'R 'neutral 'L 'neutral 'L)))
+      (emacs-redisplay--bidi-resolve-brackets vec cl 0)
+      (should (eq 'L (aref cl 1)))
+      (should (eq 'L (aref cl 3))))
+    ;; no strong type inside -> brackets stay neutral (left for N1)
+    (let ((vec (vector (funcall mk ?\() (funcall mk ?\s) (funcall mk ?\))))
+          (cl  (vector 'neutral 'neutral 'neutral)))
+      (emacs-redisplay--bidi-resolve-brackets vec cl 0)
+      (should (eq 'neutral (aref cl 0)))
+      (should (eq 'neutral (aref cl 2))))))
+
+(ert-deftest emacs-redisplay-test-bidi-brackets-levels ()
+  "Through bidi-levels, an N0-resolved pair gets a consistent embedding level."
+  (let* ((mk (lambda (c) (emacs-redisplay--make-glyph :char c)))
+         ;; LTR base: alef ( bet ) c  -> brackets + bet at level 1, c at 0
+         (vec (vector (funcall mk #x05D0) (funcall mk ?\() (funcall mk #x05D1)
+                      (funcall mk ?\)) (funcall mk ?c))))
+    (should (equal [1 1 1 1 0] (emacs-redisplay--bidi-levels vec 0)))))
+
 
 (ert-deftest emacs-redisplay-test-redisplay-skips-invisible-property ()
   "redisplay-window omits characters with non-nil `invisible'."
