@@ -964,6 +964,53 @@ char width and codepoint must stay intact so they do not regress."
       (should (equal "-" (emacs-redisplay--mode-line-format-to-string "%*" b)))
       (should (equal "-" (emacs-redisplay--mode-line-format-to-string "%+" b))))))
 
+;;; H'''''. bidi base-direction detection (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-char-class ()
+  "Strong bidi classes: Latin L, Hebrew R, Arabic AL, others neutral."
+  (should (eq 'L (emacs-redisplay--char-bidi-class ?A)))
+  (should (eq 'L (emacs-redisplay--char-bidi-class ?z)))
+  (should (eq 'L (emacs-redisplay--char-bidi-class #x3042)))  ; HIRAGANA A
+  (should (eq 'R (emacs-redisplay--char-bidi-class #x05D0)))  ; HEBREW ALEF
+  (should (eq 'AL (emacs-redisplay--char-bidi-class #x0627))) ; ARABIC ALEF
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?5)))
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\s))))
+
+(ert-deftest emacs-redisplay-test-bidi-base-direction ()
+  "Base direction follows the first strong char (UAX #9 P2/P3)."
+  (should (eq 'left-to-right (emacs-redisplay--base-direction "hello")))
+  (should (eq 'right-to-left
+              (emacs-redisplay--base-direction (string #x05E9 #x05DC #x05DD))))
+  (should (eq 'right-to-left
+              (emacs-redisplay--base-direction (string #x0633 #x0644 #x0627))))
+  ;; neutrals / digits only -> default LTR
+  (should (eq 'left-to-right (emacs-redisplay--base-direction "12:34 ... ")))
+  ;; leading neutrals then a strong Hebrew char -> RTL
+  (should (eq 'right-to-left
+              (emacs-redisplay--base-direction (string ?1 ?\s #x05D0 ?a))))
+  ;; leading neutrals then a strong Latin char -> LTR
+  (should (eq 'left-to-right
+              (emacs-redisplay--base-direction (string ?\s ?\s ?a #x05D0)))))
+
+(ert-deftest emacs-redisplay-test-bidi-row-direction ()
+  "Laid-out content rows record their base paragraph direction."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "hello"
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0)))
+          (should (eq 'left-to-right
+                      (emacs-redisplay-glyph-row-direction row)))))))
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b (string #x05E9 #x05DC #x05DD)
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0)))
+          (should (eq 'right-to-left
+                      (emacs-redisplay-glyph-row-direction row))))))))
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."
