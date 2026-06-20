@@ -974,8 +974,11 @@ char width and codepoint must stay intact so they do not regress."
   (should (eq 'R (emacs-redisplay--char-bidi-class #x05D0)))  ; HEBREW ALEF
   (should (eq 'AL (emacs-redisplay--char-bidi-class #x0627))) ; ARABIC ALEF
   (should (eq 'EN (emacs-redisplay--char-bidi-class ?5)))     ; digits are EN
+  (should (eq 'CS (emacs-redisplay--char-bidi-class ?.)))     ; . common separator
+  (should (eq 'ES (emacs-redisplay--char-bidi-class ?+)))     ; + - separators
+  (should (eq 'ET (emacs-redisplay--char-bidi-class ?%)))     ; % terminator
   (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\s)))
-  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?.))))
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\;))))
 
 (ert-deftest emacs-redisplay-test-bidi-base-direction ()
   "Base direction follows the first strong char (UAX #9 P2/P3)."
@@ -1237,6 +1240,52 @@ rule N2 falls back to the base direction when the sides disagree."
                     (vector (funcall mk ?a) (funcall mk ?\s)
                             (funcall mk #x05D0))
                     0)))))
+
+;;; H'''''''''''. bidi weak resolution — rules W2-W7 (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-resolve-weak-unit ()
+  "bidi-resolve-weak: W4 (separator between EN), W6 (lone separator -> neutral),
+W2+W3 (EN after AL -> AN, AL -> R), W5 (ET adjacent to EN -> EN),
+W7 (EN after L -> L)."
+  ;; W4: CS between two EN -> EN
+  (let ((cl (vector 'EN 'CS 'EN)))
+    (emacs-redisplay--bidi-resolve-weak cl 1)
+    (should (equal [EN EN EN] cl)))
+  ;; W6: a CS not between numbers becomes a neutral
+  (let ((cl (vector 'L 'CS 'L)))
+    (emacs-redisplay--bidi-resolve-weak cl 0)
+    (should (equal [L neutral L] cl)))
+  ;; W2 + W3: EN after AL -> AN, then AL -> R
+  (let ((cl (vector 'AL 'EN)))
+    (emacs-redisplay--bidi-resolve-weak cl 1)
+    (should (equal [R AN] cl)))
+  ;; W5: a run of ET next to EN -> EN (base RTL so W7 leaves the EN as EN)
+  (let ((cl (vector 'EN 'ET 'ET)))
+    (emacs-redisplay--bidi-resolve-weak cl 1)
+    (should (equal [EN EN EN] cl)))
+  ;; W7: EN after an L -> L
+  (let ((cl (vector 'L 'EN)))
+    (emacs-redisplay--bidi-resolve-weak cl 0)
+    (should (equal [L L] cl))))
+
+(ert-deftest emacs-redisplay-test-bidi-number-with-separator ()
+  "Rule W4: a separator inside a number (\"3.14\") keeps the number together
+as one left-to-right run inside RTL text (not split into \"14.3\")."
+  (emacs-redisplay-test--with-fresh-world
+    ;; logical: alef(1) 3(2) .(3) 1(4) 4(5) — base RTL
+    (emacs-redisplay-test--with-buffer b (concat (string #x05D0) "3.14")
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
+          ;; right-aligned last 5 cells = "3.14" then alef
+          (should (eq ?3 (emacs-redisplay-glyph-char (aref v (- W 5)))))
+          (should (eq ?. (emacs-redisplay-glyph-char (aref v (- W 4)))))
+          (should (eq ?1 (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (eq ?4 (emacs-redisplay-glyph-char (aref v (- W 2)))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1))))))))))
 
 
 (ert-deftest emacs-redisplay-test-redisplay-skips-invisible-property ()

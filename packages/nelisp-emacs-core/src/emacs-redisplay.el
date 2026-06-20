@@ -1041,6 +1041,18 @@ CJK letters are L."
     'AL)
    ;; EN: European numbers (read left-to-right even inside RTL)
    ((and (>= ch ?0) (<= ch ?9)) 'EN)
+   ;; AN: Arabic-Indic / Extended Arabic-Indic numbers
+   ((or (and (>= ch #x0660) (<= ch #x0669))
+        (and (>= ch #x06F0) (<= ch #x06F9)))
+    'AN)
+   ;; ES: European number separator (+ -)
+   ((or (= ch ?+) (= ch ?-)) 'ES)
+   ;; ET: European number terminator ($ % # currencies degree)
+   ((or (= ch ?$) (= ch ?%) (= ch ?#)
+        (= ch #x00B0) (= ch #x00A3) (= ch #x00A5) (= ch #x20AC))
+    'ET)
+   ;; CS: common number separator (, . : /)
+   ((or (= ch ?,) (= ch ?.) (= ch ?:) (= ch ?/)) 'CS)
    ;; strong L: ASCII letters, Latin-1/Extended letters, CJK and beyond
    ((or (and (>= ch ?A) (<= ch ?Z))
         (and (>= ch ?a) (<= ch ?z))
@@ -1087,7 +1099,7 @@ get BASE-LEVEL+1 (even level); neutrals take the base level."
     (cond
      ((eq cls 'L)  (if base-rtl (1+ base-level) base-level))
      ((or (eq cls 'R) (eq cls 'AL)) (if base-rtl base-level (1+ base-level)))
-     ((eq cls 'EN) (if base-rtl (1+ base-level) base-level))
+     ((or (eq cls 'EN) (eq cls 'AN)) (if base-rtl (1+ base-level) base-level))
      (t base-level))))
 
 (defun emacs-redisplay--reverse-subrange (vec i j)
@@ -1108,8 +1120,56 @@ For neutral resolution (rule N1) numbers act as R.  A nil class (a line edge)
 yields the base direction."
   (cond
    ((eq cls 'L) 'L)
-   ((or (eq cls 'R) (eq cls 'AL) (eq cls 'EN)) 'R)
+   ((or (eq cls 'R) (eq cls 'AL) (eq cls 'EN) (eq cls 'AN)) 'R)
    (t (if (= (logand base-level 1) 1) 'R 'L))))
+
+(defun emacs-redisplay--bidi-resolve-weak (classes base-level)
+  "Resolve weak bidi types in CLASSES in place (UAX #9 W2-W7, simplified).
+W1 (NSM) is handled upstream by glyph composition, so it is omitted.  After
+this pass CLASSES holds only L, R, EN, AN, and neutral."
+  (let ((n (length classes))
+        (sos (if (= (logand base-level 1) 1) 'R 'L)))
+    ;; W2: EN -> AN when the last strong type seen is AL.
+    (let ((last-strong sos))
+      (dotimes (i n)
+        (let ((c (aref classes i)))
+          (cond
+           ((memq c '(L R AL)) (setq last-strong c))
+           ((and (eq c 'EN) (eq last-strong 'AL)) (aset classes i 'AN))))))
+    ;; W3: AL -> R.
+    (dotimes (i n) (when (eq (aref classes i) 'AL) (aset classes i 'R)))
+    ;; W4: a single ES or CS between two EN -> EN; a single CS between two AN -> AN.
+    (dotimes (i n)
+      (when (and (> i 0) (< i (1- n)))
+        (let ((c (aref classes i))
+              (p (aref classes (1- i)))
+              (q (aref classes (1+ i))))
+          (cond
+           ((and (memq c '(ES CS)) (eq p 'EN) (eq q 'EN)) (aset classes i 'EN))
+           ((and (eq c 'CS) (eq p 'AN) (eq q 'AN)) (aset classes i 'AN))))))
+    ;; W5: a run of ET adjacent to EN -> EN.
+    (let ((i 0))
+      (while (< i n)
+        (if (eq (aref classes i) 'ET)
+            (let ((j i))
+              (while (and (< j n) (eq (aref classes j) 'ET)) (setq j (1+ j)))
+              (when (or (and (> i 0) (eq (aref classes (1- i)) 'EN))
+                        (and (< j n) (eq (aref classes j) 'EN)))
+                (let ((k i))
+                  (while (< k j) (aset classes k 'EN) (setq k (1+ k)))))
+              (setq i j))
+          (setq i (1+ i)))))
+    ;; W6: any remaining ES / ET / CS -> neutral (ON).
+    (dotimes (i n)
+      (when (memq (aref classes i) '(ES ET CS)) (aset classes i 'neutral)))
+    ;; W7: EN -> L when the last strong type seen is L.
+    (let ((last-strong sos))
+      (dotimes (i n)
+        (let ((c (aref classes i)))
+          (cond
+           ((memq c '(L R)) (setq last-strong c))
+           ((and (eq c 'EN) (eq last-strong 'L)) (aset classes i 'L))))))
+    classes))
 
 (defun emacs-redisplay--bidi-levels (vec base-level)
   "Return a vector of embedding levels for VEC's glyphs (simplified UAX #9).
@@ -1126,6 +1186,8 @@ run instead of splitting it."
         (aset classes i (if g (emacs-redisplay--char-bidi-class
                                (emacs-redisplay-glyph-char g))
                           'neutral))))
+    ;; W2-W7 (weak types) before N1/N2 (neutrals), per UAX #9 ordering
+    (emacs-redisplay--bidi-resolve-weak classes base-level)
     (let ((i 0))
       (while (< i n)
         (if (emacs-redisplay--bidi-neutral-p (aref classes i))
