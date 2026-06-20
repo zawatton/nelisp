@@ -648,6 +648,32 @@ still inspect the unresolved value."
       (error spec)))
    (t spec)))
 
+(defun emacs-redisplay--space-display-width (spec col)
+  "Cell width of a `(space ...)' display SPEC at column COL, or nil.
+SPEC may be a single `(space ...)' spec or a list of display specs (the
+normalized form `nelisp-display-resolve' / Emacs produce, e.g.
+`((space :width 5))').  Honors `(space :width N)' (N cells) and
+`(space :align-to C)' (stretch to column C).  Returns nil when no
+`(space ...)' spec is present so callers fall back to the normal
+character width.  Image / slice specs are not handled yet (they need
+backend glyph support)."
+  (cond
+   ((not (consp spec)) nil)
+   ((eq (car spec) 'space)
+    (let ((w (plist-get (cdr spec) :width))
+          (a (plist-get (cdr spec) :align-to)))
+      (cond
+       ((numberp w) (max 1 (truncate w)))
+       ((numberp a) (max 1 (- (truncate a) col)))
+       (t 1))))
+   (t
+    ;; a list of display specs -- use the first `(space ...)' found
+    (let (result)
+      (dolist (s spec)
+        (when (and (null result) (consp s) (eq (car s) 'space))
+          (setq result (emacs-redisplay--space-display-width s col))))
+      result))))
+
 (defun emacs-redisplay--overlays-in (beg end &optional buffer)
   "Return overlays touching [BEG, END) in BUFFER, or nil if API absent."
   (cond
@@ -1281,25 +1307,30 @@ the overlay anchor position."
                  (display (emacs-redisplay--text-property-at pos 'display buffer))
                  (mouse-face (emacs-redisplay--text-property-at
                               pos 'mouse-face buffer))
+                 (display-spec (emacs-redisplay--resolve-display display nil))
+                 ;; A `(space :width/:align-to ...)' display spec overrides the
+                 ;; cell width and renders blank; other specs keep the char.
+                 (space-w (emacs-redisplay--space-display-width
+                           display-spec col))
+                 (ew (or space-w (max 1 cw)))
                  (g (emacs-redisplay--make-glyph
-                     :char ch
+                     :char (if space-w ?\s ch)
                      :face (emacs-redisplay--resolve-face face)
                      :realized-face (emacs-redisplay-realize-face face)
                      :face-id 0
-                     :width (max 1 cw)
+                     :width ew
                      :composition nil
-                     :display-spec (emacs-redisplay--resolve-display
-                                    display nil)
+                     :display-spec display-spec
                      :mouse-face mouse-face
                      :buf-pos pos)))
             (when overlays
               (emacs-redisplay--apply-overlay-face g overlays pos))
             (cond
-             ((>= (+ col (max 1 cw)) (1+ width))
+             ((>= (+ col ew) (1+ width))
               (setq overflow t))
              (t
               (aset used col g)
-              (setq col (+ col (max 1 cw))
+              (setq col (+ col ew)
                     pos (1+ pos))
               (setq col (emacs-redisplay--emit-after-strings
                          overlays pos used col width))

@@ -844,6 +844,61 @@ merge is exercised without the upstream `nelisp-ovly' storage layer."
               (should (eq 'from-overlay
                           (emacs-redisplay-glyph-mouse-face (aref vec 1)))))))))))
 
+;;; H''. display property — (space ...) stretch (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-display-space-width ()
+  "A `(space :width N)' display property makes the glyph N cells wide."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "aX"
+      (emacs-buffer-put-text-property 1 2 'display '(space :width 5) b)
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          ;; pos 1 ("a") becomes a 5-cell blank stretch; "X" follows at col 5
+          (should (= 5 (emacs-redisplay-glyph-width (aref vec 0))))
+          (should (eq ?\s (emacs-redisplay-glyph-char (aref vec 0))))
+          ;; the resolved spec is normalized to a list of specs
+          (should (emacs-redisplay-glyph-display-spec (aref vec 0)))
+          (should (eq ?X (emacs-redisplay-glyph-char (aref vec 5)))))))))
+
+(ert-deftest emacs-redisplay-test-display-space-align-to ()
+  "A `(space :align-to C)' display property stretches to column C."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abZ"
+      ;; space spec on pos 3 ("Z"), which lays out at col 2 -> stretch to
+      ;; col 8 = width 6
+      (emacs-buffer-put-text-property 3 4 'display '(space :align-to 8) b)
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq ?a (emacs-redisplay-glyph-char (aref vec 0))))
+          (should (eq ?b (emacs-redisplay-glyph-char (aref vec 1))))
+          (should (= 6 (emacs-redisplay-glyph-width (aref vec 2))))
+          (should (eq ?\s (emacs-redisplay-glyph-char (aref vec 2)))))))))
+
+(ert-deftest emacs-redisplay-test-display-non-space-keeps-char ()
+  "A non-`(space ...)' display spec is stored but does not change layout.
+Image/slice specs need backend glyph support (later increment); the
+char width and codepoint must stay intact so they do not regress."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "aX"
+      (emacs-buffer-put-text-property 1 2 'display '(image :file "x.png") b)
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          (should (= 1 (emacs-redisplay-glyph-width (aref vec 0))))
+          (should (eq ?a (emacs-redisplay-glyph-char (aref vec 0))))
+          (should (eq ?X (emacs-redisplay-glyph-char (aref vec 1)))))))))
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."
