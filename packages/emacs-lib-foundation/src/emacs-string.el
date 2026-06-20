@@ -184,6 +184,30 @@ CASE-FOLD non-nil compares via `downcase'."
           res)
       s)))
 
+;;;; --- Doc 16 breadth: subr-x / subr string builtins (were void) -------
+;; `string-equal-ignore-case' / `string-clean-whitespace' (subr-x.el) and
+;; `string-split' (subr.el alias) were void in the standalone runtime.
+;; Gated on `unless (fboundp ...)'.  The reader treats POSIX `[[:blank:]]'
+;; classes literally (verified by direct --load), so
+;; `string-clean-whitespace' uses an explicit `[ \t\r\n]+' character set.
+
+(unless (fboundp 'string-equal-ignore-case)
+  (defun string-equal-ignore-case (string1 string2)
+    "Compare STRING1 and STRING2 case-insensitively (= naive `downcase').
+Upper-case and lower-case letters are treated as equal."
+    (string-equal (downcase string1) (downcase string2))))
+
+(unless (fboundp 'string-clean-whitespace)
+  (defun string-clean-whitespace (string)
+    "Clean up whitespace in STRING.
+All sequences of whitespace in STRING are collapsed into a single
+space character, and leading/trailing whitespace is removed."
+    (string-trim (replace-regexp-in-string "[ \t\r\n]+" " " string t t))))
+
+(unless (fboundp 'string-split)
+  (defalias 'string-split #'split-string
+    "Split STRING into a list of substrings.  Alias of `split-string'."))
+
 (provide 'emacs-string)
 
 ;;; emacs-string.el ends here

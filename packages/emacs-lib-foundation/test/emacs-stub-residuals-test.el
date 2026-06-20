@@ -405,6 +405,27 @@ must be able to overwrite early bootstrap stubs with real substrates."
     (should (eq before-frame-selected-win (symbol-function 'frame-selected-window)))
     (should (eq before-display-graphic-p  (symbol-function 'display-graphic-p)))))
 
+;;;; I. Doc 16 breadth — foundational subr builtins (xor / ntake / char-uppercase-p)
+
+(ert-deftest emacs-stub-residuals-test/doc16-breadth-subr-builtins ()
+  "Doc 16 breadth: `xor' / `ntake' / `char-uppercase-p' were void in the
+standalone runtime.  Host Emacs supplies the real builtins, so this pins
+the contract the gated polyfills mirror."
+  ;; xor
+  (should (eq t (xor t nil)))
+  (should (eq 5 (xor nil 5)))
+  (should-not (xor t t))
+  (should-not (xor nil nil))
+  ;; ntake (destructive prefix)
+  (should (equal '(1 2) (ntake 2 (list 1 2 3 4))))
+  (should-not (ntake 0 (list 1 2)))
+  (should (equal '(1 2 3) (ntake 5 (list 1 2 3))))
+  ;; char-uppercase-p
+  (should (char-uppercase-p ?A))
+  (should (char-uppercase-p ?Z))
+  (should-not (char-uppercase-p ?a))
+  (should-not (char-uppercase-p ?5)))
+
 (provide 'emacs-stub-residuals-test)
 
 ;;; emacs-stub-residuals-test.el ends here
