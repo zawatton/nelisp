@@ -22683,6 +22683,35 @@
           nil)
         cmd))
 
+(fset 'files--bridge-delete-insert-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "delete-char")
+                t
+              (if (equal cmd "backward-delete-char")
+                  t
+                (equal cmd "delete-backward-char")))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "self-insert-command")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "insert-char")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23961,39 +23990,7 @@
               (setq cmd (files--bridge-kill-abbrev-writeback-current-context cmd))
               (setq cmd (files--bridge-mark-count-eval-writeback-current-context cmd))
               (setq cmd (files--bridge-paragraph-region-edit-writeback-current-context cmd))
-              (if (equal cmd "delete-char")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-delete-char")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "delete-backward-char")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "self-insert-command")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "insert-char")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-delete-insert-writeback-current-context cmd))
               (if (equal cmd "emoji-insert")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)

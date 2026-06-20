@@ -423,6 +423,23 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、paragraph/region edit command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の delete/insert writeback chunk を
+  =files--bridge-delete-insert-writeback-current-context= へ切り出した。
+  - 対象は =delete-char= / =backward-delete-char= /
+    =delete-backward-char= / =self-insert-command= / =insert-char=。
+  - helper 内では buf+point、buf+point+mark、buf+point+mark+modeline の
+    branch に分けた。
+  - command-writeback-chain の direct transport write は 377 から 371、
+    =files--write*= helper は 427 から 420、=equal cmd= tests は 239 から 234。
+    これは delete/insert block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-delete-insert-writeback-current-context= が 1 件追加され、
+    =setq= は 604 から 594、=if= は 291 から 286 へ減少。
+  - =standalone-save-and-transform= は 108.496177 秒で pass。
+  - =standalone-bridge-delete-insert-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、delete/insert command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -638,7 +655,8 @@ make nemacs-gui-bridge-run-shape
    kill/abbrev chunk も helper 化済み。
    mark/count/eval chunk も helper 化済み。
    paragraph/region edit chunk も helper 化済み。
-   次は command-writeback-chain 内の =delete-char= から始まる local editing 系の小さい chunk を
+   delete/insert chunk も helper 化済み。
+   次は command-writeback-chain 内の =emoji-insert= から始まる emoji 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。

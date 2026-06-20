@@ -16259,6 +16259,70 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-delete-insert-writeback-helper ()
+  "Bridge delete/insert writeback helper should write matching state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-delete-insert-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"alphaXbeta\")
+                       (setq files--modeline-string \"Insert: A\")
+                       (setq files--point 7)
+                       (setq files--mark 2)
+                       (fset 'capture-delete-insert-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-delete-insert-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-delete-insert-writeback-helper\"
+                        (concat
+                         (capture-delete-insert-writeback \"delete-char\")
+                         \"\\t\"
+                         (capture-delete-insert-writeback
+                          \"backward-delete-char\")
+                         \"\\t\"
+                         (capture-delete-insert-writeback
+                          \"delete-backward-char\")
+                         \"\\t\"
+                         (capture-delete-insert-writeback
+                          \"self-insert-command\")
+                         \"\\t\"
+                         (capture-delete-insert-writeback \"insert-char\")
+                         \"\\t\"
+                         (capture-delete-insert-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "delete-char:written\tbackward-delete-char:written\tdelete-backward-char:written\tself-insert-command:written\tinsert-char:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "alphaXbeta"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "Insert: A"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-modeline")))
+              (should (equal "00007"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00002"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
