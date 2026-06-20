@@ -1039,6 +1039,8 @@ CJK letters are L."
         (and (>= ch #xFB50) (<= ch #xFDFF))
         (and (>= ch #xFE70) (<= ch #xFEFF)))
     'AL)
+   ;; EN: European numbers (read left-to-right even inside RTL)
+   ((and (>= ch ?0) (<= ch ?9)) 'EN)
    ;; strong L: ASCII letters, Latin-1/Extended letters, CJK and beyond
    ((or (and (>= ch ?A) (<= ch ?Z))
         (and (>= ch ?a) (<= ch ?z))
@@ -1061,6 +1063,139 @@ the direction defaults to `left-to-right'."
       (setq i (1+ i)))
     (or dir 'left-to-right)))
 
+(defun emacs-redisplay--reverse-glyph-vector (vec)
+  "Return a new vector with VEC's glyphs in reverse visual order.
+This is the UAX #9 level-1 reorder applied to a right-to-left paragraph:
+correct for pure-RTL text (each glyph keeps its own `buf-pos', so the visual-
+first glyph is the logical-last char).  Mixed L/R run reordering with proper
+embedding levels (so an embedded Latin/number run keeps its internal order) is
+a follow-up."
+  (let* ((n (length vec))
+         (out (make-vector n nil)))
+    (dotimes (i n)
+      (aset out i (aref vec (- n 1 i))))
+    out))
+
+
+(defun emacs-redisplay--char-level (cls base-level)
+  "Embedding level for a glyph of bidi CLS given BASE-LEVEL (0 or 1).
+Simplified UAX #9 level assignment: a strong char matching the base direction
+stays at BASE-LEVEL; an opposite-direction strong char gets BASE-LEVEL+1 (an
+embedded run); European numbers (EN) read left-to-right, so in an RTL base they
+get BASE-LEVEL+1 (even level); neutrals take the base level."
+  (let ((base-rtl (= (logand base-level 1) 1)))
+    (cond
+     ((eq cls 'L)  (if base-rtl (1+ base-level) base-level))
+     ((or (eq cls 'R) (eq cls 'AL)) (if base-rtl base-level (1+ base-level)))
+     ((eq cls 'EN) (if base-rtl (1+ base-level) base-level))
+     (t base-level))))
+
+(defun emacs-redisplay--reverse-subrange (vec i j)
+  "Reverse VEC[I..J] (inclusive) in place."
+  (while (< i j)
+    (let ((tmp (aref vec i)))
+      (aset vec i (aref vec j))
+      (aset vec j tmp))
+    (setq i (1+ i) j (1- j))))
+
+(defun emacs-redisplay--bidi-neutral-p (cls)
+  "Non-nil when bidi class CLS is a neutral (resolved by rules N1/N2)."
+  (eq cls 'neutral))
+
+(defun emacs-redisplay--bidi-dir-of (cls base-level)
+  "Resolved direction symbol (`L' or `R') of a strong/number class CLS.
+For neutral resolution (rule N1) numbers act as R.  A nil class (a line edge)
+yields the base direction."
+  (cond
+   ((eq cls 'L) 'L)
+   ((or (eq cls 'R) (eq cls 'AL) (eq cls 'EN)) 'R)
+   (t (if (= (logand base-level 1) 1) 'R 'L))))
+
+(defun emacs-redisplay--bidi-levels (vec base-level)
+  "Return a vector of embedding levels for VEC's glyphs (simplified UAX #9).
+Resolve neutral runs by rule N1 -- a run of neutrals between two strong
+contexts of the same direction takes that direction, else the base direction
+(N2) -- then assign levels with `emacs-redisplay--char-level'.  This keeps a
+space or punctuation inside an embedded opposite-direction run attached to that
+run instead of splitting it."
+  (let* ((n (length vec))
+         (classes (make-vector n 'neutral))
+         (levels (make-vector n base-level)))
+    (dotimes (i n)
+      (let ((g (aref vec i)))
+        (aset classes i (if g (emacs-redisplay--char-bidi-class
+                               (emacs-redisplay-glyph-char g))
+                          'neutral))))
+    (let ((i 0))
+      (while (< i n)
+        (if (emacs-redisplay--bidi-neutral-p (aref classes i))
+            (let ((j i))
+              (while (and (< j n)
+                          (emacs-redisplay--bidi-neutral-p (aref classes j)))
+                (setq j (1+ j)))
+              (let* ((before (emacs-redisplay--bidi-dir-of
+                              (and (> i 0) (aref classes (1- i))) base-level))
+                     (after (emacs-redisplay--bidi-dir-of
+                             (and (< j n) (aref classes j)) base-level))
+                     (resolved (if (eq before after)
+                                   before
+                                 (if (= (logand base-level 1) 1) 'R 'L)))
+                     (k i))
+                (while (< k j)
+                  (aset classes k resolved)
+                  (setq k (1+ k))))
+              (setq i j))
+          (setq i (1+ i)))))
+    (dotimes (i n)
+      (aset levels i (emacs-redisplay--char-level (aref classes i) base-level)))
+    levels))
+
+(defun emacs-redisplay--bidi-reorder-glyphs (vec base-level)
+  "Reorder VEC into visual order for BASE-LEVEL (UAX #9 L2, simplified).
+Assign each glyph an embedding level (`emacs-redisplay--char-level'), then for
+L from the maximum level down to 1, reverse every maximal contiguous run of
+glyphs whose level is >= L.  This flips the overall flow for an RTL paragraph
+while leaving embedded opposite-direction runs (a Latin word or a number inside
+Hebrew) in their own internal order.  Returns a new vector; LTR-only text
+(max level 0) is returned in logical order."
+  (let ((n (length vec)))
+    (if (= n 0)
+        vec
+      (let ((levels (emacs-redisplay--bidi-levels vec base-level))
+            (out (make-vector n nil))
+            (maxlevel base-level))
+        (dotimes (i n)
+          (when (> (aref levels i) maxlevel)
+            (setq maxlevel (aref levels i)))
+          (aset out i (aref vec i)))
+        (let ((lev maxlevel))
+          (while (>= lev 1)
+            (let ((i 0))
+              (while (< i n)
+                (if (>= (aref levels i) lev)
+                    (let ((j i))
+                      (while (and (< j n) (>= (aref levels j) lev))
+                        (setq j (1+ j)))
+                      (emacs-redisplay--reverse-subrange out i (1- j))
+                      (emacs-redisplay--reverse-subrange levels i (1- j))
+                      (setq i j))
+                  (setq i (1+ i)))))
+            (setq lev (1- lev))))
+        out))))
+
+(defun emacs-redisplay--right-align-glyphs (vec width)
+  "Return a WIDTH-length vector with VEC's glyphs flush against the right.
+Cells left of the content are nil (rendered blank).  Used to right-align an
+RTL paragraph row against the window's right edge.  When VEC already fills (or
+exceeds) WIDTH it is returned unchanged."
+  (let ((n (length vec)))
+    (if (>= n width)
+        vec
+      (let ((out (make-vector width nil))
+            (pad (- width n)))
+        (dotimes (i n)
+          (aset out (+ pad i) (aref vec i)))
+        out))))
 (defun emacs-redisplay--buffer-name (buffer)
   "Return BUFFER's display name for the MVP mode-line."
   (cond
@@ -1682,11 +1817,20 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
           (emacs-redisplay--clear-row row)
           (let* ((laid (emacs-redisplay--lay-out-line
                         line pos buffer overlays width))
-                 (gvec (car laid))
+                 (dir (emacs-redisplay--base-direction line))
+                 ;; Reorder the laid-out glyphs into visual order (UAX #9 L2)
+                 ;; before they enter the row, so the row hash covers the final
+                 ;; order.  LTR-only rows come back in logical order; embedded
+                 ;; opposite-direction runs keep their own internal order.
+                 (gvec (emacs-redisplay--bidi-reorder-glyphs
+                        (car laid) (if (eq dir 'right-to-left) 1 0)))
+                 ;; RTL paragraphs sit flush against the window's right edge
+                 (gvec (if (eq dir 'right-to-left)
+                           (emacs-redisplay--right-align-glyphs gvec width)
+                         gvec))
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
-            (setf (emacs-redisplay-glyph-row-direction row)
-                  (emacs-redisplay--base-direction line))
+            (setf (emacs-redisplay-glyph-row-direction row) dir)
             (aset cache row-idx (cons line (cons ovly-fp tp-fp))))))
         (setq pos next-pos-est
               row-idx (1+ row-idx))))
@@ -1748,17 +1892,34 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
           (when (and s e (<= s point) (<= point e))
             (let* ((vec (emacs-redisplay-glyph-row-glyphs row))
                    (used (emacs-redisplay-glyph-row-used row))
-                   (col 0))
-              (catch 'col-done
-                (dotimes (i used)
-                  (let* ((g (aref vec i))
-                         (bp (and g (emacs-redisplay--effective-buf-pos
-                                     row g))))
-                    (when (and bp (>= bp point))
-                      (setq col i)
-                      (throw 'col-done nil))
-                    (setq col (1+ i)))))
-              (setq found (cons r col)))
+                   (dir (emacs-redisplay-glyph-row-direction row)))
+              (if (eq dir 'right-to-left)
+                  ;; RTL: POINT's glyph sits at its visual column; end-of-line
+                  ;; sits just left of the visual-leftmost (logical-last) char.
+                  (let ((col nil) (leftmost nil) (n (length vec)) (i 0))
+                    (while (< i n)
+                      (let* ((g (aref vec i))
+                             (bp (and g (emacs-redisplay--effective-buf-pos
+                                         row g))))
+                        (when bp
+                          (when (null leftmost) (setq leftmost i))
+                          (when (and (null col) (= bp point)) (setq col i))))
+                      (setq i (1+ i)))
+                    (setq found
+                          (cons r (or col
+                                      (if leftmost (max 0 (1- leftmost)) 0)))))
+                ;; LTR: first glyph at or past POINT (logical order).
+                (let ((col 0))
+                  (catch 'col-done
+                    (dotimes (i used)
+                      (let* ((g (aref vec i))
+                             (bp (and g (emacs-redisplay--effective-buf-pos
+                                         row g))))
+                        (when (and bp (>= bp point))
+                          (setq col i)
+                          (throw 'col-done nil))
+                        (setq col (1+ i)))))
+                  (setq found (cons r col)))))
             (throw 'done nil)))))
     found))
 
