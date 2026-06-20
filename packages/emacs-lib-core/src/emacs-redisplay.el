@@ -1098,6 +1098,58 @@ get BASE-LEVEL+1 (even level); neutrals take the base level."
       (aset vec j tmp))
     (setq i (1+ i) j (1- j))))
 
+(defun emacs-redisplay--bidi-neutral-p (cls)
+  "Non-nil when bidi class CLS is a neutral (resolved by rules N1/N2)."
+  (eq cls 'neutral))
+
+(defun emacs-redisplay--bidi-dir-of (cls base-level)
+  "Resolved direction symbol (`L' or `R') of a strong/number class CLS.
+For neutral resolution (rule N1) numbers act as R.  A nil class (a line edge)
+yields the base direction."
+  (cond
+   ((eq cls 'L) 'L)
+   ((or (eq cls 'R) (eq cls 'AL) (eq cls 'EN)) 'R)
+   (t (if (= (logand base-level 1) 1) 'R 'L))))
+
+(defun emacs-redisplay--bidi-levels (vec base-level)
+  "Return a vector of embedding levels for VEC's glyphs (simplified UAX #9).
+Resolve neutral runs by rule N1 -- a run of neutrals between two strong
+contexts of the same direction takes that direction, else the base direction
+(N2) -- then assign levels with `emacs-redisplay--char-level'.  This keeps a
+space or punctuation inside an embedded opposite-direction run attached to that
+run instead of splitting it."
+  (let* ((n (length vec))
+         (classes (make-vector n 'neutral))
+         (levels (make-vector n base-level)))
+    (dotimes (i n)
+      (let ((g (aref vec i)))
+        (aset classes i (if g (emacs-redisplay--char-bidi-class
+                               (emacs-redisplay-glyph-char g))
+                          'neutral))))
+    (let ((i 0))
+      (while (< i n)
+        (if (emacs-redisplay--bidi-neutral-p (aref classes i))
+            (let ((j i))
+              (while (and (< j n)
+                          (emacs-redisplay--bidi-neutral-p (aref classes j)))
+                (setq j (1+ j)))
+              (let* ((before (emacs-redisplay--bidi-dir-of
+                              (and (> i 0) (aref classes (1- i))) base-level))
+                     (after (emacs-redisplay--bidi-dir-of
+                             (and (< j n) (aref classes j)) base-level))
+                     (resolved (if (eq before after)
+                                   before
+                                 (if (= (logand base-level 1) 1) 'R 'L)))
+                     (k i))
+                (while (< k j)
+                  (aset classes k resolved)
+                  (setq k (1+ k))))
+              (setq i j))
+          (setq i (1+ i)))))
+    (dotimes (i n)
+      (aset levels i (emacs-redisplay--char-level (aref classes i) base-level)))
+    levels))
+
 (defun emacs-redisplay--bidi-reorder-glyphs (vec base-level)
   "Reorder VEC into visual order for BASE-LEVEL (UAX #9 L2, simplified).
 Assign each glyph an embedding level (`emacs-redisplay--char-level'), then for
@@ -1109,17 +1161,12 @@ Hebrew) in their own internal order.  Returns a new vector; LTR-only text
   (let ((n (length vec)))
     (if (= n 0)
         vec
-      (let ((levels (make-vector n base-level))
+      (let ((levels (emacs-redisplay--bidi-levels vec base-level))
             (out (make-vector n nil))
             (maxlevel base-level))
         (dotimes (i n)
-          (let* ((g (aref vec i))
-                 (cls (if g (emacs-redisplay--char-bidi-class
-                             (emacs-redisplay-glyph-char g))
-                        'neutral))
-                 (lvl (emacs-redisplay--char-level cls base-level)))
-            (aset levels i lvl)
-            (when (> lvl maxlevel) (setq maxlevel lvl)))
+          (when (> (aref levels i) maxlevel)
+            (setq maxlevel (aref levels i)))
           (aset out i (aref vec i)))
         (let ((lev maxlevel))
           (while (>= lev 1)
