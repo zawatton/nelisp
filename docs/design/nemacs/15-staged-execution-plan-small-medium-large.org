@@ -228,6 +228,21 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   セッション (例 dev/nelix の perf apply) の reader も巻き添えにする。lock/proc 掃除
   無しでも本 round の boot は 16s で成功した。静的 gap 分析 (probe × grep) は full
   package load 不要で安全・高速、reader 起動回数を最小化できる。
+- *Doc 16 breadth round 2 — seq/map facade を bundle 収録 (2026-06-21)*:
+  full-runtime =fboundp= probe (boot が ground truth、grep は cl-defmethod/facade
+  定義を誤判定) で seq-sort / seq-min / seq-first / seq-map-indexed / map-elt /
+  map-keys 等が *軒並み VOID* と判明。原因 = =src/seq.el= / =src/map.el= は API を
+  定義済みだが bundle 未収録 (=collect-loaded-src-files= は host-load 依存集合のみ。
+  src 178 file 中 bundle は 100)。対処: 両 file を =nelisp-bootstrap-extra-files=
+  (cl-lib.el 直後、require 充足) に追加し bundle 収録 (102 files)。併せて seq facade の
+  欠落集合演算を補完: =seq-partition= / =seq-mapcat= / =seq-keep= / =seq-difference= /
+  =seq-intersection= / =seq-union= / =seq-reverse= (=seq-reverse= は host で preloaded
+  =cl-defgeneric= のため =unless (fboundp)= gate = arglist 警告回避 + host generic 温存)。
+  検証: full boot で ~25 seq/map 関数 (bare-builtin override の seq-map/filter/reduce/
+  uniq 含む) regression 無し全 ok (boot 16s)、host ERT seq-test+map-test 14/14
+  (seq-test +1)、seq.el byte-compile 新規警告 0 (HEAD の pre-existing 7 と同数)。
+  所見: facade file が「定義済みだが未 bundle」で全 VOID という failure mode は grep
+  では見抜けず、full-runtime fboundp probe が必須。commit 1d406a0。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
