@@ -1147,6 +1147,38 @@ char width and codepoint must stay intact so they do not regress."
   (let ((vv (vector (emacs-redisplay--make-glyph :char ?a))))
     (should (eq vv (emacs-redisplay--right-align-glyphs vv 1)))))
 
+;;; H'''''''''. bidi RTL cursor mapping (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-rtl-cursor ()
+  "In an RTL row the cursor starts at the right edge and moves left as point
+advances; end-of-line sits just left of the content."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b (string #x05D0 #x05D1 #x05D2)
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let ((W (emacs-redisplay-glyph-matrix-width
+                  (emacs-redisplay-redisplay-window h w))))
+          (cl-flet ((ccol (p)
+                      (emacs-window-set-window-point w p)
+                      (cdr (emacs-redisplay-glyph-matrix-cursor
+                            (emacs-redisplay-redisplay-window h w)))))
+            (should (= (- W 1) (ccol 1)))   ; alef (logical first) at right edge
+            (should (= (- W 2) (ccol 2)))   ; bet
+            (should (= (- W 3) (ccol 3)))   ; gimel
+            (should (= (- W 4) (ccol 4)))))))))  ; end-of-line, left of content
+
+(ert-deftest emacs-redisplay-test-bidi-ltr-cursor-unchanged ()
+  "An LTR row keeps logical cursor mapping (col == offset from line start)."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (emacs-window-set-window-point w 2)
+        (let ((cur (emacs-redisplay-glyph-matrix-cursor
+                    (emacs-redisplay-redisplay-window h w))))
+          (should (= 0 (car cur)))
+          (should (= 1 (cdr cur))))))))   ; point 2 = col 1 in "abc"
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."

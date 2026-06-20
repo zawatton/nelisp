@@ -1845,17 +1845,34 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
           (when (and s e (<= s point) (<= point e))
             (let* ((vec (emacs-redisplay-glyph-row-glyphs row))
                    (used (emacs-redisplay-glyph-row-used row))
-                   (col 0))
-              (catch 'col-done
-                (dotimes (i used)
-                  (let* ((g (aref vec i))
-                         (bp (and g (emacs-redisplay--effective-buf-pos
-                                     row g))))
-                    (when (and bp (>= bp point))
-                      (setq col i)
-                      (throw 'col-done nil))
-                    (setq col (1+ i)))))
-              (setq found (cons r col)))
+                   (dir (emacs-redisplay-glyph-row-direction row)))
+              (if (eq dir 'right-to-left)
+                  ;; RTL: POINT's glyph sits at its visual column; end-of-line
+                  ;; sits just left of the visual-leftmost (logical-last) char.
+                  (let ((col nil) (leftmost nil) (n (length vec)) (i 0))
+                    (while (< i n)
+                      (let* ((g (aref vec i))
+                             (bp (and g (emacs-redisplay--effective-buf-pos
+                                         row g))))
+                        (when bp
+                          (when (null leftmost) (setq leftmost i))
+                          (when (and (null col) (= bp point)) (setq col i))))
+                      (setq i (1+ i)))
+                    (setq found
+                          (cons r (or col
+                                      (if leftmost (max 0 (1- leftmost)) 0)))))
+                ;; LTR: first glyph at or past POINT (logical order).
+                (let ((col 0))
+                  (catch 'col-done
+                    (dotimes (i used)
+                      (let* ((g (aref vec i))
+                             (bp (and g (emacs-redisplay--effective-buf-pos
+                                         row g))))
+                        (when (and bp (>= bp point))
+                          (setq col i)
+                          (throw 'col-done nil))
+                        (setq col (1+ i)))))
+                  (setq found (cons r col)))))
             (throw 'done nil)))))
     found))
 
