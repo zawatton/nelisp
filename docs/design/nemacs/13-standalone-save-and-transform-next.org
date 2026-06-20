@@ -383,6 +383,23 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、kill/abbrev command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の mark/count/eval writeback chunk を
+  =files--bridge-mark-count-eval-writeback-current-context= へ切り出した。
+  - 対象は =mark-word= / =count-words-region= /
+    =count-lines-page= / =eval-last-sexp= / =eval-expression=。
+  - =mark-word= は point+mark、count/eval 系は modeline+point+mark を
+    helper 内で分けた。
+  - command-writeback-chain の direct transport write は 400 から 396、
+    =files--write*= helper は 476 から 466、=equal cmd= tests は 268 から 263。
+    これは mark/count/eval block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-mark-count-eval-writeback-current-context= が 1 件追加され、
+    =setq= は 654 から 646、=if= は 320 から 315 へ減少。
+  - =standalone-save-and-transform= は 108.376 秒で pass。
+  - =standalone-bridge-mark-count-eval-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、mark/count/eval command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -596,7 +613,8 @@ make nemacs-gui-bridge-run-shape
    helper 化済み。customize chunk と side/window resize chunk も helper 化済み。
    word/sexp/defun motion chunk も helper 化済み。
    kill/abbrev chunk も helper 化済み。
-   次は command-writeback-chain 内の mark/count/eval 系の小さい chunk を
+   mark/count/eval chunk も helper 化済み。
+   次は command-writeback-chain 内の paragraph/region edit 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
