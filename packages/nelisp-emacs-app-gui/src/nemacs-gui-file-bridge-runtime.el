@@ -22409,6 +22409,45 @@
           nil)
         cmd))
 
+(fset 'files--bridge-magit-vc-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "magit-status")
+                t
+              (if (equal cmd "magit-stage-file")
+                  t
+                (if (equal cmd "magit-unstage-file")
+                    t
+                  (if (equal cmd "magit-diff")
+                      t
+                    (if (equal cmd "magit-log")
+                        t
+                      (equal cmd "vc-root-diff"))))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "magit-commit")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23680,41 +23719,7 @@
               (setq cmd (files--bridge-window-state-writeback-current-context cmd))
               (setq cmd (files--bridge-dired-writeback-current-context cmd))
               (setq cmd (files--bridge-org-writeback-current-context cmd))
-              (if (if (equal cmd "magit-status")
-                      t
-                    (if (equal cmd "magit-stage-file")
-                        t
-                      (if (equal cmd "magit-unstage-file")
-                          t
-                        (if (equal cmd "magit-diff")
-                            t
-                          (if (equal cmd "magit-log")
-                              t
-                            (equal cmd "vc-root-diff"))))))
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "magit-commit")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-magit-vc-writeback-current-context cmd))
               (if (if (equal cmd "customize-variable")
                       t
                     (equal cmd "customize-save-variable"))

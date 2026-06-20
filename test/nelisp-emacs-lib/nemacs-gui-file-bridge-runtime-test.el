@@ -15651,6 +15651,90 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-magit-vc-writeback-helper ()
+  "Bridge magit/vc writeback helper should write repository buffer state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-magit-vc-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"On branch main\\n M file.el\\n\")
+                       (setq files--current-file-name
+                             \"/tmp/nemacs-vc-file.el\")
+                       (setq files--buffer-name \"MagitStatus\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--modeline-string \"Magit modeline\")
+                       (setq files--point 19)
+                       (setq files--mark 4)
+                       (setq files--window-start 3)
+                       (fset 'capture-magit-vc-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-magit-vc-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-magit-vc-writeback-helper\"
+                        (concat
+                         (capture-magit-vc-writeback \"magit-status\")
+                         \"\\t\"
+                         (capture-magit-vc-writeback
+                          \"magit-stage-file\")
+                         \"\\t\"
+                         (capture-magit-vc-writeback
+                          \"magit-unstage-file\")
+                         \"\\t\"
+                         (capture-magit-vc-writeback \"magit-diff\")
+                         \"\\t\"
+                         (capture-magit-vc-writeback \"magit-log\")
+                         \"\\t\"
+                         (capture-magit-vc-writeback \"vc-root-diff\")
+                         \"\\t\"
+                         (capture-magit-vc-writeback \"magit-commit\")
+                         \"\\t\"
+                         (capture-magit-vc-writeback \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "magit-status:written\tmagit-stage-file:written\tmagit-unstage-file:written\tmagit-diff:written\tmagit-log:written\tvc-root-diff:written\tmagit-commit:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "On branch main\n M file.el\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/nemacs-vc-file.el"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "MagitStatus"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              (should (equal "Magit modeline"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-modeline")))
+              (should (equal "00019"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00004"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here

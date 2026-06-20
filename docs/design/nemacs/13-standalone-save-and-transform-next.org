@@ -290,6 +290,23 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、org command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の magit/vc writeback chunk を
+  =files--bridge-magit-vc-writeback-current-context= へ切り出した。
+  - 対象は =magit-status= / =magit-stage-file= /
+    =magit-unstage-file= / =magit-diff= / =magit-log= /
+    =vc-root-diff= / =magit-commit=。
+  - =magit-commit= は modeline writeback も含む。
+  - command-writeback-chain の direct transport write は 439 から 430、
+    =files--write*= helper は 545 から 539、=equal cmd= tests は 316 から 309。
+    これは magit/vc block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-magit-vc-writeback-current-context= が 1 件追加され、
+    =setq= は 730 から 720、=if= は 371 から 362 へ減少。
+  - =standalone-save-and-transform= は 108.272 秒で pass。
+  - =standalone-bridge-magit-vc-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、magit/vc command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -499,8 +516,9 @@ make nemacs-gui-bridge-run-shape
 5. direct-cmd の common read/writeback setup、family writeback chunk、prefix writeback
    chunk、project writeback chunk、find-file variants chunk、read-only chunk、
    buffer switch chunk、display-buffer chunk、register chunk、window layout chunk、
-   window split chunk、window state chunk、dired chunk、org chunk は helper 化済み。
-   次は command-writeback-chain 内の magit/vc 系の小さい chunk を
+   window split chunk、window state chunk、dired chunk、org chunk、magit/vc chunk は
+   helper 化済み。
+   次は command-writeback-chain 内の customize 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
