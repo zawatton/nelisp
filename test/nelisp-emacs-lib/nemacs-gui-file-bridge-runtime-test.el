@@ -15365,6 +15365,65 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-window-split-writeback-helper ()
+  "Bridge window split writeback helper should write split state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-window-split-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--window-layout \"window-split-layout\")
+                       (setq files--window-selected \"10\")
+                       (setq files--window-split-delta 6)
+                       (fset 'capture-window-split-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-window-split-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-window-split-writeback-helper\"
+                        (concat
+                         (capture-window-split-writeback
+                          \"fit-window-to-buffer\")
+                         \"\\t\"
+                         (capture-window-split-writeback
+                          \"delete-windows-on\")
+                         \"\\t\"
+                         (capture-window-split-writeback
+                          \"split-root-window-below\")
+                         \"\\t\"
+                         (capture-window-split-writeback
+                          \"split-root-window-right\")
+                         \"\\t\"
+                         (capture-window-split-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "fit-window-to-buffer:written\tdelete-windows-on:written\tsplit-root-window-below:written\tsplit-root-window-right:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "window-split-layout"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "10"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "6"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-split-delta")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
