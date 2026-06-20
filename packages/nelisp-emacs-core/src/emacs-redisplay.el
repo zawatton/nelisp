@@ -1135,6 +1135,20 @@ Hebrew) in their own internal order.  Returns a new vector; LTR-only text
                   (setq i (1+ i)))))
             (setq lev (1- lev))))
         out))))
+
+(defun emacs-redisplay--right-align-glyphs (vec width)
+  "Return a WIDTH-length vector with VEC's glyphs flush against the right.
+Cells left of the content are nil (rendered blank).  Used to right-align an
+RTL paragraph row against the window's right edge.  When VEC already fills (or
+exceeds) WIDTH it is returned unchanged."
+  (let ((n (length vec)))
+    (if (>= n width)
+        vec
+      (let ((out (make-vector width nil))
+            (pad (- width n)))
+        (dotimes (i n)
+          (aset out (+ pad i) (aref vec i)))
+        out))))
 (defun emacs-redisplay--buffer-name (buffer)
   "Return BUFFER's display name for the MVP mode-line."
   (cond
@@ -1763,6 +1777,10 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
                  ;; opposite-direction runs keep their own internal order.
                  (gvec (emacs-redisplay--bidi-reorder-glyphs
                         (car laid) (if (eq dir 'right-to-left) 1 0)))
+                 ;; RTL paragraphs sit flush against the window's right edge
+                 (gvec (if (eq dir 'right-to-left)
+                           (emacs-redisplay--right-align-glyphs gvec width)
+                         gvec))
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
             (setf (emacs-redisplay-glyph-row-direction row) dir)
