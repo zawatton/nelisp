@@ -4,6 +4,26 @@
 #+STATUS: DRAFT
 #+DEPENDS_ON: Doc 01 architecture, Doc 02 v0.1 daily-driver, Doc 03 vendor migration, Doc 05 legacy omission scope, Doc 09 layer boundary, Doc 10 runtime callable tiers
 
+* ⚠️ 2026-06-20 STATUS 訂正 (実地検証は Doc 15 §3.2-3.4)
+
+本書 (2026-06-09) の一部 lane は runtime 前進で前提が変わっている。検証手順・証拠は
+=docs/design/15-staged-execution-plan-small-medium-large.org= §3.2-3.4。要約:
+
+- ✅ *§3.8 Process*: make-process / start-process / call-process / comint-mode /
+  process-send-string / accept-process-output 既に full-stack に揃う。
+  「shell-command が最初の milestone」段階は越えている。残は
+  start-process-shell-command / PTY breadth 程度 (Doc 15 B3)。
+- ◑ *§3.6 Vendor callable promotion*: runtime macro 展開は解決済 (実 dash.el 動作)。
+  残実体は package が呼ぶ未実装 builtin の breadth。replace-match (string 形) を
+  reader で stub に勝たせて s.el を callable 化、save-match-data も補完済
+  (Doc 15 B4/B1)。実 package 駆動で逐次補完が筋。
+- ℹ️ 関連: 日本語入力 file-read blocker (Doc 14) も解消済 (skk E2E 5/5)。
+
+#+BEGIN_COMMENT
+以下は 2026-06-09 時点の本文。歴史記録として保持。訂正対象節には行頭 # の
+inline ノートを付した。
+#+END_COMMENT
+
 * 0. Purpose
 
 This document turns the remaining large work items into an implementation
@@ -179,6 +199,10 @@ Close gate:
 ** 3.6 Vendor migration and autoload/dump
 
 Doc 03 and Doc 10 already define the broad vendor strategy.  The missing work is
+# 【2026-06-20 訂正 (Doc 15 §3.3/§3.4)】runtime macro 展開は解決済 (実 dash.el
+# 148KB が --load / bridge で動作、-map 等 callable)。callable promotion の残実体は
+# package が呼ぶ未実装 builtin の breadth (save-match-data / replace-match string 形
+# 等を逐次補完、long-tail 継続)。以下は当時の計画。
 to turn load/count proof into callable runtime behavior.
 
 | Area | Remaining work |
@@ -220,6 +244,10 @@ Close gate:
 
 ** 3.8 Process, terminal, and command-running workflows
 
+# 【2026-06-20 訂正 (Doc 15 §3.4)】process 層は大半既存: make-process /
+# start-process / call-process / comint-mode / process-send-string /
+# accept-process-output 全て full-stack に fboundp。残は
+# start-process-shell-command / PTY breadth 程度。以下は当時の計画。
 =shell-command= is only the first process milestone.
 
 | Area | Remaining work |
