@@ -24798,4 +24798,35 @@
           (setq files--bridge-session-active nil)
           nil)))
 
+;;;; --- B2: range-honouring insert-file-contents for the bridge image ----
+;;
+;; Doc 15 wave B (B2).  The GUI bridge image does not bake
+;; `nelisp-emacs-compat-fileio' (the nelisp-ec buffer model), so
+;; `insert-file-contents-literally' falls back to the prelude version,
+;; which (a) ignores BEG/END and (b) appends to the `nelisp--current-buffer'
+;; overlay instead of the bridge buffer -- so ddskk's `cdb-get', a
+;; fixed-offset slot read, gets "".  The bridge `insert' works, so install a
+;; byte-exact range-honouring reader here.  Gated on the absence of the
+;; nelisp-ec reader (= bridge image only); the full --batch stack keeps its
+;; richer nelisp-ec implementation untouched.
+(unless (fboundp 'nelisp-ec-insert-file-contents)
+  (defun insert-file-contents (filename &optional visit beg end replace)
+    "Insert FILENAME into the current bridge buffer, honouring BEG/END.
+BEG/END are byte offsets into FILENAME (the slot read ddskk's cdb-get
+uses).  REPLACE erases the buffer first.  Reads are byte-exact."
+    (ignore visit)
+    (let* ((all (or (and (fboundp 'nelisp--syscall-read-file)
+                         (nelisp--syscall-read-file filename))
+                    ""))
+           (b (or beg 0))
+           (e (or end (length all)))
+           (slice (substring all (min b (length all)) (min e (length all)))))
+      (when (and replace (fboundp 'erase-buffer))
+        (erase-buffer))
+      (insert slice)
+      (list filename (length slice))))
+  (defun insert-file-contents-literally (filename &optional visit beg end replace)
+    "Like `insert-file-contents' but byte-literal; honours BEG/END."
+    (insert-file-contents filename visit beg end replace)))
+
 (provide 'nemacs-gui-file-bridge-runtime)
