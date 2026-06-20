@@ -15810,6 +15810,73 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-side-window-resize-writeback-helper ()
+  "Bridge side/window resize writeback helper should write window state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-side-window-resize-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--side-windows-visible-p t)
+                       (setq files--window-layout
+                             \"root(v main)(v side)\")
+                       (setq files--window-selected \"side\")
+                       (setq files--window-split-delta 9)
+                       (fset 'capture-side-window-resize-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-side-window-resize-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-side-window-resize-writeback-helper\"
+                        (concat
+                         (capture-side-window-resize-writeback
+                          \"window-toggle-side-windows\")
+                         \"\\t\"
+                         (capture-side-window-resize-writeback
+                          \"enlarge-window\")
+                         \"\\t\"
+                         (capture-side-window-resize-writeback
+                          \"shrink-window-horizontally\")
+                         \"\\t\"
+                         (capture-side-window-resize-writeback
+                          \"enlarge-window-horizontally\")
+                         \"\\t\"
+                         (capture-side-window-resize-writeback
+                          \"other-window\")
+                         \"\\t\"
+                         (capture-side-window-resize-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "window-toggle-side-windows:written\tenlarge-window:written\tshrink-window-horizontally:written\tenlarge-window-horizontally:written\tother-window:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-side-windows-visible")))
+              (should (equal "root(v main)(v side)"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "side"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "9"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-split-delta")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
