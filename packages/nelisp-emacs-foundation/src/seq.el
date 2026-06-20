@@ -297,6 +297,56 @@ TYPE can be `list', `vector', `string', or `sequence'."
               (cons (car cell) (nreverse (cdr cell))))
             (nreverse groups))))
 
+;;; Doc 16 breadth round 2 — set / partition / mapcat / keep / reverse.
+;; These complete the common seq API the facade was missing; vendor
+;; packages (project / eshell / transient / magit-section) rely on them.
+
+;; `seq-reverse' is preloaded on host Emacs as a `cl-defgeneric'; gate so
+;; the facade only defines it on the standalone runtime (where it is void)
+;; and does not narrow the host generic's arglist at byte-compile time.
+(unless (fboundp 'seq-reverse)
+  (defun seq-reverse (sequence)
+    "Return a sequence with the elements of SEQUENCE in reverse order."
+    (reverse sequence)))
+
+(defun seq-partition (sequence n)
+  "Return a list of the elements of SEQUENCE grouped into sublists of length N."
+  (setq n (max n 1))
+  (let ((seq (append sequence nil))
+        (result nil))
+    (while seq
+      (push (take n seq) result)
+      (setq seq (nthcdr n seq)))
+    (nreverse result)))
+
+(defun seq-mapcat (function sequence &optional type)
+  "Concatenate the results of applying FUNCTION to each element of SEQUENCE.
+The result is a sequence of TYPE, or a list when TYPE is nil."
+  (apply #'seq-concatenate (or type 'list)
+         (seq-map function sequence)))
+
+(defun seq-keep (function sequence)
+  "Apply FUNCTION to each element of SEQUENCE, returning the non-nil results."
+  (delq nil (seq-map function sequence)))
+
+(defun seq-difference (sequence1 sequence2 &optional testfn)
+  "Return a list of the elements of SEQUENCE1 that are not in SEQUENCE2.
+Equality is tested with TESTFN (default `equal')."
+  (seq-remove (lambda (elt) (seq-contains-p sequence2 elt testfn))
+              sequence1))
+
+(defun seq-intersection (sequence1 sequence2 &optional testfn)
+  "Return a list of the elements that appear in both SEQUENCE1 and SEQUENCE2.
+Equality is tested with TESTFN (default `equal')."
+  (seq-filter (lambda (elt) (seq-contains-p sequence2 elt testfn))
+              sequence1))
+
+(defun seq-union (sequence1 sequence2 &optional testfn)
+  "Return a list of the elements that appear in either SEQUENCE1 or SEQUENCE2.
+Equality is tested with TESTFN (default `equal')."
+  (append (append sequence1 nil)
+          (seq-difference sequence2 sequence1 testfn)))
+
 (provide 'seq)
 
 ;;; seq.el ends here

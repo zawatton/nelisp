@@ -35,6 +35,8 @@ final `.el' suffix with `.repl'.")
 
 (defvar nelisp-bootstrap-extra-files
   '("cl-lib.el"
+    "seq.el"
+    "map.el"
     "emacs-tui-backend.el"
     "emacs-redisplay-core.el"
     "emacs-tui-event.el")
