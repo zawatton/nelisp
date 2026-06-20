@@ -15304,6 +15304,67 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-window-layout-writeback-helper ()
+  "Bridge window layout writeback helper should write layout state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-window-layout-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--window-layout \"window-layout-state\")
+                       (setq files--window-selected \"9\")
+                       (fset 'capture-window-layout-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-window-layout-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-window-layout-writeback-helper\"
+                        (concat
+                         (capture-window-layout-writeback
+                          \"delete-other-windows\")
+                         \"\\t\"
+                         (capture-window-layout-writeback
+                          \"delete-window\")
+                         \"\\t\"
+                         (capture-window-layout-writeback
+                          \"split-window-right\")
+                         \"\\t\"
+                         (capture-window-layout-writeback
+                          \"split-window-below\")
+                         \"\\t\"
+                         (capture-window-layout-writeback
+                          \"balance-windows\")
+                         \"\\t\"
+                         (capture-window-layout-writeback
+                          \"shrink-window-if-larger-than-buffer\")
+                         \"\\t\"
+                         (capture-window-layout-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "delete-other-windows:written\tdelete-window:written\tsplit-window-right:written\tsplit-window-below:written\tbalance-windows:written\tshrink-window-if-larger-than-buffer:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "window-layout-state"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "9"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
