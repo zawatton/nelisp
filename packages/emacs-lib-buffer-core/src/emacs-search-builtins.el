@@ -68,7 +68,12 @@
 (defun emacs-search-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   (or (not (boundp 'emacs-version))
-      (not (fboundp symbol))))
+      (not (fboundp symbol))
+      ;; NeLisp reader (`rdf' present): these substrate-backed search/match
+      ;; polyfills are the real implementations and must win over the no-op
+      ;; `emacs-stub-bulk' stubs (e.g. `replace-match') that pre-bind some of
+      ;; these symbols.  Host Emacs (`rdf' absent) keeps its C builtins.
+      (fboundp 'rdf)))
 
 ;;;; --- string-match family (Phase 4 B, 2026-05-06) ---------------------
 
@@ -129,9 +134,13 @@ FIXEDCASE / LITERAL / SUBEXP are accepted for API parity:
           (concat (substring string 0 b) newtext (substring string e)))
          (t string))))
      (t
-      (signal 'error
-              (list "replace-match without STRING needs a buffer-side"
-                    "mutator that the substrate has not wired yet"))))))
+      ;; Buffer-form (no STRING): substrate buffer mutation through
+      ;; match-data is not wired here, and emacs-stub-bulk's prior stub
+      ;; returned nil -- keep that (silent no-op) rather than signalling, so
+      ;; force-installing this polyfill on the reader cannot regress a caller
+      ;; that relied on the old nil.  The bridge runtime supplies its own
+      ;; buffer-form replace-match for the editor.
+      nil))))
 
 (when (emacs-search-builtins--install-function-p 'replace-regexp-in-string)
   (defun replace-regexp-in-string

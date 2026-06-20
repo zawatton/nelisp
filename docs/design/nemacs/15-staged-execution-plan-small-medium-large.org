@@ -80,8 +80,8 @@ A3 (bridge 依存でやや重い) → A6 (棚卸しは継続タスク化) → A7
 |----+------+------+--------------+--------|
 | B2 | bridge GUI image の汎用 =insert-file-contents(-literal)= が BEG/END range honor + bridge buffer 挿入するよう修正 (§3.2)。※ 日本語入力 headline は skk が独自 cdb--read を持つため既に動作済 (E2E 5/5) | Doc 14:125-141, §3.2 | gui-bridge test +1 (range bytes 正)、skk E2E 5/5、full-stack 無回帰 | nemacs-gui-file-bridge-runtime.el 末尾に gated fix | SHIPPED (2026-06-20) |
 | B1 | runtime macroexpand は既に解決済 (§3.3)。本 wave 増分 = bridge に save-match-data 等 stub 補完 | Doc 14:191-198, §3.3 | dash -map 動作、bridge save-match-data test +1、full-stack 無回帰 | nemacs-gui-file-bridge-runtime.el | コア SHIPPED (Doc14 stale) + stub SHIPPED (2026-06-20) |
-| B3 | process / PTY / comint / compile: =shell-command= + 基本 =make-process= の先 (comint, PTY, =compile=/=grep=/next-error) | Doc 11 §3.8, emacs-process.el:52 | comint smoke + compile next-error | TODO |
-| B4 | vendor callable promotion: load-proof → 実行時 callable behavior、MELPA promotion gate の確定 | Doc 11 §3.6,§7 | featurep でなく callable ERT | TODO |
+| B3 | process 層は想定より進捗 (§3.4): make-process / start-process / call-process / comint-mode / process-send-string / accept-process-output 全て full-stack に有り。Doc 11 §3.8 stale。残 = start-process-shell-command / PTY breadth | Doc 11 §3.8 | (実態確認のみ、未着手) | — | 診断: 大半 SHIPPED 済 |
+| B4 | vendor callable promotion = builtin breadth (§3.4)。本 wave 増分 = replace-match (string 形) を reader で stub に勝たせ s.el 等を callable 化 | Doc 11 §3.6,§7 | s-trim/s-replace/s-collapse 動作、search-builtins test 12/12、full-stack 無回帰 | emacs-search-builtins install gate + bridge save-match-data | 増分 SHIPPED (2026-06-20)、breadth 継続 |
 
 ** 3.1 波 B の着手順
 B2 (I/O subsystem、日本語入力 unblock) → B1 (任意 pkg load) → B3 (process 系) →
@@ -145,6 +145,31 @@ B1 の最重要 frontier としたが、その後実装が進み *stale*:
     固有でなく nelisp-emacs 全体の一般的限界)。s.el =s-trim= はこれ依存で未動作 =
     B1 スコープ外の別 issue。
 - *macroexpand-all は未 fboundp* (単一 macroexpand は有り)。dash load には不要。
+
+** 3.4 B3 / B4 診断 (2026-06-20, 着手調査)
+
+Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
+
+- *B3 (process) は大半 SHIPPED 済*: full --batch で =make-process= /
+  =start-process= / =call-process= / =shell-command= / =comint-mode= /
+  =process-send-string= / =accept-process-output= が全て fboundp。Doc 11 §3.8
+  の「shell-command + 基本 make-process の先」は既に越えている。残は
+  =start-process-shell-command= (convenience wrapper) / PTY breadth 程度。
+  本 wave では未着手 (実態確認のみ)。
+- *B4 (callable promotion) = builtin breadth*: runtime macro 展開は B1 で解決済、
+  package は load される。残るは個別 builtin の欠落で package 関数が callable
+  にならないケース (B1 の save-match-data がその一例)。
+  - *本 wave 増分 = replace-match (string 形)*: =emacs-search-builtins.el= に
+    良い substrate-backed 実装 (=match-beginning/end= + concat) が既存だが、
+    =emacs-stub-bulk.el:252= の mass-stub list が =replace-match= を no-op
+    (=(&rest _) nil=) で先に bind し、=--install-function-p= gate
+    (=fboundp= 済なら skip) で負けていた。gate に reader override
+    (=(fboundp 'rdf)=) を追加し、全 search/match polyfill が reader で stub に
+    勝つよう修正。bundle 再生成で full --batch でも =(s-trim "  hi  ")= = "hi"、
+    s-replace / s-collapse-whitespace 動作。buffer 形 (STRING 無し) は旧 stub と
+    同じ nil (no-op) を保ち無回帰。host は =rdf= 不在で C builtin 保護。
+  - *残 breadth*: =macroexpand-all= 未実装、他 package が呼ぶ未実装 builtin の
+    long-tail。実 package 駆動で逐次補完するのが筋。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
