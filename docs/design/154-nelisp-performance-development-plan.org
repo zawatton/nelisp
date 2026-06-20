@@ -1167,6 +1167,16 @@ This keeps the Nelix native subset proof on the same user-facing gate surface
 as =nelisp-performance-gate=, =nelisp-nelix-command-gate=, and
 =nelisp-native-artifact-gate=.
 
+The combined Nelix operational proof is exposed as:
+
+#+begin_src sh
+make nelisp-nelix-operational-gate
+#+end_src
+
+It runs the real Nelix command path gate and the native hot subset gate
+together, so user-facing Nelix regressions can be checked without remembering
+the two underlying scripts.
+
 tools/nelisp-runtime-image-cache-gate.sh --no-build
   source_replay_v1 rc=0 out=42
   cache_cold_v1 rc=0 out=42

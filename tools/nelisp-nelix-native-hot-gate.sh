@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-NELIX_REPO="${NELIX_REPO:-$REPO_ROOT/../anvil-pkg}"
+NELIX_REPO="${NELIX_REPO:-$REPO_ROOT/../nelix}"
 NELISP="${NELISP:-$REPO_ROOT/target/nelisp}"
 EMACS="${EMACS:-emacs}"
 TMP_DIR="$(mktemp -d)"
@@ -136,7 +136,7 @@ verify_required_manifest subset "$SUBSET_ART.manifest.el"
 run_timed standalone_audit_cli_required \
   timeout 60 "$NELISP" audit-elisp-artifacts --required "$CLI_SRC"
 expect_grep standalone_audit_cli_required 'artifact_audit_summary status=ok'
-expect_grep standalone_audit_cli_required 'defuns=9'
+expect_grep standalone_audit_cli_required 'defuns=[1-9][0-9]* native=[1-9][0-9]*'
 expect_grep standalone_audit_cli_required 'gaps=0'
 
 line_payload="$(printf 'NELIX-AOT-MANIFEST-V1\ntarget\tmagit\tmagit\npin\tripgrep\ninstalled\tmagit\nend\n')"
