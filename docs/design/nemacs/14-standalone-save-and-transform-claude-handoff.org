@@ -15,22 +15,24 @@ session/progn 一括化には戻らないこと。
 * 現在地
 
 - branch: =feat/doc142-gate5-nemacs=
-- 直近実装 commit: =c74db75 Extract bridge kill yank writeback chunk=
-- 直近の完了 chunk: kill/yank writeback chunk
+- 直近実装 commit: =8cef714 Extract bridge truncate text scale frame writeback chunk=
+- 直近の完了 chunk: truncate/text-scale/frame writeback chunk
 - 最新 shape:
-  - direct transport write: =330 -> 322=
-  - =files--write*= helper: =376 -> 371=
-  - =equal cmd= tests: =189 -> 185=
-  - post-boundary top-level =setq=: =531 -> 520=
-  - post-boundary top-level =if=: =236 -> 232=
+  - direct transport write: =322 -> 319=
+  - =files--write*= helper: =359 -> 355=
+  - =equal cmd= tests: =181 -> 176=
+  - post-boundary top-level =setq=: =517 -> 510=
+  - post-boundary top-level =if=: =228 -> 223=
 - 最新 slow gate:
-  - =standalone-save-and-transform= pass, =108.823426 sec=
+  - =standalone-save-and-transform= pass, =109.419179 sec=
 
 この引き継ぎ書作成時点で、Codex 側の worktree は handoff doc 以外 clean。
 Claude Code 側でも対象外の user 変更が見えた場合は勝手に revert / commit しないこと。
 
 * 直近の完了 commit
 
+- =8cef714= truncate/text-scale/frame writeback chunk
+- =6ef765f= mark/global/rectangle writeback chunk
 - =c74db75= kill/yank writeback chunk
 - =f0ba42b= runtime OS detection via uname(2) (別作業。触らない)
 - =173d066= indent/newline writeback chunk
@@ -50,49 +52,45 @@ Claude Code 側でも対象外の user 変更が見えた場合は勝手に reve
 * 次の作業開始点
 
 =src/nemacs-gui-file-bridge-runtime.el= の
-=files--bridge-kill-yank-writeback-current-context= 呼び出し直後から再開する。
+=files--bridge-truncate-text-scale-frame-writeback-current-context= 呼び出し直後から再開する。
 
 現時点の次 block:
 
 #+begin_src elisp
-(setq cmd (files--bridge-kill-yank-writeback-current-context cmd))
-(if (equal cmd "set-mark-command") ...)
-(if (equal cmd "exchange-point-and-mark") ...)
-(if (equal cmd "pop-global-mark") ...)
-(if (equal cmd "rectangle-mark-mode") ...)
+(setq cmd (files--bridge-truncate-text-scale-frame-writeback-current-context cmd))
+(if (equal cmd "tmm-menubar") ...)
+(if (equal cmd "set-selective-display") ...)
+(if (equal cmd "revert-buffer-with-coding-system") ...)
+(if (if (equal cmd "toggle-input-method") ...) ...)
 #+end_src
 
 推奨する次 chunk:
 
-- helper 名: =files--bridge-mark-global-rectangle-writeback-current-context=
+- helper 名: =files--bridge-tmm-menubar-writeback-current-context=
 - 対象:
-  - =set-mark-command=
-  - =exchange-point-and-mark=
-  - =pop-global-mark=
-  - =rectangle-mark-mode=
+  - =tmm-menubar=
 - branch 分類:
-  - point+mark+global-mark: set-mark-command / pop-global-mark
-  - point+mark: exchange-point-and-mark
-  - point+mark+global-mark+rectangle-mark-mode: rectangle-mark-mode
+  - buf+file+buffer-name+read-only+point+mark+window-start
 
-=toggle-truncate-lines= 以降は truncate / text-scale / frame state など性質が違うため、
-次の別 chunk に回すのが安全。
+=set-selective-display= は selective-display+modeline、=revert-buffer-with-coding-system= は
+buf+file+point、coding/input-method 群は coding/input state なので、=tmm-menubar= と混ぜず
+次以降の別 chunk に回すのが安全。
 
 * 変更手順
 
 1. =src/nemacs-gui-file-bridge-runtime.el= に helper を追加する。
    - 既存 helper と同じ =fset= + =lambda (cmd)= 形式に揃える。
    - helper は最後に =cmd= を返す。
-   - 既存の =files--write-transport-*= / =files--write-global-mark-state= /
-     =files--write-rectangle-mark-mode-state= の順序は変えない。
-2. =nemacs-gui-file-bridge-run= 内の対象 block を
-   =(setq cmd (files--bridge-mark-global-rectangle-writeback-current-context cmd))=
+   - 既存の =nl-write-file= / =files--write-transport-*= の順序は変えない。
+2. =nemacs-gui-file-bridge-run= 内の =tmm-menubar= block を
+   =(setq cmd (files--bridge-tmm-menubar-writeback-current-context cmd))=
    に置き換える。
 3. =test/nemacs-gui-file-bridge-runtime-test.el= の末尾付近に専用 ERT を追加する。
-   - 既存の =standalone-bridge-kill-yank-writeback-helper= と同じ形式でよい。
-   - probe file に =cmd:status= を tab 連結で書く。
-   - =/tmp/nemacs-point=、=/tmp/nemacs-mark=、global mark state、
-     rectangle mark mode state を確認する。
+   - 既存の =standalone-bridge-truncate-text-scale-frame-writeback-helper= と同じ形式でよい。
+   - probe file に =cmd:status= を書く。
+   - =/tmp/nemacs-buf=、=/tmp/nemacs-file=、=/tmp/nemacs-buffer-name=、
+     =/tmp/nemacs-read-only=、=/tmp/nemacs-point=、=/tmp/nemacs-mark=、
+     =/tmp/nemacs-window-start= を確認する。
    - miss path として =forward-char= が =ok= のまま返ることを確認する。
 4. =make nemacs-gui-bridge-run-shape= で shape を再計測する。
 5. =docs/design/13-standalone-save-and-transform-next.org= に結果を追記する。
@@ -112,7 +110,7 @@ emacs --batch -L src -L test \
   -l test/nemacs-gui-file-bridge-runtime-test.el \
   --eval '(princ "test-load-ok\n")'
 
-NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-bridge-mark-global-rectangle-writeback-helper' \
+NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-bridge-tmm-menubar-writeback-helper' \
   make test-nemacs-gui-bridge-gate
 
 make nemacs-gui-bridge-run-shape
@@ -130,35 +128,18 @@ git diff --check
 
 * 今回の完了済み検証
 
-=c74db75= で以下を確認済み。
+=6ef765f= で mark/global/rectangle chunk、=8cef714= で truncate/text-scale/frame chunk を確認済み。
 
-#+begin_src sh
-emacs --batch -L src -L test \
-  -l test/nemacs-gui-file-bridge-runtime-test.el \
-  --eval '(princ "test-load-ok\n")'
+=8cef714= の検証結果:
 
-NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-bridge-kill-yank-writeback-helper' \
-  make test-nemacs-gui-bridge-gate
-
-make nemacs-gui-bridge-run-shape
-
-NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-session-bridge-roundtrip' \
-  make test-nemacs-gui-bridge-gate
-
-make test-fast
-
-NEMACS_GUI_BRIDGE_SLOW_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform' \
-  make test-nemacs-gui-bridge-slow
-#+end_src
-
-結果:
-
+- load: green
 - helper gate: green
-- shape: direct write =322=、=files--write*= =371=、=equal cmd= =185=、
-  top-level =setq= =520=、top-level =if= =232=
-- roundtrip gate: green
-- fast gate: green, 708 tests
-- slow gate: green, =108.823426 sec=
+- shape: direct write =319=、=files--write*= =355=、=equal cmd= =176=、
+  top-level =setq= =510=、top-level =if= =223=
+- roundtrip gate: green, =1.272658 sec=
+- fast gate: green, 708 tests, =2.190591 sec=
+- slow gate: green, =109.419179 sec=
+- =git diff --check=: green
 
 * 守ること
 
