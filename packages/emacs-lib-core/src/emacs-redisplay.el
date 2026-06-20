@@ -1266,6 +1266,7 @@ the overlay anchor position."
          (used (make-vector width nil))
          (i 0)
          (n (length line))
+         (last-glyph nil)
          (overflow nil))
     ;; Before-strings anchored at the line's first buffer position.
     (setq col (emacs-redisplay--emit-before-strings
@@ -1302,6 +1303,15 @@ the overlay anchor position."
           (when (< i (1- n))
             (setq col (emacs-redisplay--emit-before-strings
                        overlays pos used col width))))
+         ;; Zero-width combining mark: merge into the previous glyph's
+         ;; composition (one grapheme cluster, no extra column) instead of
+         ;; emitting its own cell.  A leading combining mark (no previous
+         ;; glyph) falls through to the normal branch and takes width 1.
+         ((and (= cw 0) last-glyph)
+          (setf (emacs-redisplay-glyph-composition last-glyph)
+                (append (emacs-redisplay-glyph-composition last-glyph)
+                        (list ch)))
+          (setq pos (1+ pos)))
          (t
           (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
                  (display (emacs-redisplay--text-property-at pos 'display buffer))
@@ -1330,6 +1340,7 @@ the overlay anchor position."
               (setq overflow t))
              (t
               (aset used col g)
+              (setq last-glyph g)
               (setq col (+ col ew)
                     pos (1+ pos))
               (setq col (emacs-redisplay--emit-after-strings
@@ -1767,6 +1778,20 @@ Returns the number of cache entries cleared."
 
 ;;; B (cont.).  flush + cursor
 
+(defun emacs-redisplay--glyph-output-string (g)
+  "Painting text for glyph G: its char plus any composition (combining) chars.
+A nil glyph (an empty / continuation cell) renders as a single space.  The
+combining chars carry no extra column — the terminal composes them over the
+base char — so the column accounting in `emacs-redisplay--row-text-segments'
+stays correct."
+  (if (null g)
+      " "
+    (let ((comp (emacs-redisplay-glyph-composition g)))
+      (if comp
+          (concat (string (emacs-redisplay-glyph-char g))
+                  (apply #'string comp))
+        (string (emacs-redisplay-glyph-char g))))))
+
 (defun emacs-redisplay--row-text-segments (row width)
   "Return a list of (COL TEXT FACE) painting segments for ROW.
 Adjacent glyphs sharing the same realized face are batched into a
@@ -1789,16 +1814,15 @@ Phase 3.B.1 face-realize MVP output) — not the raw spec — so the
         (let* ((g (aref vec col))
                (face (paint-face g))
                (start col)
-               (chars (list (if g (emacs-redisplay-glyph-char g) ?\s))))
+               (text (emacs-redisplay--glyph-output-string g)))
           (setq col (1+ col))
           (while (and (< col n)
-                      (let ((g2 (aref vec col)))
-                        (equal face (paint-face g2))))
-            (push (let ((g2 (aref vec col)))
-                    (if g2 (emacs-redisplay-glyph-char g2) ?\s))
-                  chars)
+                      (equal face (paint-face (aref vec col))))
+            (setq text (concat text
+                               (emacs-redisplay--glyph-output-string
+                                (aref vec col))))
             (setq col (1+ col)))
-          (push (list start (concat (nreverse chars)) face) segments))))
+          (push (list start text face) segments))))
     (nreverse segments)))
 
 (defvar emacs-redisplay--flush-hash-cache (make-hash-table :test 'eq)

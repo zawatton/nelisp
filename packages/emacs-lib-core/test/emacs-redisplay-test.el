@@ -899,6 +899,46 @@ char width and codepoint must stay intact so they do not regress."
           (should (eq ?a (emacs-redisplay-glyph-char (aref vec 0))))
           (should (eq ?X (emacs-redisplay-glyph-char (aref vec 1)))))))))
 
+;;; H'''. composition — combining marks (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-composition-combining-mark ()
+  "A zero-width combining mark merges into the previous glyph (no extra cell)."
+  (emacs-redisplay-test--with-fresh-world
+    ;; "e" + U+0301 COMBINING ACUTE ACCENT + "X"
+    (emacs-redisplay-test--with-buffer b (concat "e" (string 769) "X")
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          ;; "e" keeps col 0 and carries the mark; "X" lands at col 1, not col 2
+          (should (eq ?e (emacs-redisplay-glyph-char (aref vec 0))))
+          (should (equal (list 769)
+                         (emacs-redisplay-glyph-composition (aref vec 0))))
+          (should (eq ?X (emacs-redisplay-glyph-char (aref vec 1)))))))))
+
+(ert-deftest emacs-redisplay-test-composition-multiple-marks ()
+  "Multiple combining marks accumulate on the base glyph in order."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b (concat "a" (string 769) (string 770))
+      (let* ((c   (emacs-redisplay--lay-out-line
+                   (concat "a" (string 769) (string 770)) 1 b nil 80))
+             (vec (car c)))
+        (should (= 1 (length vec)))              ; one visual cell only
+        (should (eq ?a (emacs-redisplay-glyph-char (aref vec 0))))
+        (should (equal (list 769 770)
+                       (emacs-redisplay-glyph-composition (aref vec 0))))))))
+
+(ert-deftest emacs-redisplay-test-composition-output-string ()
+  "Glyph paint output is the base char plus any composition chars."
+  (let ((g (emacs-redisplay--make-glyph :char ?e :composition (list 769))))
+    (should (equal (concat (string ?e) (string 769))
+                   (emacs-redisplay--glyph-output-string g))))
+  (let ((g (emacs-redisplay--make-glyph :char ?a)))
+    (should (equal "a" (emacs-redisplay--glyph-output-string g))))
+  (should (equal " " (emacs-redisplay--glyph-output-string nil))))
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."
