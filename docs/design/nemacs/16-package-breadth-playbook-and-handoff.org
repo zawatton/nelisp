@@ -1,0 +1,112 @@
+#+TITLE: nelisp-emacs Doc 16 — package callability breadth playbook + 次セッション handoff
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-20
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 11/14 (stale, Doc 15 §3 で訂正), Doc 15 段階実行プラン
+
+* 0. Purpose
+
+次セッションが *cold start* で「実 package を駆動して未実装 builtin を逐次補完
+する」breadth loop を継続できるようにする handoff。本書 = その方法論 (playbook)
++ 現状サマリ + next targets + reader-load gotchas。
+
+* 1. 現状サマリ (2026-06-20 セッション後)
+
+- 波A (A1-A5) + 波B (B1-B4) 完了。検証手順は Doc 15 §3.1-3.5。
+- Doc 14 (2026-06-13) / Doc 11 (2026-06-09) は *広範に stale* (Doc 15 §3.2-3.4 +
+  両 doc 冒頭の訂正 section で反映)。runtime は文書より大幅前進。
+- *C1 redisplay v2 は並行セッションが increments 投入中* (mouse-face / display
+  =(space :width/:align-to)= / 結合文字 composition / full-width mode-line bar +
+  =%*/%+= / bidi base-direction)。C2 (self-host binary) は別セッション保留。
+- branch =integ/org-agenda-daily= (= 私の波A/B/breadth + 並行 C1 + org-roam/agenda
+  の統合 local→remote branch)。commit 系列 107a7cc..ab0c1ca + 並行 C1。
+
+| lane | 状態 |
+|------+------|
+| 波A 小物 (A1-A5) | SHIPPED |
+| B1 macroexpand / B2 file-read / B3 process / B4 callable | SHIPPED or 診断完了 (Doc 15) |
+| B4 breadth (replace-match/save-match-data/function-get/define-inline/cl-pred) | 進行中 (本書 §5) |
+| C1 redisplay v2 | 並行セッション進行中 |
+| C2 self-host | 別セッション保留 |
+
+* 2. Breadth loop playbook (再現手順)
+
+1. *package 選定*: foundational 優先 (=dash= / =s= / =ht= / =cl-lib=)。依存先が
+   広いほど 1 fix の波及が大きい。
+2. *駆動*: full --batch =--eval= で =(load PKG)= → 関数を exercise。各呼び出しを
+   =condition-case= で包み void-function を捕捉 (§4 の安定性に注意)。
+3. *分類*: 失敗を「*単純 void-function* (逐次追加)」と「*深い runtime 機構*
+   (dedicated)」に切り分け (§3)。
+4. *補完*: 単純は polyfill。=(unless (fboundp 'X) (defun X ...))=。host の C builtin
+   を守る必要があれば =(when (fboundp 'rdf) ...)= で reader-gate (= getenv /
+   replace-match と同パターン)。
+5. *bundle*: =make build-nelisp-bootstrap= 再生成 → reader で検証
+   (=./bin/nemacs --driver=nelisp --batch --eval ...=)。
+6. *test + commit*: host test (source-shape or 純関数) + 必要なら reader-gate test。
+   .elc を canonical に残さない。
+
+** 2.1 配置先 map (builtin 種別 → module)
+
+| 種別 | module |
+|------+--------|
+| 一般 builtin (function-get, save-match-data, define-inline) | =src/emacs-stub.el= (emacs-stub-bulk require=L1014 の後に置くと stub override) |
+| cl-lib (cl-evenp, cl-some, cl-remove-if) | =src/emacs-cl-macros.el= |
+| string-match / replace-match / match-data 系 | =src/emacs-search-builtins.el= (gate =--install-function-p= に rdf override 済) |
+| 文字列 (s-* 相当, string-trim 等) | =src/emacs-string.el= / =src/nemacs-runtime-stdlib-extra.el= |
+| bridge image 専用 (GUI runtime のみ欠落) | =src/nemacs-gui-file-bridge-runtime.el= 末尾 (B1/B2 で追記済) |
+
+* 3. 単純 vs 深い の判定基準
+
+- *単純* = 1〜数行 defun で済む。例: =cl-evenp= =(= 0 (% x 2))=、=function-get=
+  (=get= + alias 追従)、=replace-match= string 形 (=match-beginning/end= + concat)。
+- *深い* = runtime 機構と絡む。例: =define-inline= (runtime backquote が =,X= を
+  =(comma X)= で read する表現差)、=macroexpand-all=、buffer mutation 系
+  (=replace-match= buffer 形)。
+- *既解決の深い例*: =define-inline= → inline.el 機構を捨て、=(comma X)=→X 置換の
+  lean polyfill を実装 (Doc 15 §3.5)。深いものも「runtime の実装を理解すれば
+  汎用 polyfill に落ちる」ことがある。
+
+* 4. ⚠️ reader-load 安定性 gotchas (testing 前に必読)
+
+- *stale lock で boot hang*: =/tmp/nemacs-transport.lock= (dir) + leftover
+  =target/nelisp= proc が残ると次 boot が hang/timeout する。*test 前に必ず*
+  =rm -rf /tmp/nemacs-transport.lock; pkill -9 -f target/nelisp=。
+- *=-l FILE= で大ファイル nested load → segfault*。=--eval= 直書きを使う。
+- *大 form の =--eval= も repl-boot で出力欠落* することがある。小分け + =timeout=。
+- 大 package load は CPU/memory 重。host は MCE/memory 既知不安定
+  ([[project_debian_host_mce_umc_crash]])。
+- これらは *reader-core / host 側 = nelisp-emacs 範囲外* (vendor/nelisp 改変は別 repo
+  の制約下)。breadth は =--eval= 小分け + clean lock で回避する。
+
+* 5. Next targets (優先度順)
+
+1. *単純 builtin breadth 継続* (本 loop): s-reverse の =ucs-normalize=、cl-lib 残
+   (=cl-loop= の珍しい clause 等)、他 foundational package (=seq= / =map= /
+   =rx= / =pcase= 拡張) を駆動。
+2. *process B3 残*: =start-process-shell-command= (trivial wrapper)、PTY breadth。
+3. *深い*: =macroexpand-all= (define-inline は回避したが他で要る)、reader-load
+   安定性 (要 reader 調査、範囲外なら issue 化)。
+4. *C1/C2*: C1 = 並行セッション (進行中)、C2 = 別セッション (self-host binary)。
+
+* 6. 検証パターン (本セッションで確立)
+
+- *host source-shape pin*: reader-only 機能を host で「source に実装が在る」ことで
+  固定 (reader を起動せず regression 防止)。例: replace-match gate の
+  =(fboundp 'rdf)=、define-inline の "not implemented" 消失。
+- *helper を gate 外・無条件定義*: 作用のない pure helper は無条件に defun し host
+  で unit-test、macro / 副作用のみ =rdf= gate (define-inline の lowering helper)。
+- *reader-gate test*: =skip-unless reader= + =exec/eval-runtime-image=。bridge は
+  stdout 非捕捉なので =nl-write-file= で結果を file に書き host で読み戻す。
+- bundle 再生成必須 (full --batch は =build/nemacs-bootstrap.el= = gitignore
+  artifact を使う)。canonical に =.elc= を残さない。
+
+* 7. tracking
+
+本 loop は *open-ended*。1 round = 1 package or 数 builtin。round ごとに Doc 15
+§3.5 に追記し、commit する。「単純は逐次、深いは dedicated」の規律を保てば、
+実 package が広く callable になる方向へ確実に前進する。
+
+#+BEGIN_COMMENT
+本書は 2026-06-20 セッション末の handoff。次セッションは §2 playbook の step 1 から
+再開できる。reader 起動の前に必ず §4 の lock/proc 掃除を行うこと。
+#+END_COMMENT
