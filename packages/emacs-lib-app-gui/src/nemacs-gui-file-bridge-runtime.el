@@ -22491,6 +22491,45 @@
           nil)
         cmd))
 
+(fset 'files--bridge-word-sexp-defun-motion-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "forward-word")
+                t
+              (if (equal cmd "backward-word")
+                  t
+                (if (equal cmd "beginning-of-defun")
+                    t
+                  (if (equal cmd "forward-sexp")
+                      t
+                    (if (equal cmd "backward-sexp")
+                        t
+                      (if (equal cmd "end-of-defun")
+                          t
+                        (if (equal cmd "down-list")
+                            t
+                          (if (equal cmd "forward-list")
+                              t
+                            (if (equal cmd "backward-list")
+                                t
+                              (if (equal cmd "backward-up-list")
+                                  t
+                                (if (equal cmd "forward-sentence")
+                                    t
+                                  (equal cmd "backward-sentence"))))))))))))
+            (progn
+              (files--write-transport-point)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "mark-defun")
+                t
+              (equal cmd "mark-sexp"))
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23765,78 +23804,7 @@
               (setq cmd (files--bridge-magit-vc-writeback-current-context cmd))
               (setq cmd (files--bridge-customize-writeback-current-context cmd))
               (setq cmd (files--bridge-side-window-resize-writeback-current-context cmd))
-              (if (equal cmd "forward-word")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-word")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "beginning-of-defun")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "forward-sexp")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-sexp")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "end-of-defun")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "mark-defun")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "mark-sexp")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "down-list")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "forward-list")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-list")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-up-list")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "forward-sentence")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-sentence")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-word-sexp-defun-motion-writeback-current-context cmd))
               (if (equal cmd "kill-word")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
