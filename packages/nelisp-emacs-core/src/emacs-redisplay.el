@@ -1041,6 +1041,18 @@ CJK letters are L."
     'AL)
    ;; EN: European numbers (read left-to-right even inside RTL)
    ((and (>= ch ?0) (<= ch ?9)) 'EN)
+   ;; AN: Arabic-Indic / Extended Arabic-Indic numbers
+   ((or (and (>= ch #x0660) (<= ch #x0669))
+        (and (>= ch #x06F0) (<= ch #x06F9)))
+    'AN)
+   ;; ES: European number separator (+ -)
+   ((or (= ch ?+) (= ch ?-)) 'ES)
+   ;; ET: European number terminator ($ % # currencies degree)
+   ((or (= ch ?$) (= ch ?%) (= ch ?#)
+        (= ch #x00B0) (= ch #x00A3) (= ch #x00A5) (= ch #x20AC))
+    'ET)
+   ;; CS: common number separator (, . : /)
+   ((or (= ch ?,) (= ch ?.) (= ch ?:) (= ch ?/)) 'CS)
    ;; strong L: ASCII letters, Latin-1/Extended letters, CJK and beyond
    ((or (and (>= ch ?A) (<= ch ?Z))
         (and (>= ch ?a) (<= ch ?z))
@@ -1087,7 +1099,7 @@ get BASE-LEVEL+1 (even level); neutrals take the base level."
     (cond
      ((eq cls 'L)  (if base-rtl (1+ base-level) base-level))
      ((or (eq cls 'R) (eq cls 'AL)) (if base-rtl base-level (1+ base-level)))
-     ((eq cls 'EN) (if base-rtl (1+ base-level) base-level))
+     ((or (eq cls 'EN) (eq cls 'AN)) (if base-rtl (1+ base-level) base-level))
      (t base-level))))
 
 (defun emacs-redisplay--reverse-subrange (vec i j)
@@ -1108,8 +1120,125 @@ For neutral resolution (rule N1) numbers act as R.  A nil class (a line edge)
 yields the base direction."
   (cond
    ((eq cls 'L) 'L)
-   ((or (eq cls 'R) (eq cls 'AL) (eq cls 'EN)) 'R)
+   ((or (eq cls 'R) (eq cls 'AL) (eq cls 'EN) (eq cls 'AN)) 'R)
    (t (if (= (logand base-level 1) 1) 'R 'L))))
+
+(defun emacs-redisplay--bidi-resolve-weak (classes base-level)
+  "Resolve weak bidi types in CLASSES in place (UAX #9 W2-W7, simplified).
+W1 (NSM) is handled upstream by glyph composition, so it is omitted.  After
+this pass CLASSES holds only L, R, EN, AN, and neutral."
+  (let ((n (length classes))
+        (sos (if (= (logand base-level 1) 1) 'R 'L)))
+    ;; W2: EN -> AN when the last strong type seen is AL.
+    (let ((last-strong sos))
+      (dotimes (i n)
+        (let ((c (aref classes i)))
+          (cond
+           ((memq c '(L R AL)) (setq last-strong c))
+           ((and (eq c 'EN) (eq last-strong 'AL)) (aset classes i 'AN))))))
+    ;; W3: AL -> R.
+    (dotimes (i n) (when (eq (aref classes i) 'AL) (aset classes i 'R)))
+    ;; W4: a single ES or CS between two EN -> EN; a single CS between two AN -> AN.
+    (dotimes (i n)
+      (when (and (> i 0) (< i (1- n)))
+        (let ((c (aref classes i))
+              (p (aref classes (1- i)))
+              (q (aref classes (1+ i))))
+          (cond
+           ((and (memq c '(ES CS)) (eq p 'EN) (eq q 'EN)) (aset classes i 'EN))
+           ((and (eq c 'CS) (eq p 'AN) (eq q 'AN)) (aset classes i 'AN))))))
+    ;; W5: a run of ET adjacent to EN -> EN.
+    (let ((i 0))
+      (while (< i n)
+        (if (eq (aref classes i) 'ET)
+            (let ((j i))
+              (while (and (< j n) (eq (aref classes j) 'ET)) (setq j (1+ j)))
+              (when (or (and (> i 0) (eq (aref classes (1- i)) 'EN))
+                        (and (< j n) (eq (aref classes j) 'EN)))
+                (let ((k i))
+                  (while (< k j) (aset classes k 'EN) (setq k (1+ k)))))
+              (setq i j))
+          (setq i (1+ i)))))
+    ;; W6: any remaining ES / ET / CS -> neutral (ON).
+    (dotimes (i n)
+      (when (memq (aref classes i) '(ES ET CS)) (aset classes i 'neutral)))
+    ;; W7: EN -> L when the last strong type seen is L.
+    (let ((last-strong sos))
+      (dotimes (i n)
+        (let ((c (aref classes i)))
+          (cond
+           ((memq c '(L R)) (setq last-strong c))
+           ((and (eq c 'EN) (eq last-strong 'L)) (aset classes i 'L))))))
+    classes))
+
+(defun emacs-redisplay--bidi-open-bracket (ch)
+  "Return the matching closing-bracket char for opening bracket CH, else nil."
+  (cond ((eq ch ?\() ?\))
+        ((eq ch ?\[) ?\])
+        ((eq ch ?{) ?})
+        (t nil)))
+
+(defun emacs-redisplay--bidi-close-bracket-p (ch)
+  "Non-nil when CH is a closing bracket."
+  (memq ch '(?\) ?\] ?})))
+
+(defun emacs-redisplay--bidi-bracket-dir (cls)
+  "Direction (`L'/`R') of a resolved class CLS for N0 (EN/AN count as R), or nil."
+  (cond ((eq cls 'L) 'L)
+        ((memq cls '(R EN AN)) 'R)
+        (t nil)))
+
+(defun emacs-redisplay--bidi-prev-strong-dir (classes pos base-level)
+  "Direction of the first strong class before POS in CLASSES; sos if none."
+  (let ((i (1- pos)) (dir nil))
+    (while (and (>= i 0) (null dir))
+      (setq dir (emacs-redisplay--bidi-bracket-dir (aref classes i)))
+      (setq i (1- i)))
+    (or dir (if (= (logand base-level 1) 1) 'R 'L))))
+
+(defun emacs-redisplay--bidi-apply-n0 (classes open close base-level)
+  "Apply rule N0 to the bracket pair at OPEN/CLOSE positions in CLASSES.
+Both brackets take the embedding direction when a matching strong type is
+inside; the opposite direction only when the inside has it AND the preceding
+context is also that direction; otherwise they are left for N1."
+  (let* ((e (if (= (logand base-level 1) 1) 'R 'L))
+         (o (if (eq e 'L) 'R 'L))
+         (has-e nil) (has-o nil) (k (1+ open)))
+    (while (< k close)
+      (let ((d (emacs-redisplay--bidi-bracket-dir (aref classes k))))
+        (cond ((eq d e) (setq has-e t))
+              ((eq d o) (setq has-o t))))
+      (setq k (1+ k)))
+    (let ((resolved
+           (cond
+            (has-e e)
+            (has-o (if (eq (emacs-redisplay--bidi-prev-strong-dir
+                            classes open base-level)
+                           o)
+                       o e))
+            (t nil))))
+      (when resolved
+        (aset classes open resolved)
+        (aset classes close resolved)))))
+
+(defun emacs-redisplay--bidi-resolve-brackets (vec classes base-level)
+  "Resolve matched bracket pairs in CLASSES in place (UAX #9 N0, simplified).
+Pairs are matched with a stack over (), [], {}; each pair is resolved by
+`emacs-redisplay--bidi-apply-n0'.  Operates after the weak pass and before
+N1 so unresolved (no-strong-inside) brackets fall through to N1."
+  (let ((n (length vec)) (stack nil))
+    (dotimes (i n)
+      (let* ((g (aref vec i))
+             (ch (and g (emacs-redisplay-glyph-char g)))
+             (closer (and ch (emacs-redisplay--bidi-open-bracket ch))))
+        (cond
+         (closer (push (cons i closer) stack))
+         ((and ch (emacs-redisplay--bidi-close-bracket-p ch)
+               stack (eq (cdar stack) ch))
+          (let ((open (caar stack)))
+            (setq stack (cdr stack))
+            (emacs-redisplay--bidi-apply-n0 classes open i base-level))))))
+    classes))
 
 (defun emacs-redisplay--bidi-levels (vec base-level)
   "Return a vector of embedding levels for VEC's glyphs (simplified UAX #9).
@@ -1126,6 +1255,9 @@ run instead of splitting it."
         (aset classes i (if g (emacs-redisplay--char-bidi-class
                                (emacs-redisplay-glyph-char g))
                           'neutral))))
+    ;; W2-W7 (weak), then N0 (bracket pairs), then N1/N2 (neutrals): UAX #9 order
+    (emacs-redisplay--bidi-resolve-weak classes base-level)
+    (emacs-redisplay--bidi-resolve-brackets vec classes base-level)
     (let ((i 0))
       (while (< i n)
         (if (emacs-redisplay--bidi-neutral-p (aref classes i))
@@ -1149,6 +1281,17 @@ run instead of splitting it."
     (dotimes (i n)
       (aset levels i (emacs-redisplay--char-level (aref classes i) base-level)))
     levels))
+
+(defun emacs-redisplay--bidi-mirror-char (ch)
+  "Return the mirror image of CH (UAX #9 L4 / Bidi_Mirrored), or nil.
+Covers the common mirrored characters: brackets, angle brackets, guillemets."
+  (cond
+   ((eq ch ?\() ?\)) ((eq ch ?\)) ?\()
+   ((eq ch ?\[) ?\]) ((eq ch ?\]) ?\[)
+   ((eq ch ?{)  ?})  ((eq ch ?})  ?{)
+   ((eq ch ?<)  ?>)  ((eq ch ?>)  ?<)
+   ((eq ch #x00AB) #x00BB) ((eq ch #x00BB) #x00AB)
+   (t nil)))
 
 (defun emacs-redisplay--bidi-reorder-glyphs (vec base-level)
   "Reorder VEC into visual order for BASE-LEVEL (UAX #9 L2, simplified).
@@ -1181,6 +1324,15 @@ Hebrew) in their own internal order.  Returns a new vector; LTR-only text
                       (setq i j))
                   (setq i (1+ i)))))
             (setq lev (1- lev))))
+        ;; L4: mirror Bidi_Mirrored glyphs at odd (RTL) levels for display.
+        ;; `levels' was reversed in lock-step with `out', so levels[i] is the
+        ;; embedding level of out[i].
+        (dotimes (i n)
+          (when (= (logand (aref levels i) 1) 1)
+            (let* ((g (aref out i))
+                   (m (and g (emacs-redisplay--bidi-mirror-char
+                              (emacs-redisplay-glyph-char g)))))
+              (when m (setf (emacs-redisplay-glyph-char g) m)))))
         out))))
 
 (defun emacs-redisplay--right-align-glyphs (vec width)
