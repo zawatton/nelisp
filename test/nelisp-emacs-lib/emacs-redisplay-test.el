@@ -939,6 +939,31 @@ char width and codepoint must stay intact so they do not regress."
     (should (equal "a" (emacs-redisplay--glyph-output-string g))))
   (should (equal " " (emacs-redisplay--glyph-output-string nil))))
 
+;;; H''''. dedicated mode-line row (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-mode-line-full-width-inverse ()
+  "The mode-line is a full-width bar: every cell carries the inverse face."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "hi"
+      (let ((vec (emacs-redisplay--mode-line-glyphs b 20)))
+        (should (= 20 (length vec)))
+        ;; including the cells past the format text (= padding bar)
+        (dotimes (i 20)
+          (should (equal '(:inverse-video t)
+                         (emacs-redisplay-glyph-face (aref vec i)))))
+        (should (eq ?\s (emacs-redisplay-glyph-char (aref vec 19))))))))
+
+(ert-deftest emacs-redisplay-test-mode-line-modified-indicator ()
+  "The `%*' / `%+' mode-line constructs reflect the buffer modified flag."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "hi"
+      (setf (nelisp-ec-buffer-modified-p b) t)
+      (should (equal "*" (emacs-redisplay--mode-line-format-to-string "%*" b)))
+      (should (equal "*" (emacs-redisplay--mode-line-format-to-string "%+" b)))
+      (setf (nelisp-ec-buffer-modified-p b) nil)
+      (should (equal "-" (emacs-redisplay--mode-line-format-to-string "%*" b)))
+      (should (equal "-" (emacs-redisplay--mode-line-format-to-string "%+" b))))))
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."
