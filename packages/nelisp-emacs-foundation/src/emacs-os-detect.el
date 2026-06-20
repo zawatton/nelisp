@@ -206,6 +206,55 @@ intact."
             (setq emacs-os--system-name nodename))
           u)))))
 
+;;;; --- environment-derived emacs-vars defaults (Doc 51 Phase 2b) -------
+;;
+;; emacs-vars.el / emacs-stub.el hard-code temporary-file-directory,
+;; user-emacs-directory, exec-path, path-separator, and exec-suffixes
+;; ("Phase 2 will resolve dynamically once getenv is wired").  Now that
+;; emacs-callproc seeds `process-environment' from /proc/self/environ and
+;; getenv reflects the real OS env, derive the dir/path vars from
+;; TMPDIR / HOME / PATH, and the OS-shaped vars from the detected
+;; `system-type'.  All gated on the substrate, so host Emacs keeps its
+;; own values.
+
+(defun emacs-os--env (name)
+  "Return env var NAME as a non-empty string, or nil."
+  (and (fboundp 'getenv)
+       (let ((v (ignore-errors (getenv name))))
+         (and (stringp v) (> (length v) 0) v))))
+
+(defun emacs-os-apply-os-polyfills! ()
+  "Set OS-shaped emacs-vars defaults from the detected `system-type'.
+`path-separator' and `exec-suffixes' follow the OS so the standalone
+reader matches host Emacs per platform.  Returns a summary plist."
+  (let ((win (eq system-type 'windows-nt)))
+    (when (boundp 'path-separator)
+      (setq path-separator (if win ";" ":")))
+    (when (boundp 'exec-suffixes)
+      (setq exec-suffixes (if win '(".exe" ".com" ".bat" ".cmd" "") nil)))
+    (list :path-separator (and (boundp 'path-separator) path-separator)
+          :exec-suffixes (and (boundp 'exec-suffixes) exec-suffixes))))
+
+(defun emacs-os-detect-and-set-dirs! ()
+  "Derive dir/path emacs-vars from the live OS environment.
+Updates `temporary-file-directory' (TMPDIR), `user-emacs-directory'
+(HOME), and `exec-path' (PATH split on `path-separator').  Each var is
+touched only when its env source is present, so a missing var keeps the
+existing default.  Returns a summary plist."
+  (let ((tmp  (emacs-os--env "TMPDIR"))
+        (home (emacs-os--env "HOME"))
+        (path (emacs-os--env "PATH")))
+    (when (and tmp (boundp 'temporary-file-directory))
+      (setq temporary-file-directory (file-name-as-directory tmp)))
+    (when (and home (boundp 'user-emacs-directory))
+      (setq user-emacs-directory
+            (file-name-as-directory
+             (concat (file-name-as-directory home) ".emacs.d"))))
+    (when (and path (boundp 'exec-path))
+      (let ((sep (if (boundp 'path-separator) path-separator ":")))
+        (setq exec-path (split-string path (regexp-quote sep) t))))
+    (list :tmp tmp :home home :path (and path t))))
+
 ;; Standalone `system-name': the host-Emacs driver already provides a
 ;; builtin, so guard with `unless fboundp' and never clobber it; the
 ;; NeLisp reader does not, so we serve the detected node name.
@@ -219,7 +268,12 @@ intact."
 ;; under the NeLisp reader it replaces the hard-coded `gnu/linux'
 ;; default with the live OS.
 (when (emacs-os--substrate-available-p)
-  (ignore-errors (emacs-os-detect-and-set!)))
+  ;; Order matters: set system-type first, then the OS-shaped vars
+  ;; (path-separator) it drives, then the env-derived dirs (PATH split
+  ;; uses path-separator).
+  (ignore-errors (emacs-os-detect-and-set!))
+  (ignore-errors (emacs-os-apply-os-polyfills!))
+  (ignore-errors (emacs-os-detect-and-set-dirs!)))
 
 (provide 'emacs-os-detect)
 

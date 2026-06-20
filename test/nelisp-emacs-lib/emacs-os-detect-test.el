@@ -81,6 +81,47 @@
   (should (equal "aarch64-unknown-linux-gnu"
                  (emacs-os--config-triple "aarch64" 'gnu/linux "6.12.0"))))
 
+;;; --- A2: OS-shaped polyfills (path-separator / exec-suffixes) ----------
+
+(ert-deftest emacs-os-detect/polyfills-linux ()
+  (let ((system-type 'gnu/linux)
+        (path-separator "?")
+        (exec-suffixes 'sentinel))
+    (emacs-os-apply-os-polyfills!)
+    (should (equal ":" path-separator))
+    (should (null exec-suffixes))))
+
+(ert-deftest emacs-os-detect/polyfills-windows ()
+  (let ((system-type 'windows-nt)
+        (path-separator "?")
+        (exec-suffixes nil))
+    (emacs-os-apply-os-polyfills!)
+    (should (equal ";" path-separator))
+    (should (member ".exe" exec-suffixes))))
+
+;;; --- A1: environment-derived dirs (getenv-backed) ----------------------
+
+(ert-deftest emacs-os-detect/env-helper ()
+  ;; getenv is live on host Emacs; PATH is set on any dev/CI host.
+  (should (stringp (emacs-os--env "PATH")))
+  (should (null (emacs-os--env "NELISP_DEFINITELY_UNSET_VAR_XYZ"))))
+
+(ert-deftest emacs-os-detect/dirs-from-env ()
+  ;; Mutates only let-bound copies, so the host daemon's real path/dirs
+  ;; are untouched.
+  (let ((temporary-file-directory "SENTINEL/")
+        (user-emacs-directory "SENTINEL/")
+        (exec-path '("SENTINEL"))
+        (path-separator (if (boundp 'path-separator) path-separator ":")))
+    (emacs-os-detect-and-set-dirs!)
+    (when (emacs-os--env "HOME")
+      (should (string-suffix-p ".emacs.d/" user-emacs-directory))
+      (should (string-prefix-p (emacs-os--env "HOME") user-emacs-directory)))
+    (when (emacs-os--env "PATH")
+      (should (listp exec-path))
+      (should (> (length exec-path) 0))
+      (should-not (equal '("SENTINEL") exec-path)))))
+
 ;;; --- substrate-absent contract (host) ----------------------------------
 
 (ert-deftest emacs-os-detect/host-has-no-substrate ()
