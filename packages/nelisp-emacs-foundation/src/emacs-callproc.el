@@ -67,12 +67,21 @@
   (or (emacs-callproc--lookup-process-environment variable)
       (emacs-callproc--sys-getenv variable)))
 
-(unless (fboundp 'getenv)
+;; On the standalone reader the prelude already defines a `getenv' that
+;; reads its own (empty) `nelisp--environment', so an `unless fboundp'
+;; guard would keep that broken lookup even though we seed
+;; `process-environment' from /proc/self/environ below.  Install our
+;; `process-environment'-based getenv whenever the reader file primitive
+;; `rdf' is present (= standalone); on host Emacs (`rdf' unbound) only
+;; when getenv is missing, so the C builtin is never clobbered.
+(when (or (not (fboundp 'getenv)) (fboundp 'rdf))
   (defun getenv (variable &optional frame)
     "Polyfill: look VARIABLE up in the NeLisp-compatible environment."
     (emacs-callproc-getenv variable frame)))
 
-(unless (fboundp 'setenv)
+;; Same reader/host split as getenv above: keep setenv writing to the
+;; `process-environment' overlay that our getenv reads.
+(when (or (not (fboundp 'setenv)) (fboundp 'rdf))
   (defun setenv (variable &optional value substitute-env-vars)
     "Polyfill: prepend `VARIABLE=VALUE' to `process-environment'.
 Returns VALUE.  When VALUE is nil this removes the entry (= matches
