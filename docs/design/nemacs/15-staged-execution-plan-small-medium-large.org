@@ -171,6 +171,29 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   - *残 breadth*: =macroexpand-all= 未実装、他 package が呼ぶ未実装 builtin の
     long-tail。実 package 駆動で逐次補完するのが筋。
 
+** 3.5 B4 breadth: 実 package 駆動の builtin 補完 (2026-06-20, 継続)
+
+実 package を full --batch =--eval= 経路で load → 関数を exercise → void-function を
+逐次補完する loop。findings:
+
+- *s.el = ほぼ完全 callable* (13 関数中 12 OK: s-split/s-trim/s-replace-all/s-match/
+  s-matched-positions-all/s-split-words/s-capitalize/s-word-wrap/s-numeric?/
+  s-count-matches/s-pad-right/s-truncate)。残 =s-reverse= のみ =ucs-normalize=
+  (CJK 正規化 feature) 欠落 = niche。replace-match / save-match-data 修正 (B4/B1) が効いた。
+- *function-get 補完 (本 wave)*: void だった一般 builtin。=emacs-stub.el= に real
+  実装 (=get= + defalias chain 追従) を追加。define-inline / cl-generic / nadvice が
+  依存。emacs-stub-residuals-test +1。
+- *ht.el = 深い chain で blocked*: ht-create 等を =define-inline= で定義するが、
+  runtime の define-inline は no-op stub。vendor =inline.el= を load すると real
+  define-inline になるが、その展開が =function-get= (補完済) → さらに =comma=
+  (=void-function comma=、runtime の backquote/inline-quote 内部表現の不一致) を要求。
+  = define-inline 完全対応は backquote/inline-quote 内部の深い runtime 作業で、
+  単純 builtin 追加でない。dedicated に扱うべき項目。
+- *breadth loop の所見*: 単純 void-function は逐次追加で解消するが、=define-inline=
+  系は深い chain。package ごとに「単純欠落 (逐次補完)」と「深い runtime 機構
+  (dedicated)」を切り分けるのが効率的。discovery sweep は 1 関数の hard crash で
+  run 全体が落ちる (reader 安定性) ため、condition-case + 小分けが安全。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
