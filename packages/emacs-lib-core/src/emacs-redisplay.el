@@ -222,7 +222,8 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (pos-delta 0)             ;; Phase 3.B.6 lazy buf-pos shift (skip path)
   (start-pos nil)           ;; buffer position at row start
   (end-pos   nil)           ;; buffer position at row end (exclusive)
-  (continuation-p nil))     ;; non-nil if this row continues the previous
+  (continuation-p nil)      ;; non-nil if this row continues the previous
+  (direction 'left-to-right)) ;; base paragraph direction (UAX #9 P2/P3)
 
 (cl-defstruct (emacs-redisplay-glyph-matrix
                (:constructor emacs-redisplay--make-glyph-matrix)
@@ -1021,6 +1022,45 @@ control characters return 1."
     (condition-case _err (char-width ch) (error 1)))
    (t 1)))
 
+(defun emacs-redisplay--char-bidi-class (ch)
+  "Return the simplified bidi class of CH: `L', `R', `AL', or `neutral'.
+Only the strong directional classes needed for base-direction detection
+(UAX #9 P2/P3) are distinguished; weak / neutral types collapse to
+`neutral'.  Hebrew is R, Arabic-family scripts are AL, ASCII / Latin /
+CJK letters are L."
+  (cond
+   ;; strong R: Hebrew + Hebrew presentation forms
+   ((or (and (>= ch #x0590) (<= ch #x05FF))
+        (and (>= ch #xFB1D) (<= ch #xFB4F)))
+    'R)
+   ;; strong AL: Arabic / Syriac / Thaana + Arabic presentation forms
+   ((or (and (>= ch #x0600) (<= ch #x07BF))
+        (and (>= ch #x08A0) (<= ch #x08FF))
+        (and (>= ch #xFB50) (<= ch #xFDFF))
+        (and (>= ch #xFE70) (<= ch #xFEFF)))
+    'AL)
+   ;; strong L: ASCII letters, Latin-1/Extended letters, CJK and beyond
+   ((or (and (>= ch ?A) (<= ch ?Z))
+        (and (>= ch ?a) (<= ch ?z))
+        (and (>= ch #x00C0) (<= ch #x024F))
+        (>= ch #x2E80))
+    'L)
+   (t 'neutral)))
+
+(defun emacs-redisplay--base-direction (string)
+  "Return the base paragraph direction of STRING (UAX #9 rules P2/P3).
+The direction is set by the first strong (L / R / AL) character: L yields
+`left-to-right', R or AL yields `right-to-left'.  With no strong character
+the direction defaults to `left-to-right'."
+  (let ((i 0) (n (length string)) (dir nil))
+    (while (and (< i n) (null dir))
+      (let ((cls (emacs-redisplay--char-bidi-class (aref string i))))
+        (cond
+         ((eq cls 'L) (setq dir 'left-to-right))
+         ((or (eq cls 'R) (eq cls 'AL)) (setq dir 'right-to-left))))
+      (setq i (1+ i)))
+    (or dir 'left-to-right)))
+
 (defun emacs-redisplay--buffer-name (buffer)
   "Return BUFFER's display name for the MVP mode-line."
   (cond
@@ -1645,6 +1685,8 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
                  (gvec (car laid))
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
+            (setf (emacs-redisplay-glyph-row-direction row)
+                  (emacs-redisplay--base-direction line))
             (aset cache row-idx (cons line (cons ovly-fp tp-fp))))))
         (setq pos next-pos-est
               row-idx (1+ row-idx))))
