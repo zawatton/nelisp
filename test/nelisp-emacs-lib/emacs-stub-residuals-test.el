@@ -121,6 +121,25 @@ It was void on the reader, blocking `define-inline' / cl-generic users."
     (put sym 'my-prop 123)
     (should (equal 123 (function-get sym 'my-prop)))))
 
+(ert-deftest emacs-stub-residuals-test/define-inline-lowers-inline-dsl ()
+  "Doc 15 B4: runtime define-inline lowers the inline DSL against the
+backquote (comma X) representation to a plain defun (function version).
+The helper is unconditional; the macro itself is reader-gated."
+  ;; inline-quote: (comma X) -> X
+  (should (equal '(defun f (x) (+ x 1))
+                 (emacs-stub--define-inline
+                  'f '(x) '((inline-quote (+ (comma x) 1))))))
+  ;; inline-letevals wrapping inline-quote (ht-get* shape)
+  (should (equal '(defun g (table key) (gethash key table))
+                 (emacs-stub--define-inline
+                  'g '(table key)
+                  '((inline-letevals (table key)
+                      (inline-quote (gethash (comma key) (comma table))))))))
+  ;; leading docstring is stripped
+  (should (equal '(defun h (x) x)
+                 (emacs-stub--define-inline
+                  'h '(x) '("doc" (inline-quote (comma x)))))))
+
 (ert-deftest emacs-stub-residuals-test/display-line-number-core-defaults ()
   (should (integerp (line-number-display-width)))
   (should-not display-line-numbers)

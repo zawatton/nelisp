@@ -189,6 +189,19 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   (=void-function comma=、runtime の backquote/inline-quote 内部表現の不一致) を要求。
   = define-inline 完全対応は backquote/inline-quote 内部の深い runtime 作業で、
   単純 builtin 追加でない。dedicated に扱うべき項目。
+- *✅ define-inline 解決 (2026-06-20)*: 上記 chain の根本 = runtime backquote が
+  =,X= / =,@X= を標準 =\,= でなく =(comma X)= / =(comma-at X)= で read すること
+  (実証: =(read-from-string ",x")= = =(comma x)=)。inline.el は標準 =\,= 前提で
+  噛み合わない。よって inline.el 機構を使わず、=emacs-stub.el= に runtime backquote
+  対応の lean な function-version-only =define-inline= polyfill を実装
+  (=inline-quote= FORM → =(comma X)=→X 置換、=inline-letevals= は arg 値なので
+  no-op wrapper)。reader-gated (host の real define-inline 保護)。検証: baked
+  bundle で =(define-inline f (x) (inline-quote (+ ,x 1)))= → =(f 41)=42=、
+  inline-letevals+inline-quote 併用 (ht-get* 形) も lower。emacs-stub-residuals-test
+  +1 (host で helper lowering 検証)。= define-inline を使う全 package の foundation。
+  ※ ht.el フル load は別途 =(require 'inline)= / =(require 'gv)= の heavy load +
+  repl-boot 安定性 (大 package load の hang/segfault、stale lock 干渉) が残るが、
+  これは define-inline とは別の reader-load issue。
 - *breadth loop の所見*: 単純 void-function は逐次追加で解消するが、=define-inline=
   系は深い chain。package ごとに「単純欠落 (逐次補完)」と「深い runtime 機構
   (dedicated)」を切り分けるのが効率的。discovery sweep は 1 関数の hard crash で

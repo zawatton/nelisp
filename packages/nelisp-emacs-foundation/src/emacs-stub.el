@@ -1287,6 +1287,59 @@ degrades to 1 (no pow primitive in the standalone reader)."
         (/ 1.0 acc)))
      (t 1))))
 
+;;;; --- define-inline (Doc 15 B4): runtime-compatible function-only impl ---
+;;
+;; `emacs-stub-bulk' (required above) pre-stubs `define-inline' to a no-op,
+;; so packages that define functions with it (ht.el's ht-create / ht-get /
+;; ..., and many MELPA libs) get void functions.  The real `inline.el'
+;; machinery does not mesh with this runtime's backquote -- the reader reads
+;; ,X / ,@X as (comma X) / (comma-at X), not the standard \\,/\\,@, so
+;; inline.el's inline-quote walker leaves (comma X) in the generated code,
+;; yielding `void-function comma'.
+;;
+;; Provide a lean, function-version-only `define-inline' that lowers the
+;; inline DSL directly against the runtime backquote: an `inline-quote' FORM
+;; becomes FORM with (comma X) -> X (the bound argument value), and
+;; `inline-letevals' is a no-op wrapper (its vars are already evaluated
+;; args).  No compiler-macro / inlining optimisation (callability over
+;; speed).  Reader-gated (`rdf') so host Emacs keeps its real `define-inline'.
+;; Lowering helpers are pure and defined unconditionally (harmless on host,
+;; and unit-testable there); only the `define-inline' macro is reader-gated.
+(defun emacs-stub--inline-uncomma (form)
+  "Lower runtime backquote unquotes in FORM: (comma X) -> X, recursively."
+  (cond
+   ((not (consp form)) form)
+   ((eq (car form) 'comma) (emacs-stub--inline-lower (cadr form)))
+   ((eq (car form) 'comma-at) (emacs-stub--inline-lower (cadr form)))
+   (t (mapcar #'emacs-stub--inline-uncomma form))))
+
+(defun emacs-stub--inline-lower (form)
+  "Lower one inline DSL FORM (`inline-quote' / `inline-letevals') to code."
+  (cond
+   ((not (consp form)) form)
+   ((eq (car form) 'inline-quote) (emacs-stub--inline-uncomma (cadr form)))
+   ((eq (car form) 'inline-letevals)
+    (let ((body (cddr form)))
+      (if (cdr body)
+          (cons 'progn (mapcar #'emacs-stub--inline-lower body))
+        (emacs-stub--inline-lower (car body)))))
+   (t form)))
+
+(defun emacs-stub--define-inline (name args body)
+  "Build the `defun' form for a runtime `define-inline' (function version)."
+  (when (stringp (car-safe body)) (setq body (cdr body)))
+  (when (eq (car-safe (car-safe body)) 'declare) (setq body (cdr body)))
+  (list 'defun name args
+        (if (cdr body)
+            (cons 'progn (mapcar #'emacs-stub--inline-lower body))
+          (emacs-stub--inline-lower (car body)))))
+
+(when (fboundp 'rdf)
+  (defmacro define-inline (name args &rest body)
+    "Runtime `define-inline': define NAME as a plain function (no inlining).
+The inline DSL in BODY is lowered against the runtime backquote."
+    (emacs-stub--define-inline name args body)))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
