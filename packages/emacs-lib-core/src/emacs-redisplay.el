@@ -1028,6 +1028,13 @@ control characters return 1."
     (nelisp-ec-buffer-name buffer))
    ((stringp buffer) "*string*")
    (t "")))
+(defun emacs-redisplay--mode-line-modified-indicator (buffer)
+  "Return \"*\" when BUFFER is modified, else \"-\" (mode-line `%*' / `%+')."
+  (if (and buffer (nelisp-ec-buffer-p buffer)
+           (fboundp 'nelisp-ec-buffer-modified-p)
+           (nelisp-ec-buffer-modified-p buffer))
+      "*" "-"))
+
 
 (defun emacs-redisplay--mode-line-format (buffer)
   "Return BUFFER's mode-line format or the Phase 3 MVP fallback."
@@ -1054,6 +1061,9 @@ control characters return 1."
                               (cond
                                ((eq esc ?b)
                                 (emacs-redisplay--buffer-name buffer))
+                               ((or (eq esc ?*) (eq esc ?+))
+                                (emacs-redisplay--mode-line-modified-indicator
+                                 buffer))
                                ((eq esc ?%) "%")
                                (t (string ?% esc)))))
                 (setq i (+ i 2)))
@@ -1068,17 +1078,21 @@ control characters return 1."
    (t (format "%s" format))))
 
 (defun emacs-redisplay--mode-line-glyphs (buffer width)
-  "Return a glyph vector for BUFFER's mode-line, clipped to WIDTH."
+  "Return a FULL-WIDTH glyph vector for BUFFER's mode-line.
+The whole row carries the `mode-line' (inverse-video) face, so it reads as a
+dedicated bar spanning the window rather than just the text length: cells
+past the format text are inverse-video spaces."
   (let* ((format (emacs-redisplay--mode-line-format buffer))
          (text (emacs-redisplay--mode-line-format-to-string format buffer))
          (face '(:inverse-video t))
          (realized (emacs-redisplay-realize-face face))
-         (n (min width (length text)))
-         (vec (make-vector n nil)))
-    (dotimes (i n)
+         (w (max 0 width))
+         (tn (length text))
+         (vec (make-vector w nil)))
+    (dotimes (i w)
       (aset vec i
             (emacs-redisplay--make-glyph
-             :char (aref text i)
+             :char (if (< i tn) (aref text i) ?\s)
              :face face
              :realized-face realized
              :width 1
