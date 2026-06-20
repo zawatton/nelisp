@@ -306,7 +306,8 @@
                            "/tmp/nemacs-ime-learn"
                            "/tmp/nemacs-ime-okuri"
                            "/tmp/nemacs-org-time"
-			                   "/tmp/nemacs-org-capture-file"))
+			                   "/tmp/nemacs-org-capture-file"
+			                   "/tmp/nemacs-org-agenda-files"))
 	          (dirs '("/tmp/nemacs-buffer-store"
 	                  "/tmp/nemacs-buffer-file-store"
 		                  "/tmp/nemacs-buffer-point-store"
@@ -4271,6 +4272,11 @@ When INTERVAL is nil, poll every 0.1s."
                     (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
                     (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
                     (write-region "" nil "/tmp/nemacs-file" nil 'silent)
+                    ;; Clear any agenda-files list so org-agenda exercises the
+                    ;; current-buffer fallback deterministically (a stray
+                    ;; /tmp/nemacs-org-agenda-files from another run would
+                    ;; otherwise redirect the scan to those files).
+                    (write-region "" nil "/tmp/nemacs-org-agenda-files" nil 'silent)
                     (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
                     (write-region buf nil "/tmp/nemacs-buf" nil 'silent)
                     (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
@@ -4351,6 +4357,76 @@ When INTERVAL is nil, poll every 0.1s."
                       "/tmp/nemacs-buf")))
             (should (string-suffix-p "* TODO write report\n" buf))
             (should (string-prefix-p org-text buf))))))))
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-org-agenda-multifile ()
+  "org-agenda scans every file in the nemacs-org-agenda-files transport list.
+
+Active TODO keywords default to a GTD set (TODO/NEXT/WAIT/STARTED/SOMEDAY)
+when a file has no in-buffer #+TODO: directive, so the user's real files --
+which inherit keywords from global org-todo-keywords -- still surface
+NEXT/WAIT/SOMEDAY headings.  Heading lines are extracted with the native
+str-filter-prefix-lines primitive so the scan scales with heading count,
+not total line count."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (file-a "/tmp/nemacs-test-agenda-a.org")
+          (file-b "/tmp/nemacs-test-agenda-b.org"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region (concat "* TODO alpha one\n"
+                                  "* DONE alpha done\n"
+                                  "** NEXT alpha next\n"
+                                  "* plain alpha\n")
+                          nil file-a nil 'silent)
+            (write-region (concat "* WAIT beta wait\n"
+                                  "* TODO beta two\n")
+                          nil file-b nil 'silent)
+            ;; current buffer is some unrelated file; both agenda files go
+            ;; through the rdf path (neither equals the visited file).
+            (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+            (write-region "/tmp/nemacs-visited.org" nil "/tmp/nemacs-file"
+                          nil 'silent)
+            (write-region "main" nil "/tmp/nemacs-buffer-name" nil 'silent)
+            (write-region "* TODO visited\n" nil "/tmp/nemacs-buf" nil 'silent)
+            (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+            (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+            (write-region (concat file-a "\n" file-b "\n")
+                          nil "/tmp/nemacs-org-agenda-files" nil 'silent)
+            (write-region "org-agenda" nil "/tmp/nemacs-cmd" nil 'silent)
+            (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image "(nemacs-gui-file-bridge-run)")
+            (should (equal "*Org Agenda*"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-buffer-name")))
+            (should (equal "1"
+                           (nemacs-gui-file-bridge-runtime-test--slurp
+                            "/tmp/nemacs-read-only")))
+            (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                        "/tmp/nemacs-buf")))
+              ;; both files scanned, basename used as the entry label
+              (should (string-match-p
+                       (regexp-quote "nemacs-test-agenda-a.org: * TODO alpha one")
+                       buf))
+              (should (string-match-p
+                       (regexp-quote "nemacs-test-agenda-a.org: ** NEXT alpha next")
+                       buf))
+              (should (string-match-p
+                       (regexp-quote "nemacs-test-agenda-b.org: * WAIT beta wait")
+                       buf))
+              (should (string-match-p
+                       (regexp-quote "nemacs-test-agenda-b.org: * TODO beta two")
+                       buf))
+              ;; DONE + plain headings excluded
+              (should-not (string-match-p (regexp-quote "alpha done") buf))
+              (should-not (string-match-p (regexp-quote "plain alpha") buf))))
+        (ignore-errors (delete-file file-a))
+        (ignore-errors (delete-file file-b))))))
+
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-magit-min ()
   "Magit-min status/stage/commit/diff/log workflow (M10)."
