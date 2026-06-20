@@ -1192,6 +1192,52 @@ advances; end-of-line sits just left of the content."
         (should (eq 1  (emacs-redisplay-glyph-buf-pos (aref g 0))))
         (should (eq ?d (emacs-redisplay-glyph-char (aref g 1))))
         (should (eq 4  (emacs-redisplay-glyph-buf-pos (aref g 1))))))))
+;;; H''''''''''. bidi weak/neutral resolution — rule N1 (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-neutral-joins-embedded-run ()
+  "Rule N1: a space inside an embedded Latin run (in RTL) stays with the run,
+keeping its internal left-to-right order instead of splitting it."
+  (emacs-redisplay-test--with-fresh-world
+    ;; logical: alef(1) a(2) SPACE(3) b(4) — base RTL
+    (emacs-redisplay-test--with-buffer b (concat (string #x05D0) "a b")
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
+          ;; right-aligned last 4 cells: a, space, b, alef
+          (should (eq ?a (emacs-redisplay-glyph-char (aref v (- W 4)))))
+          (should (eq ?\s (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (eq ?b (emacs-redisplay-glyph-char (aref v (- W 2)))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1)))))
+          ;; the Latin run keeps logical order: a before b
+          (should (< (emacs-redisplay-glyph-buf-pos (aref v (- W 4)))
+                     (emacs-redisplay-glyph-buf-pos (aref v (- W 2))))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-levels-unit ()
+  "bidi-levels: rule N1 resolves a neutral between same-direction strongs;
+rule N2 falls back to the base direction when the sides disagree."
+  (let ((mk (lambda (c) (emacs-redisplay--make-glyph :char c))))
+    ;; [R L sp L] base RTL -> the space joins the Latin run: [1 2 2 2]
+    (should (equal [1 2 2 2]
+                   (emacs-redisplay--bidi-levels
+                    (vector (funcall mk #x05D0) (funcall mk ?a)
+                            (funcall mk ?\s) (funcall mk ?b))
+                    1)))
+    ;; [R sp R] base RTL -> neutral between two R stays RTL: [1 1 1]
+    (should (equal [1 1 1]
+                   (emacs-redisplay--bidi-levels
+                    (vector (funcall mk #x05D0) (funcall mk ?\s)
+                            (funcall mk #x05D1))
+                    1)))
+    ;; [L sp R] base LTR -> sides disagree -> neutral takes base (L): [0 0 1]
+    (should (equal [0 0 1]
+                   (emacs-redisplay--bidi-levels
+                    (vector (funcall mk ?a) (funcall mk ?\s)
+                            (funcall mk #x05D0))
+                    0)))))
+
 
 (ert-deftest emacs-redisplay-test-redisplay-skips-invisible-property ()
   "redisplay-window omits characters with non-nil `invisible'."
