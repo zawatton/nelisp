@@ -1023,14 +1023,16 @@ char width and codepoint must stay intact so they do not regress."
         (emacs-window-set-window-buffer w b)
         (let* ((m   (emacs-redisplay-redisplay-window h w))
                (row (emacs-redisplay-glyph-row m 0))
-               (v   (emacs-redisplay-glyph-row-glyphs row)))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
           (should (eq 'right-to-left (emacs-redisplay-glyph-row-direction row)))
-          ;; visual col 0 = logical-last char (gimel, pos 3)
-          (should (= #x05D2 (emacs-redisplay-glyph-char (aref v 0))))
-          (should (= 3 (emacs-redisplay-glyph-buf-pos (aref v 0))))
-          ;; visual col 2 = logical-first char (alef, pos 1)
-          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v 2))))
-          (should (= 1 (emacs-redisplay-glyph-buf-pos (aref v 2)))))))))
+          ;; RTL is right-aligned: content fills the last 3 cells.
+          ;; leftmost content cell (W-3) = logical-last char (gimel, pos 3)
+          (should (= #x05D2 (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (= 3 (emacs-redisplay-glyph-buf-pos (aref v (- W 3)))))
+          ;; right edge (W-1) = logical-first char (alef, pos 1)
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1)))))
+          (should (= 1 (emacs-redisplay-glyph-buf-pos (aref v (- W 1))))))))))
 
 (ert-deftest emacs-redisplay-test-bidi-ltr-row-not-reversed ()
   "An LTR paragraph row keeps logical order (no reordering)."
@@ -1067,16 +1069,18 @@ char width and codepoint must stay intact so they do not regress."
         (emacs-window-set-window-buffer w b)
         (let* ((m   (emacs-redisplay-redisplay-window h w))
                (row (emacs-redisplay-glyph-row m 0))
-               (v   (emacs-redisplay-glyph-row-glyphs row)))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
           (should (eq 'right-to-left (emacs-redisplay-glyph-row-direction row)))
-          ;; embedded Latin "ab" sits left, in order a then b (ascending pos)
-          (should (eq ?a (emacs-redisplay-glyph-char (aref v 0))))
-          (should (eq ?b (emacs-redisplay-glyph-char (aref v 1))))
-          (should (< (emacs-redisplay-glyph-buf-pos (aref v 0))
-                     (emacs-redisplay-glyph-buf-pos (aref v 1))))
-          ;; Hebrew is reversed on the right: bet then alef
-          (should (= #x05D1 (emacs-redisplay-glyph-char (aref v 2))))
-          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v 3)))))))))
+          ;; right-aligned: content fills the last 4 cells.
+          ;; embedded Latin "ab" stays in order a then b (ascending pos)
+          (should (eq ?a (emacs-redisplay-glyph-char (aref v (- W 4)))))
+          (should (eq ?b (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (< (emacs-redisplay-glyph-buf-pos (aref v (- W 4)))
+                     (emacs-redisplay-glyph-buf-pos (aref v (- W 3)))))
+          ;; Hebrew reversed toward the right edge: bet then alef
+          (should (= #x05D1 (emacs-redisplay-glyph-char (aref v (- W 2)))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1))))))))))
 
 (ert-deftest emacs-redisplay-test-bidi-mixed-number-keeps-order ()
   "In an RTL row, an embedded number keeps its left-to-right digit order."
@@ -1087,10 +1091,12 @@ char width and codepoint must stay intact so they do not regress."
         (emacs-window-set-window-buffer w b)
         (let* ((m   (emacs-redisplay-redisplay-window h w))
                (row (emacs-redisplay-glyph-row m 0))
-               (v   (emacs-redisplay-glyph-row-glyphs row)))
-          (should (eq ?1 (emacs-redisplay-glyph-char (aref v 0))))
-          (should (eq ?2 (emacs-redisplay-glyph-char (aref v 1))))
-          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v 2)))))))))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
+          ;; right-aligned: number "12" keeps order at the last three cells
+          (should (eq ?1 (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (eq ?2 (emacs-redisplay-glyph-char (aref v (- W 2)))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1))))))))))
 
 (ert-deftest emacs-redisplay-test-bidi-reorder-glyphs-unit ()
   "bidi-reorder-glyphs: pure RTL fully reverses; LTR-only keeps order."
@@ -1108,6 +1114,38 @@ char width and codepoint must stay intact so they do not regress."
                 0)))
       (should (eq ?a (emacs-redisplay-glyph-char (aref out 0))))
       (should (eq ?c (emacs-redisplay-glyph-char (aref out 2)))))))
+
+;;; H''''''''. bidi RTL right-alignment (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-rtl-right-aligned ()
+  "An RTL row is flush against the right edge; left cells are blank."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b (string #x05D0 #x05D1 #x05D2)
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
+          ;; right edge holds the logical-first char (alef) = RTL reading start
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1)))))
+          ;; far-left cell is blank padding (nil or a space glyph)
+          (let ((g (aref v 0)))
+            (should (or (null g) (eq ?\s (emacs-redisplay-glyph-char g))))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-right-align-glyphs-unit ()
+  "right-align-glyphs pads the left and places the content flush right."
+  (let* ((g0 (emacs-redisplay--make-glyph :char ?x))
+         (g1 (emacs-redisplay--make-glyph :char ?y))
+         (out (emacs-redisplay--right-align-glyphs (vector g0 g1) 5)))
+    (should (= 5 (length out)))
+    (should (null (aref out 0)))
+    (should (null (aref out 2)))
+    (should (eq g0 (aref out 3)))
+    (should (eq g1 (aref out 4))))
+  ;; a vector already at / over the width is returned unchanged
+  (let ((vv (vector (emacs-redisplay--make-glyph :char ?a))))
+    (should (eq vv (emacs-redisplay--right-align-glyphs vv 1)))))
 
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
