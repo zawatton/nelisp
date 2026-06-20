@@ -22293,6 +22293,23 @@
           nil)
         cmd))
 
+(fset 'files--bridge-window-split-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "fit-window-to-buffer")
+                t
+              (if (equal cmd "delete-windows-on")
+                  t
+                (if (equal cmd "split-root-window-below")
+                    t
+                  (equal cmd "split-root-window-right"))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+              (files--write-transport-window-split-delta)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23560,34 +23577,7 @@
                     (setq files--bridge-status "written"))
                 nil)
               (setq cmd (files--bridge-window-layout-writeback-current-context cmd))
-              (if (equal cmd "fit-window-to-buffer")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "delete-windows-on")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "split-root-window-below")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "split-root-window-right")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-window-split-writeback-current-context cmd))
               (if (equal cmd "tear-off-window")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
