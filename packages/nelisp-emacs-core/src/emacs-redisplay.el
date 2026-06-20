@@ -209,6 +209,7 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (width         1)          ;; glyph width in cells (1 ASCII / 2 CJK)
   (composition   nil)        ;; nil or composition reference (deferred)
   (display-spec  nil)        ;; nil or display property override
+  (mouse-face    nil)        ;; nil or `mouse-face' spec (hover highlight)
   (buf-pos       nil))       ;; source buffer position (for tooltips, etc.)
 
 (cl-defstruct (emacs-redisplay-glyph-row
@@ -221,7 +222,8 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (pos-delta 0)             ;; Phase 3.B.6 lazy buf-pos shift (skip path)
   (start-pos nil)           ;; buffer position at row start
   (end-pos   nil)           ;; buffer position at row end (exclusive)
-  (continuation-p nil))     ;; non-nil if this row continues the previous
+  (continuation-p nil)      ;; non-nil if this row continues the previous
+  (direction 'left-to-right)) ;; base paragraph direction (UAX #9 P2/P3)
 
 (cl-defstruct (emacs-redisplay-glyph-matrix
                (:constructor emacs-redisplay--make-glyph-matrix)
@@ -647,6 +649,32 @@ still inspect the unresolved value."
       (error spec)))
    (t spec)))
 
+(defun emacs-redisplay--space-display-width (spec col)
+  "Cell width of a `(space ...)' display SPEC at column COL, or nil.
+SPEC may be a single `(space ...)' spec or a list of display specs (the
+normalized form `nelisp-display-resolve' / Emacs produce, e.g.
+`((space :width 5))').  Honors `(space :width N)' (N cells) and
+`(space :align-to C)' (stretch to column C).  Returns nil when no
+`(space ...)' spec is present so callers fall back to the normal
+character width.  Image / slice specs are not handled yet (they need
+backend glyph support)."
+  (cond
+   ((not (consp spec)) nil)
+   ((eq (car spec) 'space)
+    (let ((w (plist-get (cdr spec) :width))
+          (a (plist-get (cdr spec) :align-to)))
+      (cond
+       ((numberp w) (max 1 (truncate w)))
+       ((numberp a) (max 1 (- (truncate a) col)))
+       (t 1))))
+   (t
+    ;; a list of display specs -- use the first `(space ...)' found
+    (let (result)
+      (dolist (s spec)
+        (when (and (null result) (consp s) (eq (car s) 'space))
+          (setq result (emacs-redisplay--space-display-width s col))))
+      result))))
+
 (defun emacs-redisplay--overlays-in (beg end &optional buffer)
   "Return overlays touching [BEG, END) in BUFFER, or nil if API absent."
   (cond
@@ -972,6 +1000,8 @@ in the `buf-pos' slot.  HANDLE may be nil — only used for logging."
                  :width 1
                  :composition nil
                  :display-spec (emacs-redisplay--resolve-display display nil)
+                 :mouse-face (emacs-redisplay--text-property-at
+                              pos 'mouse-face buffer)
                  :buf-pos pos)
                 glyphs))))
     (vconcat (nreverse glyphs))))
@@ -992,6 +1022,45 @@ control characters return 1."
     (condition-case _err (char-width ch) (error 1)))
    (t 1)))
 
+(defun emacs-redisplay--char-bidi-class (ch)
+  "Return the simplified bidi class of CH: `L', `R', `AL', or `neutral'.
+Only the strong directional classes needed for base-direction detection
+(UAX #9 P2/P3) are distinguished; weak / neutral types collapse to
+`neutral'.  Hebrew is R, Arabic-family scripts are AL, ASCII / Latin /
+CJK letters are L."
+  (cond
+   ;; strong R: Hebrew + Hebrew presentation forms
+   ((or (and (>= ch #x0590) (<= ch #x05FF))
+        (and (>= ch #xFB1D) (<= ch #xFB4F)))
+    'R)
+   ;; strong AL: Arabic / Syriac / Thaana + Arabic presentation forms
+   ((or (and (>= ch #x0600) (<= ch #x07BF))
+        (and (>= ch #x08A0) (<= ch #x08FF))
+        (and (>= ch #xFB50) (<= ch #xFDFF))
+        (and (>= ch #xFE70) (<= ch #xFEFF)))
+    'AL)
+   ;; strong L: ASCII letters, Latin-1/Extended letters, CJK and beyond
+   ((or (and (>= ch ?A) (<= ch ?Z))
+        (and (>= ch ?a) (<= ch ?z))
+        (and (>= ch #x00C0) (<= ch #x024F))
+        (>= ch #x2E80))
+    'L)
+   (t 'neutral)))
+
+(defun emacs-redisplay--base-direction (string)
+  "Return the base paragraph direction of STRING (UAX #9 rules P2/P3).
+The direction is set by the first strong (L / R / AL) character: L yields
+`left-to-right', R or AL yields `right-to-left'.  With no strong character
+the direction defaults to `left-to-right'."
+  (let ((i 0) (n (length string)) (dir nil))
+    (while (and (< i n) (null dir))
+      (let ((cls (emacs-redisplay--char-bidi-class (aref string i))))
+        (cond
+         ((eq cls 'L) (setq dir 'left-to-right))
+         ((or (eq cls 'R) (eq cls 'AL)) (setq dir 'right-to-left))))
+      (setq i (1+ i)))
+    (or dir 'left-to-right)))
+
 (defun emacs-redisplay--buffer-name (buffer)
   "Return BUFFER's display name for the MVP mode-line."
   (cond
@@ -999,6 +1068,13 @@ control characters return 1."
     (nelisp-ec-buffer-name buffer))
    ((stringp buffer) "*string*")
    (t "")))
+(defun emacs-redisplay--mode-line-modified-indicator (buffer)
+  "Return \"*\" when BUFFER is modified, else \"-\" (mode-line `%*' / `%+')."
+  (if (and buffer (nelisp-ec-buffer-p buffer)
+           (fboundp 'nelisp-ec-buffer-modified-p)
+           (nelisp-ec-buffer-modified-p buffer))
+      "*" "-"))
+
 
 (defun emacs-redisplay--mode-line-format (buffer)
   "Return BUFFER's mode-line format or the Phase 3 MVP fallback."
@@ -1025,6 +1101,9 @@ control characters return 1."
                               (cond
                                ((eq esc ?b)
                                 (emacs-redisplay--buffer-name buffer))
+                               ((or (eq esc ?*) (eq esc ?+))
+                                (emacs-redisplay--mode-line-modified-indicator
+                                 buffer))
                                ((eq esc ?%) "%")
                                (t (string ?% esc)))))
                 (setq i (+ i 2)))
@@ -1039,17 +1118,21 @@ control characters return 1."
    (t (format "%s" format))))
 
 (defun emacs-redisplay--mode-line-glyphs (buffer width)
-  "Return a glyph vector for BUFFER's mode-line, clipped to WIDTH."
+  "Return a FULL-WIDTH glyph vector for BUFFER's mode-line.
+The whole row carries the `mode-line' (inverse-video) face, so it reads as a
+dedicated bar spanning the window rather than just the text length: cells
+past the format text are inverse-video spaces."
   (let* ((format (emacs-redisplay--mode-line-format buffer))
          (text (emacs-redisplay--mode-line-format-to-string format buffer))
          (face '(:inverse-video t))
          (realized (emacs-redisplay-realize-face face))
-         (n (min width (length text)))
-         (vec (make-vector n nil)))
-    (dotimes (i n)
+         (w (max 0 width))
+         (tn (length text))
+         (vec (make-vector w nil)))
+    (dotimes (i w)
       (aset vec i
             (emacs-redisplay--make-glyph
-             :char (aref text i)
+             :char (if (< i tn) (aref text i) ?\s)
              :face face
              :realized-face realized
              :width 1
@@ -1173,19 +1256,27 @@ after emission (= COL when WIDTH is exhausted before any char)."
     out))
 
 (defun emacs-redisplay--apply-overlay-face (glyph overlays pos)
-  "Merge overlay face attributes (highest priority wins) into GLYPH."
+  "Merge overlay face attributes (highest priority wins) into GLYPH.
+An overlay `mouse-face' at POS likewise overrides the glyph's
+text-property `mouse-face' by the same priority rule."
   (when overlays
-    (let (best best-prio)
+    (let (best best-prio best-mface best-mface-prio)
       (dolist (ov overlays)
-        (let ((bounds (emacs-redisplay--ovly-bounds ov))
-              (prio   (or (emacs-redisplay--ovly-prop ov 'priority) 0))
-              (face   (emacs-redisplay--ovly-prop ov 'face)))
-          (when (and bounds face
-                     (<= (car bounds) pos)
-                     (< pos (cdr bounds))
-                     (or (null best) (> prio best-prio)))
+        (let* ((bounds (emacs-redisplay--ovly-bounds ov))
+               (prio   (or (emacs-redisplay--ovly-prop ov 'priority) 0))
+               (face   (emacs-redisplay--ovly-prop ov 'face))
+               (mface  (emacs-redisplay--ovly-prop ov 'mouse-face))
+               (inside (and bounds
+                            (<= (car bounds) pos)
+                            (< pos (cdr bounds)))))
+          (when (and inside face (or (null best) (> prio best-prio)))
             (setq best face
-                  best-prio prio))))
+                  best-prio prio))
+          (when (and inside mface (or (null best-mface) (> prio best-mface-prio)))
+            (setq best-mface mface
+                  best-mface-prio prio))))
+      (when best-mface
+        (setf (emacs-redisplay-glyph-mouse-face glyph) best-mface))
       (when best
         (let* ((existing (emacs-redisplay-glyph-face glyph))
                (resolved (emacs-redisplay--resolve-face best))
@@ -1229,6 +1320,7 @@ the overlay anchor position."
          (used (make-vector width nil))
          (i 0)
          (n (length line))
+         (last-glyph nil)
          (overflow nil))
     ;; Before-strings anchored at the line's first buffer position.
     (setq col (emacs-redisplay--emit-before-strings
@@ -1265,27 +1357,45 @@ the overlay anchor position."
           (when (< i (1- n))
             (setq col (emacs-redisplay--emit-before-strings
                        overlays pos used col width))))
+         ;; Zero-width combining mark: merge into the previous glyph's
+         ;; composition (one grapheme cluster, no extra column) instead of
+         ;; emitting its own cell.  A leading combining mark (no previous
+         ;; glyph) falls through to the normal branch and takes width 1.
+         ((and (= cw 0) last-glyph)
+          (setf (emacs-redisplay-glyph-composition last-glyph)
+                (append (emacs-redisplay-glyph-composition last-glyph)
+                        (list ch)))
+          (setq pos (1+ pos)))
          (t
           (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
                  (display (emacs-redisplay--text-property-at pos 'display buffer))
+                 (mouse-face (emacs-redisplay--text-property-at
+                              pos 'mouse-face buffer))
+                 (display-spec (emacs-redisplay--resolve-display display nil))
+                 ;; A `(space :width/:align-to ...)' display spec overrides the
+                 ;; cell width and renders blank; other specs keep the char.
+                 (space-w (emacs-redisplay--space-display-width
+                           display-spec col))
+                 (ew (or space-w (max 1 cw)))
                  (g (emacs-redisplay--make-glyph
-                     :char ch
+                     :char (if space-w ?\s ch)
                      :face (emacs-redisplay--resolve-face face)
                      :realized-face (emacs-redisplay-realize-face face)
                      :face-id 0
-                     :width (max 1 cw)
+                     :width ew
                      :composition nil
-                     :display-spec (emacs-redisplay--resolve-display
-                                    display nil)
+                     :display-spec display-spec
+                     :mouse-face mouse-face
                      :buf-pos pos)))
             (when overlays
               (emacs-redisplay--apply-overlay-face g overlays pos))
             (cond
-             ((>= (+ col (max 1 cw)) (1+ width))
+             ((>= (+ col ew) (1+ width))
               (setq overflow t))
              (t
               (aset used col g)
-              (setq col (+ col (max 1 cw))
+              (setq last-glyph g)
+              (setq col (+ col ew)
                     pos (1+ pos))
               (setq col (emacs-redisplay--emit-after-strings
                          overlays pos used col width))
@@ -1575,6 +1685,8 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
                  (gvec (car laid))
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
+            (setf (emacs-redisplay-glyph-row-direction row)
+                  (emacs-redisplay--base-direction line))
             (aset cache row-idx (cons line (cons ovly-fp tp-fp))))))
         (setq pos next-pos-est
               row-idx (1+ row-idx))))
@@ -1722,6 +1834,20 @@ Returns the number of cache entries cleared."
 
 ;;; B (cont.).  flush + cursor
 
+(defun emacs-redisplay--glyph-output-string (g)
+  "Painting text for glyph G: its char plus any composition (combining) chars.
+A nil glyph (an empty / continuation cell) renders as a single space.  The
+combining chars carry no extra column — the terminal composes them over the
+base char — so the column accounting in `emacs-redisplay--row-text-segments'
+stays correct."
+  (if (null g)
+      " "
+    (let ((comp (emacs-redisplay-glyph-composition g)))
+      (if comp
+          (concat (string (emacs-redisplay-glyph-char g))
+                  (apply #'string comp))
+        (string (emacs-redisplay-glyph-char g))))))
+
 (defun emacs-redisplay--row-text-segments (row width)
   "Return a list of (COL TEXT FACE) painting segments for ROW.
 Adjacent glyphs sharing the same realized face are batched into a
@@ -1744,16 +1870,15 @@ Phase 3.B.1 face-realize MVP output) — not the raw spec — so the
         (let* ((g (aref vec col))
                (face (paint-face g))
                (start col)
-               (chars (list (if g (emacs-redisplay-glyph-char g) ?\s))))
+               (text (emacs-redisplay--glyph-output-string g)))
           (setq col (1+ col))
           (while (and (< col n)
-                      (let ((g2 (aref vec col)))
-                        (equal face (paint-face g2))))
-            (push (let ((g2 (aref vec col)))
-                    (if g2 (emacs-redisplay-glyph-char g2) ?\s))
-                  chars)
+                      (equal face (paint-face (aref vec col))))
+            (setq text (concat text
+                               (emacs-redisplay--glyph-output-string
+                                (aref vec col))))
             (setq col (1+ col)))
-          (push (list start (concat (nreverse chars)) face) segments))))
+          (push (list start text face) segments))))
     (nreverse segments)))
 
 (defvar emacs-redisplay--flush-hash-cache (make-hash-table :test 'eq)

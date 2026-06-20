@@ -779,6 +779,238 @@ layer (which only accepts raw Emacs buffers, not `nelisp-ec-buffer')."
               (should (let ((f (emacs-redisplay-glyph-face (aref vec 2))))
                         (or (eq f 'highlight)
                             (and (listp f) (memq 'highlight f))))))))))))
+;;; H'. mouse-face (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-mouse-face-text-property ()
+  "A `mouse-face' text property is copied into the glyph mouse-face slot."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (emacs-buffer-put-text-property 2 3 'mouse-face 'highlight b)
+      (let* ((h (emacs-redisplay-init))
+             (g (emacs-redisplay-text-to-glyphs h b)))
+        ;; pos 2 = "b" = glyph 1 carries mouse-face; neighbours do not
+        (should-not (emacs-redisplay-glyph-mouse-face (aref g 0)))
+        (should (eq 'highlight (emacs-redisplay-glyph-mouse-face (aref g 1))))
+        (should-not (emacs-redisplay-glyph-mouse-face (aref g 2)))))))
+
+(ert-deftest emacs-redisplay-test-mouse-face-overlay ()
+  "Overlay `mouse-face' is merged into the glyph mouse-face slot.
+Mocks the overlay accessor trio (as the overlay-face test does) so the
+merge is exercised without the upstream `nelisp-ovly' storage layer."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (let ((mock-ov 'mock-overlay))
+        (cl-letf (((symbol-function 'emacs-redisplay--overlays-in)
+                   (lambda (_beg _end &optional _buffer) (list mock-ov)))
+                  ((symbol-function 'emacs-redisplay--ovly-bounds)
+                   (lambda (ov) (when (eq ov mock-ov) (cons 2 4))))
+                  ((symbol-function 'emacs-redisplay--ovly-prop)
+                   (lambda (ov prop)
+                     (when (and (eq ov mock-ov) (eq prop 'mouse-face))
+                       'highlight))))
+          (let* ((h (emacs-redisplay-init))
+                 (w (emacs-window-selected-window)))
+            (emacs-window-set-window-buffer w b)
+            (let* ((m   (emacs-redisplay-redisplay-window h w))
+                   (row (emacs-redisplay-glyph-row m 0))
+                   (vec (emacs-redisplay-glyph-row-glyphs row)))
+              ;; overlay spans pos 2..4 ("b","c") = glyphs 1,2
+              (should-not (emacs-redisplay-glyph-mouse-face (aref vec 0)))
+              (should (eq 'highlight
+                          (emacs-redisplay-glyph-mouse-face (aref vec 1))))
+              (should (eq 'highlight
+                          (emacs-redisplay-glyph-mouse-face (aref vec 2)))))))))))
+
+(ert-deftest emacs-redisplay-test-mouse-face-overlay-overrides-text-property ()
+  "An overlay `mouse-face' overrides the text-property mouse-face by priority."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (emacs-buffer-put-text-property 2 3 'mouse-face 'from-text b)
+      (let ((mock-ov 'mock-overlay))
+        (cl-letf (((symbol-function 'emacs-redisplay--overlays-in)
+                   (lambda (_beg _end &optional _buffer) (list mock-ov)))
+                  ((symbol-function 'emacs-redisplay--ovly-bounds)
+                   (lambda (ov) (when (eq ov mock-ov) (cons 2 3))))
+                  ((symbol-function 'emacs-redisplay--ovly-prop)
+                   (lambda (ov prop)
+                     (when (and (eq ov mock-ov) (eq prop 'mouse-face))
+                       'from-overlay))))
+          (let* ((h (emacs-redisplay-init))
+                 (w (emacs-window-selected-window)))
+            (emacs-window-set-window-buffer w b)
+            (let* ((m   (emacs-redisplay-redisplay-window h w))
+                   (row (emacs-redisplay-glyph-row m 0))
+                   (vec (emacs-redisplay-glyph-row-glyphs row)))
+              (should (eq 'from-overlay
+                          (emacs-redisplay-glyph-mouse-face (aref vec 1)))))))))))
+
+;;; H''. display property — (space ...) stretch (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-display-space-width ()
+  "A `(space :width N)' display property makes the glyph N cells wide."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "aX"
+      (emacs-buffer-put-text-property 1 2 'display '(space :width 5) b)
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          ;; pos 1 ("a") becomes a 5-cell blank stretch; "X" follows at col 5
+          (should (= 5 (emacs-redisplay-glyph-width (aref vec 0))))
+          (should (eq ?\s (emacs-redisplay-glyph-char (aref vec 0))))
+          ;; the resolved spec is normalized to a list of specs
+          (should (emacs-redisplay-glyph-display-spec (aref vec 0)))
+          (should (eq ?X (emacs-redisplay-glyph-char (aref vec 5)))))))))
+
+(ert-deftest emacs-redisplay-test-display-space-align-to ()
+  "A `(space :align-to C)' display property stretches to column C."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abZ"
+      ;; space spec on pos 3 ("Z"), which lays out at col 2 -> stretch to
+      ;; col 8 = width 6
+      (emacs-buffer-put-text-property 3 4 'display '(space :align-to 8) b)
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq ?a (emacs-redisplay-glyph-char (aref vec 0))))
+          (should (eq ?b (emacs-redisplay-glyph-char (aref vec 1))))
+          (should (= 6 (emacs-redisplay-glyph-width (aref vec 2))))
+          (should (eq ?\s (emacs-redisplay-glyph-char (aref vec 2)))))))))
+
+(ert-deftest emacs-redisplay-test-display-non-space-keeps-char ()
+  "A non-`(space ...)' display spec is stored but does not change layout.
+Image/slice specs need backend glyph support (later increment); the
+char width and codepoint must stay intact so they do not regress."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "aX"
+      (emacs-buffer-put-text-property 1 2 'display '(image :file "x.png") b)
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          (should (= 1 (emacs-redisplay-glyph-width (aref vec 0))))
+          (should (eq ?a (emacs-redisplay-glyph-char (aref vec 0))))
+          (should (eq ?X (emacs-redisplay-glyph-char (aref vec 1)))))))))
+
+;;; H'''. composition — combining marks (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-composition-combining-mark ()
+  "A zero-width combining mark merges into the previous glyph (no extra cell)."
+  (emacs-redisplay-test--with-fresh-world
+    ;; "e" + U+0301 COMBINING ACUTE ACCENT + "X"
+    (emacs-redisplay-test--with-buffer b (concat "e" (string 769) "X")
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (vec (emacs-redisplay-glyph-row-glyphs row)))
+          ;; "e" keeps col 0 and carries the mark; "X" lands at col 1, not col 2
+          (should (eq ?e (emacs-redisplay-glyph-char (aref vec 0))))
+          (should (equal (list 769)
+                         (emacs-redisplay-glyph-composition (aref vec 0))))
+          (should (eq ?X (emacs-redisplay-glyph-char (aref vec 1)))))))))
+
+(ert-deftest emacs-redisplay-test-composition-multiple-marks ()
+  "Multiple combining marks accumulate on the base glyph in order."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b (concat "a" (string 769) (string 770))
+      (let* ((c   (emacs-redisplay--lay-out-line
+                   (concat "a" (string 769) (string 770)) 1 b nil 80))
+             (vec (car c)))
+        (should (= 1 (length vec)))              ; one visual cell only
+        (should (eq ?a (emacs-redisplay-glyph-char (aref vec 0))))
+        (should (equal (list 769 770)
+                       (emacs-redisplay-glyph-composition (aref vec 0))))))))
+
+(ert-deftest emacs-redisplay-test-composition-output-string ()
+  "Glyph paint output is the base char plus any composition chars."
+  (let ((g (emacs-redisplay--make-glyph :char ?e :composition (list 769))))
+    (should (equal (concat (string ?e) (string 769))
+                   (emacs-redisplay--glyph-output-string g))))
+  (let ((g (emacs-redisplay--make-glyph :char ?a)))
+    (should (equal "a" (emacs-redisplay--glyph-output-string g))))
+  (should (equal " " (emacs-redisplay--glyph-output-string nil))))
+
+;;; H''''. dedicated mode-line row (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-mode-line-full-width-inverse ()
+  "The mode-line is a full-width bar: every cell carries the inverse face."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "hi"
+      (let ((vec (emacs-redisplay--mode-line-glyphs b 20)))
+        (should (= 20 (length vec)))
+        ;; including the cells past the format text (= padding bar)
+        (dotimes (i 20)
+          (should (equal '(:inverse-video t)
+                         (emacs-redisplay-glyph-face (aref vec i)))))
+        (should (eq ?\s (emacs-redisplay-glyph-char (aref vec 19))))))))
+
+(ert-deftest emacs-redisplay-test-mode-line-modified-indicator ()
+  "The `%*' / `%+' mode-line constructs reflect the buffer modified flag."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "hi"
+      (setf (nelisp-ec-buffer-modified-p b) t)
+      (should (equal "*" (emacs-redisplay--mode-line-format-to-string "%*" b)))
+      (should (equal "*" (emacs-redisplay--mode-line-format-to-string "%+" b)))
+      (setf (nelisp-ec-buffer-modified-p b) nil)
+      (should (equal "-" (emacs-redisplay--mode-line-format-to-string "%*" b)))
+      (should (equal "-" (emacs-redisplay--mode-line-format-to-string "%+" b))))))
+
+;;; H'''''. bidi base-direction detection (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-char-class ()
+  "Strong bidi classes: Latin L, Hebrew R, Arabic AL, others neutral."
+  (should (eq 'L (emacs-redisplay--char-bidi-class ?A)))
+  (should (eq 'L (emacs-redisplay--char-bidi-class ?z)))
+  (should (eq 'L (emacs-redisplay--char-bidi-class #x3042)))  ; HIRAGANA A
+  (should (eq 'R (emacs-redisplay--char-bidi-class #x05D0)))  ; HEBREW ALEF
+  (should (eq 'AL (emacs-redisplay--char-bidi-class #x0627))) ; ARABIC ALEF
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?5)))
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\s))))
+
+(ert-deftest emacs-redisplay-test-bidi-base-direction ()
+  "Base direction follows the first strong char (UAX #9 P2/P3)."
+  (should (eq 'left-to-right (emacs-redisplay--base-direction "hello")))
+  (should (eq 'right-to-left
+              (emacs-redisplay--base-direction (string #x05E9 #x05DC #x05DD))))
+  (should (eq 'right-to-left
+              (emacs-redisplay--base-direction (string #x0633 #x0644 #x0627))))
+  ;; neutrals / digits only -> default LTR
+  (should (eq 'left-to-right (emacs-redisplay--base-direction "12:34 ... ")))
+  ;; leading neutrals then a strong Hebrew char -> RTL
+  (should (eq 'right-to-left
+              (emacs-redisplay--base-direction (string ?1 ?\s #x05D0 ?a))))
+  ;; leading neutrals then a strong Latin char -> LTR
+  (should (eq 'left-to-right
+              (emacs-redisplay--base-direction (string ?\s ?\s ?a #x05D0)))))
+
+(ert-deftest emacs-redisplay-test-bidi-row-direction ()
+  "Laid-out content rows record their base paragraph direction."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "hello"
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0)))
+          (should (eq 'left-to-right
+                      (emacs-redisplay-glyph-row-direction row)))))))
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b (string #x05E9 #x05DC #x05DD)
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0)))
+          (should (eq 'right-to-left
+                      (emacs-redisplay-glyph-row-direction row))))))))
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."
