@@ -16548,6 +16548,83 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-indent-newline-writeback-helper ()
+  "Bridge indent/newline writeback helper should write matching state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-indent-newline-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"alpha\\n  beta\\n\")
+                       (setq files--point 10)
+                       (setq files--mark 3)
+                       (fset 'capture-indent-newline-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-indent-newline-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-indent-newline-writeback-helper\"
+                        (concat
+                         (capture-indent-newline-writeback
+                          \"quoted-insert\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"indent-for-tab-command\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"tab-to-tab-stop\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"indent-region\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"indent-rigidly\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback \"newline\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"electric-newline-and-maybe-indent\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"default-indent-new-line\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback \"open-line\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback \"split-line\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"delete-blank-lines\")
+                         \"\\t\"
+                         (capture-indent-newline-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "quoted-insert:written\tindent-for-tab-command:written\ttab-to-tab-stop:written\tindent-region:written\tindent-rigidly:written\tnewline:written\telectric-newline-and-maybe-indent:written\tdefault-indent-new-line:written\topen-line:written\tsplit-line:written\tdelete-blank-lines:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "alpha\n  beta\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "00010"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
