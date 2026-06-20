@@ -7275,47 +7275,139 @@
                 (setq files--modeline-override files--modeline-string)))))
         files--buffer-name))
 
+;; --- multi-file org-agenda (Notes daily-driver) -----------------------------
+;; The user's real `org-agenda-files' (mirrors host init.el): dashboard /
+;; todo / journals under ~/Notes/capture.  The currently-visited file uses
+;; the live (possibly edited) buffer; the rest are read from disk with `rdf'.
+;; Split TEXT on newlines, dropping empty lines, preserving order.
+(fset 'files--org-agenda-split-lines
+      (lambda (text)
+        (let ((n (length text)) (i 0) (start 0) (acc nil) (line ""))
+          (while (< i n)
+            (if (= (aref text i) 10)
+                (progn
+                  (setq line (substring text start i))
+                  (if (> (length line) 0) (setq acc (cons line acc)) nil)
+                  (setq start (+ i 1)))
+              nil)
+            (setq i (+ i 1)))
+          (setq line (substring text start n))
+          (if (> (length line) 0) (setq acc (cons line acc)) nil)
+          (nreverse acc))))
+
+;; The agenda file list is supplied by the GUI/launcher (Layer 3) as
+;; newline-separated absolute paths in the `nemacs-org-agenda-files'
+;; transport file.  The runtime has no HOME env, so it must not rely on
+;; `expand-file-name' ~-expansion -- absolute paths only.
+(fset 'files--org-agenda-file-list
+      (lambda ()
+        (let ((raw (rdf (progn
+                          (setq files--transport-name "nemacs-org-agenda-files")
+                          (files--transport-path)))))
+          (if (if raw (> (length raw) 0) nil)
+              (files--org-agenda-split-lines raw)
+            nil))))
+
+(fset 'files--org-agenda-basename
+      (lambda (path)
+        (let ((c 0) (slash -1) (len (length path)))
+          (while (< c len)
+            (if (= (aref path c) 47) (setq slash c) nil)
+            (setq c (+ c 1)))
+          (if (>= slash 0) (substring path (+ slash 1)) path))))
+
+;; Active-todo test against a PRECOMPUTED active-keyword list.  The original
+;; files--org-rest-active-todo-p re-derived the buffer's #+TODO: set on every
+;; heading (files--org-todo-keyword-sequence rescans the whole buffer), making
+;; a full-buffer agenda scan O(headings * buffer) = O(n^2).  Hoist that out.
+(fset 'files--org-rest-active-with-kw-p
+      (lambda (rest active)
+        (let ((n (length rest)) (i 0))
+          (while (if (< i n) (= (aref rest i) 32) nil) (setq i (+ i 1)))
+          (let ((ts i))
+            (while (if (< i n) (if (= (aref rest i) 32) nil t) nil) (setq i (+ i 1)))
+            (files--org-list-member-p (substring rest ts i) active)))))
+
+;; Scan the org text currently in `files--buffer-string'; return a LIST of
+;; agenda entry strings (active-TODO heading lines), each prefixed with LABEL.
+;;
+;; Heading lines are extracted with the native `str-filter-prefix-lines'
+;; primitive (one native pass) instead of an interpreted line-by-line walk.
+;; The old per-line scan called `files--org-line-end' + `files--org-heading-
+;; level-at' on EVERY line, so its cost tracked the buffer's TOTAL line count:
+;; a 561KB journal (~15k lines, 1.6k headings) took ~45s+.  Filtering heading
+;; lines natively makes the interpreted work scale with HEADING count instead
+;; (~10s for that journal, ~3s for a 65KB todo.org -- measured 2026-06-20).
+;;
+;; Active keywords come from the buffer's own #+TODO: directive when present
+;; (detected natively first, so an ABSENT directive does NOT trigger a full-
+;; buffer interpreted scan); otherwise a GTD-flavored default so files that
+;; depend on the user's global org-todo-keywords still surface NEXT/WAIT/
+;; SOMEDAY headings as active.
+;;
+;; NOTE: inline SCHEDULED/DEADLINE/CLOSED enrichment was dropped in this pass --
+;; the native filter yields heading TEXT without buffer positions, so the
+;; following planning lines can no longer be associated cheaply.  A sectioned
+;; "Scheduled" view is a follow-up (see worklog 2026-06-20).
+(fset 'files--org-agenda-scan-current
+      (lambda (label)
+        (let* ((active (if (> (length (str-filter-prefix-lines
+                                       files--buffer-string "#+TODO:"))
+                              0)
+                           (car (files--org-todo-keyword-sequence))
+                         (list "TODO" "NEXT" "WAIT" "STARTED" "SOMEDAY")))
+               (htext (str-filter-prefix-lines files--buffer-string "*"))
+               (lines (files--org-agenda-split-lines htext))
+               (acc nil))
+          (while lines
+            (let* ((line (car lines)) (m (length line)) (lv 0))
+              ;; count leading stars; a heading needs a space right after them
+              (while (if (< lv m) (= (aref line lv) 42) nil) (setq lv (+ lv 1)))
+              (if (if (> lv 0) (if (< lv m) (= (aref line lv) 32) nil) nil)
+                  (if (files--org-rest-active-with-kw-p
+                       (substring line (+ lv 1) m) active)
+                      (setq acc (cons (concat label ": " line) acc))
+                    nil)
+                nil))
+            (setq lines (cdr lines)))
+          (nreverse acc))))
+
 (fset 'org-agenda
       (lambda ()
-        (let ((src files--buffer-string)
-              (src-name files--buffer-name)
-              (n 0)
-              (scan 0)
-              (out "")
-              (eol 0)
-              (level 0))
-          (setq n (length src))
-          (setq out (concat "Org Agenda: TODO + scheduled in " src-name "\n"))
-          (while (< scan n)
-            (setq level (files--org-heading-level-at scan))
-            (setq eol (files--org-line-end scan))
-            (if (> level 0)
-                (if (files--org-rest-active-todo-p
-                     (substring src (+ scan level 1) eol))
-                    ;; append the SCHEDULED:/DEADLINE:/CLOSED: planning lines
-                    ;; that follow the heading, so the agenda shows the dates.
-                    (let ((line (substring src scan eol))
-                          (plan "") (pscan (+ eol 1)) (more t))
-                      (while more
-                        (if (< pscan n)
-                            (let* ((peol (files--org-line-end pscan))
-                                   (pline (substring src pscan peol)))
-                              (if (if (files--org-line-has-keyword-p pline "SCHEDULED")
-                                      t
-                                    (if (files--org-line-has-keyword-p pline "DEADLINE")
-                                        t
-                                      (files--org-line-has-keyword-p pline "CLOSED")))
-                                  (progn
-                                    (setq plan
-                                          (concat plan "  " (files--org-lstrip pline)))
-                                    (setq pscan (+ peol 1)))
-                                (setq more nil)))
-                          (setq more nil)))
-                      (setq out (concat out line plan "\n")))
-                  nil)
-              nil)
-            (setq scan (+ eol 1)))
+        (let ((orig-buf files--buffer-string)
+              (orig-file files--current-file-name)
+              (rest (files--org-agenda-file-list))
+              (all nil) (out ""))
+          ;; preserve the buffer we are leaving so switching back works
           (files--save-current-buffer-state)
+          (if rest
+              (while rest
+                (let* ((path (car rest))
+                       (content (if (if (> (length orig-file) 0)
+                                        (equal path orig-file)
+                                      nil)
+                                    orig-buf
+                                  (rdf path))))
+                  (if (if content (> (length content) 0) nil)
+                      (progn
+                        (setq files--buffer-string content)
+                        (setq all (files--org-list-append
+                                   all
+                                   (files--org-agenda-scan-current
+                                    (files--org-agenda-basename path)))))
+                    nil)
+                  (setq rest (cdr rest))))
+            ;; No agenda-files configured: scan the current buffer, so an
+            ;; unconfigured `C-c a' still lists the visited file's TODOs.
+            (progn
+              (setq files--buffer-string orig-buf)
+              (setq all (files--org-agenda-scan-current
+                         (if (> (length orig-file) 0)
+                             (files--org-agenda-basename orig-file)
+                           "current")))))
+          ;; join once (O(n)); never concat-in-loop
+          (setq out (concat "Org Agenda: TODO + scheduled\n"
+                            (mapconcat (lambda (e) (concat e "\n")) all "")))
           (setq files--buffer-list-name "*Org Agenda*")
           (files--buffer-list-add)
           (setq files--buffer-name "*Org Agenda*")
