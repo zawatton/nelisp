@@ -554,6 +554,22 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、truncate/text-scale/frame command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の tmm-menubar writeback chunk を
+  =files--bridge-tmm-menubar-writeback-current-context= へ切り出した。
+  - 対象は =tmm-menubar=。
+  - helper 内では buf+file+buffer-name+read-only+point+mark+window-start を書く
+    branch として分離した。
+  - command-writeback-chain の direct transport write は 319 から 315、
+    =files--write*= helper は 355 から 352、=equal cmd= tests は 176 から 175。
+    これは tmm-menubar block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-tmm-menubar-writeback-current-context= が 1 件追加され、
+    =setq= は 510 から 506、=if= は 223 から 221 へ減少。
+  - =standalone-save-and-transform= は 108.676735 秒で pass。
+  - =standalone-bridge-tmm-menubar-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、tmm-menubar command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -776,9 +792,10 @@ make nemacs-gui-bridge-run-shape
    kill/yank chunk も helper 化済み。
    mark/global/rectangle chunk も helper 化済み。
    truncate/text-scale/frame chunk も helper 化済み。
-   次は command-writeback-chain 内の =tmm-menubar= から始める。
-   =tmm-menubar= は buf/file/buffer-name/read-only/point/mark/window-start を書くため
-   単体または極小 chunk として
+   tmm-menubar chunk も helper 化済み。
+   次は command-writeback-chain 内の =set-selective-display= から始める。
+   =revert-buffer-with-coding-system= は直後の単独 branch と後続 coding/input-method
+   group の両方に含まれるため、混ぜずに
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。

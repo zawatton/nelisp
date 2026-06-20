@@ -22949,6 +22949,22 @@
           nil)
         cmd))
 
+(fset 'files--bridge-tmm-menubar-writeback-current-context
+      (lambda (cmd)
+        (if (equal cmd "tmm-menubar")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -24234,18 +24250,7 @@
               (setq cmd (files--bridge-kill-yank-writeback-current-context cmd))
               (setq cmd (files--bridge-mark-global-rectangle-writeback-current-context cmd))
               (setq cmd (files--bridge-truncate-text-scale-frame-writeback-current-context cmd))
-              (if (equal cmd "tmm-menubar")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-tmm-menubar-writeback-current-context cmd))
               (if (equal cmd "set-selective-display")
                   (progn
                     (files--write-selective-display-state)
