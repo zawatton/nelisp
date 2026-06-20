@@ -22589,6 +22589,29 @@
           nil)
         cmd))
 
+(fset 'files--bridge-mark-count-eval-writeback-current-context
+      (lambda (cmd)
+        (if (equal cmd "mark-word")
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "count-words-region")
+                t
+              (if (equal cmd "count-lines-page")
+                  t
+                (if (equal cmd "eval-last-sexp")
+                    t
+                  (equal cmd "eval-expression"))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23865,40 +23888,7 @@
               (setq cmd (files--bridge-side-window-resize-writeback-current-context cmd))
               (setq cmd (files--bridge-word-sexp-defun-motion-writeback-current-context cmd))
               (setq cmd (files--bridge-kill-abbrev-writeback-current-context cmd))
-              (if (equal cmd "mark-word")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "count-words-region")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "count-lines-page")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "eval-last-sexp")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "eval-expression")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-mark-count-eval-writeback-current-context cmd))
               (if (equal cmd "forward-paragraph")
                   (progn
                     (files--write-transport-point)
