@@ -15964,6 +15964,114 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-kill-abbrev-writeback-helper ()
+  "Bridge kill/abbrev writeback helper should write buffer, kill, point, and mark."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-kill-abbrev-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"alpha beta gamma delta epsilon\")
+                       (setq files--kill-ring-head \"beta\")
+                       (setq files--point 18)
+                       (setq files--mark 6)
+                       (fset 'capture-kill-abbrev-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-kill-abbrev-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-kill-abbrev-writeback-helper\"
+                        (concat
+                         (capture-kill-abbrev-writeback \"kill-word\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback \"kill-sexp\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"backward-kill-word\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback \"zap-to-char\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback \"expand-abbrev\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"add-global-abbrev\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"add-mode-abbrev\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"inverse-add-global-abbrev\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"inverse-add-mode-abbrev\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"abbrev-prefix-mark\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"expand-jump-to-next-slot\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"expand-jump-to-previous-slot\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"dabbrev-expand\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"dabbrev-completion\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"complete-symbol\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"transpose-words\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"transpose-sexps\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"insert-parentheses\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"move-past-close-and-reindent\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"transpose-lines\")
+                         \"\\t\"
+                         (capture-kill-abbrev-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "kill-word:written\tkill-sexp:written\tbackward-kill-word:written\tzap-to-char:written\texpand-abbrev:written\tadd-global-abbrev:written\tadd-mode-abbrev:written\tinverse-add-global-abbrev:written\tinverse-add-mode-abbrev:written\tabbrev-prefix-mark:written\texpand-jump-to-next-slot:written\texpand-jump-to-previous-slot:written\tdabbrev-expand:written\tdabbrev-completion:written\tcomplete-symbol:written\ttranspose-words:written\ttranspose-sexps:written\tinsert-parentheses:written\tmove-past-close-and-reindent:written\ttranspose-lines:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "alpha beta gamma delta epsilon"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "beta"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-kill")))
+              (should (equal "00018"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00006"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
