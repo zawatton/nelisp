@@ -7561,6 +7561,51 @@
                     (setq files--bridge-status "unsupported")))))))))
 
 
+;; --- org-open-at-point: follow the [[id:...]] link under point --------------
+;; The everyday org-roam trigger (C-c C-o): extract the org-id from an id link
+;; spanning point and hand it to org-roam-id-open.  Other link types are not
+;; handled yet (status "unsupported").
+(fset 'files--org-id-at-point
+      (lambda ()
+        ;; Return the org-id of a [[id:...]] link spanning files--point, else "".
+        (let* ((buf files--buffer-string)
+               (n (length buf))
+               (p (if (> files--point n) n files--point))
+               (s -1) (i p))
+          ;; nearest "[[" at or before point
+          (while (if (>= i 0) (if (< s 0) t nil) nil)
+            (if (if (< (+ i 1) n)
+                    (if (= (aref buf i) 91) (= (aref buf (+ i 1)) 91) nil)
+                  nil)
+                (setq s i)
+              (setq i (- i 1))))
+          (if (< s 0)
+              ""
+            ;; require "id:" right after "[["
+            (if (if (< (+ s 5) n)
+                    (if (= (aref buf (+ s 2)) 105)
+                        (if (= (aref buf (+ s 3)) 100)
+                            (= (aref buf (+ s 4)) 58)
+                          nil)
+                      nil)
+                  nil)
+                ;; id runs from s+5 to the first "]" (covers [[id:X]] and
+                ;; [[id:X][desc]]); the link must still span point
+                (let ((e (+ s 5)))
+                  (while (if (< e n) (if (= (aref buf e) 93) nil t) nil)
+                    (setq e (+ e 1)))
+                  (if (>= e p) (substring buf (+ s 5) e) ""))
+              "")))))
+
+(fset 'org-open-at-point
+      (lambda ()
+        (let ((id (files--org-id-at-point)))
+          (if (equal id "")
+              (setq files--bridge-status "unsupported")
+            (progn
+              (setq files--bridge-arg id)
+              (org-roam-id-open))))))
+
 ;; M15 user-init lane.
 ;; The launcher generates nemacs-init-wrapped (scripts/nemacs-wrap-init.el)
 ;; from ~/.nemacs.d/early-init.el + init.el: every user form bracketed
@@ -20321,6 +20366,7 @@
                           "C-c C-s\torg-schedule\n"
                           "C-c C-d\torg-deadline\n"
                           "C-c C-c\torg-toggle-checkbox\n"
+                          "C-c C-o\torg-open-at-point\n"
                           "C-c ,\torg-priority\n"
                           "C-c <\torg-promote-subtree\n"
                           "C-c >\torg-demote-subtree\n"
@@ -22582,7 +22628,9 @@
                 t
               (if (equal cmd "org-shifttab")
                   t
-                (equal cmd "org-roam-id-open")))
+                (if (equal cmd "org-roam-id-open")
+                    t
+                  (equal cmd "org-open-at-point"))))
             (progn
               (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
               (nl-write-file (progn (setq files--transport-name "nemacs-file") (files--transport-path)) files--current-file-name)
