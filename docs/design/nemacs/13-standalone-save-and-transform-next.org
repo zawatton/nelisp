@@ -400,6 +400,29 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、mark/count/eval command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の paragraph/region edit writeback chunk を
+  =files--bridge-paragraph-region-edit-writeback-current-context= へ切り出した。
+  - 対象は =forward-paragraph= / =backward-paragraph= / =set-fill-column= /
+    =set-fill-prefix= / =comment-set-column= / =not-modified= /
+    =mark-paragraph= / =kill-sentence= / =backward-kill-sentence= /
+    =fill-paragraph= / =transpose-chars= / =delete-horizontal-space= /
+    =cycle-spacing= / =just-one-space= / =delete-indentation= /
+    =comment-line= / =comment-dwim= / =upcase-word= / =downcase-word= /
+    =capitalize-word= / =upcase-region= / =downcase-region= /
+    =capitalize-region= / =sort-lines=。
+  - helper 内では point-only、status-only、point+mark、
+    buf+kill+point+mark、buf+point+mark の branch に分けた。
+  - command-writeback-chain の direct transport write は 396 から 377、
+    =files--write*= helper は 466 から 427、=equal cmd= tests は 263 から 239。
+    これは paragraph/region edit block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-paragraph-region-edit-writeback-current-context= が 1 件追加され、
+    =setq= は 646 から 604、=if= は 315 から 291 へ減少。
+  - =standalone-save-and-transform= は 108.224724 秒で pass。
+  - =standalone-bridge-paragraph-region-edit-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、paragraph/region edit command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -614,7 +637,8 @@ make nemacs-gui-bridge-run-shape
    word/sexp/defun motion chunk も helper 化済み。
    kill/abbrev chunk も helper 化済み。
    mark/count/eval chunk も helper 化済み。
-   次は command-writeback-chain 内の paragraph/region edit 系の小さい chunk を
+   paragraph/region edit chunk も helper 化済み。
+   次は command-writeback-chain 内の =delete-char= から始まる local editing 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
