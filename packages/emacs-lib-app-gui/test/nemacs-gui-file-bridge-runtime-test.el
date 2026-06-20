@@ -15496,6 +15496,79 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-dired-writeback-helper ()
+  "Bridge dired writeback helper should write dired buffer state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-dired-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"  file-a\\nD file-b\\n\")
+                       (setq files--buffer-name \"DiredBuffer\")
+                       (setq files--modeline-string \"Dired modeline\")
+                       (setq files--point 15)
+                       (setq files--mark 2)
+                       (setq files--window-start 1)
+                       (fset 'capture-dired-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-dired-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-dired-writeback-helper\"
+                        (concat
+                         (capture-dired-writeback \"dired-mark\")
+                         \"\\t\"
+                         (capture-dired-writeback \"dired-unmark\")
+                         \"\\t\"
+                         (capture-dired-writeback
+                          \"dired-flag-file-deletion\")
+                         \"\\t\"
+                         (capture-dired-writeback \"dired-do-rename\")
+                         \"\\t\"
+                         (capture-dired-writeback \"dired-do-copy\")
+                         \"\\t\"
+                         (capture-dired-writeback
+                          \"dired-do-flagged-delete\")
+                         \"\\t\"
+                         (capture-dired-writeback \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "dired-mark:written\tdired-unmark:written\tdired-flag-file-deletion:written\tdired-do-rename:written\tdired-do-copy:written\tdired-do-flagged-delete:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "  file-a\nD file-b\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "DiredBuffer"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "Dired modeline"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-modeline")))
+              (should (equal "00015"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00002"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00001"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
