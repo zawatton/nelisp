@@ -16135,6 +16135,130 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-paragraph-region-edit-writeback-helper ()
+  "Bridge paragraph/region edit writeback helper should write matching state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-paragraph-region-edit-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"alpha beta gamma\\n\\ndelta epsilon\")
+                       (setq files--kill-ring-head \"sentence\")
+                       (setq files--point 20)
+                       (setq files--mark 3)
+                       (fset 'capture-paragraph-region-edit-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-paragraph-region-edit-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-paragraph-region-edit-writeback-helper\"
+                        (concat
+                         (capture-paragraph-region-edit-writeback
+                          \"forward-paragraph\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"backward-paragraph\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"set-fill-column\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"set-fill-prefix\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"comment-set-column\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"not-modified\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"mark-paragraph\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"kill-sentence\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"backward-kill-sentence\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"fill-paragraph\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"transpose-chars\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"delete-horizontal-space\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"cycle-spacing\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"just-one-space\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"delete-indentation\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"comment-line\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"comment-dwim\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"upcase-word\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"downcase-word\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"capitalize-word\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"upcase-region\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"downcase-region\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"capitalize-region\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"sort-lines\")
+                         \"\\t\"
+                         (capture-paragraph-region-edit-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "forward-paragraph:written\tbackward-paragraph:written\tset-fill-column:written\tset-fill-prefix:written\tcomment-set-column:written\tnot-modified:written\tmark-paragraph:written\tkill-sentence:written\tbackward-kill-sentence:written\tfill-paragraph:written\ttranspose-chars:written\tdelete-horizontal-space:written\tcycle-spacing:written\tjust-one-space:written\tdelete-indentation:written\tcomment-line:written\tcomment-dwim:written\tupcase-word:written\tdowncase-word:written\tcapitalize-word:written\tupcase-region:written\tdowncase-region:written\tcapitalize-region:written\tsort-lines:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "alpha beta gamma\n\ndelta epsilon"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "sentence"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-kill")))
+              (should (equal "00020"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here

@@ -22612,6 +22612,77 @@
           nil)
         cmd))
 
+(fset 'files--bridge-paragraph-region-edit-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "forward-paragraph")
+                t
+              (if (equal cmd "backward-paragraph")
+                  t
+                (equal cmd "set-fill-column")))
+            (progn
+              (files--write-transport-point)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "set-fill-prefix")
+                t
+              (if (equal cmd "comment-set-column")
+                  t
+                (equal cmd "not-modified")))
+            (setq files--bridge-status "written")
+          nil)
+        (if (equal cmd "mark-paragraph")
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "kill-sentence")
+                t
+              (equal cmd "backward-kill-sentence"))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "fill-paragraph")
+                t
+              (if (equal cmd "transpose-chars")
+                  t
+                (if (equal cmd "delete-horizontal-space")
+                    t
+                  (if (equal cmd "cycle-spacing")
+                      t
+                    (if (equal cmd "just-one-space")
+                        t
+                      (if (equal cmd "delete-indentation")
+                          t
+                        (if (equal cmd "comment-line")
+                            t
+                          (if (equal cmd "comment-dwim")
+                              t
+                            (if (equal cmd "upcase-word")
+                                t
+                              (if (equal cmd "downcase-word")
+                                  t
+                                (if (equal cmd "capitalize-word")
+                                    t
+                                  (if (equal cmd "upcase-region")
+                                      t
+                                    (if (equal cmd "downcase-region")
+                                        t
+                                      (if (equal cmd "capitalize-region")
+                                          t
+                                        (equal cmd "sort-lines")))))))))))))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23889,157 +23960,7 @@
               (setq cmd (files--bridge-word-sexp-defun-motion-writeback-current-context cmd))
               (setq cmd (files--bridge-kill-abbrev-writeback-current-context cmd))
               (setq cmd (files--bridge-mark-count-eval-writeback-current-context cmd))
-              (if (equal cmd "forward-paragraph")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-paragraph")
-                  (progn
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "mark-paragraph")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "fill-paragraph")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-	              (if (equal cmd "set-fill-column")
-	                  (progn
-	                    (files--write-transport-point)
-	                    (setq files--bridge-status "written"))
-	                nil)
-	              (if (equal cmd "set-fill-prefix")
-	                  (setq files--bridge-status "written")
-	                nil)
-	              (if (equal cmd "comment-set-column")
-	                  (setq files--bridge-status "written")
-	                nil)
-	              (if (equal cmd "kill-sentence")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-kill-sentence")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "transpose-chars")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "delete-horizontal-space")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "cycle-spacing")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "not-modified")
-                  (setq files--bridge-status "written")
-                nil)
-              (if (equal cmd "just-one-space")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-	              (if (equal cmd "delete-indentation")
-	                  (progn
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (files--write-transport-point)
-	                    (files--write-transport-mark)
-	                    (setq files--bridge-status "written"))
-	                nil)
-	              (if (equal cmd "comment-line")
-	                  (progn
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (files--write-transport-point)
-	                    (files--write-transport-mark)
-	                    (setq files--bridge-status "written"))
-	                nil)
-	              (if (equal cmd "comment-dwim")
-	                  (progn
-	                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-	                    (files--write-transport-point)
-	                    (files--write-transport-mark)
-	                    (setq files--bridge-status "written"))
-	                nil)
-	              (if (equal cmd "upcase-word")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "downcase-word")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "capitalize-word")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "upcase-region")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "downcase-region")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "capitalize-region")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "sort-lines")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-paragraph-region-edit-writeback-current-context cmd))
               (if (equal cmd "delete-char")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
