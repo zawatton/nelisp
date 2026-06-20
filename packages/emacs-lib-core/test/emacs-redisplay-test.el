@@ -974,8 +974,11 @@ char width and codepoint must stay intact so they do not regress."
   (should (eq 'R (emacs-redisplay--char-bidi-class #x05D0)))  ; HEBREW ALEF
   (should (eq 'AL (emacs-redisplay--char-bidi-class #x0627))) ; ARABIC ALEF
   (should (eq 'EN (emacs-redisplay--char-bidi-class ?5)))     ; digits are EN
+  (should (eq 'CS (emacs-redisplay--char-bidi-class ?.)))     ; . common separator
+  (should (eq 'ES (emacs-redisplay--char-bidi-class ?+)))     ; + - separators
+  (should (eq 'ET (emacs-redisplay--char-bidi-class ?%)))     ; % terminator
   (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\s)))
-  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?.))))
+  (should (eq 'neutral (emacs-redisplay--char-bidi-class ?\;))))
 
 (ert-deftest emacs-redisplay-test-bidi-base-direction ()
   "Base direction follows the first strong char (UAX #9 P2/P3)."
@@ -1237,6 +1240,129 @@ rule N2 falls back to the base direction when the sides disagree."
                     (vector (funcall mk ?a) (funcall mk ?\s)
                             (funcall mk #x05D0))
                     0)))))
+
+;;; H'''''''''''. bidi weak resolution — rules W2-W7 (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-resolve-weak-unit ()
+  "bidi-resolve-weak: W4 (separator between EN), W6 (lone separator -> neutral),
+W2+W3 (EN after AL -> AN, AL -> R), W5 (ET adjacent to EN -> EN),
+W7 (EN after L -> L)."
+  ;; W4: CS between two EN -> EN
+  (let ((cl (vector 'EN 'CS 'EN)))
+    (emacs-redisplay--bidi-resolve-weak cl 1)
+    (should (equal [EN EN EN] cl)))
+  ;; W6: a CS not between numbers becomes a neutral
+  (let ((cl (vector 'L 'CS 'L)))
+    (emacs-redisplay--bidi-resolve-weak cl 0)
+    (should (equal [L neutral L] cl)))
+  ;; W2 + W3: EN after AL -> AN, then AL -> R
+  (let ((cl (vector 'AL 'EN)))
+    (emacs-redisplay--bidi-resolve-weak cl 1)
+    (should (equal [R AN] cl)))
+  ;; W5: a run of ET next to EN -> EN (base RTL so W7 leaves the EN as EN)
+  (let ((cl (vector 'EN 'ET 'ET)))
+    (emacs-redisplay--bidi-resolve-weak cl 1)
+    (should (equal [EN EN EN] cl)))
+  ;; W7: EN after an L -> L
+  (let ((cl (vector 'L 'EN)))
+    (emacs-redisplay--bidi-resolve-weak cl 0)
+    (should (equal [L L] cl))))
+
+(ert-deftest emacs-redisplay-test-bidi-number-with-separator ()
+  "Rule W4: a separator inside a number (\"3.14\") keeps the number together
+as one left-to-right run inside RTL text (not split into \"14.3\")."
+  (emacs-redisplay-test--with-fresh-world
+    ;; logical: alef(1) 3(2) .(3) 1(4) 4(5) — base RTL
+    (emacs-redisplay-test--with-buffer b (concat (string #x05D0) "3.14")
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
+          ;; right-aligned last 5 cells = "3.14" then alef
+          (should (eq ?3 (emacs-redisplay-glyph-char (aref v (- W 5)))))
+          (should (eq ?. (emacs-redisplay-glyph-char (aref v (- W 4)))))
+          (should (eq ?1 (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (eq ?4 (emacs-redisplay-glyph-char (aref v (- W 2)))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 1))))))))))
+
+;;; H''''''''''''. bidi bracket pairs — rule N0 (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-brackets-n0 ()
+  "Rule N0: a matched bracket pair takes one consistent direction from its
+content and surrounding context (N1 alone could split the pair)."
+  (let ((mk (lambda (c) (emacs-redisplay--make-glyph :char c))))
+    ;; LTR base, "alef ( bet ) c": opposite-dir (R) content + R context before
+    ;; -> both brackets resolve to R together
+    (let ((vec (vector (funcall mk #x05D0) (funcall mk ?\() (funcall mk #x05D1)
+                       (funcall mk ?\)) (funcall mk ?c)))
+          (cl  (vector 'R 'neutral 'R 'neutral 'L)))
+      (emacs-redisplay--bidi-resolve-brackets vec cl 0)
+      (should (eq 'R (aref cl 1)))
+      (should (eq 'R (aref cl 3))))
+    ;; embedding-direction (L) content inside -> brackets take the embedding (L)
+    (let ((vec (vector (funcall mk #x05D0) (funcall mk ?\() (funcall mk ?x)
+                       (funcall mk ?\)) (funcall mk ?c)))
+          (cl  (vector 'R 'neutral 'L 'neutral 'L)))
+      (emacs-redisplay--bidi-resolve-brackets vec cl 0)
+      (should (eq 'L (aref cl 1)))
+      (should (eq 'L (aref cl 3))))
+    ;; no strong type inside -> brackets stay neutral (left for N1)
+    (let ((vec (vector (funcall mk ?\() (funcall mk ?\s) (funcall mk ?\))))
+          (cl  (vector 'neutral 'neutral 'neutral)))
+      (emacs-redisplay--bidi-resolve-brackets vec cl 0)
+      (should (eq 'neutral (aref cl 0)))
+      (should (eq 'neutral (aref cl 2))))))
+
+(ert-deftest emacs-redisplay-test-bidi-brackets-levels ()
+  "Through bidi-levels, an N0-resolved pair gets a consistent embedding level."
+  (let* ((mk (lambda (c) (emacs-redisplay--make-glyph :char c)))
+         ;; LTR base: alef ( bet ) c  -> brackets + bet at level 1, c at 0
+         (vec (vector (funcall mk #x05D0) (funcall mk ?\() (funcall mk #x05D1)
+                      (funcall mk ?\)) (funcall mk ?c))))
+    (should (equal [1 1 1 1 0] (emacs-redisplay--bidi-levels vec 0)))))
+
+;;; H'''''''''''''. bidi mirroring — rule L4 (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-bidi-mirror-char-unit ()
+  "bidi-mirror-char mirrors brackets / angle brackets / guillemets."
+  (should (eq ?\) (emacs-redisplay--bidi-mirror-char ?\()))
+  (should (eq ?\( (emacs-redisplay--bidi-mirror-char ?\))))
+  (should (eq ?\] (emacs-redisplay--bidi-mirror-char ?\[)))
+  (should (eq ?> (emacs-redisplay--bidi-mirror-char ?<)))
+  (should (eq #x00BB (emacs-redisplay--bidi-mirror-char #x00AB)))
+  (should-not (emacs-redisplay--bidi-mirror-char ?a)))
+
+(ert-deftest emacs-redisplay-test-bidi-rtl-mirroring ()
+  "Rule L4: brackets at an RTL level are displayed mirrored, so an RTL
+\"(text)\" still visually reads as parentheses around the text."
+  (emacs-redisplay-test--with-fresh-world
+    ;; ( alef ) -- base RTL (first strong char is alef)
+    (emacs-redisplay-test--with-buffer b (concat "(" (string #x05D0) ")")
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row))
+               (W   (emacs-redisplay-glyph-matrix-width m)))
+          ;; right-aligned last 3 cells display as "(", alef, ")"
+          (should (eq ?\( (emacs-redisplay-glyph-char (aref v (- W 3)))))
+          (should (= #x05D0 (emacs-redisplay-glyph-char (aref v (- W 2)))))
+          (should (eq ?\) (emacs-redisplay-glyph-char (aref v (- W 1))))))))))
+
+(ert-deftest emacs-redisplay-test-bidi-ltr-no-mirror ()
+  "LTR rows are not mirrored: \"(a)\" stays \"(a)\"."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "(a)"
+      (let* ((h (emacs-redisplay-init)) (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m   (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0))
+               (v   (emacs-redisplay-glyph-row-glyphs row)))
+          (should (eq ?\( (emacs-redisplay-glyph-char (aref v 0))))
+          (should (eq ?a (emacs-redisplay-glyph-char (aref v 1))))
+          (should (eq ?\) (emacs-redisplay-glyph-char (aref v 2)))))))))
 
 
 (ert-deftest emacs-redisplay-test-redisplay-skips-invisible-property ()
