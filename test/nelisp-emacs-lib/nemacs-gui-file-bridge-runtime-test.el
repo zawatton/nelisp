@@ -5863,6 +5863,37 @@ and the bridge reports applied/skipped instead of dying silently."
         (when (file-exists-p image)
           (delete-file image))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-insert-file-contents-honours-range ()
+  "Doc 15 B2: insert-file-contents-literally honours BEG/END in the bridge image.
+The bridge previously fell back to the prelude reader, which ignored the
+byte range and did not populate the bridge buffer, so cdb-style fixed-offset
+slot reads returned empty.  The range-honouring fallback inserts only the
+[BEG, END) slice via the bridge `insert', byte-exact (high bytes preserved).
+Result is round-tripped via `nl-write-file' (the bridge's stdout is not
+captured by `exec-runtime-image')."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (bin (make-temp-file "nemacs-b2range-" nil ".bin"))
+          (out (make-temp-file "nemacs-b2range-out-")))
+      (unwind-protect
+          (progn
+            ;; 10 bytes incl. high bytes: ff 80 c0 01 A B C e6 9c aa
+            (let ((coding-system-for-write 'binary))
+              (write-region (unibyte-string 255 128 192 1 65 66 67 230 156 170)
+                            nil bin nil 'silent))
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format "(with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally %S nil 4 8) (let ((s (buffer-substring-no-properties (point-min) (point-max)))) (nl-write-file %S (format \"%%S\" (mapcar (lambda (i) (aref s i)) (number-sequence 0 (1- (length s))))))))"
+                     bin out))
+            ;; bytes [4,8) of the file = A B C 0xe6 = (65 66 67 230)
+            (should (string-match-p
+                     "(65 66 67 230)"
+                     (nemacs-gui-file-bridge-runtime-test--slurp out))))
+        (delete-file image)
+        (delete-file bin)
+        (delete-file out)))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-save-some-buffers-runtime-adapter ()
   "In standalone NeLisp, `save-some-buffers' should go through fileio GUI runtime."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
