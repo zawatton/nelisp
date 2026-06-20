@@ -22273,6 +22273,26 @@
           nil)
         cmd))
 
+(fset 'files--bridge-window-layout-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "delete-other-windows")
+                t
+              (if (equal cmd "delete-window")
+                  t
+                (if (equal cmd "split-window-right")
+                    t
+                  (if (equal cmd "split-window-below")
+                      t
+                    (if (equal cmd "balance-windows")
+                        t
+                      (equal cmd "shrink-window-if-larger-than-buffer"))))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23539,42 +23559,7 @@
                     (files--write-rectangle-mark-mode-state)
                     (setq files--bridge-status "written"))
                 nil)
-              (if (equal cmd "delete-other-windows")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "delete-window")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "split-window-right")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "split-window-below")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "balance-windows")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "shrink-window-if-larger-than-buffer")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-window-layout-writeback-current-context cmd))
               (if (equal cmd "fit-window-to-buffer")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
