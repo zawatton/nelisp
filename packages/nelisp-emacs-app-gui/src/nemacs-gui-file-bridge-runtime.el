@@ -22092,6 +22092,22 @@
           nil)
         cmd))
 
+(fset 'files--bridge-read-only-writeback-current-context
+      (lambda (cmd)
+        (if (equal cmd "toggle-read-only")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "read-only-mode")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
+                             (if files--buffer-read-only-p "1" "0"))
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -22253,18 +22269,7 @@
                   (setq cmd (files--bridge-prefix-writeback-current-context cmd))
                   (setq cmd (files--bridge-find-file-writeback-current-context cmd))
                   (setq cmd (files--bridge-project-writeback-current-context cmd))
-              (if (equal cmd "toggle-read-only")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "read-only-mode")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-read-only") (files--transport-path))
-                                   (if files--buffer-read-only-p "1" "0"))
-                      (setq files--bridge-status "written"))
-                nil)
+                  (setq cmd (files--bridge-read-only-writeback-current-context cmd))
               (if (equal cmd "insert-file")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
