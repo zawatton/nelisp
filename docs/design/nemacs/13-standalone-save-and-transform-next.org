@@ -537,6 +537,23 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、mark/global/rectangle command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の truncate/text-scale/frame writeback chunk を
+  =files--bridge-truncate-text-scale-frame-writeback-current-context= へ切り出した。
+  - 対象は =toggle-truncate-lines= / =font-lock-update= /
+    =text-scale-adjust= / =global-text-scale-adjust= / =suspend-frame=。
+  - helper 内では truncate state、status-only、text-scale+modeline、
+    frame-suspended+modeline の branch に分けた。
+  - command-writeback-chain の direct transport write は 322 から 319、
+    =files--write*= helper は 359 から 355、=equal cmd= tests は 181 から 176。
+    これは truncate/text-scale/frame block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-truncate-text-scale-frame-writeback-current-context= が 1 件追加され、
+    =setq= は 517 から 510、=if= は 228 から 223 へ減少。
+  - =standalone-save-and-transform= は 109.419179 秒で pass。
+  - =standalone-bridge-truncate-text-scale-frame-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、truncate/text-scale/frame command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -758,8 +775,10 @@ make nemacs-gui-bridge-run-shape
    indent/newline chunk も helper 化済み。
    kill/yank chunk も helper 化済み。
    mark/global/rectangle chunk も helper 化済み。
-   次は command-writeback-chain 内の =toggle-truncate-lines= から =suspend-frame= までの
-   truncate/font/text-scale/frame state 系の小さい chunk を
+   truncate/text-scale/frame chunk も helper 化済み。
+   次は command-writeback-chain 内の =tmm-menubar= から始める。
+   =tmm-menubar= は buf/file/buffer-name/read-only/point/mark/window-start を書くため
+   単体または極小 chunk として
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
