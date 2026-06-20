@@ -83,6 +83,12 @@
 ;; is the source of truth.  Required early so later modules can use
 ;; them at their own load-time.
 (require 'emacs-stub)
+;; OS introspection (Doc 51 Phase 2): replace the hard-coded
+;; `system-type' / `system-configuration' / `system-name' defaults with
+;; live `uname(2)' detection when the syscall substrate is present.
+;; No-op under the host-Emacs driver.  Needs `emacs-string' (loaded
+;; above) and the `emacs-vars' / `emacs-stub' defaults in place first.
+(require 'emacs-os-detect)
 ;; Standalone NeLisp cannot yet macroexpand vendored easy-mmode.el's
 ;; lexical-closure-heavy implementation.  Provide a small Layer 2
 ;; fallback before vendor files ask for `(require 'easy-mmode)'.
