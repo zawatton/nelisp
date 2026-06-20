@@ -22923,6 +22923,32 @@
           nil)
         cmd))
 
+(fset 'files--bridge-truncate-text-scale-frame-writeback-current-context
+      (lambda (cmd)
+        (if (equal cmd "toggle-truncate-lines")
+            (progn
+              (files--write-truncate-lines-state)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "font-lock-update")
+            (setq files--bridge-status "written")
+          nil)
+        (if (if (equal cmd "text-scale-adjust")
+                t
+              (equal cmd "global-text-scale-adjust"))
+            (progn
+              (files--write-text-scale-state)
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "suspend-frame")
+            (progn
+              (files--write-frame-suspended-state)
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -24207,32 +24233,7 @@
               (setq cmd (files--bridge-indent-newline-writeback-current-context cmd))
               (setq cmd (files--bridge-kill-yank-writeback-current-context cmd))
               (setq cmd (files--bridge-mark-global-rectangle-writeback-current-context cmd))
-              (if (equal cmd "toggle-truncate-lines")
-                  (progn
-                    (files--write-truncate-lines-state)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "font-lock-update")
-                  (setq files--bridge-status "written")
-                nil)
-              (if (equal cmd "text-scale-adjust")
-                  (progn
-                    (files--write-text-scale-state)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "global-text-scale-adjust")
-                  (progn
-                    (files--write-text-scale-state)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "suspend-frame")
-                  (progn
-                    (files--write-frame-suspended-state)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-truncate-text-scale-frame-writeback-current-context cmd))
               (if (equal cmd "tmm-menubar")
                   (progn
                     (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)

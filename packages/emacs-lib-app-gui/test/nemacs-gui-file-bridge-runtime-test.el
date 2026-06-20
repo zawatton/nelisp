@@ -16750,6 +16750,76 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-truncate-text-scale-frame-writeback-helper ()
+  "Bridge truncate/text-scale/frame writeback helper should write matching state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-truncate-text-scale-frame-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq truncate-lines t)
+                       (setq text-scale-mode-amount -2)
+                       (setq global-text-scale-mode-amount 3)
+                       (setq files--frame-suspended-p t)
+                       (setq files--modeline-string \"State modeline\")
+                       (fset 'capture-truncate-text-scale-frame-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-truncate-text-scale-frame-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-truncate-text-scale-frame-writeback-helper\"
+                        (concat
+                         (capture-truncate-text-scale-frame-writeback
+                          \"toggle-truncate-lines\")
+                         \"\\t\"
+                         (capture-truncate-text-scale-frame-writeback
+                          \"font-lock-update\")
+                         \"\\t\"
+                         (capture-truncate-text-scale-frame-writeback
+                          \"text-scale-adjust\")
+                         \"\\t\"
+                         (capture-truncate-text-scale-frame-writeback
+                          \"global-text-scale-adjust\")
+                         \"\\t\"
+                         (capture-truncate-text-scale-frame-writeback
+                          \"suspend-frame\")
+                         \"\\t\"
+                         (capture-truncate-text-scale-frame-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "toggle-truncate-lines:written\tfont-lock-update:written\ttext-scale-adjust:written\tglobal-text-scale-adjust:written\tsuspend-frame:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-truncate-lines")))
+              (should (equal "-2"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-text-scale")))
+              (should (equal "3"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-global-text-scale")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-suspended")))
+              (should (equal "State modeline"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-modeline")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
