@@ -15424,6 +15424,78 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-window-state-writeback-helper ()
+  "Bridge window state writeback helper should write frame and dedicated state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-window-state-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--window-layout \"window-state-layout\")
+                       (setq files--window-selected \"11\")
+                       (setq files--window-split-delta 7)
+                       (setq files--window-dedicated-p t)
+                       (setq files--frame-selected-index 2)
+                       (setq files--frame-count 4)
+                       (setq files--frame-selected-name \"FrameC\")
+                       (setq files--frame-undo-active t)
+                       (setq files--frame-undo-index 1)
+                       (setq files--frame-undo-name \"FrameB\")
+                       (fset 'capture-window-state-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-window-state-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-window-state-writeback-helper\"
+                        (concat
+                         (capture-window-state-writeback
+                          \"tear-off-window\")
+                         \"\\t\"
+                         (capture-window-state-writeback
+                          \"toggle-window-dedicated\")
+                         \"\\t\"
+                         (capture-window-state-writeback
+                          \"quit-window\")
+                         \"\\t\"
+                         (capture-window-state-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "tear-off-window:written\ttoggle-window-dedicated:written\tquit-window:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "window-state-layout"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-layout")))
+              (should (equal "11"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-selected")))
+              (should (equal "7"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-split-delta")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-dedicated")))
+              (should (equal "2\t4\tFrameC"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-state")))
+              (should (equal "1\tFrameB"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-frame-undo-state")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here

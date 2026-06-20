@@ -22310,6 +22310,31 @@
           nil)
         cmd))
 
+(fset 'files--bridge-window-state-writeback-current-context
+      (lambda (cmd)
+        (if (equal cmd "tear-off-window")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+              (files--write-transport-window-split-delta)
+              (files--write-transport-frame-state)
+              (files--write-transport-frame-undo-state)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "toggle-window-dedicated")
+            (progn
+              (files--write-transport-window-dedicated-state)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "quit-window")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+              (files--write-transport-window-split-delta)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23578,27 +23603,7 @@
                 nil)
               (setq cmd (files--bridge-window-layout-writeback-current-context cmd))
               (setq cmd (files--bridge-window-split-writeback-current-context cmd))
-              (if (equal cmd "tear-off-window")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (files--write-transport-frame-state)
-                    (files--write-transport-frame-undo-state)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "toggle-window-dedicated")
-                  (progn
-                    (files--write-transport-window-dedicated-state)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "quit-window")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-window-state-writeback-current-context cmd))
               (if (if (equal cmd "dired-mark")
                       t
                     (if (equal cmd "dired-unmark")
