@@ -44,6 +44,8 @@
     (dolist (needle '("(unless (fboundp 'mapcan)"
                       "(unless (fboundp 'assoc-default)"
                       "(unless (fboundp 'cl-reduce)"
+                      ;; A5: cl-reduce :from-end handling (Doc 15 wave A).
+                      "(setq from-end (car (cdr k)))"
                       "(unless (fboundp 'if-let*)"
                       "(defmacro when-let* "
                       "(defmacro if-let* "
@@ -135,6 +137,7 @@ suite, whose persistent IME learning file leaks on disk)."
   \"assoc=\" (format \"%S\" (assoc-default 'b '((a . 1) (b . 2)))) \"\\n\"
   \"reduce=\" (format \"%S\" (cl-reduce '+ '(1 2 3 4))) \"\\n\"
   \"reduce-init=\" (format \"%S\" (cl-reduce '+ '(1 2 3) :initial-value 10)) \"\\n\"
+  \"reduce-fe=\" (format \"%S\" (cl-reduce '- '(1 2 3 4) :from-end t)) \"\\n\"
   \"wl-hit=\" (format \"%S\" (when-let ((a 5) (b 7)) (+ a b))) \"\\n\"
   \"wl-miss=\" (format \"%S\" (when-let ((a 5) (b nil)) (+ a 1))) \"\\n\"
   \"il-else=\" (format \"%S\" (if-let ((a nil)) 'then 'else)) \"\\n\"
@@ -143,6 +146,7 @@ suite, whose persistent IME learning file leaks on disk)."
             (should (string-match-p "assoc=2" out))
             (should (string-match-p "reduce=10" out))
             (should (string-match-p "reduce-init=16" out))
+            (should (string-match-p "reduce-fe=-2" out))
             (should (string-match-p "wl-hit=12" out))
             (should (string-match-p "wl-miss=nil" out))
             (should (string-match-p "il-else=else" out))
