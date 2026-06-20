@@ -4504,6 +4504,70 @@ unsupported."
                               "/tmp/nemacs-buffer-name")))))
         (ignore-errors (delete-file node-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-org-open-at-point ()
+  "org-open-at-point follows the [[id:...]] link under point to its node.
+
+The everyday org-roam trigger (C-c C-o): extract the org-id from the id link
+spanning point, then visit the node via org-roam-id-open.  Point not on an id
+link leaves the buffer untouched."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (node-file "/tmp/nemacs-test-roam-target.org"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (write-region (concat "#+title: Target\n"          ; 1
+                                  "* First\n"                   ; 2
+                                  ":PROPERTIES:\n:ID: x\n:END:\n" ; 3-5
+                                  "body\n"                       ; 6
+                                  "* Target heading\n"           ; 7
+                                  ":PROPERTIES:\n:ID: tgt-0001\n:END:\n"
+                                  "more\n")
+                          nil node-file nil 'silent)
+            (write-region (concat "tgt-0001\tTarget heading\t" node-file "\t7\n")
+                          nil "/tmp/nemacs-org-roam-nodes" nil 'silent)
+            ;; source buffer holds an id link; point will sit inside it
+            (let* ((src "see [[id:tgt-0001][the target]] here\n")
+                   (link-pos (+ (string-match (regexp-quote "id:tgt") src) 2)))
+              (write-region "" nil "/tmp/nemacs-keys" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-minibuffer-text" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-prefix-arg" nil 'silent)
+              (write-region "/tmp/nemacs-src.org" nil "/tmp/nemacs-file" nil 'silent)
+              (write-region "src.org" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region src nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region "single" nil "/tmp/nemacs-window-layout" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-window-selected" nil 'silent)
+              (write-region (number-to-string link-pos)
+                            nil "/tmp/nemacs-point" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-mark" nil 'silent)
+              ;; --- hit: point on the id link ---
+              (write-region "org-open-at-point" nil "/tmp/nemacs-cmd" nil 'silent)
+              (write-region "" nil "/tmp/nemacs-arg" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "nemacs-test-roam-target.org"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (let ((buf (nemacs-gui-file-bridge-runtime-test--slurp
+                          "/tmp/nemacs-buf"))
+                    (pt (string-to-number
+                         (nemacs-gui-file-bridge-runtime-test--slurp
+                          "/tmp/nemacs-point"))))
+                (should (string-prefix-p "* Target heading"
+                                         (substring buf pt))))
+              ;; --- miss: point NOT on a link leaves the buffer untouched ---
+              (write-region "src.org" nil "/tmp/nemacs-buffer-name" nil 'silent)
+              (write-region src nil "/tmp/nemacs-buf" nil 'silent)
+              (write-region "0" nil "/tmp/nemacs-point" nil 'silent)
+              (write-region "org-open-at-point" nil "/tmp/nemacs-cmd" nil 'silent)
+              (nemacs-gui-file-bridge-runtime-test--run-ok
+               reader image "(nemacs-gui-file-bridge-run)")
+              (should (equal "src.org"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))))
+        (ignore-errors (delete-file node-file))))))
+
+
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-magit-min ()
   "Magit-min status/stage/commit/diff/log workflow (M10)."
