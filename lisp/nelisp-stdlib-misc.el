@@ -664,10 +664,14 @@ for the full contract."
 ;; chmod primitive in a later wave; for now this stub silently no-
 ;; ops so the elf-write success path returns cleanly.
 (unless (fboundp 'set-file-modes)
-  (defun set-file-modes (_filename _mode)
-    "NeLisp stub: no-op (= no chmod primitive yet).
-Mode bits are not applied; nl-write-file's default 0644 stands.
-Final executables needing +x must use a later wave with chmod."
+  (defun set-file-modes (filename mode &optional _flag)
+    "Apply MODE to FILENAME via chmod(2) when a syscall primitive exists.
+Falls back to a no-op (nl-write-file's default 0644 stands) on substrates
+without `nelisp--syscall-path-int'."
+    (when (fboundp 'nelisp--syscall-path-int)
+      (let ((rc (nelisp--syscall-path-int 90 filename mode)))   ; chmod
+        (unless (= rc 0)
+          (error "set-file-modes: rc=%S %s" rc filename))))
     nil))
 
 ;; nelisp-stdlib-misc.el ends here

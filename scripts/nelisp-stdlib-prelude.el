@@ -2896,7 +2896,14 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
             (funcall sentinel proc "finished\n")))))
     t))
 (unless (fboundp 'set-file-modes)
-  (defun set-file-modes (_filename _mode) nil))
+  (defun set-file-modes (filename mode &optional _flag)
+    "Apply MODE to FILENAME via chmod(2) when a syscall primitive exists.
+No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
+    (when (fboundp 'nelisp--syscall-path-int)
+      (let ((rc (nelisp--syscall-path-int 90 filename mode)))   ; chmod
+        (unless (= rc 0)
+          (error "set-file-modes: rc=%S %s" rc filename))))
+    nil))
 
 ;; --- Wave-2 (C): sort (stable merge sort, 2-arg PREDICATE form) ----------
 ;; (sort LIST PREDICATE) -> a new list ordered by PREDICATE (a < b).  Stable.
@@ -3556,6 +3563,34 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
             (nelisp--syscall-path-int 83 acc 511)))
       (nelisp--syscall-path-int 83 dir 511))
     dir))
+;; Native-store file builtins via direct syscalls (pure elisp, no Rust).
+;; x86_64 Linux numbers, matching the access=21/unlink=87/mkdir=83/rmdir=84
+;; convention above: rename=82, symlink=88, chmod=90, access(X_OK)=21.
+(unless (fboundp 'file-name-absolute-p)
+  (defun file-name-absolute-p (filename)
+    (and (stringp filename)
+         (> (length filename) 0)
+         (let ((c (aref filename 0)))
+           (or (= c 47) (= c 126))))))      ; "/" or "~"
+(unless (fboundp 'rename-file)
+  (defun rename-file (file newname &optional ok-if-already-exists)
+    (when (and (not ok-if-already-exists) (file-exists-p newname))
+      (error "rename-file: target exists: %s" newname))
+    (let ((rc (nelisp--syscall-path2 82 file newname)))
+      (unless (= rc 0)
+        (error "rename-file: rc=%S %s -> %s" rc file newname)))
+    nil))
+(unless (fboundp 'make-symbolic-link)
+  (defun make-symbolic-link (target linkname &optional ok-if-already-exists)
+    (when (and ok-if-already-exists (file-exists-p linkname))
+      (nelisp--syscall-path 87 linkname))     ; unlink existing
+    (let ((rc (nelisp--syscall-path2 88 target linkname)))
+      (unless (= rc 0)
+        (error "make-symbolic-link: rc=%S %s -> %s" rc target linkname)))
+    nil))
+(unless (fboundp 'file-executable-p)
+  (defun file-executable-p (filename)
+    (= 0 (nelisp--syscall-path-int 21 filename 1))))  ; access X_OK
 (unless (fboundp 'make-temp-file)
   (defun make-temp-file (prefix &optional dir-flag suffix text)
     (let ((path (concat "/tmp/" (make-temp-name prefix) (or suffix ""))))
