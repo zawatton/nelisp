@@ -520,6 +520,23 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、kill/yank command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の mark/global/rectangle writeback chunk を
+  =files--bridge-mark-global-rectangle-writeback-current-context= へ切り出した。
+  - 対象は =set-mark-command= / =exchange-point-and-mark= /
+    =pop-global-mark= / =rectangle-mark-mode=。
+  - helper 内では point+mark+global-mark、point+mark、
+    point+mark+global-mark+rectangle-mark-mode の branch に分けた。
+  - command-writeback-chain の direct transport write は 322 のまま、
+    =files--write*= helper は 371 から 359、=equal cmd= tests は 185 から 181。
+    これは mark/global/rectangle block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-mark-global-rectangle-writeback-current-context= が 1 件追加され、
+    =setq= は 520 から 517、=if= は 232 から 228 へ減少。
+  - =standalone-save-and-transform= は 108.672773 秒で pass。
+  - =standalone-bridge-mark-global-rectangle-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、mark/global/rectangle command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -740,8 +757,9 @@ make nemacs-gui-bridge-run-shape
    kmacro chunk も helper 化済み。
    indent/newline chunk も helper 化済み。
    kill/yank chunk も helper 化済み。
-   次は command-writeback-chain 内の =set-mark-command= から始まる
-   mark/global/rectangle 系の小さい chunk を
+   mark/global/rectangle chunk も helper 化済み。
+   次は command-writeback-chain 内の =toggle-truncate-lines= から =suspend-frame= までの
+   truncate/font/text-scale/frame state 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。

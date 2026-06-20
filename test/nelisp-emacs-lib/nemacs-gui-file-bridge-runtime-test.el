@@ -16685,6 +16685,71 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-mark-global-rectangle-writeback-helper ()
+  "Bridge mark/global/rectangle writeback helper should write matching state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-mark-global-rectangle-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string \"abcdefghij\")
+                       (setq files--point 8)
+                       (setq files--mark 3)
+                       (setq files--global-mark 6)
+                       (setq files--global-mark-active t)
+                       (setq rectangle-mark-mode t)
+                       (fset 'capture-mark-global-rectangle-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-mark-global-rectangle-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-mark-global-rectangle-writeback-helper\"
+                        (concat
+                         (capture-mark-global-rectangle-writeback
+                          \"set-mark-command\")
+                         \"\\t\"
+                         (capture-mark-global-rectangle-writeback
+                          \"exchange-point-and-mark\")
+                         \"\\t\"
+                         (capture-mark-global-rectangle-writeback
+                          \"pop-global-mark\")
+                         \"\\t\"
+                         (capture-mark-global-rectangle-writeback
+                          \"rectangle-mark-mode\")
+                         \"\\t\"
+                         (capture-mark-global-rectangle-writeback
+                          \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "set-mark-command:written\texchange-point-and-mark:written\tpop-global-mark:written\trectangle-mark-mode:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "00008"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00003"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00006"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-global-mark")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-rectangle-mark-mode")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here

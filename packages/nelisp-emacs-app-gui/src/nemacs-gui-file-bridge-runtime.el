@@ -22893,6 +22893,33 @@
               (files--write-transport-point)
               (files--write-transport-mark)
               (setq files--bridge-status "written"))
+                nil)
+        cmd))
+
+(fset 'files--bridge-mark-global-rectangle-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "set-mark-command")
+                t
+              (equal cmd "pop-global-mark"))
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-global-mark-state)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "exchange-point-and-mark")
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "rectangle-mark-mode")
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-global-mark-state)
+              (files--write-rectangle-mark-mode-state)
+              (setq files--bridge-status "written"))
           nil)
         cmd))
 
@@ -24179,34 +24206,7 @@
               (setq cmd (files--bridge-kmacro-writeback-current-context cmd))
               (setq cmd (files--bridge-indent-newline-writeback-current-context cmd))
               (setq cmd (files--bridge-kill-yank-writeback-current-context cmd))
-              (if (equal cmd "set-mark-command")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-global-mark-state)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "exchange-point-and-mark")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "pop-global-mark")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-global-mark-state)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "rectangle-mark-mode")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-global-mark-state)
-                    (files--write-rectangle-mark-mode-state)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-mark-global-rectangle-writeback-current-context cmd))
               (if (equal cmd "toggle-truncate-lines")
                   (progn
                     (files--write-truncate-lines-state)
