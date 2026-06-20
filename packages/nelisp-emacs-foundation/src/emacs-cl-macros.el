@@ -228,6 +228,23 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
           (list 'setq place value)
         (list 'setf place value)))))
 
+;;;; --- cl numeric predicates (Doc 15 B4 breadth) ---------------------
+;; cl-evenp / cl-oddp / cl-plusp / cl-minusp were void; many packages and
+;; `cl-loop' clauses rely on them.  Plain defuns (the cl-lib `cl-defsubst'
+;; forms are unavailable here).
+
+(unless (fboundp 'cl-evenp)
+  (defun cl-evenp (x) "Return non-nil if integer X is even." (= 0 (% x 2))))
+
+(unless (fboundp 'cl-oddp)
+  (defun cl-oddp (x) "Return non-nil if integer X is odd." (not (= 0 (% x 2)))))
+
+(unless (fboundp 'cl-plusp)
+  (defun cl-plusp (x) "Return non-nil if number X is positive." (> x 0)))
+
+(unless (fboundp 'cl-minusp)
+  (defun cl-minusp (x) "Return non-nil if number X is negative." (< x 0)))
+
 ;;;; --- cl-some / cl-every / cl-position / cl-find ---------------------
 
 (unless (fboundp 'cl-some)

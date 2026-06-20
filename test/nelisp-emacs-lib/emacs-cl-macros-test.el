@@ -48,6 +48,19 @@
   (should (equal (cl-position 3 '(1 2 3 4)) 2))
   (should (equal (cl-position-if (lambda (x) (> x 3)) '(1 2 4 5)) 2)))
 
+(ert-deftest emacs-cl-macros-test/cl-numeric-predicates ()
+  "Doc 15 B4: cl-evenp / cl-oddp / cl-plusp / cl-minusp (were void)."
+  (should (cl-evenp 4))
+  (should-not (cl-evenp 3))
+  (should (cl-oddp 3))
+  (should-not (cl-oddp 4))
+  (should (cl-plusp 1))
+  (should-not (cl-plusp 0))
+  (should (cl-minusp -1))
+  (should-not (cl-minusp 0))
+  ;; usable as a predicate argument
+  (should (equal '(1 3) (cl-remove-if #'cl-evenp '(1 2 3 4)))))
+
 (ert-deftest emacs-cl-macros-test/cl-remove-if-and-cl-remove-if-not-filter-correctly ()
   (should (equal (cl-remove-if (lambda (x) (= 1 (% x 2))) '(1 2 3 4 5)) '(2 4)))
   (should (equal (cl-remove-if-not (lambda (x) (= 1 (% x 2))) '(1 2 3 4 5))

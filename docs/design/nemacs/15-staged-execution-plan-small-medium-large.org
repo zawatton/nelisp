@@ -202,6 +202,11 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   ※ ht.el フル load は別途 =(require 'inline)= / =(require 'gv)= の heavy load +
   repl-boot 安定性 (大 package load の hang/segfault、stale lock 干渉) が残るが、
   これは define-inline とは別の reader-load issue。
+- *cl 数値 predicate 補完 (2026-06-20)*: =cl-evenp= / =cl-oddp= / =cl-plusp= /
+  =cl-minusp= が void だった (cl の高階関数 cl-remove-if/find-if/sort/subseq/
+  position/some は動作済)。=emacs-cl-macros.el= に plain defun 追加。多数 package +
+  =cl-loop= clause が依存。検証: =(cl-loop for x in '(1 2 3 4 5) when (cl-oddp x)
+  collect x)= = (1 3 5)、emacs-cl-macros-test +1。
 - *breadth loop の所見*: 単純 void-function は逐次追加で解消するが、=define-inline=
   系は深い chain。package ごとに「単純欠落 (逐次補完)」と「深い runtime 機構
   (dedicated)」を切り分けるのが効率的。discovery sweep は 1 関数の hard crash で
