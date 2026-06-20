@@ -67,7 +67,7 @@
 
 (ert-deftest emacs-stub-residuals-test/feature-and-fboundp ()
   (should (featurep 'emacs-stub))
-  (dolist (sym '(define-key-after
+  (dolist (sym '(function-get define-key-after
                   display-graphic-p display-color-p display-multi-frame-p
                   window-system
                   emacs-display-window-system emacs-display-graphic-p
@@ -112,6 +112,14 @@
   (should (integerp emacs-minor-version))
   (should (boundp 'three-step-help))
   (should (boundp 'help-for-help-use-variable-pitch)))
+
+(ert-deftest emacs-stub-residuals-test/function-get-reads-symbol-property ()
+  "Doc 15 B4 breadth: `function-get' returns a function symbol's property.
+It was void on the reader, blocking `define-inline' / cl-generic users."
+  (let ((sym (make-symbol "emacs-stub-test--fg")))
+    (should (null (function-get sym 'no-such-prop)))
+    (put sym 'my-prop 123)
+    (should (equal 123 (function-get sym 'my-prop)))))
 
 (ert-deftest emacs-stub-residuals-test/display-line-number-core-defaults ()
   (should (integerp (line-number-display-width)))

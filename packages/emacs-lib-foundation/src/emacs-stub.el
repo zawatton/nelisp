@@ -512,6 +512,20 @@ without attempting to weave advice into existing function cells."
 (unless (fboundp 'set-match-data)
   (defun set-match-data (list &optional reseat) (ignore list reseat) nil))
 
+(unless (fboundp 'function-get)
+  (defun function-get (f prop &optional _autoload)
+    "Polyfill: value of F's function property PROP, following defalias chains.
+AUTOLOAD is accepted for API parity and ignored (no autoload layer here).
+Real `function-get' (subr.el) is relied on by `define-inline', cl-generic,
+nadvice, etc.; the runtime previously left it void."
+    (let ((val nil))
+      (while (and (symbolp f)
+                  (null (setq val (get f prop)))
+                  (fboundp f))
+        (let ((fundef (symbol-function f)))
+          (setq f (and (symbolp fundef) fundef))))
+      val)))
+
 (unless (fboundp 'string-match)
   ;; Emacs 27+ added 4th arg INHIBIT-MODIFY (= don't update match data).
   ;; Vendor subr.el's string-match-p calls (string-match RE STR START t) so
