@@ -13,27 +13,29 @@ runtime state reset / writeback 境界を測れる形へ分割すること。
 * 現在地
 
 - branch: =feat/doc142-gate5-nemacs=
-- stop commit: =d0f0076 Extract bridge kmacro writeback chunk=
-- 直近の完了 chunk: kmacro writeback chunk
+- stop commit: =173d066 Extract bridge indent newline writeback chunk=
+- 直近の完了 chunk: indent/newline writeback chunk
 - 最新 shape:
-  - direct transport write: =350 -> 341=
-  - =files--write*= helper: =406 -> 396=
-  - =equal cmd= tests: =226 -> 200=
-  - post-boundary top-level =setq=: =566 -> 552=
-  - post-boundary top-level =if=: =274 -> 247=
+  - direct transport write: =341 -> 330=
+  - =files--write*= helper: =396 -> 376=
+  - =equal cmd= tests: =200 -> 189=
+  - post-boundary top-level =setq=: =552 -> 531=
+  - post-boundary top-level =if=: =247 -> 236=
 - 最新 slow gate:
-  - =standalone-save-and-transform= pass, =108.976717 sec=
+  - =standalone-save-and-transform= pass, =108.722140 sec=
 
 Codex 側で見えていた未コミット user 変更:
 
 - modified: =src/emacs-init.el=
 - untracked: =src/emacs-os-detect.el=
+- untracked: =test/emacs-os-detect-test.el=
 
 これらは今回の writeback chunk 作業では触っていない。Claude Code 側でも勝手に
 revert / commit しないこと。
 
 * 直近の完了 commit
 
+- =173d066= indent/newline writeback chunk
 - =d0f0076= kmacro writeback chunk
 - =df0e283= emoji writeback chunk
 - =1b02065= delete/insert writeback chunk
@@ -50,46 +52,31 @@ revert / commit しないこと。
 * 次の作業開始点
 
 =src/nemacs-gui-file-bridge-runtime.el= の
-=files--bridge-kmacro-writeback-current-context= 呼び出し直後から再開する。
+=files--bridge-indent-newline-writeback-current-context= 呼び出し直後から再開する。
 
 現時点の次 block:
 
 #+begin_src elisp
-(setq cmd (files--bridge-kmacro-writeback-current-context cmd))
-(if (equal cmd "quoted-insert") ...)
-(if (equal cmd "indent-for-tab-command") ...)
-(if (equal cmd "tab-to-tab-stop") ...)
-(if (equal cmd "indent-region") ...)
-(if (equal cmd "indent-rigidly") ...)
-(if (equal cmd "newline") ...)
-(if (equal cmd "electric-newline-and-maybe-indent") ...)
-(if (equal cmd "default-indent-new-line") ...)
-(if (equal cmd "open-line") ...)
-(if (equal cmd "split-line") ...)
-(if (equal cmd "delete-blank-lines") ...)
+(setq cmd (files--bridge-indent-newline-writeback-current-context cmd))
+(if (equal cmd "kill-line") ...)
+(if (equal cmd "kill-whole-line") ...)
+(if (equal cmd "yank") ...)
+(if (equal cmd "yank-pop") ...)
 #+end_src
 
 推奨する次 chunk:
 
-- helper 名: =files--bridge-indent-newline-writeback-current-context=
+- helper 名: =files--bridge-kill-yank-writeback-current-context=
 - 対象:
-  - =quoted-insert=
-  - =indent-for-tab-command=
-  - =tab-to-tab-stop=
-  - =indent-region=
-  - =indent-rigidly=
-  - =newline=
-  - =electric-newline-and-maybe-indent=
-  - =default-indent-new-line=
-  - =open-line=
-  - =split-line=
-  - =delete-blank-lines=
+  - =kill-line=
+  - =kill-whole-line=
+  - =yank=
+  - =yank-pop=
 - branch 分類:
-  - buf+point+mark: quoted/indent/tab/electric/default/split/delete-blank
-  - buf+point: newline/open-line
+  - buf+kill+point: kill-line / yank / yank-pop
+  - buf+kill+point+mark: kill-whole-line
 
-=kill-line= / =kill-whole-line= / =yank= / =yank-pop= は kill ring writeback を含むため、
-次の別 chunk に回すのが安全。
+=set-mark-command= 以降は global mark writeback を含むため、次の別 chunk に回すのが安全。
 
 * 変更手順
 
@@ -98,7 +85,7 @@ revert / commit しないこと。
    - helper は最後に =cmd= を返す。
    - 既存の =files--write-transport-*= / =nl-write-file= の順序は変えない。
 2. =nemacs-gui-file-bridge-run= 内の対象 block を
-   =(setq cmd (files--bridge-indent-newline-writeback-current-context cmd))=
+   =(setq cmd (files--bridge-kill-yank-writeback-current-context cmd))=
    に置き換える。
 3. =test/nemacs-gui-file-bridge-runtime-test.el= の末尾付近に専用 ERT を追加する。
    - 既存の =standalone-bridge-kmacro-writeback-helper= と同じ形式でよい。
@@ -122,7 +109,7 @@ emacs --batch -L src -L test \
   -l test/nemacs-gui-file-bridge-runtime-test.el \
   --eval '(princ "test-load-ok\n")'
 
-NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-bridge-indent-newline-writeback-helper' \
+NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-bridge-kill-yank-writeback-helper' \
   make test-nemacs-gui-bridge-gate
 
 make nemacs-gui-bridge-run-shape
