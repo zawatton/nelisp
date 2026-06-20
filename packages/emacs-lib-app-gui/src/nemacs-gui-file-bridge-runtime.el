@@ -22873,6 +22873,29 @@
           nil)
         cmd))
 
+(fset 'files--bridge-kill-yank-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "kill-line")
+                t
+              (if (equal cmd "yank")
+                  t
+                (equal cmd "yank-pop")))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
+              (files--write-transport-point)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "kill-whole-line")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -24155,35 +24178,7 @@
               (setq cmd (files--bridge-emoji-writeback-current-context cmd))
               (setq cmd (files--bridge-kmacro-writeback-current-context cmd))
               (setq cmd (files--bridge-indent-newline-writeback-current-context cmd))
-              (if (equal cmd "kill-line")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "kill-whole-line")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "yank")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "yank-pop")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-kill-yank-writeback-current-context cmd))
               (if (equal cmd "set-mark-command")
                   (progn
                     (files--write-transport-point)
