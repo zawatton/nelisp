@@ -77,6 +77,19 @@
                  '((a (a . 1) (a . 3))
                    (b (b . 2))))))
 
+(ert-deftest seq-test/doc16-round2-set-and-partition ()
+  "Doc 16 breadth round 2: seq-partition / seq-mapcat / seq-keep /
+seq-difference / seq-intersection / seq-union (+ seq-reverse), which the
+NeLisp seq facade was missing."
+  (should (equal '((1 2) (3 4) (5)) (seq-partition '(1 2 3 4 5) 2)))
+  (should (equal '(1 1 2 2) (seq-mapcat (lambda (x) (list x x)) '(1 2))))
+  (should (equal '(10 30)
+                 (seq-keep (lambda (x) (and (= 1 (% x 2)) (* x 10))) '(1 2 3))))
+  (should (equal '(1 3) (seq-difference '(1 2 3 4) '(2 4))))
+  (should (equal '(2 4) (seq-intersection '(1 2 3 4) '(2 4 6))))
+  (should (equal '(1 2 3 4 5) (seq-union '(1 2 3) '(3 4 5))))
+  (should (equal '(3 2 1) (seq-reverse '(1 2 3)))))
+
 (provide 'seq-test)
 
 ;;; seq-test.el ends here
