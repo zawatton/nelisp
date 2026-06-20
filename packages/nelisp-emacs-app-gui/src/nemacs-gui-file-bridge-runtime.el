@@ -22467,6 +22467,30 @@
           nil)
         cmd))
 
+(fset 'files--bridge-side-window-resize-writeback-current-context
+      (lambda (cmd)
+        (if (equal cmd "window-toggle-side-windows")
+            (progn
+              (files--write-transport-side-windows-state)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "enlarge-window")
+                t
+              (if (equal cmd "shrink-window-horizontally")
+                  t
+                (if (equal cmd "enlarge-window-horizontally")
+                    t
+                  (equal cmd "other-window"))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
+              (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
+              (if (equal cmd "other-window")
+                  nil
+                (files--write-transport-window-split-delta))
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23740,38 +23764,7 @@
               (setq cmd (files--bridge-org-writeback-current-context cmd))
               (setq cmd (files--bridge-magit-vc-writeback-current-context cmd))
               (setq cmd (files--bridge-customize-writeback-current-context cmd))
-              (if (equal cmd "window-toggle-side-windows")
-                  (progn
-                    (files--write-transport-side-windows-state)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "enlarge-window")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "shrink-window-horizontally")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "enlarge-window-horizontally")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (files--write-transport-window-split-delta)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "other-window")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-layout") (files--transport-path)) files--window-layout)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-window-selected") (files--transport-path)) files--window-selected)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-side-window-resize-writeback-current-context cmd))
               (if (equal cmd "forward-word")
                   (progn
                     (files--write-transport-point)
