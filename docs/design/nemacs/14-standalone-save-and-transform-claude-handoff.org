@@ -15,22 +15,23 @@ session/progn 一括化には戻らないこと。
 * 現在地
 
 - branch: =feat/doc142-gate5-nemacs=
-- 直近実装 commit: =8cef714 Extract bridge truncate text scale frame writeback chunk=
-- 直近の完了 chunk: truncate/text-scale/frame writeback chunk
+- 直近実装 commit: =f9398d2 Extract bridge tmm menubar writeback chunk=
+- 直近の完了 chunk: tmm-menubar writeback chunk
 - 最新 shape:
-  - direct transport write: =322 -> 319=
-  - =files--write*= helper: =359 -> 355=
-  - =equal cmd= tests: =181 -> 176=
-  - post-boundary top-level =setq=: =517 -> 510=
-  - post-boundary top-level =if=: =228 -> 223=
+  - direct transport write: =319 -> 315=
+  - =files--write*= helper: =355 -> 352=
+  - =equal cmd= tests: =176 -> 175=
+  - post-boundary top-level =setq=: =510 -> 506=
+  - post-boundary top-level =if=: =223 -> 221=
 - 最新 slow gate:
-  - =standalone-save-and-transform= pass, =109.419179 sec=
+  - =standalone-save-and-transform= pass, =108.676735 sec=
 
 この引き継ぎ書作成時点で、Codex 側の worktree は handoff doc 以外 clean。
 Claude Code 側でも対象外の user 変更が見えた場合は勝手に revert / commit しないこと。
 
 * 直近の完了 commit
 
+- =f9398d2= tmm-menubar writeback chunk
 - =8cef714= truncate/text-scale/frame writeback chunk
 - =6ef765f= mark/global/rectangle writeback chunk
 - =c74db75= kill/yank writeback chunk
@@ -52,13 +53,12 @@ Claude Code 側でも対象外の user 変更が見えた場合は勝手に reve
 * 次の作業開始点
 
 =src/nemacs-gui-file-bridge-runtime.el= の
-=files--bridge-truncate-text-scale-frame-writeback-current-context= 呼び出し直後から再開する。
+=files--bridge-tmm-menubar-writeback-current-context= 呼び出し直後から再開する。
 
 現時点の次 block:
 
 #+begin_src elisp
-(setq cmd (files--bridge-truncate-text-scale-frame-writeback-current-context cmd))
-(if (equal cmd "tmm-menubar") ...)
+(setq cmd (files--bridge-tmm-menubar-writeback-current-context cmd))
 (if (equal cmd "set-selective-display") ...)
 (if (equal cmd "revert-buffer-with-coding-system") ...)
 (if (if (equal cmd "toggle-input-method") ...) ...)
@@ -66,38 +66,31 @@ Claude Code 側でも対象外の user 変更が見えた場合は勝手に reve
 
 推奨する次 chunk:
 
-- helper 名: =files--bridge-tmm-menubar-writeback-current-context=
+- helper 名: =files--bridge-selective-display-writeback-current-context=
 - 対象:
-  - =tmm-menubar=
+  - =set-selective-display=
 - branch 分類:
-  - buf+file+buffer-name+read-only+point+mark+window-start
+  - selective-display+modeline
 
-=set-selective-display= は selective-display+modeline、=revert-buffer-with-coding-system= は
-buf+file+point、coding/input-method 群は coding/input state なので、=tmm-menubar= と混ぜず
-次以降の別 chunk に回すのが安全。
+=revert-buffer-with-coding-system= は単独 branch と後続 coding/input-method group の両方に
+含まれる。ここを混ぜると重複 writeback の境界が見えにくくなるため、まず
+=set-selective-display= 単体で切るのが安全。
 
 * 変更手順
 
 1. =src/nemacs-gui-file-bridge-runtime.el= に helper を追加する。
    - 既存 helper と同じ =fset= + =lambda (cmd)= 形式に揃える。
    - helper は最後に =cmd= を返す。
-   - 既存の =nl-write-file= / =files--write-transport-*= の順序は変えない。
-2. =nemacs-gui-file-bridge-run= 内の =tmm-menubar= block を
-   =(setq cmd (files--bridge-tmm-menubar-writeback-current-context cmd))=
+   - =files--write-selective-display-state= と modeline write の順序は変えない。
+2. =nemacs-gui-file-bridge-run= 内の =set-selective-display= block を
+   =(setq cmd (files--bridge-selective-display-writeback-current-context cmd))=
    に置き換える。
 3. =test/nemacs-gui-file-bridge-runtime-test.el= の末尾付近に専用 ERT を追加する。
-   - 既存の =standalone-bridge-truncate-text-scale-frame-writeback-helper= と同じ形式でよい。
    - probe file に =cmd:status= を書く。
-   - =/tmp/nemacs-buf=、=/tmp/nemacs-file=、=/tmp/nemacs-buffer-name=、
-     =/tmp/nemacs-read-only=、=/tmp/nemacs-point=、=/tmp/nemacs-mark=、
-     =/tmp/nemacs-window-start= を確認する。
+   - =/tmp/nemacs-selective-display= と =/tmp/nemacs-modeline= を確認する。
    - miss path として =forward-char= が =ok= のまま返ることを確認する。
 4. =make nemacs-gui-bridge-run-shape= で shape を再計測する。
 5. =docs/design/13-standalone-save-and-transform-next.org= に結果を追記する。
-   - shape 数値
-   - slow gate 秒数
-   - helper gate / roundtrip / fast gate が green であること
-   - 次の開始点を次 chunk へ送ること
 6. commit する。
 7. 作業ログを記録する。
 
@@ -110,7 +103,7 @@ emacs --batch -L src -L test \
   -l test/nemacs-gui-file-bridge-runtime-test.el \
   --eval '(princ "test-load-ok\n")'
 
-NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-bridge-tmm-menubar-writeback-helper' \
+NEMACS_GUI_BRIDGE_GATE_SELECTOR='nemacs-gui-file-bridge-runtime-test/standalone-bridge-selective-display-writeback-helper' \
   make test-nemacs-gui-bridge-gate
 
 make nemacs-gui-bridge-run-shape
@@ -128,17 +121,15 @@ git diff --check
 
 * 今回の完了済み検証
 
-=6ef765f= で mark/global/rectangle chunk、=8cef714= で truncate/text-scale/frame chunk を確認済み。
-
-=8cef714= の検証結果:
+=f9398d2= で tmm-menubar chunk を確認済み。
 
 - load: green
 - helper gate: green
-- shape: direct write =319=、=files--write*= =355=、=equal cmd= =176=、
-  top-level =setq= =510=、top-level =if= =223=
-- roundtrip gate: green, =1.272658 sec=
-- fast gate: green, 708 tests, =2.190591 sec=
-- slow gate: green, =109.419179 sec=
+- shape: direct write =315=、=files--write*= =352=、=equal cmd= =175=、
+  top-level =setq= =506=、top-level =if= =221=
+- roundtrip gate: green, =1.271796 sec=
+- fast gate: green, 708 tests, =2.168682 sec=
+- slow gate: green, =108.676735 sec=
 - =git diff --check=: green
 
 * 守ること
