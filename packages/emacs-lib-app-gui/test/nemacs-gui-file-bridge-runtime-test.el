@@ -5894,6 +5894,30 @@ captured by `exec-runtime-image')."
         (delete-file bin)
         (delete-file out)))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-save-match-data-available ()
+  "Doc 15 B1: save-match-data + match-data stubs are present in the bridge.
+Runtime-loaded string packages (s.el etc.) call `save-match-data', which the
+bridge did not bake (it lives in emacs-stub.el).  Mirror emacs-stub's no-op
+match-data stubs so those functions are callable; the no-op `save-match-data'
+runs its body and returns its value (verified via nl-write-file roundtrip)."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (out (make-temp-file "nemacs-b1smd-out-")))
+      (unwind-protect
+          (progn
+            (nemacs-gui-file-bridge-runtime-test--run-ok
+             reader image
+             (format "(nl-write-file %S (format \"smd=%%S body=%%S md=%%S smd-set=%%S\" (fboundp (quote save-match-data)) (save-match-data (+ 40 2)) (fboundp (quote match-data)) (fboundp (quote set-match-data))))"
+                     out))
+            (let ((res (nemacs-gui-file-bridge-runtime-test--slurp out)))
+              (should (string-match-p "smd=t" res))
+              (should (string-match-p "body=42" res))
+              (should (string-match-p "md=t" res))
+              (should (string-match-p "smd-set=t" res))))
+        (delete-file image)
+        (delete-file out)))))
+
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-save-some-buffers-runtime-adapter ()
   "In standalone NeLisp, `save-some-buffers' should go through fileio GUI runtime."
   (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
