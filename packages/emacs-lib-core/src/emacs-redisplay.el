@@ -1061,6 +1061,19 @@ the direction defaults to `left-to-right'."
       (setq i (1+ i)))
     (or dir 'left-to-right)))
 
+(defun emacs-redisplay--reverse-glyph-vector (vec)
+  "Return a new vector with VEC's glyphs in reverse visual order.
+This is the UAX #9 level-1 reorder applied to a right-to-left paragraph:
+correct for pure-RTL text (each glyph keeps its own `buf-pos', so the visual-
+first glyph is the logical-last char).  Mixed L/R run reordering with proper
+embedding levels (so an embedded Latin/number run keeps its internal order) is
+a follow-up."
+  (let* ((n (length vec))
+         (out (make-vector n nil)))
+    (dotimes (i n)
+      (aset out i (aref vec (- n 1 i))))
+    out))
+
 (defun emacs-redisplay--buffer-name (buffer)
   "Return BUFFER's display name for the MVP mode-line."
   (cond
@@ -1682,11 +1695,16 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
           (emacs-redisplay--clear-row row)
           (let* ((laid (emacs-redisplay--lay-out-line
                         line pos buffer overlays width))
-                 (gvec (car laid))
+                 (dir (emacs-redisplay--base-direction line))
+                 ;; RTL paragraph: reverse the laid-out glyphs to visual order
+                 ;; before they enter the row (so the row hash covers the final
+                 ;; order).  LTR rows pass through unchanged.
+                 (gvec (if (eq dir 'right-to-left)
+                           (emacs-redisplay--reverse-glyph-vector (car laid))
+                         (car laid)))
                  (next-pos (+ (cdr laid) nl-consumed)))
             (emacs-redisplay--fill-row row gvec width pos next-pos)
-            (setf (emacs-redisplay-glyph-row-direction row)
-                  (emacs-redisplay--base-direction line))
+            (setf (emacs-redisplay-glyph-row-direction row) dir)
             (aset cache row-idx (cons line (cons ovly-fp tp-fp))))))
         (setq pos next-pos-est
               row-idx (1+ row-idx))))
