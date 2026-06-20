@@ -22335,6 +22335,44 @@
           nil)
         cmd))
 
+(fset 'files--bridge-dired-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "dired-mark")
+                t
+              (if (equal cmd "dired-unmark")
+                  t
+                (equal cmd "dired-flag-file-deletion")))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "dired-do-rename")
+                t
+              (equal cmd "dired-do-copy"))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (equal cmd "dired-do-flagged-delete")
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
+              (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (files--write-transport-window-start)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23604,40 +23642,7 @@
               (setq cmd (files--bridge-window-layout-writeback-current-context cmd))
               (setq cmd (files--bridge-window-split-writeback-current-context cmd))
               (setq cmd (files--bridge-window-state-writeback-current-context cmd))
-              (if (if (equal cmd "dired-mark")
-                      t
-                    (if (equal cmd "dired-unmark")
-                        t
-                      (equal cmd "dired-flag-file-deletion")))
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (if (equal cmd "dired-do-rename")
-                      t
-                    (equal cmd "dired-do-copy"))
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "dired-do-flagged-delete")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buffer-name") (files--transport-path)) files--buffer-name)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-modeline") (files--transport-path)) files--modeline-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (files--write-transport-window-start)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-dired-writeback-current-context cmd))
               (if (if (equal cmd "org-todo")
                       t
                     (if (equal cmd "org-capture")
