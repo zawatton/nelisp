@@ -15569,6 +15569,88 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
         (when (file-exists-p probe-file)
           (delete-file probe-file))))))
 
+(ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-bridge-org-writeback-helper ()
+  "Bridge org writeback helper should write org buffer state."
+  (nemacs-gui-file-bridge-runtime-test--skip-unless-reader
+    (let ((reader (nemacs-gui-file-bridge-runtime-test--reader))
+          (image (nemacs-gui-file-bridge-runtime-test--write-image))
+          (probe-file "/tmp/nemacs-bridge-org-writeback-helper"))
+      (unwind-protect
+          (nemacs-gui-file-bridge-runtime-test--with-transport
+            (let ((result
+                   (nemacs-gui-file-bridge-runtime-test--run-ok
+                    reader image
+                    "(progn
+                       (setq files--buffer-string
+                             \"* TODO item\\n| a | b |\\n\")
+                       (setq files--current-file-name
+                             \"/tmp/nemacs-org-buffer.org\")
+                       (setq files--buffer-name \"OrgBuffer\")
+                       (setq files--buffer-read-only-p t)
+                       (setq files--point 11)
+                       (setq files--mark 1)
+                       (setq files--window-start 0)
+                       (fset 'capture-org-writeback
+                             (lambda (command)
+                               (setq files--bridge-status \"ok\")
+                               (let ((returned
+                                      (files--bridge-org-writeback-current-context
+                                       command)))
+                                 (concat returned
+                                         \":\"
+                                         files--bridge-status))))
+                       (nl-write-file
+                        \"/tmp/nemacs-bridge-org-writeback-helper\"
+                        (concat
+                         (capture-org-writeback \"org-todo\")
+                         \"\\t\"
+                         (capture-org-writeback \"org-capture\")
+                         \"\\t\"
+                         (capture-org-writeback
+                          \"org-table-next-field\")
+                         \"\\t\"
+                         (capture-org-writeback \"org-cycle\")
+                         \"\\t\"
+                         (capture-org-writeback \"org-table-align\")
+                         \"\\t\"
+                         (capture-org-writeback
+                          \"org-narrow-to-subtree\")
+                         \"\\t\"
+                         (capture-org-writeback \"org-agenda\")
+                         \"\\t\"
+                         (capture-org-writeback \"org-shifttab\")
+                         \"\\t\"
+                         (capture-org-writeback \"forward-char\"))))")))
+              (should (equal 0 (plist-get result :status)))
+              (should (equal "org-todo:written\torg-capture:written\torg-table-next-field:written\torg-cycle:written\torg-table-align:written\torg-narrow-to-subtree:written\torg-agenda:written\torg-shifttab:written\tforward-char:ok"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              probe-file)))
+              (should (equal "* TODO item\n| a | b |\n"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buf")))
+              (should (equal "/tmp/nemacs-org-buffer.org"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-file")))
+              (should (equal "OrgBuffer"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-buffer-name")))
+              (should (equal "1"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-read-only")))
+              (should (equal "00011"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-point")))
+              (should (equal "00001"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-mark")))
+              (should (equal "00000"
+                             (nemacs-gui-file-bridge-runtime-test--slurp
+                              "/tmp/nemacs-window-start")))))
+        (when (file-exists-p image)
+          (delete-file image))
+        (when (file-exists-p probe-file)
+          (delete-file probe-file))))))
+
 (provide 'nemacs-gui-file-bridge-runtime-test)
 
 ;;; nemacs-gui-file-bridge-runtime-test.el ends here
