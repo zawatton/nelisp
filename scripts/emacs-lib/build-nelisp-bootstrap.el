@@ -37,6 +37,8 @@ final `.el' suffix with `.repl'.")
   '("cl-lib.el"
     "seq.el"
     "map.el"
+    "json.el"
+    "range.el"
     "emacs-tui-backend.el"
     "emacs-redisplay-core.el"
     "emacs-tui-event.el")
