@@ -779,6 +779,71 @@ layer (which only accepts raw Emacs buffers, not `nelisp-ec-buffer')."
               (should (let ((f (emacs-redisplay-glyph-face (aref vec 2))))
                         (or (eq f 'highlight)
                             (and (listp f) (memq 'highlight f))))))))))))
+;;; H'. mouse-face (C1 v2 increment — Doc 15)
+
+(ert-deftest emacs-redisplay-test-mouse-face-text-property ()
+  "A `mouse-face' text property is copied into the glyph mouse-face slot."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (emacs-buffer-put-text-property 2 3 'mouse-face 'highlight b)
+      (let* ((h (emacs-redisplay-init))
+             (g (emacs-redisplay-text-to-glyphs h b)))
+        ;; pos 2 = "b" = glyph 1 carries mouse-face; neighbours do not
+        (should-not (emacs-redisplay-glyph-mouse-face (aref g 0)))
+        (should (eq 'highlight (emacs-redisplay-glyph-mouse-face (aref g 1))))
+        (should-not (emacs-redisplay-glyph-mouse-face (aref g 2)))))))
+
+(ert-deftest emacs-redisplay-test-mouse-face-overlay ()
+  "Overlay `mouse-face' is merged into the glyph mouse-face slot.
+Mocks the overlay accessor trio (as the overlay-face test does) so the
+merge is exercised without the upstream `nelisp-ovly' storage layer."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (let ((mock-ov 'mock-overlay))
+        (cl-letf (((symbol-function 'emacs-redisplay--overlays-in)
+                   (lambda (_beg _end &optional _buffer) (list mock-ov)))
+                  ((symbol-function 'emacs-redisplay--ovly-bounds)
+                   (lambda (ov) (when (eq ov mock-ov) (cons 2 4))))
+                  ((symbol-function 'emacs-redisplay--ovly-prop)
+                   (lambda (ov prop)
+                     (when (and (eq ov mock-ov) (eq prop 'mouse-face))
+                       'highlight))))
+          (let* ((h (emacs-redisplay-init))
+                 (w (emacs-window-selected-window)))
+            (emacs-window-set-window-buffer w b)
+            (let* ((m   (emacs-redisplay-redisplay-window h w))
+                   (row (emacs-redisplay-glyph-row m 0))
+                   (vec (emacs-redisplay-glyph-row-glyphs row)))
+              ;; overlay spans pos 2..4 ("b","c") = glyphs 1,2
+              (should-not (emacs-redisplay-glyph-mouse-face (aref vec 0)))
+              (should (eq 'highlight
+                          (emacs-redisplay-glyph-mouse-face (aref vec 1))))
+              (should (eq 'highlight
+                          (emacs-redisplay-glyph-mouse-face (aref vec 2)))))))))))
+
+(ert-deftest emacs-redisplay-test-mouse-face-overlay-overrides-text-property ()
+  "An overlay `mouse-face' overrides the text-property mouse-face by priority."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (emacs-buffer-put-text-property 2 3 'mouse-face 'from-text b)
+      (let ((mock-ov 'mock-overlay))
+        (cl-letf (((symbol-function 'emacs-redisplay--overlays-in)
+                   (lambda (_beg _end &optional _buffer) (list mock-ov)))
+                  ((symbol-function 'emacs-redisplay--ovly-bounds)
+                   (lambda (ov) (when (eq ov mock-ov) (cons 2 3))))
+                  ((symbol-function 'emacs-redisplay--ovly-prop)
+                   (lambda (ov prop)
+                     (when (and (eq ov mock-ov) (eq prop 'mouse-face))
+                       'from-overlay))))
+          (let* ((h (emacs-redisplay-init))
+                 (w (emacs-window-selected-window)))
+            (emacs-window-set-window-buffer w b)
+            (let* ((m   (emacs-redisplay-redisplay-window h w))
+                   (row (emacs-redisplay-glyph-row m 0))
+                   (vec (emacs-redisplay-glyph-row-glyphs row)))
+              (should (eq 'from-overlay
+                          (emacs-redisplay-glyph-mouse-face (aref vec 1)))))))))))
+
 
 (ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
   "The Phase 3 MVP `invisible' text property suppresses glyph output."

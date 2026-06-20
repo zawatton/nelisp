@@ -209,6 +209,7 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (width         1)          ;; glyph width in cells (1 ASCII / 2 CJK)
   (composition   nil)        ;; nil or composition reference (deferred)
   (display-spec  nil)        ;; nil or display property override
+  (mouse-face    nil)        ;; nil or `mouse-face' spec (hover highlight)
   (buf-pos       nil))       ;; source buffer position (for tooltips, etc.)
 
 (cl-defstruct (emacs-redisplay-glyph-row
@@ -972,6 +973,8 @@ in the `buf-pos' slot.  HANDLE may be nil — only used for logging."
                  :width 1
                  :composition nil
                  :display-spec (emacs-redisplay--resolve-display display nil)
+                 :mouse-face (emacs-redisplay--text-property-at
+                              pos 'mouse-face buffer)
                  :buf-pos pos)
                 glyphs))))
     (vconcat (nreverse glyphs))))
@@ -1173,19 +1176,27 @@ after emission (= COL when WIDTH is exhausted before any char)."
     out))
 
 (defun emacs-redisplay--apply-overlay-face (glyph overlays pos)
-  "Merge overlay face attributes (highest priority wins) into GLYPH."
+  "Merge overlay face attributes (highest priority wins) into GLYPH.
+An overlay `mouse-face' at POS likewise overrides the glyph's
+text-property `mouse-face' by the same priority rule."
   (when overlays
-    (let (best best-prio)
+    (let (best best-prio best-mface best-mface-prio)
       (dolist (ov overlays)
-        (let ((bounds (emacs-redisplay--ovly-bounds ov))
-              (prio   (or (emacs-redisplay--ovly-prop ov 'priority) 0))
-              (face   (emacs-redisplay--ovly-prop ov 'face)))
-          (when (and bounds face
-                     (<= (car bounds) pos)
-                     (< pos (cdr bounds))
-                     (or (null best) (> prio best-prio)))
+        (let* ((bounds (emacs-redisplay--ovly-bounds ov))
+               (prio   (or (emacs-redisplay--ovly-prop ov 'priority) 0))
+               (face   (emacs-redisplay--ovly-prop ov 'face))
+               (mface  (emacs-redisplay--ovly-prop ov 'mouse-face))
+               (inside (and bounds
+                            (<= (car bounds) pos)
+                            (< pos (cdr bounds)))))
+          (when (and inside face (or (null best) (> prio best-prio)))
             (setq best face
-                  best-prio prio))))
+                  best-prio prio))
+          (when (and inside mface (or (null best-mface) (> prio best-mface-prio)))
+            (setq best-mface mface
+                  best-mface-prio prio))))
+      (when best-mface
+        (setf (emacs-redisplay-glyph-mouse-face glyph) best-mface))
       (when best
         (let* ((existing (emacs-redisplay-glyph-face glyph))
                (resolved (emacs-redisplay--resolve-face best))
@@ -1268,6 +1279,8 @@ the overlay anchor position."
          (t
           (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
                  (display (emacs-redisplay--text-property-at pos 'display buffer))
+                 (mouse-face (emacs-redisplay--text-property-at
+                              pos 'mouse-face buffer))
                  (g (emacs-redisplay--make-glyph
                      :char ch
                      :face (emacs-redisplay--resolve-face face)
@@ -1277,6 +1290,7 @@ the overlay anchor position."
                      :composition nil
                      :display-spec (emacs-redisplay--resolve-display
                                     display nil)
+                     :mouse-face mouse-face
                      :buf-pos pos)))
             (when overlays
               (emacs-redisplay--apply-overlay-face g overlays pos))
