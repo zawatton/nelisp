@@ -304,6 +304,27 @@ KIND is either `function' or `variable'."
     (insert "\n"))
   (insert "\n"))
 
+(defvar emacs-help--nav-back nil
+  "Stack of previous help rerender thunks (most recent first).")
+(defvar emacs-help--nav-forward nil
+  "Stack of forward help rerender thunks (next first).")
+(defvar emacs-help--nav-current nil
+  "Rerender thunk for the help topic currently on display.")
+(defvar emacs-help--navigating nil
+  "Non-nil while replaying a history entry, so it is not re-recorded.")
+
+(defun emacs-help--history-record (rerender)
+  "Record RERENDER in the help navigation history.
+A normal topic push moves the current topic onto the back stack and
+clears the forward stack; replays driven by `help-go-back' /
+`help-go-forward' (when `emacs-help--navigating' is non-nil) are not
+recorded so navigation stays stable."
+  (unless emacs-help--navigating
+    (when emacs-help--nav-current
+      (push emacs-help--nav-current emacs-help--nav-back))
+    (setq emacs-help--nav-current rerender
+          emacs-help--nav-forward nil)))
+
 (defun emacs-help--render-buffer (kind subject rerender renderer)
   "Render help content into `*Help*'.
 KIND and SUBJECT describe the current topic.
@@ -319,6 +340,7 @@ RERENDER is a thunk stored for `g'.  RENDERER inserts the content."
       (puthash buffer
                (list :kind kind :subject subject :rerender rerender)
                emacs-help--state))
+    (emacs-help--history-record rerender)
     (emacs-help--show-buffer buffer)))
 
 (defun emacs-help--render-function (symbol)
@@ -866,14 +888,24 @@ display core."
     (funcall rerender)))
 
 (defun help-go-back ()
-  "Report that help history navigation is not implemented yet."
+  "Go back to the previously shown help topic."
   (interactive)
-  (user-error "Help history is not available"))
+  (unless emacs-help--nav-back
+    (user-error "No previous help"))
+  (push emacs-help--nav-current emacs-help--nav-forward)
+  (setq emacs-help--nav-current (pop emacs-help--nav-back))
+  (let ((emacs-help--navigating t))
+    (funcall emacs-help--nav-current)))
 
 (defun help-go-forward ()
-  "Report that help history navigation is not implemented yet."
+  "Go forward to the next help topic in the history."
   (interactive)
-  (user-error "Help history is not available"))
+  (unless emacs-help--nav-forward
+    (user-error "No next help"))
+  (push emacs-help--nav-current emacs-help--nav-back)
+  (setq emacs-help--nav-current (pop emacs-help--nav-forward))
+  (let ((emacs-help--navigating t))
+    (funcall emacs-help--nav-current)))
 
 ;;;###autoload
 (defun describe-function (function)

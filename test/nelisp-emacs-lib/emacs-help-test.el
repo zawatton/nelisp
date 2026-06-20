@@ -16,6 +16,9 @@
 (defun emacs-help-test--fresh-help-state ()
   "Reset mutable help state used by tests."
   (setq emacs-help--state (make-hash-table :test 'eq :weakness nil))
+  (setq emacs-help--nav-back nil
+        emacs-help--nav-forward nil
+        emacs-help--nav-current nil)
   (when (get-buffer emacs-help--buffer-name)
     (kill-buffer emacs-help--buffer-name))
   (let ((map (make-sparse-keymap)))
@@ -84,6 +87,25 @@
   (emacs-help-test--with-fresh-world
     (should-error (help-go-back) :type 'user-error)
     (should-error (help-go-forward) :type 'user-error)))
+
+(ert-deftest help-go-back-and-forward-navigate-history ()
+  "A4-adjacent: help history (Doc 15 wave A: A3) walks topics back/forward."
+  (emacs-help-test--with-fresh-world
+    (describe-function 'emacs-help-test--sample-function) ; topic A
+    (describe-variable 'emacs-help-test--sample-variable) ; topic B (now shown)
+    ;; back -> A
+    (help-go-back)
+    (should (string-match-p "Sample function docstring"
+                            (emacs-help-test--help-string)))
+    ;; forward -> B
+    (help-go-forward)
+    (should (string-match-p "Sample variable docstring"
+                            (emacs-help-test--help-string)))
+    ;; nothing past B
+    (should-error (help-go-forward) :type 'user-error)
+    ;; back -> A, then nothing before A
+    (help-go-back)
+    (should-error (help-go-back) :type 'user-error)))
 
 (ert-deftest describe-key-resolves-binding ()
   (emacs-help-test--with-fresh-world
