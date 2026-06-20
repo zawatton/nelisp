@@ -360,6 +360,29 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、word/sexp/defun motion command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の kill/abbrev writeback chunk を
+  =files--bridge-kill-abbrev-writeback-current-context= へ切り出した。
+  - 対象は =kill-word= / =kill-sexp= / =backward-kill-word= /
+    =zap-to-char= / =expand-abbrev= / =add-global-abbrev= /
+    =add-mode-abbrev= / =inverse-add-global-abbrev= /
+    =inverse-add-mode-abbrev= / =abbrev-prefix-mark= /
+    =expand-jump-to-next-slot= / =expand-jump-to-previous-slot= /
+    =dabbrev-expand= / =dabbrev-completion= / =complete-symbol= /
+    =transpose-words= / =transpose-sexps= / =insert-parentheses= /
+    =move-past-close-and-reindent= / =transpose-lines=。
+  - kill ring を伴う command、buf+point+mark command、point+mark command を
+    helper 内で分けた。
+  - command-writeback-chain の direct transport write は 417 から 400、
+    =files--write*= helper は 516 から 476、=equal cmd= tests は 288 から 268。
+    これは kill/abbrev block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-kill-abbrev-writeback-current-context= が 1 件追加され、
+    =setq= は 690 から 654、=if= は 340 から 320 へ減少。
+  - =standalone-save-and-transform= は 108.098 秒で pass。
+  - =standalone-bridge-kill-abbrev-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、kill/abbrev command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -572,7 +595,8 @@ make nemacs-gui-bridge-run-shape
    window split chunk、window state chunk、dired chunk、org chunk、magit/vc chunk は
    helper 化済み。customize chunk と side/window resize chunk も helper 化済み。
    word/sexp/defun motion chunk も helper 化済み。
-   次は command-writeback-chain 内の kill/abbrev 系の小さい chunk を
+   kill/abbrev chunk も helper 化済み。
+   次は command-writeback-chain 内の mark/count/eval 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。

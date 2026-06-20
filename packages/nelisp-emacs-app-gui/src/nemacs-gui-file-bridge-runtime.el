@@ -22530,6 +22530,65 @@
           nil)
         cmd))
 
+(fset 'files--bridge-kill-abbrev-writeback-current-context
+      (lambda (cmd)
+        (if (if (equal cmd "kill-word")
+                t
+              (if (equal cmd "kill-sexp")
+                  t
+                (if (equal cmd "backward-kill-word")
+                    t
+                  (equal cmd "zap-to-char"))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "expand-abbrev")
+                t
+              (if (equal cmd "dabbrev-expand")
+                  t
+                (if (equal cmd "dabbrev-completion")
+                    t
+                  (if (equal cmd "complete-symbol")
+                      t
+                    (if (equal cmd "transpose-words")
+                        t
+                      (if (equal cmd "transpose-sexps")
+                          t
+                        (if (equal cmd "insert-parentheses")
+                            t
+                          (if (equal cmd "move-past-close-and-reindent")
+                              t
+                            (equal cmd "transpose-lines")))))))))
+            (progn
+              (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        (if (if (equal cmd "add-global-abbrev")
+                t
+              (if (equal cmd "add-mode-abbrev")
+                  t
+                (if (equal cmd "inverse-add-global-abbrev")
+                    t
+                  (if (equal cmd "inverse-add-mode-abbrev")
+                      t
+                    (if (equal cmd "abbrev-prefix-mark")
+                        t
+                      (if (equal cmd "expand-jump-to-next-slot")
+                          t
+                        (equal cmd "expand-jump-to-previous-slot")))))))
+            (progn
+              (files--write-transport-point)
+              (files--write-transport-mark)
+              (setq files--bridge-status "written"))
+          nil)
+        cmd))
+
 (fset 'nemacs-gui-file-bridge-run
       (lambda ()
         (files--refresh-transport-derived-paths)
@@ -23805,143 +23864,7 @@
               (setq cmd (files--bridge-customize-writeback-current-context cmd))
               (setq cmd (files--bridge-side-window-resize-writeback-current-context cmd))
               (setq cmd (files--bridge-word-sexp-defun-motion-writeback-current-context cmd))
-              (if (equal cmd "kill-word")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "kill-sexp")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "backward-kill-word")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "zap-to-char")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (nl-write-file (progn (setq files--transport-name "nemacs-kill") (files--transport-path)) files--kill-ring-head)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "expand-abbrev")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "add-global-abbrev")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "add-mode-abbrev")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "inverse-add-global-abbrev")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "inverse-add-mode-abbrev")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "abbrev-prefix-mark")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "expand-jump-to-next-slot")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "expand-jump-to-previous-slot")
-                  (progn
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "dabbrev-expand")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "dabbrev-completion")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "complete-symbol")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "transpose-words")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "transpose-sexps")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "insert-parentheses")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "move-past-close-and-reindent")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
-              (if (equal cmd "transpose-lines")
-                  (progn
-                    (nl-write-file (progn (setq files--transport-name "nemacs-buf") (files--transport-path)) files--buffer-string)
-                    (files--write-transport-point)
-                    (files--write-transport-mark)
-                    (setq files--bridge-status "written"))
-                nil)
+              (setq cmd (files--bridge-kill-abbrev-writeback-current-context cmd))
               (if (equal cmd "mark-word")
                   (progn
                     (files--write-transport-point)
