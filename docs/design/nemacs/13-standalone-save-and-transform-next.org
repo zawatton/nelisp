@@ -505,6 +505,21 @@ case を分割・集約する。
     =standalone-session-bridge-roundtrip=、=make test-fast= は green。
   - これは短縮採用ではなく、indent/newline command の writeback 境界を
     測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の kill/yank writeback chunk を
+  =files--bridge-kill-yank-writeback-current-context= へ切り出した。
+  - 対象は =kill-line= / =kill-whole-line= / =yank= / =yank-pop=。
+  - helper 内では buf+kill+point、buf+kill+point+mark の branch に分けた。
+  - command-writeback-chain の direct transport write は 330 から 322、
+    =files--write*= helper は 376 から 371、=equal cmd= tests は 189 から 185。
+    これは kill/yank block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-kill-yank-writeback-current-context= が 1 件追加され、
+    =setq= は 531 から 520、=if= は 236 から 232 へ減少。
+  - =standalone-save-and-transform= は 108.823426 秒で pass。
+  - =standalone-bridge-kill-yank-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、kill/yank command の writeback 境界を
+    測れるようにするための no-op helper 化。
 - =standalone-session-bridge-roundtrip= と =make test-fast= は green。
 
 * 守ること
@@ -724,7 +739,9 @@ make nemacs-gui-bridge-run-shape
    emoji chunk も helper 化済み。
    kmacro chunk も helper 化済み。
    indent/newline chunk も helper 化済み。
-   次は command-writeback-chain 内の =kill-line= から始まる kill/yank 系の小さい chunk を
+   kill/yank chunk も helper 化済み。
+   次は command-writeback-chain 内の =set-mark-command= から始まる
+   mark/global/rectangle 系の小さい chunk を
    切り、巨大な =equal cmd= chain を測れる形にする。
    individual command の後付け wrapper には戻らない。
 6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
