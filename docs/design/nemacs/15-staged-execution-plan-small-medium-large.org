@@ -257,6 +257,22 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   (file 無改変、bundle list のみ編集)。所見: orphan 監査は =;;; >>> src/= marker 抽出 →
   「require 無し or 既収録依存のみ」かつ load clean な facade を優先収録すると低リスク高利得。
   commit (round 3)。
+- *Doc 16 breadth round 4 — 残 orphan 段階収録 監査 (負の結果) (2026-06-21)*:
+  require が全 bundled な高 defun orphan (=emacs-shell-command= 42 / =emacs-fileio= 31 /
+  =lisp= 21 / =emacs-elisp-eval= 14) を full-runtime probe + *functional test* で評価。
+  結論 = *安全な収録対象なし*。理由: (1) =shell-command= / =find-file-noselect=
+  (=emacs-fileio-builtins= 由来) / =forward-sexp= は *既に fboundp=t* (別 bundled file が
+  提供) = 収録は override で冗長・危険、(2) =emacs-elisp-eval= の =eval-region= /
+  =eval-buffer= は load clean + fboundp=t だが *呼ぶと no-op (buffer を評価せず =r4z=nil=)
+  or crash* = VOID より有害な silent-broken、(3) =hex-util= の =encode-hex-string= は
+  load 後 functional に blank 出力。=files-standalone-buffer= (70 defun) も load clean だが
+  buffer round-trip は収録前から動作 (=insert→buffer-string= ok) で value-add 不明、
+  70 defun override は高リスク。
+- *round 4 の重要知見*: orphan 収録判定は =fboundp + clean-load では不十分、必ず
+  functional call で検証する= ([[feedback_nelisp_fboundp_cleanload_insufficient]])。
+  buffer/process/eval facade は load 通過しても runtime 機構が不完全で no-op/crash する。
+  clean な pure-data facade (json/seq/map/range) は round 2-3 で出尽くした。残 orphan の
+  前進には buffer/process 機構の dedicated 調査 (eval facade を機能させる前提) が要る。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
