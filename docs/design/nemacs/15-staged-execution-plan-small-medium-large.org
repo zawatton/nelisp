@@ -1,0 +1,123 @@
+#+TITLE: nelisp-emacs Doc 15 — 段階実行プラン (小物 → 中物 → 大物)
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-20
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 05 legacy omission scope, Doc 11 remaining-work roadmap, Doc 12 development gates, Doc 14 completion roadmap
+
+* 0. Purpose / 位置づけ
+
+Doc 11 / Doc 14 が「何が残っているか」を列挙した roadmap なのに対し、本書は
+user 指示 (2026-06-20) による *実行順序の確定* — まず小物を片付け、次に中物、
+最後に大物、という波で進める。各波の中の項目は独立着手可能 (= parallel
+agent 向き) に保つ。
+
+直近の *OS 判別* (=uname(2)= runtime detection, =src/emacs-os-detect.el=,
+commit f0ba42b) が「小物波」の最初のドミノであり、以降の小物が踏襲すべき
+*型* でもある:
+
+- 純 Elisp、Rust LOC 不変 (nelisp-emacs は reader substrate を *消費する側*)。
+- 既存 substrate (=syscall-direct= / =alloc-bytes= / =getenv= 等) に乗せる。
+- host Emacs driver では no-op、reader でのみ作用 (=fboundp= gate)。
+- ハードコード default は残し、検出/解決できた時だけ上書き (= 安全な degrade)。
+- ERT は host 純関数 + standalone reader gate の 2 レーン。
+- canonical に =.elc= を残さない / =make build-nelisp-bootstrap= で bundle 再生成。
+
+* 1. 進め方の原則 (全波共通)
+
+| # | 原則 | 補足 |
+|---+------+------|
+| 1 | 1 波 1 テーマ、独立着手 | parallel development 可能な粒度に割る |
+| 2 | 各項目に close signal | ERT (host) + boot/reader smoke の最低 1 本 |
+| 3 | Rust LOC 不変 | substrate 不足時は新 primitive 提案を別 issue 化し勝手に Rust を増やさない |
+| 4 | substrate-gated | host driver = no-op、reader = 作用。`(when (fboundp ...) ...)` |
+| 5 | 安全 degrade | 検出/解決失敗時は既存 default を維持 (誤上書き禁止) |
+| 6 | bundle 同期 | source 改修後 `make build-nelisp-bootstrap`、`.elc` を canonical に残さない |
+| 7 | 記録 | 完了は =worklog-add=、本書の Status 列を SHIPPED + commit 参照に更新 |
+
+* 2. 波 A — 小物 (即着手 / 各 < 1 セッション)
+
+OS 判別と同型の、低リスク・高レバレッジ・テスト容易な項目。A1/A2 は
+=emacs-os-detect= の検出値を直接消費する「応用」。
+
+| ID | 内容 | 根拠 (file:line / doc) | close signal | 依存 | Status |
+|----+------+------------------------+--------------+------+--------|
+| A1 | =getenv= 連動 dir 解決: =temporary-file-directory= ("/tmp/")・=user-emacs-directory= ("~/.emacs.d/")・=exec-path= を =TMPDIR= / =HOME= / =PATH= から実行時解決 | emacs-vars.el commentary「Phase 2 will resolve dynamically once getenv is wired」、emacs-vars.el:26,46 | reader boot で env 由来値、host no-op、ERT | reader の =getenv= availability = getenv は fboundp だが prelude 版が空の nelisp--environment を読む shadowing bug。emacs-callproc は既に /proc/self/environ から process-environment を seed 済 → emacs-callproc の getenv/setenv を reader で強制 install する fix で解消 | SHIPPED (2026-06-20) |
+| A2 | polyfill の OS 分岐: =path-separator= (":")・=exec-suffixes= (nil) を =system-type= 連動に (windows-nt → ";" + (".exe" ".com" ".bat")) | emacs-vars.el:42,49 | ERT (system-type→値 mapping) + reader boot | emacs-os-detect (済) | SHIPPED (2026-06-20) |
+| A3 | help bridge 未実装の充足: package-UI / distribution-file view / help 検索 / help 履歴ナビ | emacs-help.el:752,767,814,869,874 | M-x 系 help コマンド smoke | bridge runtime | TODO |
+| A4 | =define-keymap :prefix= 実装 | emacs-keymap.el:993 | ERT (prefix keymap 構築) | — | TODO |
+| A5 | stdlib =:from-end= 実装 | nemacs-runtime-stdlib-extra.el:112 | ERT | — | TODO |
+| A6 | fallback 行棚卸し: =bridge-local-fallback= / =implementation-debt= (~328 行) を Doc 12 方針で実装 or 削除に仕分け | Doc 12:24-29, build/nemacs-stub-fallback-skip-summary.org | inventory 行数の純減 + gate 維持 | — | TODO |
+| A7 | README =* Status= 更新: Doc 11 §4 の M1–M19 close と整合 (現 header は過小記述) | README.org:8, Doc 11 §4 (11-…roadmap.org:279-292) | doc 整合 (gate なし) | — | TODO |
+
+** 2.1 波 A の着手順 (推奨)
+A1 → A2 (OS 判別の直接応用、勢いを継ぐ) → A4 / A5 (純粋小関数、低リスク) →
+A3 (bridge 依存でやや重い) → A6 (棚卸しは継続タスク化) → A7 (随時)。
+
+** 2.2 実装メモ (2026-06-20, A1/A2 着地)
+
+- *A1 の真因*: =getenv= は fboundp だったが、reader prelude が空の
+  =nelisp--environment= を読む getenv を先に定義しており、=emacs-callproc.el=
+  の =(unless (fboundp 'getenv) …)= ガードが正しい =process-environment= 版を
+  install できずに shadowing されていた (=process-environment= 自体は
+  =/proc/self/environ= から seed 済で HOME 等を保持)。
+- *fix*: =emacs-callproc.el= の getenv/setenv ガードを
+  =(when (or (not (fboundp 'getenv)) (fboundp 'rdf)) …)= に変更。reader
+  (=rdf= 在) では =process-environment= 版を強制 install、host (=rdf= 不在) では
+  C builtin を保護。これが getenv 系全体 (executable-find の PATH walk 含む) の
+  foundation。
+- *A1/A2 本体*: =src/emacs-os-detect.el= に =emacs-os--env= /
+  =emacs-os-apply-os-polyfills!= / =emacs-os-detect-and-set-dirs!= を追加、
+  load-time apply を system-type → path-separator → PATH-split の順で実行。
+- *検証*: full boot で =user-emacs-directory= = HOME 由来、=exec-path= = 実 PATH
+  (14 要素)、=path-separator= ":"。host ERT 14/14 (standalone reader gate 込)。
+
+* 3. 波 B — 中物 (レーン / 各 数セッション)
+
+小物完了後。breadth + correctness の実装レーン。B2 が日本語入力の
+統一 blocker なので B 波の先頭に置く。
+
+| ID | 内容 | 根拠 | close signal | Status |
+|----+------+------+--------------+--------|
+| B2 | bridge file-read / buffer-ops subsystem: syscall ベース =insert-file-contents(-literal)= / =buffer-substring= 等 | Doc 14:125-141 | skk CDB / google-ime server の実 round-trip 含む E2E | TODO |
+| B1 | raw =(load pkg.el)= runtime macroexpand: 生 =defun= の wrap-init/fset gap を埋める | Doc 14:191-198 | 任意 MELPA pkg の runtime load + callable | TODO |
+| B3 | process / PTY / comint / compile: =shell-command= + 基本 =make-process= の先 (comint, PTY, =compile=/=grep=/next-error) | Doc 11 §3.8, emacs-process.el:52 | comint smoke + compile next-error | TODO |
+| B4 | vendor callable promotion: load-proof → 実行時 callable behavior、MELPA promotion gate の確定 | Doc 11 §3.6,§7 | featurep でなく callable ERT | TODO |
+
+** 3.1 波 B の着手順
+B2 (I/O subsystem、日本語入力 unblock) → B1 (任意 pkg load) → B3 (process 系) →
+B4 (promotion gate)。B1/B2 は相互に補完。
+
+* 4. 波 C — 大物 (長期 / multi-session〜multi-year)
+
+| ID | 内容 | 根拠 | 備考 | Status |
+|----+------+------+------+--------|
+| C1 | redisplay v2: bidi / composition / 実 =display= property (=(image …)= / =(space …)=) / mouse-face / 専用 mode-line row | README:54-56, Doc 11 §3.7 | 大きな correctness レーン。GUI/TUI 双方 | TODO |
+| C2 | Phase 5 self-host binary =bin/nelisp-emacs= (configure 不要 cold-start) | README:586 (3–5yr 見積) | 最も構造的。他は全部この上の Layer 2 | TODO |
+
+* 5. 順序の根拠
+
+- *小物先行*: (1) OS 判別で確立したテスト/bundle ワークフローを連続適用して
+  習熟、(2) 各々 low-risk で degrade 安全、(3) A1/A2 は検出値の即応用で
+  「色々と応用が可能」(user) を可視化。
+- *中物の B2 を B 波先頭*: Doc 14 が file-read/buffer-ops を「日本語入力の
+  統一 blocker」かつ「構造 blocker 解消済、残り I/O 網羅」と判定。効果最大。
+- *大物は最後*: C2 self-host binary は他全項目の上位、C1 redisplay v2 は
+  独立大レーン。B 波で daily-driver gate を「honest」(host fallback 無し,
+  Doc 12:24-29) にしてから着手するのが筋。
+
+* 6. 除外 (実装しない — Doc 05 准拠、念のため明記)
+
+Gnus/Rmail/MH-E, EDE/Semantic, 非 Git VC, full Tramp, ISO-2022/EUC/SJIS codecs,
+MS-DOS/legacy platform, Quail/kkc mega-tables 等は *意図的 omission* (Doc 05
+§1,§8)。本プランの「残実装」には含めない。
+
+* 7. トラッキング
+
+各項目の Status 列を TODO → WIP → SHIPPED で更新し、SHIPPED 時に commit SHA と
+=worklog= digest を併記する。波単位の完了は本書冒頭 =#+STATUS= に反映。
+
+| マイルストン | 定義 | Status |
+|-------------+------+--------|
+| A 波完了 | A1–A7 全 SHIPPED (A6 は仕分け完了をもって) | — |
+| B 波完了 | B1–B4 全 SHIPPED、daily-driver gate host-fallback 無し | — |
+| C 波着手可 | A/B 完了 | — |
