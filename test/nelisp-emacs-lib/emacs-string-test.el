@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'emacs-string)
 
 (ert-deftest emacs-string-test/require-loads-cleanly ()
@@ -47,6 +48,28 @@
   (should (equal '(A . 1)
                  (assoc-string "a" '((A . 1)) t)))
   (should-not (assoc-string 'a '((A . 1)) nil)))
+
+(ert-deftest emacs-string-test/doc16-breadth-string-builtins ()
+  "Doc 16 breadth: string-equal-ignore-case / string-clean-whitespace /
+string-split were void in the standalone runtime."
+  ;; string-equal-ignore-case
+  (should (string-equal-ignore-case "ABc" "abC"))
+  (should-not (string-equal-ignore-case "abc" "abd"))
+  ;; string-clean-whitespace (collapse runs + trim ends).
+  ;; On host Emacs this name is an *autoload* into subr-x, and the test
+  ;; load-path (-L src) shadows subr-x with the partial NeLisp port, so
+  ;; calling it live would mis-resolve.  Pin a literal copy of the
+  ;; standalone polyfill body (residuals-test parity pattern) instead.
+  (cl-letf (((symbol-function 'string-clean-whitespace)
+             (lambda (string)
+               (string-trim
+                (replace-regexp-in-string "[ \t\r\n]+" " " string t t)))))
+    (should (equal "a b c" (string-clean-whitespace "  a   b\tc \n")))
+    (should (equal "single" (string-clean-whitespace "single")))
+    (should (equal "" (string-clean-whitespace "   "))))
+  ;; string-split is an alias of split-string
+  (should (equal '("a" "b" "c") (string-split "a,b,c" ",")))
+  (should (equal '("a" "b") (string-split "  a b  "))))
 
 (provide 'emacs-string-test)
 

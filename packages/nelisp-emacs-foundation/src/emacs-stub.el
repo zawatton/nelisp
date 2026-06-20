@@ -1340,6 +1340,39 @@ degrades to 1 (no pow primitive in the standalone reader)."
 The inline DSL in BODY is lowered against the runtime backquote."
     (emacs-stub--define-inline name args body)))
 
+;;;; --- Doc 16 breadth: foundational subr builtins (were void) ---------
+;; `xor' (subr.el), `ntake' (Emacs 30 fns.c) and `char-uppercase-p'
+;; (simple.el) were void in the standalone runtime.  They are widely
+;; called by vendor packages -- bytecomp / comp / ert / pp / package-vc
+;; all use `xor'.  Plain defuns gated on `unless (fboundp ...)' so host
+;; Emacs stays a no-op.  Reader notes verified by direct --load: the bare
+;; reader has no `/=' (use `(not (= ...))') and treats POSIX `[[:blank:]]'
+;; classes literally, so explicit char sets are used where needed.
+
+(unless (fboundp 'xor)
+  (defun xor (cond1 cond2)
+    "Return the boolean exclusive-or of COND1 and COND2.
+If only one of the arguments is non-nil, return it; otherwise return nil."
+    (cond ((not cond1) cond2)
+          ((not cond2) cond1))))
+
+(unless (fboundp 'ntake)
+  (defun ntake (n list)
+    "Modify LIST to keep only the first N elements, and return it.
+If N is zero or negative, return nil.  If N is greater or equal to the
+length of LIST, return LIST unmodified.  Destructive counterpart of `take'."
+    (when (and (> n 0) list)
+      (let ((cell (nthcdr (1- n) list)))
+        (when (consp cell) (setcdr cell nil)))
+      list)))
+
+(unless (fboundp 'char-uppercase-p)
+  (defun char-uppercase-p (char)
+    "Return non-nil if CHAR is an upper-case character.
+A character is upper-case when it differs from its `downcase' form,
+which covers ASCII plus any cased letter in the runtime case table."
+    (and (natnump char) (not (= char (downcase char))))))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here

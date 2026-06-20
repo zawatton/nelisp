@@ -71,6 +71,15 @@
 - *stale lock で boot hang*: =/tmp/nemacs-transport.lock= (dir) + leftover
   =target/nelisp= proc が残ると次 boot が hang/timeout する。*test 前に必ず*
   =rm -rf /tmp/nemacs-transport.lock; pkill -9 -f target/nelisp=。
+  - ⚠️ *2026-06-21 訂正*: =pkill -9 -f target/nelisp= は危険。env var の binary
+    path が自 shell の argv に self-match して shell ごと SIGKILL され (出力欠落で
+    boot hang と誤認しやすい)、並行セッション (dev/nelix perf 等) の reader も
+    巻き添えにする。本 round では掃除無しでも boot は 16s で成功。lock が本当に
+    stale な時のみ lock dir 単独 =rm -rf= に留め、proc kill は PID 明示で行う。
+  - *静的 gap 分析の併用*: full package load を起動せずとも「bare reader の
+    =fboundp= probe (=target/nelisp --load= 小ファイル) × bundle =src/*.el= grep」
+    で void builtin を発見できる。reader 起動回数を最小化でき host 不安定/並行
+    contention を避けられる (Doc 15 §3.5 round 1 で実証)。
 - *=-l FILE= で大ファイル nested load → segfault*。=--eval= 直書きを使う。
 - *大 form の =--eval= も repl-boot で出力欠落* することがある。小分け + =timeout=。
 - 大 package load は CPU/memory 重。host は MCE/memory 既知不安定

@@ -211,6 +211,23 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   系は深い chain。package ごとに「単純欠落 (逐次補完)」と「深い runtime 機構
   (dedicated)」を切り分けるのが効率的。discovery sweep は 1 関数の hard crash で
   run 全体が落ちる (reader 安定性) ため、condition-case + 小分けが安全。
+- *Doc 16 breadth round 1 — foundational subr/subr-x builtins (2026-06-21)*:
+  静的 gap 分析 (bare reader =fboundp= probe × bundle =src/*.el= grep) で void を
+  発見し 6 builtin を補完。=xor= / =ntake= / =char-uppercase-p= → =emacs-stub.el=、
+  =string-equal-ignore-case= / =string-clean-whitespace= / =string-split= →
+  =emacs-string.el= (全て =unless (fboundp ...)= gate)。reader direct-=--load= の
+  light-check で 2 件の reader 非互換を発見・修正: (1) bare reader に =/== 無し
+  (→ =(not (= ...))=)、(2) POSIX =[[:blank:]]= class を literal 文字集合として
+  解釈し空白を collapse できない (→ 明示 =[ \t\r\n]+=)。検証: host ERT 31/31
+  (emacs-string-test +1 / emacs-stub-residuals-test +1、=string-clean-whitespace= は
+  host で autoload + =-L src= shadow のため =cl-letf= literal-copy でピン留め)、
+  bundle 再生成 (100 files) → full boot で =BREADTH6: xor=t ntake=t cup=t seic=t
+  scw=t ssp=t= (gate 正常発火・bulk shadow 無し・boot 16s)。
+- *playbook 補正 (§4 への注記)*: =pkill -9 -f target/nelisp= は危険 — (a) env var の
+  binary path が自 shell の argv に self-match し shell ごと SIGKILL、(b) 並行
+  セッション (例 dev/nelix の perf apply) の reader も巻き添えにする。lock/proc 掃除
+  無しでも本 round の boot は 16s で成功した。静的 gap 分析 (probe × grep) は full
+  package load 不要で安全・高速、reader 起動回数を最小化できる。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
