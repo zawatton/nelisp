@@ -292,6 +292,44 @@ Falls back to `string-equal'; IGNORE-CASE folds with `downcase'."
     "Return a vector of the characters in STRING."
     (vconcat string)))
 
+;;;; --- Doc 16 breadth round 12: subr.el string utilities (were void) ---
+;; subst-char-in-string / combine-and-quote-strings / split-string-and-unquote
+;; were void.  subst-char-in-string routes through `string-replace' because
+;; the standalone runtime's `aset' does not mutate strings (only vectors).
+
+(unless (fboundp 'subst-char-in-string)
+  (defun subst-char-in-string (fromchar tochar string &optional _inplace)
+    "Return a copy of STRING with each FROMCHAR replaced by TOCHAR.
+The INPLACE argument is ignored (the runtime cannot mutate strings)."
+    (string-replace (string fromchar) (string tochar) string)))
+
+(unless (fboundp 'combine-and-quote-strings)
+  (defun combine-and-quote-strings (strings &optional separator)
+    "Concatenate STRINGS, quoting any that contain SEPARATOR (default \" \").
+Inverse of `split-string-and-unquote'."
+    (let* ((sep (or separator " "))
+           (re (concat "[\\\"]" "\\|" (regexp-quote sep))))
+      (mapconcat
+       (lambda (str)
+         (if (string-match re str)
+             (concat "\"" (replace-regexp-in-string "[\\\"]" "\\\\\\&" str) "\"")
+           str))
+       strings sep))))
+
+(unless (fboundp 'split-string-and-unquote)
+  (defun split-string-and-unquote (string &optional separator)
+    "Split STRING on SEPARATOR (default \"\\\\s-+\"), unquoting Lisp-quoted parts.
+Inverse of `combine-and-quote-strings'."
+    (let ((sep (or separator "\\s-+"))
+          (i (string-search "\"" string)))
+      (if (null i)
+          (split-string string sep t)
+        (append (unless (eq i 0) (split-string (substring string 0 i) sep t))
+                (let ((rfs (read-from-string string i)))
+                  (cons (car rfs)
+                        (split-string-and-unquote (substring string (cdr rfs))
+                                                  sep))))))))
+
 (provide 'emacs-string)
 
 ;;; emacs-string.el ends here

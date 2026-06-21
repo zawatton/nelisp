@@ -1451,6 +1451,50 @@ If PLACE is already non-nil, return it without evaluating CODE."
              (setf ,place ,val)
              ,val)))))
 
+;;;; --- Doc 16 breadth round 12: subr.el / macroexp list helpers --------
+;; delete-consecutive-dups / rassq-delete-all (subr.el) and macroexp-quote
+;; (macroexp.el) were void.  Mirror the Emacs definitions; gated on
+;; `unless (fboundp ...)'.  (`dlet' and `with-output-to-string' are not
+;; shimmed here: the runtime's `let' is lexical so `dlet's dynamic binding
+;; does not take effect, and `princ' ignores a buffer `standard-output' so
+;; output capture is unavailable.)
+
+(unless (fboundp 'delete-consecutive-dups)
+  (defun delete-consecutive-dups (list &optional circular)
+    "Destructively remove `equal' consecutive duplicates from LIST.
+With CIRCULAR, the first and last elements are treated as consecutive."
+    (let ((tail list) last)
+      (while (cdr tail)
+        (if (equal (car tail) (cadr tail))
+            (setcdr tail (cddr tail))
+          (setq last tail
+                tail (cdr tail))))
+      (when (and circular last (equal (car tail) (car list)))
+        (setcdr last nil))
+      list)))
+
+(unless (fboundp 'rassq-delete-all)
+  (defun rassq-delete-all (value alist)
+    "Delete from ALIST all elements whose cdr is `eq' to VALUE.
+Return the modified alist; non-cons elements are ignored."
+    (while (and (consp (car alist)) (eq (cdr (car alist)) value))
+      (setq alist (cdr alist)))
+    (let ((tail alist) tail-cdr)
+      (while (setq tail-cdr (cdr tail))
+        (if (and (consp (car tail-cdr)) (eq (cdr (car tail-cdr)) value))
+            (setcdr tail (cdr tail-cdr))
+          (setq tail tail-cdr))))
+    alist))
+
+(unless (fboundp 'macroexp-quote)
+  (defun macroexp-quote (v)
+    "Return an expression E such that `(eval E)' is V.
+E is V itself when V is self-quoting, otherwise (quote V)."
+    (if (and (not (consp v))
+             (or (keywordp v) (not (symbolp v)) (memq v '(nil t))))
+        v
+      (list 'quote v))))
+
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
