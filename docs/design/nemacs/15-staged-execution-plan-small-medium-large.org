@@ -516,6 +516,19 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *goal 達成*: place 系 (round 19) + small package let-alist/thunk (round 20) + 反復 macro
   cl-do/cl-do* (round 21) の 3 群すべて完了。
 
+- *Doc 16 breadth round 22 (深い) — cl-tagbody / cl-prog family (2026-06-22)*:
+  full-runtime void だった =cl-tagbody= / =cl-prog= / =cl-prog*= / =cl-prog1= / =cl-prog2=
+  を =src/emacs-cl-macros.el= に追加。=cl-tagbody= は深い: program-counter (現ラベル保持) で
+  駆動する =catch=/=while= state machine に compile、=(go LABEL)= は code walk で
+  「=(setq PC 'LABEL)= + throw で restart」に書換、segment は PC を次ラベルへ進めて
+  fall-through。=cl-prog=/=cl-prog*= = =let=/=let*= + =cl-tagbody= を =cl-block nil= で wrap。
+  hygiene は module 内 =emacs-cl-macros--gensym= (interned + 一意、A11 回避 + =cl-gensym=
+  "not known" 警告回避)。probe で =cl-macrolet= / =macroexpand-all= / =cl-block= が runtime
+  OK と判明 (= generator.el round への布石)。
+- 検証: host ERT =emacs-cl-macros= 25/25 (round-22 で +2、forward/backward go + cl-prog
+  cl-return を pin)、full-runtime 7/7、byte-compile 新規警告 0、bundle 再生成 114 files。
+  commit 5595fd8。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
