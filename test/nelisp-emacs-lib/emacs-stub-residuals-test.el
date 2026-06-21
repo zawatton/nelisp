@@ -481,6 +481,22 @@ these use gv.el / the real macro; the standalone shims pin this contract."
   (should (equal '(quote foo) (macroexp-quote 'foo)))
   (should (equal '(quote (1 2)) (macroexp-quote (list 1 2)))))
 
+;;;; M. Doc 16 round 15 — copy-hash-table (unblocks map-copy on hash tables)
+
+(ert-deftest emacs-stub-residuals-test/doc16-round15-copy-hash-table ()
+  "Doc 16 round 15: copy-hash-table was void, breaking map-copy on hashes."
+  (let ((h (make-hash-table)))
+    (puthash 'a 1 h)
+    (puthash 'b 2 h)
+    (let ((c (copy-hash-table h)))
+      (should (equal 1 (gethash 'a c)))
+      (should (equal 2 (gethash 'b c)))
+      (should (equal 2 (hash-table-count c)))
+      ;; the copy is independent of the original
+      (puthash 'z 9 c)
+      (should (equal 9 (gethash 'z c)))
+      (should-not (gethash 'z h)))))
+
 (provide 'emacs-stub-residuals-test)
 
 ;;; emacs-stub-residuals-test.el ends here

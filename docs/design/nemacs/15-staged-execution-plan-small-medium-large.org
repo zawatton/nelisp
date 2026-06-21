@@ -420,6 +420,19 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *round 14 の知見*: runtime の =substring= は string では OK だが *vector で壊れる*
   (=mapc=/=mapcar=/=aset-string=/=equal-vector= と同じ reader-core gap 群)。seq facade で
   vector を扱う path は =seq--list= / list copy 経由にする。
+- *Doc 16 breadth round 15 — map.el alist/plist/hash/array 安全性 audit (2026-06-21)*:
+  全 33 map 関数を *alist / plist / hash-table / array(vector)* 入力で functional audit
+  (hash は順序不定なので sort 比較)。seq.el と違い *大半は健全* — map-elt / contains-key /
+  length / keys / values / pairs / do / some / every-p / filter / remove / into / merge /
+  merge-with / delete / insert / keys-apply / values-apply / nested-elt / array-map 全 OK。
+  唯一の破損 = *=map-copy= on hash-table* (=copy-hash-table= が VOID)。修正: =copy-hash-table=
+  polyfill を =emacs-stub.el= に追加 (=hash-table-test= も VOID で test 種別保持不可なので
+  default test の =make-hash-table= + =maphash= コピー、=eql=/=eq= keyed は正しい)。検証:
+  audit 43 ケース + 修正後 full boot 5/5 (copy 独立性含む、105 files)、host ERT residuals +
+  map-test 36/36、byte-compile 新規警告 0。
+- *round 15 の知見*: map.el は seq.el ほど reader-core gap に当たらなかった (alist/array path
+  は素直、hash path も =maphash=/=gethash=/=puthash= は健全)。残 hash gap = =copy-hash-table= /
+  =hash-table-test= の VOID (後者は introspection 不能なので polyfill 不可、reader-core 案件)。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
