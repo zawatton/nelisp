@@ -167,6 +167,32 @@ cl-adjoin / cl-set-exclusive-or / cl-substitute with :test/:key keywords."
   (should (equal '(1 4) (cl-set-exclusive-or '(1 2 3) '(2 3 4))))
   (should (equal '(1 9 3 9) (cl-substitute 9 2 '(1 2 3 2)))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round10-remaining-cl ()
+  "Doc 16 round 10: cl-member / cl-assoc(-if) / cl-rassoc(-if) / cl-notany /
+cl-notevery / cl-mapcan / cl-maplist / cl-mapcon / cl-subst /
+cl-position-if-not / cl-subsetp / cl-tailp / cl-delete / cl-nsubstitute."
+  (should (equal '(2 3) (cl-member 2 '(1 2 3))))
+  (should-not (cl-member 9 '(1 2 3)))
+  (should (equal '(b . 2) (cl-assoc 'b '((a . 1) (b . 2)))))
+  (should (equal '(b . 2) (cl-rassoc 2 '((a . 1) (b . 2)))))
+  (should (equal '(3 . y) (cl-assoc-if (lambda (k) (= 1 (% k 2))) '((2 . x) (3 . y)))))
+  (should (equal '(b . 2) (cl-rassoc-if (lambda (v) (> v 1)) '((a . 1) (b . 2)))))
+  (should (cl-notany (lambda (x) (= 1 (% x 2))) '(2 4 6)))
+  (should-not (cl-notany (lambda (x) (= 1 (% x 2))) '(2 3)))
+  (should (cl-notevery (lambda (x) (= 0 (% x 2))) '(2 4 5)))
+  (should-not (cl-notevery (lambda (x) (= 0 (% x 2))) '(2 4)))
+  (should (equal '(1 1 2 2) (cl-mapcan (lambda (x) (list x x)) '(1 2))))
+  (should (equal '((1 2 3) (2 3) (3)) (cl-maplist #'identity '(1 2 3))))
+  (should (equal '(3 2 1) (cl-mapcon (lambda (l) (list (length l))) '(1 2 3))))
+  (should (equal '(1 (9 3) 9) (cl-subst 9 2 '(1 (2 3) 2))))
+  (should (equal 2 (cl-position-if-not (lambda (x) (= 1 (% x 2))) '(1 3 4 5))))
+  (should (cl-subsetp '(1 2) '(1 2 3)))
+  (should-not (cl-subsetp '(1 4) '(1 2 3)))
+  (should (let ((l '(1 2 3))) (cl-tailp (cddr l) l)))
+  (should-not (cl-tailp '(9) '(1 2 3)))
+  (should (equal '(1 3) (cl-delete 2 '(1 2 3 2))))
+  (should (equal '(1 9 3 9) (cl-nsubstitute 9 2 '(1 2 3 2)))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here

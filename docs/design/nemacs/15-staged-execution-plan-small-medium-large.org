@@ -348,6 +348,20 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   検証: full runtime functional 15 ケース → bundle 再生成後 full boot 12/12 ok
   (cl-floor/cl-gcd/with-memoization regression 維持、104 files)、host ERT
   emacs-cl-macros-test 14/14 (実 cl-lib と完全一致)、byte-compile 新規警告 0。
+- *Doc 16 breadth round 10 — cl 残 sequence/list 関数 16 個 (2026-06-21)*:
+  VOID だった membership/assoc/mapping/tree 系を =emacs-cl-macros.el= に補完:
+  =cl-member= / =cl-assoc= / =cl-rassoc= / =cl-assoc-if= / =cl-rassoc-if= / =cl-notany= /
+  =cl-notevery= / =cl-mapcan= / =cl-maplist= / =cl-mapcon= / =cl-subst= (tree 再帰) /
+  =cl-position-if-not= / =cl-subsetp= / =cl-tailp= / =cl-delete= / =cl-nsubstitute= (alias)。
+  round 9 規約 (=:test=/=:key= default =eql=、=&rest keys=) + helper
+  =emacs-cl-macros--member-test= 再利用。=cl-notany/notevery= は =cl-some/every=、
+  =cl-mapcan= は =cl-mapcar= (host compile で「not known」回避に =#'= でなく quote 使用)、
+  =cl-position-if-not= は =cl-position-if=、=cl-nsubstitute= は =cl-substitute= に委譲。
+  実 Emacs 挙動を host 確認して mirror (=cl-member= →tail、=cl-maplist= →tail 適用、
+  =cl-subst= →tree)。検証: full runtime functional 21 ケース → full boot 17/17 ok
+  (cl-remove-duplicates/cl-reduce/with-memoization regression 維持、104 files)、host ERT
+  emacs-cl-macros-test 15/15 (実 cl-lib と一致)、byte-compile 新規警告 0。cl-lib の主要
+  sequence/list/assoc/map API は実用域に到達。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
