@@ -1,7 +1,7 @@
 #+TITLE: nelisp-emacs Doc 22 — reader-core gaps blocking the breadth loop (vendor/nelisp issue)
 #+AUTHOR: nelisp-emacs
 #+DATE: 2026-06-21
-#+STATUS: ISSUE (for vendor/nelisp = github.com/zawatton/nelisp)
+#+STATUS: FILED — github.com/zawatton/nelisp#7 (2026-06-21)
 
 * 0. Purpose
 
@@ -183,5 +183,6 @@ hash table の test 種別 (=eq= / =eql= / =equal=) を取得する accessor が
 - 本書は nelisp-emacs 側の consumer 視点 catalog。vendor/nelisp の AGENTS.md は
   repo 内 handoff doc を避ける方針のため、doc 本体は nelisp-emacs に置き、必要なら
   github.com/zawatton/nelisp の issue へ転記する。
+  → *2026-06-21 起票済: github.com/zawatton/nelisp#7* (A/B/C 全群を 1 issue に集約、A 群を優先課題明記)。
 - 各 bug は Doc 15 §3.5 の round 6/11/12/13/14/15 log にも個別記録済。
 - nelisp-emacs 側は全 bug を *回避済 or 延期明記* で、breadth は前進を止めていない。
