@@ -2034,6 +2034,106 @@ Like `cl-do' but bindings init and step left-to-right (let* + setq)."
       (list 'cl-block nil
             (append (list 'let* binds loop) result)))))
 
+;;;; --- Doc 16 breadth round 22: cl-tagbody / cl-prog family ------------
+;; cl-tagbody / cl-prog / cl-prog* / cl-prog1 / cl-prog2, all void on the
+;; runtime.  cl-tagbody is the deep one: it is compiled to a `catch'/`while'
+;; state machine driven by a program-counter holding the current label, and
+;; `(go LABEL)' is rewritten by a code walk into "(setq PC 'LABEL); throw to
+;; restart".  Segments fall through by advancing PC to the next label.
+;; Hygienic temporaries use `emacs-cl-macros--gensym' (interned + unique),
+;; side-stepping the Doc 22 A11 `make-symbol' name-collision.  Gated;
+;; these live in emacs-cl-macros, not cl-macs.el, so host autoloads are safe.
+
+(defvar emacs-cl-macros--gensym-counter 0
+  "Counter backing `emacs-cl-macros--gensym'.")
+
+(defun emacs-cl-macros--gensym (prefix)
+  "Return a fresh interned symbol named PREFIX followed by a number.
+Used in place of `cl-gensym' (which the host byte-compiler does not know
+here) for hygienic temporaries; interned + unique names side-step the
+Doc 22 A11 `make-symbol' name-collision."
+  (intern (format "%s%d" prefix
+                  (setq emacs-cl-macros--gensym-counter
+                        (1+ emacs-cl-macros--gensym-counter)))))
+
+(defun emacs-cl-macros--tagbody-replace-go (form pcsym gotag)
+  "Rewrite every (go TAG) in FORM into a jump that sets PCSYM and throws GOTAG.
+Quoted data and nested `cl-tagbody' forms are left untouched."
+  (cond
+   ((not (consp form)) form)
+   ((eq (car form) 'quote) form)
+   ((and (eq (car form) 'go) (consp (cdr form)))
+    (list 'progn
+          (list 'setq pcsym (list 'quote (car (cdr form))))
+          (list 'throw (list 'quote gotag) nil)))
+   ((eq (car form) 'cl-tagbody) form)
+   (t (cons (emacs-cl-macros--tagbody-replace-go (car form) pcsym gotag)
+            (emacs-cl-macros--tagbody-replace-go (cdr form) pcsym gotag)))))
+
+(unless (fboundp 'cl-tagbody)
+  (defmacro cl-tagbody (&rest body)
+    "Common Lisp `tagbody': execute statements in order; atoms are labels
+reachable with (go LABEL).  Always returns nil."
+    (let ((pcsym (emacs-cl-macros--gensym "--cl-tagbody-pc--"))
+          (gotag (emacs-cl-macros--gensym "--cl-tagbody-go--"))
+          (contsym (emacs-cl-macros--gensym "--cl-tagbody-cont--"))
+          (start (emacs-cl-macros--gensym "--cl-tagbody-start--"))
+          (endtag (emacs-cl-macros--gensym "--cl-tagbody-end--"))
+          (segments nil)
+          (curtag nil)
+          (curforms nil))
+      (setq curtag start)
+      (dolist (item body)
+        (if (consp item)
+            (setq curforms
+                  (cons (emacs-cl-macros--tagbody-replace-go item pcsym gotag)
+                        curforms))
+          (setq segments (cons (cons curtag (nreverse curforms)) segments))
+          (setq curtag item)
+          (setq curforms nil)))
+      (setq segments
+            (nreverse (cons (cons curtag (nreverse curforms)) segments)))
+      (let ((clauses nil) (segs segments))
+        (while segs
+          (let* ((seg (car segs))
+                 (tag (car seg))
+                 (forms (cdr seg))
+                 (next (if (cdr segs) (car (car (cdr segs))) endtag)))
+            (setq clauses
+                  (cons (append (list (list 'eql pcsym (list 'quote tag)))
+                                forms
+                                (list (list 'setq pcsym (list 'quote next))))
+                        clauses)))
+          (setq segs (cdr segs)))
+        (setq clauses
+              (append (nreverse clauses)
+                      (list (list t (list 'setq contsym nil)))))
+        (list 'let (list (list pcsym (list 'quote start)) (list contsym t))
+              (list 'while contsym
+                    (list 'catch (list 'quote gotag) (cons 'cond clauses)))
+              nil)))))
+
+(unless (fboundp 'cl-prog)
+  (defmacro cl-prog (bindings &rest body)
+    "Common Lisp `prog': `let' + `cl-tagbody', wrapped in `cl-block nil'."
+    (list 'cl-block nil (list 'let bindings (cons 'cl-tagbody body)))))
+
+(unless (fboundp 'cl-prog*)
+  (defmacro cl-prog* (bindings &rest body)
+    "Like `cl-prog' but binds with `let*' (sequential)."
+    (list 'cl-block nil (list 'let* bindings (cons 'cl-tagbody body)))))
+
+(unless (fboundp 'cl-prog1)
+  (defmacro cl-prog1 (first &rest body)
+    "Evaluate FIRST then BODY; return the value of FIRST."
+    (let ((tmp (emacs-cl-macros--gensym "--cl-prog1--")))
+      (list 'let (list (list tmp first)) (cons 'progn body) tmp))))
+
+(unless (fboundp 'cl-prog2)
+  (defmacro cl-prog2 (form1 form2 &rest body)
+    "Evaluate FORM1, FORM2 and BODY; return the value of FORM2."
+    (list 'progn form1 (cons 'cl-prog1 (cons form2 body)))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here

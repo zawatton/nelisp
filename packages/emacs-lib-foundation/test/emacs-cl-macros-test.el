@@ -335,6 +335,48 @@ The batch host autoloads the real cl-lib macros, pinning the contract."
                    (cl-do* ((a 1 b) (b 2 a) (n 0 (1+ n))) ((= n 3) (nreverse log))
                      (push (list a b) log))))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round22-cl-tagbody ()
+  "Doc 16 round 22: cl-tagbody loop / forward-go / return-nil.
+The batch host autoloads the real cl-lib macros, pinning the contract."
+  ;; backward go: loop until i reaches 3
+  (should (equal '(0 1 2)
+                 (let ((acc nil) (i 0))
+                   (cl-tagbody
+                    top
+                    (push i acc)
+                    (setq i (1+ i))
+                    (when (< i 3) (go top)))
+                   (nreverse acc))))
+  ;; forward go: skip the middle statement
+  (should (= 11
+             (let ((x 0))
+               (cl-tagbody
+                (setq x 1)
+                (go skip)
+                (setq x 99)
+                skip
+                (setq x (+ x 10)))
+               x)))
+  ;; tagbody returns nil
+  (should (null (cl-tagbody (ignore)))))
+
+(ert-deftest emacs-cl-macros-test/doc16-round22-cl-prog ()
+  "Doc 16 round 22: cl-prog / cl-prog* / cl-prog1 / cl-prog2."
+  ;; cl-prog: let + tagbody + block; cl-return yields a value
+  (should (= 10
+             (cl-prog ((i 0) (sum 0))
+               loop
+               (when (= i 5) (cl-return sum))
+               (setq sum (+ sum i) i (1+ i))
+               (go loop))))
+  ;; cl-prog* sequential bindings: b sees a
+  (should (equal '(5 10)
+                 (cl-prog* ((a 5) (b (* a 2)))
+                   (cl-return (list a b)))))
+  ;; cl-prog1 / cl-prog2 return the first / second form
+  (should (= 1 (let ((l (list 1 2))) (cl-prog1 (car l) (setcar l 99)))))
+  (should (= 2 (cl-prog2 1 2 3))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here
