@@ -473,6 +473,21 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   含む)、host ERT =emacs-cl-macros= 20/20 (round-18 で +2)、byte-compile 新規警告 0、
   bundle 再生成 105 files。commit e13f7c3。
 
+- *Doc 16 breadth round 19 — cl place/setf macros (2026-06-21)*:
+  full-runtime void だった place 系を =src/emacs-cl-macros.el= に追加: =cl-psetq= /
+  =cl-psetf= (並列代入 = 全値を先に評価してから書込)、=cl-rotatef= (place 値を回転)、
+  =cl-shiftf= (左シフト + 先頭の旧値を返す)、=cl-callf= / =cl-callf2= (FUNC を literal
+  splice = cl-lib 同仕様、#' 不可)。setq/setf へ展開、runtime setf は symbol/car/nth/
+  gethash place を round 8 cl-simple-setter で対応済のため place 非依存。=unless (fboundp)=
+  gate。
+- *round 19 の新 reader-core gap A11*: =make-symbol= の uninterned symbol が *名前で
+  解決* され、同名 temp が 1 つの let で衝突 (parallel-set が全要素同値に化けた)。temp
+  名を index で一意化して回避。Doc 22 A11 に記録。
+- *host pinning が捕捉*: =cl-callf= は FUNC を literal splice する仕様 (=#'1+= は
+  invalid-function)。当初の =#'= 対応 helper を削って実 cl-lib に忠実化。
+- 検証: host ERT =emacs-cl-macros= 21/21 (round-19 で +1)、full-runtime 11/11、
+  byte-compile 新規警告 0、bundle 再生成 105 files。commit 1c22028。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
