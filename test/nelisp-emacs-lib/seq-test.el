@@ -107,6 +107,21 @@ the seq-do/seq-map list-conversion fix."
                    (seq-doseq (x [1 2 3]) (push (* x x) acc))
                    (nreverse acc)))))
 
+(ert-deftest seq-test/doc16-round14-subseq-over-vectors ()
+  "Doc 16 round 14: seq-subseq / seq-take / seq-drop / seq-rest over vectors
+after routing the vector path through a list copy (the runtime's `substring'
+mishandles vectors)."
+  (should (equal '(2 3) (append (seq-subseq [1 2 3 4] 1 3) nil)))
+  (should (equal '(3 4) (append (seq-subseq [1 2 3 4] -2) nil)))
+  (should (equal "bc" (seq-subseq "abcde" 1 3)))
+  (should (equal '(1 2) (append (seq-take [1 2 3 4] 2) nil)))
+  (should (equal '(3 4) (append (seq-drop [1 2 3 4] 2) nil)))
+  (should (equal '(1 2 3) (append (seq-take [1 2 3] 9) nil)))
+  (should (equal '(2 3 4) (append (seq-rest [1 2 3 4]) nil)))
+  ;; lists still behave
+  (should (equal '(2 3) (seq-subseq '(1 2 3 4) 1 3)))
+  (should (equal '(1 2) (seq-take '(1 2 3 4) 2))))
+
 (provide 'seq-test)
 
 ;;; seq-test.el ends here
