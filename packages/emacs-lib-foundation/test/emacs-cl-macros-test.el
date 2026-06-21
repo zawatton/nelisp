@@ -304,6 +304,37 @@ pinning the contract the NeLisp runtime shims must reproduce."
   (should (= 2 (let ((h (make-hash-table)))
                  (puthash 'k 1 h) (cl-callf 1+ (gethash 'k h)) (gethash 'k h)))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round21-cl-do ()
+  "Doc 16 round 21: cl-do (parallel step) / cl-do* (sequential step).
+The batch host autoloads the real cl-lib macros, pinning the contract."
+  ;; accumulate with parallel steps
+  (should (= 10 (cl-do ((i 0 (1+ i)) (sum 0 (+ sum i))) ((= i 5) sum))))
+  ;; body runs each iteration
+  (should (equal '(0 1 2)
+                 (let (acc)
+                   (cl-do ((i 0 (1+ i))) ((= i 3) (nreverse acc))
+                     (push i acc)))))
+  ;; parallel stepping: a and b swap (both read old values)
+  (should (equal '((1 2) (2 1) (1 2))
+                 (let (log)
+                   (cl-do ((a 1 b) (b 2 a) (n 0 (1+ n))) ((= n 3) (nreverse log))
+                     (push (list a b) log)))))
+  ;; no result form => nil
+  (should (null (cl-do ((i 0 (1+ i))) ((= i 3)))))
+  ;; cl-return exits early
+  (should (= 2 (cl-do ((i 0 (1+ i))) (nil)
+                 (when (= i 2) (cl-return i))))))
+
+(ert-deftest emacs-cl-macros-test/doc16-round21-cl-do-star ()
+  "Doc 16 round 21: cl-do* sequential init and step."
+  ;; sequential init: j sees the already-bound i
+  (should (= 0 (cl-do* ((i 0 (1+ i)) (j i (1+ i))) ((= i 3) (- j j)))))
+  ;; sequential stepping differs from cl-do: a is updated before b reads it
+  (should (equal '((1 2) (2 2) (2 2))
+                 (let (log)
+                   (cl-do* ((a 1 b) (b 2 a) (n 0 (1+ n))) ((= n 3) (nreverse log))
+                     (push (list a b) log))))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here
