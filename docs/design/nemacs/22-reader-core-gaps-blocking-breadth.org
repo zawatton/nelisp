@@ -244,6 +244,29 @@ accessor (=r24s-a=) 経由のアクセスは正常 (= 別経路)。=record= prim
   一方 =cl-defstruct= の constructor/accessor/predicate と =cl-defgeneric=/=cl-defmethod=
   の単一・特定 dispatch は *正常動作*。
 
+** A15. =&optional (VAR DEFAULT)= の lambda を呼ぶと SEGFAULT/crash
+
+#+begin_src elisp
+(funcall (lambda (x &optional (z 9)) (+ x z)) 5)
+;;=> *** crash *** ("before-call" の後 無音で process 死、catch 不能)
+;; 定義・macroexpand は通る:
+(macroexpand '(cl-defun f (x &optional (z 9)) (+ x z)))
+;;=> (progn (fset 'f (lambda (x &optional (z 9)) ...)) 'f)  ← raw のまま
+#+end_src
+
+CL 形式の optional default =(VAR DEFAULT)= を arglist に持つ lambda を *呼び出す* と
+runtime が crash する (誤値でなく process 死、=condition-case= で捕捉不能)。定義と
+macroexpand は通る。core の =cl-defun= も raw arglist を lambda に渡すため同症状。
+
+- *impact*: =cl-defun= / =cl-defsubst= (Doc 16 round 24) で =&optional (VAR DEFAULT)= を
+  使う関数が呼出時 crash。basic な optional (default 無) は正常。
+- *src 修正不可*: =cl-defun= の active 実装は core (vendor/nelisp) 側で、=src/emacs-stub.el=
+  / =src/emacs-cl-macros.el= の shim は =unless (fboundp 'cl-defun)= / =--define-p= で
+  gate-out される (両 shim に desugar を入れても効かないことを round 25 で実証)。core が
+  lambda 呼出で optional-default を desugar するか error にすれば解決。round 25 で発見。
+- 回避: optional default を使わず =&optional z= + body 先頭 =(unless z (setq z DEFAULT))= を
+  手書きする (= desugar を caller 側で行う)。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):
