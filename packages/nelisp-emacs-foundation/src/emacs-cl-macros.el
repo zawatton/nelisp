@@ -1664,6 +1664,155 @@ Honours `:test' and `:key'.  (This shim does not destroy SEQ.)"
   (defalias 'cl-nsubstitute #'cl-substitute
     "Substitute NEW for OLD in SEQ (non-destructive shim of `cl-substitute')."))
 
+;;;; --- Doc 16 breadth round 17: cl type-dispatch + value/binding helpers -
+;; cl-typep + the type-dispatch macros (cl-typecase / cl-etypecase /
+;; cl-ecase / cl-check-type) plus the trivial cl-the / cl-locally /
+;; cl-values / cl-values-list / cl-gentemp, all void on the NeLisp runtime.
+;; Same `unless (fboundp ...)' gating: host Emacs already supplies these
+;; (cl-macs / cl-lib) so the forms are inert there and only fire on the
+;; runtime.  NOTE: the runtime lacks `sequencep', so the `sequence' branch
+;; below tests `(or (listp ..) (arrayp ..))'.  The dispatch macros build only
+;; single-level backquote templates (clause lists are spliced, never built
+;; with a nested backquote) to stay clear of the runtime backquote quirks
+;; documented in Doc 22 / Doc 16 §4.
+
+(unless (fboundp 'cl-typep)
+  (defun cl-typep (val type)
+    "Return non-nil if VAL is of TYPE.
+Supports the common Common-Lisp type specifiers used by `cl-check-type'
+and `cl-typecase': atomic type symbols, the `TYPEp'/`TYPE-p' predicate
+convention, and the compound forms (integer LO HI), (float ...),
+(member ...), (eql X), (satisfies PRED), (or ...), (and ...), (not ...)."
+    (cond
+     ((null type) nil)
+     ((eq type t) t)
+     ((symbolp type)
+      (cond
+       ((memq type '(integer fixnum bignum)) (integerp val))
+       ((memq type '(number real)) (numberp val))
+       ((eq type 'float) (floatp val))
+       ((eq type 'string) (stringp val))
+       ((eq type 'character) (characterp val))
+       ((eq type 'keyword) (keywordp val))
+       ((eq type 'symbol) (symbolp val))
+       ((eq type 'cons) (consp val))
+       ((eq type 'list) (listp val))
+       ((eq type 'null) (null val))
+       ((eq type 'atom) (atom val))
+       ((eq type 'vector) (vectorp val))
+       ;; NOTE: the runtime's `arrayp' is broken (returns nil for both
+       ;; vectors and strings, Doc 22 A10), so test the concrete predicates.
+       ((eq type 'array) (or (vectorp val) (stringp val)))
+       ((eq type 'sequence) (or (listp val) (vectorp val) (stringp val)))
+       ((eq type 'hash-table) (hash-table-p val))
+       ((eq type 'function) (functionp val))
+       ((eq type 'boolean) (and (memq val '(nil t)) t))
+       (t
+        ;; Fall back to a `TYPEp' or `TYPE-p' predicate when one exists.
+        (let* ((name (symbol-name type))
+               (p1 (intern-soft (concat name "p")))
+               (p2 (intern-soft (concat name "-p"))))
+          (cond
+           ((and p1 (fboundp p1)) (and (funcall p1 val) t))
+           ((and p2 (fboundp p2)) (and (funcall p2 val) t))
+           (t nil))))))
+     ((consp type)
+      (let ((head (car type)))
+        (cond
+         ((eq head 'integer)
+          (and (integerp val)
+               (let ((lo (nth 1 type)) (hi (nth 2 type)))
+                 (and (or (null lo) (eq lo '*) (>= val lo))
+                      (or (null hi) (eq hi '*) (<= val hi))))))
+         ((eq head 'float) (floatp val))
+         ((eq head 'member) (and (member val (cdr type)) t))
+         ((eq head 'eql) (eql val (nth 1 type)))
+         ((eq head 'satisfies) (and (funcall (nth 1 type) val) t))
+         ((eq head 'or)
+          (let ((r nil))
+            (dolist (sub (cdr type) r)
+              (when (cl-typep val sub) (setq r t)))))
+         ((eq head 'and)
+          (let ((r t))
+            (dolist (sub (cdr type) r)
+              (unless (cl-typep val sub) (setq r nil)))))
+         ((eq head 'not) (not (cl-typep val (nth 1 type))))
+         (t nil))))
+     (t nil))))
+
+(unless (fboundp 'cl-the)
+  (defmacro cl-the (_type form)
+    "Return FORM; the TYPE declaration is advisory and ignored."
+    form))
+
+(unless (fboundp 'cl-locally)
+  (defmacro cl-locally (&rest body)
+    "Evaluate BODY as a `progn' (declarations are ignored)."
+    (cons 'progn body)))
+
+(unless (fboundp 'cl-check-type)
+  (defmacro cl-check-type (form type &optional _string)
+    "Signal `wrong-type-argument' unless FORM satisfies TYPE.  Return nil."
+    (let ((temp (make-symbol "--cl-check--")))
+      `(let ((,temp ,form))
+         (unless (cl-typep ,temp ',type)
+           (signal 'wrong-type-argument (list ',type ,temp ',form)))
+         nil))))
+
+(unless (fboundp 'cl-typecase)
+  (defmacro cl-typecase (expr &rest clauses)
+    "Eval EXPR and run the first CLAUSE whose (TYPE . BODY) TYPE matches.
+A TYPE of t or `otherwise' is the default clause."
+    (let ((temp (make-symbol "--cl-typecase--")))
+      ;; Build the cond clauses with `cons'/`list' (no inner backquote) so the
+      ;; template stays a single-level backquote.
+      `(let ((,temp ,expr))
+         (cond
+          ,@(mapcar
+             (lambda (clause)
+               (let ((type (car clause)) (body (cdr clause)))
+                 (if (memq type '(t otherwise))
+                     (cons t body)
+                   (cons (list 'cl-typep temp (list 'quote type)) body))))
+             clauses))))))
+
+(unless (fboundp 'cl-etypecase)
+  (defmacro cl-etypecase (expr &rest clauses)
+    "Like `cl-typecase' but signal an error if no clause matches."
+    `(cl-typecase ,expr
+       ,@clauses
+       (t (error "cl-etypecase failed")))))
+
+(unless (fboundp 'cl-ecase)
+  (defmacro cl-ecase (expr &rest clauses)
+    "Like `cl-case' but signal an error if no key matches."
+    `(cl-case ,expr
+       ,@clauses
+       (t (error "cl-ecase failed")))))
+
+(unless (fboundp 'cl-values)
+  (defun cl-values (&rest values)
+    "Return VALUES as a list (Emacs models multiple values as a list)."
+    values))
+
+(unless (fboundp 'cl-values-list)
+  (defun cl-values-list (list)
+    "Return LIST (the multiple values carried by a list)."
+    list))
+
+(defvar emacs-cl-macros--gentemp-counter 0
+  "Counter backing the fresh names produced by `cl-gentemp'.")
+
+(unless (fboundp 'cl-gentemp)
+  (defun cl-gentemp (&optional prefix)
+    "Return a fresh interned symbol named PREFIX followed by a number."
+    (let ((pfx (or prefix "T")) sym)
+      (while (intern-soft
+              (setq sym (format "%s%d" pfx
+                                (setq emacs-cl-macros--gentemp-counter
+                                      (1+ emacs-cl-macros--gentemp-counter))))))
+      (intern sym))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here

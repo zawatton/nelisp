@@ -193,6 +193,69 @@ cl-position-if-not / cl-subsetp / cl-tailp / cl-delete / cl-nsubstitute."
   (should (equal '(1 3) (cl-delete 2 '(1 2 3 2))))
   (should (equal '(1 9 3 9) (cl-nsubstitute 9 2 '(1 2 3 2)))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round17-cl-typep ()
+  "Doc 16 round 17: cl-typep over atomic and compound type specifiers.
+On the batch host the real `cl-typep' runs, pinning the contract the
+NeLisp runtime polyfill must reproduce."
+  ;; atomic
+  (should (cl-typep 3 'integer))
+  (should-not (cl-typep 3.0 'integer))
+  (should (cl-typep 3.0 'float))
+  (should (cl-typep "x" 'string))
+  (should (cl-typep ?a 'character))
+  (should (cl-typep :k 'keyword))
+  (should (cl-typep 'sym 'symbol))
+  (should (cl-typep '(1) 'cons))
+  (should (cl-typep '(1) 'list))
+  (should (cl-typep nil 'null))
+  (should (cl-typep [1] 'vector))
+  (should (cl-typep [1] 'array))
+  (should (cl-typep "x" 'array))
+  (should (cl-typep '(1) 'sequence))
+  (should (cl-typep [1] 'sequence))
+  (should (cl-typep "x" 'sequence))
+  (should (cl-typep (make-hash-table) 'hash-table))
+  (should-not (cl-typep 3 'string))
+  (should (cl-typep t t))
+  (should-not (cl-typep t nil))
+  ;; `TYPEp' predicate-convention fallback
+  (should (cl-typep (current-buffer) 'buffer))
+  ;; compound specifiers
+  (should (cl-typep 5 '(integer 1 10)))
+  (should-not (cl-typep 50 '(integer 1 10)))
+  (should (cl-typep 99 '(integer 1 *)))
+  (should (cl-typep 'b '(member a b c)))
+  (should-not (cl-typep 'z '(member a b c)))
+  (should (cl-typep "s" '(or integer string)))
+  (should (cl-typep 4 '(and integer (satisfies cl-evenp))))
+  (should (cl-typep "s" '(not integer)))
+  (should (cl-typep 4 '(satisfies cl-evenp))))
+
+(ert-deftest emacs-cl-macros-test/doc16-round17-type-dispatch-macros ()
+  "Doc 16 round 17: cl-the / cl-locally / cl-check-type / cl-typecase /
+cl-etypecase / cl-ecase."
+  (should (= 7 (cl-the integer (+ 3 4))))
+  (should (= 9 (cl-locally (ignore) (+ 4 5))))
+  (should (null (cl-check-type 5 integer)))
+  (should-error (cl-check-type "x" integer) :type 'wrong-type-argument)
+  (should (eq 'is-int (cl-typecase 5 (string 'is-str) (integer 'is-int) (t 'other))))
+  (should (eq 'is-str (cl-typecase "x" (string 'is-str) (integer 'is-int) (t 'other))))
+  (should (eq 'other (cl-typecase 'sym (string 'is-str) (integer 'is-int) (t 'other))))
+  (should (eq 'ow (cl-typecase 'sym (string 'is-str) (otherwise 'ow))))
+  (should (null (cl-typecase 'sym (string 'is-str) (integer 'is-int))))
+  (should (eq 'i (cl-etypecase 5 (string 's) (integer 'i))))
+  (should-error (cl-etypecase 'sym (string 's) (integer 'i)) :type 'error)
+  (should (eq 'b (cl-ecase 2 (1 'a) (2 'b) (3 'c))))
+  (should-error (cl-ecase 9 (1 'a) (2 'b)) :type 'error))
+
+(ert-deftest emacs-cl-macros-test/doc16-round17-values-and-gentemp ()
+  "Doc 16 round 17: cl-values / cl-values-list / cl-gentemp."
+  (should (equal '(1 2 3) (cl-values 1 2 3)))
+  (should (equal '(a b) (cl-values-list '(a b))))
+  (let ((s (cl-gentemp "R17")))
+    (should (symbolp s))
+    (should (string-prefix-p "R17" (symbol-name s)))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here
