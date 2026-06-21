@@ -182,6 +182,45 @@ uninterned symbol が区別されず衝突する。マクロ衛生 (hygiene) の
   =--cl-psq-1--= …)。単一 temp の round 17/18 マクロは無影響だった。
 - core が =make-symbol= の identity を尊重すれば hygiene macro が一般に安全になる。
 
+** A12. =macroexpand-all= / =macroexpand-1= が ENVIRONMENT 引数を無視
+
+#+begin_src elisp
+(macroexpand-all '(myx 5)
+                 (list (cons 'myx (lambda (&rest a) (list '+ (car a) 100)))))
+;;=> (myx 5)        (期待 (+ 5 100))  ← env の myx 展開が無視される
+(macroexpand-1 '(myx 5)
+               (list (cons 'myx (lambda (&rest a) (list '+ (car a) 100)))))
+;;=> (myx 5)        (期待 (+ 5 100))
+;; cl-macrolet は別経路で動く:
+(cl-macrolet ((myy (v) (list '* v 2))) (myy 9))  ;=> 18 (正常)
+#+end_src
+
+=macroexpand-all= / =macroexpand-1= が第 2 引数 (macro environment) を honor せず、
+env で定義したローカル macro を展開しない。グローバル macro 展開と =cl-macrolet= は
+正常なので、*env-driven な局所 macro 横取り*だけが壊れている。
+
+- *impact*: =generator.el= (=iter-defun= / =iter-yield=、Doc 16 round 23) の CPS 変換が
+  破綻。generator は =(macroexpand-all BODY SPECIAL-ENV)= で =iter-yield= を横取りして
+  CPS 化するが、env 無視で yield が未変換 → iterator の =(catch 'cps--yield ...)= が
+  張られず、最初の =iter-next= で yield の =throw= が escape (catch/throw 自体は funcall
+  跨ぎでも正常、A12 が真因)。vendored generator.el は host では正常、runtime のみ block。
+  nelisp-emacs の polyfill 不可 (=macroexpand-all= は core)。round 23 で発見。
+
+** A13. =type-of= が function / closure に対し nil を返す
+
+#+begin_src elisp
+(type-of (lambda (x) x))        ;=> nil  (期待 closure / function 等)
+(type-of (let ((n 1)) (lambda () n)))  ;=> nil  (期待 closure)
+(type-of 5)                     ;=> integer (非 function は正常)
+#+end_src
+
+=type-of= が関数オブジェクト (lambda / closure) を分類できず nil を返す。整数 / 文字列 /
+cons / symbol 等は正常。
+
+- *impact*: function の type-dispatch (=cl-typecase ... (function ..)= 等) や型内省が
+  壊れる。round 23 で generator 調査中に発見 (generator 自体は type-of 不使用なので
+  この gap は generator block の主因ではない)。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):
