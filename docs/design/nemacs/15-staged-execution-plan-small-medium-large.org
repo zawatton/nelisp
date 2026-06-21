@@ -529,6 +529,23 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   cl-return を pin)、full-runtime 7/7、byte-compile 新規警告 0、bundle 再生成 114 files。
   commit 5595fd8。
 
+- *Doc 16 breadth round 23 (最深) — generator.el (iter-defun) vendored, runtime block 特定 (2026-06-22)*:
+  =src/generator.el= を GNU Emacs 30.1 から *verbatim vendor* (801 行、CPS generator)。
+  =nelisp-bootstrap-extra-files= に追加し =(require 'generator)= 可能化 + 全 API
+  (=iter-defun=/=iter-lambda=/=iter-yield=/=iter-next=) を fbound 化。host では完全動作
+  (test/generator-test.el 3/3)。
+- *runtime block 特定 = reader-core gap A12*: runtime の =macroexpand-all= / =macroexpand-1=
+  が *ENVIRONMENT 引数を無視*。generator の CPS は =(macroexpand-all BODY SPECIAL-ENV)= で
+  =iter-yield= を横取りするが env 無視で未変換 → iterator の =(catch 'cps--yield)= が
+  張られず最初の =iter-next= で yield の throw が escape。切り分け: catch/throw は funcall
+  跨ぎでも正常、=cl-macrolet= も正常、=macroexpand-all= の env のみ壊。polyfill 不可
+  (core 関数)。A12 が直れば vendored generator は無改変で動く。
+- *副次 gap A13*: =type-of= が function/closure に nil を返す (generator 主因ではない)。
+- A12/A13 を Doc 22 + issue #7 に記録。vendored file は ready 状態で bundle 同梱 (load は
+  正常、iterator 実行のみ block と provenance に明記)。
+- 検証: host ERT generator 3/3、bundle 再生成 115 files (require 成功、type-of probe で gap
+  確認)。深い実装は「vendor + 真因の reader-core gap 特定」で着地。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
