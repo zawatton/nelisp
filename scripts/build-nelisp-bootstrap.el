@@ -39,6 +39,8 @@ final `.el' suffix with `.repl'.")
     "map.el"
     "json.el"
     "range.el"
+    "let-alist.el"
+    "thunk.el"
     "emacs-tui-backend.el"
     "emacs-redisplay-core.el"
     "emacs-tui-event.el")
