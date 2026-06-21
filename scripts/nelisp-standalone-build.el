@@ -2528,8 +2528,7 @@ diagnostic below; pass a self-contained form (e.g. `1') for link sets that do
 NOT provide `nl_os_write_stderr' — the baked eval applyfn, whose manifest omits
 the reader-only stderr unit, so emitting the diagnostic would leave the symbol
 unresolved at link time."
-  (let ((u #'nelisp-standalone--name-u64)
-        ;; Unknown-builtin default: write the symbol name to stderr (was a
+  (let (;; Unknown-builtin default: write the symbol name to stderr (was a
         ;; silent failure) so interpreted callers surface WHICH registered-but-
         ;; undispatched builtin is missing, then fall through to rc 1.  A symbol
         ;; Sexp (tag 4) keeps its name bytes at ptr@16 / len@24, same as a Str.
@@ -2544,7 +2543,14 @@ unresolved at link time."
       (let* ((match (car entry))
              (impl (cdr entry))
              (cond-form (pcase (car match)
-                          (:u8  `(wf_name_is name_ptr ,(funcall u (cadr match)) ,(length (cadr match))))
+                          ;; Both arms use the alloc-free `sexp-name-eq' grammar
+                          ;; op.  The former `:u8' path went through
+                          ;; `wf_name_is'/`wf_sym_eq', which allocated a fresh
+                          ;; symbol (via `nl_alloc_symbol') plus scratch slots on
+                          ;; EVERY comparison; a builtin call walking K dispatch
+                          ;; arms then churned ~K symbol allocations, dominating
+                          ;; eval time and GC pressure on hot ops (`+', `<', ...).
+                          (:u8  `(= (sexp-name-eq name_ptr ,(cadr match)) 1))
                           (:lit `(= (sexp-name-eq name_ptr ,(cadr match)) 1)))))
         (setq dispatch `(if ,cond-form ,impl ,dispatch))))
     dispatch))
