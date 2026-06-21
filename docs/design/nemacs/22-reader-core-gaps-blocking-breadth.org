@@ -142,6 +142,23 @@ lexical only と思われる。
 - *impact*: =with-output-to-string= (Doc 16 round 12) が出力捕捉できず延期。
   =prin1-to-string= 系の一部もこれに依存。
 
+** A10. =arrayp= が vector / string の両方で nil を返す
+
+#+begin_src elisp
+(arrayp [1 2 3])  ;=> nil  (期待 t)
+(arrayp "abc")    ;=> nil  (期待 t)
+(vectorp [1 2 3]) ;=> t    (vectorp / stringp は正常)
+(stringp "abc")   ;=> t
+#+end_src
+
+=arrayp= が array (vector + string + char-table + bool-vector) を一切認識せず
+常に nil。=vectorp= / =stringp= は正常。
+
+- *impact*: =cl-typep= の =array= / =sequence= 判定 (Doc 16 round 17) が =arrayp= に
+  乗らない。=(or (vectorp val) (stringp val))= / =(or (listp val) (vectorp val)
+  (stringp val))= で回避。=arrayp= を内部使用する builtin / facade は全て同様に破損
+  の疑い。round 17 で発見。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):
@@ -171,7 +188,8 @@ hash table の test 種別 (=eq= / =eql= / =equal=) を取得する accessor が
 * 5. 優先度の提案
 
 1. *A6 (mapc/mapcar vector)* / *A5 (substring vector)* / *A3 (equal vector)* /
-   *A4 (aset string)* — sequence/string 操作の基盤。多数の facade が乗る。最優先。
+   *A4 (aset string)* / *A10 (arrayp 常に nil)* — sequence/string 操作・型判定の
+   基盤。多数の facade が乗る。最優先。
 2. *A1 (floor 2-arg)* / *A2 (mod 負)* — 数値計算の基盤。
 3. *A7 (format 幅)* — 整形出力。
 4. *A8 (let dynamic)* / *A9 (princ redirect)* — 動的束縛・出力捕捉。これらが直ると

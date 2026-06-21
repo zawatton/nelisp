@@ -446,6 +446,22 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   nelisp の AGENTS.md が repo 内 handoff doc を避ける方針のため doc 本体は nelisp-emacs に置き、
   GitHub issue 転記は user 確認後。
 
+- *Doc 16 breadth round 17 — cl type-dispatch + value/binding helpers (2026-06-21)*:
+  full-runtime fboundp probe で void だった cl 型ディスパッチ群を =src/emacs-cl-macros.el=
+  に追加: =cl-typep= (atomic + =(integer LO HI)= / =(member ..)= / =(eql ..)= /
+  =(satisfies ..)= / =(or/and/not ..)= + =TYPEp=/=TYPE-p= 述語 fallback)、=cl-the= /
+  =cl-locally= / =cl-check-type= / =cl-typecase= / =cl-etypecase= / =cl-ecase= (dispatch
+  は cl-typep / cl-case 経由、template は single-level backquote のみ = Doc 16 §4 の
+  runtime backquote quirk 回避)、=cl-values= / =cl-values-list= / =cl-gentemp=。全て
+  =unless (fboundp)= gate で host (実 cl-lib) は無改変。
+- *round 17 の新 reader-core gap*: =arrayp= が vector / string 両方で nil を返す
+  (=vectorp=/=stringp= は正常)。cl-typep の =array=/=sequence= 判定を =vectorp=/=stringp=/
+  =listp= ベースにして回避。Doc 22 A10 に記録 (= 既出 A 群と同じ sequence/string 系
+  reader-core gap)。
+- 検証: bare-reader inline 35/35、host ERT =emacs-cl-macros= 18/18 (round-17 で +3)、
+  byte-compile 新規警告 0 (既存 cl-progv/loop warning は round 17 と無関係)、bundle
+  再生成 105 files。commit 182162c。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
