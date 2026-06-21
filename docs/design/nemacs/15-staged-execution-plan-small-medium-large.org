@@ -434,6 +434,18 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   は素直、hash path も =maphash=/=gethash=/=puthash= は健全)。残 hash gap = =copy-hash-table= /
   =hash-table-test= の VOID (後者は introspection 不能なので polyfill 不可、reader-core 案件)。
 
+- *Doc 16 breadth round 16 — reader-core gap 群を vendor/nelisp issue 化 (2026-06-21)*:
+  round 1-15 で蓄積した *nelisp-emacs 側 polyfill では塞げない reader-core (vendor/nelisp)
+  の不具合・欠落* を bare reader (=target/nelisp --load=) で再現確認し、=docs/design/22-reader-
+  core-gaps-blocking-breadth.org= に consolidated catalog として記録。A 群=誤値 bug 9 件
+  (floor/ceiling/truncate 2-arg 除数無視、mod 負 truncate 意味論、equal-vector 常に nil、
+  aset-string no-op、substring-vector garbage、mapc/mapcar-vector 非反復、format 幅/フラグ
+  literal、let 動的束縛 crash、princ standard-output 無視)、B 群=VOID (round/%//=/sqrt/expt/
+  copy-hash-table、bundle/polyfill で対処済)、C 群=introspection 不能 (hash-table-test VOID =
+  polyfill 不可)。各々最小再現 + 期待/実際 + nelisp-emacs 回避策 + 優先度を付した。vendor/
+  nelisp の AGENTS.md が repo 内 handoff doc を避ける方針のため doc 本体は nelisp-emacs に置き、
+  GitHub issue 転記は user 確認後。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
