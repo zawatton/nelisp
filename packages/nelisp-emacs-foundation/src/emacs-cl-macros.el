@@ -1259,8 +1259,8 @@ defining `emit-before-strings' / `emit-after-strings')."
 ;; keyword-free and gated on `unless (fboundp ...)'.  cl-gcd uses `mod'
 ;; with positive operands only (the bare reader has no `/=', and the
 ;; runtime's `mod' is truncate-semantics for negatives + 2-arg `floor' is
-;; broken -- so the division-family cl helpers are deferred to a numeric
-;; round and these stay clear of those primitives).
+;; broken -- so these stay clear of those primitives.  The division-family
+;; cl helpers are added in round 6 below, working around the same bugs.
 
 (unless (fboundp 'cl-caddr)
   (defun cl-caddr (x) "Return the `car' of the `cddr' of X." (car (cddr x))))
@@ -1320,6 +1320,73 @@ Matches Emacs `cl-signum', which always returns an integer sign."
         (push (car list) result)
         (setq list (cdr list)))
       (nreverse result))))
+
+;;;; --- Doc 16 breadth round 6: cl division family (were void) ---------
+;; cl-floor / cl-ceiling / cl-round / cl-truncate / cl-mod / cl-rem each
+;; return (QUOTIENT REMAINDER) per Emacs `cl-lib'.  The runtime's native
+;; 2-arg `floor'/`ceiling'/`truncate' ignore the divisor and `mod' is
+;; truncate-semantics for negatives, so these are built only from `/'
+;; (correct toward-zero truncation) plus the 1-arg `floor'/`ceiling'/
+;; `round'/`truncate' (correct on int and float): integers use an exact
+;; truncate-then-adjust, floats use the real ratio then a 1-arg rounding.
+
+(unless (fboundp 'cl-truncate)
+  (defun cl-truncate (x &optional y)
+    "Return (list Q R) where Q = X/Y truncated toward zero and R = X - Y*Q.
+Y defaults to 1."
+    (setq y (or y 1))
+    (if (or (floatp x) (floatp y))
+        (let* ((q (truncate (/ x y))) (r (- x (* y q)))) (list q r))
+      (let* ((q (/ x y)) (r (- x (* y q)))) (list q r)))))
+
+(unless (fboundp 'cl-floor)
+  (defun cl-floor (x &optional y)
+    "Return (list Q R) where Q = floor of X/Y and R = X - Y*Q.  Y defaults to 1."
+    (setq y (or y 1))
+    (if (or (floatp x) (floatp y))
+        (let* ((q (floor (/ x y))) (r (- x (* y q)))) (list q r))
+      (let* ((q (/ x y)) (r (- x (* y q))))
+        (when (and (not (= r 0)) (< (* x y) 0))
+          (setq q (- q 1) r (+ r y)))
+        (list q r)))))
+
+(unless (fboundp 'cl-ceiling)
+  (defun cl-ceiling (x &optional y)
+    "Return (list Q R) where Q = ceiling of X/Y and R = X - Y*Q.  Y defaults to 1."
+    (setq y (or y 1))
+    (if (or (floatp x) (floatp y))
+        (let* ((q (ceiling (/ x y))) (r (- x (* y q)))) (list q r))
+      (let* ((q (/ x y)) (r (- x (* y q))))
+        (when (and (not (= r 0)) (> (* x y) 0))
+          (setq q (+ q 1) r (- r y)))
+        (list q r)))))
+
+(unless (fboundp 'cl-round)
+  (defun cl-round (x &optional y)
+    "Return (list Q R), Q = X/Y rounded to nearest (ties to even), R = X - Y*Q.
+Y defaults to 1.  Float arguments use the runtime's 1-arg `round'."
+    (setq y (or y 1))
+    (if (or (floatp x) (floatp y))
+        (let* ((q (round (/ x y))) (r (- x (* y q)))) (list q r))
+      (let ((sx x) (sy y))
+        (when (< sy 0) (setq sx (- sx) sy (- sy)))
+        (let* ((q (/ sx sy)) (rr (- sx (* sy q))))
+          (when (< rr 0) (setq q (- q 1) rr (+ rr sy)))
+          (let ((twice (* 2 rr)))
+            (cond ((< twice sy) nil)
+                  ((> twice sy) (setq q (+ q 1)))
+                  (t (when (not (= 0 (% q 2))) (setq q (+ q 1))))))
+          (list q (- x (* y q))))))))
+
+(unless (fboundp 'cl-mod)
+  (defun cl-mod (x y)
+    "Return X modulo Y -- the remainder of `cl-floor' (same sign as Y)."
+    (nth 1 (cl-floor x y))))
+
+(unless (fboundp 'cl-rem)
+  (defun cl-rem (x y)
+    "Return the remainder of X / Y truncated toward zero (same sign as X)."
+    (nth 1 (cl-truncate x y))))
 
 (provide 'emacs-cl-macros)
 

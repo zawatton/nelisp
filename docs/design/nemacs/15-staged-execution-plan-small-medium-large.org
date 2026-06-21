@@ -289,6 +289,20 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - *round 5 の知見*: runtime の数値 primitive (=floor/ceiling/truncate= 2-arg, 負 =mod=,
   =round=) は要修正の別 gap。cl breadth で division 系を足す前にこれを fix する必要 (要 reader/
   Rust 側調査の可能性、nelisp-emacs 範囲外なら issue 化)。
+- *Doc 16 breadth round 6 — cl division family 6 個 (numeric round) (2026-06-21)*:
+  round 5 で延期した =cl-floor= / =cl-ceiling= / =cl-round= / =cl-truncate= / =cl-mod= /
+  =cl-rem= を補完 (=emacs-cl-macros.el=、各 =(list Q R)= 返却、gated)。鍵: runtime の
+  *破損 primitive を直さず回避* — core =floor=/=mod= は reader-core (vendor/nelisp = 別 repo)
+  なので触らず、*正常な =/= (toward-zero truncate) + 1-arg =floor=/=ceiling=/=round=/=truncate=
+  (int/float とも正常)* だけで実装。整数は truncate→符号調整、float は実除算 =(/ x y)= →
+  1-arg 丸め。=cl-round= は整数で ties-to-even (=(% q 2)= で parity、負 =mod= 回避)。検証:
+  full runtime functional で 28 ケース (全符号組合せ + float + 半偶数) → bundle 再生成後
+  full boot 11/11 ok (cl-gcd/cl-signum/seq-partition regression 維持、104 files)、host ERT
+  emacs-cl-macros-test 13/13、byte-compile 新規警告 0。これで cl-lib の数値 API は
+  predicate (round1) + numeric/list (round5) + division (round6) で実用域。
+- *round 6 の知見*: runtime の壊れた数値 primitive (=floor/mod= 2-arg・負) 自体の fix は
+  reader-core 案件で別 repo (=vendor/nelisp=) 管轄。nelisp-emacs 側は「正常 primitive のみで
+  上位 API を組む」回避で対処可能 ([[feedback_nelisp_numeric_primitive_bugs]])。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
