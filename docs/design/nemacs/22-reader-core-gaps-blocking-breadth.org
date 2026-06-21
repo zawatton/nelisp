@@ -159,6 +159,29 @@ lexical only と思われる。
   (stringp val))= で回避。=arrayp= を内部使用する builtin / facade は全て同様に破損
   の疑い。round 17 で発見。
 
+** A11. =make-symbol= の uninterned symbol が名前で解決される (同名衝突)
+
+#+begin_src elisp
+(let ((a (make-symbol "g")) (b (make-symbol "g")))
+  (eq a b))          ;=> 期待 nil (別オブジェクト)。runtime では同一視される
+
+;; 実害: 同名 uninterned を 1 つの let で 2 つ束縛すると衝突
+(let ((t1 (make-symbol "tmp")) (t2 (make-symbol "tmp")))
+  (eval (list 'let (list (list t1 1) (list t2 2))
+              (list 'list t1 t2))))
+;;=> (2 2)  (期待 (1 2))  ← 両 binding が名前 "tmp" で同一 cell に
+#+end_src
+
+=make-symbol= は本来 *uninterned (= obarray 非登録、identity でのみ等価)* な symbol を
+返すが、runtime の評価器は変数を *symbol 名 (string)* で解決するため、同名の
+uninterned symbol が区別されず衝突する。マクロ衛生 (hygiene) の前提が崩れる。
+
+- *impact*: parallel-assignment マクロ (=cl-psetq= / =cl-psetf= / =cl-rotatef=、Doc 16
+  round 19) が 1 つの =let= に複数 temp を作ると全 temp が最後の値になり、結果が
+  全要素同値に化ける。回避: temp 名に index を付して一意化 (=--cl-psq-0--= /
+  =--cl-psq-1--= …)。単一 temp の round 17/18 マクロは無影響だった。
+- core が =make-symbol= の identity を尊重すれば hygiene macro が一般に安全になる。
+
 * 3. B. 欠落 (VOID、core にあるべき builtin)
 
 bare reader で void (bundle / stdlib-prelude が一部を埋める):
