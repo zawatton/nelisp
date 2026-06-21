@@ -1,0 +1,187 @@
+#+TITLE: nelisp-emacs Doc 22 — reader-core gaps blocking the breadth loop (vendor/nelisp issue)
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-21
+#+STATUS: ISSUE (for vendor/nelisp = github.com/zawatton/nelisp)
+
+* 0. Purpose
+
+Doc 16 の package-breadth loop (round 1-15) を回す過程で、nelisp-emacs 側の
+polyfill では塞げない / 塞いでも silent-broken になる *reader-core (vendor/nelisp)
+の不具合・欠落* を多数発見した。本書はそれらを *最小再現付きで一覧化* し、
+vendor/nelisp (= github.com/zawatton/nelisp、reader-core repo) 側で対処すべき
+issue としてまとめる handoff。
+
+検証環境: =vendor/nelisp/target/nelisp --load FILE= (bare reader、bundle 無し)。
+各 bug は bare reader で再現する = reader-core 案件 (stdlib-prelude でなく Rust/
+core 由来)。nelisp-emacs の bundle/prelude は一部の VOID を埋めるが、*誤値を返す
+bug* は core を直さない限り消えない。
+
+* 1. 分類
+
+- *A. 誤値 bug* — 呼べるが *間違った結果* を返す。elisp polyfill で上位 API を
+  組んでも下位がこれだと silent-broken。最優先。
+- *B. 欠落 (VOID)* — 関数が無い。bundle/prelude で polyfill 可能なものは nelisp-
+  emacs 側で対処済だが、core にあるべきもの。
+- *C. introspection 不能* — VOID かつ polyfill も不能 (core の内部状態を要する)。
+
+* 2. A. 誤値 bug (最優先)
+
+** A1. 2-arg =floor= / =ceiling= / =truncate= が除数を無視
+
+#+begin_src elisp
+(floor 7 2)      ;=> 7   (期待 3)
+(ceiling 7 2)    ;=> 7   (期待 4)
+(truncate -7 2)  ;=> -7  (期待 -3)
+#+end_src
+
+2 引数形 =(floor X Y)= = floor(X/Y) が Y を無視して X をそのまま返す。1-arg 形
+(=(floor 3.7)= = 3) は正常。=/= は toward-zero truncate で正常 (=(/ -7 2)= = -3)。
+
+- *impact*: =cl-floor= / =cl-ceiling= / =cl-round= / =cl-truncate= / =cl-mod= /
+  =cl-rem= (Doc 16 round 6) を core の floor/mod に乗せられず、=/= + 1-arg
+  floor/ceiling/round + 符号調整で自前実装して回避した。
+
+** A2. 負の被除数で =mod= が truncate 意味論
+
+#+begin_src elisp
+(mod -7 3)  ;=> -1  (期待 2 = floor-mod)
+(mod 7 3)   ;=> 1   (正の場合は正常)
+#+end_src
+
+=mod= が floor-mod でなく truncate-rem (=%= と同じ、符号が被除数依存)。
+
+- *impact*: cl-mod / floor 系の自前実装で =mod= を使えず回避。
+
+** A3. =equal= が vector を要素比較しない (常に non-equal)
+
+#+begin_src elisp
+(equal [1 2 3] [1 2 3])  ;=> nil  (期待 t)
+#+end_src
+
+list / string / number の =equal= は正常。vector だけ要素比較せず常に nil。
+
+- *impact*: vector を返す関数 (=string-to-vector= / =seq-into ... 'vector= 等) の
+  test で =(equal RESULT [..])= が常に FAIL に見える。検証は =(append vec nil)= で
+  list 化して比較する hack で回避中。実コードでも vector の =equal= 比較は壊れる。
+
+** A4. =aset= が string を破壊変更しない (no-op)
+
+#+begin_src elisp
+(let ((s (copy-sequence "abc"))) (aset s 0 ?X) s)  ;=> "abc"  (期待 "Xbc")
+(let ((v (vector 1 2 3))) (aset v 0 9) v)          ;=> [9 2 3] (vector は正常)
+#+end_src
+
+vector の =aset= は効くが、string の =aset= は無反応 (string が immutable か backing
+を書き換えない)。
+
+- *impact*: =subst-char-in-string= / =store-substring= 系 / fill 系を =aset= で書くと
+  silent no-op。=subst-char-in-string= は =string-replace= ベースで回避。
+
+** A5. =substring= が vector で壊れる
+
+#+begin_src elisp
+(substring [10 20 30 40] 1 3)  ;=> garbage (例 [105 115])  (期待 [20 30])
+(substring "abcde" 1 3)        ;=> "bc"  (string は正常)
+#+end_src
+
+string の =substring= は正常。vector の =substring= が garbage (char-code 風の値)
+を返す。
+
+- *impact*: =seq-subseq= / =seq-take= / =seq-drop= / =seq-rest= が vector で破損
+  (Doc 16 round 14 で発覚)。seq-subseq の vector path を =(append seq nil)= で list 化
+  → slice → =seq--same-type= で型復元、で回避。
+
+** A6. =mapc= / =mapcar= が vector / string を反復しない
+
+#+begin_src elisp
+(mapcar (lambda (x) (1+ x)) [1 2 3])  ;=> (1)        (期待 (2 3 4))
+(mapc #'identity [1 2 3])             ;=> 反復されない (期待 全要素)
+#+end_src
+
+list は正常。vector / string で 1 要素 (しかも誤値) しか処理しない。
+
+- *impact*: =seq-do= / =seq-map= (= 多数の seq fn が delegate) が vector/string で
+  破損 (Doc 16 round 13)。seq-do/seq-map を =(seq--list sequence)= 経由に修正して回避。
+
+** A7. =format= が幅 / フラグ指定子を解釈しない
+
+#+begin_src elisp
+(format "%-5s|" "ab")  ;=> "%-5s|"  (期待 "ab   |")
+(format "%05d" 42)     ;=> 期待 "00042" (未確認だが同根の疑い)
+#+end_src
+
+=%-5s= / =%05d= のような幅・左寄せ・ゼロ埋めフラグ付き指定子が *literal のまま*
+出力される (basic な =%s= / =%S= / =%d= は正常)。
+
+- *impact*: 整形出力全般。回避策は手動 pad。
+
+** A8. =let= が lexical のみ / 動的束縛が機能せず crash
+
+#+begin_src elisp
+(progn (defvar dv) (let ((dv 7)) (symbol-value 'dv)))  ;=> crash (catch 不能)
+#+end_src
+
+=(defvar X)= で special 宣言しても、=let= が動的束縛せず、=symbol-value= で参照すると
+catch 不能 crash (void-variable error でなくプロセス停止)。runtime の =let= は
+lexical only と思われる。
+
+- *impact*: =dlet= (動的 let macro、Doc 16 round 12) が機能せず延期。=let= 内で
+  =symbol-value= を使うコード全般が危険。
+
+** A9. =princ= / =print= が buffer / function の =standard-output= を無視
+
+#+begin_src elisp
+(let ((standard-output (generate-new-buffer " *t*")))
+  (princ "x" standard-output)
+  (with-current-buffer standard-output (buffer-string)))  ;=> "" (x は stdout へ)
+#+end_src
+
+=standard-output= に buffer (や関数) を束ねても =princ= は stdout に直接書き、
+リダイレクトされない。
+
+- *impact*: =with-output-to-string= (Doc 16 round 12) が出力捕捉できず延期。
+  =prin1-to-string= 系の一部もこれに依存。
+
+* 3. B. 欠落 (VOID、core にあるべき builtin)
+
+bare reader で void (bundle / stdlib-prelude が一部を埋める):
+
+| fn | 状態 | nelisp-emacs 側の対処 |
+|----+------+------|
+| =round= | bare void (full runtime には有) | prelude/bundle 由来で利用可 |
+| =%= | bare void | 同上 |
+| =/== | bare void | =(not (= ...))= で回避 |
+| =sqrt= / =expt= | bare void | cl-isqrt は Newton で sqrt 不使用 |
+| =copy-hash-table= | full void | =emacs-stub.el= に polyfill 追加 (Doc 16 round 15) |
+
+* 4. C. introspection 不能 (polyfill 不能)
+
+** C1. =hash-table-test= が void
+
+#+begin_src elisp
+(fboundp 'hash-table-test)  ;=> nil
+#+end_src
+
+hash table の test 種別 (=eq= / =eql= / =equal=) を取得する accessor が無い。
+
+- *impact*: =copy-hash-table= polyfill が *元の test を保持できない* (default test で
+  複製するしかない)。=equal= keyed table (string キー等) の複製で lookup が壊れる
+  可能性。core が test を露出しないと polyfill 不能。
+
+* 5. 優先度の提案
+
+1. *A6 (mapc/mapcar vector)* / *A5 (substring vector)* / *A3 (equal vector)* /
+   *A4 (aset string)* — sequence/string 操作の基盤。多数の facade が乗る。最優先。
+2. *A1 (floor 2-arg)* / *A2 (mod 負)* — 数値計算の基盤。
+3. *A7 (format 幅)* — 整形出力。
+4. *A8 (let dynamic)* / *A9 (princ redirect)* — 動的束縛・出力捕捉。これらが直ると
+   dlet / with-output-to-string も解禁。
+5. *C1 (hash-table-test)* — copy-hash-table の完全化。
+
+* 6. 注記
+
+- 本書は nelisp-emacs 側の consumer 視点 catalog。vendor/nelisp の AGENTS.md は
+  repo 内 handoff doc を避ける方針のため、doc 本体は nelisp-emacs に置き、必要なら
+  github.com/zawatton/nelisp の issue へ転記する。
+- 各 bug は Doc 15 §3.5 の round 6/11/12/13/14/15 log にも個別記録済。
+- nelisp-emacs 側は全 bug を *回避済 or 延期明記* で、breadth は前進を止めていない。
