@@ -488,6 +488,22 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
 - 検証: host ERT =emacs-cl-macros= 21/21 (round-19 で +1)、full-runtime 11/11、
   byte-compile 新規警告 0、bundle 再生成 105 files。commit 1c22028。
 
+- *Doc 16 breadth round 20 — small package: let-alist + thunk (2026-06-22)*:
+  full-runtime void だった 2 package を専用 src ファイルとして実装し bundle 収録。
+  =src/let-alist.el= = =(let-alist ALIST BODY)= が BODY を deep-dot scan して =.k= /
+  =.k1.k2= dotted symbol を =alist-get= access に束縛 (helper は =substring=/=aref= で
+  =string-match=/=replace-regexp-in-string= 回避)。=src/thunk.el= = =thunk-delay= (memoized
+  closure)、=thunk-force=、=thunk-let= / =thunk-let*= (=cl-symbol-macrolet= 経由の lazy
+  binding)。両 package を =nelisp-bootstrap-extra-files= に追加。
+- *gating の知見*: =let-alist= / =thunk= は host で *autoload* (=fboundp= t だが未定義)。
+  =unless (fboundp)= gate にすると host で skip → autoload が自ファイルに解決し "failed
+  to define" error。=range.el= 同様 *無条件定義* にして解決 (stock host は src/ を load
+  しない、bundle/-L src 経由のみ)。=seq.el=/=json.el= は host *preload* なので fboundp gate
+  が効く ＝ preload と autoload で gating 方針が分かれる。
+- 検証: host ERT 7/7 (let-alist 3 + thunk 4、私の実装を直接検証)、full-runtime 8/8
+  (=(require 'let-alist)= / =(require 'thunk)= 成功)、byte-compile クリーン、bundle 再生成
+  108 files。commit 59645b9。
+
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
 | ID | 内容 | 根拠 | 備考 | Status |
