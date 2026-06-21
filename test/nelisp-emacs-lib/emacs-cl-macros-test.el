@@ -281,6 +281,29 @@ runtime shim must reproduce (nested patterns are out of scope)."
   (should (equal '(10 20) (let (p q) (cl-multiple-value-setq (p q) '(10 20)) (list p q))))
   (should (= 10 (let (p q) (cl-multiple-value-setq (p q) '(10 20))))))
 
+(ert-deftest emacs-cl-macros-test/doc16-round19-place-macros ()
+  "Doc 16 round 19: cl-psetq / cl-psetf / cl-rotatef / cl-shiftf /
+cl-callf / cl-callf2.  The batch host autoloads the real cl-lib macros,
+pinning the contract the NeLisp runtime shims must reproduce."
+  ;; parallel set (swap semantics prove values are read before writes)
+  (should (equal '(2 1) (let ((a 1) (b 2)) (cl-psetq a b b a) (list a b))))
+  (should (equal '(2 1) (let ((a 1) (b 2)) (cl-psetf a b b a) (list a b))))
+  (should (null (let ((a 1) (b 2)) (cl-psetq a b b a))))
+  ;; rotate
+  (should (equal '(2 3 1) (let ((a 1) (b 2) (c 3)) (cl-rotatef a b c) (list a b c))))
+  (should (equal '(2 1) (let ((a 1) (b 2)) (cl-rotatef a b) (list a b))))
+  (should (null (let ((a 1) (b 2)) (cl-rotatef a b))))
+  ;; shift (returns original first value)
+  (should (equal '(1 2 3 9) (let ((a 1) (b 2) (c 3))
+                              (let ((old (cl-shiftf a b c 9))) (list old a b c)))))
+  ;; callf / callf2 (FUNC spliced literally: unquoted name; non-symbol place)
+  (should (= 4 (let ((x 3)) (cl-callf 1+ x) x)))
+  (should (= 4 (let ((x 3)) (cl-callf 1+ x))))
+  (should (equal "abc" (let ((s "ab")) (cl-callf concat s "c") s)))
+  (should (equal '(1 2 3) (let ((l '(2 3))) (cl-callf2 cons 1 l) l)))
+  (should (= 2 (let ((h (make-hash-table)))
+                 (puthash 'k 1 h) (cl-callf 1+ (gethash 'k h)) (gethash 'k h)))))
+
 (provide 'emacs-cl-macros-test)
 
 ;;; emacs-cl-macros-test.el ends here

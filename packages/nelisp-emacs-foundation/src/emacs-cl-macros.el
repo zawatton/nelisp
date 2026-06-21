@@ -1883,6 +1883,104 @@ Return the primary (first) value."
             (cons (list (list tmp form))
                   (append (nreverse sets) (list (list 'car tmp))))))))
 
+;;;; --- Doc 16 breadth round 19: cl place (setf) macros ------------------
+;; cl-psetq / cl-psetf / cl-rotatef / cl-shiftf / cl-callf / cl-callf2, all
+;; void on the runtime.  They expand to `setq'/`setf'; the runtime's `setf'
+;; already handles symbol / car / nth / gethash places (Doc 16 round 8
+;; cl-simple-setter registrations), so these macros are place-agnostic.
+;; Parallel forms capture every value into hygienic temporaries first.
+;; Same `unless (fboundp ...)' gating: host cl-lib is untouched.
+
+(defun emacs-cl-macros--pairs (args)
+  "Split a flat (P1 V1 P2 V2 ...) ARGS list into a list of (PLACE . VALUE)."
+  (let ((out nil) (cur args))
+    (while cur
+      (setq out (cons (cons (car cur) (car (cdr cur))) out))
+      (setq cur (cdr (cdr cur))))
+    (nreverse out)))
+
+;; NOTE: temporaries below carry an index in their name.  The runtime
+;; resolves `make-symbol' (uninterned) symbols by NAME, so several temps
+;; sharing one name collide inside a single `let' (Doc 22 A11); unique
+;; names sidestep that and remain correct if the runtime later honours
+;; uninterned identity.
+(unless (fboundp 'cl-psetq)
+  (defmacro cl-psetq (&rest args)
+    "Like `setq' but evaluate all values before any assignment.  Return nil."
+    (let ((binds nil) (sets nil) (i 0))
+      (dolist (pr (emacs-cl-macros--pairs args))
+        (let ((tmp (make-symbol (format "--cl-psq-%d--" i))))
+          (setq binds (cons (list tmp (cdr pr)) binds))
+          (setq sets (cons (list 'setq (car pr) tmp) sets))
+          (setq i (1+ i))))
+      (cons 'let (cons (nreverse binds) (append (nreverse sets) (list nil)))))))
+
+(unless (fboundp 'cl-psetf)
+  (defmacro cl-psetf (&rest args)
+    "Like `setf' but evaluate all values before any assignment.  Return nil."
+    (let ((binds nil) (sets nil) (i 0))
+      (dolist (pr (emacs-cl-macros--pairs args))
+        (let ((tmp (make-symbol (format "--cl-psf-%d--" i))))
+          (setq binds (cons (list tmp (cdr pr)) binds))
+          (setq sets (cons (list 'setf (car pr) tmp) sets))
+          (setq i (1+ i))))
+      (cons 'let (cons (nreverse binds) (append (nreverse sets) (list nil)))))))
+
+(unless (fboundp 'cl-rotatef)
+  (defmacro cl-rotatef (&rest places)
+    "Rotate the values of PLACES: each gets the next one's value, the last
+gets the first one's original value.  Return nil."
+    (if (null (cdr places))
+        nil
+      (let ((temps nil) (binds nil) (sets nil) (i 0))
+        (dolist (p places)
+          (let ((tmp (make-symbol (format "--cl-rot-%d--" i))))
+            (setq temps (cons tmp temps))
+            (setq binds (cons (list tmp p) binds))
+            (setq i (1+ i))))
+        (setq temps (nreverse temps))
+        (setq binds (nreverse binds))
+        (let ((ps places)
+              (ts (append (cdr temps) (list (car temps)))))
+          (while ps
+            (setq sets (cons (list 'setf (car ps) (car ts)) sets))
+            (setq ps (cdr ps))
+            (setq ts (cdr ts))))
+        (cons 'let (cons binds (append (nreverse sets) (list nil))))))))
+
+(unless (fboundp 'cl-shiftf)
+  (defmacro cl-shiftf (&rest args)
+    "Shift values leftward through PLACES; the final ARG is the new value
+for the last place.  Return the original value of the first place."
+    (let* ((places (butlast args))
+           (newval (car (last args)))
+           (old (make-symbol "--cl-shf--"))
+           (sets nil))
+      (when (null places)
+        (error "cl-shiftf needs at least one place and a value"))
+      (let ((ps places))
+        (while (cdr ps)
+          (setq sets (cons (list 'setf (car ps) (car (cdr ps))) sets))
+          (setq ps (cdr ps)))
+        (setq sets (cons (list 'setf (car ps) newval) sets)))
+      (list 'let (list (list old (car places)))
+            (cons 'progn (append (nreverse sets) (list old)))))))
+
+(unless (fboundp 'cl-callf)
+  (defmacro cl-callf (func place &rest args)
+    "Set PLACE to (FUNC PLACE ARGS...).
+FUNC is spliced literally into the call (an unquoted function name or a
+lambda form), matching `cl-callf'."
+    (let ((call (cons func (cons place args))))
+      (if (symbolp place) (list 'setq place call) (list 'setf place call)))))
+
+(unless (fboundp 'cl-callf2)
+  (defmacro cl-callf2 (func arg1 place &rest args)
+    "Set PLACE to (FUNC ARG1 PLACE ARGS...).
+FUNC is spliced literally into the call, matching `cl-callf2'."
+    (let ((call (cons func (cons arg1 (cons place args)))))
+      (if (symbolp place) (list 'setq place call) (list 'setf place call)))))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here
