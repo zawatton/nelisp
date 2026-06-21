@@ -1507,6 +1507,163 @@ Honours `:test' and `:key' (the `:count' keyword is not supported)."
                 (if (funcall test old (if key (funcall key elt) elt)) new elt))
               (append seq nil)))))
 
+;;;; --- Doc 16 breadth round 10: remaining cl sequence/list fns ---------
+;; Membership / assoc / mapping / tree helpers that were void.  Same
+;; `:test'/`:key' convention (default `eql') and `unless (fboundp ...)'
+;; gating as round 9.  cl-position-if-not / cl-notany / cl-notevery /
+;; cl-mapcan / cl-mapcon / cl-nsubstitute build on already-present cl fns.
+
+(unless (fboundp 'cl-member)
+  (defun cl-member (item list &rest keys)
+    "Return the sublist of LIST starting at the first element matching ITEM.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key)))
+      (while (and list
+                  (not (funcall test item
+                                (if key (funcall key (car list)) (car list)))))
+        (setq list (cdr list)))
+      list)))
+
+(unless (fboundp 'cl-assoc)
+  (defun cl-assoc (item alist &rest keys)
+    "Return the first cons in ALIST whose car matches ITEM.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key))
+          (found nil))
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (when (and (consp pair)
+                     (funcall test item (if key (funcall key (car pair)) (car pair))))
+            (setq found pair)))
+        (setq alist (cdr alist)))
+      found)))
+
+(unless (fboundp 'cl-rassoc)
+  (defun cl-rassoc (item alist &rest keys)
+    "Return the first cons in ALIST whose cdr matches ITEM.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key))
+          (found nil))
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (when (and (consp pair)
+                     (funcall test item (if key (funcall key (cdr pair)) (cdr pair))))
+            (setq found pair)))
+        (setq alist (cdr alist)))
+      found)))
+
+(unless (fboundp 'cl-assoc-if)
+  (defun cl-assoc-if (predicate alist &rest keys)
+    "Return the first cons in ALIST whose car satisfies PREDICATE.  Honours `:key'."
+    (let ((key (plist-get keys :key))
+          (found nil))
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (when (and (consp pair)
+                     (funcall predicate (if key (funcall key (car pair)) (car pair))))
+            (setq found pair)))
+        (setq alist (cdr alist)))
+      found)))
+
+(unless (fboundp 'cl-rassoc-if)
+  (defun cl-rassoc-if (predicate alist &rest keys)
+    "Return the first cons in ALIST whose cdr satisfies PREDICATE.  Honours `:key'."
+    (let ((key (plist-get keys :key))
+          (found nil))
+      (while (and alist (not found))
+        (let ((pair (car alist)))
+          (when (and (consp pair)
+                     (funcall predicate (if key (funcall key (cdr pair)) (cdr pair))))
+            (setq found pair)))
+        (setq alist (cdr alist)))
+      found)))
+
+(unless (fboundp 'cl-notany)
+  (defun cl-notany (predicate &rest seqs)
+    "Return t if PREDICATE is false for every tuple drawn from SEQS."
+    (not (apply #'cl-some predicate seqs))))
+
+(unless (fboundp 'cl-notevery)
+  (defun cl-notevery (predicate &rest seqs)
+    "Return t if PREDICATE is false for at least one tuple from SEQS."
+    (not (apply #'cl-every predicate seqs))))
+
+(unless (fboundp 'cl-mapcan)
+  (defun cl-mapcan (fn &rest seqs)
+    "Map FN over SEQS and `nconc' the resulting lists together."
+    ;; `cl-mapcar' is provided by cl-extra at runtime (quote, not #', so the
+    ;; host byte-compiler does not warn it is "not known to be defined").
+    (apply #'nconc (apply 'cl-mapcar fn seqs))))
+
+(unless (fboundp 'cl-maplist)
+  (defun cl-maplist (fn &rest lists)
+    "Apply FN to successive sublists (tails) of LISTS, returning the results."
+    (let ((result nil))
+      (while (not (memq nil lists))
+        (push (apply fn lists) result)
+        (setq lists (mapcar #'cdr lists)))
+      (nreverse result))))
+
+(unless (fboundp 'cl-mapcon)
+  (defun cl-mapcon (fn &rest lists)
+    "Like `cl-maplist' but `nconc' the results together."
+    (apply #'nconc (apply #'cl-maplist fn lists))))
+
+(unless (fboundp 'cl-subst)
+  (defun cl-subst (new old tree &rest keys)
+    "Return a copy of TREE with each subtree matching OLD replaced by NEW.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key)))
+      (cond
+       ((funcall test old (if key (funcall key tree) tree)) new)
+       ((consp tree)
+        (cons (apply #'cl-subst new old (car tree) keys)
+              (apply #'cl-subst new old (cdr tree) keys)))
+       (t tree)))))
+
+(unless (fboundp 'cl-position-if-not)
+  (defun cl-position-if-not (predicate seq &rest keys)
+    "Return the index of the first element of SEQ not satisfying PREDICATE."
+    (apply #'cl-position-if (lambda (x) (not (funcall predicate x))) seq keys)))
+
+(unless (fboundp 'cl-subsetp)
+  (defun cl-subsetp (list1 list2 &rest keys)
+    "Return t if every element of LIST1 is a member of LIST2.
+Honours `:test' and `:key'."
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key))
+          (ok t))
+      (dolist (e list1 ok)
+        (unless (emacs-cl-macros--member-test (if key (funcall key e) e)
+                                              list2 test key)
+          (setq ok nil))))))
+
+(unless (fboundp 'cl-tailp)
+  (defun cl-tailp (sublist list)
+    "Return t if SUBLIST is `eq' to one of the cons cells (tails) of LIST."
+    (while (and (consp list) (not (eq sublist list)))
+      (setq list (cdr list)))
+    (eq sublist list)))
+
+(unless (fboundp 'cl-delete)
+  (defun cl-delete (item seq &rest keys)
+    "Return a copy of SEQ (as a list) with elements matching ITEM removed.
+Honours `:test' and `:key'.  (This shim does not destroy SEQ.)"
+    (let ((test (or (plist-get keys :test) #'eql))
+          (key (plist-get keys :key))
+          (result nil))
+      (dolist (e (append seq nil) (nreverse result))
+        (unless (funcall test item (if key (funcall key e) e))
+          (push e result))))))
+
+(unless (fboundp 'cl-nsubstitute)
+  (defalias 'cl-nsubstitute #'cl-substitute
+    "Substitute NEW for OLD in SEQ (non-destructive shim of `cl-substitute')."))
+
 (provide 'emacs-cl-macros)
 
 ;;; emacs-cl-macros.el ends here
