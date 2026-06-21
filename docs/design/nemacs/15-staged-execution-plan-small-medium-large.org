@@ -389,6 +389,23 @@ Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
   crash → =dlet= は dynamic binding が効かず *延期*。=with-output-to-string= も =princ= が
   buffer/function =standard-output= を無視 (stdout 直書き) のため *延期*。いずれも reader-core
   (=vendor/nelisp=) gap ([[feedback_nelisp_equal_vector_broken]] と同列)。
+- *Doc 16 breadth round 13 — seq-let + seq vector regression 修正 (2026-06-21)*:
+  =seq-doseq= は既存だが *vector で壊れていた*。原因 = =src/seq.el= の =seq-do= /
+  =seq-map= が runtime の =mapc= / =mapcar= を *直接* 呼ぶが、runtime の =mapc=/=mapcar= は
+  *list only で vector 非対応* (=(mapcar #'1+ [1 2 3])= = =(1)=)。これは round 2 で seq.el を
+  bundle 収録した際に bare-reader の動作版 =seq-map= を seq.el plain-elisp 版 (vector 非対応)
+  で override した *latent regression* (round 2 検証は list のみだった)。修正: =seq-do= /
+  =seq-map= を =(seq--list sequence)= 経由に (=seq--list= は list 不変なので list は regression
+  無し)。これで *delegate している seq-filter / seq-find / seq-some / seq-reduce / seq-doseq
+  等が transitively vector 対応*。併せて VOID だった =seq-let= を補完 (実 Emacs は pcase +
+  =seq--make-pcase-patterns= 依存だが後者 VOID なので、=seq-elt=/=seq-drop= over list-copy の
+  manual destructuring。flat args + =&rest= 対応、nested pattern 非対応、gated)。検証: full
+  boot 12/12 ok (seq-map/filter/reduce/find/doseq が vector で動作、seq-let 4 ケース、
+  seq-partition/cl-member regression 維持、105 files)、host ERT seq-test 8/8、byte-compile
+  新規警告 0。
+- *round 13 の知見*: facade を bundle 収録する時は *list だけでなく vector/string でも検証*
+  する (round 2 の seq.el は list のみ検証で vector regression を見逃した)。runtime の
+  =mapc=/=mapcar= は list only ([[feedback_nelisp_aset_string_noop]] 系の reader-core gap)。
 
 * 4. 波 C — 大物 (長期 / multi-session〜multi-year)
 
